@@ -5,15 +5,16 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceOrigin};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
+use crate::api::envelope::ApiResponse;
 use crate::discovery;
+use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
 
 use super::{
@@ -79,7 +80,7 @@ pub async fn list_logical_devices(
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
-        return ApiError::validation("limit must be between 1 and 200");
+        return DomainError::validation("limit must be between 1 and 200").into_response();
     }
     let offset = query.offset.unwrap_or(0);
 
@@ -91,7 +92,7 @@ pub async fn list_logical_devices(
     let physical_filter = match query.physical_device {
         Some(raw) => match resolve_device_id_or_error(&state, raw.trim()).await {
             Ok(id) => Some(id),
-            Err(error) => return into_v1_response(error),
+            Err(error) => return error.into_response(),
         },
         None => None,
     };
@@ -144,11 +145,11 @@ pub async fn list_device_logical_devices(
 ) -> Response {
     let physical_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&physical_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     ensure_default_logical_entry(&state, &tracked.info).await;
@@ -190,22 +191,22 @@ pub async fn create_logical_device(
 ) -> Response {
     let physical_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&physical_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let normalized_name = match normalize_logical_name(&body.name) {
         Ok(name) => name,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
 
     let physical_layout_id = ensure_default_logical_entry(&state, &tracked.info).await;
     let physical_led_count = tracked.info.total_led_count();
     let writer = match logical_devices::writer(&state.logical_devices_path) {
         Ok(writer) => writer,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
 
     let (created, pending) = {
@@ -228,7 +229,7 @@ pub async fn create_logical_device(
         if let Err(error) =
             logical_devices::validate_entry(&candidate_store, &entry, physical_led_count, None)
         {
-            return ApiError::validation(error);
+            return DomainError::validation(error).into_response();
         }
 
         candidate_store.insert(logical_id.clone(), entry);
@@ -246,10 +247,13 @@ pub async fn create_logical_device(
 
     let pending = match pending {
         Ok(pending) => pending,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
     if let Err(error) = persist_logical_segments(&state, pending) {
-        return ApiError::internal(format!("Failed to persist logical devices: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist logical devices: {error}"
+        ))
+        .into_response();
     }
 
     let runtime = crate::api::discovery_runtime(&state);
@@ -278,7 +282,7 @@ pub async fn get_logical_device(
         store.get(&id).cloned()
     };
     let Some(entry) = entry else {
-        return ApiError::not_found(format!("Logical device not found: {id}"));
+        return DomainError::not_found(ResourceKind::LogicalDevice, &id).into_response();
     };
 
     let physical_devices = state.device_registry.list().await;
@@ -308,9 +312,10 @@ pub async fn update_logical_device(
         && body.led_count.is_none()
         && body.enabled.is_none()
     {
-        return ApiError::validation(
+        return DomainError::validation(
             "At least one field must be provided: name, led_start, led_count, or enabled",
-        );
+        )
+        .into_response();
     }
 
     let existing = {
@@ -321,28 +326,29 @@ pub async fn update_logical_device(
         if let Err(error) = logical_devices::kick_pending(&state.logical_devices_path) {
             tracing::warn!(%error, "Failed to wake logical-device persistence retry");
         }
-        return ApiError::not_found(format!("Logical device not found: {id}"));
+        return DomainError::not_found(ResourceKind::LogicalDevice, &id).into_response();
     };
 
     if existing.kind == LogicalDeviceKind::Default
         && (body.led_start.is_some() || body.led_count.is_some())
     {
-        return ApiError::validation("Default logical devices always span the full physical range");
+        return DomainError::validation(
+            "Default logical devices always span the full physical range",
+        )
+        .into_response();
     }
     let Some(tracked) = state
         .device_registry
         .get(&existing.physical_device_id)
         .await
     else {
-        return ApiError::not_found(format!(
-            "Physical device not found for logical device: {}",
-            existing.id
-        ));
+        return DomainError::not_found(ResourceKind::Device, existing.physical_device_id)
+            .into_response();
     };
     let physical_led_count = tracked.info.total_led_count();
     let writer = match logical_devices::writer(&state.logical_devices_path) {
         Ok(writer) => writer,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
 
     let (updated, pending) = {
@@ -350,7 +356,7 @@ pub async fn update_logical_device(
         if let Some(name) = body.name {
             candidate.name = match normalize_logical_name(&name) {
                 Ok(value) => value,
-                Err(error) => return ApiError::validation(error),
+                Err(error) => return DomainError::validation(error).into_response(),
             };
         }
         if let Some(led_start) = body.led_start {
@@ -371,7 +377,7 @@ pub async fn update_logical_device(
             physical_led_count,
             Some(&id),
         ) {
-            return ApiError::validation(error);
+            return DomainError::validation(error).into_response();
         }
         candidate_store.insert(id.clone(), candidate);
         logical_devices::reconcile_default_enabled(
@@ -391,10 +397,13 @@ pub async fn update_logical_device(
 
     let pending = match pending {
         Ok(pending) => pending,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
     if let Err(error) = persist_logical_segments(&state, pending) {
-        return ApiError::internal(format!("Failed to persist logical devices: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist logical devices: {error}"
+        ))
+        .into_response();
     }
 
     let runtime = crate::api::discovery_runtime(&state);
@@ -426,15 +435,15 @@ pub async fn delete_logical_device(
         if let Err(error) = logical_devices::kick_pending(&state.logical_devices_path) {
             tracing::warn!(%error, "Failed to wake logical-device persistence retry");
         }
-        return ApiError::not_found(format!("Logical device not found: {id}"));
+        return DomainError::not_found(ResourceKind::LogicalDevice, &id).into_response();
     };
 
     if existing.kind == LogicalDeviceKind::Default {
-        return ApiError::conflict("Cannot delete the default logical device");
+        return DomainError::conflict("Cannot delete the default logical device").into_response();
     }
     let writer = match logical_devices::writer(&state.logical_devices_path) {
         Ok(writer) => writer,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
     let pending = {
         let mut store = state.logical_devices.write().await;
@@ -452,10 +461,13 @@ pub async fn delete_logical_device(
 
     let pending = match pending {
         Ok(pending) => pending,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
     if let Err(error) = persist_logical_segments(&state, pending) {
-        return ApiError::internal(format!("Failed to persist logical devices: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist logical devices: {error}"
+        ))
+        .into_response();
     }
 
     let runtime = crate::api::discovery_runtime(&state);

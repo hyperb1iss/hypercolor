@@ -28,9 +28,12 @@
 //! structured success payloads ("did you mean …"), and migrating
 //! workers must keep that behavior rather than projecting them
 //! through [`DomainError::NotFound`] (which would surface as a
-//! JSON-RPC error the client never saw before). Canonical routes render the
-//! canonical error envelope; legacy v1 paths keep their frozen error
-//! projections via the [`legacy`] shims.
+//! JSON-RPC error the client never saw before).
+//!
+//! [`DomainError`]'s `IntoResponse` is the ONLY error rendering in the
+//! daemon. There is no second factory, no per-family projection, and no
+//! route that hand-builds an error body: an error either is a
+//! `DomainError` or it does not reach the wire.
 
 pub mod commit;
 pub mod display;
@@ -58,14 +61,24 @@ pub enum ResourceKind {
     Layer,
     Effect,
     Device,
+    LogicalDevice,
     Display,
+    DisplayPreview,
+    SimulatedDisplay,
     Driver,
     Profile,
     Layout,
     Preset,
     Playlist,
+    Favorite,
     Asset,
+    AttachmentTemplate,
+    Control,
+    ControlSurface,
+    Sensor,
+    Diagnostic,
     Config,
+    ConfigKey,
     Session,
 }
 
@@ -77,14 +90,24 @@ impl std::fmt::Display for ResourceKind {
             Self::Layer => "layer",
             Self::Effect => "effect",
             Self::Device => "device",
+            Self::LogicalDevice => "logical device",
             Self::Display => "display",
+            Self::DisplayPreview => "display preview",
+            Self::SimulatedDisplay => "simulated display",
             Self::Driver => "driver",
             Self::Profile => "profile",
             Self::Layout => "layout",
             Self::Preset => "preset",
             Self::Playlist => "playlist",
+            Self::Favorite => "favorite",
             Self::Asset => "asset",
+            Self::AttachmentTemplate => "attachment template",
+            Self::Control => "control",
+            Self::ControlSurface => "control surface",
+            Self::Sensor => "sensor",
+            Self::Diagnostic => "diagnostic",
             Self::Config => "config",
+            Self::ConfigKey => "config key",
             Self::Session => "session",
         };
         f.write_str(name)
@@ -110,12 +133,66 @@ pub enum DomainError {
         message: String,
         /// The offending field, when one names itself.
         field: Option<String>,
+        /// Caller-actionable structured context (rejected control ids,
+        /// cap violations, per-layer diagnostics). Rides the envelope's
+        /// `error.details`; merges with `field` when both are present.
+        details: Option<serde_json::Value>,
+    },
+    /// The request cannot be parsed at all — a header, path segment, or
+    /// body fragment whose syntax is wrong, as distinct from a
+    /// well-formed request the domain rejects.
+    #[error("{message}")]
+    Malformed {
+        /// Human-readable description.
+        message: String,
     },
     /// Current state rejects the mutation.
     #[error("{message}")]
     Conflict {
         /// Human-readable description.
         message: String,
+        /// Caller-actionable structured context.
+        details: Option<serde_json::Value>,
+    },
+    /// Credentials are missing or unrecognized.
+    #[error("{message}")]
+    Unauthorized {
+        /// Human-readable description.
+        message: String,
+    },
+    /// Credentials are valid but the operation is not permitted, or the
+    /// caller's origin is not allowed to reach this surface.
+    #[error("{message}")]
+    Forbidden {
+        /// Human-readable description.
+        message: String,
+        /// Caller-actionable structured context (required tier,
+        /// rejected client address, invalid allow-list rules).
+        details: Option<serde_json::Value>,
+    },
+    /// The payload exceeds what the route accepts.
+    #[error("payload exceeds the {limit_bytes} byte limit")]
+    PayloadTooLarge {
+        /// The accepting limit, in bytes.
+        limit_bytes: u64,
+    },
+    /// The payload's media type is not one this route can decode.
+    #[error("{message}")]
+    UnsupportedMediaType {
+        /// Human-readable description.
+        message: String,
+    },
+    /// The caller exhausted its request budget for the current window.
+    #[error("{message}")]
+    RateLimited {
+        /// Human-readable description.
+        message: String,
+        /// Requests permitted per window.
+        limit: u32,
+        /// Window length, in seconds.
+        window_seconds: u64,
+        /// Seconds until the budget refills.
+        retry_after_secs: u64,
     },
     /// An If-Match / version precondition failed.
     #[error("version mismatch: expected {expected}, current {current}")]
@@ -157,6 +234,7 @@ impl DomainError {
         Self::Validation {
             message: message.into(),
             field: None,
+            details: None,
         }
     }
 
@@ -166,6 +244,26 @@ impl DomainError {
         Self::Validation {
             message: message.into(),
             field: Some(field.into()),
+            details: None,
+        }
+    }
+
+    /// A semantic validation failure carrying structured context the
+    /// caller needs in order to correct the request.
+    #[must_use]
+    pub fn validation_details(message: impl Into<String>, details: serde_json::Value) -> Self {
+        Self::Validation {
+            message: message.into(),
+            field: None,
+            details: Some(details),
+        }
+    }
+
+    /// Input whose syntax the parser cannot read.
+    #[must_use]
+    pub fn malformed(message: impl Into<String>) -> Self {
+        Self::Malformed {
+            message: message.into(),
         }
     }
 
@@ -173,6 +271,50 @@ impl DomainError {
     #[must_use]
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::Conflict {
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// A state conflict carrying structured context.
+    #[must_use]
+    pub fn conflict_details(message: impl Into<String>, details: serde_json::Value) -> Self {
+        Self::Conflict {
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
+    /// Missing or unrecognized credentials.
+    #[must_use]
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::Unauthorized {
+            message: message.into(),
+        }
+    }
+
+    /// A permitted caller reaching an operation it may not perform.
+    #[must_use]
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::Forbidden {
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// A refusal carrying structured context.
+    #[must_use]
+    pub fn forbidden_details(message: impl Into<String>, details: serde_json::Value) -> Self {
+        Self::Forbidden {
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
+    /// A media type this route cannot decode.
+    #[must_use]
+    pub fn unsupported_media_type(message: impl Into<String>) -> Self {
+        Self::UnsupportedMediaType {
             message: message.into(),
         }
     }
@@ -184,7 +326,13 @@ impl DomainError {
         match self {
             Self::NotFound { .. } => "not_found",
             Self::Validation { .. } => "validation_error",
+            Self::Malformed { .. } => "malformed_request",
             Self::Conflict { .. } => "conflict",
+            Self::Unauthorized { .. } => "unauthorized",
+            Self::Forbidden { .. } => "forbidden",
+            Self::PayloadTooLarge { .. } => "payload_too_large",
+            Self::UnsupportedMediaType { .. } => "unsupported_media_type",
+            Self::RateLimited { .. } => "rate_limited",
             Self::PreconditionFailed { .. } => "precondition_failed",
             Self::DeviceUnavailable { .. } => "device_unavailable",
             Self::Internal(_) => "internal_error",
@@ -197,7 +345,13 @@ impl DomainError {
         match self {
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::Malformed { .. } => StatusCode::BAD_REQUEST,
             Self::Conflict { .. } => StatusCode::CONFLICT,
+            Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
+            Self::Forbidden { .. } => StatusCode::FORBIDDEN,
+            Self::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::UnsupportedMediaType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::PreconditionFailed { .. } => StatusCode::PRECONDITION_FAILED,
             Self::DeviceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -206,12 +360,22 @@ impl DomainError {
 
     fn detail(&self) -> ApiErrorDetail {
         let details = match self {
-            Self::Validation {
-                field: Some(field), ..
-            } => Some(json!({ "field": field })),
+            Self::Validation { field, details, .. } => merge_field(details.clone(), field.as_ref()),
+            Self::Conflict { details, .. } | Self::Forbidden { details, .. } => details.clone(),
             Self::PreconditionFailed {
                 expected, current, ..
             } => Some(json!({ "expected": expected, "current": current })),
+            Self::PayloadTooLarge { limit_bytes } => Some(json!({ "limit_bytes": limit_bytes })),
+            Self::RateLimited {
+                limit,
+                window_seconds,
+                retry_after_secs,
+                ..
+            } => Some(json!({
+                "limit": limit,
+                "window_seconds": window_seconds,
+                "retry_after": retry_after_secs,
+            })),
             _ => None,
         };
         let message = match self {
@@ -225,6 +389,26 @@ impl DomainError {
             message,
             details,
         }
+    }
+}
+
+/// Fold a validation error's offending field into its structured
+/// details, so a caller reads one `details` object rather than two
+/// competing context channels.
+fn merge_field(
+    details: Option<serde_json::Value>,
+    field: Option<&String>,
+) -> Option<serde_json::Value> {
+    let Some(field) = field else {
+        return details;
+    };
+    match details {
+        Some(serde_json::Value::Object(mut map)) => {
+            map.insert("field".to_owned(), json!(field));
+            Some(serde_json::Value::Object(map))
+        }
+        Some(other) => Some(json!({ "field": field, "context": other })),
+        None => Some(json!({ "field": field })),
     }
 }
 
@@ -259,11 +443,23 @@ impl From<DomainError> for ToolError {
                 param: kind.to_string(),
                 reason: format!("not found: {id}"),
             },
-            DomainError::Validation { message, field } => ToolError::InvalidParam {
+            DomainError::Validation { message, field, .. } => ToolError::InvalidParam {
                 param: field.unwrap_or_else(|| "request".to_owned()),
                 reason: message,
             },
-            DomainError::Conflict { message } => ToolError::Conflict(message),
+            DomainError::Malformed { message } => ToolError::InvalidParam {
+                param: "request".to_owned(),
+                reason: message,
+            },
+            DomainError::Conflict { message, .. }
+            | DomainError::Unauthorized { message }
+            | DomainError::Forbidden { message, .. }
+            | DomainError::UnsupportedMediaType { message }
+            | DomainError::RateLimited { message, .. } => ToolError::Conflict(message),
+            DomainError::PayloadTooLarge { limit_bytes } => ToolError::InvalidParam {
+                param: "payload".to_owned(),
+                reason: format!("exceeds the {limit_bytes} byte limit"),
+            },
             DomainError::PreconditionFailed {
                 resource,
                 expected,
@@ -367,89 +563,6 @@ pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
     attach_version_etag(response, resource.version())
 }
 
-/// Frozen legacy error projections for v1 paths.
-///
-/// **This whole module is scheduled for deletion.** Hypercolor is
-/// pre-1.0 and the program removes compat glue rather than accumulating
-/// it: in-repo clients move in lockstep with wire changes and persisted
-/// files migrate forward once. These projections exist only so the
-/// service lift could land without changing wire bytes in the same PR;
-/// the route-flip wave deletes them along with the legacy shapes they
-/// reproduce. Do not build on them, and do not add a family — if you
-/// are here because a new path needs a legacy rendering, that path
-/// should be emitting the canonical envelope instead.
-///
-/// Until then this module is the single index for them, and the v1
-/// compat matrix pins these shapes.
-///
-/// There is deliberately **more than one** `DomainError` projection,
-/// because v1 path families do not agree on their frozen bytes. A
-/// single universal adapter would have to pick one family's rendering
-/// and would silently falsify the others. The two that exist:
-///
-/// - [`into_v1_response`] is the **helper family** — the device,
-///   layer, template, simulator, and control-surface helpers that wave
-///   2.2 typed. It is the default: sentence-cased not-found, the
-///   internal message spelled out, `details` always serialized, and
-///   `PreconditionFailed`/`DeviceUnavailable` rendered canonically
-///   because no helper in that family produces them. It still lives in
-///   `api::envelope` next to the `ApiError` factory it is built from,
-///   and is re-exported here so both families are found in one place.
-/// - [`scene_family_error_response`] is the **scene-mutation family** —
-///   `POST /effects/{id}/apply`, `POST /scenes/{id}/activate`, and the
-///   library activation they share. It differs in exactly one arm, and
-///   defers to the helper family for the rest so the two cannot drift.
-///
-/// They are separate because the families genuinely disagree on their
-/// bytes, so one universal adapter would have to pick a rendering and
-/// silently falsify the other. That is a property of the legacy shapes
-/// being frozen, not a pattern worth keeping past their deletion.
-pub mod legacy {
-    use super::{DomainError, HeaderValue, IntoResponse, Json, Response, StatusCode, header, json};
-    use crate::api::envelope::ApiError;
-    pub(crate) use crate::api::envelope::into_v1_response;
-
-    /// Render a [`DomainError`] in the frozen v1 shapes of the
-    /// **scene-mutation family**: `POST /effects/{id}/apply` and
-    /// `POST /scenes/{id}/activate`, plus the library activation they
-    /// share.
-    ///
-    /// Exactly one arm differs from the helper family, and every other
-    /// arm defers to it so the two renderings cannot drift apart.
-    ///
-    /// `PreconditionFailed` is the difference. These paths carry no
-    /// `If-Match`, so before the commit compare-and-swap existed they
-    /// could not produce one, and the helper family renders it as a
-    /// canonical 412 with an envelope this family has never emitted.
-    /// Here it is a 409 naming the revision that won, which is both a
-    /// v1-shaped body and what a caller needs in order to retry.
-    #[must_use]
-    pub fn scene_family_error_response(error: DomainError) -> Response {
-        match error {
-            DomainError::PreconditionFailed { current, .. } => ApiError::conflict(format!(
-                "Scene state changed while applying this request; current revision is {current}"
-            )),
-            other => into_v1_response(other),
-        }
-    }
-
-    /// The frozen v1 412 body: `{ "error": "<label> mismatch",
-    /// "current": N }` with the current version as `ETag` — top-level
-    /// `current`, no envelope, exactly as the compat matrix pins it.
-    #[must_use]
-    pub fn revision_mismatch_response(label: &str, current: u64) -> Response {
-        let body = json!({
-            "error": format!("{label} mismatch"),
-            "current": current,
-        });
-        let mut response = (StatusCode::PRECONDITION_FAILED, Json(body)).into_response();
-        if let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\"")) {
-            response.headers_mut().insert(header::ETAG, etag);
-        }
-        response
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,77 +624,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_shim_matches_the_frozen_v1_shape_byte_for_byte() {
-        let response = legacy::revision_mismatch_response("groups_revision", 9);
-        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::ETAG)
-                .and_then(|value| value.to_str().ok()),
-            Some("\"9\"")
-        );
+    async fn absent_details_are_omitted_rather_than_serialized_as_null() {
+        let response = DomainError::validation("nope").into_response();
         let bytes = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body reads");
-        // Expected bytes come from the same json! construction the
-        // in-tree builders use, so this pins the shim to them under
-        // whatever serde_json map-order policy the build graph
-        // resolves — a hard-coded string would encode the local
-        // feature graph instead. The real wire bytes are frozen by
-        // the v1 compat matrix.
-        let expected = serde_json::to_string(&json!({
-            "error": "groups_revision mismatch",
-            "current": 9,
-        }))
-        .expect("expected body serializes");
-        assert_eq!(
-            std::str::from_utf8(&bytes).expect("utf8"),
-            expected,
-            "the frozen v1 412 body, byte for byte against the builder construction"
+        let text = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(
+            !text.contains("\"details\""),
+            "the canonical envelope skips the key entirely when there is no context: {text}"
         );
     }
 
     #[tokio::test]
-    async fn the_scene_family_projection_keeps_its_own_frozen_renderings() {
-        // Sentence case, because that is how every v1 not-found message
-        // on these paths reads.
-        let response = legacy::scene_family_error_response(DomainError::NotFound {
-            kind: ResourceKind::Effect,
-            id: "aurora".to_owned(),
-        });
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    async fn a_validation_field_rides_the_details_object() {
+        let response = DomainError::validation_field("name", "must not be blank").into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "validation_error");
+        assert_eq!(json["error"]["details"]["field"], "name");
+    }
+
+    #[tokio::test]
+    async fn structured_validation_details_survive_beside_the_field() {
+        let error = DomainError::Validation {
+            message: "no valid controls to apply".to_owned(),
+            field: Some("controls".to_owned()),
+            details: Some(json!({ "rejected": ["speed"] })),
+        };
+        let json = body_json(error.into_response()).await;
+        assert_eq!(json["error"]["details"]["field"], "controls");
+        assert_eq!(json["error"]["details"]["rejected"][0], "speed");
+    }
+
+    #[tokio::test]
+    async fn malformed_input_is_a_400_distinct_from_validation() {
+        let response =
+            DomainError::malformed("If-Match must be a non-negative integer").into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "malformed_request");
         assert_eq!(
-            body_json(response).await["error"]["message"],
-            "Effect not found: aurora"
+            json["error"]["message"],
+            "If-Match must be a non-negative integer"
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthorized_and_forbidden_keep_their_own_statuses() {
+        let response = DomainError::unauthorized("Missing API key").into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body_json(response).await["error"]["code"], "unauthorized");
+
+        let response = DomainError::forbidden_details(
+            "Read-only API key cannot perform write operations",
+            json!({ "required_tier": "control" }),
+        )
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "forbidden");
+        assert_eq!(json["error"]["details"]["required_tier"], "control");
+    }
+
+    #[tokio::test]
+    async fn payload_too_large_names_the_limit_it_enforced() {
+        let response = DomainError::PayloadTooLarge {
+            limit_bytes: 64 * 1024 * 1024,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "payload_too_large");
+        assert_eq!(json["error"]["details"]["limit_bytes"], 64 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn unsupported_media_type_and_rate_limits_render_canonically() {
+        let response =
+            DomainError::unsupported_media_type("audio/flac is not decodable").into_response();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "unsupported_media_type"
         );
 
-        // A commit compare-and-swap loss is a 409 here, not the
-        // canonical 412: these paths carry no `If-Match` and never
-        // spoke 412 before the swap existed.
-        let response = legacy::scene_family_error_response(DomainError::PreconditionFailed {
-            resource: ResourceKind::Scene,
-            expected: 4,
-            current: 7,
-        });
+        let response = DomainError::RateLimited {
+            message: "Too many mutations".to_owned(),
+            limit: 60,
+            window_seconds: 60,
+            retry_after_secs: 12,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "rate_limited");
+        assert_eq!(json["error"]["details"]["limit"], 60);
+        assert_eq!(json["error"]["details"]["retry_after"], 12);
+    }
+
+    #[tokio::test]
+    async fn conflict_details_reach_the_envelope() {
+        let response = DomainError::conflict_details(
+            "Control surface revision conflict",
+            json!({ "kind": "control_surface_revision_conflict", "current_revision": 4 }),
+        )
+        .into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let json = body_json(response).await;
-        assert!(
-            json["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("current revision is 7")),
-            "the 409 must name the revision that won: {json}"
-        );
-
-        // Internal messages stay on the wire, as v1 has always sent them.
-        let response = legacy::scene_family_error_response(DomainError::Internal(anyhow::anyhow!(
-            "Failed to persist scene: disk on fire"
-        )));
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(
-            body_json(response).await["error"]["message"],
-            "Failed to persist scene: disk on fire"
-        );
+        assert_eq!(json["error"]["code"], "conflict");
+        assert_eq!(json["error"]["details"]["current_revision"], 4);
     }
 
     #[test]
@@ -622,10 +774,7 @@ mod tests {
         .into();
         assert_eq!(not_found.error_code(), -32602);
 
-        let conflict: ToolError = DomainError::Conflict {
-            message: "busy".to_owned(),
-        }
-        .into();
+        let conflict: ToolError = DomainError::conflict("busy").into();
         assert_eq!(conflict.error_code(), -32000);
 
         let precondition: ToolError = DomainError::PreconditionFailed {

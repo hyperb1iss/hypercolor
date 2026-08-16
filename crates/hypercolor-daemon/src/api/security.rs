@@ -16,13 +16,13 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderName, HeaderValue, Method, Request, header};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use if_addrs::IfAddr;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::api::envelope::ApiError;
+use crate::domain::DomainError;
 use hypercolor_types::config::{
     HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
 };
@@ -260,9 +260,10 @@ impl NetworkAccessPolicy {
         }
 
         let Some(client_ip) = client_ip(request) else {
-            return Some(ApiError::forbidden(
-                "Client IP is required by network.allowed_clients",
-            ));
+            return Some(
+                DomainError::forbidden("Client IP is required by network.allowed_clients")
+                    .into_response(),
+            );
         };
 
         if client_ip.is_loopback() {
@@ -270,17 +271,23 @@ impl NetworkAccessPolicy {
         }
 
         if !self.invalid_rules.is_empty() {
-            return Some(ApiError::forbidden_with_details(
-                "Invalid network.allowed_clients entries; remote clients are blocked",
-                json!({ "invalid_rules": &self.invalid_rules }),
-            ));
+            return Some(
+                DomainError::forbidden_details(
+                    "Invalid network.allowed_clients entries; remote clients are blocked",
+                    json!({ "invalid_rules": &self.invalid_rules }),
+                )
+                .into_response(),
+            );
         }
 
         if !self.scope_errors.is_empty() {
-            return Some(ApiError::forbidden_with_details(
-                "Network client scope is unavailable; remote clients are blocked",
-                json!({ "scope_errors": &self.scope_errors }),
-            ));
+            return Some(
+                DomainError::forbidden_details(
+                    "Network client scope is unavailable; remote clients are blocked",
+                    json!({ "scope_errors": &self.scope_errors }),
+                )
+                .into_response(),
+            );
         }
 
         if self
@@ -291,10 +298,13 @@ impl NetworkAccessPolicy {
             return None;
         }
 
-        Some(ApiError::forbidden_with_details(
-            "Client IP is not allowed by network.allowed_clients",
-            json!({ "client_ip": client_ip.to_string() }),
-        ))
+        Some(
+            DomainError::forbidden_details(
+                "Client IP is not allowed by network.allowed_clients",
+                json!({ "client_ip": client_ip.to_string() }),
+            )
+            .into_response(),
+        )
     }
 }
 
@@ -545,9 +555,10 @@ pub async fn enforce_security(
 
     if request_is_loopback(&request) {
         if is_mutating_request(request.method()) && is_cross_site_request(&request) {
-            return ApiError::forbidden(
+            return DomainError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
-            );
+            )
+            .into_response();
         }
 
         if !state.security_enabled() {
@@ -584,26 +595,28 @@ pub async fn enforce_security(
             granted_tier
         } else {
             let Some(token) = extract_token(&request) else {
-                return ApiError::unauthorized(
+                return DomainError::unauthorized(
                     "Missing API key. Use Authorization: Bearer <token>.",
-                );
+                )
+                .into_response();
             };
 
             let Some(granted_tier) = resolve_token_tier(&token, &state.auth) else {
-                return ApiError::unauthorized("Invalid API key");
+                return DomainError::unauthorized("Invalid API key").into_response();
             };
             granted_tier
         };
         granted_tier = Some(granted);
 
         if !tier_satisfies(granted, required_tier) {
-            return ApiError::forbidden_with_details(
+            return DomainError::forbidden_details(
                 "Read-only API key cannot perform write operations",
                 json!({
                     "required_tier": "control",
                     "current_tier": "read"
                 }),
-            );
+            )
+            .into_response();
         }
     }
 
@@ -621,15 +634,13 @@ pub async fn enforce_security(
     };
 
     if !decision.allowed {
-        let message = rate_limit_message(operation, decision.retry_after_secs);
-        let mut response = ApiError::rate_limited_with_details(
-            message,
-            json!({
-                "limit": decision.limit,
-                "window_seconds": RATE_WINDOW.as_secs(),
-                "retry_after": decision.retry_after_secs
-            }),
-        );
+        let mut response = DomainError::RateLimited {
+            message: rate_limit_message(operation, decision.retry_after_secs),
+            limit: decision.limit,
+            window_seconds: RATE_WINDOW.as_secs(),
+            retry_after_secs: decision.retry_after_secs,
+        }
+        .into_response();
         apply_rate_headers(&mut response, &decision);
         return response;
     }

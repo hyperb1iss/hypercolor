@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use tracing::warn;
 
@@ -17,7 +17,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiResponse, into_v1_response};
+use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
 use super::{DeviceSummary, refreshed_device_summary, resolve_device_id_or_error};
@@ -50,12 +50,12 @@ pub async fn pair_device(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     match pair_device_for_ui(&state, device_id, payload).await {
         Ok(paired) => ApiResponse::ok(paired),
-        Err(error) => into_v1_response(error),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -66,12 +66,12 @@ pub async fn delete_pairing(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     match delete_device_pairing(&state, device_id).await {
         Ok(deleted) => ApiResponse::ok(deleted),
-        Err(error) => into_v1_response(error),
+        Err(error) => error.into_response(),
     }
 }
 

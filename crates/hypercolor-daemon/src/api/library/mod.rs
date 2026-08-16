@@ -11,11 +11,12 @@ pub use presets::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::response::{IntoResponse, Response};
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
 
 use crate::api::AppState;
-use crate::domain::DomainError;
+use crate::domain::{DomainError, ResourceKind};
 use crate::library::LibraryStoreError;
 
 // ── Shared Types ────────────────────────────────────────────────────────
@@ -112,23 +113,23 @@ pub(crate) async fn activate_effect_with_controls(
     })
 }
 
-pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> axum::response::Response {
-    use crate::api::envelope::ApiError;
-
+pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> Response {
     match error {
         LibraryStoreError::PresetNotFound(id) => {
-            ApiError::not_found(format!("Preset not found: {id}"))
+            DomainError::not_found(ResourceKind::Preset, id).into_response()
         }
         LibraryStoreError::PresetConflict(id) => {
-            ApiError::conflict(format!("Preset already exists: {id}"))
+            DomainError::conflict(format!("Preset already exists: {id}")).into_response()
         }
         LibraryStoreError::PlaylistNotFound(id) => {
-            ApiError::not_found(format!("Playlist not found: {id}"))
+            DomainError::not_found(ResourceKind::Playlist, id).into_response()
         }
         LibraryStoreError::PlaylistConflict(id) => {
-            ApiError::conflict(format!("Playlist already exists: {id}"))
+            DomainError::conflict(format!("Playlist already exists: {id}")).into_response()
         }
-        LibraryStoreError::Persistence(message) => ApiError::internal(message.clone()),
+        LibraryStoreError::Persistence(message) => {
+            DomainError::Internal(anyhow::anyhow!(message.clone())).into_response()
+        }
     }
 }
 

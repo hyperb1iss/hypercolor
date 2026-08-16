@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLockWriteGuard;
 
@@ -19,8 +19,8 @@ use hypercolor_types::attachment::{
 
 use crate::api::AppState;
 use crate::api::devices::Pagination;
-use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
-use crate::domain::DomainError;
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ListTemplatesQuery {
@@ -106,13 +106,13 @@ pub async fn list_templates(
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
-        return ApiError::validation("limit must be between 1 and 200");
+        return DomainError::validation("limit must be between 1 and 200").into_response();
     }
     let offset = query.offset.unwrap_or(0);
 
     let filter = match build_filter(&query) {
         Ok(filter) => filter,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let registry = state.attachment_registry.read().await;
@@ -144,7 +144,7 @@ pub async fn get_template(
 ) -> Response {
     let registry = state.attachment_registry.read().await;
     let Some(template) = registry.get(&id) else {
-        return ApiError::not_found(format!("Attachment template not found: {id}"));
+        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
     };
 
     ApiResponse::ok(template_detail(template))
@@ -159,14 +159,15 @@ pub async fn create_template(
 
     let mut registry = state.attachment_registry.write().await;
     if registry.get(&template.id).is_some() {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Attachment template already exists: {}",
             template.id
-        ));
+        ))
+        .into_response();
     }
 
     if let Err(error) = register_and_persist_template(&mut registry, &template) {
-        return into_v1_response(error);
+        return error.into_response();
     }
 
     ApiResponse::created(template_detail(&template))
@@ -179,20 +180,22 @@ pub async fn update_template(
     Json(mut template): Json<ComponentTemplate>,
 ) -> Response {
     if template.id != id {
-        return ApiError::validation("template ID in path must match request body");
+        return DomainError::validation("template ID in path must match request body")
+            .into_response();
     }
     template.origin = ComponentOrigin::User;
 
     let mut registry = state.attachment_registry.write().await;
     let Some(existing) = registry.get(&id) else {
-        return ApiError::not_found(format!("Attachment template not found: {id}"));
+        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
     };
     if existing.origin == ComponentOrigin::BuiltIn {
-        return ApiError::forbidden(format!("Built-in template cannot be updated: {id}"));
+        return DomainError::forbidden(format!("Built-in template cannot be updated: {id}"))
+            .into_response();
     }
 
     if let Err(error) = register_and_persist_template(&mut registry, &template) {
-        return into_v1_response(error);
+        return error.into_response();
     }
 
     ApiResponse::ok(template_detail(&template))
@@ -206,26 +209,28 @@ pub async fn delete_template(
     {
         let profiles = state.attachment_profiles.read().await;
         if profiles.uses_template(&id) {
-            return ApiError::conflict(format!(
+            return DomainError::conflict(format!(
                 "Attachment template is still bound in a device profile: {id}"
-            ));
+            ))
+            .into_response();
         }
     }
 
     let mut registry = state.attachment_registry.write().await;
     let Some(existing) = registry.get(&id) else {
-        return ApiError::not_found(format!("Attachment template not found: {id}"));
+        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
     };
     if existing.origin == ComponentOrigin::BuiltIn {
-        return ApiError::forbidden(format!("Built-in template cannot be deleted: {id}"));
+        return DomainError::forbidden(format!("Built-in template cannot be deleted: {id}"))
+            .into_response();
     }
 
     let removed = match registry.remove(&id) {
         Ok(template) => template,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
     if let Err(error) = delete_user_template_file(&id) {
-        return ApiError::internal(error);
+        return DomainError::Internal(anyhow::anyhow!("{error}")).into_response();
     }
 
     ApiResponse::ok(serde_json::json!({

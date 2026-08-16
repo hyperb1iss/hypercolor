@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 
 use hypercolor_core::device::{DeviceLifecycleManager, PortableRebindError};
 use hypercolor_types::api::devices::{
@@ -23,8 +23,9 @@ use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceState};
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::device_aliases;
+use crate::domain::{DomainError, ResourceKind};
 
 /// `GET /api/v1/devices/bindings`
 pub async fn get_device_bindings(State(state): State<Arc<AppState>>) -> Response {
@@ -87,17 +88,16 @@ pub async fn rebind_device(
 ) -> Response {
     let layout_device_id = request.layout_device_id.trim();
     if layout_device_id.is_empty() {
-        return ApiError::validation("layout_device_id must not be empty");
+        return DomainError::validation("layout_device_id must not be empty").into_response();
     }
     let Ok(device_id) = request.device_id.parse::<DeviceId>() else {
-        return ApiError::validation("device_id must be a device UUID");
+        return DomainError::validation("device_id must be a device UUID").into_response();
     };
 
     let Some(fingerprint) = recorded_fingerprint_for(&state, layout_device_id, device_id).await
     else {
-        return ApiError::not_found(format!(
-            "no recorded identity derives layout binding '{layout_device_id}'"
-        ));
+        return DomainError::not_found(ResourceKind::LogicalDevice, layout_device_id)
+            .into_response();
     };
 
     // A cross-driver inheritance would pin the key but derive a
@@ -108,10 +108,11 @@ pub async fn rebind_device(
         let would_derive =
             DeviceLifecycleManager::canonical_layout_device_id(&target.info, Some(&fingerprint));
         if would_derive != layout_device_id {
-            return ApiError::validation(format!(
+            return DomainError::validation(format!(
                 "device would derive layout binding '{would_derive}', not \
                  '{layout_device_id}'; a binding can only be inherited within its driver"
-            ));
+            ))
+            .into_response();
         }
     }
 
@@ -122,17 +123,19 @@ pub async fn rebind_device(
     {
         Ok(rebound) => rebound,
         Err(PortableRebindError::UnknownDevice) => {
-            return ApiError::not_found(format!("Device not found: {device_id}"));
+            return DomainError::not_found(ResourceKind::Device, device_id).into_response();
         }
         Err(PortableRebindError::Unclaimed) => {
-            return ApiError::validation(
+            return DomainError::validation(
                 "device carries no portable identity claim; re-bind it by editing the layout",
-            );
+            )
+            .into_response();
         }
         Err(PortableRebindError::TargetActive) => {
-            return ApiError::conflict(
+            return DomainError::conflict(
                 "the binding's device is currently active, so it was not replaced",
-            );
+            )
+            .into_response();
         }
     };
 
@@ -140,9 +143,10 @@ pub async fn rebind_device(
     if let Err(error) =
         device_aliases::sync_from_registry(&alias_path, &state.device_registry).await
     {
-        return ApiError::internal(format!(
+        return DomainError::Internal(anyhow::anyhow!(
             "re-bind applied but the alias overlay failed to persist: {error:#}"
-        ));
+        ))
+        .into_response();
     }
 
     let portable_key = state

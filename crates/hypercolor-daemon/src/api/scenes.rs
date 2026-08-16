@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
 use hypercolor_core::scene::SceneManager;
@@ -15,7 +15,8 @@ use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId, SceneKind, Zone};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 
 const MEDIA_SOFT_PRODUCER_COST_US: u64 = 60_000;
 const LOTTIE_PRODUCER_COST_US: u64 = 8_000;
@@ -59,11 +60,11 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
 pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let manager = state.scene_manager.read().await;
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
-        return ApiError::not_found(format!("Scene not found: {id}"));
+        return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
     let Some(scene) = manager.get(&scene_id) else {
-        return ApiError::not_found(format!("Scene not found: {id}"));
+        return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
     ApiResponse::ok(scene_summary(scene))
@@ -75,7 +76,7 @@ pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
 
     let manager = state.scene_manager.read().await;
     let Some(scene) = manager.active_scene() else {
-        return ApiError::not_found("No active scene".to_owned());
+        return DomainError::not_found(ResourceKind::Scene, "active").into_response();
     };
 
     ApiResponse::ok(ActiveSceneResponse {
@@ -111,7 +112,7 @@ pub async fn create_scene(
     .await
     {
         Ok(created) => created,
-        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+        Err(error) => return error.into_response(),
     };
 
     ApiResponse::created(scene_summary(&created.scene))
@@ -124,7 +125,7 @@ pub async fn update_scene(
     Json(body): Json<UpdateSceneRequest>,
 ) -> Response {
     let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
-        return ApiError::not_found(format!("Scene not found: {id}"));
+        return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
     let updated = match crate::domain::scene::update_scene(
@@ -141,10 +142,12 @@ pub async fn update_scene(
     .await
     {
         Ok(updated) => updated,
-        Err(crate::domain::DomainError::NotFound { .. }) => {
-            return ApiError::not_found(format!("Scene not found: {id}"));
+        // The service reports the resolved id; the caller gets back the
+        // id it actually sent.
+        Err(DomainError::NotFound { .. }) => {
+            return DomainError::not_found(ResourceKind::Scene, &id).into_response();
         }
-        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+        Err(error) => return error.into_response(),
     };
 
     ApiResponse::ok(scene_summary(&updated.scene))
@@ -153,7 +156,7 @@ pub async fn update_scene(
 /// `DELETE /api/v1/scenes/:id` — Delete a scene.
 pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
-        return ApiError::not_found(format!("Scene not found: {id}"));
+        return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
     if let Err(error) = crate::domain::scene::delete_scene(
@@ -164,10 +167,12 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
     .await
     {
         return match error {
-            crate::domain::DomainError::NotFound { .. } => {
-                ApiError::not_found(format!("Scene not found: {id}"))
+            // The service reports the resolved id; the caller gets back
+            // the id it actually sent.
+            DomainError::NotFound { .. } => {
+                DomainError::not_found(ResourceKind::Scene, &id).into_response()
             }
-            other => crate::domain::legacy::scene_family_error_response(other),
+            other => other.into_response(),
         };
     }
 
@@ -190,10 +195,10 @@ pub async fn activate_scene(
         let media_config = current_media_config(state.as_ref());
         let manager = state.scene_manager.read().await;
         let Some(scene_id) = resolve_scene_id(&manager, &id) else {
-            return ApiError::not_found(format!("Scene not found: {id}"));
+            return DomainError::not_found(ResourceKind::Scene, &id).into_response();
         };
         let Some(scene) = manager.get(&scene_id) else {
-            return ApiError::not_found(format!("Scene not found: {id}"));
+            return DomainError::not_found(ResourceKind::Scene, &id).into_response();
         };
         let admission = crate::domain::scene::evaluate_scene_media_admission(
             scene,
@@ -203,14 +208,15 @@ pub async fn activate_scene(
         (scene_id, admission)
     };
     if let Some(violation) = admission.violation.as_ref() {
-        return ApiError::validation_with_details(
+        return DomainError::validation_details(
             violation.message.clone(),
             serde_json::json!({
                 "caps": violation.caps,
                 "counts": violation.counts,
                 "layers": violation.layers,
             }),
-        );
+        )
+        .into_response();
     }
 
     let activated = match crate::domain::scene::activate_scene(
@@ -224,7 +230,7 @@ pub async fn activate_scene(
     .await
     {
         Ok(activated) => activated,
-        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+        Err(error) => return error.into_response(),
     };
 
     ApiResponse::ok(serde_json::json!({
@@ -245,7 +251,7 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
     .await
     {
         Ok(deactivated) => deactivated,
-        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+        Err(error) => return error.into_response(),
     };
 
     ApiResponse::ok(serde_json::json!({
@@ -302,12 +308,10 @@ pub(crate) fn current_media_config(state: &AppState) -> MediaConfig {
 pub(crate) fn validate_scene_media_admission(
     counts: &MediaAdmissionCounts,
     media_config: &MediaConfig,
-) -> Option<Response> {
-    let Some(details) = scene_media_admission_violation_details(counts, media_config) else {
-        return None;
-    };
+) -> Option<DomainError> {
+    let details = scene_media_admission_violation_details(counts, media_config)?;
 
-    Some(ApiError::validation_with_details(
+    Some(DomainError::validation_details(
         details.message,
         serde_json::json!({
             "caps": details.caps,

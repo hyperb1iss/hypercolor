@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::Json;
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use cpal::traits::{DeviceTrait, HostTrait};
 use hypercolor_core::config::canonical_audio_device_id;
 #[cfg(target_os = "linux")]
@@ -19,8 +19,9 @@ use tracing::{debug, warn};
 use utoipa::ToSchema;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::persist_runtime_session;
+use crate::domain::DomainError;
 use crate::session::{current_global_brightness, set_global_brightness};
 use hypercolor_types::event::HypercolorEvent;
 
@@ -69,14 +70,17 @@ pub async fn set_brightness(
 ) -> Response {
     let normalized = f32::from(body.brightness) / 100.0;
     if !(0.0..=1.0).contains(&normalized) {
-        return ApiError::validation("brightness must be between 0 and 100");
+        return DomainError::validation("brightness must be between 0 and 100").into_response();
     }
 
     {
         let mut settings = state.device_settings.write().await;
         settings.set_global_brightness(normalized);
         if let Err(error) = settings.save() {
-            return ApiError::internal(format!("Failed to persist global brightness: {error}"));
+            return DomainError::Internal(anyhow::anyhow!(
+                "Failed to persist global brightness: {error}"
+            ))
+            .into_response();
         }
     }
     state

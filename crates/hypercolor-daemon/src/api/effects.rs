@@ -37,11 +37,11 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::discovery;
 use crate::domain;
-use crate::domain::MutationContext;
 use crate::domain::effect::RequestedTransition;
+use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
 use crate::session::set_output_stopped;
@@ -340,7 +340,7 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
         (
             status = 404,
             description = "Effect was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -349,7 +349,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     let registry = state.effect_registry.read().await;
 
     let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-        return ApiError::not_found(format!("Effect not found: {id}"));
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
     drop(registry);
 
@@ -400,7 +400,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         (
             status = 404,
             description = "Effect was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -412,7 +412,7 @@ pub async fn list_effect_presets(
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(metadata) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         metadata
     };
@@ -448,12 +448,12 @@ pub async fn list_effect_presets(
         (
             status = 404,
             description = "Effect or preset was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 422,
             description = "Preset belongs to another effect",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -483,7 +483,7 @@ pub async fn get_effect_layout(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
@@ -493,7 +493,7 @@ pub async fn get_effect_layout(
         let links = state.effect_layout_links.read().await;
         links.get(&effect_id).cloned()
     }) else {
-        return ApiError::not_found(format!("No layout associated with effect: {id}"));
+        return DomainError::not_found(ResourceKind::Layout, &id).into_response();
     };
 
     let layout = {
@@ -522,14 +522,14 @@ pub async fn set_effect_layout(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
 
     let requested_layout = body.layout_id.trim();
     if requested_layout.is_empty() {
-        return ApiError::validation("layout_id must not be empty");
+        return DomainError::validation("layout_id must not be empty").into_response();
     }
 
     let layout = {
@@ -537,10 +537,11 @@ pub async fn set_effect_layout(
         match resolve_layout_for_link(&layouts, requested_layout) {
             Ok(layout) => layout,
             Err(ResolveLayoutLinkError::NotFound(layout_id)) => {
-                return ApiError::not_found(format!("Layout not found: {layout_id}"));
+                return DomainError::not_found(ResourceKind::Layout, &layout_id).into_response();
             }
             Err(ResolveLayoutLinkError::AmbiguousName(name)) => {
-                return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+                return DomainError::conflict(format!("Layout name is ambiguous: {name}"))
+                    .into_response();
             }
         }
     };
@@ -548,7 +549,9 @@ pub async fn set_effect_layout(
     let effect_id = effect.id.to_string();
     let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
         Ok(writer) => writer,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
     let pending = {
         let mut links = state.effect_layout_links.write().await;
@@ -564,10 +567,12 @@ pub async fn set_effect_layout(
     };
     let pending = match pending {
         Ok(pending) => pending,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
     if let Err(error) = save_effect_layout_links(&state, pending) {
-        return ApiError::internal(error);
+        return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
     ApiResponse::ok(serde_json::json!({
@@ -588,14 +593,16 @@ pub async fn delete_effect_layout(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
     let effect_id = effect.id.to_string();
     let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
         Ok(writer) => writer,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
 
     let (removed_layout_id, pending) = {
@@ -611,10 +618,12 @@ pub async fn delete_effect_layout(
 
     let pending = match pending {
         Ok(pending) => pending,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
     if let Err(error) = save_effect_layout_links(&state, pending) {
-        return ApiError::internal(error);
+        return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
     ApiResponse::ok(serde_json::json!({
@@ -642,22 +651,22 @@ pub async fn delete_effect_layout(
         (
             status = 400,
             description = "Request was malformed",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 404,
             description = "Effect or preset was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 422,
             description = "Request validation failed",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 500,
             description = "The effect could not be applied",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -670,7 +679,7 @@ pub async fn apply_effect(
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
@@ -683,16 +692,16 @@ pub async fn apply_effect(
         "Applying effect via API"
     );
     if metadata.category == EffectCategory::Display {
-        return ApiError::validation(format!(
+        return DomainError::validation(format!(
             "Effect '{}' is a display face and must be assigned to a display device, not applied to the LED pipeline",
             metadata.name
-        ));
+        ))
+        .into_response();
     }
 
-    // The transition rule lives in the domain so MCP cannot diverge from
-    // it; the 400 it renders as on this legacy path is the adapter's.
+    // The transition rule lives in the domain so MCP cannot diverge from it.
     if let Err(error) = transition_request(body.as_ref()).resolve() {
-        return ApiError::bad_request(error.to_string());
+        return error.into_response();
     }
 
     // Resolve the optional preset before changing the scene. Both bundled
@@ -713,12 +722,13 @@ pub async fn apply_effect(
                                 || saved.name.eq_ignore_ascii_case(preset_ref)
                         })
                 {
-                    return ApiError::validation(format!(
+                    return DomainError::validation(format!(
                         "Preset '{}' targets effect '{}', not '{}'",
                         saved.name, saved.effect_id, metadata.id
-                    ));
+                    ))
+                    .into_response();
                 }
-                return ApiError::not_found(format!("Preset not found: {preset_ref}"));
+                return DomainError::not_found(ResourceKind::Preset, preset_ref).into_response();
             };
             Some(preset)
         }
@@ -740,7 +750,7 @@ pub async fn apply_effect(
     let target_group =
         match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
             Ok(target) => target,
-            Err(response) => return *response,
+            Err(error) => return error.into_response(),
         };
 
     let applied = match domain::effect::apply_effect(
@@ -757,7 +767,7 @@ pub async fn apply_effect(
     .await
     {
         Ok(applied) => applied,
-        Err(error) => return domain::legacy::scene_family_error_response(error),
+        Err(error) => return error.into_response(),
     };
 
     if let Some(error) = applied.commit.retry_error() {
@@ -840,7 +850,7 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/effects/active/cover` — Get the active effect cover image.
 pub async fn get_active_effect_cover(State(state): State<Arc<AppState>>) -> Response {
     let Some((_, meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
 
     effect_cover_image_response(&meta, EffectCoverCache::Active).await
@@ -854,7 +864,7 @@ pub async fn get_effect_cover(
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
@@ -919,8 +929,8 @@ pub async fn resume_effect(State(state): State<Arc<AppState>>) -> Response {
 pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
     let stopped = match domain::effect::stop_effect(state.as_ref(), MutationContext::api()).await {
         Ok(Some(stopped)) => stopped,
-        Ok(None) => return ApiError::not_found("No effect is currently active"),
-        Err(error) => return domain::legacy::scene_family_error_response(error),
+        Ok(None) => return DomainError::not_found(ResourceKind::Effect, "active").into_response(),
+        Err(error) => return error.into_response(),
     };
 
     ApiResponse::ok(serde_json::json!({
@@ -942,11 +952,15 @@ pub async fn update_current_controls(
         .cloned()
         .unwrap_or_default();
     if controls.is_empty() {
-        return ApiError::bad_request("controls payload must include at least one key");
+        return DomainError::validation_field(
+            "controls",
+            "controls payload must include at least one key",
+        )
+        .into_response();
     }
 
     let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
     let effect_name = active_meta.name.clone();
     let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
@@ -967,17 +981,19 @@ pub async fn update_current_controls(
     match outcome {
         Ok(Ok(_)) => {}
         Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
-            return ApiError::not_found("No effect is currently active");
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
         }
         Ok(Err(domain::effect::ControlsRefusal::Stale { .. })) => {
-            return ApiError::conflict("active effect controls changed concurrently");
+            return DomainError::conflict("active effect controls changed concurrently")
+                .into_response();
         }
         Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
-            return ApiError::validation(
+            return DomainError::validation(
                 "active group has multiple effect layers; use the layer controls endpoint",
-            );
+            )
+            .into_response();
         }
-        Err(error) => return domain::legacy::scene_family_error_response(error),
+        Err(error) => return error.into_response(),
     }
 
     if !rejected.is_empty() {
@@ -1018,13 +1034,13 @@ pub async fn update_effect_controls(
     body: Option<Json<UpdateCurrentControlsRequest>>,
 ) -> Response {
     let Ok(effect_uuid) = effect_id_raw.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request("effect_id must be a valid UUID");
+        return DomainError::malformed("effect_id must be a valid UUID").into_response();
     };
     let effect_id = EffectId::from(effect_uuid);
 
     let expected_version = match parse_if_match_version(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
 
     let controls = body
@@ -1034,11 +1050,15 @@ pub async fn update_effect_controls(
         .cloned()
         .unwrap_or_default();
     if controls.is_empty() {
-        return ApiError::bad_request("controls payload must include at least one key");
+        return DomainError::validation_field(
+            "controls",
+            "controls payload must include at least one key",
+        )
+        .into_response();
     }
 
     let Some((group, active_meta)) = primary_effect_by_id(state.as_ref(), effect_id).await else {
-        return ApiError::not_found("No zone loads that effect");
+        return DomainError::not_found(ResourceKind::Zone, effect_id).into_response();
     };
     let effect_name = active_meta.name.clone();
     let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
@@ -1063,17 +1083,25 @@ pub async fn update_effect_controls(
     let new_version = match outcome {
         Ok(Ok(written)) => written.controls_version,
         Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
-            return ApiError::not_found("zone no longer loads that effect");
+            return DomainError::not_found(ResourceKind::Zone, effect_id).into_response();
         }
         Ok(Err(domain::effect::ControlsRefusal::Stale { current })) => {
-            return controls_version_mismatch_response(current);
+            return DomainError::PreconditionFailed {
+                resource: ResourceKind::Effect,
+                // Staleness is only checked when the caller sent a
+                // precondition, so the header value is always present here.
+                expected: expected_version.unwrap_or(current),
+                current,
+            }
+            .into_response();
         }
         Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
-            return ApiError::validation(
+            return DomainError::validation(
                 "zone has multiple matching effect layers; use the layer controls endpoint",
-            );
+            )
+            .into_response();
         }
-        Err(error) => return domain::legacy::scene_family_error_response(error),
+        Err(error) => return error.into_response(),
     };
 
     if !rejected.is_empty() {
@@ -1125,22 +1153,6 @@ fn parse_if_match_version(headers: &HeaderMap) -> Result<Option<u64>, &'static s
         .map_err(|_| "If-Match must be a non-negative integer controls_version")
 }
 
-fn controls_version_mismatch_response(current: u64) -> Response {
-    let body = serde_json::json!({
-        "error": "controls_version mismatch",
-        "current": current,
-    });
-    let mut response = (
-        axum::http::StatusCode::PRECONDITION_FAILED,
-        axum::Json(body),
-    )
-        .into_response();
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\"")) {
-        response.headers_mut().insert(header::ETAG, etag);
-    }
-    response
-}
-
 fn attach_controls_version_headers(mut response: Response, version: u64) -> Response {
     if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
         response.headers_mut().insert(header::ETAG, etag);
@@ -1179,17 +1191,17 @@ pub async fn set_current_control_binding(
     Json(binding): Json<ControlBinding>,
 ) -> Response {
     let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
     let effect_id = active_meta.id.to_string();
     let effect_name = active_meta.name.clone();
     let Some(control) = active_meta.control_by_id(&name) else {
-        return ApiError::not_found(format!("Control not found on active effect: {name}"));
+        return DomainError::not_found(ResourceKind::Control, &name).into_response();
     };
     let control_id = control.control_id().to_owned();
     let normalized = match validate_control_binding_request(&active_meta, &name, binding) {
         Ok(normalized) => normalized,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
     let outcome = domain::effect::set_control_binding(
         state.as_ref(),
@@ -1203,8 +1215,10 @@ pub async fn set_current_control_binding(
     .await;
     match outcome {
         Ok(Ok(_)) => {}
-        Ok(Err(_)) => return ApiError::not_found("No effect is currently active"),
-        Err(error) => return domain::legacy::scene_family_error_response(error),
+        Ok(Err(_)) => {
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
+        }
+        Err(error) => return error.into_response(),
     }
 
     ApiResponse::ok(serde_json::json!({
@@ -1228,14 +1242,14 @@ pub async fn reset_controls(
     let target_group =
         match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
             Ok(target) => target,
-            Err(response) => return *response,
+            Err(error) => return error.into_response(),
         };
     let resolved = match target_group {
         Some(group_id) => active_group_effect(state.as_ref(), group_id).await,
         None => active_primary_effect(state.as_ref()).await,
     };
     let Some((group, meta)) = resolved else {
-        return ApiError::not_found("No effect is active in the target zone");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
     let effect_id = meta.id;
     let effect_name = meta.name.clone();
@@ -1251,8 +1265,10 @@ pub async fn reset_controls(
     .await;
     match outcome {
         Ok(Ok(_)) => {}
-        Ok(Err(_)) => return ApiError::not_found("No effect is currently active"),
-        Err(error) => return domain::legacy::scene_family_error_response(error),
+        Ok(Err(_)) => {
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
+        }
+        Err(error) => return error.into_response(),
     }
 
     info!(effect = %effect_name, "Controls reset to defaults");
@@ -1306,36 +1322,38 @@ pub async fn install_effect(
 ) -> Response {
     let (file_name, file_bytes) = match next_uploaded_html_field(&mut multipart).await {
         Ok(upload) => upload,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     if file_bytes.len() > MAX_EFFECT_UPLOAD_BYTES {
-        return ApiError::payload_too_large(format!(
-            "Uploaded effect exceeds the 1 MB limit ({} bytes).",
-            file_bytes.len()
-        ));
+        return DomainError::PayloadTooLarge {
+            limit_bytes: MAX_EFFECT_UPLOAD_BYTES as u64,
+        }
+        .into_response();
     }
 
     let Ok(html) = String::from_utf8(file_bytes) else {
-        return ApiError::bad_request("Uploaded effect must be valid UTF-8 HTML.");
+        return DomainError::malformed("Uploaded effect must be valid UTF-8 HTML.").into_response();
     };
 
     let validated = match validate_uploaded_html(&html) {
         Ok(validated) => validated,
         Err(errors) => {
-            return ApiError::bad_request_with_details(
+            return DomainError::validation_details(
                 "Uploaded effect failed validation.",
                 serde_json::json!({ "errors": errors }),
-            );
+            )
+            .into_response();
         }
     };
 
     let install_dir = user_effects_install_dir(state.as_ref());
     if let Err(error) = fs::create_dir_all(&install_dir).await {
-        return ApiError::internal(format!(
+        return DomainError::Internal(anyhow::anyhow!(
             "Failed to create user effects directory '{}': {error}",
             install_dir.display()
-        ));
+        ))
+        .into_response();
     }
 
     let preferred_stem = file_name
@@ -1352,25 +1370,30 @@ pub async fn install_effect(
     let replacing = installed_path.exists();
 
     if let Err(error) = fs::write(&installed_path, html.as_bytes()).await {
-        return ApiError::internal(format!(
+        return DomainError::Internal(anyhow::anyhow!(
             "Failed to write uploaded effect to '{}': {error}",
             installed_path.display()
-        ));
+        ))
+        .into_response();
     }
 
     let entry = match load_html_effect_file(&installed_path) {
         Ok(Some(entry)) => entry,
         Ok(None) => {
             let _ = fs::remove_file(&installed_path).await;
-            return ApiError::bad_request("Uploaded effect is not supported by this daemon build.");
+            return DomainError::validation(
+                "Uploaded effect is not supported by this daemon build.",
+            )
+            .into_response();
         }
         Err(error) => {
             let _ = fs::remove_file(&installed_path).await;
-            return ApiError::internal(format!(
+            return DomainError::Internal(anyhow::anyhow!(
                 "Failed to register uploaded effect '{}': {}",
                 error.path.display(),
                 error.message
-            ));
+            ))
+            .into_response();
         }
     };
 
@@ -1592,20 +1615,15 @@ pub(crate) async fn active_group_effect(
 }
 
 /// Parse an optional `render_group` request field into a [`ZoneId`].
-/// An unparseable id is a client error, surfaced as the boxed `Err`
-/// response (boxed so the happy path isn't penalized by axum's large
-/// `Response` type).
-pub(crate) fn parse_render_group(raw: Option<&str>) -> Result<Option<ZoneId>, Box<Response>> {
+/// An id that is not a UUID is malformed syntax, not a value the
+/// domain weighs.
+pub(crate) fn parse_render_group(raw: Option<&str>) -> Result<Option<ZoneId>, DomainError> {
     match raw {
         None => Ok(None),
         Some(raw) => raw
             .parse::<uuid::Uuid>()
             .map(|uuid| Some(ZoneId(uuid)))
-            .map_err(|_| {
-                Box::new(ApiError::bad_request(format!(
-                    "Invalid render_group id: {raw}"
-                )))
-            }),
+            .map_err(|_| DomainError::malformed(format!("Invalid render_group id: {raw}"))),
     }
 }
 
@@ -1817,10 +1835,7 @@ async fn effect_cover_image_response(
     cache: EffectCoverCache,
 ) -> Response {
     let Some(cover) = effect_cover_image_bytes(metadata).await else {
-        return ApiError::not_found(format!(
-            "Cover image not found for effect: {}",
-            metadata.name
-        ));
+        return DomainError::not_found(ResourceKind::Asset, &metadata.name).into_response();
     };
 
     let mut headers = HeaderMap::new();
@@ -2073,9 +2088,9 @@ struct ValidatedUploadedHtml {
 
 async fn next_uploaded_html_field(
     multipart: &mut Multipart,
-) -> Result<(Option<String>, Vec<u8>), Response> {
+) -> Result<(Option<String>, Vec<u8>), DomainError> {
     while let Some(field) = multipart.next_field().await.map_err(|error| {
-        ApiError::bad_request(format!("Failed to read multipart upload: {error}"))
+        DomainError::malformed(format!("Failed to read multipart upload: {error}"))
     })? {
         let file_name = field.file_name().map(ToOwned::to_owned);
         let field_name = field.name().map(ToOwned::to_owned);
@@ -2084,12 +2099,12 @@ async fn next_uploaded_html_field(
         }
 
         let bytes = field.bytes().await.map_err(|error| {
-            ApiError::bad_request(format!("Failed to read uploaded file: {error}"))
+            DomainError::malformed(format!("Failed to read uploaded file: {error}"))
         })?;
         return Ok((file_name, bytes.to_vec()));
     }
 
-    Err(ApiError::bad_request(
+    Err(DomainError::malformed(
         "Missing multipart file field named \"file\".",
     ))
 }

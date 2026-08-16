@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::HypercolorEvent;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -17,9 +17,10 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::{effects, persist_runtime_session};
 use crate::discovery;
+use crate::domain::{DomainError, ResourceKind};
 use crate::profile_store::{Profile, ProfileDisplay, ProfilePrimary, ResolveProfileError};
 use crate::scene_transactions::apply_layout_update;
 use crate::session::{current_global_brightness, set_global_brightness};
@@ -118,9 +119,10 @@ pub async fn get_profile(State(state): State<Arc<AppState>>, Path(id): Path<Stri
     let profiles = state.profiles.read().await;
     let key = match resolve_profile_key(&profiles, &id) {
         Ok(Some(key)) => key,
-        Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+        Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     };
 
@@ -143,7 +145,7 @@ pub async fn create_profile(
     .await
     {
         Ok(profile) => profile,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
 
     let mut profiles = state.profiles.write().await;
@@ -152,15 +154,18 @@ pub async fn create_profile(
             profile.id = existing_id;
         }
         Ok(Some(_)) => {
-            return ApiError::conflict(format!("Profile already exists: {}", profile.name));
+            return DomainError::conflict(format!("Profile already exists: {}", profile.name))
+                .into_response();
         }
         Ok(None) => {}
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     }
     if let Err(error) = profiles.insert(profile.clone()) {
-        return ApiError::internal(format!("Failed to persist profile store: {error}"));
+        return DomainError::Internal(anyhow::anyhow!("Failed to persist profile store: {error}"))
+            .into_response();
     }
 
     if body.force {
@@ -180,9 +185,10 @@ pub async fn update_profile(
         let profiles = state.profiles.read().await;
         match resolve_profile_key(&profiles, &id) {
             Ok(Some(key)) => key,
-            Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+            Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
             Err(ResolveProfileError::AmbiguousName(name)) => {
-                return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+                return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                    .into_response();
             }
         }
     };
@@ -197,21 +203,24 @@ pub async fn update_profile(
     .await
     {
         Ok(profile) => profile,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
 
     let mut profiles = state.profiles.write().await;
     match profiles.find_existing_name_key(&profile.name, Some(&profile_id)) {
         Ok(Some(_)) => {
-            return ApiError::conflict(format!("Profile already exists: {}", profile.name));
+            return DomainError::conflict(format!("Profile already exists: {}", profile.name))
+                .into_response();
         }
         Ok(None) => {}
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     }
     if let Err(error) = profiles.insert(profile.clone()) {
-        return ApiError::internal(format!("Failed to persist profile store: {error}"));
+        return DomainError::Internal(anyhow::anyhow!("Failed to persist profile store: {error}"))
+            .into_response();
     }
 
     ApiResponse::ok(profile)
@@ -225,16 +234,20 @@ pub async fn delete_profile(
     let mut profiles = state.profiles.write().await;
     let key = match resolve_profile_key(&profiles, &id) {
         Ok(Some(key)) => key,
-        Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+        Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     };
 
     let removed = match profiles.remove(&key) {
         Ok(removed) => removed.is_some(),
         Err(error) => {
-            return ApiError::internal(format!("Failed to persist profile store: {error}"));
+            return DomainError::Internal(anyhow::anyhow!(
+                "Failed to persist profile store: {error}"
+            ))
+            .into_response();
         }
     };
     debug_assert!(removed, "resolved profile key must exist");
@@ -252,16 +265,17 @@ pub async fn apply_profile(
     body: Option<Json<ApplyProfileRequest>>,
 ) -> Response {
     if let Err(error) = validate_apply_request(body.as_ref()) {
-        return ApiError::bad_request(error);
+        return DomainError::validation(error).into_response();
     }
 
     let profile = {
         let profiles = state.profiles.read().await;
         let key = match resolve_profile_key(&profiles, &id) {
             Ok(Some(key)) => key,
-            Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+            Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
             Err(ResolveProfileError::AmbiguousName(name)) => {
-                return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+                return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                    .into_response();
             }
         };
         profiles
@@ -272,8 +286,12 @@ pub async fn apply_profile(
 
     let warnings = match apply_profile_snapshot(&state, &profile).await {
         Ok(warnings) => warnings,
-        Err(ProfileApplyError::Conflict(error)) => return ApiError::conflict(error),
-        Err(ProfileApplyError::Internal(error)) => return ApiError::internal(error),
+        Err(ProfileApplyError::Conflict(error)) => {
+            return DomainError::conflict(error).into_response();
+        }
+        Err(ProfileApplyError::Internal(error)) => {
+            return DomainError::Internal(anyhow::anyhow!(error)).into_response();
+        }
     };
 
     state

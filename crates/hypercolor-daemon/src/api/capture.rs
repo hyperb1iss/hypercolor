@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use tracing::{info, warn};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::DomainError;
 
 /// `POST /api/v1/capture/source/pick` — Re-open the portal source picker.
 ///
@@ -16,25 +17,31 @@ use crate::api::envelope::{ApiError, ApiResponse};
 /// the user confirms the picker.
 pub async fn pick_capture_source(State(state): State<Arc<AppState>>) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
-        return ApiError::internal("Config manager unavailable in this runtime");
+        return DomainError::Internal(anyhow::anyhow!(
+            "Config manager unavailable in this runtime"
+        ))
+        .into_response();
     };
 
     if !manager.get().capture.enabled {
-        return ApiError::validation(
+        return DomainError::validation(
             "Screen capture is disabled; enable capture.enabled before picking a source",
-        );
+        )
+        .into_response();
     }
 
     let mut input_manager = state.input_manager.lock().await;
     if !input_manager.has_screen_source() {
-        return ApiError::validation(
+        return DomainError::validation(
             "No screen capture source is registered; restart the daemon or re-enable capture",
-        );
+        )
+        .into_response();
     }
 
     if let Err(error) = input_manager.reselect_screen_source() {
         warn!(%error, "Failed to re-open screen source picker");
-        return ApiError::internal(format!("Failed to re-open source picker: {error}"));
+        return DomainError::Internal(anyhow::anyhow!("Failed to re-open source picker: {error}"))
+            .into_response();
     }
 
     info!("Screen capture source picker requested");

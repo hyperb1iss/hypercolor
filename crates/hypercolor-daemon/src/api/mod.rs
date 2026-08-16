@@ -54,7 +54,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
 use crate::interaction_routing::InteractionRoutingControl;
-use hypercolor_core::asset::{AssetLibrary, AssetLibraryLimits};
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -1034,11 +1034,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             },
         );
     let cors_origin = cors_origins(&web_config, security_state.security_enabled());
-    // The request body includes multipart framing in addition to the asset bytes.
+    // Sourced from the route's own ceiling so a 413 can never name a limit
+    // this layer does not enforce.
     let asset_upload_body_limit =
-        usize::try_from(AssetLibraryLimits::default().hard_file_cap_bytes)
-            .unwrap_or(usize::MAX)
-            .saturating_add(1024 * 1024);
+        usize::try_from(assets::asset_upload_body_limit_bytes()).unwrap_or(usize::MAX);
 
     let api = Router::new()
         // ── Assets ───────────────────────────────────────────────────
