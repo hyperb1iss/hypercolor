@@ -233,9 +233,9 @@ impl SceneMutation {
         color: Option<String>,
         fallback_canvas: (u32, u32),
     ) -> Result<ZoneId, ZoneMutationError> {
-        let zone_id = self
-            .candidate
-            .create_render_group(&scene_id, name, color, fallback_canvas)?;
+        let zone_id =
+            self.candidate
+                .create_render_group(&scene_id, name, color, fallback_canvas)?;
         self.persists_scene_content = true;
         Ok(zone_id)
     }
@@ -352,7 +352,10 @@ impl SceneMutation {
         zone_id: ZoneId,
         updates: HashMap<String, ControlValue>,
     ) -> Option<Zone> {
-        let zone = self.candidate.patch_group_controls(zone_id, updates)?.clone();
+        let zone = self
+            .candidate
+            .patch_group_controls(zone_id, updates)?
+            .clone();
         self.persists_scene_content = true;
         Some(zone)
     }
@@ -471,9 +474,12 @@ impl SceneMutation {
         layer_id: SceneLayerId,
         expected_version: Option<u64>,
     ) -> Result<Zone, LayerMutationError> {
-        let (zone, _version) =
-            self.candidate
-                .remove_scene_group_layer(scene_id, zone_id, layer_id, expected_version)?;
+        let (zone, _version) = self.candidate.remove_scene_group_layer(
+            scene_id,
+            zone_id,
+            layer_id,
+            expected_version,
+        )?;
         let zone = zone.clone();
         self.persists_scene_content = true;
         Ok(zone)
@@ -1287,7 +1293,6 @@ pub fn active_scene_changed_event(
         reason,
     }
 }
-
 
 /// The zone-changed event both effect-apply paths record.
 #[must_use]

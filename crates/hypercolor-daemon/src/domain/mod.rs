@@ -35,6 +35,7 @@
 pub mod commit;
 pub mod effect;
 pub mod scene;
+pub mod zone;
 
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};

@@ -74,9 +74,7 @@ use hypercolor_types::config::{
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::event::{
-    EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind,
-};
+use hypercolor_types::event::{EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
@@ -1023,7 +1021,7 @@ pub(crate) async fn prune_scene_display_groups_for_device(
 }
 
 /// Persist discovery auto-sync exclusions to disk.
-pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
+pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
     let exclusions = state.layout_auto_exclusions.read().await;
     if let Err(error) =
         crate::layout_auto_exclusions::save(&state.layout_auto_exclusions_path, &exclusions)

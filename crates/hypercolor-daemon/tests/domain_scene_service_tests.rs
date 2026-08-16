@@ -920,7 +920,11 @@ async fn create_scene_carries_adapter_metadata_onto_the_scene() {
         .expect("scene should be created");
 
     assert_eq!(
-        created.scene.metadata.get("trigger_type").map(String::as_str),
+        created
+            .scene
+            .metadata
+            .get("trigger_type")
+            .map(String::as_str),
         Some("sunset")
     );
     assert_eq!(created.scene.mutation_mode, SceneMutationMode::Snapshot);
