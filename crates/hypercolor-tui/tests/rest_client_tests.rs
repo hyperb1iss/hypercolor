@@ -651,7 +651,17 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
         post(|| async {
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "invalid favorite payload" })),
+                Json(json!({
+                    "error": {
+                        "code": "validation_error",
+                        "message": "invalid favorite payload"
+                    },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_test",
+                        "timestamp": "2026-08-16T00:00:00.000Z"
+                    }
+                })),
             )
         }),
     );
@@ -763,7 +773,14 @@ async fn get_active_scene_returns_none_without_active_scene() {
         get(|| async {
             (
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": "No active scene" })),
+                Json(json!({
+                    "error": { "code": "not_found", "message": "scene not found: active" },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_test",
+                        "timestamp": "2026-08-16T00:00:00.000Z"
+                    }
+                })),
             )
         }),
     );

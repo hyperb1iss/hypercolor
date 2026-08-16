@@ -11,6 +11,7 @@ use hypercolor_types::api::effects::{
     EffectDetailResponse as ApiEffectDetailResponse, EffectListResponse as ApiEffectListResponse,
     EffectSummary as ApiEffectSummary, ResetControlsRequest,
 };
+use hypercolor_types::api::envelope::ApiErrorBody;
 use hypercolor_types::api::scenes::{
     ActiveSceneResponse as ApiActiveSceneResponse, SceneListResponse as ApiSceneListResponse,
 };
@@ -435,9 +436,7 @@ impl DaemonClient {
             .with_context(|| format!("Failed to connect to daemon at {url}"))?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("API request failed ({status}): {body}");
+            return Err(daemon_error("API request failed", response).await);
         }
 
         // The API wraps responses in { "data": T, "meta": {...} }
@@ -715,16 +714,37 @@ async fn ensure_success(response: reqwest::Response, context: &str) -> Result<()
         return Ok(());
     }
 
+    Err(daemon_error(context, response).await)
+}
+
+/// Turn a failed daemon response into one line a user can act on.
+///
+/// The daemon answers every error with the canonical envelope
+/// `{ error: { code, message, details }, meta }`, so the code and message
+/// are what a toast should carry. The raw body is the fallback for the
+/// surfaces that bypass the envelope (Axum's own rejections, binary
+/// routes).
+async fn daemon_error(context: &str, response: reqwest::Response) -> anyhow::Error {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    anyhow::bail!("{context} ({status}): {body}");
+    if let Ok(envelope) = serde_json::from_str::<ApiErrorBody>(&body) {
+        return anyhow::anyhow!(
+            "{context} ({status}, {}): {}",
+            envelope.error.code,
+            envelope.error.message
+        );
+    }
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        anyhow::anyhow!("{context} ({status})")
+    } else {
+        anyhow::anyhow!("{context} ({status}): {trimmed}")
+    }
 }
 
 async fn response_data<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("API request failed ({status}): {body}");
+        return Err(daemon_error("API request failed", response).await);
     }
 
     let envelope: serde_json::Value = response.json().await?;

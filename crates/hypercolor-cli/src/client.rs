@@ -5,6 +5,7 @@
 //! rather than panicking.
 
 use anyhow::{Context, Result};
+use hypercolor_core::types::api::envelope::ApiErrorBody;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -184,7 +185,7 @@ async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::V
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Daemon returned {status}: {body}");
+        anyhow::bail!("{}", describe_error_body(status, &body));
     }
 
     let json: serde_json::Value = response
@@ -193,4 +194,28 @@ async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::V
         .context("Failed to parse daemon response as JSON")?;
 
     Ok(json.get("data").cloned().unwrap_or(json))
+}
+
+/// Render a failed response as one line a human can act on.
+///
+/// The daemon answers every error with the canonical envelope
+/// `{ error: { code, message, details }, meta }`, so the code and message
+/// are what a user needs; the raw JSON is the fallback for the surfaces
+/// that bypass it (Axum's own rejections, binary routes).
+fn describe_error_body(status: reqwest::StatusCode, body: &str) -> String {
+    let Ok(envelope) = serde_json::from_str::<ApiErrorBody>(body) else {
+        let trimmed = body.trim();
+        return if trimmed.is_empty() {
+            format!("Daemon returned {status}")
+        } else {
+            format!("Daemon returned {status}: {trimmed}")
+        };
+    };
+
+    let code = envelope.error.code;
+    let message = envelope.error.message;
+    match envelope.error.details {
+        Some(details) => format!("Daemon returned {status} ({code}): {message} [{details}]"),
+        None => format!("Daemon returned {status} ({code}): {message}"),
+    }
 }
