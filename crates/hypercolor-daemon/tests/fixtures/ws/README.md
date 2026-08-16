@@ -69,13 +69,23 @@ the fixture table exactly, in both directions. A fixture cannot claim a tag the
 manifest never declared, and a manifest tag cannot ship without one. Tag `0x04`
 stays deliberately unassigned.
 
-`golden_fixtures_cover_every_tag_leptos_ext_declares` scans the tag constants
-out of `hypercolor-leptos-ext/src/ws/{preview,spectrum,rpc}.rs` and asserts both
-the declaration count and per-tag fixture coverage, which catches a tag added in
-the codec crate before it reaches the manifest. Moving those constants to a new
-file makes this test fail loudly rather than pass vacuously; repoint
-`declared_wire_tags()` when that happens, and re-run the fixtures as part of the
-same change.
+`golden_fixtures_cover_every_tag_leptos_ext_declares` walks every `.rs` file
+under `hypercolor-leptos-ext/src/ws/`, including subdirectories and files that
+did not exist when this gate was written, and scans them for tag constants. It
+asserts the declaration count, per-tag fixture coverage, and that no two
+differently named constants claim the same tag byte, so a wire collision fails
+with both names rather than being silently merged. Moving the codecs out of that
+directory makes the walk find nothing and fail loudly rather than pass
+vacuously.
+
+The scan reads source text, so it recognizes the shape the codecs actually use:
+`pub const NAME_TAG: u8 = 0x..` and hex discriminants on the
+`PreviewFrameChannel` enum. A tag written as a decimal literal, aliased through
+another constant, or produced by a macro is outside what it can see. That
+boundary is deliberate: the gate exists to catch a tag someone forgot to freeze,
+not to defend against someone deliberately hiding one. Spec 76 §5 replaces it
+with a real registry, where `define_ws_topics!` can enforce unique tag ownership
+at compile time.
 
 Decode coverage mirrors the encoders: every fixture whose frame has a
 `hypercolor-leptos-ext` decoder is decoded back from the on-disk bytes and

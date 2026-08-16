@@ -1168,8 +1168,9 @@ fn golden_fixtures_cover_every_tag_leptos_ext_declares() {
         EXPECTED_DECLARED_TAG_COUNT,
         "hypercolor-leptos-ext declares {} wire tags, this suite expects \
          {EXPECTED_DECLARED_TAG_COUNT}: {declared:?}. A new tag needs a golden \
-         fixture and a bump here; if the count dropped because the constants \
-         moved, point declared_wire_tags() at their new home.",
+         fixture and a bump here; if the count dropped, confirm the constants \
+         are still written as `pub const NAME_TAG: u8 = 0x..` before bumping \
+         it down.",
         declared.len()
     );
 
@@ -1314,49 +1315,118 @@ fn wide_frame_payloads_are_written_verbatim() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/// One tag declaration found in the leptos-ext wire codecs.
+struct DeclaredTag {
+    tag: u8,
+    name: String,
+    source: PathBuf,
+}
+
 /// Tag bytes `hypercolor-leptos-ext` declares, scanned out of its wire codecs
 /// so a tag added there fails this suite until it arrives with a fixture. The
 /// `frames` tag is absent because the daemon, not leptos-ext, still owns it.
+///
+/// Two different constants sharing one tag byte is a wire collision, so the
+/// declarations are collected as a list and checked for that before they
+/// collapse into a map keyed by tag.
 fn declared_wire_tags() -> BTreeMap<u8, String> {
-    const PREVIEW_SOURCE: &str = include_str!("../../hypercolor-leptos-ext/src/ws/preview.rs");
-    const SPECTRUM_SOURCE: &str = include_str!("../../hypercolor-leptos-ext/src/ws/spectrum.rs");
-    const RPC_SOURCE: &str = include_str!("../../hypercolor-leptos-ext/src/ws/rpc.rs");
+    let mut declarations = Vec::new();
+    for source in leptos_ext_ws_sources() {
+        let text = std::fs::read_to_string(&source)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", source.display()));
+        scan_tag_declarations(&text, &source, &mut declarations);
+    }
 
     let mut tags = BTreeMap::new();
-    for source in [PREVIEW_SOURCE, SPECTRUM_SOURCE, RPC_SOURCE] {
-        let mut in_channel_enum = false;
-        for line in source.lines() {
-            let line = line.trim();
-            if line.starts_with("pub enum PreviewFrameChannel") {
-                in_channel_enum = true;
-                continue;
-            }
-            if in_channel_enum && line == "}" {
-                in_channel_enum = false;
-                continue;
-            }
-
-            if let Some(rest) = line.strip_prefix("pub const ")
-                && let Some((name, value)) = rest.split_once(": u8 = ")
-                && name.ends_with("_TAG")
-            {
-                record_tag(&mut tags, name, value.trim_end_matches(';'));
-            } else if in_channel_enum && let Some((name, value)) = line.split_once(" = ") {
-                record_tag(&mut tags, name, value.trim_end_matches(','));
-            }
+    for declaration in declarations {
+        if let Some(existing) = tags.insert(declaration.tag, declaration.name.clone()) {
+            assert_eq!(
+                existing,
+                declaration.name,
+                "tag 0x{:02x} is declared twice under different names, `{existing}` and \
+                 `{}` ({}). Two codecs claiming one tag byte is a wire collision: \
+                 pick an unused tag rather than reusing this one.",
+                declaration.tag,
+                declaration.name,
+                declaration.source.display()
+            );
         }
     }
     tags
 }
 
-fn record_tag(tags: &mut BTreeMap<u8, String>, name: &str, value: &str) {
+/// Every Rust source under `hypercolor-leptos-ext/src/ws`, walked at test time
+/// so a tag constant introduced in a brand new file is still scanned.
+fn leptos_ext_ws_sources() -> Vec<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("hypercolor-leptos-ext")
+        .join("src")
+        .join("ws");
+
+    let mut sources = Vec::new();
+    let mut pending = vec![root.clone()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()));
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()))
+                .path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push(path);
+            }
+        }
+    }
+
+    assert!(
+        !sources.is_empty(),
+        "found no Rust sources under {}; the wire codecs moved and this gate \
+         would otherwise pass vacuously",
+        root.display()
+    );
+    sources.sort();
+    sources
+}
+
+fn scan_tag_declarations(text: &str, source: &std::path::Path, out: &mut Vec<DeclaredTag>) {
+    let mut in_channel_enum = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("pub enum PreviewFrameChannel") {
+            in_channel_enum = true;
+            continue;
+        }
+        if in_channel_enum && line == "}" {
+            in_channel_enum = false;
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("pub const ")
+            && let Some((name, value)) = rest.split_once(": u8 = ")
+            && name.ends_with("_TAG")
+        {
+            record_tag(out, name, value.trim_end_matches(';'), source);
+        } else if in_channel_enum && let Some((name, value)) = line.split_once(" = ") {
+            record_tag(out, name, value.trim_end_matches(','), source);
+        }
+    }
+}
+
+fn record_tag(out: &mut Vec<DeclaredTag>, name: &str, value: &str, source: &std::path::Path) {
     let Some(hex) = value.trim().strip_prefix("0x") else {
         return;
     };
     let Ok(tag) = u8::from_str_radix(hex, 16) else {
         return;
     };
-    tags.insert(tag, name.trim().to_owned());
+    out.push(DeclaredTag {
+        tag,
+        name: name.trim().to_owned(),
+        source: source.to_path_buf(),
+    });
 }
 
 fn protocol_manifest_tags() -> BTreeMap<u8, String> {
