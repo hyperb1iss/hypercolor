@@ -5,12 +5,9 @@
 //! onto LEDs, so a saturation boost and gamma shaping restore the punch.
 //! All math runs in linear light to avoid hue shifts.
 
-use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_color::LinearRgba;
 
-/// BT.709 luma coefficients in linear light.
-const LUMA_R: f32 = 0.2126;
-const LUMA_G: f32 = 0.7152;
-const LUMA_B: f32 = 0.0722;
+use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedLinearColorTuning {
@@ -44,7 +41,7 @@ impl PreparedLinearColorTuning {
         if self.neutral {
             return;
         }
-        let luma = LUMA_R * color[0] + LUMA_G * color[1] + LUMA_B * color[2];
+        let luma = LinearRgba::new(color[0], color[1], color[2], 1.0).luma();
         for channel in color {
             *channel = luma + (*channel - luma) * self.saturation;
             *channel = (*channel * self.brightness).max(0.0);
