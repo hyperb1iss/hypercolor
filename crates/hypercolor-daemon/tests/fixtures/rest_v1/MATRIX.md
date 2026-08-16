@@ -170,8 +170,12 @@ rather than replacing them.
 | PATCH | `/api/v1/scenes/{id}/groups/{group_id}/layers/order` | `{layer_ids: […]}` | `200`, enveloped, ETag | |
 | PUT/DELETE | `/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}` | Layer spec on PUT | `200`, enveloped, ETag | |
 | PATCH | `/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls` | `{controls: {…}}` | `200`, enveloped, ETag | |
-| GET | `/api/v1/config/get?key=…` | Key as a **query param**, not a path segment | `200`, enveloped `{key, value}` | `key` echoes the *normalized* key; a 404 message echoes the caller's raw key |
-| POST | `/api/v1/config/set` | `{key, value: string, live?: bool}` | `200`, enveloped `{key, value, live, path}` | `value` is a string parsed as JSON with a fallback to a JSON string, so `"true"` becomes boolean `true` while `"hello"` stays `"hello"`. Returns `500 internal_error` when no `ConfigManager` is wired |
+| GET | `/api/v1/config` | — | `200`, enveloped whole config | Secret-classified sections render as `{redacted: true}`: every `drivers` entry, plus any top-level section the build does not model |
+| GET | `/api/v1/config/keys/{key}` | Dotted key as one **path segment** | `200`, enveloped `{key, value}` | `key` echoes the *normalized* key; a 404 message echoes the caller's raw key; a malformed key (empty segment) is `400 bad_request` |
+| PUT | `/api/v1/config/keys/{key}` | **The value itself** as the JSON body; `?live=` (default `true`) gates the live apply | `200`, enveloped `{key, value, live, requires_restart, pending_restart, path}` | The body is typed JSON, so `true` is boolean and `"hello"` is a string. Returns `500 internal_error` when no `ConfigManager` is wired |
+| DELETE | `/api/v1/config/keys/{key}` | `?live=` (default `true`) | `200`, same mutation body, `value` carrying the restored default | |
+| POST | `/api/v1/config/reset` | No body; `?live=` (default `true`) | `200`, mutation body with `key` and `value` null | Whole-config reset only; the `drivers` map, unmodeled sections, and the include list survive |
+| GET | `/api/v1/config/schema` | — | `200`, enveloped list of `{pattern, apply, redaction, has_validator}` | The key registry as clients read it; `apply` is `{kind, section?}` |
 
 ---
 
