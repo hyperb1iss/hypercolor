@@ -947,10 +947,7 @@ fn no_scene_writer_lives_outside_the_commit_path() {
                 continue;
             }
             let source = std::fs::read_to_string(&path).expect("source file reads");
-            let production = source
-                .find("#[cfg(test)]")
-                .map_or(source.as_str(), |cut| &source[..cut]);
-            let count = scene_write_lock_sites(production);
+            let count = scene_write_lock_sites(&source);
             if count > 0 {
                 found.push((relative, count));
             }
@@ -973,9 +970,47 @@ fn no_scene_writer_lives_outside_the_commit_path() {
 /// Count `scene_manager.write()` acquisitions in one file's production
 /// source, ignoring comments and tolerating the rustfmt line breaks that
 /// split the receiver from the call.
+///
+/// `#[cfg(test)] mod` blocks are dropped first: a test that drives the
+/// manager directly races nothing. They are dropped as blocks rather
+/// than by truncating at the first one, because several files carry a
+/// test module in the middle and a truncating scan would go blind to
+/// every writer below it — which is exactly where `api/mod.rs` keeps
+/// two. The block's end is the closing brace at the attribute's own
+/// indentation, which rustfmt guarantees and `just fmt-check` enforces.
 fn scene_write_lock_sites(source: &str) -> usize {
-    let code = source
-        .lines()
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut production: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let is_test_module = line.trim() == "#[cfg(test)]"
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| next.trim_start().starts_with("mod "));
+        if !is_test_module {
+            production.push(line);
+            index += 1;
+            continue;
+        }
+
+        let declaration = lines[index + 1];
+        if declaration.trim_end().ends_with(';') {
+            // `mod tests;` — the block lives in its own file.
+            index += 2;
+            continue;
+        }
+        let indent = &line[..line.len() - line.trim_start().len()];
+        let closing = format!("{indent}}}");
+        index += 2;
+        while index < lines.len() && lines[index] != closing {
+            index += 1;
+        }
+        index += 1;
+    }
+
+    let code = production
+        .iter()
         .map(|line| line.split("//").next().unwrap_or(""))
         .collect::<Vec<_>>()
         .join("\n");
