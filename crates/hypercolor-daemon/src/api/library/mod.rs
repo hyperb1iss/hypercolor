@@ -15,6 +15,7 @@ use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
 
 use crate::api::AppState;
+use crate::domain::DomainError;
 use crate::library::LibraryStoreError;
 
 // ── Shared Types ────────────────────────────────────────────────────────
@@ -89,7 +90,15 @@ pub(crate) async fn activate_effect_with_controls(
         .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
     let commit = crate::domain::scene::commit_scene(state.as_ref(), mutation)
         .await
-        .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
+        .map_err(|error| match error {
+            // A competing scene commit is a state conflict, not an
+            // activation failure, and this path already has a shape for
+            // one.
+            DomainError::PreconditionFailed { .. } => {
+                ActivateEffectError::Conflict(error.to_string())
+            }
+            other => ActivateEffectError::Activation(other.to_string()),
+        })?;
     if let Some(error) = commit.retry_error() {
         return Err(ActivateEffectError::Activation(error.to_owned()));
     }

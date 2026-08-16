@@ -214,6 +214,17 @@ pub(super) async fn handle_set_effect_with_state(
     let (normalized_controls, rejected_controls) =
         normalize_control_payload(&best_match.effect, &controls);
 
+    // The service enforces this too, but its DomainError::Internal for a
+    // missing active scene would reach MCP as -32603 "internal error".
+    // These tools have always answered -32000 with the specific reason,
+    // so the reason is resolved here and rendered in the tool's own
+    // frozen shape.
+    {
+        let scene_manager = state.scene_manager.read().await;
+        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
+    }
+
     let applied = apply_effect(
         state,
         ApplyEffect {
@@ -457,6 +468,17 @@ pub(super) async fn handle_set_color_with_state(
     )]);
     if let Some(brightness) = brightness {
         controls.insert("brightness".to_owned(), ControlValue::Float(brightness));
+    }
+
+    // The service enforces this too, but its DomainError::Internal for a
+    // missing active scene would reach MCP as -32603 "internal error".
+    // These tools have always answered -32000 with the specific reason,
+    // so the reason is resolved here and rendered in the tool's own
+    // frozen shape.
+    {
+        let scene_manager = state.scene_manager.read().await;
+        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
     }
 
     let applied = apply_effect(

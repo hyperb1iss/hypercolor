@@ -658,7 +658,7 @@ impl AppState {
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: Arc::clone(&daemon.scene_manager),
             scene_store: Arc::clone(&daemon.scene_store),
-            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
+            scene_commits: Arc::clone(&daemon.scene_commits),
             event_bus: Arc::clone(&daemon.event_bus),
             asset_library: Arc::clone(&daemon.asset_library),
             preview_runtime: Arc::clone(&daemon.preview_runtime),

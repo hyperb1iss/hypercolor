@@ -366,6 +366,32 @@ mod tests {
         assert!(sequencer.fill(generation, vec![marker(1)]).is_empty());
     }
 
+    /// The daemon builds five `AppState`s over one `DaemonState`, all
+    /// sharing the scene manager by `Arc`. Giving any of them its own
+    /// sequencer hands it a private revision counter and a private
+    /// publication chain over shared state, so the compare-and-swap
+    /// stops seeing competing commits and two chains publish in
+    /// arbitrary order relative to each other. The property is
+    /// structural rather than observable — reproducing it behaviorally
+    /// means booting real subsystems, which segfaults on teardown — so
+    /// it is pinned at the one construction site that can regress it.
+    #[test]
+    fn app_state_takes_the_daemon_sequencer_rather_than_minting_one() {
+        let source = include_str!("../api/mod.rs");
+        let from_daemon = source
+            .split_once("pub fn from_daemon_state(")
+            .expect("from_daemon_state must exist")
+            .1;
+        let wiring = from_daemon
+            .lines()
+            .find(|line| line.contains("scene_commits:"))
+            .expect("from_daemon_state must wire scene_commits");
+        assert!(
+            wiring.contains("Arc::clone(&daemon.scene_commits)"),
+            "from_daemon_state must share the daemon's sequencer, not mint one: {wiring}"
+        );
+    }
+
     #[test]
     fn durability_names_which_payload_the_destination_converges_on() {
         assert!(CommitDurability::Written.is_authoritative_payload());

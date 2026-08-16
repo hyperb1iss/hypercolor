@@ -193,10 +193,21 @@ impl AppState {
 
 /// Install a candidate, admit its snapshot, then persist and publish.
 ///
-/// The compare-and-swap on the base revision is what makes the short
-/// lock scopes safe: a candidate built from a revision that no longer
-/// exists would silently overwrite whatever landed in between, so it is
-/// refused with the current revision attached instead.
+/// The compare-and-swap on the base revision refuses a candidate built
+/// from a revision that no longer exists, rather than letting it
+/// silently overwrite whatever landed in between.
+///
+/// **The swap only sees commits.** The revision advances in
+/// [`SceneCommitSequencer::admit`], which nothing but this function
+/// calls, so a candidate is protected against another `commit_scene`
+/// and against nothing else. Roughly fifty other sites still take
+/// `scene_manager.write()` directly and mutate live scene state without
+/// touching the revision — the zone, layer, display, preset, profile,
+/// and layout-transaction paths that wave 2.3b migrates. Because the
+/// install below replaces the whole manager, a direct write that lands
+/// inside a candidate's window is discarded with no error to either
+/// caller. Every such site must route through here before the swap is
+/// a general guarantee rather than a guarantee between commits.
 ///
 /// # Errors
 ///
@@ -216,7 +227,14 @@ pub async fn commit_scene(
         persists_scene_content,
     } = mutation;
 
-    let coordinator = state.scene_store.read().await.clone();
+    // Only a mutation that changes persisted scene content needs the
+    // store handle, and cloning it is a deep copy plus a yield point
+    // that would widen every activation's swap window for nothing.
+    let coordinator = if persists_scene_content {
+        Some(state.scene_store.read().await.clone())
+    } else {
+        None
+    };
 
     let (ticket, pending) = {
         let mut manager = state.scene_manager.write().await;
@@ -230,7 +248,7 @@ pub async fn commit_scene(
         }
 
         let previous = std::mem::replace(&mut *manager, candidate);
-        let pending = if persists_scene_content {
+        let pending = if let Some(coordinator) = coordinator.as_ref() {
             match coordinator.reserve_save(manager.list().into_iter().cloned()) {
                 Ok(pending) => Some(pending),
                 Err(error) => {
