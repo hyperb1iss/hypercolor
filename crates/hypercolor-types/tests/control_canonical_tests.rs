@@ -34,6 +34,8 @@ fn driver_samples() -> Vec<driver::ControlValue> {
         driver::ControlValue::IpAddress("::FFFF:1.2.3.4".into()),
         driver::ControlValue::MacAddress("AA:bb:CC:dd:EE:ff".into()),
         driver::ControlValue::MacAddress("aa-bb-cc-dd-ee-ff".into()),
+        driver::ControlValue::MacAddress("001122334455".into()),
+        driver::ControlValue::MacAddress("aabb.ccdd.eeff".into()),
         driver::ControlValue::DurationMs(1500),
         driver::ControlValue::Enum("rainbow".into()),
         driver::ControlValue::Flags(vec!["b".into(), "a".into(), "b".into()]),
@@ -117,6 +119,21 @@ fn ip_and_mac_round_trips_preserve_original_spelling() {
     let mac = MacText::new("AA:bb:CC:dd:EE:ff").expect("valid mac");
     assert_eq!(mac.as_str(), "AA:bb:CC:dd:EE:ff");
     assert_eq!(mac.octets(), [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    // Every established encoding is admitted with spelling preserved —
+    // persisted driver settings carry all of these.
+    for spelling in ["aa-bb-cc-dd-ee-ff", "001122334455", "aabb.ccdd.eeff"] {
+        let mac = MacText::new(spelling).expect("established encoding");
+        assert_eq!(mac.as_str(), spelling);
+    }
+    assert_eq!(
+        MacText::new("001122334455").expect("bare").octets(),
+        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]
+    );
+    assert_eq!(
+        MacText::new("aabb.ccdd.eeff").expect("dotted").octets(),
+        [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]
+    );
 }
 
 #[test]
@@ -129,8 +146,10 @@ fn invalid_ip_and_mac_are_rejected_at_canonicalization() {
         "",
         "aa:bb",
         "aa:bb:cc:dd:ee:gg",
-        "aabb.ccdd.eeff",
         "aa:bb-cc:dd:ee:ff",
+        "0011223344",
+        "0011.2233.4455.66",
+        "aa bb cc dd ee ff",
     ] {
         assert_eq!(
             ControlValue::try_from(driver::ControlValue::MacAddress(bad_mac.into())),
@@ -158,10 +177,34 @@ fn non_finite_floats_are_rejected_everywhere() {
         ControlValue::Float(f64::NAN).validate(),
         Err(ControlValueInvalid::NonFiniteFloat)
     );
-    // Nested values validate recursively.
+    // Nested values validate recursively, and the error names the path.
+    let nested = ControlValue::List(vec![
+        ControlValue::Bool(true),
+        ControlValue::Float(f64::INFINITY),
+    ])
+    .validate()
+    .expect_err("nested non-finite float must fail");
+    assert!(
+        matches!(
+            &nested,
+            ControlValueInvalid::Nested { path, source }
+                if path == "[1]" && **source == ControlValueInvalid::NonFiniteFloat
+        ),
+        "expected a located nested error, got {nested:?}"
+    );
+}
+
+#[test]
+fn sub_millisecond_durations_never_truncate_silently() {
+    use hypercolor_types::control::DriverProjectionError as DriverError;
     assert_eq!(
-        ControlValue::List(vec![ControlValue::Float(f64::INFINITY)]).validate(),
-        Err(ControlValueInvalid::NonFiniteFloat)
+        ControlValue::Duration(Duration::from_micros(1500)).to_driver_wire(),
+        Err(DriverError::SubMillisecondDuration)
+    );
+    // Whole milliseconds project cleanly.
+    assert_eq!(
+        ControlValue::Duration(Duration::from_millis(1500)).to_driver_wire(),
+        Ok(driver::ControlValue::DurationMs(1500))
     );
 }
 

@@ -25,7 +25,7 @@
 //! | `Text` | `text` | `string` | TextInput/Asset | — |
 //! | `SecretRef` | rejected | `secret_ref` | SecretInput | opaque store reference; the secret never transits |
 //! | `Ip` | rejected | `ip_address` | IpInput | parses as `IpAddr`; original text preserved |
-//! | `Mac` | rejected | `mac_address` | MacInput | six hex octets, `:` or `-` separated; original text preserved |
+//! | `Mac` | rejected | `mac_address` | MacInput | six hex octets in any established encoding (colon/hyphen/bare/dotted); original text preserved |
 //! | `Duration` | rejected | `duration_ms` (u64 ms, overflow-checked) | Duration | — |
 //! | `ColorRgb` | rejected | `color_rgb` | ColorPicker | encoded sRGB bytes |
 //! | `ColorRgba` | rejected | `color_rgba` | ColorPicker | encoded sRGB bytes |
@@ -36,7 +36,7 @@
 //! | `Flags` | rejected | `flags` | CheckboxSet | ordered (a `Vec`, not a set) |
 //! | `List` | rejected | `list` | — | elements validate recursively |
 //! | `Map` | rejected | `object` | — | values validate recursively |
-//! | `Unknown` | rejected | `<unrecognized>` | — | round-trips as-is |
+//! | `Unknown` | rejected | `<unrecognized>` | — | unit-level round-trip; payload already dropped by the legacy deserializer |
 //!
 //! **Finite-only floats are an invariant, not a loss**: serde_json
 //! serializes NaN/Infinity as `null`, so a non-finite float silently
@@ -44,7 +44,19 @@
 //! projection validates finiteness; sensor resolution sanitizes before
 //! values enter a control set. Direct construction is possible (the
 //! variants are public); anything that admits externally sourced values
-//! calls [`ControlValue::validate`].
+//! calls [`ControlValue::validate`]. The enforced admission boundary is
+//! wave 6.5b's `ControlSet`: its insertion API validates, so values
+//! inside an authoritative set are valid by construction of the SET,
+//! not of the enum.
+//!
+//! # Canonicalizing persisted legacy values
+//!
+//! The legacy driver wire accepts arbitrary strings where canonical
+//! requires validity, so canonicalizing old persisted state CAN fail.
+//! A read path that meets a `ControlValueInvalid` must keep the raw
+//! legacy `crate::controls::ControlValue` (per §0, old shapes stay
+//! readable and are never dropped) and surface the failure as a
+//! validation diagnostic — never discard the value, never crash.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -110,7 +122,11 @@ impl IpText {
 }
 
 /// MAC address text, validated on construction, original text
-/// preserved. Grammar: six hex octets separated uniformly by `:` or `-`.
+/// preserved. Accepts every encoding established in the wild —
+/// colon (`aa:bb:cc:dd:ee:ff`), hyphen (`aa-bb-cc-dd-ee-ff`), bare
+/// (`aabbccddeeff`, as Govee emits), and dotted (`aabb.ccdd.eeff`) —
+/// because persisted driver settings carry all of them and §0 requires
+/// old shapes stay readable. Spelling is preserved byte-for-byte.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MacText(String);
 
@@ -137,21 +153,37 @@ impl MacText {
     }
 
     fn parse(text: &str) -> Option<[u8; 6]> {
-        let separator = match text.as_bytes().get(2) {
-            Some(b':') => ':',
-            Some(b'-') => '-',
-            _ => return None,
-        };
-        let mut octets = [0_u8; 6];
-        let mut count = 0;
-        for part in text.split(separator) {
-            if count == 6 || part.len() != 2 {
-                return None;
-            }
-            octets[count] = u8::from_str_radix(part, 16).ok()?;
-            count += 1;
+        let bytes = text.as_bytes();
+        match bytes.len() {
+            12 => Self::from_hex_groups(text, None),
+            17 if bytes[2] == b':' => Self::from_hex_groups(text, Some((':', 2))),
+            17 if bytes[2] == b'-' => Self::from_hex_groups(text, Some(('-', 2))),
+            14 if bytes[4] == b'.' => Self::from_hex_groups(text, Some(('.', 4))),
+            _ => None,
         }
-        (count == 6).then_some(octets)
+    }
+
+    fn from_hex_groups(text: &str, separator: Option<(char, usize)>) -> Option<[u8; 6]> {
+        let mut hex = String::with_capacity(12);
+        match separator {
+            None => hex.push_str(text),
+            Some((separator, group_len)) => {
+                for part in text.split(separator) {
+                    if part.len() != group_len {
+                        return None;
+                    }
+                    hex.push_str(part);
+                }
+            }
+        }
+        if hex.len() != 12 {
+            return None;
+        }
+        let mut octets = [0_u8; 6];
+        for (index, octet) in octets.iter_mut().enumerate() {
+            *octet = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
+        }
+        Some(octets)
     }
 }
 
@@ -197,12 +229,17 @@ pub enum ControlValue {
     List(Vec<ControlValue>),
     /// Structured object (driver-only).
     Map(BTreeMap<String, ControlValue>),
-    /// Value from a newer schema — round-trips as-is (driver-only).
+    /// Value whose `kind` a newer schema minted. Round-trips as the
+    /// unit `unknown` variant — the legacy driver deserializer already
+    /// discards unrecognized payloads at the wire, so the payload loss
+    /// is inherited, not introduced here. The §0 write-side flip must
+    /// solve unknown-payload preservation before any canonical
+    /// encoding becomes a storage format.
     Unknown,
 }
 
 /// Why a value violates the canonical invariants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ControlValueInvalid {
     /// A float (or a float component of a color, gradient, or rect)
     /// is NaN or infinite.
@@ -211,12 +248,33 @@ pub enum ControlValueInvalid {
     /// IP text does not parse as an address.
     #[error("text does not parse as an IP address")]
     InvalidIp,
-    /// MAC text does not parse as six hex octets.
+    /// MAC text does not parse in any established encoding.
     #[error("text does not parse as a MAC address")]
     InvalidMac,
+    /// A nested value failed; `path` locates it (`[3]`, `.host`).
+    #[error("{path}: {source}")]
+    Nested {
+        /// Where in the list/map/gradient the failure sits.
+        path: String,
+        /// The underlying failure.
+        source: Box<ControlValueInvalid>,
+    },
+}
+
+impl ControlValueInvalid {
+    fn nested(path: impl Into<String>, source: Self) -> Self {
+        Self::Nested {
+            path: path.into(),
+            source: Box::new(source),
+        }
+    }
 }
 
 /// Why a canonical value cannot project onto the effect wire.
+///
+/// Narrowing `f64` → `f32` rounds to the nearest representable value
+/// by contract — the effect wire IS f32, so rounding is definitional.
+/// Only overflow past f32's range is an error.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum EffectProjectionError {
     /// The variant has no effect-wire representation.
@@ -239,6 +297,27 @@ pub enum DriverProjectionError {
     /// The duration exceeds the driver wire's u64 millisecond range.
     #[error("duration exceeds the driver wire's u64 millisecond range")]
     DurationOverflow,
+    /// The duration carries sub-millisecond precision the driver wire
+    /// (whole milliseconds) would silently truncate.
+    #[error("duration carries sub-millisecond precision the driver wire cannot represent")]
+    SubMillisecondDuration,
+    /// A nested value failed; `path` locates it (`[3]`, `.host`).
+    #[error("{path}: {source}")]
+    Nested {
+        /// Where in the list/map the failure sits.
+        path: String,
+        /// The underlying failure.
+        source: Box<DriverProjectionError>,
+    },
+}
+
+impl DriverProjectionError {
+    fn nested(path: impl Into<String>, source: Self) -> Self {
+        Self::Nested {
+            path: path.into(),
+            source: Box::new(source),
+        }
+    }
 }
 
 fn finite(value: f32) -> Result<f32, ControlValueInvalid> {
@@ -304,8 +383,9 @@ impl ControlValue {
                 Ok(())
             }
             Self::Gradient(stops) => {
-                for stop in stops {
-                    finite_stop(stop)?;
+                for (index, stop) in stops.iter().enumerate() {
+                    finite_stop(stop)
+                        .map_err(|e| ControlValueInvalid::nested(format!("[{index}]"), e))?;
                 }
                 Ok(())
             }
@@ -316,14 +396,17 @@ impl ControlValue {
                 Ok(())
             }
             Self::List(items) => {
-                for item in items {
-                    item.validate()?;
+                for (index, item) in items.iter().enumerate() {
+                    item.validate()
+                        .map_err(|e| ControlValueInvalid::nested(format!("[{index}]"), e))?;
                 }
                 Ok(())
             }
             Self::Map(entries) => {
-                for value in entries.values() {
-                    value.validate()?;
+                for (key, value) in entries {
+                    value
+                        .validate()
+                        .map_err(|e| ControlValueInvalid::nested(format!(".{key}"), e))?;
                 }
                 Ok(())
             }
@@ -350,6 +433,9 @@ impl ControlValue {
             Self::Ip(ip) => Ok(driver::ControlValue::IpAddress(ip.as_str().to_owned())),
             Self::Mac(mac) => Ok(driver::ControlValue::MacAddress(mac.as_str().to_owned())),
             Self::Duration(duration) => {
+                if duration.subsec_nanos() % 1_000_000 != 0 {
+                    return Err(DriverProjectionError::SubMillisecondDuration);
+                }
                 let millis = u64::try_from(duration.as_millis())
                     .map_err(|_| DriverProjectionError::DurationOverflow)?;
                 Ok(driver::ControlValue::DurationMs(millis))
@@ -365,13 +451,22 @@ impl ControlValue {
             Self::List(items) => Ok(driver::ControlValue::List(
                 items
                     .iter()
-                    .map(Self::to_driver_wire)
+                    .enumerate()
+                    .map(|(index, item)| {
+                        item.to_driver_wire()
+                            .map_err(|e| DriverProjectionError::nested(format!("[{index}]"), e))
+                    })
                     .collect::<Result<_, _>>()?,
             )),
             Self::Map(entries) => Ok(driver::ControlValue::Object(
                 entries
                     .iter()
-                    .map(|(key, value)| Ok((key.clone(), value.to_driver_wire()?)))
+                    .map(|(key, value)| {
+                        value
+                            .to_driver_wire()
+                            .map(|projected| (key.clone(), projected))
+                            .map_err(|e| DriverProjectionError::nested(format!(".{key}"), e))
+                    })
                     .collect::<Result<_, DriverProjectionError>>()?,
             )),
             Self::Unknown => Ok(driver::ControlValue::Unknown),
@@ -458,13 +553,21 @@ impl TryFrom<driver::ControlValue> for ControlValue {
             driver::ControlValue::List(items) => Self::List(
                 items
                     .into_iter()
-                    .map(Self::try_from)
+                    .enumerate()
+                    .map(|(index, item)| {
+                        Self::try_from(item)
+                            .map_err(|e| ControlValueInvalid::nested(format!("[{index}]"), e))
+                    })
                     .collect::<Result<_, _>>()?,
             ),
             driver::ControlValue::Object(entries) => Self::Map(
                 entries
                     .into_iter()
-                    .map(|(key, value)| Ok((key, Self::try_from(value)?)))
+                    .map(|(key, value)| {
+                        Self::try_from(value)
+                            .map(|canonical| (key.clone(), canonical))
+                            .map_err(|e| ControlValueInvalid::nested(format!(".{key}"), e))
+                    })
                     .collect::<Result<_, ControlValueInvalid>>()?,
             ),
             driver::ControlValue::Unknown => Self::Unknown,
@@ -488,8 +591,9 @@ impl TryFrom<effect::ControlValue> for ControlValue {
                 finite(a)?,
             )),
             effect::ControlValue::Gradient(stops) => {
-                for stop in &stops {
-                    finite_stop(stop)?;
+                for (index, stop) in stops.iter().enumerate() {
+                    finite_stop(stop)
+                        .map_err(|e| ControlValueInvalid::nested(format!("[{index}]"), e))?;
                 }
                 Self::Gradient(stops)
             }
