@@ -5465,6 +5465,7 @@ dependencies = [
 name = "hypercolor-types"
 version = "0.3.2"
 dependencies = [
+ "hypercolor-color",
  "serde",
  "serde_json",
  "strum 0.28.0",
