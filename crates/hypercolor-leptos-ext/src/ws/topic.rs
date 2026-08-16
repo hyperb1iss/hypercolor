@@ -36,6 +36,11 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+// The macro expands in downstream crates; anchor its serde_json paths
+// here so callers don't need their own dependency.
+#[doc(hidden)]
+pub use ::serde_json;
+
 /// Why a wire key was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KeyError {
@@ -96,11 +101,21 @@ impl TopicKey for () {
 /// A topic's per-subscription configuration.
 ///
 /// Blanket-implemented; `()` serves configless topics.
+///
+/// Config structs MUST carry `#[serde(deny_unknown_fields)]`: stored
+/// config JSON round-trips through this type at every patch, and a
+/// stale or typo'd field must fail loudly, never vanish in the round
+/// trip.
 pub trait TopicConfig: Clone + PartialEq + Default + Serialize + DeserializeOwned {}
 
 impl<T: Clone + PartialEq + Default + Serialize + DeserializeOwned> TopicConfig for T {}
 
 /// A topic's config patch: every field validates before any lands.
+///
+/// Patch structs MUST carry `#[serde(deny_unknown_fields)]`: a typo'd
+/// field in a client patch would otherwise deserialize as an empty
+/// patch and "succeed" as a no-op, defeating the transactional
+/// promise that every supplied field validated.
 pub trait TopicPatch<C>: DeserializeOwned {
     /// Apply onto `config`. Called on a CLONE by
     /// [`apply_patch_transactionally`]; implementations mutate freely
@@ -184,8 +199,10 @@ pub struct TopicVTable {
     pub configurable: bool,
     /// The default config as JSON (`null` for configless topics).
     pub default_config_json: fn() -> serde_json::Value,
-    /// Validate a wire key for this topic without materializing it.
-    pub validate_key: fn(Option<&str>) -> Result<(), KeyError>,
+    /// Validate a wire key for this topic, returning the CANONICAL
+    /// wire form (`None` for unkeyed topics) so callers store what the
+    /// key type parsed, not what the client happened to send.
+    pub validate_key: fn(Option<&str>) -> Result<Option<String>, KeyError>,
     /// Transactionally apply a JSON patch onto a JSON config,
     /// returning the replacement config. Errors leave the input
     /// semantics untouched by construction.
@@ -311,33 +328,38 @@ macro_rules! define_ws_topics {
             pub fn vtable(self) -> &'static $crate::ws::topic::TopicVTable {
                 match self {
                     $( Self::$topic => {
-                        static VTABLE: std::sync::LazyLock<$crate::ws::topic::TopicVTable> =
-                            std::sync::LazyLock::new(|| $crate::ws::topic::TopicVTable {
+                        static VTABLE: ::std::sync::LazyLock<$crate::ws::topic::TopicVTable> =
+                            ::std::sync::LazyLock::new(|| $crate::ws::topic::TopicVTable {
                                 name: $name,
                                 owned_tags: <$topic as $crate::ws::topic::WsTopic>::OWNED_TAGS,
                                 requires_control: <$topic as $crate::ws::topic::WsTopic>::REQUIRES_CONTROL,
                                 keyed: $crate::define_ws_topics!(@keyed $key),
-                                // `()` serializes to null — configless by construction.
-                                configurable: !serde_json::to_value(
+                                // `()` serializes to null — configless by
+                                // construction. A config whose DEFAULT fails to
+                                // serialize is a defective topic definition;
+                                // panic at first vtable touch rather than
+                                // misclassify it as configless.
+                                configurable: !$crate::ws::topic::serde_json::to_value(
                                     <<$topic as $crate::ws::topic::WsTopic>::Config as Default>::default()
-                                ).unwrap_or(serde_json::Value::Null).is_null(),
-                                default_config_json: || serde_json::to_value(
+                                ).expect("topic default config must serialize to JSON").is_null(),
+                                default_config_json: || $crate::ws::topic::serde_json::to_value(
                                     <<$topic as $crate::ws::topic::WsTopic>::Config as Default>::default()
-                                ).unwrap_or(serde_json::Value::Null),
+                                ).expect("topic default config must serialize to JSON"),
                                 validate_key: |key| {
-                                    <<$topic as $crate::ws::topic::WsTopic>::Key as $crate::ws::topic::TopicKey>::from_wire(key).map(|_| ())
+                                    <<$topic as $crate::ws::topic::WsTopic>::Key as $crate::ws::topic::TopicKey>::from_wire(key)
+                                        .map(|parsed| $crate::ws::topic::TopicKey::to_wire(&parsed))
                                 },
                                 apply_patch_json: |config, patch| {
                                     let current: <$topic as $crate::ws::topic::WsTopic>::Config =
-                                        serde_json::from_value(config.clone()).map_err(|error| {
+                                        $crate::ws::topic::serde_json::from_value(config.clone()).map_err(|error| {
                                             $crate::ws::topic::PatchError::new("config", error.to_string())
                                         })?;
                                     let patch: <$topic as $crate::ws::topic::WsTopic>::Patch =
-                                        serde_json::from_value(patch.clone()).map_err(|error| {
+                                        $crate::ws::topic::serde_json::from_value(patch.clone()).map_err(|error| {
                                             $crate::ws::topic::PatchError::new("patch", error.to_string())
                                         })?;
                                     let next = $crate::ws::topic::apply_patch_transactionally(&current, &patch)?;
-                                    serde_json::to_value(next).map_err(|error| {
+                                    $crate::ws::topic::serde_json::to_value(next).map_err(|error| {
                                         $crate::ws::topic::PatchError::new("config", error.to_string())
                                     })
                                 },
@@ -393,6 +415,11 @@ macro_rules! define_ws_topics {
                 ]),
                 "two topics claim the same binary tag"
             );
+            // `bit()` shifts into a u32; topic 33 would overflow it.
+            assert!(
+                $registry::COUNT <= 32,
+                "the registry bitset holds 32 topics; widen TopicSet before adding more"
+            );
         };
     };
 
@@ -424,6 +451,10 @@ pub struct SubscriptionTable {
 
 impl SubscriptionTable {
     /// Insert or replace a subscription's config.
+    ///
+    /// `key` is the CANONICAL wire key from the topic vtable's
+    /// `validate_key` — the table stores what the boundary validated
+    /// and never re-checks shape itself.
     pub fn insert(&mut self, bit: u32, key: Option<String>, config: serde_json::Value) {
         self.entries.insert((bit, key), config);
     }
@@ -444,10 +475,19 @@ impl SubscriptionTable {
     /// Every live key for a topic (empty when the topic has no
     /// subscription; one `None` entry when an unkeyed topic is live).
     pub fn keys_for(&self, bit: u32) -> impl Iterator<Item = Option<&str>> {
+        self.entries_for(bit).map(|(key, _)| key)
+    }
+
+    /// Every live `(key, config)` pair for a topic — the shape
+    /// acknowledgment projection walks.
+    pub fn entries_for(
+        &self,
+        bit: u32,
+    ) -> impl Iterator<Item = (Option<&str>, &serde_json::Value)> {
         self.entries
             .iter()
             .filter(move |((topic_bit, _), _)| *topic_bit == bit)
-            .map(|((_, key), _)| key.as_deref())
+            .map(|((_, key), config)| (key.as_deref(), config))
     }
 
     /// Whether any subscription for the topic is live.

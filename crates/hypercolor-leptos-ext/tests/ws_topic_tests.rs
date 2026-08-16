@@ -11,7 +11,7 @@
 
 use hypercolor_leptos_ext::define_ws_topics;
 use hypercolor_leptos_ext::ws::topic::{
-    KeyError, NoPatch, PatchError, Subscription, SubscriptionTable, TopicKey, TopicPatch, WsTopic,
+    KeyError, NoPatch, PatchError, Subscription, SubscriptionTable, TopicKey, TopicPatch,
     apply_patch_transactionally,
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ impl TopicKey for DeviceKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FramesConfig {
     fps: u32,
     zones: Option<Vec<String>>,
@@ -52,6 +53,7 @@ impl Default for FramesConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FramesPatch {
     fps: Option<u32>,
     // Tri-state: missing = leave, null = clear, list = set.
@@ -82,6 +84,7 @@ impl TopicPatch<FramesConfig> for FramesPatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreviewConfig {
     fps: u32,
 }
@@ -93,6 +96,7 @@ impl Default for PreviewConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreviewPatch {
     fps: Option<u32>,
 }
@@ -174,9 +178,13 @@ fn vtable_reports_shape_facts() {
 }
 
 #[test]
-fn key_validation_rejects_both_mismatches() {
+fn key_validation_rejects_both_mismatches_and_returns_canonical_form() {
     let display = Topic::DisplayPreview.vtable();
-    assert!((display.validate_key)(Some("device-1")).is_ok());
+    assert_eq!(
+        (display.validate_key)(Some("device-1")),
+        Ok(Some("device-1".to_owned())),
+        "callers store the canonical key, not the raw wire text"
+    );
     assert_eq!((display.validate_key)(None), Err(KeyError::MissingKey));
     assert!(matches!(
         (display.validate_key)(Some("  padded ")),
@@ -184,7 +192,7 @@ fn key_validation_rejects_both_mismatches() {
     ));
 
     let frames = Topic::Frames.vtable();
-    assert!((frames.validate_key)(None).is_ok());
+    assert_eq!((frames.validate_key)(None), Ok(None));
     assert_eq!(
         (frames.validate_key)(Some("unexpected")),
         Err(KeyError::UnexpectedKey)
@@ -229,6 +237,12 @@ fn json_dispatch_round_trips_through_the_vtable() {
         .expect_err("range violation");
     assert_eq!(error.field, "fps");
 
+    // A typo'd field must be rejected, never silently dropped as an
+    // empty patch (deny_unknown_fields is contractual on patch types).
+    let typo = (frames.apply_patch_json)(&current, &serde_json::json!({"fpp": 42}))
+        .expect_err("unknown fields are rejected, not dropped");
+    assert_eq!(typo.field, "patch");
+
     // The tri-state clear survives JSON erasure: explicit null clears.
     let with_zones = (frames.apply_patch_json)(&current, &serde_json::json!({"zones": ["a"]}))
         .expect("set zones");
@@ -271,6 +285,11 @@ fn subscription_table_holds_n_keys_per_topic() {
     let keys: Vec<_> = table.keys_for(bit).collect();
     assert_eq!(keys, [Some("dev-a"), Some("dev-b")]);
     assert!(table.any_for(bit));
+    // The ack projection walks (key, config) pairs.
+    let entries: Vec<_> = table.entries_for(bit).collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].0, Some("dev-b"));
+    assert_eq!(entries[1].1["fps"], 20);
     assert_eq!(
         table.config(bit, Some("dev-b")).expect("present")["fps"],
         20
