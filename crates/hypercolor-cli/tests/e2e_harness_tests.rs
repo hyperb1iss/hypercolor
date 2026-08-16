@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::{BootConfig, ConfigManager};
 use hypercolor_core::input::{BrowserInputSource, InputManager};
 use hypercolor_core::types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use hypercolor_daemon::api::{self, AppState};
@@ -90,8 +90,15 @@ impl DaemonHarness {
         config.discovery.blocks_scan = false;
         config.network.mdns_publish = false;
 
-        let mut daemon_state = DaemonState::initialize(&config, paths.config_path())
-            .context("failed to initialize daemon state")?;
+        let config_manager = Arc::new(ConfigManager::from_config_unchecked(
+            paths.config_path(),
+            config.clone(),
+        ));
+        let mut daemon_state = DaemonState::initialize(
+            BootConfig::from_config_unchecked(config.clone()),
+            config_manager,
+        )
+        .context("failed to initialize daemon state")?;
         install_browser_only_input(&mut daemon_state);
         daemon_state
             .start()

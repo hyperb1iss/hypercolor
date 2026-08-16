@@ -1,7 +1,6 @@
 //! Subsystem initialization: bus, engines, managers, stores, and input sources.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -17,7 +16,9 @@ use tracing::{info, warn};
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::config::{CapturePersistenceEpoch, CapturePersistenceSource, ConfigManager};
+use hypercolor_core::config::{
+    BootConfig, CapturePersistenceEpoch, CapturePersistenceSource, ConfigManager,
+};
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
@@ -89,19 +90,27 @@ fn open_persisted_library_store(
 impl DaemonState {
     /// Initialize all subsystems from a loaded configuration.
     ///
+    /// `boot` is **consumed by value** (Spec 76 §3.2): subsystems freeze
+    /// the boot values they need during construction, and the config dies
+    /// with this call, so no live handle to a [`BootConfig`] can outlast
+    /// initialization. `config_manager` is the live authority the load
+    /// pipeline already built, so nothing here re-reads or re-parses the
+    /// config file.
+    ///
     /// This wires together the bus, registry, engines, and render loop
     /// but does **not** start any background tasks. Call [`start`](Self::start)
     /// to begin the render loop and device discovery.
     ///
     /// # Errors
     ///
-    /// Returns an error if the config manager cannot be created from the
-    /// resolved config path.
+    /// Returns an error if the configuration is invalid or a subsystem
+    /// fails to construct.
     #[expect(
         clippy::too_many_lines,
         reason = "initialization is inherently sequential; splitting would scatter related setup across helpers"
     )]
-    pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
+    pub fn initialize(boot: BootConfig, config_manager: Arc<ConfigManager>) -> Result<Self> {
+        let config: &HypercolorConfig = &boot;
         info!("Initializing daemon subsystems");
         config
             .capture
@@ -155,14 +164,8 @@ impl DaemonState {
 
         let server_identity =
             resolve_server_identity(config).context("failed to resolve server identity")?;
-        // ── Configuration ───────────────────────────────────────────────
         let api_extensions = Vec::new();
         let lifecycle_extensions = Vec::new();
-
-        let config_manager =
-            ConfigManager::new(config_path).context("failed to initialize config manager")?;
-        config_manager.update(config.clone());
-        let config_manager = Arc::new(config_manager);
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());

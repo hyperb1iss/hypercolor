@@ -158,7 +158,24 @@ impl ConfigManager {
         })
     }
 
-    /// Build a manager over an already-materialized config (the
+    /// Build a manager over a config the caller already materialized,
+    /// running the same normalize every load runs.
+    ///
+    /// Everything else the pipeline in
+    /// [`load_with_sources`](Self::load_with_sources) does is skipped:
+    /// the daemon's driver-seeding hook never runs, capture config is
+    /// never validated, no env or CLI overlay is applied, and no
+    /// provenance or boot fingerprint is recorded — so a manager built
+    /// this way reports no pending restarts. It exists for callers that
+    /// already own a fully materialized config, which in practice means
+    /// tests driving daemon initialization directly.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_config_unchecked(config_path: PathBuf, config: HypercolorConfig) -> Self {
+        Self::with_config(config_path, normalize_config(config))
+    }
+
+    /// Build a manager over an already-normalized config (the
     /// `load_with_sources` pipeline owns parse/overlay/validate).
     pub(super) fn with_config(config_path: PathBuf, config: HypercolorConfig) -> Self {
         Self {
@@ -181,6 +198,7 @@ impl ConfigManager {
             .with_context(|| format!("failed to read config from {}", path.display()))?;
 
         Self::parse_toml(&contents)
+            .with_context(|| format!("failed to load config from {}", path.display()))
     }
 
     /// Returns a snapshot of the current configuration.
@@ -672,10 +690,17 @@ impl ConfigManager {
         paths::cache_dir()
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────────
-
     /// Parses a TOML string into a [`HypercolorConfig`].
-    fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
+    ///
+    /// This is THE config parser: file loads, tooling, and tests all run
+    /// the same migrate and normalize, so no caller can materialize a
+    /// config that skips them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TOML is malformed or does not deserialize
+    /// into [`HypercolorConfig`].
+    pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
         let document = toml::from_str::<toml::Value>(toml_str)
             .context("failed to parse configuration TOML")?;
         let daemon_route_missing = input_field_missing(&document, "daemon_route");
@@ -691,7 +716,12 @@ impl ConfigManager {
     }
 
     /// Returns a default config suitable for first-run.
-    fn default_config() -> HypercolorConfig {
+    ///
+    /// Normalized like every other materialized config, so a daemon that
+    /// never found a file behaves exactly like one that loaded a file of
+    /// pure defaults.
+    #[must_use]
+    pub fn default_config() -> HypercolorConfig {
         normalize_config(HypercolorConfig::default())
     }
 }

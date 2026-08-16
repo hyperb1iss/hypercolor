@@ -1,92 +1,67 @@
-//! Configuration loading, server identity resolution, and instance ID management.
+//! Config sources for the daemon, server identity resolution, and
+//! instance ID management.
+//!
+//! Loading itself lives in [`ConfigManager::load_with_sources`] (Spec 76
+//! §3.1). What the daemon owns is the source set: which file, which CLI
+//! flags overlay it, and the driver-entry seeding hook the builtin driver
+//! bundle supplies from above core.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use tracing::{info, warn};
+use tracing::warn;
 use uuid::Uuid;
 
-use hypercolor_core::config::ConfigManager;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_core::config::{CliOverrides, ConfigManager, ConfigSources, EnvOverrides};
+use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode, ServoGpuImportMode};
 use hypercolor_types::server::ServerIdentity;
 
 use crate::network;
 
-/// Default configuration file name within the config directory.
-const CONFIG_FILE_NAME: &str = "hypercolor.toml";
 const INSTANCE_ID_FILE_NAME: &str = "instance_id";
 const DEFAULT_INSTANCE_NAME: &str = "hypercolor";
 
-/// Load and validate configuration from the filesystem.
+/// Everything one daemon start feeds into the load pipeline.
 ///
-/// Resolution order:
-/// 1. Explicit path from `--config` CLI argument
-/// 2. Platform-specific config directory (`$XDG_CONFIG_HOME/hypercolor/hypercolor.toml`
-///    on Linux, `%APPDATA%\hypercolor\hypercolor.toml` on Windows)
-/// 3. Fall back to compile-time defaults (no file needed)
-///
-/// # Errors
-///
-/// Returns an error if an explicit config path is provided but the file
-/// cannot be read or parsed. When falling back to defaults, this always
-/// succeeds.
-#[allow(
-    clippy::unused_async,
-    reason = "will be async when config loading gains network support"
-)]
-pub async fn load_config(config_path: Option<&Path>) -> Result<(HypercolorConfig, PathBuf)> {
-    let resolved_path = resolve_config_path(config_path);
-
-    info!(path = %resolved_path.display(), "Resolved config path");
-
-    if resolved_path.exists() {
-        let mut config = ConfigManager::load(&resolved_path)
-            .with_context(|| format!("failed to load config from {}", resolved_path.display()))?;
-        normalize_daemon_driver_configs(&mut config);
-        info!(
-            schema_version = config.schema_version,
-            "Configuration loaded from file"
-        );
-        Ok((config, resolved_path))
-    } else if config_path.is_some() {
-        // Explicit path was given but doesn't exist — that's an error.
-        anyhow::bail!("config file not found: {}", resolved_path.display());
-    } else {
-        // No explicit path, no file found — use defaults.
-        warn!("No config file found, using built-in defaults");
-        let config = default_config();
-        Ok((config, resolved_path))
+/// `file` is the explicit `--config` path (or `HYPERCOLOR_CONFIG`): when
+/// set the file must exist, and when absent the platform default path is
+/// used, falling back to defaults. The seed hook installs the builtin
+/// driver entries that live above core.
+#[must_use]
+pub fn config_sources(
+    file: Option<PathBuf>,
+    compositor_acceleration_mode: Option<RenderAccelerationMode>,
+    servo_gpu_import_mode: Option<ServoGpuImportMode>,
+) -> ConfigSources {
+    ConfigSources {
+        file,
+        cli: CliOverrides {
+            compositor_acceleration_mode,
+            servo_gpu_import_mode,
+        },
+        env: EnvOverrides::from_process_env(),
+        seed: Some(normalize_daemon_driver_configs),
     }
 }
 
-/// Resolve which config file path to use.
-///
-/// If an explicit path is provided, it is used directly. Otherwise the
-/// platform-specific config directory is checked for `hypercolor.toml`.
-fn resolve_config_path(explicit: Option<&Path>) -> PathBuf {
-    explicit.map_or_else(
-        || ConfigManager::config_dir().join(CONFIG_FILE_NAME),
-        Path::to_path_buf,
-    )
-}
-
 /// Construct a default configuration (all defaults, current schema version).
+#[must_use]
 pub fn default_config() -> HypercolorConfig {
-    let mut config = HypercolorConfig::default();
+    let mut config = ConfigManager::default_config();
     normalize_daemon_driver_configs(&mut config);
     config
 }
 
-/// Parse a TOML string into a [`HypercolorConfig`].
+/// Parse a TOML string into a [`HypercolorConfig`] for tests and tooling.
 ///
-/// Convenience wrapper around `toml::from_str` for tests and tooling.
+/// Runs the daemon's driver seeding on top of the one canonical parser, so
+/// a parsed string and a loaded file yield the same config.
 ///
 /// # Errors
 ///
 /// Returns an error if the TOML is malformed or cannot be deserialized.
 pub fn parse_config_toml(toml_str: &str) -> Result<HypercolorConfig> {
-    let mut config: HypercolorConfig =
-        toml::from_str(toml_str).context("failed to parse config TOML")?;
+    let mut config = ConfigManager::parse_toml(toml_str)?;
     normalize_daemon_driver_configs(&mut config);
     Ok(config)
 }

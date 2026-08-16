@@ -72,7 +72,7 @@ pub(crate) use acceleration::{
     resolve_compositor_acceleration_mode,
 };
 pub(crate) use config::normalize_daemon_driver_configs;
-pub use config::{default_config, load_config, parse_config_toml};
+pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };

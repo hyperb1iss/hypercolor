@@ -20,7 +20,7 @@ mod windows_service;
 #[command(name = "hypercolor-daemon", about = "Hypercolor lighting daemon")]
 struct DaemonArgs {
     /// Path to the configuration file.
-    #[arg(short, long)]
+    #[arg(short, long, env = "HYPERCOLOR_CONFIG")]
     config: Option<PathBuf>,
 
     /// Address and port to bind the API server to.
