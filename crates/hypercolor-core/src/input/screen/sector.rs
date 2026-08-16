@@ -5,6 +5,8 @@
 //! per-zone LED colors. Works on raw `&[u8]` RGBA buffers — no capture
 //! backend dependency.
 
+use hypercolor_color::LinearRgba;
+
 use crate::types::canvas::{Rgb, linear_to_srgb_u8, srgb_u8_to_linear};
 use rayon::prelude::*;
 use thiserror::Error;
@@ -182,7 +184,7 @@ impl PreparedLetterboxDetector {
         for (index, color) in colors.iter().copied().enumerate() {
             let row = index / columns;
             let column = index % columns;
-            let luminance = encoded_luminance(color, transfer);
+            let luminance = linear_luminance(color, transfer);
             self.row_luminance[row] += luminance;
             self.column_luminance[column] += luminance;
         }
@@ -262,13 +264,13 @@ fn count_dark_suffix(values: &[f32], threshold: f32) -> u32 {
     .expect("prepared scratch length originates from u32 geometry")
 }
 
-fn encoded_luminance(color: [u8; 3], transfer: CaptureTransferFunction) -> f32 {
+fn linear_luminance(color: [u8; 3], transfer: CaptureTransferFunction) -> f32 {
     let decode = |channel| match transfer {
         CaptureTransferFunction::Srgb => srgb_u8_to_linear(channel),
         CaptureTransferFunction::Linear => f32::from(channel) / 255.0,
         _ => unreachable!("unsupported transfers are rejected before decoding"),
     };
-    0.2126 * decode(color[0]) + 0.7152 * decode(color[1]) + 0.0722 * decode(color[2])
+    LinearRgba::new(decode(color[0]), decode(color[1]), decode(color[2]), 1.0).luma()
 }
 
 // ── SectorGrid ────────────────────────────────────────────────────────────
@@ -752,10 +754,13 @@ fn accumulate_region(
 
 /// Relative luminance of an RGB pixel (BT.709 coefficients), 0.0 - 1.0.
 fn pixel_luminance(c: [u8; 3]) -> f32 {
-    let r = srgb_u8_to_linear(c[0]);
-    let g = srgb_u8_to_linear(c[1]);
-    let b = srgb_u8_to_linear(c[2]);
-    0.2126 * r + 0.7152 * g + 0.0722 * b
+    LinearRgba::new(
+        srgb_u8_to_linear(c[0]),
+        srgb_u8_to_linear(c[1]),
+        srgb_u8_to_linear(c[2]),
+        1.0,
+    )
+    .luma()
 }
 
 /// Convert `[u8; 3]` to the types crate `Rgb` for interop.

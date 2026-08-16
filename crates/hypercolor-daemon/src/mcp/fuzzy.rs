@@ -7,6 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
+use hypercolor_color::Rgb;
 use hypercolor_types::effect::EffectMetadata;
 
 // ── Effect Matching ────────────────────────────────────────────────────────
@@ -445,19 +446,26 @@ pub fn resolve_color(input: &str) -> Option<ColorMatch> {
     match_color_name(trimmed)
 }
 
-/// Parse a hex color code like `#ff6ac1` or `ff6ac1`.
+/// Parse a hex color code like `#ff6ac1`, `ff6ac1`, or `#f6c`.
+///
+/// Shorthand is honored only behind a `#`. Without one, a three-letter
+/// word of hex digits is a name query — `bed` asks the name matcher for a
+/// color called "bed", not for `#bbeedd`.
 fn parse_hex(input: &str) -> Option<ColorMatch> {
-    let hex = input.strip_prefix('#').unwrap_or(input);
-    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+    let explicit = input.starts_with('#');
+    if !explicit && input.len() != 6 {
         return None;
     }
-    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    let Rgb {
+        r: red,
+        g: green,
+        b: blue,
+    } = Rgb::from_hex(input).ok()?;
     let closest_name = find_closest_color_name(red, green, blue);
     Some(ColorMatch {
         name: closest_name,
-        hex: format!("#{hex}"),
+        hex: format!("#{red:02x}{green:02x}{blue:02x}"),
         r: red,
         g: green,
         b: blue,

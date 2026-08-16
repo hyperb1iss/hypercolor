@@ -1,5 +1,6 @@
 //! Tests for device identity, capabilities, and state types.
 
+use hypercolor_color::DevicePixelLayout;
 use hypercolor_types::device::{
     ConnectionType, DRIVER_MODULE_API_SCHEMA_VERSION, DeviceCapabilities, DeviceClassHint,
     DeviceColorFormat, DeviceColorSpace, DeviceError, DeviceFamily, DeviceFeatures,
@@ -522,6 +523,27 @@ fn color_format_display() {
     assert_eq!(DeviceColorFormat::Rgbw.to_string(), "RGBW");
     assert_eq!(DeviceColorFormat::Grb.to_string(), "GRB");
     assert_eq!(DeviceColorFormat::Rbg.to_string(), "RBG");
+}
+
+#[test]
+fn color_format_maps_to_pixel_layouts() {
+    assert_eq!(
+        DeviceColorFormat::Rgb.pixel_layout(),
+        Some(DevicePixelLayout::Rgb)
+    );
+    assert_eq!(
+        DeviceColorFormat::Grb.pixel_layout(),
+        Some(DevicePixelLayout::Grb)
+    );
+    assert_eq!(
+        DeviceColorFormat::Rbg.pixel_layout(),
+        Some(DevicePixelLayout::Rbg)
+    );
+    assert_eq!(
+        DeviceColorFormat::Rgbw.pixel_layout(),
+        Some(DevicePixelLayout::RgbwZeroWhite)
+    );
+    assert_eq!(DeviceColorFormat::Jpeg.pixel_layout(), None);
 }
 
 #[test]

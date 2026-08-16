@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use hypercolor_color::Rgb;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
@@ -577,14 +578,6 @@ fn scale_color([red, green, blue]: [u8; 3], brightness: u8) -> [u8; 3] {
         return [red, green, blue];
     }
 
-    [
-        scale_channel(red, brightness),
-        scale_channel(green, brightness),
-        scale_channel(blue, brightness),
-    ]
-}
-
-fn scale_channel(channel: u8, brightness: u8) -> u8 {
-    let scaled = (u16::from(channel) * u16::from(brightness)) / u16::from(u8::MAX);
-    u8::try_from(scaled).unwrap_or(u8::MAX)
+    let scaled = Rgb::new(red, green, blue).scale(f32::from(brightness) / f32::from(u8::MAX));
+    [scaled.r, scaled.g, scaled.b]
 }

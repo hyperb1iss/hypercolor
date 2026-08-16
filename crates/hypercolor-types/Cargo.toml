@@ -12,7 +12,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-hypercolor-color = { path = "../hypercolor-color", features = ["serde", "schema"] }
+hypercolor-color = { workspace = true, features = ["serde", "schema"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

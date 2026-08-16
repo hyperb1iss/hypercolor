@@ -1506,6 +1506,23 @@ async fn set_color_tool_rejects_missing_color() {
     assert!(matches!(error, ToolError::MissingParam(_)));
 }
 
+#[test]
+fn fuzzy_color_shorthand_hex_requires_an_explicit_hash() {
+    let word = mcp::fuzzy::resolve_color("bed").expect("a hex-digit word reaches the name matcher");
+    assert_ne!(
+        word.hex, "#bbeedd",
+        "hashless shorthand must not shadow named colors"
+    );
+
+    let shorthand = mcp::fuzzy::resolve_color("#bed").expect("hash-prefixed shorthand is hex");
+    assert_eq!(shorthand.hex, "#bbeedd");
+    assert_eq!((shorthand.r, shorthand.g, shorthand.b), (0xbb, 0xee, 0xdd));
+
+    let hashless = mcp::fuzzy::resolve_color("ff8800").expect("hashless six-digit hex is hex");
+    assert_eq!(hashless.hex, "#ff8800");
+    assert_eq!((hashless.r, hashless.g, hashless.b), (0xff, 0x88, 0x00));
+}
+
 #[tokio::test]
 async fn set_output_power_tool_validates_desired_state() {
     let state = fresh_app_state();

@@ -1,3 +1,4 @@
+use hypercolor_color::LinearRgba;
 use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
     screen_blend,
@@ -192,7 +193,9 @@ fn effect_tint_material(effect_rgb: [f32; 3], face_rgb: [f32; 3]) -> [f32; 3] {
 }
 
 fn linear_rgb_luma(rgb: [f32; 3]) -> f32 {
-    (rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722).clamp(0.0, 1.0)
+    LinearRgba::new(rgb[0], rgb[1], rgb[2], 1.0)
+        .luma()
+        .clamp(0.0, 1.0)
 }
 
 fn rgb_colorfulness(rgb: [f32; 3]) -> f32 {

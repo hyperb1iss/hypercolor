@@ -1,5 +1,7 @@
 //! Mapping from raw session events to sleep and wake actions.
 
+use hypercolor_color::Rgb;
+
 use crate::types::session::{
     OffOutputBehavior, SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
 };
@@ -138,37 +140,9 @@ fn sleep_action_from_behavior(
 
 #[must_use]
 pub fn parse_static_color(raw: &str) -> [u8; 3] {
-    let trimmed = raw.trim();
-    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
-    match hex.len() {
-        3 => {
-            let bytes = hex.as_bytes();
-            [
-                parse_nibble(bytes[0]).map_or(0, |value| (value << 4) | value),
-                parse_nibble(bytes[1]).map_or(0, |value| (value << 4) | value),
-                parse_nibble(bytes[2]).map_or(0, |value| (value << 4) | value),
-            ]
-        }
-        6 => [
-            parse_byte(&hex[0..2]).unwrap_or(0),
-            parse_byte(&hex[2..4]).unwrap_or(0),
-            parse_byte(&hex[4..6]).unwrap_or(0),
-        ],
-        _ => [0, 0, 0],
-    }
-}
-
-fn parse_byte(raw: &str) -> Option<u8> {
-    u8::from_str_radix(raw, 16).ok()
-}
-
-fn parse_nibble(raw: u8) -> Option<u8> {
-    match raw {
-        b'0'..=b'9' => Some(raw - b'0'),
-        b'a'..=b'f' => Some(raw - b'a' + 10),
-        b'A'..=b'F' => Some(raw - b'A' + 10),
-        _ => None,
-    }
+    // A configured color that will not parse has always resolved to black
+    // rather than refusing the sleep action.
+    Rgb::from_hex(raw.trim()).map_or([0, 0, 0], |color| [color.r, color.g, color.b])
 }
 
 #[cfg(test)]
