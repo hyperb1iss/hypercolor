@@ -42,7 +42,7 @@ pub use state_machine::{
 pub use traits::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DevicePlugin, DeviceWriteOutcome, HealthStatus, OutputCadence,
+    DeviceLifecyclePolicy, DeviceWriteOutcome, HealthStatus, OutputCadence,
 };
 pub use usb_backend::{
     UsbActorMetricsSnapshot, UsbBackend, UsbProtocolConfigStore, usb_actor_metrics_snapshot,

@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 
 use hypercolor_core::device::{
-    BackendInfo, DeviceBackend, DevicePlugin, DeviceRegistry, DeviceStateMachine, DiscoveredDevice,
+    BackendInfo, DeviceBackend, DeviceRegistry, DeviceStateMachine, DiscoveredDevice,
     DiscoveryConnectBehavior, DiscoveryOrchestrator, ReconnectPolicy, TransportScanner,
 };
 use hypercolor_types::device::{
@@ -174,20 +174,6 @@ impl DeviceBackend for MockBackend {
         let mut last = self.last_colors.lock().await;
         last.insert(*id, colors.to_vec());
         Ok(())
-    }
-}
-
-// ── Mock Plugin ──────────────────────────────────────────────────────────
-
-struct MockPlugin;
-
-impl DevicePlugin for MockPlugin {
-    fn name(&self) -> &'static str {
-        "Mock Plugin"
-    }
-
-    fn build(&self) -> Box<dyn DeviceBackend> {
-        Box::new(MockBackend::new(vec![mock_device_info("Plugin Device")]))
     }
 }
 
@@ -400,26 +386,6 @@ async fn backend_write_failure_propagates() {
     let colors: Vec<[u8; 3]> = vec![[0, 0, 255]; 30];
     let result = backend.write_colors(&id, &colors).await;
     assert!(result.is_err(), "write should fail when fail_write is set");
-}
-
-// ── DevicePlugin trait tests ─────────────────────────────────────────────
-
-#[tokio::test]
-async fn plugin_lifecycle() {
-    let plugin = MockPlugin;
-
-    assert_eq!(plugin.name(), "Mock Plugin");
-    plugin.ready().expect("ready should succeed");
-
-    let mut backend = plugin.build();
-    let info = backend.info();
-    assert_eq!(info.id, "mock");
-
-    let discovered = backend.discover().await.expect("discover succeeds");
-    assert_eq!(discovered.len(), 1);
-    assert_eq!(discovered[0].name, "Plugin Device");
-
-    plugin.teardown();
 }
 
 // ── DeviceRegistry tests ─────────────────────────────────────────────────
