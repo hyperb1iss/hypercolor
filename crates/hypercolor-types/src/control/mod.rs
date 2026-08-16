@@ -11,7 +11,7 @@
 //! The canonical type is deliberately **not serializable**. Wires and
 //! persisted files speak the two existing projections; the write-side
 //! flip to any canonical encoding is its own reviewed wave under the §0
-//! compat doctrine. Keeping serde off the canonical type makes "which
+//! lockstep doctrine. Keeping serde off the canonical type makes "which
 //! encoding is this?" unrepresentable.
 //!
 //! # Per-variant contract
@@ -49,14 +49,15 @@
 //! inside an authoritative set are valid by construction of the SET,
 //! not of the enum.
 //!
-//! # Canonicalizing persisted legacy values
+//! # Canonicalizing persisted values
 //!
-//! The legacy driver wire accepts arbitrary strings where canonical
-//! requires validity, so canonicalizing old persisted state CAN fail.
-//! A read path that meets a `ControlValueInvalid` must keep the raw
-//! legacy `crate::controls::ControlValue` (per §0, old shapes stay
-//! readable and are never dropped) and surface the failure as a
-//! validation diagnostic — never discard the value, never crash.
+//! The driver wire accepts arbitrary strings where canonical requires
+//! validity, so canonicalizing old persisted state CAN fail. A failed
+//! canonicalization is a validation error surfaced to the caller,
+//! naming the key — never a silent drop, never a crash. Nothing keeps
+//! the raw value alive alongside the canonical one: migration is
+//! one-time-forward per §0, so a shape that no longer canonicalizes is
+//! hand-migrated or refused, not dual-read.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;

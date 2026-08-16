@@ -35,7 +35,12 @@ pub struct RuntimeSessionSnapshot {
     /// Explicit user pause state. Transient OS sleep is never persisted.
     pub manual_paused: bool,
 
-    /// Legacy driver cache retained only as a one-time inventory migration source.
+    /// Dead payload: the driver inventory owns this data outright now.
+    ///
+    /// Nothing reads it. It cannot simply be deleted because the snapshot
+    /// denies unknown fields, so dropping the field would refuse every
+    /// existing file and silently cost a session restore; retiring it
+    /// needs a versioned runtime-state envelope.
     pub driver_runtime_cache: BTreeMap<String, BTreeMap<String, Value>>,
 }
 

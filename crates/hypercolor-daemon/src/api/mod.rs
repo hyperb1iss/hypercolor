@@ -517,11 +517,8 @@ impl AppState {
         let effect_layout_links_path = data_dir.join("effect-layouts.json");
         let runtime_state_path = data_dir.join("runtime-state.json");
         let driver_inventory = Arc::new(
-            DriverInventoryStore::open(
-                data_dir.join(DRIVER_INVENTORY_FILENAME),
-                &runtime_state_path,
-            )
-            .expect("default app state should open driver inventory"),
+            DriverInventoryStore::open(data_dir.join(DRIVER_INVENTORY_FILENAME))
+                .expect("default app state should open driver inventory"),
         );
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(

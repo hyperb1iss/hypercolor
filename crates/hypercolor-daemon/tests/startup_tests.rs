@@ -53,7 +53,7 @@ use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 
 /// Minimal TOML content that `ConfigManager` can parse.
-const MINIMAL_TOML: &str = "schema_version = 3\n";
+const MINIMAL_TOML: &str = "schema_version = 4\n";
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -303,7 +303,7 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
 #[tokio::test]
 async fn load_config_reads_toml_file() {
     let toml_content = r#"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 target_fps = 30
@@ -431,7 +431,7 @@ fn parse_config_toml_minimal() {
 #[test]
 fn parse_config_toml_with_overrides() {
     let toml_str = r#"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 target_fps = 45
@@ -473,17 +473,25 @@ wasm_plugins = true
 }
 
 #[test]
-fn parse_config_toml_runs_the_shared_migrate_and_normalize() {
-    let config = parse_config_toml("schema_version = 3\n[audio]\ndevice = \"Auto\"\n")
-        .expect("legacy config should parse");
+fn parse_config_toml_runs_the_shared_normalize_and_seed() {
+    let config = parse_config_toml("schema_version = 4\n[audio]\ndevice = \"Auto\"\n")
+        .expect("current-schema config should parse");
 
-    // Migration: schema-3 files predate the interaction-route split.
-    assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Merge);
-    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
     // Normalization: audio device aliases canonicalize.
     assert_eq!(config.audio.device, "default");
     // Seeding: the builtin driver entries are installed.
     assert!(config.drivers.contains_key("wled"));
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn parse_config_toml_refuses_an_outdated_schema() {
+    let error = parse_config_toml("schema_version = 3\n")
+        .expect_err("an outdated schema must be refused, not migrated");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 3"), "{rendered}");
+    assert!(rendered.contains("release notes"), "{rendered}");
 }
 
 #[test]
@@ -1132,7 +1140,7 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
     // the file only has to agree with it for the accessor to be honest.
     std::fs::write(
         temp.path(),
-        "schema_version = 3\n[daemon]\ntarget_fps = 45\n",
+        "schema_version = 4\n[daemon]\ntarget_fps = 45\n",
     )
     .expect("failed to write config");
     let state = DaemonState::initialize(

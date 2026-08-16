@@ -18,13 +18,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use arc_swap::{ArcSwap, Guard};
 use tracing::{debug, info};
 
 use crate::types::config::{
-    CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, InteractionRoutePolicy,
-    default_driver_configs,
+    CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, default_driver_configs,
 };
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
@@ -693,26 +692,31 @@ impl ConfigManager {
     /// Parses a TOML string into a [`HypercolorConfig`].
     ///
     /// This is THE config parser: file loads, tooling, and tests all run
-    /// the same migrate and normalize, so no caller can materialize a
-    /// config that skips them.
+    /// the same parse and normalize, so no caller can materialize a
+    /// config that skips them. Schema versions older than
+    /// [`CURRENT_SCHEMA_VERSION`] are refused rather than migrated —
+    /// migration is one-time-forward, so old shapes are named in release
+    /// notes and hand-migrated, never read by a legacy path here.
     ///
     /// # Errors
     ///
-    /// Returns an error if the TOML is malformed or does not deserialize
-    /// into [`HypercolorConfig`].
+    /// Returns an error if the TOML is malformed, does not deserialize
+    /// into [`HypercolorConfig`], or declares an outdated schema version.
     pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
-        let document = toml::from_str::<toml::Value>(toml_str)
+        let config = toml::from_str::<HypercolorConfig>(toml_str)
             .context("failed to parse configuration TOML")?;
-        let daemon_route_missing = input_field_missing(&document, "daemon_route");
-        let preview_route_missing = input_field_missing(&document, "preview_route");
-        let config = document
-            .try_into::<HypercolorConfig>()
-            .context("failed to parse configuration TOML")?;
-        Ok(normalize_config(migrate_config(
-            config,
-            daemon_route_missing,
-            preview_route_missing,
-        )))
+        if config.schema_version < CURRENT_SCHEMA_VERSION {
+            bail!(
+                "config declares schema_version {} but this build reads \
+                 schema {CURRENT_SCHEMA_VERSION}; hypercolor no longer \
+                 migrates older config files. Update the file by hand as \
+                 described in the release notes, then set schema_version = \
+                 {CURRENT_SCHEMA_VERSION}, or move it aside to start from \
+                 defaults.",
+                config.schema_version
+            );
+        }
+        Ok(normalize_config(config))
     }
 
     /// Returns a default config suitable for first-run.
@@ -753,30 +757,6 @@ fn parent_directory(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
-}
-
-fn input_field_missing(document: &toml::Value, field: &str) -> bool {
-    document
-        .get("input")
-        .and_then(toml::Value::as_table)
-        .is_none_or(|input| !input.contains_key(field))
-}
-
-fn migrate_config(
-    mut config: HypercolorConfig,
-    daemon_route_missing: bool,
-    preview_route_missing: bool,
-) -> HypercolorConfig {
-    if config.schema_version <= 3 {
-        if daemon_route_missing {
-            config.input.daemon_route = InteractionRoutePolicy::Merge;
-        }
-        if preview_route_missing {
-            config.input.preview_route = InteractionRoutePolicy::Browser;
-        }
-        config.schema_version = CURRENT_SCHEMA_VERSION;
-    }
-    config
 }
 
 fn normalize_config(mut config: HypercolorConfig) -> HypercolorConfig {
