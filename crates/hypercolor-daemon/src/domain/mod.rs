@@ -457,10 +457,21 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body reads");
+        // Expected bytes come from the same json! construction the
+        // in-tree builders use, so this pins the shim to them under
+        // whatever serde_json map-order policy the build graph
+        // resolves — a hard-coded string would encode the local
+        // feature graph instead. The real wire bytes are frozen by
+        // the v1 compat matrix.
+        let expected = serde_json::to_string(&json!({
+            "error": "groups_revision mismatch",
+            "current": 9,
+        }))
+        .expect("expected body serializes");
         assert_eq!(
             std::str::from_utf8(&bytes).expect("utf8"),
-            r#"{"error":"groups_revision mismatch","current":9}"#,
-            "the frozen v1 412 body, byte for byte"
+            expected,
+            "the frozen v1 412 body, byte for byte against the builder construction"
         );
     }
 
