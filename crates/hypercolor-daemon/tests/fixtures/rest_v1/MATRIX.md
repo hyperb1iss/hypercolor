@@ -86,13 +86,18 @@ when it does:
 | `unsupported_media_type` | 415 | `UnsupportedMediaType` | none |
 | `validation_error` | **422**, not 400 | `Validation` | optional; `field` folds in |
 | `rate_limited` | 429 | `RateLimited` | `{limit, window_seconds, retry_after}` |
+| `internal_error` | 500 | `Internal` | none |
 | `device_unavailable` | 503 | `DeviceUnavailable` | none |
 
 `device_unavailable` is the one row no route emits today. The variant is
 contract (Spec 76 §2.1) and the MCP projection consumes it, but every device
 refusal currently reaches the wire as a `conflict`. It is listed so the closed
 set is complete, not because a client will see it.
-| `internal_error` | 500 | `Internal` | none |
+
+The one structured `conflict` shape is the scene-commit compare-and-swap
+loss: `details: { kind: "scene_commit_superseded", expected_revision,
+current_revision }`, branchable by `kind` so a client re-reads instead of
+parsing prose.
 
 Two message rules are contract:
 

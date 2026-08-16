@@ -44,8 +44,41 @@ fn daemon_sources() -> Vec<(String, String)> {
     sources
 }
 
-/// Blank out `//` comments, `/* */` blocks, and string literals, leaving
-/// byte offsets and line structure intact.
+/// The length of the char literal starting at `rest[0] == '\''`, or 0
+/// when the quote is a lifetime or loop label. Char literals must be
+/// consumed whole: `'"'` would otherwise open a phantom string that
+/// blanks real code until the next quote in the file.
+fn char_literal_length(rest: &[char]) -> usize {
+    if rest.len() >= 3 && rest[1] == '\\' {
+        let mut position = 2;
+        if rest[position] == 'u' {
+            position += 1;
+            if position < rest.len() && rest[position] == '{' {
+                while position < rest.len() && rest[position] != '}' {
+                    position += 1;
+                }
+                position += 1;
+            }
+        } else {
+            position += 1;
+            while position < rest.len() && rest[position].is_ascii_hexdigit() {
+                position += 1;
+            }
+        }
+        if position < rest.len() && rest[position] == '\'' {
+            position + 1
+        } else {
+            0
+        }
+    } else if rest.len() >= 3 && rest[1] != '\'' && rest[2] == '\'' {
+        3
+    } else {
+        0
+    }
+}
+
+/// Blank out `//` comments, `/* */` blocks, string literals, and char
+/// literals, leaving byte offsets and line structure intact.
 fn strip_comments_and_strings(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
@@ -82,6 +115,17 @@ fn strip_comments_and_strings(source: &str) -> String {
             }
             if index < chars.len() {
                 out.push(' ');
+                index += 1;
+            }
+        } else if chars[index] == '\'' {
+            let literal_length = char_literal_length(&chars[index..]);
+            if literal_length > 0 {
+                for _ in 0..literal_length {
+                    out.push(' ');
+                    index += 1;
+                }
+            } else {
+                out.push(chars[index]);
                 index += 1;
             }
         } else {
@@ -289,6 +333,29 @@ mod scan_self_tests {
             result_error_types(&code),
             vec!["DomainError".to_owned()],
             "only real signatures survive the strip"
+        );
+    }
+
+    #[test]
+    fn a_char_literal_quote_does_not_blind_the_scan() {
+        // `'"'` used to open a phantom string that blanked real code
+        // until the next quote in the file — hiding, among others, the
+        // exact signatures this fence exists to forbid.
+        let source = r#"
+            let trimmed = value.trim_matches('"');
+            let escaped = '\'';
+            let newline = '\n';
+            fn offender<'a>(input: &'a str) -> Result<(), Response> { Ok(()) }
+        "#;
+        let code = strip_comments_and_strings(source);
+        assert!(
+            code.contains("&'a str"),
+            "lifetimes survive the strip untouched"
+        );
+        assert_eq!(
+            result_error_types(&code),
+            vec!["Response".to_owned()],
+            "signatures after a char literal stay visible to the scan"
         );
     }
 }

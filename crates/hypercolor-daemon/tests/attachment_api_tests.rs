@@ -1020,4 +1020,40 @@ async fn attachment_identify_separates_missing_slots_from_unusable_selections() 
         out_of_range_json["error"]["details"]["field"],
         "binding_index"
     );
+
+    // A slot that exists but holds only disabled bindings: the slot
+    // lookup resolves, so this is the caller's selection failing, not a
+    // missing resource.
+    let disable_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "identify-bounds-fan",
+                "instances": 1,
+                "led_offset": 0,
+                "enabled": false
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(disable_response.status(), StatusCode::OK);
+
+    let no_enabled = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/main/identify"),
+        json!({ "binding_index": 0 }),
+    )
+    .await;
+    assert_eq!(no_enabled.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let no_enabled_json = body_json(no_enabled).await;
+    assert_eq!(no_enabled_json["error"]["code"], "validation_error");
+    assert_eq!(no_enabled_json["error"]["details"]["field"], "slot_id");
+    assert_eq!(
+        no_enabled_json["error"]["message"],
+        "No enabled bindings in slot 'main'"
+    );
 }

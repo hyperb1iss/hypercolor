@@ -51,7 +51,7 @@ pub struct Meta {
 }
 ```
 
-Errors have exactly one rendering: the `IntoResponse` impl on `DomainError` in `src/domain/mod.rs`. A handler builds the variant that describes the failure and calls `.into_response()`; a helper returns `Result<T, DomainError>` so the route can `?` it or match on it. Constructors read like the failure: `DomainError::not_found(ResourceKind::Scene, id)`, `validation(msg)`, `validation_field(field, msg)`, `malformed(msg)`, `conflict(msg)`, `unauthorized(msg)`, `forbidden(msg)`, `unsupported_media_type(msg)`. Never hand-build an error body and never hand a `Response` back through a `Result`; `tests/api_error_surface_tests.rs` scans `src/api` for both and fails the build.
+Errors have exactly one rendering: the `IntoResponse` impl on `DomainError` in `src/domain/mod.rs`. A handler builds the variant that describes the failure and calls `.into_response()`; a helper returns `Result<T, DomainError>` so the route can `?` it or match on it. Constructors read like the failure: `DomainError::not_found(ResourceKind::Scene, id)`, `validation(msg)`, `validation_field(field, msg)`, `malformed(msg)`, `conflict(msg)`, `unauthorized(msg)`, `forbidden(msg)`, `unsupported_media_type(msg)`. Never hand-build an error body and never hand a `Response` back through a `Result`; `tests/api_error_surface_tests.rs` scans every file under `src/` for both and fails the build.
 
 The error envelope is `{ error: { code, message, details }, meta }`, where `details` is omitted entirely when the variant carries no structured context. See `references/api-patterns.md` for the full variant, code, and status table.
 

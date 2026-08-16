@@ -117,6 +117,11 @@ kind, so every route reports a miss the same way.
 validation field, conflicting IDs, the versions behind a precondition failure,
 retry timing on a throttle.
 
+One structured `conflict` is contract: losing the scene-commit
+compare-and-swap answers 409 with
+`details: { kind: "scene_commit_superseded", expected_revision, current_revision }`,
+so a client can branch on the kind and re-read rather than parse prose.
+
 ### 2.6 Standard Error Codes
 
 | HTTP Status | Code                     | Meaning                                                       |

@@ -75,7 +75,7 @@ pub async fn delete_simulated_display(
 }
 ```
 
-Never hand a `Response` back through a `Result` and never hand-build an error body. Both grow a second error surface, and `tests/api_error_surface_tests.rs` scans every file under `src/api` for them.
+Never hand a `Response` back through a `Result` and never hand-build an error body. Both grow a second error surface, and `tests/api_error_surface_tests.rs` scans every file under `src/` for them.
 
 ### Variants
 

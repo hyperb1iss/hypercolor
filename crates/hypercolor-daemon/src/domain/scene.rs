@@ -720,7 +720,7 @@ pub async fn commit_scene(
             // token onto a counter it does not track.
             return Err(DomainError::conflict_details(
                 format!(
-                    "Scene state changed while applying this request;                      current revision is {current_revision}"
+                    "Scene state changed while applying this request; current revision is {current_revision}"
                 ),
                 serde_json::json!({
                     "kind": "scene_commit_superseded",
