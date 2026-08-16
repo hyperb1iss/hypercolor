@@ -314,7 +314,7 @@ When adapting Shadertoy/GLSL shaders to LED Canvas 2D effects:
 ```rust
 Rgba    // u8 sRGB — input/output format
 Rgb     // u8 sRGB — no alpha
-RgbaF32 // linear f32 — internal math
+LinearRgba // linear f32 — internal math
 Oklab   // perceptually uniform — gradients, blending
 Oklch   // polar perceptual — palette generation, chroma boost
 ```

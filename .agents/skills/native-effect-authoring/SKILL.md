@@ -103,7 +103,7 @@ Color controls arrive as `[f32; 4]` in **linear RGBA** (0.0-1.0). Convert to sRG
 | Type           | Space            | Use                             |
 | -------------- | ---------------- | ------------------------------- |
 | `Rgba` / `Rgb` | sRGB u8          | Canvas pixels, final output     |
-| `RgbaF32`      | Linear f32       | Math, blending, lerp            |
+| `LinearRgba`   | Linear f32       | Math, blending, lerp            |
 | `Oklab`        | Perceptual       | Smooth gradients                |
 | `Oklch`        | Perceptual polar | Hue cycling, palette generation |
 

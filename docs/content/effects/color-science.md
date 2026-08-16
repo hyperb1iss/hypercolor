@@ -271,4 +271,4 @@ The 80/20 rule: one color dominates, the other accents. The most admired setups 
 - [GLSL shader effects](@/effects/glsl-effects.md): color math in WebGL2 fragment shaders (rendered via Servo, not wgpu).
 - [TypeScript canvas effects](@/effects/typescript-effects.md): the `canvas()` authoring surface these techniques target.
 
-Building a compiled-in native renderer instead? The native Rust effect path lives in `crates/hypercolor-core/src/effect/builtin/`, registered through that module's `mod.rs`. It ships the real color vocabulary (`Rgba`, `RgbaF32`, `Oklab`, `Oklch`) with working sRGB-to-linear transfer functions, so the linear-light rules on this page apply directly in code.
+Building a compiled-in native renderer instead? The native Rust effect path lives in `crates/hypercolor-core/src/effect/builtin/`, registered through that module's `mod.rs`. It ships the real color vocabulary (`Rgba`, `LinearRgba`, `Oklab`, `Oklch`) with working sRGB-to-linear transfer functions, so the linear-light rules on this page apply directly in code.

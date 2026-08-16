@@ -46,7 +46,7 @@ Every native effect is a struct that implements `EffectRenderer` from `crates/hy
 The two methods you must implement are `init` (called once on activation) and `render_into` (called once per frame):
 
 ```rust
-use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::canvas::{Canvas, LinearRgba};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
     PresetTemplate,
@@ -103,7 +103,7 @@ Key constraints:
 
 - `render_into` returns `anyhow::Result`, so use `?`, never `unwrap()`.
 - Always call `prepare_target_canvas` at the top of `render_into` so the canvas resizes correctly when the daemon config changes. Never hardcode dimensions.
-- Math goes in linear RGB or Oklab; final pixel values go to the canvas in sRGB. Use `RgbaF32::to_srgba()` for the conversion.
+- Math goes in linear RGB or Oklab; final pixel values go to the canvas in sRGB. Use `LinearRgba::to_encoded()` for the conversion.
 - `unsafe_code` is forbidden in application, driver, and domain crates (the only exceptions are the audited platform-interop crates). No unsafe blocks in effect code.
 
 ### Write a metadata constructor
