@@ -273,13 +273,9 @@ impl DaemonState {
         ));
         info!("Spatial engine created (empty default layout)");
 
-        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         let driver_inventory = Arc::new(
-            DriverInventoryStore::open(
-                ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME),
-                &runtime_state_path,
-            )
-            .context("failed to open driver inventory store")?,
+            DriverInventoryStore::open(ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME))
+                .context("failed to open driver inventory store")?,
         );
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
@@ -496,6 +492,7 @@ impl DaemonState {
         );
 
         // ── Runtime Session Store ───────────────────────────────────
+        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         info!(
             path = %runtime_state_path.display(),
             "Runtime session store ready"

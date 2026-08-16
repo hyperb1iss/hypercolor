@@ -27,7 +27,7 @@ use tempfile::NamedTempFile;
 use tokio::sync::{Mutex, watch};
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
-const MINIMAL_TOML: &str = "schema_version = 3\n";
+const MINIMAL_TOML: &str = "schema_version = 4\n";
 
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -459,7 +459,7 @@ async fn config_loading_all_sub_configs_have_defaults() {
 #[tokio::test]
 async fn config_loading_from_custom_file() {
     let toml_str = r"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 target_fps = 45
@@ -653,7 +653,7 @@ async fn daemon_render_loop_uses_configured_fps() {
     let mut config = default_config();
     config.daemon.target_fps = 30;
 
-    let toml_str = "schema_version = 3\n[daemon]\ntarget_fps = 30\n";
+    let toml_str = "schema_version = 4\n[daemon]\ntarget_fps = 30\n";
     let mut temp = NamedTempFile::new().expect("create temp");
     temp.write_all(toml_str.as_bytes()).expect("write");
     temp.flush().expect("flush");

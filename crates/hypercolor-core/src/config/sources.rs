@@ -1,10 +1,10 @@
 //! The single config load path and the Boot/Live split (Spec 76 §3.1–§3.2).
 //!
 //! [`ConfigManager::load_with_sources`] is the one pipeline that
-//! materializes a config: parse → migrate → normalize → seed driver
-//! entries (injected — the builtin driver set lives above core) →
-//! env overlay → CLI overlay → validate. Precedence is CLI > env >
-//! file > defaults, and every overlaid key is recorded as provenance.
+//! materializes a config: parse → normalize → seed driver entries
+//! (injected — the builtin driver set lives above core) → env overlay
+//! → CLI overlay → validate. Precedence is CLI > env > file >
+//! defaults, and every overlaid key is recorded as provenance.
 //!
 //! The Boot/Live split is enforced by ownership, not by a runtime
 //! check: [`LoadedConfig::boot`] is consumed **by value** during
@@ -194,8 +194,10 @@ pub(super) struct BootState {
 }
 
 impl ConfigManager {
-    /// The one load pipeline (Spec 76 §3.1): parse → migrate →
-    /// normalize → seed → env overlay → CLI overlay → validate.
+    /// The one load pipeline (Spec 76 §3.1): parse → normalize →
+    /// seed → env overlay → CLI overlay → validate. Config files older
+    /// than the current schema are refused by the parser, never
+    /// migrated (§0).
     pub fn load_with_sources(sources: ConfigSources) -> Result<LoadedConfig> {
         let (path, mut config) = if let Some(explicit) = &sources.file {
             if !explicit.exists() {

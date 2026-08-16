@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn restart_only_render_keys_do_not_apply_live() {
-        assert!(!applies_live("effect_engine.render_acceleration_mode"));
+        assert!(!applies_live("effect_engine.compositor_acceleration_mode"));
     }
 
     #[test]

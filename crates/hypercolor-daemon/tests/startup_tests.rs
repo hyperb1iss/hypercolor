@@ -53,7 +53,7 @@ use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 
 /// Minimal TOML content that `ConfigManager` can parse.
-const MINIMAL_TOML: &str = "schema_version = 3\n";
+const MINIMAL_TOML: &str = "schema_version = 4\n";
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -303,7 +303,7 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
 #[tokio::test]
 async fn load_config_reads_toml_file() {
     let toml_content = r#"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 target_fps = 30
@@ -431,7 +431,7 @@ fn parse_config_toml_minimal() {
 #[test]
 fn parse_config_toml_with_overrides() {
     let toml_str = r#"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 target_fps = 45
@@ -473,17 +473,40 @@ wasm_plugins = true
 }
 
 #[test]
-fn parse_config_toml_runs_the_shared_migrate_and_normalize() {
-    let config = parse_config_toml("schema_version = 3\n[audio]\ndevice = \"Auto\"\n")
-        .expect("legacy config should parse");
+fn parse_config_toml_runs_the_shared_normalize_and_seed() {
+    let config = parse_config_toml("schema_version = 4\n[audio]\ndevice = \"Auto\"\n")
+        .expect("current-schema config should parse");
 
-    // Migration: schema-3 files predate the interaction-route split.
-    assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Merge);
-    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
     // Normalization: audio device aliases canonicalize.
     assert_eq!(config.audio.device, "default");
     // Seeding: the builtin driver entries are installed.
     assert!(config.drivers.contains_key("wled"));
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn parse_config_toml_refuses_an_outdated_schema() {
+    let error = parse_config_toml("schema_version = 3\n")
+        .expect_err("an outdated schema must be refused, not migrated");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 3"), "{rendered}");
+    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+    assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
+    assert!(
+        rendered.contains(r#"preview_route = "browser""#),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn parse_config_toml_refuses_a_newer_schema() {
+    let error = parse_config_toml("schema_version = 5\n")
+        .expect_err("a future schema must be refused, not read");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 5"), "{rendered}");
+    assert!(rendered.contains("newer hypercolor"), "{rendered}");
 }
 
 #[test]
@@ -1132,7 +1155,7 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
     // the file only has to agree with it for the accessor to be honest.
     std::fs::write(
         temp.path(),
-        "schema_version = 3\n[daemon]\ntarget_fps = 45\n",
+        "schema_version = 4\n[daemon]\ntarget_fps = 45\n",
     )
     .expect("failed to write config");
     let state = DaemonState::initialize(
@@ -1180,6 +1203,53 @@ async fn shutdown_is_idempotent() {
 }
 
 #[tokio::test]
+async fn a_stale_runtime_snapshot_never_blocks_startup() {
+    let guard = TestDataDirGuard::new().await;
+    // A snapshot written before `driver_runtime_cache` was retired. The
+    // snapshot denies unknown fields, so this one no longer parses; the
+    // daemon must log it and start fresh rather than refuse to boot.
+    std::fs::create_dir_all(
+        guard
+            .runtime_state_path()
+            .parent()
+            .expect("runtime state path has a parent"),
+    )
+    .expect("data directory should be created");
+    std::fs::write(
+        guard.runtime_state_path(),
+        serde_json::json!({
+            "active_scene_id": null,
+            "default_scene_groups": [],
+            "active_layout_id": "layout_gone",
+            "global_brightness": 0.25,
+            "manual_paused": true,
+            "driver_runtime_cache": {},
+        })
+        .to_string(),
+    )
+    .expect("stale snapshot should be written");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("a stale snapshot must not block initialization");
+
+    state
+        .start()
+        .await
+        .expect("a stale snapshot must not block startup");
+
+    // Nothing from the unreadable snapshot was restored.
+    assert!((current_global_brightness(&state.power_state) - 1.0).abs() < f32::EPSILON);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn daemon_start_restores_persisted_active_layout_from_disk() {
     let guard = TestDataDirGuard::new().await;
     let mut layouts = std::collections::HashMap::new();
@@ -1206,7 +1276,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -1392,7 +1461,6 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
         Some(metadata.id)
     );
     assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
-    assert!(snapshot.driver_runtime_cache.is_empty());
     let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
         .expect("probe IP inventory should deserialize");
@@ -1448,7 +1516,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             active_layout_id: None,
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -1536,7 +1603,6 @@ async fn default_scene_contents_restore_on_restart() {
             active_layout_id: None,
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");

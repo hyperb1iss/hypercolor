@@ -509,13 +509,9 @@ fn make_runtime_with_registry(
         .expect("test credential store"),
     );
     let in_progress = Arc::new(AtomicBool::new(true));
-    let runtime_state_path_for_host = runtime_state_path.clone();
     let driver_inventory = Arc::new(
-        DriverInventoryStore::open(
-            runtime_state_path.with_file_name(DRIVER_INVENTORY_FILENAME),
-            &runtime_state_path_for_host,
-        )
-        .expect("test driver inventory"),
+        DriverInventoryStore::open(runtime_state_path.with_file_name(DRIVER_INVENTORY_FILENAME))
+            .expect("test driver inventory"),
     );
     let scene_transactions = SceneTransactionQueue::default();
     let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
@@ -542,7 +538,7 @@ fn make_runtime_with_registry(
         attachment_profiles: Arc::clone(&attachment_profiles),
         device_settings: Arc::clone(&device_settings),
         scene_transactions: scene_transactions.clone(),
-        runtime_state_path,
+        runtime_state_path: runtime_state_path.clone(),
         usb_protocol_configs: usb_protocol_configs.clone(),
         credential_store: Arc::clone(&credential_store),
         in_progress: Arc::clone(&in_progress),
@@ -564,7 +560,7 @@ fn make_runtime_with_registry(
         attachment_registry,
         attachment_profiles,
         device_settings,
-        runtime_state_path_for_host,
+        runtime_state_path,
         driver_inventory,
         usb_protocol_configs,
         credential_store,

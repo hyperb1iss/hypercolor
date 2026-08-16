@@ -29,36 +29,70 @@ fn load_minimal_toml() {
 }
 
 #[test]
-fn legacy_config_without_routes_migrates_to_compatibility_policy() {
+fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
     fs::write(
         tmp.path(),
         "schema_version = 3\n\n[input]\nenabled = true\n",
     )
-    .expect("failed to write legacy config");
+    .expect("failed to write outdated config");
 
-    let config = ConfigManager::load(tmp.path()).expect("legacy config should migrate");
+    let error = ConfigManager::load(tmp.path())
+        .expect_err("an outdated schema must be refused, never migrated");
+    let rendered = format!("{error:#}");
 
-    assert_eq!(config.schema_version, 4);
-    assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Merge);
-    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+    assert!(
+        rendered.contains(&tmp.path().display().to_string()),
+        "{rendered}"
+    );
+    assert!(rendered.contains("schema_version 3"), "{rendered}");
+    // Every edit the hand-migration needs, verbatim. Bumping the version
+    // without the routes silently adopts the new daemon_route default.
+    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+    assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
+    assert!(
+        rendered.contains(r#"preview_route = "browser""#),
+        "{rendered}"
+    );
 }
 
 #[test]
-fn legacy_config_preserves_explicit_route_fields() {
+fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
+    let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+    fs::write(tmp.path(), "schema_version = 5\n").expect("failed to write future config");
+
+    let error = ConfigManager::load(tmp.path())
+        .expect_err("a future schema must be refused, never guessed at");
+    let rendered = format!("{error:#}");
+
+    assert!(
+        rendered.contains(&tmp.path().display().to_string()),
+        "{rendered}"
+    );
+    assert!(rendered.contains("schema_version 5"), "{rendered}");
+    assert!(rendered.contains("newer hypercolor"), "{rendered}");
+    // A future file is not an old file: no hand-migration is offered.
+    assert!(
+        !rendered.contains(r#"daemon_route = "merge""#),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn current_schema_keeps_explicit_route_fields() {
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
     fs::write(
         tmp.path(),
         concat!(
-            "schema_version = 3\n\n",
+            "schema_version = 4\n\n",
             "[input]\n",
             "daemon_route = \"host\"\n",
             "preview_route = \"merge\"\n",
         ),
     )
-    .expect("failed to write legacy config");
+    .expect("failed to write config");
 
-    let config = ConfigManager::load(tmp.path()).expect("legacy config should migrate");
+    let config = ConfigManager::load(tmp.path()).expect("current-schema config should load");
 
     assert_eq!(config.schema_version, 4);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
