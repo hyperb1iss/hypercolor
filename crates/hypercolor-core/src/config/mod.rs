@@ -6,6 +6,12 @@
 //! `hypercolor-types`.
 
 pub mod paths;
+pub mod sources;
+
+pub use sources::{
+    BootConfig, CliOverrides, ConfigProvenance, ConfigSources, EnvOverrides, LoadedConfig,
+    SourceLayer,
+};
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -23,6 +29,30 @@ use crate::types::config::{
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
 
+/// A borrowed live-config snapshot: cheap to take, plain to hold.
+///
+/// Dereferences to [`HypercolorConfig`]. Holding one across an await
+/// pins the snapshot, not a lock — writers are never blocked. Storing
+/// a clone of the inner config in a long-lived struct is the
+/// anti-pattern this type exists to discourage (Spec 76 §3.2).
+pub struct LiveConfigSnapshot(Guard<Arc<HypercolorConfig>>);
+
+impl LiveConfigSnapshot {
+    /// An owned copy of the snapshot's config, for mutation staging.
+    #[must_use]
+    pub fn clone_inner(&self) -> HypercolorConfig {
+        (**self.0).clone()
+    }
+}
+
+impl std::ops::Deref for LiveConfigSnapshot {
+    type Target = HypercolorConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Manages the live Hypercolor configuration with lock-free reads and reload.
 ///
 /// Configuration is stored behind an [`ArcSwap`] so readers never block and
@@ -37,6 +67,10 @@ pub struct ConfigManager {
     /// writers (config API, capture restore-token sink) cannot lose updates
     /// or interleave partial file contents.
     write_lock: std::sync::Mutex<ConfigWriterState>,
+    /// Boot-time fingerprint and sticky overlays for restart
+    /// reporting. Set exactly once by `load_with_sources`; managers
+    /// built without a boot baseline report nothing pending.
+    boot_state: std::sync::OnceLock<sources::BootState>,
     #[cfg(test)]
     persistence_fault: std::sync::Mutex<Option<ConfigPersistenceStage>>,
 }
@@ -118,9 +152,23 @@ impl ConfigManager {
             config: Arc::new(ArcSwap::from_pointee(config)),
             config_path,
             write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
+            boot_state: std::sync::OnceLock::new(),
             #[cfg(test)]
             persistence_fault: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Build a manager over an already-materialized config (the
+    /// `load_with_sources` pipeline owns parse/overlay/validate).
+    pub(super) fn with_config(config_path: PathBuf, config: HypercolorConfig) -> Self {
+        Self {
+            config: Arc::new(ArcSwap::from_pointee(config)),
+            config_path,
+            write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
+            boot_state: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            persistence_fault: std::sync::Mutex::new(None),
+        }
     }
 
     /// Parses a TOML file at `path` into a [`HypercolorConfig`].
@@ -141,6 +189,13 @@ impl ConfigManager {
     /// dereferences to `Arc<HypercolorConfig>` and is cheap to hold.
     pub fn get(&self) -> Guard<Arc<HypercolorConfig>> {
         self.config.load()
+    }
+
+    /// A live snapshot behind a plain `Deref` — the public read
+    /// surface (Spec 76 §3.2). The swap machinery never appears in
+    /// the signature, so callers cannot depend on it.
+    pub fn live(&self) -> LiveConfigSnapshot {
+        LiveConfigSnapshot(self.config.load())
     }
 
     /// Whether `snapshot` is still the manager's current immutable value.
