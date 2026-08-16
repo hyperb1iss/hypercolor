@@ -3,7 +3,7 @@ import {
     clamp,
     color,
     combo,
-    hslToRgb as hslUnitToRgb,
+    hslToRgb as hslFromUnit,
     num,
     hexToRgb as parseHexColor,
     rgbToHsl,
@@ -121,7 +121,7 @@ function hexToRgb(hex: string): RGB {
 
 /** Percent-domain saturation and lightness, as the call sites below carry them. */
 function hslToRgb(h: number, sPercent: number, lPercent: number): RGB {
-    return hslUnitToRgb(h, sPercent / 100, lPercent / 100)
+    return hslFromUnit(h, sPercent / 100, lPercent / 100)
 }
 
 function fract(value: number): number {

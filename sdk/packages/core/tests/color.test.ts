@@ -8,11 +8,13 @@ import {
     hslToRgbUnit,
     hsvToRgb,
     linearToOklab,
+    linearToSrgb,
     oklabToLinear,
     rgbToHex,
     rgbToHsl,
     rgbToHsv,
     scaleRgb,
+    srgbToLinear,
     unitToByte,
     wrapHue,
 } from '../src/color'
@@ -195,9 +197,8 @@ describe('oklab', () => {
 })
 
 // ── Shared-vector agreement ──────────────────────────────────────────────
-// The Rust kernel and this module are fenced by the same table. Wave 1.5
-// grows the file to ~200 triples and widens this allowlist to every op;
-// until then these four prove the two implementations already agree.
+// The Rust kernel and this module run the same table. Every op the module
+// implements is fenced here; wave 1.5 grows the table itself.
 
 interface Vector {
     op: string
@@ -206,10 +207,16 @@ interface Vector {
     tol?: number
 }
 
-const SPOT_CHECK_OPS = new Set(['hex_to_rgb', 'hex_to_rgba', 'hsv_to_rgb', 'hsl_to_rgb', 'rgb_to_hex'])
-
 const SENTINEL: Rgb = { b: 7, g: 7, r: 7 }
 const SENTINEL_RGBA = { a: 7, b: 7, g: 7, r: 7 }
+
+type Triple = [number, number, number]
+type Quad = [number, number, number, number]
+
+function toLinear(input: Quad) {
+    const [r, g, b, a] = input
+    return { a, b, g, r }
+}
 
 function runVector(vector: Vector): unknown {
     switch (vector.op) {
@@ -221,35 +228,95 @@ function runVector(vector: Vector): unknown {
             const parsed = hexToRgba(vector.input as string, SENTINEL_RGBA)
             return parsed === SENTINEL_RGBA ? null : [parsed.r, parsed.g, parsed.b, parsed.a]
         }
+        case 'rgb_to_hex': {
+            const [r, g, b] = vector.input as Triple
+            return rgbToHex({ b, g, r })
+        }
         case 'hsv_to_rgb': {
-            const [h, s, v] = vector.input as [number, number, number]
+            const [h, s, v] = vector.input as Triple
             const rgb = hsvToRgb(h, s, v)
             return [rgb.r, rgb.g, rgb.b]
         }
         case 'hsl_to_rgb': {
-            const [h, s, l] = vector.input as [number, number, number]
+            const [h, s, l] = vector.input as Triple
             const rgb = hslToRgb(h, s, l)
             return [rgb.r, rgb.g, rgb.b]
         }
-        case 'rgb_to_hex': {
-            const [r, g, b] = vector.input as [number, number, number]
-            return rgbToHex({ b, g, r })
+        case 'rgb_to_hsv': {
+            const [r, g, b] = vector.input as Triple
+            const hsv = rgbToHsv({ b, g, r })
+            return [hsv.h, hsv.s, hsv.v]
+        }
+        case 'rgb_to_hsl': {
+            const [r, g, b] = vector.input as Triple
+            const hsl = rgbToHsl({ b, g, r })
+            return [hsl.h, hsl.s, hsl.l]
+        }
+        case 'srgb_to_linear':
+            return srgbToLinear(vector.input as number)
+        case 'linear_to_srgb':
+            return linearToSrgb(vector.input as number)
+        case 'oklab_from_linear': {
+            const lab = linearToOklab(toLinear(vector.input as Quad))
+            return [lab.l, lab.a, lab.b, lab.alpha]
+        }
+        case 'oklab_roundtrip': {
+            const back = oklabToLinear(linearToOklab(toLinear(vector.input as Quad)))
+            return [back.r, back.g, back.b, back.a]
+        }
+        case 'scale_rgb': {
+            const [[r, g, b], factor] = vector.input as [Triple, number]
+            const scaled = scaleRgb({ b, g, r }, factor)
+            return [scaled.r, scaled.g, scaled.b]
         }
         default:
             throw new Error(`unhandled vector op: ${vector.op}`)
     }
 }
 
-describe('shared color vectors', () => {
-    const vectors = (vectorFile.vectors as Vector[]).filter((vector) => SPOT_CHECK_OPS.has(vector.op))
+/** Hue components compare by shortest angular distance, per the file's notes. */
+function hueDelta(a: number, b: number): number {
+    const raw = Math.abs(a - b) % 360
+    return raw > 180 ? 360 - raw : raw
+}
 
-    test('the allowlisted ops are present in the shared file', () => {
-        expect(vectors.length).toBeGreaterThan(30)
+const HUE_FIRST_OPS = new Set(['rgb_to_hsv', 'rgb_to_hsl'])
+
+function expectVector(vector: Vector, actual: unknown, tolerance: number): void {
+    if (vector.expected === null || typeof vector.expected === 'string') {
+        expect(actual).toEqual(vector.expected)
+        return
+    }
+    if (typeof vector.expected === 'number') {
+        expect(Math.abs((actual as number) - vector.expected)).toBeLessThanOrEqual(tolerance)
+        return
+    }
+    const expected = vector.expected as number[]
+    const got = actual as number[]
+    expect(got).toHaveLength(expected.length)
+    expected.forEach((value, index) => {
+        const delta =
+            index === 0 && HUE_FIRST_OPS.has(vector.op)
+                ? hueDelta(got[index] as number, value)
+                : Math.abs((got[index] as number) - value)
+        expect(delta).toBeLessThanOrEqual(tolerance)
+    })
+}
+
+describe('shared color vectors', () => {
+    const vectors = vectorFile.vectors as Vector[]
+    const defaultTolerance = vectorFile.default_tolerance
+
+    test('the whole table is covered by an op handler', () => {
+        expect(vectors.length).toBeGreaterThan(60)
+        for (const vector of vectors) {
+            expect(() => runVector(vector)).not.toThrow()
+        }
     })
 
     for (const vector of vectors) {
         test(`${vector.op}(${JSON.stringify(vector.input)})`, () => {
-            expect(runVector(vector)).toEqual(vector.expected)
+            expectVector(vector, runVector(vector), vector.tol ?? defaultTolerance)
         })
     }
 })
