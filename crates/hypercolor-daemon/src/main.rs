@@ -40,7 +40,7 @@ struct DaemonArgs {
     log_level: Option<String>,
 
     /// Override the configured compositor acceleration mode.
-    #[arg(long, alias = "render-acceleration-mode", value_enum)]
+    #[arg(long, value_enum)]
     compositor_acceleration_mode: Option<RenderAccelerationModeArg>,
 
     /// Override the configured Servo GPU import mode.
@@ -164,23 +164,6 @@ mod tests {
             "gpu",
         ])
         .expect("CLI override should parse");
-        let mut config = HypercolorConfig::default();
-
-        if let Some(mode) = args.compositor_acceleration_mode {
-            config.effect_engine.compositor_acceleration_mode = mode.into();
-        }
-
-        assert_eq!(
-            config.effect_engine.compositor_acceleration_mode,
-            RenderAccelerationMode::Gpu
-        );
-    }
-
-    #[test]
-    fn legacy_render_acceleration_mode_cli_alias_updates_config() {
-        let args =
-            DaemonArgs::try_parse_from(["hypercolor-daemon", "--render-acceleration-mode", "gpu"])
-                .expect("legacy CLI override should parse");
         let mut config = HypercolorConfig::default();
 
         if let Some(mode) = args.compositor_acceleration_mode {
