@@ -11,8 +11,8 @@ from ...types import Response
 def _get_kwargs() -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/api/v1/config/get",
+        "method": "post",
+        "url": "/api/v1/config/reset",
     }
 
     return _kwargs
@@ -63,7 +63,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Get daemon config value
+    """Restore the whole daemon config to defaults
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -86,7 +86,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Get daemon config value
+    """Restore the whole daemon config to defaults
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

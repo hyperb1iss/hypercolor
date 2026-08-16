@@ -1,5 +1,6 @@
 from http import HTTPStatus
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -8,11 +9,15 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response
 
 
-def _get_kwargs() -> dict[str, Any]:
+def _get_kwargs(
+    key: str,
+) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
-        "method": "post",
-        "url": "/api/v1/config/reset",
+        "method": "get",
+        "url": "/api/v1/config/keys/{key}".format(
+            key=quote(str(key), safe=""),
+        ),
     }
 
     return _kwargs
@@ -60,10 +65,14 @@ def _build_response(
 
 
 def sync_detailed(
+    key: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Reset daemon config value
+    """Read one daemon config key
+
+    Args:
+        key (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -73,7 +82,9 @@ def sync_detailed(
         Response[Any]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        key=key,
+    )
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -83,10 +94,14 @@ def sync_detailed(
 
 
 async def asyncio_detailed(
+    key: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Reset daemon config value
+    """Read one daemon config key
+
+    Args:
+        key (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -96,7 +111,9 @@ async def asyncio_detailed(
         Response[Any]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        key=key,
+    )
 
     response = await client.get_async_httpx_client().request(**kwargs)
 

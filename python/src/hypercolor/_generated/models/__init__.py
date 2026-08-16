@@ -107,6 +107,16 @@ from .apply_impact_type_4 import ApplyImpactType4
 from .apply_impact_type_5 import ApplyImpactType5
 from .apply_impact_type_6 import ApplyImpactType6
 from .apply_impact_type_7 import ApplyImpactType7
+from .apply_policy_type_0 import ApplyPolicyType0
+from .apply_policy_type_0_kind import ApplyPolicyType0Kind
+from .apply_policy_type_1 import ApplyPolicyType1
+from .apply_policy_type_1_kind import ApplyPolicyType1Kind
+from .apply_policy_type_2 import ApplyPolicyType2
+from .apply_policy_type_2_kind import ApplyPolicyType2Kind
+from .apply_policy_type_3 import ApplyPolicyType3
+from .apply_policy_type_3_kind import ApplyPolicyType3Kind
+from .apply_policy_type_4 import ApplyPolicyType4
+from .apply_policy_type_4_kind import ApplyPolicyType4Kind
 from .apply_profile_request import ApplyProfileRequest
 from .apply_transition_response import ApplyTransitionResponse
 from .assign_devices_request import AssignDevicesRequest
@@ -131,6 +141,8 @@ from .broadcast_media_layer_response import BroadcastMediaLayerResponse
 from .broadcast_media_layer_target import BroadcastMediaLayerTarget
 from .broadcast_media_layer_target_adjust import BroadcastMediaLayerTargetAdjust
 from .broadcast_media_layer_target_transform import BroadcastMediaLayerTargetTransform
+from .config_key_schema_entry import ConfigKeySchemaEntry
+from .config_mutation_response import ConfigMutationResponse
 from .control_access import ControlAccess
 from .control_action_descriptor import ControlActionDescriptor
 from .control_action_descriptor_availability import ControlActionDescriptorAvailability
@@ -266,6 +278,7 @@ from .led_topology_type_5 import LedTopologyType5
 from .led_topology_type_5_type import LedTopologyType5Type
 from .led_topology_type_6 import LedTopologyType6
 from .led_topology_type_6_type import LedTopologyType6Type
+from .live_section import LiveSection
 from .meta import Meta
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
@@ -289,6 +302,7 @@ from .preview_runtime_status import PreviewRuntimeStatus
 from .preview_source import PreviewSource
 from .rebind_candidate_summary import RebindCandidateSummary
 from .rebind_device_request import RebindDeviceRequest
+from .redaction import Redaction
 from .rejected_control_change import RejectedControlChange
 from .rejected_control_change_attempted_value import RejectedControlChangeAttemptedValue
 from .render_acceleration_status import RenderAccelerationStatus
@@ -310,7 +324,6 @@ from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
 from .set_brightness_request import SetBrightnessRequest
-from .set_config_request import SetConfigRequest
 from .set_output_power_request import SetOutputPowerRequest
 from .space_definition import SpaceDefinition
 from .spatial_layout import SpatialLayout
@@ -432,6 +445,16 @@ __all__ = (
     "ApplyImpactType5",
     "ApplyImpactType6",
     "ApplyImpactType7",
+    "ApplyPolicyType0",
+    "ApplyPolicyType0Kind",
+    "ApplyPolicyType1",
+    "ApplyPolicyType1Kind",
+    "ApplyPolicyType2",
+    "ApplyPolicyType2Kind",
+    "ApplyPolicyType3",
+    "ApplyPolicyType3Kind",
+    "ApplyPolicyType4",
+    "ApplyPolicyType4Kind",
     "ApplyProfileRequest",
     "ApplyTransitionResponse",
     "AssignDevicesRequest",
@@ -448,6 +471,8 @@ __all__ = (
     "BroadcastMediaLayerTargetTransform",
     "BTreeMap",
     "BTreeMapAdditionalProperty",
+    "ConfigKeySchemaEntry",
+    "ConfigMutationResponse",
     "ControlAccess",
     "ControlActionDescriptor",
     "ControlActionDescriptorAvailability",
@@ -575,6 +600,7 @@ __all__ = (
     "LedTopologyType5Type",
     "LedTopologyType6",
     "LedTopologyType6Type",
+    "LiveSection",
     "Meta",
     "NormalizedPosition",
     "NormalizedRect",
@@ -598,6 +624,7 @@ __all__ = (
     "PreviewSource",
     "RebindCandidateSummary",
     "RebindDeviceRequest",
+    "Redaction",
     "RejectedControlChange",
     "RejectedControlChangeAttemptedValue",
     "RenderAccelerationStatus",
@@ -619,7 +646,6 @@ __all__ = (
     "ServerIdentity",
     "ServerInfo",
     "SetBrightnessRequest",
-    "SetConfigRequest",
     "SetOutputPowerRequest",
     "SpaceDefinition",
     "SpatialLayout",

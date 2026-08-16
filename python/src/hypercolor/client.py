@@ -10,7 +10,6 @@ from urllib.parse import quote
 import httpx
 import msgspec
 
-from ._generated.api.config import set_config_value as generated_set_config_value
 from ._generated.api.controls import (
     apply_control_surface_values as generated_apply_control_surface_values,
     get_device_control_surface as generated_get_device_control_surface,
@@ -63,7 +62,6 @@ from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
 from ._generated.models.set_brightness_request import SetBrightnessRequest
-from ._generated.models.set_config_request import SetConfigRequest
 from ._generated.models.update_current_controls_request import UpdateCurrentControlsRequest
 from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.types import UNSET
@@ -1152,17 +1150,19 @@ class HypercolorClient:
         *,
         live: bool = True,
     ) -> ConfigMutationResult:
-        """Persist the selected audio input device."""
+        """Persist the selected audio input device.
 
-        return await self._generated_model(
-            generated_set_config_value._get_kwargs(
-                body=SetConfigRequest(
-                    key="audio.device",
-                    value=json.dumps(device_id),
-                    live=live,
-                ),
-            ),
+        The config key resource takes the value as the request body, and
+        ``live`` decides whether the daemon re-applies it to the running
+        audio pipeline.
+        """
+
+        return await self._request_model(
+            "PUT",
+            "/config/keys/audio.device",
             ConfigMutationResult,
+            body=device_id,
+            params={"live": live},
         )
 
     async def _request_items(
@@ -1201,7 +1201,7 @@ class HypercolorClient:
         path: str,
         model_type: type[ModelT],
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> ModelT:
@@ -1215,7 +1215,7 @@ class HypercolorClient:
         method: str,
         path: str,
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Any:
@@ -1227,7 +1227,7 @@ class HypercolorClient:
         method: str,
         path: str,
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Any:
@@ -1245,7 +1245,7 @@ class HypercolorClient:
         method: str,
         path: str,
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
