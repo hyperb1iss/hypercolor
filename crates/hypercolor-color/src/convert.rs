@@ -14,6 +14,15 @@ fn unit_to_u8(x: f32) -> u8 {
     (x * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
+/// The canonical unit-float → byte conversion, exposed as a free
+/// function for sinks that write linear-light bytes directly (LED PWM
+/// after any transfer correction the device itself applies).
+#[inline]
+#[must_use]
+pub fn linear_to_output_u8(c: f32) -> u8 {
+    unit_to_u8(c)
+}
+
 #[inline]
 fn rgb_from_units(r: f32, g: f32, b: f32) -> Rgb {
     Rgb {

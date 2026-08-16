@@ -164,8 +164,8 @@ impl EffectRenderer for SolidColorRenderer {
                 pixel.r *= self.brightness;
                 pixel.g *= self.brightness;
                 pixel.b *= self.brightness;
-                let rgba = pixel.to_srgb_u8();
-                pixel_bytes.copy_from_slice(&rgba);
+                let rgba = pixel.to_encoded();
+                pixel_bytes.copy_from_slice(&[rgba.r, rgba.g, rgba.b, rgba.a]);
             }
         }
 

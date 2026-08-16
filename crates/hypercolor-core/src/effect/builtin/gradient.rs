@@ -429,8 +429,8 @@ impl EffectRenderer for GradientRenderer {
                 rgba.r *= self.brightness;
                 rgba.g *= self.brightness;
                 rgba.b *= self.brightness;
-                let encoded = rgba.to_srgb_u8();
-                pixel.copy_from_slice(&encoded);
+                let encoded = rgba.to_encoded();
+                pixel.copy_from_slice(&[encoded.r, encoded.g, encoded.b, encoded.a]);
             }
         }
 

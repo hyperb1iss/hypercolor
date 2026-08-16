@@ -5,15 +5,6 @@
 import { hslToRgbUnit } from '../color'
 import { AudioData } from './types'
 
-/**
- * Convert HSL to unit-float RGB.
- *
- * @deprecated This is the color kernel's `hslToRgbUnit` under its historic
- * name. Import `hslToRgb` from the barrel for encoded bytes, which is the
- * RGB vocabulary everywhere else, or `hslToRgbUnit` to keep unit floats.
- */
-export const hslToRgb = hslToRgbUnit
-
 /** Pitch class names. */
 const PITCH_CLASS_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 

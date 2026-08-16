@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
 };
@@ -223,7 +223,7 @@ fn apply_output_adjustments(
     let apply_hue = hue_shift.abs() > 1e-3;
     let hue_degrees = hue_shift.to_degrees();
     for pixel in canvas.as_rgba_bytes_mut().chunks_exact_mut(BYTES_PER_PIXEL) {
-        let mut color = LinearRgba::from_srgb_u8(pixel[0], pixel[1], pixel[2], pixel[3]);
+        let mut color = Rgba::new(pixel[0], pixel[1], pixel[2], pixel[3]).to_linear();
         if apply_hue {
             color = rotate_hue(color, hue_degrees);
         }

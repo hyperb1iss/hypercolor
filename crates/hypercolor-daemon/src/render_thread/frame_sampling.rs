@@ -13,7 +13,7 @@ use hypercolor_core::spatial::generate_positions;
 #[cfg(test)]
 use hypercolor_core::spatial::is_led_sampled_zone;
 use hypercolor_core::spatial::{PreparedZonePlan, SpatialEngine};
-use hypercolor_core::types::canvas::{Canvas, LinearRgba};
+use hypercolor_core::types::canvas::{Canvas, Rgb};
 #[cfg(test)]
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
@@ -353,13 +353,13 @@ fn blend_zone_rgb(
     color_interpolation: &ColorInterpolation,
 ) -> [u8; 3] {
     let mixed = interpolate_color(
-        &LinearRgba::from_srgb_u8(from[0], from[1], from[2], 255),
-        &LinearRgba::from_srgb_u8(to[0], to[1], to[2], 255),
+        &Rgb::new(from[0], from[1], from[2]).to_linear(),
+        &Rgb::new(to[0], to[1], to[2]).to_linear(),
         progress,
         color_interpolation,
     )
-    .to_srgb_u8();
-    [mixed[0], mixed[1], mixed[2]]
+    .to_encoded();
+    [mixed.r, mixed.g, mixed.b]
 }
 
 pub(crate) fn blend_scene_zone_frames(

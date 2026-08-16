@@ -100,11 +100,6 @@ pub use hypercolor_color::lut::{linear_to_srgb_u8, srgb_u8_to_linear};
 pub use hypercolor_color::{
     LinearRgba, Oklab, Oklch, Rgb, Rgba, linear_to_output_u8, linear_to_srgb, srgb_to_linear,
 };
-#[allow(
-    deprecated,
-    reason = "canvas's names retire one release after the kernel lands (Spec 76 §1.2)"
-)]
-pub use hypercolor_color::{RgbaF32, linear_srgb_to_oklab, oklab_to_linear_srgb};
 
 // ── Color (alias) ──────────────────────────────────────────────────────────
 

@@ -127,7 +127,7 @@ Use `globalCompositeOperation = 'lighter'` for additive blending of overlapping 
 Effect Canvas (sRGB u8) -> Spatial Sampling -> polish_sampled_color() -> fade_to_black -> USB output
 ```
 
-`polish_sampled_color()` boosts chroma in Oklch space to compensate for sampling dullness on physical LEDs. Available color types: `Rgba`/`Rgb` (u8 sRGB), `RgbaF32` (linear f32), `Oklab`, `Oklch`. The engine implements correct sRGB transfer functions and Oklab/Oklch math.
+`polish_sampled_color()` boosts chroma in Oklch space to compensate for sampling dullness on physical LEDs. Available color types: `Rgba`/`Rgb` (u8 sRGB), `LinearRgba` (linear f32), `Oklab`, `Oklch`. The engine implements correct sRGB transfer functions and Oklab/Oklch math.
 
 ## Quick Checklist
 
