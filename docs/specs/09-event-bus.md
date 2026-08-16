@@ -2728,6 +2728,10 @@ let shared_bus: Arc<HypercolorBus> = Arc::new(bus);
 let plugin: Box<dyn DevicePlugin> = Box::new(WledPlugin::new(shared_bus.clone()));
 ```
 
+> **Removed (Spec 76, Phase 0):** `DevicePlugin` is deleted. The `Arc<HypercolorBus>`
+> sharing pattern above still applies to any trait object; only the plugin type in
+> the example is gone. See `docs/specs/76-internal-api-unification.md` §7.4.
+
 ### 12.3 No Blocking in Event Handlers
 
 **Rule: never hold a lock, block on I/O, or perform CPU-intensive work inside an event handler on the bus.**

@@ -35,7 +35,7 @@ use hypercolor_types::device::{DeviceColorFormat, DeviceId, DeviceInfo};
 
 use cache::{build_device_info, wled_fingerprint};
 use health::{
-    clear_device, enter_realtime_mode, exit_realtime_mode, prime_device, probe_device_reachable,
+    clear_device, enter_realtime_mode, exit_realtime_mode, prime_device,
     validate_wled_receiver_config,
 };
 use protocol::{KEEPALIVE_INTERVAL, encode_colors};
@@ -290,21 +290,6 @@ impl WledBackend {
             .next_e131_universe
             .saturating_add(universes_needed.max(1));
         start_universe
-    }
-
-    /// Check if a device is reachable over WLED's HTTP API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the device ID is unknown or the client cannot be built.
-    pub async fn health_check(&self, id: &DeviceId) -> Result<bool> {
-        let ip = self
-            .device_ips
-            .get(id)
-            .copied()
-            .with_context(|| format!("Unknown WLED device {id}"))?;
-
-        probe_device_reachable(ip).await
     }
 }
 

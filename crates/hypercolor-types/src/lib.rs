@@ -20,7 +20,6 @@ pub mod media;
 pub mod motherboard;
 pub mod net;
 pub mod pairing;
-pub mod palette;
 pub mod portable;
 pub mod scene;
 pub mod sensor;

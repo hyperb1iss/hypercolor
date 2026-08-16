@@ -34,7 +34,6 @@ optionally `hypercolor-linux-gpu-interop` (feature `servo-gpu-import`).
 
 - `device::traits::DeviceBackend` — hardware communication trait: `discover`,
   `connect`, `write_colors`, `disconnect`.
-- `device::traits::DevicePlugin` — lifecycle hooks for backend registration.
 - `device::manager::BackendManager` — device registry and frame dispatch.
 - `device::state_machine` — per-device lifecycle state machine.
 

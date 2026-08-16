@@ -15,7 +15,7 @@ use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
     DeviceFrameSink, DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior,
     DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider, HealthStatus,
+    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
@@ -419,20 +419,6 @@ impl DeviceBackend for OpenRgbBackend {
                     .map(|controller| controller.route.target_fps)
             })
             .or_else(|| self.discovered.get(id).map(|route| route.target_fps))
-    }
-
-    async fn health_check(&self, id: &DeviceId) -> Result<HealthStatus> {
-        if let Some(output) = self.connected.get(id) {
-            let controller = output.controller.lock().await;
-            if controller.consecutive_failures == 0 {
-                return Ok(HealthStatus::Healthy);
-            }
-            return Ok(HealthStatus::Degraded);
-        }
-        if self.discovered.contains_key(id) {
-            return Ok(HealthStatus::Degraded);
-        }
-        Ok(HealthStatus::Unreachable)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

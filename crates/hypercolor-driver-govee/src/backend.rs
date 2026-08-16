@@ -7,8 +7,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     BackendInfo, CredentialStore, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, HealthStatus, OutputCadence,
-    TransportScanner,
+    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, OutputCadence, TransportScanner,
 };
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
@@ -679,14 +678,6 @@ impl DeviceBackend for GoveeBackend {
             };
             Some(OutputCadence::from_fps(target_fps))
         })
-    }
-
-    async fn health_check(&self, id: &DeviceId) -> Result<HealthStatus> {
-        if self.devices.contains_key(id) {
-            Ok(HealthStatus::Healthy)
-        } else {
-            Ok(HealthStatus::Unreachable)
-        }
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

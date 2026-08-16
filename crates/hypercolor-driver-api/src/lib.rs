@@ -23,7 +23,7 @@ pub mod validation;
 pub use backend::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, HealthStatus, OutputCadence,
+    DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
 };
 pub use config::{DriverConfigProvider, DriverConfigView};
 pub use controls::{
