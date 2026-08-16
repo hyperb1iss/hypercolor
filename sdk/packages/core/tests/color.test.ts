@@ -176,6 +176,18 @@ describe('float to byte rounding', () => {
         expect(scaleRgb({ b: 200, g: 200, r: 200 }, 2)).toEqual({ b: 255, g: 255, r: 255 })
         expect(scaleRgb({ b: 100, g: 100, r: 100 }, -1)).toEqual({ b: 0, g: 0, r: 0 })
     })
+
+    // Inputs that land a channel exactly on 127.5. These cannot live in the
+    // shared vector table: its tie rule excludes rounding ties, because f32
+    // and f64 can resolve them to opposite bytes. The Rust kernel pins the
+    // same four in kernel_tests.rs, so the two stay honest about ties even
+    // though the fence between them stays clear of any.
+    test('hsvToRgb and hslToRgb round half steps up', () => {
+        expect(hsvToRgb(180, 0.5, 1)).toEqual({ b: 255, g: 255, r: 128 })
+        expect(hsvToRgb(60, 1, 0.5)).toEqual({ b: 0, g: 128, r: 128 })
+        expect(hslToRgb(120, 1, 0.25)).toEqual({ b: 0, g: 128, r: 0 })
+        expect(hslToRgb(0, 0, 0.5)).toEqual({ b: 128, g: 128, r: 128 })
+    })
 })
 
 describe('oklab', () => {

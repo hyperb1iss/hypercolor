@@ -164,6 +164,21 @@ fn scale_rounds_half_away_from_zero() {
     assert_eq!(Rgb::new(1, 1, 1).scale(0.5), Rgb::new(1, 1, 1));
 }
 
+/// Inputs that land a channel exactly on 127.5.
+///
+/// These cannot live in `sdk/shared/color-vectors.json`: that table is the
+/// cross-language fence and its tie rule excludes rounding ties, because
+/// f32 and f64 can resolve them to opposite bytes. The oracle can't judge
+/// them either, since it tolerates a whole LSB. So the behavior is pinned
+/// per language, here and in the SDK's color test.
+#[test]
+fn hsv_and_hsl_round_half_steps_up() {
+    assert_eq!(Hsv::new(180.0, 0.5, 1.0).to_rgb(), Rgb::new(128, 255, 255));
+    assert_eq!(Hsv::new(60.0, 1.0, 0.5).to_rgb(), Rgb::new(128, 128, 0));
+    assert_eq!(Hsl::new(120.0, 1.0, 0.25).to_rgb(), Rgb::new(0, 128, 0));
+    assert_eq!(Hsl::new(0.0, 0.0, 0.5).to_rgb(), Rgb::new(128, 128, 128));
+}
+
 #[test]
 fn scale_clamps_both_ends() {
     assert_eq!(Rgb::new(200, 200, 200).scale(2.0), Rgb::WHITE);
