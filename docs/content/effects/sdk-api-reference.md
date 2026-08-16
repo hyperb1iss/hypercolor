@@ -282,8 +282,10 @@ isOnBeat(audio: AudioData, division?: number, tolerance?: number): boolean
 normalizeAudioLevel(level: number): number
 normalizeFrequencyBin(value: number, max?: number): number
 smoothValue(currentValue: number, previousValue: number, smoothing?: number): number
-hslToRgb(h: number, s: number, l: number): [number, number, number]
 ```
+
+`getHarmonicColor` and `getMoodColor` return unit floats, `0.0` to `1.0` per
+channel. For encoded bytes, see [Color](#color) below.
 
 ## Input
 
@@ -398,6 +400,57 @@ type UniformValue
 
 The declarative functions generate subclasses of these; reach for the classes only
 when you need lifecycle control the functions do not expose.
+
+## Color
+
+The color kernel. Every conversion here mirrors the `hypercolor-color` Rust
+crate, and the two are held together by a shared vector table, so an effect and
+the engine resolve a color identically.
+
+Hue is degrees and wraps into `[0, 360)` at every entry point. Saturation,
+value, lightness and alpha are `0.0` to `1.0`. Byte channels are `0` to `255`,
+converted by rounding then clamping.
+
+```typescript
+interface Rgb  { r: number; g: number; b: number }
+interface Rgba { r: number; g: number; b: number; a: number }
+interface Hsl  { h: number; s: number; l: number }
+interface Hsv  { h: number; s: number; v: number }
+interface LinearRgba { r: number; g: number; b: number; a: number }   // linear light
+interface Oklab { l: number; a: number; b: number; alpha: number }
+
+hexToRgb(source: string, fallback: Rgb): Rgb      // 3 or 6 digits, optional '#'
+hexToRgba(source: string, fallback: Rgba): Rgba   // 3, 4, 6 or 8 digits
+rgbToHex(rgb: Rgb): string                        // lowercase '#rrggbb'
+
+hsvToRgb(h: number, s: number, v: number): Rgb
+hslToRgb(h: number, s: number, l: number): Rgb
+hslToRgbUnit(h: number, s: number, l: number): [number, number, number]
+rgbToHsv(rgb: Rgb): Hsv
+rgbToHsl(rgb: Rgb): Hsl
+
+scaleRgb(rgb: Rgb, factor: number): Rgb           // brightness, round then clamp
+wrapHue(hue: number): number
+unitToByte(value: number): number
+
+srgbToLinear(c: number): number
+linearToSrgb(c: number): number
+rgbToLinear(rgb: Rgb): LinearRgba
+linearToRgba(linear: LinearRgba): Rgba
+linearLuma(linear: LinearRgba): number            // BT.709 on linear values
+linearToOklab(linear: LinearRgba): Oklab
+oklabToLinear(lab: Oklab): LinearRgba
+```
+
+`hexToRgb` takes the fallback as a required argument. A malformed string returns
+exactly what you pass, so a typo in a color control can never masquerade as a
+color someone chose. The 4- and 8-digit forms are rejected by `hexToRgb` rather
+than silently losing their alpha; parse those with `hexToRgba`.
+
+Shaders get the same helpers. `hsv2rgb`, `rgb2hsv`, `saturateColor`,
+`limitWhiteness`, `softClip`, `blendOverlay` and `blendSoftLight` are injected
+into a fragment shader automatically when it calls them, so a `.glsl` file uses
+them without declaring them. Define one yourself and yours wins.
 
 ## Math
 

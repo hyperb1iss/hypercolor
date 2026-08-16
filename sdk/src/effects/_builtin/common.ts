@@ -1,4 +1,6 @@
-import { hslToRgb } from 'hypercolor'
+import { clamp, hslToRgb, mix, hexToRgb as parseHexColor, saturate } from 'hypercolor'
+
+export { clamp, mix as lerp, saturate as clamp01, wrapHue } from 'hypercolor'
 
 export const BUILTIN_DESIGN_BASIS = { height: 200, width: 320 } as const
 
@@ -8,24 +10,14 @@ export interface Rgb {
     b: number
 }
 
-export function clamp(value: number, min: number, max: number): number {
-    return Math.min(max, Math.max(min, value))
-}
-
-export function clamp01(value: number): number {
-    return clamp(value, 0, 1)
-}
-
-export function lerp(a: number, b: number, t: number): number {
-    return a + (b - a) * t
-}
+const WHITE: Rgb = { b: 255, g: 255, r: 255 }
 
 export function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
-    const mix = clamp01(t)
+    const amount = saturate(t)
     return {
-        b: lerp(a.b, b.b, mix),
-        g: lerp(a.g, b.g, mix),
-        r: lerp(a.r, b.r, mix),
+        b: mix(a.b, b.b, amount),
+        g: mix(a.g, b.g, amount),
+        r: mix(a.r, b.r, amount),
     }
 }
 
@@ -38,33 +30,19 @@ export function scaleRgb(rgb: Rgb, scale: number): Rgb {
 }
 
 export function withLift(rgb: Rgb, amount: number): Rgb {
-    return mixRgb(rgb, { b: 255, g: 255, r: 255 }, clamp01(amount))
+    return mixRgb(rgb, WHITE, saturate(amount))
 }
 
 export function rgbToCss(rgb: Rgb, alpha = 1): string {
-    return `rgba(${Math.round(clamp(rgb.r, 0, 255))}, ${Math.round(clamp(rgb.g, 0, 255))}, ${Math.round(clamp(rgb.b, 0, 255))}, ${clamp01(alpha)})`
+    return `rgba(${Math.round(clamp(rgb.r, 0, 255))}, ${Math.round(clamp(rgb.g, 0, 255))}, ${Math.round(clamp(rgb.b, 0, 255))}, ${saturate(alpha)})`
 }
 
 export function hexToRgb(hex: string): Rgb {
-    const normalized = hex.trim().replace(/^#/, '')
-    if (normalized.length !== 6) {
-        return { b: 255, g: 255, r: 255 }
-    }
-
-    return {
-        b: Number.parseInt(normalized.slice(4, 6), 16),
-        g: Number.parseInt(normalized.slice(2, 4), 16),
-        r: Number.parseInt(normalized.slice(0, 2), 16),
-    }
+    return parseHexColor(hex.trim(), WHITE)
 }
 
 export function hslCss(hue: number, saturation: number, lightness: number, alpha = 1): string {
-    const [r, g, b] = hslToRgb(wrapHue(hue), clamp01(saturation / 100), clamp01(lightness / 100))
-    return rgbToCss({ b: b * 255, g: g * 255, r: r * 255 }, alpha)
-}
-
-export function wrapHue(hue: number): number {
-    return ((hue % 360) + 360) % 360
+    return rgbToCss(hslToRgb(hue, saturation / 100, lightness / 100), alpha)
 }
 
 // ── Oklab blending ───────────────────────────────────────────────────────
@@ -119,14 +97,14 @@ function oklabToRgb(lightness: number, a: number, b: number): Rgb {
  * straight sRGB blending produces. Prefer this over [`mixRgb`] for gradients.
  */
 export function mixOklab(a: Rgb, b: Rgb, t: number): Rgb {
-    const mix = clamp01(t)
+    const amount = saturate(t)
     const from = rgbToOklab(a)
     const to = rgbToOklab(b)
-    return oklabToRgb(lerp(from[0], to[0], mix), lerp(from[1], to[1], mix), lerp(from[2], to[2], mix))
+    return oklabToRgb(mix(from[0], to[0], amount), mix(from[1], to[1], amount), mix(from[2], to[2], amount))
 }
 
 export function easeInOutSine(value: number): number {
-    return 0.5 - 0.5 * Math.cos(clamp01(value) * Math.PI)
+    return 0.5 - 0.5 * Math.cos(saturate(value) * Math.PI)
 }
 
 export function pulse01(time: number): number {

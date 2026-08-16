@@ -1,4 +1,4 @@
-import { color, combo, effect, num, paletteControl } from 'hypercolor'
+import { color, combo, effect, hexToRgba, num, paletteControl, type Rgba } from 'hypercolor'
 import shader from './fragment.glsl'
 
 interface PaletteTriad {
@@ -32,13 +32,13 @@ const PALETTES: Record<string, PaletteTriad> = {
 
 const PALETTE_NAMES: readonly string[] = [CUSTOM_PALETTE, ...Object.keys(PALETTES)]
 
+const BLACK: Rgba = { a: 255, b: 0, g: 0, r: 0 }
+
 function hexToFloats(hex: string): [number, number, number] {
-    const h = hex.replace('#', '')
-    return [
-        Number.parseInt(h.slice(0, 2), 16) / 255,
-        Number.parseInt(h.slice(2, 4), 16) / 255,
-        Number.parseInt(h.slice(4, 6), 16) / 255,
-    ]
+    // Parsed as RGBA so an #rrggbbaa control value keeps resolving to its
+    // color instead of the fallback; the shader takes no alpha.
+    const rgba = hexToRgba(hex, BLACK)
+    return [rgba.r / 255, rgba.g / 255, rgba.b / 255]
 }
 
 export default effect(

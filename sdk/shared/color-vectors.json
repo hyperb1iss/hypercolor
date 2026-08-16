@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "Shared color test vectors (Spec 76 §1.6). Consumed by hypercolor-color (Rust, include_str!) and the SDK color module (Bun test). Byte outputs compare exactly; float outputs compare within `tol` (absolute, per component), defaulting to default_tolerance. Hue components compare by shortest angular distance. `expected: null` means the parse MUST fail. Wave 1.5 grows this set to ~200 vectors and wires the Bun side.",
+  "notes": "Shared color test vectors (Spec 76 §1.6). Consumed by hypercolor-color (Rust, include_str!) and the SDK color module (Bun test). Byte outputs compare exactly; float outputs compare within `tol` (absolute, per component), defaulting to default_tolerance. Hue components compare by shortest angular distance. `expected: null` means the parse MUST fail. Wave 1.5 grows this set to ~200 vectors and wires the Bun side. Cross-language caveat for `hsv_to_rgb` and `hsl_to_rgb`: Rust computes in f32 and TypeScript in f64, so where the true channel value is an exact .5 the two round to opposite sides and the byte differs by 1. Measured over 4721 differential cases per op, 43 diverge and never by more than 1; every other op is byte- or tolerance-exact (0 divergences over 6000 hex, 3000 rgb_to_hs*, 2000 each of rgb_to_hex, scale_rgb, transfer and oklab cases). Do not add whole-degree saturated hues to those two ops expecting byte equality.",
   "default_tolerance": 0.0001,
   "vectors": [
     { "op": "hex_to_rgb", "input": "#ff8800", "expected": [255, 136, 0] },

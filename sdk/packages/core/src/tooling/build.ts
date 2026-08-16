@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 
 import { HYPERCOLOR_FORMAT_VERSION } from './constants'
 import { faceFontFaceCss } from './fonts'
+import { injectColorPrelude } from './glsl-prelude'
 import { artifactIdFromEntry, extractArtifactMetadata } from './metadata'
 import type { BuildArtifactResult, BuildArtifactsOptions, BuildControlDef, PresetDef } from './types'
 
@@ -193,6 +194,17 @@ async function bundleEntry(entryPath: string, sdkAliasPath: string | undefined, 
             '.glsl': 'text',
         },
         minify,
+        plugins: [
+            {
+                name: 'hypercolor-glsl-prelude',
+                setup(build: Bun.PluginBuilder) {
+                    build.onLoad({ filter: /\.glsl$/ }, async (args: { path: string }) => ({
+                        contents: injectColorPrelude(await Bun.file(args.path).text()),
+                        loader: 'text' as const,
+                    }))
+                },
+            },
+        ],
         sourcemap: 'none',
         target: 'browser',
         write: false,

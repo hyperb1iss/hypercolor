@@ -1,9 +1,5 @@
-import { combo, effect, num } from 'hypercolor'
+import { clamp, combo, effect, num } from 'hypercolor'
 import shader from './fragment.glsl'
-
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
 
 function mix(a: number, b: number, t: number): number {
     return a + (b - a) * t
