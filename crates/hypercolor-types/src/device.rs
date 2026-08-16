@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::net::IpAddr;
-use std::str::FromStr;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,56 +19,17 @@ use crate::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 
 // ── DeviceId ──────────────────────────────────────────────────────────────
 
-/// Opaque, globally unique device identifier.
-///
-/// Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
-/// database keys, map keys, and log correlation IDs.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-pub struct DeviceId(pub Uuid);
-
-impl DeviceId {
-    /// Generate a fresh identifier (`UUIDv7` -- time-ordered).
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-
-    /// Wrap an existing UUID.
-    #[must_use]
-    pub fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-
-    /// The inner UUID value.
-    #[must_use]
-    pub fn as_uuid(&self) -> Uuid {
-        self.0
-    }
-}
+crate::identity::uuid_id!(
+    /// Opaque, globally unique device identifier.
+    ///
+    /// Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
+    /// database keys, map keys, and log correlation IDs.
+    DeviceId
+);
 
 impl Default for DeviceId {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl fmt::Debug for DeviceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DeviceId({})", self.0)
-    }
-}
-
-impl fmt::Display for DeviceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl FromStr for DeviceId {
-    type Err = uuid::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Uuid::parse_str(s).map(Self)
     }
 }
 
