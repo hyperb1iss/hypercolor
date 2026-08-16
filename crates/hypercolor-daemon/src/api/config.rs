@@ -258,17 +258,18 @@ pub async fn reset_config_value(
     };
 
     let current_snapshot = Arc::clone(&manager.get());
-    let mut current = match serde_json::to_value(&*current_snapshot) {
-        Ok(v) => v,
-        Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
-    };
-    let defaults = match serde_json::to_value(HypercolorConfig::default()) {
-        Ok(v) => v,
-        Err(e) => return ApiError::internal(format!("Failed to serialize default config: {e}")),
-    };
-
     let normalized_key = body.key.as_deref().map(normalize_config_key);
-    if let Some(key) = normalized_key.as_deref() {
+    let updated: HypercolorConfig = if let Some(key) = normalized_key.as_deref() {
+        let mut current = match serde_json::to_value(&*current_snapshot) {
+            Ok(v) => v,
+            Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
+        };
+        let defaults = match serde_json::to_value(HypercolorConfig::default()) {
+            Ok(v) => v,
+            Err(e) => {
+                return ApiError::internal(format!("Failed to serialize default config: {e}"));
+            }
+        };
         let Some(default_value) = get_json_path(&defaults, key) else {
             return ApiError::not_found(format!(
                 "Unknown config key: {}",
@@ -279,15 +280,20 @@ pub async fn reset_config_value(
         if !set_json_path(&mut current, key, default_value.clone()) {
             return ApiError::validation(format!("Invalid config key path: {key}"));
         }
-    } else {
-        current = defaults;
-    }
 
-    let updated: HypercolorConfig = match serde_json::from_value(current) {
-        Ok(cfg) => cfg,
-        Err(e) => return ApiError::internal(format!("Failed to build reset config: {e}")),
+        match serde_json::from_value(current) {
+            Ok(cfg) => cfg,
+            Err(e) => return ApiError::internal(format!("Failed to build reset config: {e}")),
+        }
+    } else {
+        full_reset_config(&current_snapshot)
     };
-    if let Err(error) = validate_driver_config_scope(&state, normalized_key.as_deref(), &updated) {
+    // A full reset carries the driver entries through untouched, so gating
+    // it on their validity would reject the one request a user makes to
+    // recover from a config they can no longer edit by hand.
+    if let Some(key) = normalized_key.as_deref()
+        && let Err(error) = validate_driver_config_scope(&state, Some(key), &updated)
+    {
         return ApiError::validation(error);
     }
     if let Err(error) = updated.capture.validate() {
@@ -337,20 +343,24 @@ pub async fn reset_config_value(
         }));
     }
 
-    // Keyed resets re-apply the default at the key against the freshest
-    // config under the write lock (same race protection as set); a full
-    // reset replaces wholesale by design.
+    // Both shapes re-derive against the freshest config under the write
+    // lock (same race protection as set), so a driver credential write that
+    // landed since the snapshot is preserved rather than clobbered.
     let reset_key = normalized_key.clone();
     manager.modify(move |config| {
-        let reapplied = reset_key.as_deref().and_then(|key| {
-            let default_value = serde_json::to_value(HypercolorConfig::default())
-                .ok()
-                .and_then(|defaults| get_json_path(&defaults, key).cloned())?;
-            let mut root = serde_json::to_value(&*config).ok()?;
-            set_json_path(&mut root, key, default_value)
-                .then(|| serde_json::from_value::<HypercolorConfig>(root).ok())
-                .flatten()
-        });
+        let Some(key) = reset_key.as_deref() else {
+            *config = full_reset_config(config);
+            return;
+        };
+        let reapplied = serde_json::to_value(HypercolorConfig::default())
+            .ok()
+            .and_then(|defaults| get_json_path(&defaults, key).cloned())
+            .and_then(|default_value| {
+                let mut root = serde_json::to_value(&*config).ok()?;
+                set_json_path(&mut root, key, default_value)
+                    .then(|| serde_json::from_value::<HypercolorConfig>(root).ok())
+                    .flatten()
+            });
         *config = reapplied.unwrap_or(updated);
     });
     if let Err(e) = manager.save() {
@@ -370,19 +380,19 @@ pub async fn reset_config_value(
     let live_applied =
         audio_live_applied || render_live_applied || capture_live_applied || input_live_applied;
 
-    // One event per reset; a whole-config reset publishes the empty key
-    // so consumers re-read everything rather than diffing per field.
+    // One event per reset; a whole-config reset publishes the empty key so
+    // consumers re-read everything rather than diffing per field. It carries
+    // no payload because the preserved driver and extension sections hold
+    // credentials, and this event fans out to every `events` subscriber.
     let reset_event_key = normalized_key.clone().unwrap_or_default();
-    let new_value = serde_json::to_value(&**manager.get())
-        .ok()
-        .and_then(|root| {
-            if reset_event_key.is_empty() {
-                Some(root)
-            } else {
-                get_json_path(&root, &reset_event_key).cloned()
-            }
-        })
-        .unwrap_or(serde_json::Value::Null);
+    let new_value = if reset_event_key.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(&**manager.get())
+            .ok()
+            .and_then(|root| get_json_path(&root, &reset_event_key).cloned())
+            .unwrap_or(serde_json::Value::Null)
+    };
     state
         .event_bus
         .publish(hypercolor_types::event::HypercolorEvent::ConfigChanged {
@@ -397,6 +407,26 @@ pub async fn reset_config_value(
         "live": live_applied,
         "path": manager.path().display().to_string(),
     }))
+}
+
+/// Build the whole-config reset result: defaults, plus the sections the
+/// daemon does not author.
+///
+/// `drivers` entries carry credentials written by driver pairing flows, the
+/// flattened `extensions` sections belong to out-of-tree crates that share
+/// this file, and `include` names files only the user knows about; none of
+/// it is recoverable once a save drops it. The copy has to be explicit
+/// because normalization only inserts missing defaults, so it can seed a
+/// driver entry but never reconstruct its settings.
+fn full_reset_config(current: &HypercolorConfig) -> HypercolorConfig {
+    let mut reset = HypercolorConfig {
+        include: current.include.clone(),
+        drivers: current.drivers.clone(),
+        extensions: current.extensions.clone(),
+        ..HypercolorConfig::default()
+    };
+    crate::startup::normalize_daemon_driver_configs(&mut reset);
+    reset
 }
 
 fn config_snapshot(state: &AppState) -> HypercolorConfig {
