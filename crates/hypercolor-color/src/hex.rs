@@ -11,8 +11,10 @@ use crate::types::{LinearRgba, Rgb, Rgba};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ColorParseError {
     /// The digit count (after the optional `#`) is not one this parse
-    /// accepts. Carries the digit count seen.
-    #[error("hex color has {0} digits; expected 3, 4, 6, or 8")]
+    /// accepts. Carries the digit count seen. Which counts a parse
+    /// accepts depends on the target type: `Rgba` takes 3/4/6/8,
+    /// `Rgb` takes 3/6 only.
+    #[error("unsupported hex color length: {0} digits")]
     BadLength(usize),
     /// A character was not a hex digit.
     #[error("hex color contains a non-hex digit")]

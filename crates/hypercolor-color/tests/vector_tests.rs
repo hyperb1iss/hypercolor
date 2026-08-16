@@ -53,7 +53,7 @@ fn assert_scalar(actual: f32, expected: f32, tol: f32, ctx: &str) {
 }
 
 fn assert_hue(actual: f32, expected: f32, tol: f32, ctx: &str) {
-    let diff = (actual - expected).abs();
+    let diff = (actual - expected).abs().rem_euclid(360.0);
     let angular = diff.min(360.0 - diff);
     assert!(
         angular <= tol,

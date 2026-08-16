@@ -229,6 +229,38 @@ fn oklch_hue_lands_in_range() {
 }
 
 #[test]
+fn oklch_wraps_hue_at_entry() {
+    let at_zero = Oklch::new(0.7, 0.15, 0.0, 1.0).to_oklab();
+    let at_full = Oklch::new(0.7, 0.15, 360.0, 1.0).to_oklab();
+    assert_eq!((at_zero.a, at_zero.b), (at_full.a, at_full.b));
+}
+
+#[test]
+fn oklch_lerp_takes_the_short_hue_arc() {
+    let a = Oklch::new(0.7, 0.15, 350.0, 1.0);
+    let b = Oklch::new(0.7, 0.15, 10.0, 1.0);
+    let mid = a.lerp(b, 0.5);
+    assert!(
+        mid.h < 1e-4 || mid.h > 359.999,
+        "midpoint of 350°→10° must sit at 0°, got {}",
+        mid.h
+    );
+    assert_eq!(a.lerp(b, 0.0).h, 350.0);
+    assert_eq!(a.lerp(b, 1.0).h, 10.0);
+}
+
+#[test]
+fn oklch_composition_paths_agree() {
+    let lin = LinearRgba::new(0.4, 0.2, 0.6, 0.9);
+    let via_method = lin.to_oklch();
+    let via_steps = Oklch::from_oklab(lin.to_oklab());
+    assert_eq!(via_method, via_steps);
+    let back = via_method.to_linear();
+    assert!((back.r - lin.r).abs() < 1e-3);
+    assert_eq!(back.a, lin.a);
+}
+
+#[test]
 fn hsv_hsl_byte_roundtrip_within_one_lsb() {
     for r in (0..=255u16).step_by(51) {
         for g in (0..=255u16).step_by(51) {

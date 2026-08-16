@@ -281,10 +281,11 @@ impl Oklab {
 }
 
 impl Oklch {
-    /// Convert to the cartesian [`Oklab`] form.
+    /// Convert to the cartesian [`Oklab`] form. Hue wraps at entry, so
+    /// `h = 360.0` produces bit-identical output to `h = 0.0`.
     #[must_use]
     pub fn to_oklab(self) -> Oklab {
-        let h_rad = self.h.to_radians();
+        let h_rad = wrap_hue(self.h).to_radians();
         Oklab {
             l: self.l,
             a: self.c * h_rad.cos(),
@@ -304,5 +305,38 @@ impl Oklch {
             h,
             alpha: lab.alpha,
         }
+    }
+
+    /// Convert straight to linear sRGB (through [`Oklab`]).
+    #[must_use]
+    pub fn to_linear(self) -> LinearRgba {
+        self.to_oklab().to_linear()
+    }
+
+    /// Interpolate in Oklch space with shortest-path hue interpolation:
+    /// the hue takes the shortest arc around the wheel, so a
+    /// `350° → 10°` gradient passes through red, not through cyan.
+    #[must_use]
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let mut dh = wrap_hue(other.h) - wrap_hue(self.h);
+        if dh > 180.0 {
+            dh -= 360.0;
+        } else if dh < -180.0 {
+            dh += 360.0;
+        }
+        Self {
+            l: (other.l - self.l).mul_add(t, self.l),
+            c: (other.c - self.c).mul_add(t, self.c),
+            h: wrap_hue(dh.mul_add(t, wrap_hue(self.h))),
+            alpha: (other.alpha - self.alpha).mul_add(t, self.alpha),
+        }
+    }
+}
+
+impl LinearRgba {
+    /// Convert straight to Oklch (through [`Oklab`]).
+    #[must_use]
+    pub fn to_oklch(self) -> Oklch {
+        Oklch::from_oklab(self.to_oklab())
     }
 }
