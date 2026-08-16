@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
 
-use hypercolor_color::Rgb;
+use hypercolor_color::{DevicePixelLayout, Rgb};
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
 };
@@ -559,17 +559,19 @@ fn flatten_colors(colors: &[[u8; 3]], scale: f32, format: DeviceColorFormat) -> 
 }
 
 fn encode_color(color: [u8; 3], scale: f32, format: DeviceColorFormat) -> [u8; 3] {
-    let Rgb {
-        r: rs,
-        g: gs,
-        b: bs,
-    } = Rgb::new(color[0], color[1], color[2]).scale(scale);
+    // PrismRGB HID reports carry fixed three-byte pixels, so the RGBW
+    // format's four-channel layout and JPEG's absent one both fall back to
+    // RGB order, which is what this driver has always written for them.
+    let layout = format
+        .pixel_layout()
+        .filter(|layout| layout.channel_count() == 3)
+        .unwrap_or(DevicePixelLayout::Rgb);
+    let [red, green, blue, _] = Rgb::new(color[0], color[1], color[2])
+        .scale(scale)
+        .encode(layout)
+        .bytes;
 
-    match format {
-        DeviceColorFormat::Grb => [gs, rs, bs],
-        DeviceColorFormat::Rbg => [rs, bs, gs],
-        DeviceColorFormat::Rgb | DeviceColorFormat::Rgbw | DeviceColorFormat::Jpeg => [rs, gs, bs],
-    }
+    [red, green, blue]
 }
 
 fn command_from_packet(

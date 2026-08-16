@@ -11,6 +11,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hypercolor_color::DevicePixelLayout;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -883,6 +884,23 @@ pub enum DeviceColorFormat {
 
     /// JPEG-compressed pixel data.
     Jpeg,
+}
+
+impl DeviceColorFormat {
+    /// The channel layout a device of this format consumes.
+    ///
+    /// `None` for [`Self::Jpeg`], which carries compressed frames rather
+    /// than per-pixel channel bytes and so has no layout to encode into.
+    #[must_use]
+    pub const fn pixel_layout(self) -> Option<DevicePixelLayout> {
+        match self {
+            Self::Rgb => Some(DevicePixelLayout::Rgb),
+            Self::Rgbw => Some(DevicePixelLayout::RgbwZeroWhite),
+            Self::Grb => Some(DevicePixelLayout::Grb),
+            Self::Rbg => Some(DevicePixelLayout::Rbg),
+            Self::Jpeg => None,
+        }
+    }
 }
 
 impl fmt::Display for DeviceColorFormat {
