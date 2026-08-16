@@ -248,6 +248,7 @@ fn bundled_origin_csp_is_exact_and_macos_network_access_is_loopback_only() {
     assert_eq!(
         base["connect-src"],
         csp_sources(&[
+            "'self'",
             "ipc:",
             "http://ipc.localhost",
             "http:",
@@ -270,7 +271,7 @@ fn bundled_origin_csp_is_exact_and_macos_network_access_is_loopback_only() {
         "https://localhost:*",
         "https://[::1]:*",
     ];
-    let mut macos_connect = csp_sources(&["ipc:", "http://ipc.localhost"]);
+    let mut macos_connect = csp_sources(&["'self'", "ipc:", "http://ipc.localhost"]);
     macos_connect.extend(loopback_http.iter().map(|source| (*source).to_owned()));
     macos_connect.extend(
         [
