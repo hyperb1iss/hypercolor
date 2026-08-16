@@ -19,6 +19,21 @@
 //! - **Restart idempotence.** A second run over a migrated pair is a no-op.
 //! - **Rollback.** The legacy file is untouched until the canonical write is
 //!   proven durable, so an interrupted migration leaves the old daemon readable.
+//!
+//! # Un-retired legacy files are residue, by design
+//!
+//! Retirement happens only on the run that imports, and only after that run's
+//! canonical write is durable. A crash in the window between those two steps
+//! therefore leaves the legacy file in place with no backup taken, and the next
+//! run resolves precedence in the canonical document's favor and reports
+//! [`MigrationOutcome::AlreadyMigrated`] without retrying the retirement.
+//!
+//! That residue is the intended contract, not an unfinished backup step. Both
+//! copies are readable, the canonical path stays authoritative, and no data is
+//! lost. The alternative, retiring the legacy file on any run where the
+//! canonical side wins, would turn an otherwise read-only outcome into a
+//! mutating one, so the harness leaves the stale file for an operator to remove
+//! and logs it at debug level instead.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -211,6 +226,16 @@ pub enum MigrationOutcome {
     /// proven durable. The retry supervisor still owns the payload and the
     /// legacy file is untouched, so an interrupted run re-imports on restart.
     ImportRetrying,
+    /// A concurrent writer admitted newer bytes for the canonical destination
+    /// before this import could replace it, so the imported payload will never
+    /// be persisted and must not be trusted. The harness discards it, re-reads
+    /// the canonical path, and returns whatever authoritative state it finds
+    /// there; the legacy file is not retired.
+    ///
+    /// Reachable only when the writer is already shared at migration time. The
+    /// intended usage runs the migration during store construction, before the
+    /// writer reaches any other caller.
+    ImportSuperseded,
 }
 
 /// The authoritative document produced by one migration run, plus its receipt.
@@ -421,20 +446,44 @@ fn import<S>(
 where
     S: MigratedStore,
 {
+    // Reserve before encoding so the generation is claimed at the snapshot
+    // boundary, matching how the other stores order their writes.
+    let reservation = writer.reserve();
     let payload = store.encode(&legacy.document)?;
-    let commit = writer.reserve().admit(payload).commit_stage_aware();
-    if !matches!(commit, AtomicWriteCommitResult::DurableWritten) {
-        warn!(
-            subject = entry.subject,
-            canonical = %entry.canonical.display(),
-            legacy = %entry.legacy.display(),
-            ?commit,
-            "Migrated store is not durable yet; legacy file stays authoritative for restart"
-        );
-        return Ok(Migrated {
-            document: Some(legacy.document),
-            outcome: MigrationOutcome::ImportRetrying,
-        });
+    match reservation.admit(payload).commit_stage_aware() {
+        AtomicWriteCommitResult::DurableWritten => {}
+        AtomicWriteCommitResult::Superseded => {
+            warn!(
+                subject = entry.subject,
+                canonical = %entry.canonical.display(),
+                legacy = %entry.legacy.display(),
+                "Newer bytes superseded the migration import; discarding it for the canonical state"
+            );
+            let winner = if entry.canonical.exists() {
+                Some(store.decode_current(&entry.canonical)?.document)
+            } else {
+                None
+            };
+            return Ok(Migrated {
+                document: winner,
+                outcome: MigrationOutcome::ImportSuperseded,
+            });
+        }
+        ref outcome @ (AtomicWriteCommitResult::FailedBeforeReplacement(ref error)
+        | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(ref error)) => {
+            warn!(
+                subject = entry.subject,
+                canonical = %entry.canonical.display(),
+                legacy = %entry.legacy.display(),
+                ?outcome,
+                %error,
+                "Migrated store is not durable yet; legacy file stays authoritative for restart"
+            );
+            return Ok(Migrated {
+                document: Some(legacy.document),
+                outcome: MigrationOutcome::ImportRetrying,
+            });
+        }
     }
 
     let backup = match entry.disposition {
@@ -462,7 +511,29 @@ fn retire_legacy(entry: &PathMigrationEntry) -> Result<PathBuf, PathMigrationErr
         backup: backup.clone(),
         source,
     })?;
+
+    // The rename is already visible and the canonical document is already
+    // durable, so a failed barrier degrades to an un-retired legacy file on the
+    // next boot, never to lost data.
+    #[cfg(unix)]
+    if let Err(source) = sync_legacy_directory(&entry.legacy) {
+        warn!(
+            subject = entry.subject,
+            backup = %backup.display(),
+            %source,
+            "Legacy backup is visible but its directory entry is not proven durable"
+        );
+    }
     Ok(backup)
+}
+
+#[cfg(unix)]
+fn sync_legacy_directory(legacy: &Path) -> Result<(), std::io::Error> {
+    let parent = legacy
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::File::open(parent).and_then(|directory| directory.sync_all())
 }
 
 fn backup_path(path: &Path) -> PathBuf {

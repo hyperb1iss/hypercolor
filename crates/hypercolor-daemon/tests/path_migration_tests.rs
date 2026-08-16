@@ -375,6 +375,68 @@ fn store_decode_errors_surface_without_touching_either_tier() {
     assert!(!tiers.canonical.exists());
 }
 
+/// Admits a newer generation for the same destination while the harness is
+/// encoding, which is the window a concurrent writer would win.
+struct SupersedingStore {
+    writer: AtomicFileWriter,
+    winner: Vec<u8>,
+}
+
+impl MigratedStore for SupersedingStore {
+    type Document = RawDocument;
+    type Error = PathMigrationError;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        RawJsonRelocation::new(SUBJECT).decode_current(path)
+    }
+
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        RawJsonRelocation::new(SUBJECT).decode_legacy(path)
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        self.writer
+            .write(&self.winner)
+            .expect("the competing write lands");
+        Ok(document.0.clone())
+    }
+}
+
+#[test]
+fn a_superseded_import_yields_the_winning_canonical_document() {
+    let tiers = Tiers::new();
+    let legacy = versioned(2, "legacy");
+    let winner = versioned(2, "winner");
+    std::fs::write(&tiers.legacy, &legacy).expect("seed legacy tier");
+    let writer = tiers.writer();
+    let store = SupersedingStore {
+        writer: writer.clone(),
+        winner: winner.clone(),
+    };
+
+    let migrated = migrate(&store, &tiers.entry(), &writer).expect("run migration");
+
+    assert_eq!(migrated.outcome, MigrationOutcome::ImportSuperseded);
+    assert_eq!(
+        migrated.document,
+        Some(RawDocument(winner.clone())),
+        "the superseded payload is discarded for the winning canonical state"
+    );
+    assert_eq!(read(&tiers.canonical), winner);
+    assert_eq!(
+        read(&tiers.legacy),
+        legacy,
+        "a superseded import never retires the legacy file"
+    );
+    assert!(backups_beside(&tiers.legacy).is_empty());
+}
+
 #[cfg(feature = "persistence-test-hooks")]
 mod rollback {
     use std::time::Duration;
