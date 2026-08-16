@@ -95,17 +95,7 @@ impl SceneMutation {
     /// Snapshot scenes are a deliberate user choice: runtime effect and
     /// face actions must not silently edit them.
     pub fn active_scene_for_runtime_mutation(&self, action: &str) -> Result<SceneId, DomainError> {
-        let active = self
-            .candidate
-            .active_scene()
-            .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("No active scene available")))?;
-        if active.blocks_runtime_mutation() {
-            return Err(DomainError::conflict(format!(
-                "Active scene '{}' is in snapshot mode; return to Default or deactivate it before {action}",
-                active.name
-            )));
-        }
-        Ok(active.id)
+        active_scene_for_runtime_mutation(&self.candidate, action)
     }
 
     /// The active scene's primary zone id, when it has one.
@@ -1272,6 +1262,34 @@ pub async fn deactivate_scene(
         current_scene,
         commit,
     })
+}
+
+/// The active scene's id, refusing scenes that forbid runtime rewriting.
+///
+/// Snapshot scenes are a deliberate user choice: runtime effect and face
+/// actions must not silently edit them. Adapters that need the refusal
+/// *before* opening a candidate — because their transport renders it in
+/// a shape the canonical projection would not produce — call this
+/// against a read guard; the mutation checks it again regardless.
+///
+/// # Errors
+///
+/// [`DomainError::Conflict`] for a snapshot-locked scene and
+/// [`DomainError::Internal`] when no scene is active at all.
+pub fn active_scene_for_runtime_mutation(
+    manager: &SceneManager,
+    action: &str,
+) -> Result<SceneId, DomainError> {
+    let active = manager
+        .active_scene()
+        .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("No active scene available")))?;
+    if active.blocks_runtime_mutation() {
+        return Err(DomainError::conflict(format!(
+            "Active scene '{}' is in snapshot mode; return to Default or deactivate it before {action}",
+            active.name
+        )));
+    }
+    Ok(active.id)
 }
 
 // ── Shared event helpers ─────────────────────────────────────────────────

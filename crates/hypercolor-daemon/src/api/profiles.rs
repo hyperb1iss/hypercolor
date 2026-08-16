@@ -298,8 +298,11 @@ pub(crate) async fn apply_profile_snapshot(
 ) -> Result<Vec<String>, ProfileApplyError> {
     {
         let scene_manager = state.scene_manager.read().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ProfileApplyError::Conflict(error.message("applying a profile")))?;
+        crate::domain::scene::active_scene_for_runtime_mutation(
+            &scene_manager,
+            "applying a profile",
+        )
+        .map_err(|error| ProfileApplyError::Conflict(error.to_string()))?;
     }
     let brightness = profile.brightness.map(|value| f32::from(value) / 100.0);
     let layout = if let Some(layout_id) = profile.layout_id.as_deref() {
@@ -318,11 +321,11 @@ pub(crate) async fn apply_profile_snapshot(
         .map_err(ProfileApplyError::Internal)?;
     let current_layout = crate::api::effects::resolve_full_scope_layout(state).await;
 
-    let has_scene_mutation = prepared_primary.is_some() || !prepared_displays.is_empty();
-    let pending = if has_scene_mutation {
-        let coordinator = crate::api::scene_store_coordinator(state).await;
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
+    // A profile restores the primary effect and every display face in one
+    // transaction: a partial restore would leave the rig in a state the
+    // profile never described.
+    if prepared_primary.is_some() || !prepared_displays.is_empty() {
+        let mut mutation = state.begin_scene_mutation().await;
 
         if let Some(prepared_primary) = prepared_primary {
             let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
@@ -330,8 +333,8 @@ pub(crate) async fn apply_profile_snapshot(
                 &prepared_primary.controls,
             );
             let active_layout = layout.clone().unwrap_or_else(|| current_layout.clone());
-            scene_manager
-                .upsert_primary_group(
+            mutation
+                .upsert_primary_zone(
                     &prepared_primary.metadata,
                     controls,
                     prepared_primary.active_preset_id,
@@ -358,8 +361,8 @@ pub(crate) async fn apply_profile_snapshot(
                 &prepared_display.metadata,
                 &prepared_display.controls,
             );
-            let group_id = scene_manager
-                .upsert_display_group(
+            let zone_id = mutation
+                .upsert_display_zone(
                     prepared_display.device_id,
                     prepared_display.device_name.as_str(),
                     &prepared_display.metadata,
@@ -375,8 +378,8 @@ pub(crate) async fn apply_profile_snapshot(
                 .id;
             // upsert seeds the target as Replace; blend the restored face over
             // the live effect so profile apply doesn't black the effect out.
-            scene_manager.patch_display_group_target(
-                group_id,
+            mutation.patch_display_target(
+                zone_id,
                 Some(hypercolor_types::scene::DisplayFaceBlendMode::Alpha),
                 Some(1.0),
             );
@@ -391,15 +394,7 @@ pub(crate) async fn apply_profile_snapshot(
             }
         }
 
-        let pending =
-            crate::api::admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-                .map_err(|error| ProfileApplyError::Internal(error.to_string()))?;
-        Some(pending)
-    } else {
-        None
-    };
-    if let Some(pending) = pending {
-        crate::api::save_admitted_scene_store_snapshot(state, pending)
+        crate::domain::scene::commit_scene(state, mutation)
             .await
             .map_err(|error| ProfileApplyError::Internal(error.to_string()))?;
     }

@@ -218,8 +218,11 @@ pub(super) async fn handle_set_effect_with_state(
     // frozen shape.
     {
         let scene_manager = state.scene_manager.read().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
+        crate::domain::scene::active_scene_for_runtime_mutation(
+            &scene_manager,
+            "applying an effect",
+        )
+        .map_err(|error| ToolError::Conflict(error.to_string()))?;
     }
 
     let applied = apply_effect(
@@ -446,8 +449,11 @@ pub(super) async fn handle_set_color_with_state(
     // frozen shape.
     {
         let scene_manager = state.scene_manager.read().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
+        crate::domain::scene::active_scene_for_runtime_mutation(
+            &scene_manager,
+            "applying an effect",
+        )
+        .map_err(|error| ToolError::Conflict(error.to_string()))?;
     }
 
     let applied = apply_effect(

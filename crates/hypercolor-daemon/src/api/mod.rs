@@ -757,36 +757,6 @@ pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Resul
     store.save_reserved(pending).map(|_| ())
 }
 
-pub(crate) async fn scene_store_coordinator(state: &AppState) -> SceneStore {
-    state.scene_store.read().await.clone()
-}
-
-pub(crate) fn admit_scene_store_snapshot(
-    coordinator: &SceneStore,
-    manager: &mut SceneManager,
-    rollback: SceneManager,
-) -> anyhow::Result<crate::scene_store::SceneStoreSave> {
-    match coordinator.reserve_save(manager.list().into_iter().cloned()) {
-        Ok(pending) => Ok(pending),
-        Err(error) => {
-            *manager = rollback;
-            Err(error.into())
-        }
-    }
-}
-
-pub(crate) async fn save_admitted_scene_store_snapshot(
-    state: &AppState,
-    pending: crate::scene_store::SceneStoreSave,
-) -> anyhow::Result<()> {
-    state
-        .scene_store
-        .write()
-        .await
-        .save_reserved(pending)
-        .map(|_| ())
-}
-
 pub(crate) fn publish_render_group_changed(
     state: &AppState,
     scene_id: SceneId,
@@ -804,50 +774,21 @@ pub(crate) fn publish_render_group_changed(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ActiveSceneMutationError {
-    NoActiveScene,
-    SnapshotLocked { scene_name: String },
-    Persistence { message: String },
-}
-
-impl ActiveSceneMutationError {
-    #[must_use]
-    pub(crate) fn message(&self, action: &str) -> String {
-        match self {
-            Self::NoActiveScene => "No active scene available".to_owned(),
-            Self::SnapshotLocked { scene_name } => format!(
-                "Active scene '{scene_name}' is in snapshot mode; return to Default or deactivate it before {action}"
-            ),
-            Self::Persistence { message } => message.clone(),
-        }
-    }
-}
-
-pub(crate) fn active_scene_id_for_runtime_mutation(
-    scene_manager: &SceneManager,
-) -> Result<SceneId, ActiveSceneMutationError> {
-    let active_scene = scene_manager
-        .active_scene()
-        .ok_or(ActiveSceneMutationError::NoActiveScene)?;
-    if active_scene.blocks_runtime_mutation() {
-        return Err(ActiveSceneMutationError::SnapshotLocked {
-            scene_name: active_scene.name.clone(),
-        });
-    }
-    Ok(active_scene.id)
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct EffectErrorFallbackApplied {
     pub effect: EffectRef,
     pub cleared_group_count: usize,
 }
 
+/// Unload an effect from every zone of the active scene that runs it,
+/// as the configured error-fallback policy demands.
+///
+/// `Ok(None)` means the policy did nothing: either it is `None`, or no
+/// zone was running the failed effect.
 pub(crate) async fn apply_effect_error_fallback(
     state: &Arc<AppState>,
     effect_id: &str,
     policy: EffectErrorFallbackPolicy,
-) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     match policy {
         EffectErrorFallbackPolicy::None => Ok(None),
         EffectErrorFallbackPolicy::ClearGroups => {
@@ -859,68 +800,60 @@ pub(crate) async fn apply_effect_error_fallback(
 async fn clear_active_scene_effect_groups(
     state: &Arc<AppState>,
     effect_id: &str,
-) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, cleared_groups, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
-        let group_ids = scene_manager
-            .active_scene()
-            .map(|scene| {
-                scene
-                    .groups
-                    .iter()
-                    .filter(|group| {
-                        group
-                            .effect_id
-                            .as_ref()
-                            .is_some_and(|candidate| candidate.to_string() == effect_id)
-                    })
-                    .map(|group| group.id)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if group_ids.is_empty() {
-            return Ok(None);
-        }
-
-        let rollback = scene_manager.clone();
-        let mut cleared_groups = Vec::with_capacity(group_ids.len());
-        for group_id in group_ids {
-            if let Some(group) = scene_manager.clear_group_effect(group_id).cloned() {
-                cleared_groups.push(group);
-            }
-        }
-        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ActiveSceneMutationError::Persistence {
-                message: error.to_string(),
-            })?;
-        (scene_id, cleared_groups, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        warn!(%error, "Failed to persist effect fallback; retry remains active");
-    }
-
-    if cleared_groups.is_empty() {
+    let mut mutation = state.begin_scene_mutation().await;
+    let scene_id =
+        mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
+    let zone_ids = mutation
+        .scenes()
+        .active_scene()
+        .map(|scene| {
+            scene
+                .groups
+                .iter()
+                .filter(|zone| {
+                    zone.effect_id
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.to_string() == effect_id)
+                })
+                .map(|zone| zone.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if zone_ids.is_empty() {
         return Ok(None);
     }
 
-    for group in &cleared_groups {
-        state.event_bus.publish(HypercolorEvent::EffectStopped {
+    let cleared_zones = zone_ids
+        .into_iter()
+        .filter_map(|zone_id| mutation.clear_zone_effect(zone_id))
+        .collect::<Vec<_>>();
+    if cleared_zones.is_empty() {
+        return Ok(None);
+    }
+
+    for zone in &cleared_zones {
+        mutation.record(HypercolorEvent::EffectStopped {
             effect: effect.clone(),
             reason: EffectStopReason::Error,
-            group_id: Some(group.id),
-            group_name: Some(group.name.clone()),
+            group_id: Some(zone.id),
+            group_name: Some(zone.name.clone()),
         });
-        publish_render_group_changed(state.as_ref(), scene_id, group, ZoneChangeKind::Updated);
+        mutation.record(crate::domain::scene::zone_changed_event(
+            scene_id,
+            zone,
+            ZoneChangeKind::Updated,
+        ));
     }
+
+    crate::domain::scene::commit_scene(state.as_ref(), mutation).await?;
     persist_runtime_session(state).await;
 
     Ok(Some(EffectErrorFallbackApplied {
         effect,
-        cleared_group_count: cleared_groups.len(),
+        cleared_group_count: cleared_zones.len(),
     }))
 }
 

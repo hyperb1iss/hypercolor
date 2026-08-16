@@ -19,9 +19,6 @@ use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{
-    admit_scene_store_snapshot, save_admitted_scene_store_snapshot, scene_store_coordinator,
-};
 
 use super::{
     ActivateEffectError, ActivationResult, activate_effect_with_controls, normalize_tags,
@@ -288,38 +285,25 @@ pub async fn apply_preset(
         else {
             return ApiError::not_found("No effect is currently active");
         };
-        let coordinator = scene_store_coordinator(state.as_ref()).await;
-        let pending = {
-            let mut scene_manager = state.scene_manager.write().await;
-            if let Err(error) = crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
-                return ApiError::conflict(error.message("applying a preset"));
-            }
-            let rollback = scene_manager.clone();
-            if scene_manager
-                .reset_group_controls(
-                    group.id,
-                    crate::api::effects::default_control_values(&metadata),
-                )
+        let mut mutation = state.begin_scene_mutation().await;
+        if let Err(error) = mutation.active_scene_for_runtime_mutation("applying a preset") {
+            return ApiError::conflict(error.to_string());
+        }
+        if mutation
+            .reset_zone_controls(
+                group.id,
+                crate::api::effects::default_control_values(&metadata),
+            )
+            .is_none()
+            || mutation
+                .patch_zone_controls(group.id, applied.clone())
                 .is_none()
-            {
-                return ApiError::not_found("No effect is currently active");
-            }
-            if scene_manager
-                .patch_group_controls(group.id, applied.clone())
-                .is_none()
-            {
-                return ApiError::not_found("No effect is currently active");
-            }
-            let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
-            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-                Ok(pending) => pending,
-                Err(error) => {
-                    return ApiError::internal(format!("Failed to persist scene: {error}"));
-                }
-            }
-        };
-        if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-            return ApiError::internal(format!("Failed to persist scene: {error}"));
+        {
+            return ApiError::not_found("No effect is currently active");
+        }
+        mutation.set_zone_preset_id(group.id, Some(preset.id));
+        if let Err(error) = crate::domain::scene::commit_scene(state.as_ref(), mutation).await {
+            return crate::domain::legacy::scene_family_error_response(error);
         }
 
         ActivationResult {
@@ -337,25 +321,12 @@ pub async fn apply_preset(
                 if let Some((group, _)) =
                     crate::api::effects::active_primary_effect(state.as_ref()).await
                 {
-                    let coordinator = scene_store_coordinator(state.as_ref()).await;
-                    let mut scene_manager = state.scene_manager.write().await;
-                    let rollback = scene_manager.clone();
-                    let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
-                    let pending = match admit_scene_store_snapshot(
-                        &coordinator,
-                        &mut scene_manager,
-                        rollback,
-                    ) {
-                        Ok(pending) => pending,
-                        Err(error) => {
-                            return ApiError::internal(format!("Failed to persist scene: {error}"));
-                        }
-                    };
-                    drop(scene_manager);
+                    let mut mutation = state.begin_scene_mutation().await;
+                    mutation.set_zone_preset_id(group.id, Some(preset.id));
                     if let Err(error) =
-                        save_admitted_scene_store_snapshot(state.as_ref(), pending).await
+                        crate::domain::scene::commit_scene(state.as_ref(), mutation).await
                     {
-                        return ApiError::internal(format!("Failed to persist scene: {error}"));
+                        return crate::domain::legacy::scene_family_error_response(error);
                     }
                 }
                 activation
@@ -398,70 +369,64 @@ async fn apply_preset_to_zone(
     let (applied, rejected) =
         crate::api::effects::normalize_control_values(metadata, &preset.controls);
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, previous_effect_id, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return ApiError::conflict(error.message("applying a preset")),
-        };
-        let rollback = scene_manager.clone();
-        let previous_effect_id = scene_manager
+    // The outgoing effect's name needs the registry, and the registry
+    // read has to happen before the candidate opens so no await sits
+    // between the snapshot and its compare-and-swap.
+    let previous_effect_id = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
             .active_scene()
             .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .and_then(|group| group.effect_id);
-
-        if previous_effect_id == Some(metadata.id) {
-            if scene_manager
-                .reset_group_controls(
-                    group_id,
-                    crate::api::effects::default_control_values(metadata),
-                )
-                .is_none()
-                || scene_manager
-                    .patch_group_controls(group_id, applied.clone())
-                    .is_none()
-            {
-                return ApiError::not_found("Zone not found in active scene");
-            }
-            let _ = scene_manager.set_group_preset_id(group_id, Some(preset.id));
-        } else if let Err(error) = scene_manager.apply_effect_to_group(
-            group_id,
-            metadata,
-            applied.clone(),
-            Some(preset.id),
-        ) {
-            return ApiError::validation(format!("Failed to apply preset to zone: {error}"));
-        }
-
-        let Some(group) = scene_manager
-            .active_scene()
-            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .cloned()
-        else {
-            return ApiError::not_found("Zone not found in active scene");
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, group, previous_effect_id, pending)
+            .and_then(|group| group.effect_id)
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    let previous = match previous_effect_id.filter(|id| *id != metadata.id) {
+        Some(effect_id) => {
+            let registry = state.effect_registry.read().await;
+            registry
+                .get(&effect_id)
+                .map(|entry| crate::api::effects::effect_ref(&entry.metadata))
+        }
+        None => None,
+    };
+
+    let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = match mutation.active_scene_for_runtime_mutation("applying a preset") {
+        Ok(scene_id) => scene_id,
+        Err(error) => return ApiError::conflict(error.to_string()),
+    };
+    let previous_effect_id = mutation.zone_effect(group_id);
+
+    if previous_effect_id == Some(metadata.id) {
+        if mutation
+            .reset_zone_controls(
+                group_id,
+                crate::api::effects::default_control_values(metadata),
+            )
+            .is_none()
+            || mutation
+                .patch_zone_controls(group_id, applied.clone())
+                .is_none()
+        {
+            return ApiError::not_found("Zone not found in active scene");
+        }
+        mutation.set_zone_preset_id(group_id, Some(preset.id));
+    } else if let Err(error) =
+        mutation.apply_effect_to_zone(group_id, metadata, applied.clone(), Some(preset.id))
+    {
+        return ApiError::validation(error.to_string());
     }
 
+    let Some(group) = mutation
+        .scenes()
+        .active_scene()
+        .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
+        .cloned()
+    else {
+        return ApiError::not_found("Zone not found in active scene");
+    };
+
     if previous_effect_id != Some(metadata.id) {
-        let previous = match previous_effect_id {
-            Some(effect_id) => {
-                let registry = state.effect_registry.read().await;
-                registry
-                    .get(&effect_id)
-                    .map(|entry| crate::api::effects::effect_ref(&entry.metadata))
-            }
-            None => None,
-        };
-        state.event_bus.publish(HypercolorEvent::EffectStarted {
+        mutation.record(HypercolorEvent::EffectStarted {
             effect: crate::api::effects::effect_ref(metadata),
             trigger: ChangeTrigger::Api,
             previous,
@@ -470,12 +435,15 @@ async fn apply_preset_to_zone(
             group_name: Some(group.name.clone()),
         });
     }
-    crate::api::publish_render_group_changed(
-        state.as_ref(),
+    mutation.record(crate::domain::scene::zone_changed_event(
         scene_id,
         &group,
         ZoneChangeKind::Updated,
-    );
+    ));
+
+    if let Err(error) = crate::domain::scene::commit_scene(state.as_ref(), mutation).await {
+        return crate::domain::legacy::scene_family_error_response(error);
+    }
     crate::api::persist_runtime_session(state).await;
 
     ApiResponse::ok(serde_json::json!({
