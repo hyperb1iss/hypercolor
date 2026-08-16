@@ -171,42 +171,7 @@ pub(super) fn build_get_sensor_data() -> ToolDefinition {
     }
 }
 
-// ── Stateless Handlers ────────────────────────────────────────────────────
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to daemon state"
-)]
-pub(super) fn handle_get_status(_params: &Value) -> Result<Value, ToolError> {
-    // Would read from DaemonState
-    Ok(json!({
-        "running": true,
-        "paused": false,
-        "brightness": 100,
-        "fps": {
-            "target": 60,
-            "actual": 0.0
-        },
-        "effect": null,
-        "profile": null,
-        "devices": {
-            "connected": 0,
-            "total": 0,
-            "total_leds": 0
-        },
-        "inputs": {
-            "audio": "disabled",
-            "screen": "disabled"
-        },
-        "uptime_seconds": 0,
-        "version": env!("CARGO_PKG_VERSION")
-    }))
-}
-
-pub(super) fn handle_set_output_power(params: &Value) -> Result<Value, ToolError> {
-    let state = parse_output_power_mode(params)?;
-    Ok(json!({ "state": state }))
-}
+// ── Handlers ──────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_set_output_power_with_state(
     params: &Value,
@@ -228,77 +193,6 @@ fn parse_output_power_mode(params: &Value) -> Result<OutputPowerMode, ToolError>
         None => Err(ToolError::MissingParam("state".into())),
     }
 }
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to audio state"
-)]
-pub(super) fn handle_get_audio_state(_params: &Value) -> Result<Value, ToolError> {
-    // Would read from the spectrum watch channel
-    Ok(json!({
-        "enabled": false,
-        "levels": {
-            "overall": 0.0,
-            "bass": 0.0,
-            "mid": 0.0,
-            "treble": 0.0
-        },
-        "beat": {
-            "detected": false,
-            "confidence": 0.0,
-            "bpm_estimate": null
-        }
-    }))
-}
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to layout state"
-)]
-pub(super) fn handle_get_layout(_params: &Value) -> Result<Value, ToolError> {
-    // Would read from spatial layout state
-    Ok(json!({
-        "layout": null,
-        "zones": [],
-        "total_devices": 0,
-        "total_leds": 0
-    }))
-}
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to diagnostics"
-)]
-pub(super) fn handle_diagnose(params: &Value) -> Result<Value, ToolError> {
-    let _device_id = params.get("device_id").and_then(Value::as_str);
-    let _checks = params.get("checks");
-
-    // Would run actual diagnostic checks
-    Ok(json!({
-        "overall_status": "healthy",
-        "findings": [],
-        "metrics": {
-            "fps": 0.0,
-            "frame_drop_rate": 0.0,
-            "avg_latency_ms": 0.0,
-            "device_error_count": 0,
-            "uptime_seconds": 0
-        }
-    }))
-}
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "state-less handler is a placeholder until live daemon state is injected"
-)]
-pub(super) fn handle_get_sensor_data(_params: &Value) -> Result<Value, ToolError> {
-    Ok(json!({
-        "snapshot": SystemSnapshot::empty(),
-        "reading": null,
-    }))
-}
-
-// ── Stateful Handlers ─────────────────────────────────────────────────────
 
 pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Value, ToolError> {
     let render_stats = {

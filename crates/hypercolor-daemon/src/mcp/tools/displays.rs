@@ -53,19 +53,6 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
     }
 }
 
-pub(super) fn handle_set_display_face(params: &Value) -> Result<Value, ToolError> {
-    let device = params
-        .get("device")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("device".into()))?;
-
-    Ok(json!({
-        "device": device,
-        "applied": false,
-        "message": "Display face tools require live daemon state."
-    }))
-}
-
 pub(super) async fn handle_set_display_face_with_state(
     params: &Value,
     state: &AppState,
