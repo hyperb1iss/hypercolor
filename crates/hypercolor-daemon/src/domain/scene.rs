@@ -125,7 +125,11 @@ impl SceneMutation {
         let zone = self
             .candidate
             .upsert_primary_group(metadata, controls, preset_id, layout)
-            .map_err(|error| DomainError::Internal(anyhow::anyhow!(error)))?
+            .map_err(|error| {
+                DomainError::Internal(anyhow::anyhow!(
+                    "Failed to update active scene primary group: {error}"
+                ))
+            })?
             .clone();
         self.persists_scene_content = true;
         Ok(zone)
@@ -142,7 +146,9 @@ impl SceneMutation {
         let zone = self
             .candidate
             .apply_effect_to_group(zone_id, metadata, controls, preset_id)
-            .map_err(|error| DomainError::validation(format!("{error}")))?
+            .map_err(|error| {
+                DomainError::validation(format!("Failed to apply effect to zone: {error}"))
+            })?
             .clone();
         self.persists_scene_content = true;
         Ok(zone)
@@ -160,7 +166,9 @@ impl SceneMutation {
     ) -> Result<(), DomainError> {
         self.candidate
             .activate(&scene_id, transition)
-            .map_err(|error| DomainError::Internal(anyhow::anyhow!(error)))
+            .map_err(|error| {
+                DomainError::Internal(anyhow::anyhow!("Failed to activate scene: {error}"))
+            })
     }
 }
 
@@ -229,7 +237,9 @@ pub async fn commit_scene(
                     // Serialization failed, so nothing was admitted and
                     // the candidate never happened.
                     *manager = previous;
-                    return Err(DomainError::Internal(anyhow::Error::new(error)));
+                    return Err(DomainError::Internal(anyhow::anyhow!(
+                        "Failed to persist scene: {error}"
+                    )));
                 }
             }
         } else {

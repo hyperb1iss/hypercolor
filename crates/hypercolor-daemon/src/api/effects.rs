@@ -39,6 +39,9 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
+use crate::domain;
+use crate::domain::MutationContext;
+use crate::domain::effect::RequestedTransition;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{
     ActiveSceneMutationError, active_scene_id_for_runtime_mutation, admit_scene_store_snapshot,
@@ -70,12 +73,6 @@ pub use hypercolor_types::api::effects::{
     PauseEffectResponse, ResetControlsRequest, ResumeEffectResponse, TransitionRequest,
     UpdateCurrentControlsRequest,
 };
-
-#[derive(Debug, Clone, Copy)]
-struct AppliedTransition {
-    transition_type: &'static str,
-    duration_ms: u64,
-}
 
 struct ResolvedEffectPreset {
     id: PresetId,
@@ -761,12 +758,12 @@ pub async fn apply_effect(
             metadata.name
         ));
     }
-    wake_output_for_effect_start(state.as_ref()).await;
 
-    let applied_transition = match validate_transition_request(body.as_ref()) {
-        Ok(transition) => transition,
-        Err(error) => return ApiError::bad_request(error),
-    };
+    // The transition rule lives in the domain so MCP cannot diverge from
+    // it; the 400 it renders as on this legacy path is the adapter's.
+    if let Err(error) = transition_request(body.as_ref()).resolve() {
+        return ApiError::bad_request(error.to_string());
+    }
 
     // Resolve the optional preset before changing the scene. Both bundled
     // and saved presets use the same effect-scoped reference here.
@@ -808,146 +805,55 @@ pub async fn apply_effect(
         (raw_controls, normalized, dropped)
     };
 
-    let layout = resolve_full_scope_layout(state.as_ref()).await;
-
     // Resolve the optional target zone; a parsed id is matched against
-    // the active scene below.
+    // the active scene inside the service.
     let target_group =
         match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
             Ok(target) => target,
             Err(response) => return *response,
         };
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, change_kind, named_target, previous_effect_id, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("applying an effect"),
-        };
-
-        // A render_group naming the Primary zone — or no render_group at
-        // all — takes the legacy upsert path; a named non-Primary zone is
-        // effect-set in place, keeping its own layout.
-        let primary_id = scene_manager
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .map(|group| group.id);
-        let named_target = target_group.filter(|id| Some(*id) != primary_id);
-
-        // "Previous" is whatever ran in the *target* zone before this
-        // apply — events that claimed the primary's effect was replaced
-        // when zone 2 changed hands were lying to subscribers.
-        let previous_effect_id = scene_manager.active_scene().and_then(|scene| {
-            let target = named_target.or(primary_id)?;
-            scene
-                .groups
-                .iter()
-                .find(|group| group.id == target)
-                .and_then(|group| group.effect_id)
-        });
-
-        let rollback = scene_manager.clone();
-        let result = if let Some(group_id) = named_target {
-            let group = match scene_manager.apply_effect_to_group(
-                group_id,
-                &metadata,
-                normalized_controls,
-                resolved_preset.as_ref().map(|preset| preset.id),
-            ) {
-                Ok(group) => group.clone(),
-                Err(error) => {
-                    return ApiError::validation(format!(
-                        "Failed to apply effect to zone: {error}"
-                    ));
-                }
-            };
-            (
-                scene_id,
-                group,
-                ZoneChangeKind::Updated,
-                named_target,
-                previous_effect_id,
-            )
-        } else {
-            let change_kind = if primary_id.is_some() {
-                ZoneChangeKind::Updated
-            } else {
-                ZoneChangeKind::Created
-            };
-            let group = match scene_manager.upsert_primary_group(
-                &metadata,
-                normalized_controls,
-                resolved_preset.as_ref().map(|preset| preset.id),
-                layout,
-            ) {
-                Ok(group) => group.clone(),
-                Err(error) => {
-                    return ApiError::internal(format!(
-                        "Failed to update active scene primary group: {error}"
-                    ));
-                }
-            };
-            (
-                scene_id,
-                group,
-                change_kind,
-                named_target,
-                previous_effect_id,
-            )
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (result.0, result.1, result.2, result.3, result.4, pending)
+    let applied = match domain::effect::apply_effect(
+        state.as_ref(),
+        domain::effect::ApplyEffect {
+            effect_id: metadata.id,
+            controls: normalized_controls,
+            preset_id: resolved_preset.as_ref().map(|preset| preset.id),
+            target_zone: target_group,
+            transition: transition_request(body.as_ref()),
+        },
+        MutationContext::api(),
+    )
+    .await
+    {
+        Ok(applied) => applied,
+        Err(error) => return domain::legacy::domain_error_response(&error),
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+
+    if let Some(error) = applied.commit.retry_error() {
         return ApiError::internal(format!("Failed to persist scene: {error}"));
     }
-    let previous_effect = match previous_effect_id {
-        Some(effect_id) => {
-            let registry = state.effect_registry.read().await;
-            registry
-                .get(&effect_id)
-                .map(|entry| effect_ref(&entry.metadata))
-        }
-        None => None,
-    };
+
     log_effect_apply_completion(
-        previous_effect.as_ref().map(|effect| effect.name.as_str()),
-        &metadata.name,
+        applied
+            .previous_effect
+            .as_ref()
+            .map(|effect| effect.name.as_str()),
+        &applied.effect.name,
         controls.len(),
         &dropped_controls,
     );
-    state.event_bus.publish(HypercolorEvent::EffectStarted {
-        effect: effect_ref(&metadata),
-        trigger: ChangeTrigger::Api,
-        previous: previous_effect,
-        transition: None,
-        group_id: Some(group.id),
-        group_name: Some(group.name.clone()),
-    });
-    publish_render_group_changed(state.as_ref(), scene_id, &group, change_kind);
-    // A named zone keeps its own layout; only a Primary apply adopts the
-    // effect's associated layout.
-    let applied_layout = if named_target.is_some() {
-        None
-    } else {
-        apply_associated_layout(state.as_ref(), &metadata.id.to_string()).await
-    };
-    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(ApplyEffectResponse {
         effect: EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name,
+            id: applied.effect.id.clone(),
+            name: applied.effect.name.clone(),
         },
         applied_controls: serde_json::Value::Object(controls),
-        layout: applied_layout,
+        layout: applied.applied_layout,
         transition: ApplyTransitionResponse {
-            transition_type: applied_transition.transition_type.to_owned(),
-            duration_ms: applied_transition.duration_ms,
+            transition_type: applied.transition.style.to_owned(),
+            duration_ms: applied.transition.duration_ms,
         },
         warnings: Vec::new(),
     })
@@ -2064,41 +1970,15 @@ pub(crate) async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout
     spatial.layout().as_ref().clone()
 }
 
-fn validate_transition_request(
-    body: Option<&Json<ApplyEffectRequest>>,
-) -> Result<AppliedTransition, String> {
+/// Project the REST transition object onto the domain's request type.
+fn transition_request(body: Option<&Json<ApplyEffectRequest>>) -> RequestedTransition {
     let Some(transition) = body.and_then(|payload| payload.transition.as_ref()) else {
-        return Ok(AppliedTransition {
-            transition_type: "cut",
-            duration_ms: 0,
-        });
+        return RequestedTransition::cut();
     };
-
-    let transition_type = transition
-        .transition_type
-        .as_deref()
-        .unwrap_or("cut")
-        .trim()
-        .to_ascii_lowercase();
-    let duration_ms = transition.duration_ms.unwrap_or(0);
-
-    if (transition_type.is_empty() || transition_type == "cut") && duration_ms == 0 {
-        return Ok(AppliedTransition {
-            transition_type: "cut",
-            duration_ms: 0,
-        });
+    RequestedTransition {
+        style: transition.transition_type.clone(),
+        duration_ms: transition.duration_ms.unwrap_or(0),
     }
-
-    if transition_type.is_empty() || transition_type == "cut" {
-        return Err(
-            "Effect transitions are not implemented yet; only immediate cut applies today."
-                .to_owned(),
-        );
-    }
-
-    Err(format!(
-        "Effect transition '{transition_type}' is not implemented yet; only immediate cut applies today."
-    ))
 }
 
 fn log_effect_apply_completion(

@@ -4,7 +4,7 @@
 //! stays in the adapters: REST resolves an id-or-name path segment and
 //! parses a JSON transition object, MCP fuzzy-matches a natural-language
 //! query and reads a `transition_ms` integer. Both arrive here with a
-//! resolved [`EffectId`] and a [`TransitionRequest`], and both get the
+//! resolved [`EffectId`] and a [`RequestedTransition`], and both get the
 //! same validation, the same scene mutation, and the same events in the
 //! same order.
 
@@ -28,7 +28,7 @@ use crate::domain::{DomainError, MutationContext, ResourceKind};
 /// else is refused rather than accepted and quietly ignored — a caller
 /// that asked for a crossfade must learn it did not get one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransitionRequest {
+pub struct RequestedTransition {
     /// Transition style, lowercased by the adapter. `None` means the
     /// caller named no style, which reads as a cut.
     pub style: Option<String>,
@@ -36,7 +36,7 @@ pub struct TransitionRequest {
     pub duration_ms: u64,
 }
 
-impl TransitionRequest {
+impl RequestedTransition {
     /// The request a caller who said nothing about transitions makes.
     #[must_use]
     pub const fn cut() -> Self {
@@ -119,7 +119,7 @@ pub struct ApplyEffect {
     /// is created when the active scene has none.
     pub target_zone: Option<ZoneId>,
     /// The requested transition.
-    pub transition: TransitionRequest,
+    pub transition: RequestedTransition,
 }
 
 /// The outcome of loading an effect.

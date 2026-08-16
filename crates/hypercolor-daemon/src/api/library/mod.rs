@@ -76,21 +76,23 @@ pub(crate) async fn activate_effect_with_controls(
         spatial.layout().as_ref().clone()
     };
 
-    let coordinator = crate::api::scene_store_coordinator(state.as_ref()).await;
-    let pending = {
-        let mut scene_manager = state.scene_manager.write().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ActivateEffectError::Conflict(error.message("applying an effect")))?;
-        let rollback = scene_manager.clone();
-        scene_manager
-            .upsert_primary_group(metadata, controls.clone(), None, layout)
-            .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
-        crate::api::admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ActivateEffectError::Activation(error.to_string()))?
-    };
-    crate::api::save_admitted_scene_store_snapshot(state.as_ref(), pending)
+    // Library activation loads the effect without announcing an effect
+    // switch — the caller publishes its own preset/playlist events — so
+    // it commits its own mutation rather than routing through
+    // `domain::effect::apply_effect`.
+    let mut mutation = state.begin_scene_mutation().await;
+    mutation
+        .active_scene_for_runtime_mutation("applying an effect")
+        .map_err(|error| ActivateEffectError::Conflict(error.to_string()))?;
+    mutation
+        .upsert_primary_zone(metadata, controls.clone(), None, layout)
+        .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
+    let commit = crate::domain::scene::commit_scene(state.as_ref(), mutation)
         .await
         .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
+    if let Some(error) = commit.retry_error() {
+        return Err(ActivateEffectError::Activation(error.to_owned()));
+    }
     crate::api::persist_runtime_session(state).await;
 
     Ok(ActivationResult {

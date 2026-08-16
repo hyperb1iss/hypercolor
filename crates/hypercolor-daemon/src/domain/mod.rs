@@ -368,7 +368,38 @@ pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
 /// them. The three byte-identical hand copies in the scene/zone
 /// handlers collapse onto this module as waves 2.2/2.3 migrate.
 pub mod legacy {
-    use super::{HeaderValue, IntoResponse, Json, Response, StatusCode, header, json};
+    use super::{DomainError, HeaderValue, IntoResponse, Json, Response, StatusCode, header, json};
+    use crate::api::envelope::ApiError;
+
+    /// Render a [`DomainError`] in the frozen v1 error shapes.
+    ///
+    /// Legacy paths kept their own `ApiError` bodies and status codes
+    /// long before the canonical envelope existed, and §0 freezes them,
+    /// so a service lifted underneath a legacy handler renders through
+    /// here rather than through `DomainError`'s own `IntoResponse`.
+    ///
+    /// `PreconditionFailed` is the one variant with no v1 precedent on
+    /// these paths: they carry no `If-Match`, so before the
+    /// compare-and-swap they could not produce one. It renders as a 409
+    /// naming the revision that won, which is what a caller needs in
+    /// order to retry.
+    #[must_use]
+    pub fn domain_error_response(error: &DomainError) -> Response {
+        match error {
+            DomainError::NotFound { .. } => ApiError::not_found(error.to_string()),
+            DomainError::Validation { .. } => ApiError::validation(error.to_string()),
+            DomainError::Conflict { .. } | DomainError::DeviceUnavailable { .. } => {
+                ApiError::conflict(error.to_string())
+            }
+            DomainError::PreconditionFailed { current, .. } => ApiError::conflict(format!(
+                "Scene state changed while applying this request; current revision is {current}"
+            )),
+            DomainError::Internal(source) => {
+                tracing::error!(chain = format!("{source:#}"), "domain internal error (v1)");
+                ApiError::internal(error.to_string())
+            }
+        }
+    }
 
     /// The frozen v1 412 body: `{ "error": "<label> mismatch",
     /// "current": N }` with the current version as `ETag` — top-level
