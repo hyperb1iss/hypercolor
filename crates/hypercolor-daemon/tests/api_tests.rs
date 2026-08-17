@@ -16379,13 +16379,17 @@ fn collect_key_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<Stri
     }
 }
 
-/// The display-face response is the one REST shape with no shared
-/// `hypercolor_types::api` type behind it; the web UI mirrors it by
-/// hand. This pin and the UI's decode test read the SAME fixture file,
-/// so a daemon-side field rename must update the fixture, and the
-/// updated fixture then has to decode into the UI's mirror. The hole
-/// closes for real when the displays domain moves into
-/// `hypercolor_types::api`.
+/// External HTTP clients read the face payload without any Rust type to
+/// hold them to it, so this pin is what keeps the published key paths
+/// stable: renaming a field in the shared
+/// `hypercolor_types::api::displays::DisplayFaceResponse` moves the
+/// daemon and every in-tree client together and would otherwise break
+/// only the outside world, silently.
+///
+/// The fixture is shared with the UI's
+/// `display_face_response_decodes_the_daemon_shape`, which decodes the
+/// same payload and so covers the value representations this key-path
+/// comparison cannot see.
 #[tokio::test]
 async fn display_face_response_shape_matches_the_shared_fixture() {
     let state = Arc::new(isolated_state());

@@ -3,72 +3,15 @@
 //! Covers display discovery, face assignment, face control updates, and the
 //! preview JPEG URL.
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
-use serde::{Deserialize, Serialize};
+use hypercolor_types::scene::DisplayFaceBlendMode;
 use std::collections::HashMap;
 
 use super::client;
 
-/// Summary row from `GET /api/v1/displays`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DisplaySummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub family: String,
-    pub width: u32,
-    pub height: u32,
-    pub circular: bool,
-}
-
-/// Effect metadata carried inside a display-face assignment response.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DisplayFaceEffect {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub author: String,
-    #[serde(default)]
-    pub controls: Vec<ControlDefinition>,
-    #[serde(default)]
-    pub presets: Vec<PresetTemplate>,
-}
-
-/// Zone details carried inside a display-face assignment response.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DisplayFaceZone {
-    pub id: String,
-    #[serde(default)]
-    pub controls: HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub display_target: Option<DisplayFaceTarget>,
-}
-
 pub use hypercolor_types::api::displays::{
-    DisplayFaceScope, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
-    UpdateDisplayFaceControlsRequest,
+    DisplayFaceResponse, DisplayFaceScope, DisplaySummary, SetDisplayFaceRequest,
+    UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
 };
-
-/// Response from `GET /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DisplayFaceResponse {
-    pub device_id: String,
-    pub scene_id: String,
-    pub effect: DisplayFaceEffect,
-    pub zone: DisplayFaceZone,
-    /// Which layer the returned assignment lives on.
-    #[serde(default)]
-    pub live_scope: DisplayFaceScope,
-    /// Whether the active scene carries its own assignment for this display.
-    #[serde(default)]
-    pub scene_assigned: bool,
-    /// Whether a persisted default face exists for this display.
-    #[serde(default)]
-    pub default_assigned: bool,
-}
 
 /// `GET /api/v1/displays` — list display-capable devices.
 pub async fn fetch_displays() -> Result<Vec<DisplaySummary>, String> {

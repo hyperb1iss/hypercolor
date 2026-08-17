@@ -4,8 +4,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::effect::ControlValue;
-use crate::scene::DisplayFaceBlendMode;
+use crate::display::DisplayDescriptor;
+use crate::effect::{ControlValue, EffectMetadata};
+use crate::scene::{DisplayFaceBlendMode, Zone};
 
 /// Which assignment layer a face operation targets (spec 69 §3.6).
 ///
@@ -30,6 +31,40 @@ impl DisplayFaceScope {
             Self::Scene => "scene",
         }
     }
+}
+
+/// Summary row from `GET /api/v1/displays`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplaySummary {
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub family: String,
+    pub width: u32,
+    pub height: u32,
+    pub circular: bool,
+    /// Full surface description (shape, safe area, fps, pixel format) —
+    /// the same descriptor injected into face pages.
+    pub descriptor: DisplayDescriptor,
+}
+
+/// Response from `GET /api/v1/displays/{id}/face` and every face mutation
+/// route.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisplayFaceResponse {
+    pub device_id: String,
+    pub scene_id: String,
+    pub effect: EffectMetadata,
+    pub zone: Zone,
+    /// Which layer the returned assignment lives on.
+    #[serde(default)]
+    pub live_scope: DisplayFaceScope,
+    /// Whether the active scene has its own face assignment for this display.
+    #[serde(default)]
+    pub scene_assigned: bool,
+    /// Whether a persisted default face exists for this display.
+    #[serde(default)]
+    pub default_assigned: bool,
 }
 
 /// Request body for `PUT /api/v1/displays/{id}/face`.
