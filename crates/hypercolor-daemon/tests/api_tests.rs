@@ -6226,12 +6226,12 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 Ok(timestamped) => {
                     if let HypercolorEvent::EffectStarted {
                         previous,
-                        group_id,
-                        group_name,
+                        zone_id,
+                        zone_name,
                         ..
                     } = timestamped.event
                     {
-                        break (previous, group_id, group_name);
+                        break (previous, zone_id, zone_name);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -8022,7 +8022,7 @@ async fn patch_active_controls_publishes_render_group_and_control_events() {
         while !saw_render_group_change || !saw_control_change {
             match events.recv().await {
                 Ok(timestamped) => match timestamped.event {
-                    HypercolorEvent::RenderGroupChanged {
+                    HypercolorEvent::ZoneChanged {
                         scene_id,
                         role,
                         kind,
@@ -15269,7 +15269,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         while removed_scene_ids.len() < 2 {
             match events.recv().await {
                 Ok(timestamped) => {
-                    if let HypercolorEvent::RenderGroupChanged {
+                    if let HypercolorEvent::ZoneChanged {
                         scene_id,
                         role,
                         kind,

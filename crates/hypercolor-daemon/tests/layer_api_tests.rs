@@ -583,16 +583,13 @@ async fn layer_crud_returns_etags_and_stale_versions() {
     assert_eq!(create_response.status(), StatusCode::CREATED);
     assert_eq!(response_etag(&create_response), "\"1\"");
     let event = events.recv().await.expect("layer stack changed event");
-    assert!(matches!(
-        event.event,
-        HypercolorEvent::RenderGroupChanged { .. }
-    ));
+    assert!(matches!(event.event, HypercolorEvent::ZoneChanged { .. }));
     let event = events.recv().await.expect("layer stack changed event");
     assert!(matches!(
         event.event,
         HypercolorEvent::LayerStackChanged {
             scene_id: event_scene_id,
-            group_id: event_group_id,
+            zone_id: event_group_id,
             layers_version: 1,
             kind: LayerStackChangeKind::Created,
         } if event_scene_id == scene_id && event_group_id == zone_id
@@ -687,7 +684,7 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
         let event = events.recv().await.expect("layer event");
         if let HypercolorEvent::LayerStackChanged {
             scene_id: event_scene_id,
-            group_id: zone_id,
+            zone_id,
             layers_version: 1,
             kind: LayerStackChangeKind::Created,
         } = event.event

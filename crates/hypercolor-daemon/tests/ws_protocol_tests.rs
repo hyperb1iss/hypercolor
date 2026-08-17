@@ -330,7 +330,15 @@ async fn hello_handshake_returns_expected_capability_set() {
         .expect("subscriptions should be an array");
     // Default subscription set is exactly {events} per SubscriptionState::default.
     assert_eq!(subscriptions.len(), 1);
-    assert_eq!(subscriptions[0], "events");
+    assert_eq!(subscriptions[0]["topic"], "events");
+    assert!(
+        subscriptions[0].get("key").is_none(),
+        "events is unkeyed, so it reports no key"
+    );
+    assert!(
+        subscriptions[0].get("config").is_none(),
+        "events takes no config, so it reports none"
+    );
 }
 
 #[tokio::test]
@@ -432,8 +440,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["device_metrics"],
-            "config": { "device_metrics": { "interval_ms": 100 } }
+            "topics": [{ "topic": "device_metrics", "config": { "interval_ms": 100 } }]
         })
         .to_string(),
     )
@@ -443,12 +450,10 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("device_metrics subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "device_metrics");
-    assert!(
-        ack["config"].get("device_metrics").is_some(),
-        "config should include device_metrics after subscribing"
+    let subscribed = subscription_map(&ack);
+    assert_eq!(
+        subscribed["device_metrics"]["interval_ms"], 100,
+        "the ack echoes the live device_metrics config"
     );
 
     let message = recv_until_type(&mut stream, "device_metrics")
@@ -488,7 +493,7 @@ async fn sensors_subscription_streams_seeded_snapshot() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["sensors"]
+            "topics": [{ "topic": "sensors" }]
         })
         .to_string(),
     )
@@ -498,9 +503,10 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("sensors subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "sensors");
+    assert!(
+        subscribed_topics(&ack).contains(&"sensors".to_owned()),
+        "the ack lists the sensors subscription"
+    );
 
     let message = recv_until_type(&mut stream, "sensors")
         .await
@@ -508,6 +514,30 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     assert_eq!(message["data"]["cpu_load_percent"], 37.5);
     assert_eq!(message["data"]["ram_used_percent"], 64.0);
     assert_eq!(message["data"]["polled_at_ms"], 8_901);
+}
+
+/// The topics an acknowledgment reports as live, in the order it sent them.
+fn subscribed_topics(ack: &serde_json::Value) -> Vec<String> {
+    ack["topics"]
+        .as_array()
+        .expect("ack.topics is an array")
+        .iter()
+        .map(|entry| entry["topic"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// Unkeyed subscriptions from an acknowledgment, viewed as `{topic: config}`.
+fn subscription_map(ack: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    ack["topics"]
+        .as_array()
+        .expect("ack.topics is an array")
+        .iter()
+        .filter(|entry| entry.get("key").is_none())
+        .filter_map(|entry| {
+            let topic = entry["topic"].as_str()?.to_owned();
+            Some((topic, entry.get("config")?.clone()))
+        })
+        .collect()
 }
 
 // ── Scenario 1: Subscribe → Unsubscribe → Subscribe cycle ────────────────
@@ -521,7 +551,7 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     // Subscribe to `metrics`.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "subscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "subscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send subscribe");
@@ -529,18 +559,20 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "metrics");
+    assert_eq!(
+        subscribed_topics(&ack),
+        vec!["events".to_owned(), "metrics".to_owned()],
+        "the ack reports the whole live subscription set"
+    );
     assert!(
-        ack["config"].get("metrics").is_some(),
+        subscription_map(&ack).get("metrics").is_some(),
         "config should include metrics after subscribing"
     );
 
     // Unsubscribe from `metrics`. Default `events` stays subscribed.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "unsubscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "unsubscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send unsubscribe");
@@ -548,17 +580,8 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "unsubscribed")
         .await
         .expect("unsubscribed ack");
-    let removed = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0], "metrics");
-    let remaining = ack["remaining"]
-        .as_array()
-        .expect("ack.remaining is array")
-        .iter()
-        .map(|v| v.as_str().unwrap_or_default().to_owned())
-        .collect::<Vec<_>>();
     assert_eq!(
-        remaining,
+        subscribed_topics(&ack),
         vec!["events".to_owned()],
         "after unsubscribing metrics, only default events should remain"
     );
@@ -568,7 +591,7 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     // anything.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "subscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "subscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send re-subscribe");
@@ -576,11 +599,12 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("re-subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "metrics");
     assert!(
-        ack["config"].get("metrics").is_some(),
+        subscribed_topics(&ack).contains(&"metrics".to_owned()),
+        "re-subscribe reinstates the metrics subscription"
+    );
+    assert!(
+        subscription_map(&ack).get("metrics").is_some(),
         "re-subscribe should reinstate metrics config"
     );
 }
@@ -597,47 +621,136 @@ async fn multi_channel_subscribe_returns_all_requested_channels() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["events", "frames", "metrics"],
+            "topics": [
+                { "topic": "events" },
+                { "topic": "frames" },
+                { "topic": "metrics" }
+            ],
         })
         .to_string(),
     )
     .await
-    .expect("send multi-channel subscribe");
+    .expect("send multi-topic subscribe");
 
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
-        .expect("multi-channel subscribed ack");
-    let mut channels = ack["channels"]
-        .as_array()
-        .expect("ack.channels is array")
-        .iter()
-        .map(|v| v.as_str().unwrap_or_default().to_owned())
-        .collect::<Vec<_>>();
-    channels.sort();
+        .expect("multi-topic subscribed ack");
     assert_eq!(
-        channels,
+        subscribed_topics(&ack),
         vec![
-            "events".to_owned(),
             "frames".to_owned(),
+            "events".to_owned(),
             "metrics".to_owned()
         ],
-        "ack should echo the requested channels in sorted order"
+        "the ack lists live subscriptions in registry declaration order"
     );
 
-    // Config should include both frames and metrics stanzas (events has no
-    // per-channel config block by design — see ChannelConfig::filtered_json).
-    let config = &ack["config"];
-    assert!(
-        config.get("frames").is_some(),
-        "config should include frames stanza"
-    );
+    // Config rides each entry, and a configless topic reports none.
+    let config = subscription_map(&ack);
+    assert!(config.get("frames").is_some(), "frames reports its config");
     assert!(
         config.get("metrics").is_some(),
-        "config should include metrics stanza"
+        "metrics reports its config"
     );
     assert!(
         config.get("events").is_none(),
-        "events has no per-channel config block"
+        "events takes no config, so it reports none"
+    );
+}
+
+#[tokio::test]
+async fn keyed_display_previews_are_independent_subscriptions() {
+    let addr = spawn_test_daemon().await;
+    let mut stream = ws_connect(addr).await.expect("ws handshake");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "subscribe",
+            "topics": [
+                { "topic": "display_preview", "key": "device-a", "config": { "fps": 5 } },
+                { "topic": "display_preview", "key": "device-b", "config": { "fps": 25 } }
+            ]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send keyed subscribe");
+
+    let ack = recv_until_type(&mut stream, "subscribed")
+        .await
+        .expect("keyed subscribed ack");
+    let keyed: Vec<(String, i64)> = ack["topics"]
+        .as_array()
+        .expect("ack.topics is array")
+        .iter()
+        .filter(|entry| entry["topic"] == "display_preview")
+        .map(|entry| {
+            (
+                entry["key"].as_str().unwrap_or_default().to_owned(),
+                entry["config"]["fps"].as_i64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        keyed,
+        vec![("device-a".to_owned(), 5), ("device-b".to_owned(), 25)],
+        "each device is its own subscription with its own cadence"
+    );
+
+    // Retiring one key leaves the other live.
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "unsubscribe",
+            "topics": [{ "topic": "display_preview", "key": "device-a" }]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send keyed unsubscribe");
+
+    let ack = recv_until_type(&mut stream, "unsubscribed")
+        .await
+        .expect("keyed unsubscribed ack");
+    let remaining: Vec<String> = ack["topics"]
+        .as_array()
+        .expect("ack.topics is array")
+        .iter()
+        .filter(|entry| entry["topic"] == "display_preview")
+        .map(|entry| entry["key"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(remaining, vec!["device-b".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_keyed_topic_refuses_a_subscribe_without_its_key() {
+    let addr = spawn_test_daemon().await;
+    let mut stream = ws_connect(addr).await.expect("ws handshake");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "subscribe",
+            "topics": [{ "topic": "display_preview" }]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send keyless subscribe");
+
+    let err = recv_until_type(&mut stream, "error")
+        .await
+        .expect("error response");
+    assert_eq!(err["code"], "invalid_request");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("display_preview"),
+        "the error names the topic: {err}"
     );
 }
 
@@ -650,14 +763,14 @@ async fn input_event_subscription_receives_canonical_timed_payload() {
 
     ws_send_text(
         &mut stream,
-        &json!({ "type": "subscribe", "channels": ["input_events"] }).to_string(),
+        &json!({ "type": "subscribe", "topics": [{ "topic": "input_events" }] }).to_string(),
     )
     .await
     .expect("send input event subscription");
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("input event subscribed ack");
-    assert_eq!(ack["channels"], json!(["input_events"]));
+    assert!(subscribed_topics(&ack).contains(&"input_events".to_owned()));
 
     state
         .event_bus
@@ -702,7 +815,7 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["lasers"],
+            "topics": [{ "topic": "lasers" }],
         })
         .to_string(),
     )
@@ -713,25 +826,18 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
         .await
         .expect("error response");
     assert_eq!(err["type"], "error");
-    // `parse_channels` rejects the unknown channel with `invalid_request`
-    // before ever reaching the `unsupported_channel` code path, so either
-    // error code is acceptable.
-    let code = err["code"].as_str().unwrap_or_default();
-    assert!(
-        code == "invalid_request" || code == "unsupported_channel",
-        "expected invalid_request or unsupported_channel, got: {code}"
-    );
+    assert_eq!(err["code"], "invalid_request");
     let message = err["message"].as_str().unwrap_or_default();
     assert!(
-        message.to_lowercase().contains("lasers") || message.to_lowercase().contains("channel"),
-        "error message should reference the channel; got: {message}"
+        message.to_lowercase().contains("lasers") || message.to_lowercase().contains("topic"),
+        "error message should reference the topic; got: {message}"
     );
 
     // Crucially, the connection must stay open. Issue a legitimate subscribe
     // and confirm the server is still speaking to us.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "subscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "subscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send follow-up subscribe");
@@ -739,9 +845,7 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("connection should still be alive after an error");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "metrics");
+    assert!(subscribed_topics(&ack).contains(&"metrics".to_owned()));
 }
 
 // ── Deferred scenarios ───────────────────────────────────────────────────

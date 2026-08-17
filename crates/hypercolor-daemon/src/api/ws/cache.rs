@@ -17,13 +17,17 @@ use serde::Serialize;
 use serde::ser::SerializeSeq;
 use tracing::{trace, warn};
 
-use hypercolor_leptos_ext::ws::{
-    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat,
-    SPECTRUM_FRAME_TAG, ZonePreviewFrame as WireZonePreviewFrame,
-};
 #[cfg(test)]
-use hypercolor_leptos_ext::ws::{ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG};
+use hypercolor_leptos_ext::ws::{
+    DISPLAY_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG,
+};
+use hypercolor_leptos_ext::ws::{
+    DisplayPreviewFrame, PreviewFrame, PreviewFrameChannel,
+    PreviewPixelFormat as WirePreviewPixelFormat, SPECTRUM_FRAME_TAG,
+    ZonePreviewFrame as WireZonePreviewFrame,
+};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{SceneId, ZoneId};
 
 use hypercolor_leptos_ext::ws::registry::{CanvasFormat, FrameFormat};
@@ -45,11 +49,12 @@ pub(super) const WS_CANVAS_BYTES_PER_PIXEL_RGBA: u64 = 4;
 pub(super) const WS_CANVAS_HEADER: u8 = PreviewFrameChannel::Canvas.tag();
 pub(super) const WS_SCREEN_CANVAS_HEADER: u8 = PreviewFrameChannel::ScreenCanvas.tag();
 pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = PreviewFrameChannel::WebViewportCanvas.tag();
-/// Binary header byte for per-display preview JPEG frames streamed by
-/// the `display_preview` channel. Body layout matches the canvas frame:
-/// `[frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][jpeg_payload]`.
+/// Binary header byte for per-display preview JPEG frames. The layout is
+/// identity-prefixed rather than channel-tagged, because `display_preview`
+/// is keyed by device:
+/// `[device_id_len:u8][frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][device_id][jpeg_payload]`.
 #[cfg(test)]
-pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = PreviewFrameChannel::DisplayPreview.tag();
+pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = DISPLAY_PREVIEW_FRAME_TAG;
 #[cfg(test)]
 pub(super) const WS_ZONE_PREVIEW_HEADER: u8 = ZONE_PREVIEW_FRAME_TAG;
 #[cfg(test)]
@@ -253,6 +258,10 @@ struct CanvasRawBodyCacheKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct DisplayPreviewPayloadCacheKey {
+    // The device is part of the key because it is part of the encoded
+    // frame: two displays publishing the same JPEG still produce
+    // different bytes.
+    device: DeviceId,
     jpeg_storage: usize,
     jpeg_len: usize,
     frame_number: u32,
@@ -1079,8 +1088,11 @@ pub(super) fn reset_display_preview_payload_cache_for_tests() {
     }
 }
 
-pub(super) fn cached_display_preview_payload(snapshot: &DisplayFrameSnapshot) -> Option<Bytes> {
-    let key = display_preview_payload_key(snapshot);
+pub(super) fn cached_display_preview_payload(
+    device: DeviceId,
+    snapshot: &DisplayFrameSnapshot,
+) -> Option<Bytes> {
+    let key = display_preview_payload_key(device, snapshot);
     if let Some(cached) = display_preview_payload_cache_get(key) {
         return Some(cached);
     }
@@ -1319,8 +1331,12 @@ const fn canvas_format_tag(format: CanvasFormat) -> u8 {
     }
 }
 
-fn display_preview_payload_key(snapshot: &DisplayFrameSnapshot) -> DisplayPreviewPayloadCacheKey {
+fn display_preview_payload_key(
+    device: DeviceId,
+    snapshot: &DisplayFrameSnapshot,
+) -> DisplayPreviewPayloadCacheKey {
     DisplayPreviewPayloadCacheKey {
+        device,
         jpeg_storage: Arc::as_ptr(&snapshot.jpeg_data).addr(),
         jpeg_len: snapshot.jpeg_data.len(),
         frame_number: display_preview_frame_number(snapshot.frame_number),
@@ -1334,8 +1350,8 @@ fn build_display_preview_payload(
     snapshot: &DisplayFrameSnapshot,
     key: DisplayPreviewPayloadCacheKey,
 ) -> Result<Bytes> {
-    PreviewFrame {
-        channel: PreviewFrameChannel::DisplayPreview,
+    DisplayPreviewFrame {
+        device_id: key.device.to_string(),
         frame_number: key.frame_number,
         timestamp_ms: key.timestamp_ms,
         width: snapshot.width,
@@ -1343,7 +1359,7 @@ fn build_display_preview_payload(
         format: WirePreviewPixelFormat::Jpeg,
         payload: Bytes::copy_from_slice(snapshot.jpeg_data.as_ref()),
     }
-    .try_encode()
+    .encode()
     .context("failed to encode display preview wire frame")
 }
 

@@ -295,7 +295,7 @@ async fn update_controls_patches_the_zone_and_reports_the_new_version() {
     assert!(
         seen.iter().any(|event| matches!(
             event,
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 kind: ZoneChangeKind::ControlsPatched,
                 ..
             }
@@ -523,7 +523,7 @@ async fn set_control_binding_attaches_the_binding_to_the_zone() {
     assert!(
         seen.iter().any(|event| matches!(
             event,
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 kind: ZoneChangeKind::Updated,
                 ..
             }

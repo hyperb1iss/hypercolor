@@ -16,7 +16,11 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
 use hypercolor_leptos_ext::ws::PreviewTransportCapability;
-use hypercolor_leptos_ext::ws::registry::{CanvasConfig, CanvasFormat, SpectrumConfig, TopicId};
+use hypercolor_leptos_ext::ws::registry::{
+    CanvasConfig, CanvasFormat, InteractivePreviewConfig, InteractivePreviewTarget, SpectrumConfig,
+    TopicId,
+};
+use hypercolor_leptos_ext::ws::topic::ActiveSubscription;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
@@ -45,10 +49,9 @@ use super::cache::{
 use super::command::dispatch_command;
 use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
-    BrowserInputEdgeWire, ClientMessage, ConfigStanzas, HelloFps, HelloState,
-    InteractivePreviewConfig, MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage,
-    SubscriptionState, TopicSelection, WsProtocolError, parse_channels, sorted_channel_names,
-    unique_sorted_channel_names, validate_interactive_preview_shape, ws_capabilities,
+    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, NameRef,
+    SceneRef, ServerMessage, SubscriptionState, TopicSelection, WsProtocolError, parse_selectors,
+    parse_subscriptions, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
     PreviewCursorQueue, PreviewOutboundItem, PreviewOutboundSender, PreviewSendCursor,
@@ -266,7 +269,7 @@ async fn handle_socket(
             server: state.server_identity.clone(),
             state: build_hello_state(&state).await,
             capabilities: ws_capabilities(),
-            subscriptions: sorted_channel_names(subscriptions.topics()),
+            subscriptions: subscriptions.projection(),
         }
     };
     if send_json(&mut socket, &hello).await.is_err() {
@@ -566,7 +569,7 @@ impl WsInputDemandLeases {
         &self,
         subscriptions: &SubscriptionState,
     ) -> Result<ProjectedInputDemand, WsProtocolError> {
-        let screen_canvas = subscriptions.config_of::<CanvasConfig>(TopicId::ScreenCanvas);
+        let screen_canvas = subscriptions.config_of::<CanvasConfig>(TopicId::ScreenCanvas, None);
         let screen_active = subscriptions.contains(TopicId::ScreenCanvas)
             || subscriptions.contains(TopicId::ScreenZones);
         let (screen_demand, screen_requested_extent) = if screen_active {
@@ -652,7 +655,7 @@ impl WsInputDemandLeases {
                 InputPublicationDemand::default().with_source(
                     hypercolor_core::input::SourceKind::Audio,
                     subscriptions
-                        .config_of::<SpectrumConfig>(TopicId::Spectrum)
+                        .config_of::<SpectrumConfig>(TopicId::Spectrum, None)
                         .fps,
                 )
             }),
@@ -791,11 +794,59 @@ impl BrowserPreviewSession {
         }
     }
 
-    pub(super) async fn open(
+    /// Bring the open previews in line with the connection's live
+    /// `interactive_preview` subscriptions.
+    ///
+    /// Opens run first because they are the only step that can refuse:
+    /// one that fails closes whatever this call had already opened and
+    /// leaves every pre-existing preview alone, so the caller can abandon
+    /// the whole subscribe with nothing half-applied. Closes run last and
+    /// cannot fail.
+    pub(super) async fn reconcile(
+        &mut self,
+        subscriptions: &SubscriptionState,
+    ) -> Result<(), WsProtocolError> {
+        let desired =
+            subscriptions.keyed_configs::<InteractivePreviewConfig>(TopicId::InteractivePreview);
+
+        let mut opened_here: Vec<String> = Vec::new();
+        for (preview_id, config) in &desired {
+            if self
+                .previews
+                .get(preview_id)
+                .is_some_and(|binding| binding.config == *config)
+            {
+                continue;
+            }
+            let was_open = self.previews.contains_key(preview_id);
+            if let Err(error) = self.open(preview_id.clone(), *config).await {
+                for rollback in opened_here {
+                    let _ = self.close(rollback).await;
+                }
+                return Err(error);
+            }
+            if !was_open {
+                opened_here.push(preview_id.clone());
+            }
+        }
+
+        let stale: Vec<String> = self
+            .previews
+            .keys()
+            .filter(|open| !desired.iter().any(|(wanted, _)| wanted == *open))
+            .cloned()
+            .collect();
+        for preview_id in stale {
+            let _ = self.close(preview_id).await;
+        }
+        Ok(())
+    }
+
+    async fn open(
         &mut self,
         preview_id: String,
         config: InteractivePreviewConfig,
-    ) -> Result<ServerMessage, WsProtocolError> {
+    ) -> Result<(), WsProtocolError> {
         let error_preview_id = preview_id.clone();
         self.open_unscoped(preview_id, config)
             .await
@@ -806,7 +857,7 @@ impl BrowserPreviewSession {
         &mut self,
         preview_id: String,
         config: InteractivePreviewConfig,
-    ) -> Result<ServerMessage, WsProtocolError> {
+    ) -> Result<(), WsProtocolError> {
         validate_interactive_preview_shape(config.width, config.height, config.format)?;
         self.outbound
             .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
@@ -820,13 +871,7 @@ impl BrowserPreviewSession {
                 .await
                 .map_err(interactive_preview_error)?;
             binding.config = config;
-            return Ok(ServerMessage::InteractivePreviewOpened {
-                preview_id,
-                connection_incarnation: self.connection.get(),
-                publication_id: binding.attachment.publication_id().get(),
-                already_open: true,
-                config,
-            });
+            return Ok(());
         }
 
         let executor = self.executor.clone().ok_or_else(|| WsProtocolError {
@@ -850,7 +895,6 @@ impl BrowserPreviewSession {
                 return Err(interactive_preview_error(error));
             }
         };
-        let publication_id = attachment.publication_id().get();
         let spec_generation = lane.spec_generation_receiver();
         let encode_workers = lane.encode_workers();
         let relay_cancel = CancellationToken::new();
@@ -864,7 +908,7 @@ impl BrowserPreviewSession {
             relay_cancel.clone(),
         );
         self.previews.insert(
-            preview_id.clone(),
+            preview_id,
             BrowserPreviewBinding {
                 attachment,
                 config,
@@ -873,16 +917,10 @@ impl BrowserPreviewSession {
                 relay,
             },
         );
-        Ok(ServerMessage::InteractivePreviewOpened {
-            preview_id,
-            connection_incarnation: self.connection.get(),
-            publication_id,
-            already_open: false,
-            config,
-        })
+        Ok(())
     }
 
-    pub(super) async fn close(&mut self, preview_id: String) -> ServerMessage {
+    async fn close(&mut self, preview_id: String) -> bool {
         let binding = self.previews.remove(&preview_id);
         if let Some(binding) = &binding {
             binding.relay_cancel.cancel();
@@ -895,13 +933,20 @@ impl BrowserPreviewSession {
         {
             warn!(%error, %preview_id, "Failed to queue interactive preview cancellation");
         }
-        let closed = if let Some(binding) = binding {
+        if let Some(binding) = binding {
             close_preview_binding_and_wait(&self.interaction_routing, binding).await;
             true
         } else {
             false
-        };
-        ServerMessage::InteractivePreviewClosed { preview_id, closed }
+        }
+    }
+
+    /// This connection's server-assigned identity. Interactive preview
+    /// children are keyed by it, so two connections naming the same
+    /// preview id still get independent lanes.
+    #[cfg(test)]
+    pub(super) const fn connection_incarnation(&self) -> BrowserConnectionIncarnation {
+        self.connection
     }
 
     pub(super) fn is_current_publication(
@@ -1036,9 +1081,7 @@ async fn finish_preview_binding_cleanup(binding: BrowserPreviewBinding) {
 const fn runtime_preview_spec(config: InteractivePreviewConfig) -> RuntimeInteractivePreviewSpec {
     RuntimeInteractivePreviewSpec {
         target: match config.target {
-            super::protocol::InteractivePreviewTarget::ActiveScene => {
-                RuntimeInteractivePreviewTarget::ActiveScene
-            }
+            InteractivePreviewTarget::ActiveScene => RuntimeInteractivePreviewTarget::ActiveScene,
         },
         fps: config.fps,
         width: config.width,
@@ -1084,7 +1127,7 @@ fn authoritative_claim_error(preview_id: &str, error: AuthoritativeClaimError) -
     }
 }
 
-pub(super) fn authorize_subscription_channels(
+pub(super) fn authorize_subscription_topics(
     auth_context: RequestAuthContext,
     selections: &[TopicSelection],
 ) -> Result<(), WsProtocolError> {
@@ -1092,21 +1135,41 @@ pub(super) fn authorize_subscription_channels(
         return Ok(());
     }
 
-    let restricted_channels: Vec<&'static str> = selections
+    let restricted_topics: Vec<&'static str> = selections
         .iter()
         .map(|selection| selection.topic)
         .filter(|topic| topic.requires_control())
         .map(TopicId::as_str)
         .collect();
 
-    if restricted_channels.is_empty() {
+    if restricted_topics.is_empty() {
         Ok(())
     } else {
         Err(WsProtocolError::forbidden(
-            "Screen capture preview subscriptions require a control-tier API key",
-            json!({"channels": restricted_channels, "required_tier": "control"}),
+            "Capture and interactive preview subscriptions require a control-tier API key",
+            json!({"topics": restricted_topics, "required_tier": "control"}),
         ))
     }
+}
+
+/// The subscription snapshot an acknowledgment carries, with each
+/// interactive preview's live publication filled in so the client can
+/// fence its frames against a previous incarnation's stragglers.
+fn subscription_projection(
+    subscriptions: &SubscriptionState,
+    browser_previews: &BrowserPreviewSession,
+) -> Vec<ActiveSubscription> {
+    let mut projection = subscriptions.projection();
+    for entry in &mut projection {
+        if entry.topic == TopicId::InteractivePreview.as_str()
+            && let Some(key) = entry.key.as_deref()
+        {
+            entry.publication_id = browser_previews
+                .publication_id(key)
+                .map(hypercolor_core::input::BrowserInputPublicationId::get);
+        }
+    }
+    projection
 }
 
 /// A transport capability both ends have agreed on but neither has
@@ -1205,15 +1268,14 @@ async fn handle_client_message(
 
     match msg {
         ClientMessage::Subscribe {
-            channels,
-            config,
+            topics,
             preview_transport,
         } => {
             // Validate the whole request first. Every step below builds
             // a candidate and refuses on its own terms, so a request
-            // that names four topics and mis-configures the fourth
+            // that names four subscriptions and mis-configures the fourth
             // leaves the connection exactly as it was.
-            let selections = match parse_channels(&channels) {
+            let requests = match parse_subscriptions(&topics) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     let _ = send_json(socket, &error.into_message()).await;
@@ -1221,14 +1283,16 @@ async fn handle_client_message(
                 }
             };
 
-            if let Err(error) = authorize_subscription_channels(auth_context, &selections) {
+            let selections: Vec<TopicSelection> = requests
+                .iter()
+                .map(|request| request.selection.clone())
+                .collect();
+            if let Err(error) = authorize_subscription_topics(auth_context, &selections) {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
 
-            let next_subscriptions = match subscriptions
-                .subscribe(&selections, config.as_ref().map(ConfigStanzas::stanzas))
-            {
+            let next_subscriptions = match subscriptions.subscribe(&requests) {
                 Ok(next) => next,
                 Err(error) => {
                     let _ = send_json(socket, &error.into_message()).await;
@@ -1257,8 +1321,9 @@ async fn handle_client_message(
             };
 
             // Commit phase. The transport goes first because adopting it
-            // is the only step that can still refuse, and it refuses
-            // without having changed anything.
+            // refuses without having changed anything; the interactive
+            // preview lanes go next because they are the only remaining
+            // step that can refuse, and they roll back what they opened.
             if let Some(staged) = staged_transport
                 && let Err(error) = commit_preview_transport(
                     staged,
@@ -1270,19 +1335,22 @@ async fn handle_client_message(
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
+            if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
             input_demand_leases.commit(projected_demand);
             *subscriptions = next_subscriptions;
 
             let ack = ServerMessage::Subscribed {
-                channels: unique_sorted_channel_names(&selections),
-                config: subscriptions.config_projection(),
+                topics: subscription_projection(subscriptions, browser_previews),
                 preview_transport: preview_capability.encode(),
             };
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
-        ClientMessage::Unsubscribe { channels } => {
-            let selections = match parse_channels(&channels) {
+        ClientMessage::Unsubscribe { topics } => {
+            let selections = match parse_selectors(&topics) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     let _ = send_json(socket, &error.into_message()).await;
@@ -1299,17 +1367,22 @@ async fn handle_client_message(
                 }
             };
             input_demand_leases.commit(projected_demand);
+            // Retiring a subscription can only close interactive preview
+            // lanes, never open one, so this cannot refuse.
+            if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
+                warn!(%error.message, "Failed to release interactive previews on unsubscribe");
+            }
             *subscriptions = next_subscriptions;
             for selection in &selections {
-                if let Err(error) = preview_outbound.cancel_topic(selection.topic) {
-                    warn!(%error, channel = selection.topic.as_str(), "Failed to cancel unsubscribed preview channel");
+                if let Err(error) =
+                    preview_outbound.cancel_subscription(selection.topic, selection.key.as_deref())
+                {
+                    warn!(%error, topic = selection.topic.as_str(), "Failed to cancel unsubscribed preview stream");
                 }
             }
-            let remaining = sorted_channel_names(subscriptions.topics());
 
             let ack = ServerMessage::Unsubscribed {
-                channels: unique_sorted_channel_names(&selections),
-                remaining,
+                topics: subscription_projection(subscriptions, browser_previews),
             };
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
@@ -1361,38 +1434,6 @@ async fn handle_client_message(
             {
                 let _ = send_json(socket, &error.into_message()).await;
             }
-        }
-        ClientMessage::InteractivePreviewOpen {
-            preview_id,
-            target,
-            fps,
-            width,
-            height,
-            format,
-        } => {
-            let error_preview_id = preview_id.clone();
-            let config = InteractivePreviewConfig {
-                target,
-                fps,
-                width,
-                height,
-                format,
-            };
-            let result = match ensure_control_tier(auth_context) {
-                Ok(()) => browser_previews.open(preview_id, config).await,
-                Err(error) => Err(error),
-            }
-            .map_err(|error| scope_preview_error(error, &error_preview_id));
-            send_protocol_result(socket, result).await;
-        }
-        ClientMessage::InteractivePreviewClose { preview_id } => {
-            let error_preview_id = preview_id.clone();
-            let result = match ensure_control_tier(auth_context) {
-                Ok(()) => Ok(browser_previews.close(preview_id).await),
-                Err(error) => Err(error),
-            }
-            .map_err(|error| scope_preview_error(error, &error_preview_id));
-            send_protocol_result(socket, result).await;
         }
         ClientMessage::InputInject { preview_id, events } => {
             let result = ensure_control_tier(auth_context)

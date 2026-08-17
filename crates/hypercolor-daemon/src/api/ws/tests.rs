@@ -19,9 +19,12 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasFormat, FrameFormat, FramesConfig, TopicId, TopicSet,
+    CanvasFormat, FrameFormat, FramesConfig, InteractivePreviewConfig, InteractivePreviewTarget,
+    TopicId, TopicSet,
 };
+use hypercolor_leptos_ext::ws::topic::{TopicSelector, TopicSubscription};
 use hypercolor_leptos_ext::ws::{
+    DisplayPreviewFrame as WireDisplayPreviewFrame,
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FRAME_TAG,
     PREVIEW_MIN_MESSAGE_BYTES, PreviewChunkFrame, PreviewFrame as WirePreviewFrame,
     PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId,
@@ -65,11 +68,10 @@ use super::preview_encode::{
 };
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, ClientMessage, FrameZoneSelection,
-    InputButtonStateWire, InteractivePreviewConfig, InteractivePreviewTarget,
-    MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA,
+    InputButtonStateWire, MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA,
     MAX_PREVIEW_PUBLICATION_BYTES, ServerMessage, SubscriptionState, TopicSelection,
-    deserialize_finite_coordinate, event_message_parts, parse_channels, should_relay_event,
-    to_snake_case, unique_sorted_channel_names, validate_interactive_preview_id,
+    deserialize_finite_coordinate, event_message_parts, parse_selectors, parse_subscriptions,
+    should_relay_event, to_snake_case, validate_interactive_preview_id,
     validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
@@ -81,7 +83,7 @@ use super::relays::{
     relay_sensors, relay_spectrum, sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{
-    BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_channels,
+    BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics,
     commit_preview_transport, negotiate_preview_transport, stage_preview_transport,
     validated_zone_layout_preview,
 };
@@ -141,7 +143,7 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     );
 
     subscriptions = subscriptions
-        .subscribed(
+        .subscribed_unkeyed(
             &["screen_canvas"],
             serde_json::json!({"screen_canvas": {"width": 5_120, "height": 0}}),
         )
@@ -168,7 +170,7 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     // it would have moved stays exactly where it was.
     let canvas_revision = demands.revision();
     let refused = subscriptions
-        .subscribed(
+        .subscribed_unkeyed(
             &["screen_canvas"],
             serde_json::json!({"screen_canvas": {"fps": 0}}),
         )
@@ -181,8 +183,8 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     assert_eq!(demands.screen_branches(), canvas_only);
 
     subscriptions = subscriptions
-        .subscribed(
-            &["spectrum", "screen_zones", "input_events"],
+        .subscribed_unkeyed(
+            &["spectrum", "screen_canvas", "screen_zones", "input_events"],
             serde_json::json!({
                 "spectrum": {"fps": 24},
                 "screen_canvas": {"height": 720}
@@ -222,9 +224,9 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     assert_eq!(demands.requested_hz(SourceKind::Interaction), 60);
 
     subscriptions = subscriptions
-        .subscribed(&["spectrum"], serde_json::json!({"spectrum": {"fps": 48}}))
+        .subscribed_unkeyed(&["spectrum"], serde_json::json!({"spectrum": {"fps": 48}}))
         .expect("spectrum cadence patch applies")
-        .unsubscribed(&["screen_canvas"]);
+        .unsubscribed_unkeyed(&["screen_canvas"]);
     leases
         .synchronize(&subscriptions)
         .expect("screen zone demand synchronizes");
@@ -238,7 +240,7 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         ScreenPublicationKind::Zones { .. }
     ));
 
-    subscriptions = subscriptions.unsubscribed(&["screen_zones", "input_events"]);
+    subscriptions = subscriptions.unsubscribed_unkeyed(&["screen_zones", "input_events"]);
     leases
         .synchronize(&subscriptions)
         .expect("removed screen demand synchronizes");
@@ -1375,7 +1377,7 @@ async fn relay_metrics_wakes_when_subscription_changes() {
     let relay_handle = tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
 
     let subscriptions = initial_subscriptions
-        .subscribed(
+        .subscribed_unkeyed(
             &["metrics"],
             serde_json::json!({"metrics": {"interval_ms": 100}}),
         )
@@ -1448,7 +1450,7 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
     ));
 
     let subscriptions = initial_subscriptions
-        .subscribed(
+        .subscribed_unkeyed(
             &["device_metrics"],
             serde_json::json!({"device_metrics": {"interval_ms": 100}}),
         )
@@ -1487,7 +1489,7 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
     let relay_handle = tokio::spawn(relay_sensors(Arc::clone(&state), json_tx, subscriptions_rx));
 
     let subscriptions = initial_subscriptions
-        .subscribed(&["sensors"], serde_json::Value::Null)
+        .subscribed_unkeyed(&["sensors"], serde_json::Value::Null)
         .expect("sensors subscribe applies");
     publish_subscriptions(&subscriptions_tx, &subscriptions);
 
@@ -1537,7 +1539,7 @@ async fn relay_frames_wakes_when_subscription_changes() {
     assert_eq!(state.event_bus.frame_receiver_count(), 0);
 
     let mut subscriptions = initial_subscriptions
-        .subscribed(&["frames"], serde_json::Value::Null)
+        .subscribed_unkeyed(&["frames"], serde_json::Value::Null)
         .expect("frames subscribe applies");
     publish_subscriptions(&subscriptions_tx, &subscriptions);
 
@@ -1548,7 +1550,7 @@ async fn relay_frames_wakes_when_subscription_changes() {
     assert_eq!(payload.first().copied(), Some(0x01));
     assert_eq!(state.event_bus.frame_receiver_count(), 1);
 
-    subscriptions = subscriptions.unsubscribed(&["frames"]);
+    subscriptions = subscriptions.unsubscribed_unkeyed(&["frames"]);
     publish_subscriptions(&subscriptions_tx, &subscriptions);
     tokio::time::timeout(std::time::Duration::from_millis(250), async {
         loop {
@@ -1585,7 +1587,7 @@ async fn relay_spectrum_subscribes_lazily() {
     assert_eq!(state.event_bus.spectrum_receiver_count(), 0);
 
     let mut subscriptions = initial_subscriptions
-        .subscribed(&["spectrum"], serde_json::Value::Null)
+        .subscribed_unkeyed(&["spectrum"], serde_json::Value::Null)
         .expect("spectrum subscribe applies");
     publish_subscriptions(&subscriptions_tx, &subscriptions);
 
@@ -1596,7 +1598,7 @@ async fn relay_spectrum_subscribes_lazily() {
     assert_eq!(payload.first().copied(), Some(0x02));
     assert_eq!(state.event_bus.spectrum_receiver_count(), 1);
 
-    subscriptions = subscriptions.unsubscribed(&["spectrum"]);
+    subscriptions = subscriptions.unsubscribed_unkeyed(&["spectrum"]);
     publish_subscriptions(&subscriptions_tx, &subscriptions);
     tokio::time::timeout(std::time::Duration::from_millis(250), async {
         loop {
@@ -1652,16 +1654,19 @@ async fn wait_for_display_preview_subscribers(
     .expect("display preview subscriber count should settle");
 }
 
-fn display_preview_payload_frame_number(payload: &Bytes) -> u32 {
+/// The device every display-preview cache test attributes its frames to.
+fn test_display_device() -> hypercolor_types::device::DeviceId {
+    hypercolor_types::device::DeviceId(uuid::Uuid::from_u128(0x0d15_71a7_0000_0001))
+}
+
+fn decoded_display_preview(payload: &Bytes) -> WireDisplayPreviewFrame {
     assert_eq!(payload.first().copied(), Some(WS_DISPLAY_PREVIEW_HEADER));
-    let bytes = payload
-        .get(1..5)
-        .expect("display preview payload should include a frame number");
-    u32::from_le_bytes(
-        bytes
-            .try_into()
-            .expect("display preview frame number should be four bytes"),
-    )
+    WireDisplayPreviewFrame::decode_bytes(payload)
+        .expect("display preview payload decodes as a keyed display frame")
+}
+
+fn display_preview_payload_frame_number(payload: &Bytes) -> u32 {
+    decoded_display_preview(payload).frame_number
 }
 
 #[test]
@@ -1694,6 +1699,20 @@ fn byte_bounded_lru_evicts_by_weight_and_rejects_oversized_entries() {
     ));
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.front().map(|(key, _)| *key), Some(2));
+}
+
+fn display_preview_test_frame(frame_number: u32, payload_len: usize) -> Bytes {
+    WireDisplayPreviewFrame {
+        device_id: test_display_device().to_string(),
+        frame_number,
+        timestamp_ms: frame_number,
+        width: 1,
+        height: 1,
+        format: WirePreviewPixelFormat::Jpeg,
+        payload: Bytes::from(jpeg_test_payload(1, 1, payload_len)),
+    }
+    .encode()
+    .expect("display preview test frame")
 }
 
 fn preview_test_frame(
@@ -1748,9 +1767,8 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
     };
     let message: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "subscribe",
-        "channels": ["canvas"],
-        "preview_transport": peer.encode(),
-        "config": { "canvas": { "format": "jpeg" } }
+        "topics": [{ "topic": "canvas", "config": { "format": "jpeg" } }],
+        "preview_transport": peer.encode()
     }))
     .expect("capability-bearing subscribe parses");
     let ClientMessage::Subscribe {
@@ -1814,8 +1832,7 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
     assert!(!receiver.is_current(&replacement));
 
     let ack = serde_json::to_value(ServerMessage::Subscribed {
-        channels: vec!["canvas".to_owned()],
-        config: serde_json::json!({}),
+        topics: Vec::new(),
         preview_transport: negotiated.encode(),
     })
     .expect("subscribe acknowledgment serializes");
@@ -1864,8 +1881,8 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
         try_receive_preview_publication(&byte_receiver).expect("third publication moves in flight");
     assert!(matches!(
         byte_sender.publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::DisplayPreview),
-            preview_test_frame(PreviewFrameChannel::DisplayPreview, 4, 700),
+            PreviewStreamId::Display(test_display_device().to_string()),
+            display_preview_test_frame(4, 700),
             None,
         ),
         Err(PreviewOutboundError::ConnectionBudgetExceeded { maximum: 2048, .. })
@@ -1908,12 +1925,12 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
 }
 
 #[test]
-fn legacy_subscribe_without_transport_capability_remains_valid() {
+fn a_subscribe_without_a_transport_capability_stays_on_the_server_default() {
     let message: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "subscribe",
-        "channels": ["events"]
+        "topics": [{ "topic": "events" }]
     }))
-    .expect("legacy subscribe parses");
+    .expect("a subscribe without preview_transport parses");
     assert!(matches!(
         message,
         ClientMessage::Subscribe {
@@ -1968,8 +1985,10 @@ fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
         captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(99),
     };
 
-    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
-    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
+    let first = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("first display preview payload");
+    let second = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("second display preview payload");
 
     assert_eq!(display_preview_payload_frame_number(&first), 17);
     assert_eq!(first, second);
@@ -1992,8 +2011,10 @@ fn cached_display_preview_payload_skips_cache_for_large_payloads() {
         captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(101),
     };
 
-    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
-    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
+    let first = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("first display preview payload");
+    let second = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("second display preview payload");
 
     assert_eq!(display_preview_payload_frame_number(&first), 21);
     assert_eq!(first, second);
@@ -2021,8 +2042,11 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
     // Derive the wire-header length from a probe payload so the boundary math
     // tracks the real header layout instead of a hard-coded guess.
     let probe_payload_len = 16;
-    let probe = cached_display_preview_payload(&display_preview_snapshot(probe_payload_len, 30))
-        .expect("display preview probe payload");
+    let probe = cached_display_preview_payload(
+        test_display_device(),
+        &display_preview_snapshot(probe_payload_len, 30),
+    )
+    .expect("display preview probe payload");
     let header_len = probe.len() - probe_payload_len;
     reset_ws_payload_caches();
 
@@ -2031,8 +2055,10 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
     // the allocator happened to reuse the freed Vec's address.
     let at_limit = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES - header_len;
     let snapshot = display_preview_snapshot(at_limit, 31);
-    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
-    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
+    let first = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("first display preview payload");
+    let second = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("second display preview payload");
     assert_eq!(
         first.as_ptr(),
         second.as_ptr(),
@@ -2041,8 +2067,10 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
 
     reset_ws_payload_caches();
     let snapshot = display_preview_snapshot(at_limit + 1, 32);
-    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
-    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
+    let first = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("first display preview payload");
+    let second = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("second display preview payload");
     assert_ne!(
         first.as_ptr(),
         second.as_ptr(),
@@ -2145,10 +2173,10 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     let device_id = state.device_registry.add(config.device_info()).await;
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let subscriptions = SubscriptionState::default()
-        .subscribed(
-            &["display_preview"],
-            serde_json::json!({"display_preview": {"device_id": device_id.to_string(), "fps": 30}}),
-        )
+        .subscribed(vec![
+            TopicSubscription::keyed("display_preview", device_id.to_string())
+                .with_config(serde_json::json!({"fps": 30})),
+        ])
         .expect("display preview subscribe applies");
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
     let (preview_tx, preview_rx) = preview_outbound_channel();
@@ -2163,7 +2191,13 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     wait_for_display_preview_subscribers(&display_frames, 1).await;
     publish_display_preview_snapshot(&display_frames, device_id, 1).await;
     let first = receive_direct_preview(&preview_rx).await;
-    assert_eq!(display_preview_payload_frame_number(&first), 1);
+    let decoded = decoded_display_preview(&first);
+    assert_eq!(decoded.frame_number, 1);
+    assert_eq!(
+        decoded.device_id,
+        device_id.to_string(),
+        "a keyed display frame names the device it came from"
+    );
 
     display_frames.write().await.remove(device_id);
     tokio::time::timeout(Duration::from_millis(250), async {
@@ -2195,10 +2229,10 @@ async fn relay_display_preview_does_not_subscribe_unknown_device() {
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let unknown_device_id = DeviceId::new();
     let subscriptions = SubscriptionState::default()
-        .subscribed(
-            &["display_preview"],
-            serde_json::json!({"display_preview": {"device_id": unknown_device_id.to_string()}}),
-        )
+        .subscribed(vec![TopicSubscription::keyed(
+            "display_preview",
+            unknown_device_id.to_string(),
+        )])
         .expect("display preview subscribe applies");
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
     let (preview_tx, preview_rx) = preview_outbound_channel();
@@ -2224,19 +2258,25 @@ async fn relay_display_preview_does_not_subscribe_unknown_device() {
 }
 
 #[test]
-fn parse_channels_accepts_supported_channel() {
-    let channels = vec![
-        "events".to_owned(),
-        "frames".to_owned(),
-        "spectrum".to_owned(),
-        "canvas".to_owned(),
-        "screen_canvas".to_owned(),
-        "frame_events".to_owned(),
-        "metrics".to_owned(),
-        "device_metrics".to_owned(),
-    ];
-    let parsed = parse_channels(&channels).expect("events should parse");
-    let topics: Vec<TopicId> = parsed.iter().map(|selection| selection.topic).collect();
+fn parse_subscriptions_accepts_supported_topics() {
+    let entries: Vec<TopicSubscription> = [
+        "events",
+        "frames",
+        "spectrum",
+        "canvas",
+        "screen_canvas",
+        "frame_events",
+        "metrics",
+        "device_metrics",
+    ]
+    .into_iter()
+    .map(TopicSubscription::unkeyed)
+    .collect();
+    let parsed = parse_subscriptions(&entries).expect("unkeyed topics should parse");
+    let topics: Vec<TopicId> = parsed
+        .iter()
+        .map(|request| request.selection.topic)
+        .collect();
     assert_eq!(
         topics,
         vec![
@@ -2251,15 +2291,61 @@ fn parse_channels_accepts_supported_channel() {
         ]
     );
     assert!(
-        parsed.iter().all(|selection| selection.key.is_none()),
-        "every topic is unkeyed on today's wire"
+        parsed.iter().all(|request| request.selection.key.is_none()),
+        "none of these topics takes a key"
     );
 }
 
 #[test]
-fn parse_channels_rejects_unknown_channel() {
-    let channels = vec!["unknown".to_owned()];
-    let error = parse_channels(&channels).expect_err("unknown channel should fail");
+fn parse_subscriptions_rejects_an_unknown_topic() {
+    let error = parse_subscriptions(&[TopicSubscription::unkeyed("unknown")])
+        .expect_err("unknown topic should fail");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn parse_subscriptions_carries_the_key_through_to_the_selection() {
+    let parsed = parse_subscriptions(&[
+        TopicSubscription::keyed("display_preview", "  device-abc  "),
+        TopicSubscription::keyed("interactive_preview", "stage"),
+    ])
+    .expect("keyed topics should parse");
+
+    assert_eq!(parsed[0].selection.key.as_deref(), Some("device-abc"));
+    assert_eq!(parsed[1].selection.key.as_deref(), Some("stage"));
+}
+
+#[test]
+fn parse_subscriptions_refuses_a_keyless_keyed_topic() {
+    let error = parse_subscriptions(&[TopicSubscription::unkeyed("display_preview")])
+        .expect_err("display_preview needs a device");
+    assert_eq!(error.code, "invalid_request");
+    assert!(error.message.contains("display_preview"));
+}
+
+#[test]
+fn parse_subscriptions_refuses_two_entries_for_one_subscription() {
+    // A client that sends the same subscription twice does not agree with
+    // itself about which config wins; resolving that silently would hide
+    // it from the only party who can fix it.
+    let error = parse_subscriptions(&[
+        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"interval_ms": 200})),
+        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"interval_ms": 300})),
+    ])
+    .expect_err("a repeated subscription is refused");
+    assert_eq!(error.code, "invalid_request");
+
+    // Two keys of one topic are two subscriptions, not a duplicate.
+    parse_subscriptions(&[
+        TopicSubscription::keyed("display_preview", "device-a"),
+        TopicSubscription::keyed("display_preview", "device-b"),
+    ])
+    .expect("distinct keys are distinct subscriptions");
+}
+
+#[test]
+fn parse_selectors_requires_at_least_one_entry() {
+    let error = parse_selectors(&[]).expect_err("an empty unsubscribe is refused");
     assert_eq!(error.code, "invalid_request");
 }
 
@@ -2271,14 +2357,14 @@ fn read_only_auth_rejects_private_capture_subscriptions() {
         TopicId::ScreenZones,
         TopicId::InputEvents,
     ]);
-    let error = authorize_subscription_channels(RequestAuthContext::read_only(), &channels)
+    let error = authorize_subscription_topics(RequestAuthContext::read_only(), &channels)
         .expect_err("read-only clients must not subscribe to capture-demand channels");
 
     assert_eq!(error.code, "forbidden");
     assert_eq!(
         error.details,
         Some(serde_json::json!({
-            "channels": ["screen_canvas", "screen_zones", "input_events"],
+            "topics": ["screen_canvas", "screen_zones", "input_events"],
             "required_tier": "control"
         }))
     );
@@ -2293,7 +2379,7 @@ fn read_only_auth_allows_non_capture_preview_subscriptions() {
         TopicId::WebViewportCanvas,
     ]);
 
-    authorize_subscription_channels(RequestAuthContext::read_only(), &channels)
+    authorize_subscription_topics(RequestAuthContext::read_only(), &channels)
         .expect("read-only clients may subscribe to non-capture channels");
 }
 
@@ -2305,7 +2391,7 @@ fn control_auth_allows_private_capture_subscriptions() {
         TopicId::InputEvents,
     ]);
 
-    authorize_subscription_channels(RequestAuthContext::control(), &channels)
+    authorize_subscription_topics(RequestAuthContext::control(), &channels)
         .expect("control clients may subscribe to capture preview channels");
 }
 
@@ -2390,7 +2476,7 @@ async fn zone_layout_preview_rejects_invalid_sampling_radii() {
 #[test]
 fn channel_config_apply_patch_supports_all_channels() {
     let state = SubscriptionState::default()
-        .subscribed(
+        .subscribed_unkeyed(
             &[
                 "frames",
                 "spectrum",
@@ -2410,7 +2496,7 @@ fn channel_config_apply_patch_supports_all_channels() {
         )
         .expect("full channel config patch should be accepted");
 
-    let json = state.config_projection();
+    let json = state.config_by_topic();
     assert_eq!(json["canvas"]["fps"], 60);
     assert_eq!(json["canvas"]["format"], "jpeg");
     assert_eq!(json["canvas"]["width"], 320);
@@ -2426,7 +2512,7 @@ fn channel_config_apply_patch_supports_all_channels() {
 #[test]
 fn channel_config_admits_wide_shapes_and_preserves_auto_dimensions() {
     let state = SubscriptionState::default()
-        .subscribed(
+        .subscribed_unkeyed(
             &["canvas", "screen_canvas"],
             serde_json::json!({
                 "canvas": {"width": 100_000, "height": 1_000},
@@ -2435,7 +2521,7 @@ fn channel_config_admits_wide_shapes_and_preserves_auto_dimensions() {
         )
         .expect("wide shapes are admitted");
 
-    let json = state.config_projection();
+    let json = state.config_by_topic();
     assert_eq!(json["canvas"]["width"], 100_000);
     assert_eq!(json["canvas"]["height"], 1_000);
     assert_eq!(json["screen_canvas"]["width"], u32::MAX);
@@ -2445,12 +2531,12 @@ fn channel_config_admits_wide_shapes_and_preserves_auto_dimensions() {
 #[test]
 fn channel_config_rejects_over_budget_shape_transactionally() {
     let live = SubscriptionState::default()
-        .subscribed(&["canvas", "zone_preview"], serde_json::Value::Null)
+        .subscribed_unkeyed(&["canvas", "zone_preview"], serde_json::Value::Null)
         .expect("bare subscribe applies");
 
     let error = live
-        .subscribed(
-            &["canvas"],
+        .subscribed_unkeyed(
+            &["canvas", "zone_preview"],
             serde_json::json!({
                 "canvas": {"fps": 60},
                 "zone_preview": {"width": 32_768, "height": 4_097}
@@ -2460,7 +2546,7 @@ fn channel_config_rejects_over_budget_shape_transactionally() {
 
     assert_eq!(error.code, "invalid_config");
     // The valid stanza in the same request did not land either.
-    let json = live.config_projection();
+    let json = live.config_by_topic();
     assert_eq!(json["canvas"]["fps"], 15);
     assert_eq!(json["zone_preview"]["width"], 0);
     assert_eq!(json["zone_preview"]["height"], 0);
@@ -2469,7 +2555,7 @@ fn channel_config_rejects_over_budget_shape_transactionally() {
 #[test]
 fn channel_config_defaults_are_stable() {
     let json = SubscriptionState::default()
-        .subscribed(
+        .subscribed_unkeyed(
             &[
                 "frames",
                 "spectrum",
@@ -2481,7 +2567,7 @@ fn channel_config_defaults_are_stable() {
             serde_json::Value::Null,
         )
         .expect("bare subscribe applies")
-        .config_projection();
+        .config_by_topic();
 
     assert_eq!(json["frames"]["fps"], 30);
     assert_eq!(json["frames"]["format"], "binary");
@@ -2503,7 +2589,7 @@ fn config_for_a_configless_topic_is_refused_the_same_way_in_both_phases() {
     // client mistake, so the client sees one answer.
     for stanza in [serde_json::Value::Null, serde_json::json!({"fps": 10})] {
         let error = SubscriptionState::default()
-            .subscribed(&["sensors"], serde_json::json!({"sensors": stanza}))
+            .subscribed_unkeyed(&["sensors"], serde_json::json!({"sensors": stanza}))
             .expect_err("sensors takes no config");
 
         assert_eq!(error.code, "invalid_config");
@@ -2518,68 +2604,76 @@ fn config_for_a_configless_topic_is_refused_the_same_way_in_both_phases() {
 }
 
 #[test]
-fn a_repeated_config_stanza_is_refused_rather_than_resolved() {
-    // Two stanzas for one channel means the client does not agree with
-    // itself about which config wins. Taking the last one silently would
-    // hide that from the only party who can fix it.
-    let repeated = r#"{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":100},"metrics":{"interval_ms":900}}}"#;
-    let error = serde_json::from_str::<ClientMessage>(repeated)
-        .expect_err("a repeated config stanza must not resolve to the last one");
-    assert!(
-        error
-            .to_string()
-            .contains("duplicate config stanza `metrics`"),
-        "expected a duplicate-stanza rejection, got: {error}"
-    );
-
-    // One stanza for the same channel still parses and carries its value.
-    let single =
-        r#"{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":900}}}"#;
-    let message: ClientMessage =
-        serde_json::from_str(single).expect("a single stanza per channel parses");
-    let ClientMessage::Subscribe { config, .. } = message else {
+fn a_subscribe_carries_its_config_inside_each_selector() {
+    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":900}},{"topic":"display_preview","key":"device-abc","config":{"fps":9}}]}"#;
+    let message: ClientMessage = serde_json::from_str(raw).expect("a keyed subscribe parses");
+    let ClientMessage::Subscribe { topics, .. } = message else {
         panic!("expected a subscribe");
     };
-    let config = config.expect("the stanza survives parsing");
-    assert_eq!(config.stanzas()["metrics"]["interval_ms"], 900);
+
+    assert_eq!(topics.len(), 2);
+    assert_eq!(topics[0].topic, "metrics");
+    assert_eq!(topics[0].key, None);
+    assert_eq!(
+        topics[0].config.as_ref().expect("metrics config")["interval_ms"],
+        900
+    );
+    assert_eq!(topics[1].topic, "display_preview");
+    assert_eq!(topics[1].key.as_deref(), Some("device-abc"));
+    assert_eq!(topics[1].config.as_ref().expect("display config")["fps"], 9);
 }
 
 #[test]
-fn an_absent_or_null_config_object_is_no_config_at_all() {
+fn a_subscribe_entry_refuses_fields_it_does_not_define() {
+    // The entry owns exactly three fields; anything else is a client
+    // mistake the wire must not silently drop.
+    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","cfg":{"interval_ms":900}}]}"#;
+    serde_json::from_str::<ClientMessage>(raw)
+        .expect_err("an unknown selector field must fail loudly");
+}
+
+#[test]
+fn an_absent_or_null_selector_config_is_no_config_at_all() {
     for raw in [
-        r#"{"type":"subscribe","channels":["metrics"]}"#,
-        r#"{"type":"subscribe","channels":["metrics"],"config":null}"#,
+        r#"{"type":"subscribe","topics":[{"topic":"metrics"}]}"#,
+        r#"{"type":"subscribe","topics":[{"topic":"metrics","config":null}]}"#,
     ] {
         let message: ClientMessage =
             serde_json::from_str(raw).expect("subscribe without config parses");
-        let ClientMessage::Subscribe { config, .. } = message else {
+        let ClientMessage::Subscribe { topics, .. } = message else {
             panic!("expected a subscribe");
         };
-        assert!(config.is_none(), "{raw}");
+        assert!(
+            topics[0]
+                .config
+                .as_ref()
+                .is_none_or(serde_json::Value::is_null),
+            "{raw}"
+        );
     }
 }
 
 #[test]
 fn a_null_stanza_leaves_a_configurable_topic_alone() {
     let state = SubscriptionState::default()
-        .subscribed(
+        .subscribed_unkeyed(
             &["metrics"],
             serde_json::json!({"metrics": {"interval_ms": 250}}),
         )
         .expect("metrics subscribe applies")
-        .subscribed(&["metrics"], serde_json::json!({"metrics": null}))
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": null}))
         .expect("a null stanza is not a patch");
 
-    assert_eq!(state.config_projection()["metrics"]["interval_ms"], 250);
+    assert_eq!(state.config_by_topic()["metrics"]["interval_ms"], 250);
 }
 
 #[test]
 fn config_for_an_unrecognized_channel_is_ignored() {
     let state = SubscriptionState::default()
-        .subscribed(&["metrics"], serde_json::json!({"lasers": {"fps": 1}}))
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"lasers": {"fps": 1}}))
         .expect("a stanza for no known topic is not a subscribe failure");
 
-    let config = state.config_projection();
+    let config = state.config_by_topic();
     assert!(config.get("lasers").is_none());
     assert_eq!(config["metrics"]["interval_ms"], 1000);
 }
@@ -2587,33 +2681,33 @@ fn config_for_an_unrecognized_channel_is_ignored() {
 #[test]
 fn unsubscribing_keeps_the_config_a_resubscribe_reinstates() {
     let configured = SubscriptionState::default()
-        .subscribed(
+        .subscribed_unkeyed(
             &["metrics"],
             serde_json::json!({"metrics": {"interval_ms": 250}}),
         )
         .expect("metrics subscribe applies");
     assert!(configured.live_table_agrees_with_membership());
-    assert!(!configured.has_dormant_config(TopicId::Metrics));
+    assert!(!configured.has_dormant_config(TopicId::Metrics, None));
 
     // Unsubscribing parks the config rather than dropping it, and the
     // live table stops claiming a topic nobody is subscribed to.
-    let dropped = configured.unsubscribed(&["metrics"]);
+    let dropped = configured.unsubscribed_unkeyed(&["metrics"]);
     assert!(!dropped.contains(TopicId::Metrics));
-    assert!(dropped.config_projection().get("metrics").is_none());
+    assert!(dropped.config_by_topic().get("metrics").is_none());
     assert!(dropped.live_table_agrees_with_membership());
-    assert!(dropped.has_dormant_config(TopicId::Metrics));
+    assert!(dropped.has_dormant_config(TopicId::Metrics, None));
 
     let restored = dropped
-        .subscribed(&["metrics"], serde_json::Value::Null)
+        .subscribed_unkeyed(&["metrics"], serde_json::Value::Null)
         .expect("resubscribe applies");
     assert_eq!(
-        restored.config_projection()["metrics"]["interval_ms"],
+        restored.config_by_topic()["metrics"]["interval_ms"],
         250,
         "a resubscribe reinstates the client's own cadence, not the default"
     );
     assert!(restored.live_table_agrees_with_membership());
     assert!(
-        !restored.has_dormant_config(TopicId::Metrics),
+        !restored.has_dormant_config(TopicId::Metrics, None),
         "a reinstated config moves back rather than being copied"
     );
 }
@@ -2627,47 +2721,89 @@ fn the_live_table_never_claims_an_unsubscribed_topic() {
     assert!(state.live_table_agrees_with_membership());
 
     state = state
-        .subscribed(
-            &["frames", "canvas"],
-            serde_json::json!({"frames": {"fps": 12}, "display_preview": {"fps": 9}}),
-        )
-        .expect("subscribe with an unrelated stanza applies");
-    assert!(
-        state.live_table_agrees_with_membership(),
-        "configuring an unsubscribed topic must not fake a subscription"
-    );
-    assert!(state.has_dormant_config(TopicId::DisplayPreview));
-
-    state = state.unsubscribed(&["frames"]);
+        .subscribed(vec![
+            TopicSubscription::unkeyed("frames").with_config(serde_json::json!({"fps": 12})),
+            TopicSubscription::unkeyed("canvas"),
+            TopicSubscription::keyed("display_preview", "device-abc")
+                .with_config(serde_json::json!({"fps": 9})),
+        ])
+        .expect("a keyed and unkeyed subscribe applies");
     assert!(state.live_table_agrees_with_membership());
+
+    state = state.unsubscribed_unkeyed(&["frames"]);
+    assert!(state.live_table_agrees_with_membership());
+    assert!(state.has_dormant_config(TopicId::Frames, None));
+
+    state = state.unsubscribed(vec![TopicSelector::keyed("display_preview", "device-abc")]);
+    assert!(state.live_table_agrees_with_membership());
+    assert!(!state.contains(TopicId::DisplayPreview));
+    assert!(state.has_dormant_config(TopicId::DisplayPreview, Some("device-abc")));
 
     state = state
-        .subscribed(&["frames", "display_preview"], serde_json::Value::Null)
+        .subscribed(vec![
+            TopicSubscription::unkeyed("frames"),
+            TopicSubscription::keyed("display_preview", "device-abc"),
+        ])
         .expect("resubscribe applies");
     assert!(state.live_table_agrees_with_membership());
-    assert_eq!(state.config_projection()["frames"]["fps"], 12);
-    assert_eq!(state.config_projection()["display_preview"]["fps"], 9);
+    assert_eq!(state.config_by_topic()["frames"]["fps"], 12);
+    assert_eq!(
+        state.config_by_topic()["display_preview"]["device-abc"]["fps"],
+        9
+    );
 }
 
 #[test]
-fn config_lands_for_a_topic_the_request_does_not_subscribe() {
+fn a_patch_can_only_target_a_subscription_the_same_request_names() {
+    // Config rides inside its selector, so there is no way to spell
+    // "configure frames without subscribing to it" any more.
     let state = SubscriptionState::default()
-        .subscribed(&["events"], serde_json::json!({"frames": {"fps": 12}}))
-        .expect("configuring an unsubscribed topic is allowed");
+        .subscribed_unkeyed(&["events"], serde_json::json!({"frames": {"fps": 12}}))
+        .expect("a config map entry for an unnamed topic is simply not read");
 
-    assert!(
-        state.config_projection().get("frames").is_none(),
-        "an unsubscribed topic is not echoed"
-    );
-    assert!(state.has_dormant_config(TopicId::Frames));
+    assert!(state.config_by_topic().get("frames").is_none());
+    assert!(!state.has_dormant_config(TopicId::Frames, None));
     assert!(state.live_table_agrees_with_membership());
     assert_eq!(
         state
-            .subscribed(&["frames"], serde_json::Value::Null)
+            .subscribed_unkeyed(&["frames"], serde_json::Value::Null)
             .expect("frames subscribe applies")
-            .config_projection()["frames"]["fps"],
-        12
+            .config_by_topic()["frames"]["fps"],
+        30,
+        "frames keeps its default because nothing ever configured it"
     );
+}
+
+#[test]
+fn one_topic_holds_a_subscription_per_key() {
+    let state = SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("display_preview", "device-a")
+                .with_config(serde_json::json!({"fps": 5})),
+            TopicSubscription::keyed("display_preview", "device-b")
+                .with_config(serde_json::json!({"fps": 25})),
+        ])
+        .expect("two devices are two subscriptions");
+
+    assert!(state.holds(TopicId::DisplayPreview, Some("device-a")));
+    assert!(state.holds(TopicId::DisplayPreview, Some("device-b")));
+    assert!(!state.holds(TopicId::DisplayPreview, Some("device-c")));
+
+    let configs = state.keyed_configs::<hypercolor_leptos_ext::ws::registry::DisplayPreviewConfig>(
+        TopicId::DisplayPreview,
+    );
+    assert_eq!(configs.len(), 2);
+    assert_eq!(configs[0].0, "device-a");
+    assert_eq!(configs[0].1.fps, 5);
+    assert_eq!(configs[1].0, "device-b");
+    assert_eq!(configs[1].1.fps, 25);
+
+    // Retiring one key leaves the other live, and the topic with it.
+    let remaining = state.unsubscribed(vec![TopicSelector::keyed("display_preview", "device-a")]);
+    assert!(!remaining.holds(TopicId::DisplayPreview, Some("device-a")));
+    assert!(remaining.holds(TopicId::DisplayPreview, Some("device-b")));
+    assert!(remaining.contains(TopicId::DisplayPreview));
+    assert!(remaining.live_table_agrees_with_membership());
 }
 
 #[test]
@@ -2712,16 +2848,6 @@ fn staging_a_preview_transport_does_not_adopt_it() {
         .expect_err("an active transport cannot renegotiate");
     assert_eq!(error.code, "invalid_request");
     assert_eq!(capability, PreviewTransportCapability::default());
-}
-
-#[test]
-fn unique_channel_names_are_sorted() {
-    let names = unique_sorted_channel_names(&selections(&[
-        TopicId::Events,
-        TopicId::Events,
-        TopicId::Events,
-    ]));
-    assert_eq!(names, vec!["events"]);
 }
 
 #[test]
@@ -2786,30 +2912,30 @@ fn event_message_parts_serializes_control_surface_changed() {
 }
 
 #[test]
-fn event_message_parts_serializes_render_group_changed() {
-    let group_id = ZoneId::new();
-    let event = HypercolorEvent::RenderGroupChanged {
+fn event_message_parts_serializes_zone_changed() {
+    let zone_id = ZoneId::new();
+    let event = HypercolorEvent::ZoneChanged {
         scene_id: SceneId::DEFAULT,
-        group_id,
+        zone_id,
         role: ZoneRole::Display,
         kind: hypercolor_types::event::ZoneChangeKind::ControlsPatched,
     };
 
     let (event_name, event_data) = event_message_parts(&event);
-    assert_eq!(event_name, "render_group_changed");
+    assert_eq!(event_name, "zone_changed");
     assert_eq!(event_data["scene_id"], SceneId::DEFAULT.to_string());
-    assert_eq!(event_data["group_id"], group_id.to_string());
+    assert_eq!(event_data["zone_id"], zone_id.to_string());
     assert_eq!(event_data["role"], "display");
     assert_eq!(event_data["kind"], "controls_patched");
 }
 
 #[test]
 fn event_message_parts_serializes_effect_degraded() {
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let event = HypercolorEvent::EffectDegraded {
         effect_id: "effect-1".to_owned(),
-        group_id: Some(group_id),
-        group_name: Some("Display Face".to_owned()),
+        zone_id: Some(zone_id),
+        zone_name: Some("Display Face".to_owned()),
         state: hypercolor_types::event::EffectDegradationState::Failed,
         reason: Some("boom".to_owned()),
     };
@@ -2817,8 +2943,8 @@ fn event_message_parts_serializes_effect_degraded() {
     let (event_name, event_data) = event_message_parts(&event);
     assert_eq!(event_name, "effect_degraded");
     assert_eq!(event_data["effect_id"], "effect-1");
-    assert_eq!(event_data["group_id"], group_id.to_string());
-    assert_eq!(event_data["group_name"], "Display Face");
+    assert_eq!(event_data["zone_id"], zone_id.to_string());
+    assert_eq!(event_data["zone_name"], "Display Face");
     assert_eq!(event_data["state"], "failed");
     assert_eq!(event_data["reason"], "boom");
 }
@@ -2978,7 +3104,7 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
     let bus = HypercolorBus::new();
     let event_rx = bus.subscribe_all();
     let subscriptions = SubscriptionState::default()
-        .subscribed(&["input_events"], serde_json::Value::Null)
+        .subscribed_unkeyed(&["input_events"], serde_json::Value::Null)
         .expect("input events subscribe applies");
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
@@ -3490,51 +3616,57 @@ fn interactive_preview_config() -> InteractivePreviewConfig {
     }
 }
 
-fn opened_address(message: ServerMessage) -> (u64, u64, bool) {
-    let ServerMessage::InteractivePreviewOpened {
-        connection_incarnation,
-        publication_id,
-        already_open,
-        ..
-    } = message
-    else {
-        panic!("expected interactive preview open acknowledgment");
-    };
-    (connection_incarnation, publication_id, already_open)
+/// Drive a set of interactive preview keys the way one subscribe does.
+///
+/// Reconciliation is against the connection's whole live subscription
+/// set, so a caller that wants two previews open names both.
+async fn subscribe_interactive_previews(
+    previews: &mut BrowserPreviewSession,
+    keys: &[(&str, InteractivePreviewConfig)],
+) -> Result<(), super::protocol::WsProtocolError> {
+    let entries = keys
+        .iter()
+        .map(|(preview_id, config)| {
+            TopicSubscription::keyed("interactive_preview", *preview_id)
+                .with_config(serde_json::to_value(*config).expect("config serializes"))
+        })
+        .collect();
+    let state = SubscriptionState::default()
+        .subscribed(entries)
+        .expect("an interactive preview subscribe applies");
+    previews.reconcile(&state).await
+}
+
+/// Drive one interactive preview key the way a subscribe does.
+async fn subscribe_interactive_preview(
+    previews: &mut BrowserPreviewSession,
+    preview_id: &str,
+    config: InteractivePreviewConfig,
+) -> Result<(), super::protocol::WsProtocolError> {
+    subscribe_interactive_previews(previews, &[(preview_id, config)]).await
+}
+
+/// Retire every interactive preview the way an unsubscribe does.
+async fn unsubscribe_all_interactive_previews(previews: &mut BrowserPreviewSession) {
+    previews
+        .reconcile(&SubscriptionState::default())
+        .await
+        .expect("retiring previews cannot refuse");
 }
 
 #[test]
 fn interactive_preview_commands_are_addressed_and_acknowledged() {
-    let open: ClientMessage = serde_json::from_value(serde_json::json!({
-        "type": "interactive_preview_open",
+    // Opening and closing are subscribe and unsubscribe now; only the
+    // messages addressed at an already-open preview remain their own.
+    let inject: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "input_inject",
         "preview_id": "main canvas",
-        "fps": 60,
-        "width": 640,
-        "height": 480,
-        "format": "rgba"
+        "events": []
     }))
-    .expect("open command should parse");
+    .expect("inject command should parse");
     assert!(matches!(
-        open,
-        ClientMessage::InteractivePreviewOpen {
-            preview_id,
-            target: InteractivePreviewTarget::ActiveScene,
-            fps: 60,
-            width: 640,
-            height: 480,
-            format: CanvasFormat::Rgba,
-        } if preview_id == "main canvas"
-    ));
-
-    let close: ClientMessage = serde_json::from_value(serde_json::json!({
-        "type": "interactive_preview_close",
-        "preview_id": "main canvas"
-    }))
-    .expect("close command should parse");
-    assert!(matches!(
-        close,
-        ClientMessage::InteractivePreviewClose { preview_id }
-            if preview_id == "main canvas"
+        inject,
+        ClientMessage::InputInject { preview_id, .. } if preview_id == "main canvas"
     ));
 
     let claim: ClientMessage = serde_json::from_value(serde_json::json!({
@@ -3559,38 +3691,56 @@ fn interactive_preview_commands_are_addressed_and_acknowledged() {
             if preview_id == "main canvas"
     ));
 
-    let opened = serde_json::to_value(ServerMessage::InteractivePreviewOpened {
-        preview_id: "main canvas".to_owned(),
-        connection_incarnation: 7,
-        publication_id: 11,
-        already_open: false,
-        config: interactive_preview_config(),
-    })
-    .expect("open acknowledgment should serialize");
-    assert_eq!(opened["type"], "interactive_preview_opened");
-    assert_eq!(opened["connection_incarnation"], 7);
-    assert_eq!(opened["publication_id"], 11);
+    // The old bespoke session verbs are gone rather than aliased.
+    for retired in [
+        serde_json::json!({
+            "type": "interactive_preview_open",
+            "preview_id": "main canvas",
+            "fps": 60,
+            "width": 640,
+            "height": 480,
+            "format": "rgba"
+        }),
+        serde_json::json!({
+            "type": "interactive_preview_close",
+            "preview_id": "main canvas"
+        }),
+    ] {
+        serde_json::from_value::<ClientMessage>(retired)
+            .expect_err("the interactive preview session verbs are deleted");
+    }
+}
+
+#[test]
+fn an_interactive_preview_subscribe_carries_its_whole_config() {
+    let raw = r#"{"type":"subscribe","topics":[{"topic":"interactive_preview","key":"main canvas","config":{"target":"active_scene","fps":60,"width":640,"height":480,"format":"rgba"}}]}"#;
+    let message: ClientMessage =
+        serde_json::from_str(raw).expect("an interactive preview subscribe parses");
+    let ClientMessage::Subscribe { topics, .. } = message else {
+        panic!("expected a subscribe");
+    };
+
+    let state = SubscriptionState::default()
+        .subscribed(topics)
+        .expect("the subscribe applies");
+    let config: InteractivePreviewConfig =
+        state.config_of(TopicId::InteractivePreview, Some("main canvas"));
+    assert_eq!(config, interactive_preview_config());
 }
 
 #[test]
 fn interactive_preview_dimensions_use_format_aware_shape_admission() {
-    let wide: ClientMessage = serde_json::from_value(serde_json::json!({
-        "type": "interactive_preview_open",
-        "preview_id": "wide",
-        "fps": 60,
-        "width": 100_000,
-        "height": 1_000,
-        "format": "rgba"
-    }))
-    .expect("wide interactive preview parses");
-    assert!(matches!(
-        wide,
-        ClientMessage::InteractivePreviewOpen {
-            width: 100_000,
-            height: 1_000,
-            ..
-        }
-    ));
+    let wide = SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("interactive_preview", "wide").with_config(
+                serde_json::json!({"width": 100_000, "height": 1_000, "format": "rgba"}),
+            ),
+        ])
+        .expect("a wide interactive preview fits the publication budget");
+    let wide_config: InteractivePreviewConfig =
+        wide.config_of(TopicId::InteractivePreview, Some("wide"));
+    assert_eq!(wide_config.width, 100_000);
+    assert_eq!(wide_config.height, 1_000);
     validate_interactive_preview_shape(100_000, 1_000, CanvasFormat::Rgba)
         .expect("wide shape fits the publication budget");
 
@@ -3600,15 +3750,20 @@ fn interactive_preview_dimensions_use_format_aware_shape_admission() {
     validate_interactive_preview_shape(65_536, 1, CanvasFormat::Rgba)
         .expect("raw previews retain u32 axes within the byte budget");
 
-    let zero = serde_json::from_value::<ClientMessage>(serde_json::json!({
-        "type": "interactive_preview_open",
-        "preview_id": "empty",
-        "fps": 60,
-        "width": 0,
-        "height": 1,
-        "format": "rgba"
-    }));
-    assert!(zero.is_err());
+    let zero = SubscriptionState::default().subscribed(vec![
+        TopicSubscription::keyed("interactive_preview", "empty")
+            .with_config(serde_json::json!({"width": 0, "height": 1})),
+    ]);
+    assert!(zero.is_err(), "a zero-width preview lane is refused");
+
+    let over_budget = SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("interactive_preview", "huge").with_config(
+                serde_json::json!({"width": 32_768, "height": 4_097, "format": "rgba"}),
+            ),
+        ])
+        .expect_err("over-budget interactive shape is rejected");
+    assert_eq!(over_budget.code, "invalid_request");
 
     let error = validate_interactive_preview_shape(32_768, 4_097, CanvasFormat::Rgba)
         .expect_err("over-budget interactive shape is rejected");
@@ -3616,31 +3771,28 @@ fn interactive_preview_dimensions_use_format_aware_shape_admission() {
 }
 
 #[test]
-fn interactive_preview_open_rejects_invalid_render_config() {
+fn an_interactive_preview_subscribe_rejects_invalid_render_config() {
     for (field, value) in [("fps", 0), ("fps", 61), ("width", 0), ("height", 0)] {
-        let mut payload = serde_json::json!({
-            "type": "interactive_preview_open",
-            "preview_id": "main",
+        let mut patch = serde_json::json!({
             "fps": 60,
             "width": 640,
             "height": 480,
             "format": "rgba"
         });
-        payload[field] = value.into();
-        serde_json::from_value::<ClientMessage>(payload)
+        patch[field] = value.into();
+        let error = SubscriptionState::default()
+            .subscribed(vec![
+                TopicSubscription::keyed("interactive_preview", "main").with_config(patch),
+            ])
             .expect_err("out-of-range interactive preview config must be rejected");
+        assert_eq!(error.code, "invalid_config");
     }
 
-    let unknown_target = serde_json::json!({
-        "type": "interactive_preview_open",
-        "preview_id": "main",
-        "target": "another_connection",
-        "fps": 60,
-        "width": 640,
-        "height": 480,
-        "format": "rgba"
-    });
-    serde_json::from_value::<ClientMessage>(unknown_target)
+    SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("interactive_preview", "main")
+                .with_config(serde_json::json!({"target": "another_connection"})),
+        ])
         .expect_err("unsupported interactive preview target must be rejected");
 }
 
@@ -3652,34 +3804,41 @@ async fn interactive_preview_input_requires_same_connection_open_and_stays_isola
         browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
     let (mut second, _second_tx, _second_rx) =
         browser_preview_session(handle.clone(), routing, executor);
-    let (first_connection, first_publication, _) = opened_address(
-        first
-            .open("shared".to_owned(), interactive_preview_config())
-            .await
-            .expect("first preview should open"),
-    );
+    subscribe_interactive_preview(&mut first, "shared", interactive_preview_config())
+        .await
+        .expect("first preview should open");
+    let first_connection = first.connection_incarnation().get();
+    let first_publication = first
+        .publication_id("shared")
+        .expect("the first preview publishes")
+        .get();
+
     let mut resized = interactive_preview_config();
     resized.width = 960;
-    let (_, repeated_publication, already_open) = opened_address(
+    subscribe_interactive_preview(&mut first, "shared", resized)
+        .await
+        .expect("resubscribing with a new shape preserves the preview identity");
+    assert_eq!(
         first
-            .open("shared".to_owned(), resized)
-            .await
-            .expect("reopening should preserve the preview identity"),
+            .publication_id("shared")
+            .expect("the resized preview still publishes")
+            .get(),
+        first_publication
     );
-    assert_eq!(repeated_publication, first_publication);
-    assert!(already_open);
 
     let error = second
         .inject("shared".to_owned(), vec![pressed_key("foreign")])
         .expect_err("another connection cannot address the first preview");
     assert_eq!(error.code, "invalid_request");
 
-    let (second_connection, second_publication, _) = opened_address(
-        second
-            .open("shared".to_owned(), interactive_preview_config())
-            .await
-            .expect("same opaque id should open independently"),
-    );
+    subscribe_interactive_preview(&mut second, "shared", interactive_preview_config())
+        .await
+        .expect("same opaque id should open independently");
+    let second_connection = second.connection_incarnation().get();
+    let second_publication = second
+        .publication_id("shared")
+        .expect("the second preview publishes")
+        .get();
     assert_ne!(first_connection, second_connection);
     assert_ne!(first_publication, second_publication);
 
@@ -3732,12 +3891,10 @@ async fn interactive_preview_authoritative_claims_conflict_and_release_idempoten
         browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
     let (mut second, _second_tx, _second_rx) =
         browser_preview_session(handle, routing.clone(), executor);
-    first
-        .open("first".to_owned(), interactive_preview_config())
+    subscribe_interactive_preview(&mut first, "first", interactive_preview_config())
         .await
         .expect("first preview should open");
-    second
-        .open("second".to_owned(), interactive_preview_config())
+    subscribe_interactive_preview(&mut second, "second", interactive_preview_config())
         .await
         .expect("second preview should open");
 
@@ -3793,14 +3950,15 @@ async fn interactive_preview_aborted_future_closes_all_and_releases_once() {
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
         let (mut session, _outbound, _frames) = browser_preview_session(handle, routing, executor);
-        session
-            .open("main".to_owned(), interactive_preview_config())
-            .await
-            .expect("main preview should open");
-        session
-            .open("inspector".to_owned(), interactive_preview_config())
-            .await
-            .expect("second preview should open");
+        subscribe_interactive_previews(
+            &mut session,
+            &[
+                ("main", interactive_preview_config()),
+                ("inspector", interactive_preview_config()),
+            ],
+        )
+        .await
+        .expect("both previews should open");
         session
             .claim_authoritative("main".to_owned())
             .expect("main preview should claim authoritative input");
@@ -3826,23 +3984,18 @@ async fn interactive_preview_explicit_close_and_drop_are_exactly_once() {
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, _outbound, _frames) =
         browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
-    session
-        .open("main".to_owned(), interactive_preview_config())
+    subscribe_interactive_preview(&mut session, "main", interactive_preview_config())
         .await
         .expect("preview should open");
     session
         .claim_authoritative("main".to_owned())
         .expect("preview should claim authoritative input");
 
-    assert!(matches!(
-        session.close("main".to_owned()).await,
-        ServerMessage::InteractivePreviewClosed { closed: true, .. }
-    ));
+    unsubscribe_all_interactive_previews(&mut session).await;
     let generation_after_close = routing.snapshot().generation;
-    assert!(matches!(
-        session.close("main".to_owned()).await,
-        ServerMessage::InteractivePreviewClosed { closed: false, .. }
-    ));
+    // Retiring an already-retired preview is a no-op, not a second
+    // teardown: the routing generation must not move again.
+    unsubscribe_all_interactive_previews(&mut session).await;
     drop(session);
 
     assert_eq!(routing.snapshot().generation, generation_after_close);
@@ -3863,12 +4016,13 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, outbound, _frames) = browser_preview_session(handle, routing, executor);
-    let (_, first_publication, _) = opened_address(
-        session
-            .open("same".to_owned(), interactive_preview_config())
-            .await
-            .expect("first preview should open"),
-    );
+    subscribe_interactive_preview(&mut session, "same", interactive_preview_config())
+        .await
+        .expect("first preview should open");
+    let first_publication = session
+        .publication_id("same")
+        .expect("first publication should be active")
+        .get();
     let first_publication_id = session
         .publication_id("same")
         .expect("first publication should be active");
@@ -3891,13 +4045,14 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
         )
         .expect("old publication frame should enter the preview router");
 
-    session.close("same".to_owned()).await;
-    let (_, second_publication, _) = opened_address(
-        session
-            .open("same".to_owned(), interactive_preview_config())
-            .await
-            .expect("same id should reopen with a new publication"),
-    );
+    unsubscribe_all_interactive_previews(&mut session).await;
+    subscribe_interactive_preview(&mut session, "same", interactive_preview_config())
+        .await
+        .expect("same id should reopen with a new publication");
+    let second_publication = session
+        .publication_id("same")
+        .expect("second publication should be active")
+        .get();
     let second_publication_id = session
         .publication_id("same")
         .expect("second publication should be active");
@@ -3917,8 +4072,7 @@ async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
     let mut config = interactive_preview_config();
     config.width = 16;
     config.height = 8;
-    session
-        .open("live".to_owned(), config)
+    subscribe_interactive_preview(&mut session, "live", config)
         .await
         .expect("interactive preview should open a real lane");
 
@@ -3956,10 +4110,10 @@ async fn interactive_preview_open_without_executor_creates_no_input_attachment()
     let (outbound, _frames) = preview_outbound_channel();
     let mut session = BrowserPreviewSession::new(handle, routing, None, outbound);
 
-    let error = session
-        .open("unavailable".to_owned(), interactive_preview_config())
-        .await
-        .expect_err("open must fail when no render executor exists");
+    let error =
+        subscribe_interactive_preview(&mut session, "unavailable", interactive_preview_config())
+            .await
+            .expect_err("subscribing must fail when no render executor exists");
     assert_eq!(error.code, "unavailable");
     assert_eq!(
         error
@@ -3985,6 +4139,7 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"device_metrics".to_owned()));
     assert!(capabilities.contains(&"sensors".to_owned()));
     assert!(capabilities.contains(&"display_preview".to_owned()));
+    assert!(capabilities.contains(&"interactive_preview".to_owned()));
     assert!(capabilities.contains(&"input_events".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));
@@ -4153,86 +4308,88 @@ fn websocket_manifest_matches_protocol_constants() {
         .filter_map(serde_json::Value::as_str)
         .collect::<std::collections::BTreeSet<_>>();
     for message in [
-        "interactive_preview_open",
-        "interactive_preview_close",
+        "subscribe",
+        "unsubscribe",
         "input_inject",
         "interactive_preview_claim_authoritative",
         "interactive_preview_release_authoritative",
     ] {
         assert!(client_messages.contains(message), "missing {message}");
     }
+    // Opening and closing an interactive preview are subscribe and
+    // unsubscribe now; the session verbs are deleted, not aliased.
+    for retired in ["interactive_preview_open", "interactive_preview_close"] {
+        assert!(
+            !client_messages.contains(retired),
+            "{retired} should be gone from the manifest"
+        );
+    }
+
+    let server_messages = manifest["json_messages"]["server"]
+        .as_array()
+        .expect("server message inventory")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    for retired in ["interactive_preview_opened", "interactive_preview_closed"] {
+        assert!(
+            !server_messages.contains(retired),
+            "{retired} should be gone from the manifest"
+        );
+    }
 }
 
 #[test]
-fn display_preview_patch_applies_tri_state_at_the_boundary() {
-    // Three JSON shapes the client can send:
-    //   - key absent → the target stays as it was
-    //   - `null`     → the target is cleared
-    //   - a string   → the target is set
-    // The patch type's own coverage lives in the leptos-ext registry
-    // suite; this is the same tri-state seen through a subscribe.
-
-    let targeted = SubscriptionState::default()
-        .subscribed(
-            &["display_preview"],
-            serde_json::json!({"display_preview": {"device_id": "device-abc", "fps": 20}}),
-        )
-        .expect("set applied");
+fn a_display_preview_subscription_is_named_by_its_device() {
+    // The target used to be a tri-state config field a client retargeted
+    // in place. It is the subscription key now, so following a second
+    // display is a second subscription rather than a retarget.
+    let one = SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("display_preview", "device-abc")
+                .with_config(serde_json::json!({"fps": 20})),
+        ])
+        .expect("a keyed display preview subscribe applies");
     assert_eq!(
-        targeted.config_projection()["display_preview"],
-        serde_json::json!({"device_id": "device-abc", "fps": 20})
+        one.config_by_topic()["display_preview"],
+        serde_json::json!({"device-abc": {"fps": 20}})
     );
 
-    let retargeted = targeted
-        .subscribed(
-            &["display_preview"],
-            serde_json::json!({"display_preview": {"fps": 15}}),
-        )
-        .expect("fps-only applied");
+    let two = one
+        .subscribed(vec![
+            TopicSubscription::keyed("display_preview", "device-def")
+                .with_config(serde_json::json!({"fps": 5})),
+        ])
+        .expect("a second display is a second subscription");
     assert_eq!(
-        retargeted.config_projection()["display_preview"],
-        serde_json::json!({"device_id": "device-abc", "fps": 15})
+        two.config_by_topic()["display_preview"],
+        serde_json::json!({"device-abc": {"fps": 20}, "device-def": {"fps": 5}})
     );
 
-    let cleared = retargeted
-        .subscribed(
-            &["display_preview"],
-            serde_json::json!({"display_preview": {"device_id": null}}),
-        )
-        .expect("clear applied");
-    assert_eq!(
-        cleared.config_projection()["display_preview"],
-        serde_json::json!({"fps": 15})
-    );
-}
-
-#[test]
-fn display_preview_patch_rejects_empty_device_id_string() {
+    // A subscribe without a key cannot reach a keyed topic at all.
     let error = SubscriptionState::default()
-        .subscribed(
-            &["display_preview"],
-            serde_json::json!({"display_preview": {"device_id": "   "}}),
-        )
-        .expect_err("empty-string device_id should be rejected");
-
-    assert_eq!(error.code, "invalid_config");
-    assert_eq!(
-        error.details,
-        Some(serde_json::json!({
-            "field": "config.display_preview.device_id",
-            "reason": "must be non-empty when provided"
-        }))
-    );
+        .subscribed_unkeyed(&["display_preview"], serde_json::Value::Null)
+        .expect_err("display_preview needs a device");
+    assert_eq!(error.code, "invalid_request");
 }
 
 #[test]
-fn display_preview_patch_fps_must_be_in_range() {
+fn a_display_preview_key_must_name_a_real_device() {
+    let error = SubscriptionState::default()
+        .subscribed(vec![TopicSubscription::keyed("display_preview", "   ")])
+        .expect_err("whitespace is not a device");
+    assert_eq!(error.code, "invalid_request");
+    assert!(error.message.contains("device id"));
+}
+
+#[test]
+fn display_preview_cadence_must_be_in_range() {
     for fps in [0, 120] {
         let error = SubscriptionState::default()
-            .subscribed(
-                &["display_preview"],
-                serde_json::json!({"display_preview": {"fps": fps}}),
-            )
+            .subscribed(vec![
+                TopicSubscription::keyed("display_preview", "device-abc")
+                    .with_config(serde_json::json!({"fps": fps})),
+            ])
             .expect_err("out-of-range cadence should be rejected");
         assert_eq!(error.code, "invalid_config");
         assert_eq!(
@@ -5287,14 +5444,12 @@ fn display_preview_payload_decodes_with_shared_codec() {
     reset_ws_payload_caches();
 
     let snapshot = display_preview_snapshot(64, 5);
-    let payload = cached_display_preview_payload(&snapshot).expect("display preview payload");
-    let decoded = shared_wire::PreviewFrame::decode(&payload)
+    let payload = cached_display_preview_payload(test_display_device(), &snapshot)
+        .expect("display preview payload");
+    let decoded = shared_wire::DisplayPreviewFrame::decode(&payload)
         .expect("shared codec must decode daemon display preview payloads");
 
-    assert_eq!(
-        decoded.channel,
-        shared_wire::PreviewFrameChannel::DisplayPreview
-    );
+    assert_eq!(decoded.device_id, test_display_device().to_string());
     assert_eq!(decoded.format, shared_wire::PreviewPixelFormat::Jpeg);
     assert_eq!(decoded.width, 256);
     assert_eq!(decoded.height, 256);

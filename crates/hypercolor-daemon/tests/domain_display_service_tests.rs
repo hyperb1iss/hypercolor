@@ -186,7 +186,7 @@ async fn set_display_face_creates_the_zone_then_updates_it() {
     let kinds = seen
         .iter()
         .filter_map(|event| match event {
-            HypercolorEvent::RenderGroupChanged { kind, .. } => Some(*kind),
+            HypercolorEvent::ZoneChanged { kind, .. } => Some(*kind),
             _ => None,
         })
         .collect::<Vec<_>>();

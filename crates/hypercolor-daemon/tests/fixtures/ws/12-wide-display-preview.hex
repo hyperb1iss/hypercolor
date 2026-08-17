@@ -1,20 +1,22 @@
 # hypercolor websocket golden fixture
-# fixture: 07-preview-display
-# tag: 0x07 (DISPLAY_PREVIEW_FRAME_TAG)
+# fixture: 12-wide-display-preview
+# tag: 0x12 (WIDE_DISPLAY_PREVIEW_FRAME_TAG)
 # encoder: hypercolor_leptos_ext::ws::DisplayPreviewFrame::encode
-# input: device_id "3f2504e0-4f89-11d3-9a0c-0305e82c3301", 2x2 rgb
-# total-bytes: 63
-# stored-bytes: 63
+# input: device_id "3f2504e0-4f89-11d3-9a0c-0305e82c3301", 65536x1 rgb (wide layout)
+# total-bytes: 196663
+# stored-bytes: 71
+# note: the remaining 196592 payload bytes are a deterministic fill and are
+#       asserted by the test rather than committed here.
 #
 # Regenerating any byte below is a wire-format change. See README.md.
-07                                              # tag (display preview)
+12                                              # tag (wide display preview)
 24                                              # device_id length u8
 78 56 34 12                                     # frame_number u32le
 4e 61 bc 00                                     # timestamp_ms u32le
-02 00                                           # width u16le
-02 00                                           # height u16le
+00 00 01 00                                     # width u32le
+01 00 00 00                                     # height u32le
 00                                              # format u8
 33 66 32 35 30 34 65 30 2d 34 66 38 39 2d 31 31 # device_id utf8 [+0x000]
 64 33 2d 39 61 30 63 2d 30 33 30 35 65 38 32 63 # device_id utf8 [+0x010]
 33 33 30 31                                     # device_id utf8 [+0x020]
-30 37 3e 45 4c 53 5a 61 68 6f 76 7d             # payload
+a0 a7 ae b5 bc c3 ca d1 d8 df e6 ed f4 fb 02 09 # payload (first 16 bytes)

@@ -772,14 +772,12 @@ pub(crate) fn publish_render_group_changed(
     group: &Zone,
     kind: ZoneChangeKind,
 ) {
-    state
-        .event_bus
-        .publish(HypercolorEvent::RenderGroupChanged {
-            scene_id,
-            group_id: group.id,
-            role: group.role,
-            kind,
-        });
+    state.event_bus.publish(HypercolorEvent::ZoneChanged {
+        scene_id,
+        zone_id: group.id,
+        role: group.role,
+        kind,
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -847,8 +845,8 @@ async fn clear_active_scene_effect_groups(
         mutation.record(HypercolorEvent::EffectStopped {
             effect: effect.clone(),
             reason: EffectStopReason::Error,
-            group_id: Some(zone.id),
-            group_name: Some(zone.name.clone()),
+            zone_id: Some(zone.id),
+            zone_name: Some(zone.name.clone()),
         });
         mutation.record(crate::domain::scene::zone_changed_event(
             scene_id,

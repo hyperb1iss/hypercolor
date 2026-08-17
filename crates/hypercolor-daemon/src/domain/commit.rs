@@ -276,19 +276,17 @@ mod tests {
         Arc::new(HypercolorBus::new())
     }
 
-    fn marker(groups_revision: u64) -> HypercolorEvent {
+    fn marker(zones_revision: u64) -> HypercolorEvent {
         HypercolorEvent::SceneSettingsChanged {
             scene_id: SceneId::DEFAULT,
-            groups_revision,
+            zones_revision,
             kind: SceneSettingsChangeKind::UnassignedBehavior,
         }
     }
 
     fn marker_revision(event: &HypercolorEvent) -> Option<u64> {
         match event {
-            HypercolorEvent::SceneSettingsChanged {
-                groups_revision, ..
-            } => Some(*groups_revision),
+            HypercolorEvent::SceneSettingsChanged { zones_revision, .. } => Some(*zones_revision),
             _ => None,
         }
     }

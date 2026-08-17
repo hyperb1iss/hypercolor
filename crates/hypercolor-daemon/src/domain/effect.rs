@@ -233,8 +233,8 @@ pub async fn apply_effect(
         trigger: meta.trigger,
         previous: previous_effect.clone(),
         transition: None,
-        group_id: Some(zone.id),
-        group_name: Some(zone.name.clone()),
+        zone_id: Some(zone.id),
+        zone_name: Some(zone.name.clone()),
     });
     mutation.record(zone_changed_event(scene_id, &zone, zone_change));
 
@@ -325,8 +325,8 @@ pub async fn stop_effect(
     mutation.record(HypercolorEvent::EffectStopped {
         effect: effect.clone(),
         reason: hypercolor_types::event::EffectStopReason::Stopped,
-        group_id: Some(cleared.id),
-        group_name: Some(cleared.name.clone()),
+        zone_id: Some(cleared.id),
+        zone_name: Some(cleared.name.clone()),
     });
     mutation.record(zone_changed_event(
         scene_id,
