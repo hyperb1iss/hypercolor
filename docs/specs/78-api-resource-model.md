@@ -18,7 +18,7 @@
 
 **Non-goals:** no rendering behavior changes; no change to the domain service layer's design (Spec 76 §2 stands); no WS frame-layout redesign beyond the named wire fixes in §7.1; no new features beyond the affordances in §5 (which exist to delete client-side workarounds, not to grow scope).
 
-**Doctrine:** lockstep, verbatim from Spec 76 §0. Pre-1.0, single user, in-repo clients ship in lockstep, generated clients regenerate. Every route deletion or rename lands with all in-repo consumers updated in the same PR — *consumers* includes the hand-written docs pages named per wave in §8, not just code. Pinned-shape tests are rewritten in the same PR. Persisted user state migrates forward once (§3.3) and is never destroyed.
+**Doctrine:** lockstep, verbatim from Spec 76 §0. Pre-1.0, single-user, in-repo clients ship in lockstep, generated clients regenerate. Every route deletion or rename lands with all in-repo consumers updated in the same PR — *consumers* includes the hand-written docs pages named per wave in §8, not just code. Pinned-shape tests are rewritten in the same PR. Persisted user state migrates forward once (§3.3) and is never destroyed.
 
 ---
 
@@ -30,7 +30,7 @@ An active scene always exists: the auto-managed default scene cannot be renamed 
 
 ### 1.2 Routes
 
-```
+```text
 GET    /scene                                  full live document (1.3)
 PATCH  /scene                                  scene-level fields: name (non-default only), unassigned_behavior
 POST   /scene/deactivate                       return to the default scene; responds with the new /scene document
@@ -74,7 +74,7 @@ All mutations route through `SceneMutation`/`commit_scene` (Spec 76 §2.3) — `
 
 ### 1.6 Concurrency — one token
 
-The scene document carries one wire version: `revision`, the commit generation assigned by the sequencer (Spec 76 §2.3). `GET /scene` serves it as `ETag`; **structural** mutations (zone create/delete/patch, member assign/unassign, layer create/delete/reorder/replace, clear, `PUT /scenes/{id}`, and both apply sugars — `/effects/{id}/apply`, `/effects/{id}/presets/{preset}/apply`) honor optional `If-Match` against it and return the canonical 412 envelope (`details: { current }`) on mismatch. The three-token zoo (`groups_revision`, `layers_version`, `controls_version`) disappears from the wire; internals keep whatever bookkeeping Spec 76 §6.5 needs.
+The scene document carries one wire version: `revision`, the commit generation assigned by the sequencer (Spec 76 §2.3). `GET /scene` serves it as `ETag`; **structural** mutations (scene-level `PATCH /scene`, zone create/delete/patch, zone `PUT .../layout`, member assign/unassign, layer create/delete/reorder/replace, clear, `PUT /scenes/{id}`, and both apply sugars — `/effects/{id}/apply`, `/effects/{id}/presets/{preset}/apply`) honor optional `If-Match` against it and return the canonical 412 envelope (`details: { current }`) on mismatch. The three-token zoo (`groups_revision`, `layers_version`, `controls_version`) disappears from the wire; internals keep whatever bookkeeping Spec 76 §6.5 needs.
 
 **Control-value writes take no token.** `PATCH .../layers/{layer}/controls` is unguarded: the server applies value writes in commit order, and the layer-id lifecycle (§1.4) already fences staleness — a replaced layer 404s rather than absorbing a stale patch. (The guarded form was unusable in practice: a guarded slider drag self-invalidates every tick, which is why the TUI ships `If-Match`-free today, `tui/src/client/rest.rs:348-378`.) A PATCH naming a control key with an active input binding is rejected 409 `control_bound`, listing the bound keys — a manual write that would be silently overridden by the next sensor resolution is an error, not a race. The rejection is recoverable in the same shape: `PatchControlsRequest.clear_bindings` (§5.7) removes named bindings and applies the accompanying values in one atomic commit. Persisted bindings therefore stay fully manageable — surfaced read-only in the layer document, removable via `clear_bindings` — while the standalone binding-creation route dies until bindings return as a first-class feature (§2.2).
 
@@ -84,7 +84,7 @@ The scene document carries one wire version: `revision`, the commit generation a
 
 ### 2.1 Catalog routes
 
-```
+```text
 GET    /effects                ?category&audio_reactive&screen_reactive&input_reactive&q&include=controls,presets
 GET    /effects/{id}
 GET    /effects/{id}/cover
@@ -112,6 +112,8 @@ Semantics, stated in the OpenAPI description verbatim: *replaces the target zone
 
 **Side effects are part of the contract, in this order:** (1) validate effect, zone, controls — any failure returns before any state changes (today power wakes before validation, `domain/effect.rs:190-191`; this spec fixes that ordering as part of the wave); (2) commit the scene mutation; (3) wake paused output; (4) resolve the effect's linked layout, if any. Response: the updated **zone resource** (canonical §1.3 shape, carrying the new layer's id), the applied transition, and the layout-link outcome (`{ layout_id, applied }`) — a linked-layout failure after a successful commit stays visible, not swallowed. `ApplyEffectResponse`'s bespoke shape is deleted.
 
+**Post-commit failure is a 200, and repair is targeted.** Once step 2 commits, the response is `200` with the outcome fields reporting any step-3/4 failure (`applied: false` plus a message) — never an error envelope, because the resource state the response describes is real. Error envelopes are reserved for step-1 refusals, where nothing changed. Clients repair a failed side effect through that side effect's own route (`PATCH /output`, `POST /layouts/{id}/apply`) rather than re-applying: a retried apply is not idempotent (it mints a fresh layer id, §1.4). The same rule governs activation's layout/brightness outcomes (§3.2).
+
 **Transitions are honest:** rev 1 accepts exactly `{ type: "cut" }` — the only transition the engine performs today (`domain/effect.rs:24-85` rejects everything else). The type is a closed enum that grows when the engine does; the request field does not accept aspirational values.
 
 **Preset apply is effect-scoped only.** `POST /effects/{id}/presets/{preset}/apply` delegates to this contract (it already does, `api/effects.rs:531-539`). `POST /library/presets/{id}/apply` — a parallel implementation with divergent semantics (hot-swaps controls without apply's power/layout behavior, `api/library/presets.rs:223-340`) — is **deleted**. Library keeps preset CRUD; applying happens through the one door.
@@ -124,7 +126,7 @@ Semantics, stated in the OpenAPI description verbatim: *replaces the target zone
 
 ### 3.1 Collection routes
 
-```
+```text
 GET    /scenes                 list
 POST   /scenes                 create (seeds a Primary zone, as today — api/scenes.rs:137-149)
 POST   /scenes/snapshot        create a scene from current runtime state (replaces profile-create)
@@ -135,6 +137,8 @@ POST   /scenes/{id}/activate
 ```
 
 `/scenes/active` is deleted (`GET /scene` replaces it); `/scenes/deactivate` moves to `/scene/deactivate`.
+
+**`PUT /scenes/{id}` is whole-document replace, and the request says so.** The body is the full scene document — the same shape `GET /scenes/{id}` returns minus server-assigned fields (`revision`; ids for zones/layers the caller is creating may be omitted and are minted server-side, while supplied ids must belong to this scene). The path id is authoritative; a body `id` must match or the request is a 422. Omitted **optional** fields clear — replace means replace; a client that wants read-modify-write reads first. `If-Match` against `revision` per §1.6. Today's partial-update `UpdateSceneRequest` (`api/scenes.rs:97-263`) dies with this wave; partial semantics live on `PATCH /scene` (live tree) only.
 
 ### 3.2 Scenes gain what profiles actually carried
 
@@ -163,7 +167,7 @@ Nothing dual-reads profiles at runtime after the importing run.
 
 ## 4. One output resource
 
-```
+```text
 GET    /output                 { power: "running" | "paused", brightness: f32 }
 PATCH  /output                 partial: either or both fields
 ```
@@ -190,7 +194,7 @@ Receipts for the merge: `POST /effects/pause` is literally `set_output_power(Out
 
 MCP stays a curated concierge, but every tool becomes an honest, thin projection of a domain service:
 
-1. **Phantom parameters are deleted** (a parameter exists only when its behavior does): `set_effect.devices`, `set_color.devices` (hardcode `target_zone: None` while advertising targeting, `tools/effects.rs:233,477`), `set_brightness.device_id` (reports `"scope": "device"` while setting global) and `.transition_ms`, `diagnose.device_id`/`.checks` (handler binds `_params`), `stop_effect.transition_ms`. The `set_effect.transition_ms` `maximum: 0` pattern is the house-correct "not yet."
+1. **Phantom parameters are deleted** (a parameter exists only when its behavior does): `set_effect.devices`, `set_color.devices` (hardcode `target_zone: None` while advertising targeting, `tools/effects.rs:233,477`), `set_brightness.device_id` (reports `"scope": "device"` while setting global) and `.transition_ms`, `diagnose.device_id`/`.checks` (handler binds `_params`), `stop_effect.transition_ms`, and `set_effect.transition_ms` — its `maximum: 0` form honestly rejected nonzero values, but a parameter accepting only its no-op value fails the same rule. `set_effect` gains the §2.3 `transition` closed enum instead (rev 1: `cut` only), so MCP and the REST sugar share one transition vocabulary that grows when the engine does.
 2. **`create_scene` routes through the domain scene service** — same Primary-zone seeding and `publish_scene_library_changed` as REST. Its fictional `trigger`/`profile_id` params (written to metadata nothing reads) are deleted, and the `setup_automation` prompt stops promising automation the daemon does not have.
 3. **The second diagnostics engine is deleted** (`tools/system.rs:380-555`): the tool calls the same domain diagnostics REST uses, with one check vocabulary.
 4. **One resolver policy.** Fuzzy resolution returns a structured ambiguity error listing candidates (the pattern `set_display_face` already implements) instead of first-substring-hit over a `HashMap`.
@@ -261,7 +265,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 **78.2 — output merge (worker, after 78.1).** `/output` GET/PATCH; delete pause/resume routes + types, `/settings/*`, `/output/power`; move audio devices to `/system/audio-devices`; MCP brightness/power onto the output service. Clients in-PR.
 
-**78.3 — the scene tree (worker(s), after 78.1; Spec 76 wave 2.3b landed).** Mount `/scene` over the domain services (validation-before-side-effects ordering per §2.3); delete `/effects/active/*` (C1b's renamed spelling), `/effects/stop`, `/effects/{id}/controls`, `/scenes/active`, `/scenes/deactivate`, `/scenes/{id}/zones/*`, broadcast-media, `/library/presets/{id}/apply`; rewrite apply as sugar returning the zone resource; playlist advancement semantics; `/scene/clear`; the §7.1 items 78.3 owns (hello singletons, `EffectControlChanged` zone+layer identity, `zone_layout_preview` keying, backpressure classes, generated event vocabulary and manifest, error vocabulary, named wire fixes, and stating the no-replay continuity contract in the manifest and SDK). Both UIs and CLI migrate in the same PR set (split by client if needed, route flip last). Docs checklist: `guide/first-session.md`, `guide/quick-start.md`, `api/cli.md`, `contributing/debugging.md`, `studio/zone-api-and-concurrency.md`, `troubleshooting/studio.md`, `effects/controls.md`.
+**78.3 — the scene tree (worker(s), after 78.1; Spec 76 wave 2.3b landed).** Mount `/scene` over the domain services (validation-before-side-effects ordering per §2.3); delete `/effects/active/*` (C1b's renamed spelling), `/effects/stop`, `/effects/{id}/controls`, `/scenes/active`, `/scenes/deactivate`, `/scenes/{id}/zones/*`, broadcast-media, `/library/presets/{id}/apply`; rewrite apply as sugar returning the zone resource; playlist advancement semantics; `/scene/clear`; the §7.1 items 78.3 owns (hello singletons, `EffectControlChanged` zone+layer identity, `zone_layout_preview` keying, backpressure classes, generated event vocabulary and manifest, error vocabulary, named wire fixes, and stating the no-replay continuity contract in the manifest and SDK). Both UIs and the CLI migrate in the same PR set (split by client if needed, route flip last). Docs checklist: `guide/first-session.md`, `guide/quick-start.md`, `api/cli.md`, `contributing/debugging.md`, `studio/zone-api-and-concurrency.md`, `troubleshooting/studio.md`, `effects/controls.md`.
 
 **78.4 — profiles fold (worker, after 78.3).** `/scenes/snapshot`; the §3.3 import; scene `layout_id`/`activation_brightness` activation behavior; delete `/profiles/*`, store, types, MCP `set_profile` + `hypercolor://profiles` (add `hypercolor://scenes`); `start_profile` → `start_scene` config rename; CLI `profile` commands become `scene snapshot`/`scene activate`. Docs checklist: `guide/profiles-and-scenes.md`, `docs/content/agents/*` (prompt-templates, resources-reference, tools-reference, workflows), `api/mcp.md`.
 
@@ -289,7 +293,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ## 10. Review history
 
-- **Rev 6 (2026-08-17, owner reconciliation + lock):** rev 5 converged one day before ten PRs landed (#195-#204: C1b, waves 3.2b/3.2c completing the 3.2 arc, 3.1a/3.1b, 2.4, and four CI/build fixes), so every §7 amendment was re-verified against main before lock. §7.1 rewritten from "amends 3.2 acceptance criteria" to a landed/owned split — the zone-vocabulary renames and RPC tag deletion are struck as shipped; hello singletons, `zone_layout_preview` keying, backpressure classes, generated vocabulary/manifest, error vocabulary, and the remaining wire fixes transfer to 78.3/78.4 with fresh file:line receipts. §7.3 updated: C1b landed; the 3.1 `devices+scenes` batch landed ahead of its rev-5 gate (churn accepted and named); `effects+library` rescoped mid-flight to Appendix A survivors. 78.0d drops the deleted `/preview` page. Wave 3.3 explicitly sequenced after 78.5. No reviewed contract changed; this is sequencing and status reconciliation only.
+- **Rev 6 (2026-08-17, owner reconciliation + lock):** rev 5 converged one day before ten PRs landed (#195-#204: C1b, waves 3.2b/3.2c completing the 3.2 arc, 3.1a/3.1b, 2.4, and four CI/build fixes), so every §7 amendment was re-verified against main before lock. §7.1 rewritten from "amends 3.2 acceptance criteria" to a landed/owned split — the zone-vocabulary renames and RPC tag deletion are struck as shipped; hello singletons, `zone_layout_preview` keying, backpressure classes, generated vocabulary/manifest, error vocabulary, and the remaining wire fixes transfer to 78.3/78.4 with fresh file:line receipts. §7.3 updated: C1b landed; the 3.1 `devices+scenes` batch landed ahead of its rev-5 gate (churn accepted and named); `effects+library` rescoped mid-flight to Appendix A survivors. 78.0d drops the deleted `/preview` page. Wave 3.3 explicitly sequenced after 78.5. No reviewed contract changed; this is sequencing and status reconciliation only. A CodeRabbit round on the PR then closed seven findings at lock: the §1.6 guarded set gains `PATCH /scene` and zone `PUT .../layout`; §2.3 defines the post-commit 200-with-outcomes contract and targeted repair; §3.1 defines the `PUT /scenes/{id}` whole-document request; §6.1's `transition_ms` contradiction resolves into the shared `transition` enum; Appendix A's scope names the `/ws` row's path-only matching; plus two prose/lint fixes.
 - **Rev 5 (2026-08-16, coordination update):** wave C1b was discovered in flight (`nova/s76-c1b-naming-flip`, three commits plus active edits) after rev 4 converged. §7.3 reframed from *strike* to *consume*: C1b lands, its vocabulary renames become 78's floor, 78.3 deletes the transitional routes. Sequencing-only change; no reviewed contract altered.
 - **Rev 4 (2026-08-16):** round-3 convergence check verified 7/8 rev-3 fixes RESOLVED with one residual (the suffix allocator could re-suffix the import's own destination on crash-replay); fixed by excluding the destination id from collision checks. Round-4 micro-check: **VERDICT: PASS. Converged.**
 - **Rev 3 (2026-08-16):** round-2 codex verification pass: 15/20 round-1 findings ADDRESSED, 5 PARTIAL, 8 findings total (6 MAJOR, 2 MINOR), all adopted: every whole-layer PUT mints a fresh id (same effect included); apply sugars named in the guarded structural list; `clear_bindings` on `PatchControlsRequest` so persisted bindings are removable (nothing API-locked); idempotent import via UUIDv5-derived scene ids + numbered suffix allocation; `description` mapped and the brightness u8→f32 formula fixed; activation ordering with reported layout/brightness outcomes; profile WS removal pinned to 78.4 alone; Appendix A scoped to `/api/v1` JSON routes + `/health` with document routes excluded. Verdict trajectory: 20 → 8.
@@ -300,7 +304,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ## Appendix A — Normative route inventory (81 paths, 118 operations)
 
-Scope: the JSON API under `/api/v1` plus `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources (`/preview` was on this list until wave 3.2c deleted the page). Config rows landed via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
+Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, which the convergence test matches by path without asserting a JSON shape) and `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources (`/preview` was on this list until wave 3.2c deleted the page). Config rows landed via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
 
 | Path | Methods | Notes |
 |---|---|---|
