@@ -264,10 +264,11 @@ pub fn PresetToolbar(
             };
             match api::create_preset(&req).await {
                 Ok(created) => {
-                    match api::apply_effect_preset(&eid, &created.id, target_zone.as_deref()).await
+                    let created_id = created.id.to_string();
+                    match api::apply_effect_preset(&eid, &created_id, target_zone.as_deref()).await
                     {
                         Ok(()) => {
-                            set_selected_id.set(Some(created.id));
+                            set_selected_id.set(Some(created_id));
                             toasts::toast_success("Preset created");
                             refresh();
                         }

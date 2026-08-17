@@ -22,47 +22,15 @@ use crate::api::devices::Pagination;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
-pub use hypercolor_types::api::attachments::ListTemplatesQuery;
+// Wire contracts live in hypercolor-types::api::attachments — shared
+// with the web UI and the TUI.
+pub use hypercolor_types::api::attachments::{
+    ListTemplatesQuery, TemplateDetail, TemplateListResponse, TemplateSummary,
+};
 
-#[derive(Debug, Serialize)]
-pub struct TemplateListResponse {
-    pub items: Vec<TemplateSummary>,
-    pub pagination: Pagination,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TemplateSummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: ComponentCategory,
-    pub origin: ComponentOrigin,
-    pub led_count: u32,
-    pub description: String,
-    pub image_url: Option<String>,
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TemplateDetail {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: ComponentCategory,
-    pub origin: ComponentOrigin,
-    pub led_count: u32,
-    pub description: String,
-    pub default_size: hypercolor_types::attachment::ComponentCanvasSize,
-    pub topology: hypercolor_types::spatial::LedTopology,
-    pub led_positions: Vec<hypercolor_types::spatial::NormalizedPosition>,
-    pub compatible_slots: Vec<hypercolor_types::attachment::ComponentCompatibility>,
-    pub tags: Vec<String>,
-    pub led_names: Option<Vec<String>>,
-    pub led_mapping: Option<Vec<u32>>,
-    pub image_url: Option<String>,
-    pub physical_size_mm: Option<(f32, f32)>,
-}
-
+// The category and vendor facets and the per-template item routes are not
+// in spec 78's Appendix A, so their shapes stay daemon-local rather than
+// entering the shared contract on the way to deletion.
 #[derive(Debug, Serialize)]
 pub struct CategoryListResponse {
     pub items: Vec<CategorySummary>,

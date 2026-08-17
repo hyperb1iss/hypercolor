@@ -164,6 +164,17 @@ pub struct InstalledEffectResponse {
     pub presets: usize,
 }
 
+/// Response for `POST /api/v1/effects/rescan`.
+///
+/// Counts describe what the rescan changed in the registry, so an
+/// all-zero response means the effect directories were already current.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RescanResponse {
+    pub added: usize,
+    pub removed: usize,
+    pub updated: usize,
+}
+
 /// Request body for `POST /api/v1/effects/{id}/apply`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEffectRequest {
@@ -204,11 +215,49 @@ pub struct UpdateActiveControlsRequest {
     pub controls: Option<serde_json::Value>,
 }
 
+// The two control PATCH responses and the control-binding response are
+// deliberately NOT defined here. Their payloads carry f32 control values,
+// and the daemon builds them with `serde_json::json!`, which widens f32 to
+// f64 and prints the widened digits. A derived struct writes f32 directly,
+// so naming those shapes would change the bytes on the wire.
+
 /// Request body for `PUT /api/v1/effects/{id}/layout`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetEffectLayoutRequest {
     /// The spatial layout to associate with the effect.
     pub layout_id: String,
+}
+
+/// Response for `GET /api/v1/effects/{id}/layout`.
+///
+/// `resolved` reports whether the linked layout still exists; a stale
+/// link answers `resolved: false` with a `null` `layout` rather than a
+/// 404, because the association itself is real.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout_id: String,
+    pub resolved: bool,
+    pub layout: Option<LayoutLinkSummary>,
+}
+
+/// Response for `PUT /api/v1/effects/{id}/layout`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout: LayoutLinkSummary,
+    pub linked: bool,
+}
+
+/// Response for `DELETE /api/v1/effects/{id}/layout`.
+///
+/// `layout_id` is the association that was removed, and `null` with
+/// `deleted: false` when the effect had no layout linked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteEffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout_id: Option<String>,
+    pub deleted: bool,
 }
 
 /// Optional body for `POST /api/v1/effects/active/reset` — scopes the

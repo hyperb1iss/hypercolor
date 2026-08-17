@@ -14,7 +14,7 @@ use hypercolor_types::api::effects::{
 };
 use hypercolor_types::api::envelope::ApiErrorBody;
 use hypercolor_types::api::layers::PatchLayerControlsRequest;
-use hypercolor_types::api::library::AddFavoriteRequest;
+use hypercolor_types::api::library::{AddFavoriteRequest, FavoriteListResponse};
 use hypercolor_types::api::scenes::{
     ActiveSceneResponse as ApiActiveSceneResponse, SceneListResponse as ApiSceneListResponse,
 };
@@ -529,16 +529,6 @@ pub struct ControlSurfaceQuery<'a> {
 #[derive(Debug, Deserialize)]
 struct ControlSurfaceListResponse {
     surfaces: Vec<ControlSurfaceDocument>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FavoriteListResponse {
-    items: Vec<FavoriteSummaryResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FavoriteSummaryResponse {
-    effect_id: String,
 }
 
 #[derive(Debug, Deserialize)]

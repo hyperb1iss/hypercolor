@@ -23,7 +23,15 @@ pub use hypercolor_types::api::effects::{
 };
 pub use hypercolor_types::api::output::{OutputPowerMode, SetOutputPowerRequest};
 
-/// Active effect response from `GET /api/v1/effects/active`.
+/// Active effect response from `GET /api/v1/effects/active`, narrowed to
+/// the running case.
+///
+/// Not a mirror of the shared wire type but a projection of it: the wire
+/// shape types `id` and `name` as `Option` because the idle body carries
+/// nulls, and every UI consumer here has already branched on `state` and
+/// wants them unwrapped. `fetch_active_effect` decodes the shared
+/// `hypercolor_types::api::effects::ActiveEffectResponse` and maps idle to
+/// `None`, so this type is only ever built from a decoded wire response.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ActiveEffectResponse {
     pub id: String,
@@ -206,6 +214,11 @@ pub enum UpdateControlsOutcome {
 /// Successful control-PATCH payload — the envelope data carries the new
 /// `controls_version` (also present in the `ETag` header; the body is
 /// simpler to extract with `gloo_net`).
+///
+/// Stays UI-local rather than moving to hypercolor-types with the rest of
+/// the effects contracts: the daemon still builds that body with a
+/// `serde_json::json!` literal, because naming the shape would reprint its
+/// f32 control values at f32 precision and change the wire.
 #[derive(Debug, Deserialize)]
 struct ControlsVersionResponse {
     controls_version: u64,

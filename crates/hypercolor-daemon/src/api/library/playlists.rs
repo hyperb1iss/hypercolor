@@ -7,7 +7,6 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -27,28 +26,15 @@ use super::{
     store_error_to_response, unix_epoch_ms,
 };
 
+// Wire contracts live in hypercolor-types::api::library — shared with
+// the web UI and the TUI.
 pub use hypercolor_types::api::library::{
-    PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest,
+    ActivatePlaylistResponse, ActivePlaylistResponse, ActivePlaylistStateResponse,
+    DeletePlaylistResponse, PlaylistItemRequest, PlaylistListResponse, PlaylistTargetRequest,
+    SavePlaylistRequest, StopPlaylistResponse,
 };
 
 const DEFAULT_PLAYLIST_ITEM_DURATION_MS: u64 = 30_000;
-
-// ── Request / Response Types ────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct PlaylistListResponse {
-    pub items: Vec<EffectPlaylist>,
-    pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ActivePlaylistResponse {
-    pub id: String,
-    pub name: String,
-    pub loop_enabled: bool,
-    pub item_count: usize,
-    pub started_at_ms: u64,
-}
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -216,10 +202,10 @@ pub async fn delete_playlist(
     };
     stop_runtime(active);
 
-    ApiResponse::ok(serde_json::json!({
-        "id": playlist_id.to_string(),
-        "deleted": true,
-    }))
+    ApiResponse::ok(DeletePlaylistResponse {
+        id: playlist_id.to_string(),
+        deleted: true,
+    })
 }
 
 /// `POST /api/v1/library/playlists/:id/activate` — start playlist playback.
@@ -284,10 +270,10 @@ pub async fn activate_playlist(
         runtime.active = Some(active);
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": response_payload,
-        "active": true,
-    }))
+    ApiResponse::ok(ActivatePlaylistResponse {
+        playlist: response_payload,
+        active: true,
+    })
 }
 
 /// `GET /api/v1/library/playlists/active` — inspect the active playlist runtime.
@@ -297,10 +283,10 @@ pub async fn get_active_playlist(State(state): State<Arc<AppState>>) -> Response
         return DomainError::not_found(ResourceKind::Playlist, "active").into_response();
     };
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": active_playlist_payload(active),
-        "state": "running",
-    }))
+    ApiResponse::ok(ActivePlaylistStateResponse {
+        playlist: active_playlist_payload(active),
+        state: "running".to_owned(),
+    })
 }
 
 /// `POST /api/v1/library/playlists/stop` — stop playlist playback if active.
@@ -316,10 +302,10 @@ pub async fn stop_playlist(State(state): State<Arc<AppState>>) -> Response {
     let payload = active_playlist_payload(&active);
     stop_runtime(Some(active));
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": payload,
-        "stopped": true,
-    }))
+    ApiResponse::ok(StopPlaylistResponse {
+        playlist: payload,
+        stopped: true,
+    })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

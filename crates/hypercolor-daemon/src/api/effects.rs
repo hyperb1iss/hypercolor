@@ -10,7 +10,6 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use serde::Serialize;
 use tokio::fs;
 use tracing::{info, warn};
 
@@ -64,10 +63,11 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
     ActiveEffectResponse, ApplyEffectPresetRequest, ApplyEffectRequest, ApplyEffectResponse,
-    ApplyTransitionResponse, EffectCapabilitySet, EffectDetailResponse, EffectLayoutApplyResult,
-    EffectListResponse, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
-    EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
-    PauseEffectResponse, ResetControlsRequest, ResumeEffectResponse, TransitionRequest,
+    ApplyTransitionResponse, DeleteEffectLayoutResponse, EffectCapabilitySet, EffectDetailResponse,
+    EffectLayoutApplyResult, EffectLayoutResponse, EffectListResponse, EffectPresetListResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectRefSummary, EffectSummary,
+    InstalledEffectResponse, LayoutLinkSummary, PauseEffectResponse, RescanResponse,
+    ResetControlsRequest, ResumeEffectResponse, SetEffectLayoutResponse, TransitionRequest,
     UpdateActiveControlsRequest,
 };
 
@@ -499,15 +499,15 @@ pub async fn get_effect_layout(
     };
 
     let summary = layout.as_ref().map(layout_link_summary);
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(EffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout_id": layout_id,
-        "resolved": summary.is_some(),
-        "layout": summary,
-    }))
+        layout_id,
+        resolved: summary.is_some(),
+        layout: summary,
+    })
 }
 
 /// `PUT /api/v1/effects/:id/layout` — Associate an effect with a layout.
@@ -572,14 +572,14 @@ pub async fn set_effect_layout(
         return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(SetEffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout": layout_link_summary(&layout),
-        "linked": true,
-    }))
+        layout: layout_link_summary(&layout),
+        linked: true,
+    })
 }
 
 /// `DELETE /api/v1/effects/:id/layout` — Remove an effect -> layout association.
@@ -623,14 +623,14 @@ pub async fn delete_effect_layout(
         return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(DeleteEffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout_id": removed_layout_id,
-        "deleted": removed_layout_id.is_some(),
-    }))
+        deleted: removed_layout_id.is_some(),
+        layout_id: removed_layout_id,
+    })
 }
 
 /// `POST /api/v1/effects/:id/apply` — Start rendering an effect.
@@ -1001,6 +1001,10 @@ pub async fn update_active_controls(
         );
     }
 
+    // Held back from the wave 3.1c type promotion deliberately: `applied`
+    // carries f32 control values, and `json!` widens them to f64 while a
+    // derived struct does not, so naming this shape would reprint every
+    // non-representable float (0.1 -> 0.10000000149011612 today).
     ApiResponse::ok(serde_json::json!({
         "effect": effect_name,
         "applied": applied,
@@ -1109,6 +1113,7 @@ pub async fn update_effect_controls(
         );
     }
 
+    // Held back for the same f32 reprint reason as its `active` sibling.
     let body = ApiResponse::ok(serde_json::json!({
         "effect": effect_name,
         "applied": applied,
@@ -1218,6 +1223,9 @@ pub async fn set_active_control_binding(
         Err(error) => return error.into_response(),
     }
 
+    // Held back: `ControlBinding` is six f32 fields, which a named struct
+    // would reprint at f32 precision instead of the widened f64 form the
+    // literal has always emitted.
     ApiResponse::ok(serde_json::json!({
         "effect": {
             "id": effect_id,
@@ -1425,13 +1433,6 @@ pub async fn install_effect(
         controls: entry.metadata.controls.len(),
         presets: entry.metadata.presets.len(),
     })
-}
-
-#[derive(Debug, Serialize)]
-pub struct RescanResponse {
-    pub added: usize,
-    pub removed: usize,
-    pub updated: usize,
 }
 
 pub(crate) fn resolve_effect_metadata(

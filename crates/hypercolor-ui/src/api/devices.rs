@@ -30,26 +30,11 @@ pub struct BrightnessSettingsResponse {
 
 // ── Attachment Types ────────────────────────────────────────────────────────
 
-/// Template summary from `GET /api/v1/attachments/templates`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TemplateSummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: hypercolor_types::attachment::ComponentCategory,
-    #[serde(default)]
-    pub origin: Option<hypercolor_types::attachment::ComponentOrigin>,
-    pub led_count: u32,
-    pub description: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-/// Paginated template list response.
-#[derive(Debug, Deserialize)]
-pub struct TemplateListResponse {
-    pub items: Vec<TemplateSummary>,
-}
+// The attachment-template catalog contracts are shared with the daemon
+// (hypercolor-types::api::attachments).
+pub use hypercolor_types::api::attachments::{
+    TemplateDetail, TemplateListResponse, TemplateSummary,
+};
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
@@ -123,7 +108,7 @@ pub async fn identify_attachment(
 /// Create a user-authored attachment template (custom strip, matrix, etc.).
 pub async fn create_attachment_template(
     template: &hypercolor_types::attachment::ComponentTemplate,
-) -> Result<TemplateSummary, String> {
+) -> Result<TemplateDetail, String> {
     client::post_json("/api/v1/attachments/templates", template)
         .await
         .map_err(Into::into)
