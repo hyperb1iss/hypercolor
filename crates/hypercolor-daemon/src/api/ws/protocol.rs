@@ -240,6 +240,14 @@ impl SubscriptionState {
         // Membership decides which half owns the result, so configuring
         // a topic the request never named cannot fake a subscription.
         if self.topics.contains(topic) {
+            // For an unkeyed topic a set bit implies a live entry, so
+            // this insert only ever replaces. Keyed topics (3.2c) must
+            // patch per admitted key, or a patch would mint a live
+            // entry for a key that never subscribed.
+            debug_assert!(
+                self.live.config(bit, None).is_some(),
+                "patch target must already be live for its key"
+            );
             self.live.insert(bit, None, next);
         } else {
             self.dormant.insert(bit, None, next);
