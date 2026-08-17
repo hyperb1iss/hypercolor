@@ -1184,8 +1184,7 @@ class HypercolorEventStream:
             expected = width * height * bytes_per_pixel
             if len(image) < expected:
                 msg = (
-                    f"{subject} payload is too short: "
-                    f"expected {expected} bytes, got {len(image)}"
+                    f"{subject} payload is too short: expected {expected} bytes, got {len(image)}"
                 )
                 raise ValueError(msg)
             image = image[:expected]

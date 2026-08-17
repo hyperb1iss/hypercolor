@@ -255,7 +255,9 @@ def test_interactive_preview_rejects_truncated_raw_payloads(
 
 
 def test_unknown_json_message_falls_back_to_event() -> None:
-    message = HypercolorEventStream._decode_json('{"type":"subscribed","topics":[{"topic":"events"}]}')
+    message = HypercolorEventStream._decode_json(
+        '{"type":"subscribed","topics":[{"topic":"events"}]}'
+    )
 
     assert isinstance(message, EventMessage)
     assert message.event == "subscribed"
