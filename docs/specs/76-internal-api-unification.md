@@ -506,7 +506,7 @@ pub trait DeviceBackendFactory: Send + Sync {
 0.5 Delete `DevicePlugin` and `health_check`; delete `types/palette.rs` (zero consumers).
 0.6 Fix literal-`~` config fallback (CLI/TUI adopt `core::config::paths`).
 0.7 **REST wire matrix** artifact + tests pinning current shapes (intentionality fence — rewritten in-PR when shapes deliberately change).
-0.8 **WS golden fixtures** pinning every binary tag (0x01, 0x02, 0x03, 0x05–0x11, and the leptos-ext RPC tags 0x80/0x81; 0x04 is deliberately unassigned) and byte layout.
+0.8 **WS golden fixtures** pinning every binary tag (0x01, 0x02, 0x03, 0x05–0x11; 0x04 is deliberately unassigned) and byte layout. The RPC tags 0x80/0x81 were pinned here originally and deleted with their codec in wave C1e; 0x12 joined in wave 3.2c.
 0.9 **Path-migration harness** (old→new path, precedence, backup, idempotence) modeled on `driver_inventory.rs:98`.
 
 **Phase 1 — color** (after 0.3; independent otherwise)
@@ -526,14 +526,14 @@ pub trait DeviceBackendFactory: Send + Sync {
 
 **Wave C1 — the compat-ectomy** (after 2.3a/4.1 merge; before or interleaved with Phase 3; each an atomic PR with all in-repo clients updated in-PR)
 C1a **Error-surface flip**: every route renders the canonical `DomainError` envelope; delete `domain::legacy`, `into_v1_response`, and `ApiError` entirely; rewrite the matrix tests to pin canonical shapes; unblocks wave 2.2's nine deferred helpers (bespoke 404 prose normalizes, `ResourceKind::Driver` exists).
-C1b **Naming flip**: `current`→`active`, `groups`→`zones`, `/config/get|set`→resource routes — old routes deleted, not aliased. The REST half shipped in C1b; the WS half (the `render_group_changed` event name and the `group_id`/`group_name`/`groups_revision` event fields) shipped in wave 3.2c, which owned that surface. Persisted scene files keep `groups` until C1c migrates them.
+C1b **Naming flip**: `current`→`active`, `groups`→`zones`, `/config/get|set`→resource routes — old routes deleted, not aliased. The REST half shipped in C1b; the WS half (the `render_group_changed` event name and the `group_id`/`group_name`/`groups_revision` event fields) shipped in wave 3.2c, which owned that surface. Persisted scene files keep `groups`: C1c landed without that migration, so the rename rides Phase 5.1's scene-schema bump alongside the legacy Zone codec deletion.
 C1c **Persisted-legacy deletion**: delete core's `migrate_config` (schema ≤3 path) and driver-inventory's legacy runtime-state import entry (already completed on the only install); update `types::control`'s keep-raw doc paragraph; schema bumps + release notes where shapes require it. (The legacy Zone codec deletes in 5.1, where its consumers restructure.)
 C1d **Deprecated-surface deletion**: migrate remaining callers off `hypercolor-color`'s `compat.rs` and delete it; delete the TS `audio/helpers` color re-export.
 
 **Phase 3 — contract rollout** (after 2)
-3.1 Worker(s): grow `types::api` to full coverage **in per-domain batches** (devices+scenes; effects+library; layouts+displays+assets; drivers+system), daemon + UI + TUI mirrors deleted in the same PR per batch.
+3.1 Worker(s): grow `types::api` to full coverage **in per-domain batches**, daemon + UI + TUI mirrors deleted in the same PR per batch. **Shipped:** layouts+displays+assets (#202) and devices+scenes (#204, ahead of Spec 78 §7.3's gate — accepted churn named there). **In flight:** effects+library, rescoped mid-flight to Spec 78 Appendix A survivors. **Remaining:** drivers+system, either side of the 78 waves. Batches extend Spec 78's 78.1 contracts and never redefine a type it ships.
 3.2 Fable: `define_ws_topics!` registry + codec/tag contracts. Worker: promote WS types to leptos-ext, migrate subscribes, keyed subscriptions replacing the old message forms outright (clients in the same PRs) — split extraction / topics / clients into separate PRs. **Shipped:** 3.2a extraction, 3.2b daemon adoption, 3.2c the keyed wire with every client, the WS half of C1b's naming flip, and the deletion of the daemon's embedded `/preview` page (a fourth WS client that also shadowed the UI's own route). `interval_ms`→`Cadence` is the one §5 item 3.2c left open, for the reason recorded there.
-3.3 Worker: honest pagination everywhere (absorbed by C1a where it lands first) + registration-helper OpenAPI catalog (142-entry table dies).
+3.3 Worker: honest pagination everywhere + registration-helper OpenAPI catalog (142-entry table dies). **Resequenced: executes after wave 78.5**, implemented per Spec 78 §7.2 (`utoipa-axum` OpenApiRouter) — the catalog is born against Appendix A's 81 paths, never the pre-78 surface.
 
 **Phase 4 — config** (after 0.9)
 4.1 Fable: `ConfigSources`/`LoadedConfig`, Boot/Live types, descriptor macro + completeness design.

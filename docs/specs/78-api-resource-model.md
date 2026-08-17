@@ -1,6 +1,6 @@
 # Spec 78: Canonical API Resource Model
 
-**Status:** REVIEW-CONVERGED rev 5 (2026-08-16), awaiting owner lock — four codex review rounds, finding trajectory 20 → 8 → 1 → 0, plus one post-convergence coordination update (full dispositions in §10).
+**Status:** LOCKED rev 6 (2026-08-17) — four codex review rounds (finding trajectory 20 → 8 → 1 → 0), one post-convergence coordination update, and one owner reconciliation pass against the 2026-08-17 merge sweep (ten PRs landed between rev 5 and lock (#195-#204: six Spec 76 waves, four CI/build fixes); every §7 amendment re-verified against main, dispositions in §10).
 **Findings base:** `docs/review/api-surface-review-2026-08-16.md` — full-surface review (REST route table read + four audit lanes: WS, MCP, clients, OpenAPI/security/docs) with file:line receipts, verified against the tree on 2026-08-16. Local artifact (`docs/review/` is gitignored); re-check line numbers at execution time.
 **Relationship to Spec 76:** Spec 76 unifies the *internals* (domain services, typed contracts, envelope, WS registry, OpenAPI catalog). This spec redesigns the *surface* those mechanics serve: the resource model, the route set, and the naming. It amends Spec 76 where the two touch (§7) and subsumes wave C1b (§7.3).
 **Authorship model:** same as Spec 76 — Fable owns the contracts and writes the contract-bearing code first; Opus 5 workers execute mechanical waves; Codex reviews per PR.
@@ -58,7 +58,7 @@ All mutations route through `SceneMutation`/`commit_scene` (Spec 76 §2.3) — `
 
 ### 1.3 The `/scene` document embeds layer identity — this kills the fake-layer hack
 
-`GET /scene` returns the scene metadata (`id`, `name`, `kind`, `is_default`, `unassigned_behavior`, `layout_id`, `revision`) and every **authored zone** with its full layer stack: layer ids, effect refs, control values, blend/opacity. Clients never synthesize ids: the "synthetic legacy layer" convention (zone id passed as both `group_id` and `layer_id`, `tui/src/client/rest.rs:361-366`, `ui/src/pages/effects/zone_controls.rs:255`) is deleted along with the routes it forged. A client patches the real layer id it read from `/scene` (or from the apply response, §2.3). No zone-scoped controls route exists — conditional shorthand routes ("valid only when the stack has one layer") are rejected as a class.
+`GET /scene` returns the scene metadata (`id`, `name`, `kind`, `is_default`, `unassigned_behavior`, `layout_id`, `revision`) and every **authored zone** with its full layer stack: layer ids, effect refs, control values, blend/opacity. Clients never synthesize ids: the "synthetic legacy layer" convention (zone id passed as both zone and layer id — `zone_id` post-C1b; receipts `tui/src/client/rest.rs:361-366`, `ui/src/pages/effects/zone_controls.rs:255` from the pre-C1b tree) is deleted along with the routes it forged. A client patches the real layer id it read from `/scene` (or from the apply response, §2.3). No zone-scoped controls route exists — conditional shorthand routes ("valid only when the stack has one layer") are rejected as a class.
 
 **Display faces stay display-domain.** Runtime default display faces materialize as `default_display_groups` outside the authored scene (`core/src/scene/mod.rs:1893-1934`), and their controls live in display preferences. They are deliberately NOT projected into `/scene`: display composition is owned by `/displays/{id}/face` + `face/controls` + `face/composition`, which this spec retains unchanged. One owner per pixel path: authored zones belong to `/scene`, faces belong to `/displays`.
 
@@ -70,7 +70,7 @@ All mutations route through `SceneMutation`/`commit_scene` (Spec 76 §2.3) — `
 
 ### 1.5 Fine-grained mutation is live-tree-only
 
-`/scenes/{id}/zones/*` and `/scenes/{id}/groups/*` (14 routes) are deleted. Editing a stored scene is either whole-document (`PUT /scenes/{id}`) or live (activate it, edit `/scene`, changes persist through the existing commit path). This matches how the product is used — Studio edits the live scene against real hardware — and removes the doubly-parameterized tree whose paths carried two different "zone" concepts at once. The WS `zone_layout_preview` command loses its caller-selected `scene_id` and becomes active-scene-only, keyed by `zone_id` (§7.1) — the live-tree invariant holds across transports, not just REST.
+`/scenes/{id}/zones/*` (14 routes; the `groups` spelling died in C1b) are deleted. Editing a stored scene is either whole-document (`PUT /scenes/{id}`) or live (activate it, edit `/scene`, changes persist through the existing commit path). This matches how the product is used — Studio edits the live scene against real hardware — and removes the doubly-parameterized tree whose paths carried two different "zone" concepts at once. The WS `zone_layout_preview` command loses its caller-selected `scene_id` and becomes active-scene-only, keyed by `zone_id` (§7.1) — the live-tree invariant holds across transports, not just REST.
 
 ### 1.6 Concurrency — one token
 
@@ -102,7 +102,7 @@ The filters are implemented server-side, once, in the effect service. Today the 
 
 ### 2.2 Deleted from the effects domain
 
-`/effects/active`, `/effects/active/cover`, `/effects/current/controls`, `/effects/current/controls/{name}/binding`, `/effects/current/reset`, `/effects/pause`, `/effects/resume`, `/effects/stop`, `/effects/{id}/controls`, and the `/effects/screenshots` static mount. Live state lives at `/scene`; pause lives at `/output` (§4); stop is `/scene/clear`; control patches address real layers (§1.3). Binding *creation* returns with a first-class binding design; until then bindings are surfaced in the layer document and removable via `PatchControlsRequest.clear_bindings` (§1.6) — never stranded. `PauseEffectResponse`/`ResumeEffectResponse`/`ActiveEffectResponse` and the idle-sentinel shape die with the routes.
+`/effects/active`, `/effects/active/cover`, `/effects/active/controls` (C1b's renamed spelling of `current`), `/effects/active/controls/{name}/binding`, `/effects/active/reset`, `/effects/pause`, `/effects/resume`, `/effects/stop`, `/effects/{id}/controls`, and the `/effects/screenshots` static mount. Live state lives at `/scene`; pause lives at `/output` (§4); stop is `/scene/clear`; control patches address real layers (§1.3). Binding *creation* returns with a first-class binding design; until then bindings are surfaced in the layer document and removable via `PatchControlsRequest.clear_bindings` (§1.6) — never stranded. `PauseEffectResponse`/`ResumeEffectResponse`/`ActiveEffectResponse` and the idle-sentinel shape die with the routes.
 
 ### 2.3 The sugar contract
 
@@ -203,26 +203,43 @@ MCP stays a curated concierge, but every tool becomes an honest, thin projection
 
 ## 7. Amendments to Spec 76 waves
 
-### 7.1 WS registry (amends wave 3.2 acceptance criteria)
+### 7.1 WS registry — the 3.2 arc is COMPLETE; the residue transfers here
 
-- Every `define_ws_topics!` entry declares a **backpressure class** — `Lossless` (awaited send), `LatestWins` (watch semantics), or `DropWithNotice` (try-send + `backpressure` message) — replacing today's three ad-hoc behaviors; the manifest states each topic's class.
-- The **event vocabulary is generated**: the manifest's event list is emitted from `HypercolorEvent` plus the synthetic names (`resync_required`; `input_source_status_changed` is renamed to not collide with `input_source_changed`).
-- **The event and hello vocabulary sheds the singleton model** (not left to 3.2), split cleanly across waves: **78.3** drops the hello payload's singleton `effect`/`active_preset_id` fields (`ws/protocol.rs:1153-1163` — both UIs consume `/scene` + events instead), renames `group_id`/`group_name`/`groups_revision` and `RenderGroupChanged` to zone vocabulary, and gives `EffectControlChanged` zone + layer identity; **78.4** — and only 78.4, so no intermediate revision has profile REST without profile WS — drops the hello `profile` field and deletes the profile events (`event.rs:849-864`). Golden fixtures update in the same PRs.
-- **`zone_layout_preview` becomes active-scene-only** and zone-keyed; the caller-selected `scene_id` field is deleted (`ws/protocol.rs:615-622`, `ws/session.rs:1405-1429`, UI payload `ui/src/ws/preview.rs:300-325`).
-- **Continuity is a documented contract:** the events channel does not replay across a socket gap; clients fold `connection_generation` into fetch epochs (the pattern the UI already implements). The manifest and SDK say so explicitly.
-- **One error vocabulary:** WS-native errors serve `ApiErrorDetail` codes; the parallel four-file code set is deleted.
-- **Named wire fixes in the migration:** `0x01` gains a `u16` zone count (u8 truncates at 255 zones silently); `screen_zones` gets its own config block (today it is paced by an *unsubscribed* channel's config); the default preview transport becomes the advertised v2; the `frames` JSON toggle is deleted (zero consumers); RPC tags `0x80`/`0x81` are deleted with their codec (implemented, golden-tested, and unreachable — the daemon discards all inbound binary, `ws/session.rs:544`).
-- **The manifest is generated output** from the topic registry and codec metadata; hand-editing `protocol/websocket-v1.json` becomes impossible by construction (six confirmed drift points today).
+Spec 76's 3.2 arc landed in full before this lock (registry contract PR #193, wire-stable daemon adoption #196, keyed wire migration #203). Rev 5 wrote this section as amendments to 3.2's acceptance criteria; that ship has sailed, so each item below is now either **struck as landed** (with the PR that shipped it) or **owned by a Spec 78 wave**. Re-verified against main at lock time:
+
+**Landed — struck from the workload:**
+- The zone-vocabulary renames (`group_id`/`group_name`, `RenderGroupChanged`, WS message fields) shipped across C1b (#195) and 3.2c (#203); the 3.2c verifier's sweep confirms zero group-vocabulary survivors on any WS path. `groups_revision` inside persisted scenes remains the deliberate carve-out.
+- RPC tags `0x80`/`0x81` and their codec were deleted by wave C1e (#191).
+
+**78.3 owns (verified still open at lock):**
+- Drop the hello payload's singleton `effect`/`active_preset_id` fields (`active_preset_id` confirmed live at `ws/protocol.rs:912`) — both UIs consume `/scene` + events instead. Give `EffectControlChanged` zone + layer identity.
+- `zone_layout_preview` becomes active-scene-only and zone-keyed; the caller-selected `scene_id` field (confirmed live at `ws/protocol.rs:523,528`) is deleted.
+- Every `define_ws_topics!` entry declares a **backpressure class** — `Lossless` (awaited send), `LatestWins` (watch semantics), or `DropWithNotice` (try-send + `backpressure` message) — replacing today's ad-hoc behaviors; the manifest states each topic's class.
+- The **event vocabulary is generated**: the manifest's event list is emitted from `HypercolorEvent` plus the synthetic names (`resync_required`; `input_source_status_changed` renamed to not collide with `input_source_changed`).
+- **One error vocabulary:** WS-native errors serve `ApiErrorDetail` codes; the parallel code set is deleted.
+- **Named wire fixes:** `0x01` gains a `u16` zone count (u8 truncates at 255 zones silently); `screen_zones` gets its own config block (confirmed still configless in the registry at lock — it is paced by an *unsubscribed* channel's config); the default preview transport becomes the advertised v2 (verify at wave start; 3.2c staged negotiation but the default was out of its scope); the `frames` JSON toggle is deleted (still live: `FrameFormat::Json` at `leptos-ext/src/ws/registry.rs:125`, JSON frame building at `ws/cache.rs:339`; zero consumers).
+- **The manifest becomes generated output** from the topic registry and codec metadata (the generator at `python/scripts/generate_ws_protocol.py` still consumes the hand-maintained `protocol/websocket-v1.json`); hand-editing becomes impossible by construction. The golden suite's source-scanning tag census (shipped in 3.2) is the pattern to extend.
+
+**78.4 owns:** drop the hello `profile` field and delete the profile events (`event.rs:849-864`) — only 78.4, so no intermediate revision has profile REST without profile WS. Golden fixtures update in the same PRs.
+
+**Documented contract:** the events channel does not replay across a socket gap; clients fold `connection_generation` into fetch epochs (the UI already does). Writing this into the manifest and SDK is 78.3's job — neither states it today.
 
 ### 7.2 OpenAPI (amends wave 3.3)
 
 Wave 3.3's registration-helper catalog is implemented with `utoipa-axum`'s `OpenApiRouter` (utoipa 5.4 is already a workspace dep): route registration *is* spec registration, so drift is impossible rather than detectable. Acceptance criteria beyond Spec 76 §4.6: response schemas on every operation (today: zero catalog operations have any), true status codes (401/403/429 from security, 201/202 from the 17 handler sites, 101 for `/ws`), typed path parameters, and an extension hook so `ApiExtension` implementors contribute paths. The docs site's endpoint reference (`docs/content/api/rest.md`, 147 hand-written blocks) is generated from the emitted document; conceptual pages stay hand-written.
 
-### 7.3 Wave C1b is consumed — it lands first, and 78 deletes what it renamed
+### 7.3 Wave C1b is consumed — it landed, and 78 deletes what it renamed
 
-C1b was in flight when this spec converged (`nova/s76-c1b-naming-flip`: `current`→`active` route renames, `groups`→`zones` in layer paths and zone payload fields), so it **lands as planned** rather than being struck — aborting a nearly-finished wave costs more than the churn it saves. Division of spoils: C1b's *vocabulary* renames (zone payload fields, path grammar) are load-bearing groundwork this spec builds on; its renamed *routes* are transitional — wave 78.3 deletes `/effects/active-formerly-current/*` and the `/scenes/{id}` fine-grained tree wholesale (§2.2, §1.5). The affected client call sites flip twice (rename, then move to `/scene`); accepted and named here. Any C1b remainder that has not landed when 78.3 starts transfers to 78.3. Config resource routes stay wave 4.3's job.
+C1b landed as PR #195 (2026-08-17): `current`→`active` route renames, `groups`→`zones` in layer paths and zone payload fields, the display-face field rename with its shared-fixture fence. Its *vocabulary* renames are load-bearing groundwork this spec builds on; its renamed *routes* are transitional — wave 78.3 deletes `/effects/active-formerly-current/*` and the `/scenes/{id}` fine-grained tree wholesale (§2.2, §1.5). The affected client call sites flip twice (rename, then move to `/scene`); accepted and named here. Config resource routes were wave 4.3's job and landed (#190/#184).
 
-**Wave 3.1 re-targeting, made precise:** the `devices+scenes` batch starts only after 78.3/78.4/78.5 merge; the `effects+library` batch after 78.3/78.5. Both batches cover surviving routes only and **extend** the 78.1 contracts — they never redefine a type 78.1 shipped. The `layouts+displays+assets` and `drivers+system` batches are unaffected except for the §5 renames.
+**Wave 3.1 status at lock — the rev-5 gating was overtaken by execution.** Rev 5 gated the `devices+scenes` batch behind 78.3/78.4/78.5 and `effects+library` behind 78.3/78.5; both dispatched before this spec was read into the program:
+
+- `layouts+displays+assets` landed (#202) — unaffected, as rev 5 predicted.
+- `devices+scenes` landed (#204) **ahead of its gate**. Accepted churn, named here: 78.3/78.4 will delete or reshape some of its contracts (the scene activate/deactivate acknowledgements gain the §3.2 outcome fields; the fine-grained zone-route responses die with their routes). The promotion still pays for itself — the reshape now propagates by compiler across every client instead of by hand-hunting mirrors, which is the exact failure C1b demonstrated.
+- `effects+library` was rescoped mid-flight to **Appendix A survivors only** (no promotions for `/effects/active|current/*`, pause/resume/stop acknowledgements, or `/library/presets/{id}/apply`); the template-catalog drift fix stays in.
+- `drivers+system` remains unaffected except for the §5 renames and may run before or after 78's waves.
+
+The standing rule survives the overtaking: 3.1 batches **extend** the 78.1 contracts and never redefine a type 78.1 ships.
 
 ---
 
@@ -232,19 +249,19 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 **Error rendering rule for every wave:** every route this spec adds or rewrites renders the canonical `DomainError` envelope from its first commit. Spec 76 waves 2.1 and C1a are both landed (C1a merged 2026-08-16, PR #192), so the canonical envelope is the only error surface this spec ever touches; no new route may reintroduce a bespoke shape.
 
-**Route-inventory strategy:** Spec 76 wave 0.7's REST matrix remains the sole executable current-state pin, updated in every route-changing PR. Wave 78.1 additionally commits Appendix A as a **target manifest** (data, not a live assertion). A convergence test asserting live router ≡ Appendix A (Appendix A's scope: `/api/v1` JSON routes + `/health`; document routes excluded) activates at the end of wave 78.5, with the config-route rows gated on Spec 76 wave 4.3.
+**Route-inventory strategy:** Spec 76 wave 0.7's REST matrix remains the sole executable current-state pin, updated in every route-changing PR. Wave 78.1 additionally commits Appendix A as a **target manifest** (data, not a live assertion). A convergence test asserting live router ≡ Appendix A (Appendix A's scope: `/api/v1` JSON routes + `/health`; document routes excluded) activates at the end of wave 78.5 (the config-route rows landed with Spec 76 wave 4.3).
 
 **78.0 — bug strikes** (independent, immediate; each lands regardless of the redesign)
 - 0a. Server-side effect filters + `Query` extractor (fixes the CLI's dead flags; UI drops WASM filtering; MCP drops its private filter).
 - 0b. MCP phantom-parameter deletion + honest annotations + category enum from strum + docs tool-count fix.
 - 0c. TUI status shadow fix (render_loop fields; FPS shows again).
-- 0d. Static assets, Swagger UI, and `/preview` exempted from bearer auth; constant-time key comparison. (The rest of the security findings route to Spec 77; these two are unambiguous now.)
+- 0d. Static assets and Swagger UI exempted from bearer auth; constant-time key comparison. (`/preview` was in this list at rev 5; wave 3.2c deleted the page outright, #203. The rest of the security findings route to Spec 77; these two are unambiguous now.)
 
 **78.1 — contracts (Fable).** `/scene` document + zone/layer resource types (incl. layer-identity rules §1.4 and the single `revision` token §1.6), `/output` type, `PatchControlsRequest`, closed enums, tagged-union convention, segment naming and `zone` body fields in `types::api`, scene `layout_id`/`activation_brightness` fields, the §2.3 sugar contract, and Appendix A committed as the target manifest.
 
 **78.2 — output merge (worker, after 78.1).** `/output` GET/PATCH; delete pause/resume routes + types, `/settings/*`, `/output/power`; move audio devices to `/system/audio-devices`; MCP brightness/power onto the output service. Clients in-PR.
 
-**78.3 — the scene tree (worker(s), after 78.1 and Spec 76 wave 2.3b).** Mount `/scene` over the domain services (validation-before-side-effects ordering per §2.3); delete `/effects/active|current/*`, `/effects/stop`, `/effects/{id}/controls`, `/scenes/active`, `/scenes/deactivate`, `/scenes/{id}/zones/*`, `/scenes/{id}/groups/*`, broadcast-media, `/library/presets/{id}/apply`; rewrite apply as sugar returning the zone resource; playlist advancement semantics; `/scene/clear`; the §7.1 WS vocabulary migration (hello fields, event renames, `zone_layout_preview`). Both UIs and CLI migrate in the same PR set (split by client if needed, route flip last). Docs checklist: `guide/first-session.md`, `guide/quick-start.md`, `api/cli.md`, `contributing/debugging.md`, `studio/zone-api-and-concurrency.md`, `troubleshooting/studio.md`, `effects/controls.md`.
+**78.3 — the scene tree (worker(s), after 78.1; Spec 76 wave 2.3b landed).** Mount `/scene` over the domain services (validation-before-side-effects ordering per §2.3); delete `/effects/active/*` (C1b's renamed spelling), `/effects/stop`, `/effects/{id}/controls`, `/scenes/active`, `/scenes/deactivate`, `/scenes/{id}/zones/*`, broadcast-media, `/library/presets/{id}/apply`; rewrite apply as sugar returning the zone resource; playlist advancement semantics; `/scene/clear`; the §7.1 items 78.3 owns (hello singletons, `EffectControlChanged` zone+layer identity, `zone_layout_preview` keying, backpressure classes, generated event vocabulary and manifest, error vocabulary, named wire fixes, and stating the no-replay continuity contract in the manifest and SDK). Both UIs and CLI migrate in the same PR set (split by client if needed, route flip last). Docs checklist: `guide/first-session.md`, `guide/quick-start.md`, `api/cli.md`, `contributing/debugging.md`, `studio/zone-api-and-concurrency.md`, `troubleshooting/studio.md`, `effects/controls.md`.
 
 **78.4 — profiles fold (worker, after 78.3).** `/scenes/snapshot`; the §3.3 import; scene `layout_id`/`activation_brightness` activation behavior; delete `/profiles/*`, store, types, MCP `set_profile` + `hypercolor://profiles` (add `hypercolor://scenes`); `start_profile` → `start_scene` config rename; CLI `profile` commands become `scene snapshot`/`scene activate`. Docs checklist: `guide/profiles-and-scenes.md`, `docs/content/agents/*` (prompt-templates, resources-reference, tools-reference, workflows), `api/mcp.md`.
 
@@ -254,7 +271,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 **Downstream check (blocks only the logical-devices deletion in 78.5):** confirm the internal repo (consumes OSS as the `oss/` submodule) and hypercolor-hass/Python SDK have no logical-devices dependency and nothing beyond §3.3's migration for profiles. Python client regenerates post-78; breaking changes named in release notes per doctrine.
 
-**Interaction with Spec 76 sequencing:** 78.1 needs 2.0 + 2.1 (landed). 78.3 needs 2.3b and C1b (both in flight at spec time, §7.3). 3.1 batches gate per §7.3. 3.2/3.3 adopt the §7.1/§7.2 amendments. Phases 5/6/7 of Spec 76 are untouched.
+**Interaction with Spec 76 sequencing (as of lock, 2026-08-17):** every 78 prerequisite has landed — 2.0, 2.1, 2.3b, C1b (#195), the full 3.2 arc (#193/#196/#203), config authority (#184/#190), and 2.4 (#200). 78.0 and 78.1 are dispatchable immediately. Wave 3.1 status per §7.3; the remaining `drivers+system` batch may run on either side of 78's waves. **Wave 3.3 executes after 78.5** — the OpenAPI catalog is born against Appendix A's 81 paths, never the pre-78 surface, using the §7.2 implementation. Spec 76's remaining phases interleave by surface: Phase 5 (types restructure) follows the 78 route waves, since both churn `types::api` and the restructure should move the post-78 shapes once; wave 4.4 (store batches) coordinates with 78.4 by store — the profile import owns `profiles.json`'s retirement, 4.4 owns the rest; Phases 6/7 (engine, benchmark-gated) are surface-disjoint and may run in parallel with any 78 wave.
 
 **Estimated effect:** 111 → 81 paths (Appendix A: 118 operations); net deletion 8 to 12k LOC across daemon + clients (dead handlers and types, the 14-route scene nesting, profiles domain, MCP second implementations, hand mirrors 3.1 no longer grows contracts for, fake-layer client code, WASM filtering, N+1 hydration).
 
@@ -272,6 +289,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ## 10. Review history
 
+- **Rev 6 (2026-08-17, owner reconciliation + lock):** rev 5 converged one day before ten PRs landed (#195-#204: C1b, waves 3.2b/3.2c completing the 3.2 arc, 3.1a/3.1b, 2.4, and four CI/build fixes), so every §7 amendment was re-verified against main before lock. §7.1 rewritten from "amends 3.2 acceptance criteria" to a landed/owned split — the zone-vocabulary renames and RPC tag deletion are struck as shipped; hello singletons, `zone_layout_preview` keying, backpressure classes, generated vocabulary/manifest, error vocabulary, and the remaining wire fixes transfer to 78.3/78.4 with fresh file:line receipts. §7.3 updated: C1b landed; the 3.1 `devices+scenes` batch landed ahead of its rev-5 gate (churn accepted and named); `effects+library` rescoped mid-flight to Appendix A survivors. 78.0d drops the deleted `/preview` page. Wave 3.3 explicitly sequenced after 78.5. No reviewed contract changed; this is sequencing and status reconciliation only.
 - **Rev 5 (2026-08-16, coordination update):** wave C1b was discovered in flight (`nova/s76-c1b-naming-flip`, three commits plus active edits) after rev 4 converged. §7.3 reframed from *strike* to *consume*: C1b lands, its vocabulary renames become 78's floor, 78.3 deletes the transitional routes. Sequencing-only change; no reviewed contract altered.
 - **Rev 4 (2026-08-16):** round-3 convergence check verified 7/8 rev-3 fixes RESOLVED with one residual (the suffix allocator could re-suffix the import's own destination on crash-replay); fixed by excluding the destination id from collision checks. Round-4 micro-check: **VERDICT: PASS. Converged.**
 - **Rev 3 (2026-08-16):** round-2 codex verification pass: 15/20 round-1 findings ADDRESSED, 5 PARTIAL, 8 findings total (6 MAJOR, 2 MINOR), all adopted: every whole-layer PUT mints a fresh id (same effect included); apply sugars named in the guarded structural list; `clear_bindings` on `PatchControlsRequest` so persisted bindings are removable (nothing API-locked); idempotent import via UUIDv5-derived scene ids + numbered suffix allocation; `description` mapped and the brightness u8→f32 formula fixed; activation ordering with reported layout/brightness outcomes; profile WS removal pinned to 78.4 alone; Appendix A scoped to `/api/v1` JSON routes + `/health` with document routes excluded. Verdict trajectory: 20 → 8.
@@ -282,7 +300,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ## Appendix A — Normative route inventory (81 paths, 118 operations)
 
-Scope: the JSON API under `/api/v1` plus `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/preview`, `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources. Config rows land via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
+Scope: the JSON API under `/api/v1` plus `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources (`/preview` was on this list until wave 3.2c deleted the page). Config rows landed via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
 
 | Path | Methods | Notes |
 |---|---|---|
