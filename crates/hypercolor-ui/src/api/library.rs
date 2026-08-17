@@ -30,17 +30,7 @@ pub struct PresetListResponse {
     pub items: Vec<PresetSummary>,
 }
 
-/// Request body for creating a preset.
-#[derive(Debug, Serialize)]
-pub struct CreatePresetRequest {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub effect: String,
-    pub controls: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-}
+pub use hypercolor_types::api::library::{AddFavoriteRequest, SavePresetRequest};
 
 // ── Favorite Types ──────────────────────────────────────────────────────────
 
@@ -67,14 +57,14 @@ pub async fn fetch_presets() -> Result<Vec<PresetSummary>, String> {
 }
 
 /// Create a new preset from current control values.
-pub async fn create_preset(req: &CreatePresetRequest) -> Result<PresetSummary, String> {
+pub async fn create_preset(req: &SavePresetRequest) -> Result<PresetSummary, String> {
     client::post_json("/api/v1/library/presets", req)
         .await
         .map_err(Into::into)
 }
 
 /// Update an existing preset (name, controls, etc.).
-pub async fn update_preset(id: &str, req: &CreatePresetRequest) -> Result<PresetSummary, String> {
+pub async fn update_preset(id: &str, req: &SavePresetRequest) -> Result<PresetSummary, String> {
     client::put_json(&format!("/api/v1/library/presets/{id}"), req)
         .await
         .map_err(Into::into)

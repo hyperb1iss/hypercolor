@@ -20,11 +20,23 @@ pub enum DisplayFaceScope {
     Scene,
 }
 
+impl DisplayFaceScope {
+    /// The wire spelling, matching the serde representation and the
+    /// `?scope=` query form.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Scene => "scene",
+        }
+    }
+}
+
 /// Request body for `PUT /api/v1/displays/{id}/face`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SetDisplayFaceRequest {
     pub effect_id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub controls: HashMap<String, ControlValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend_mode: Option<DisplayFaceBlendMode>,

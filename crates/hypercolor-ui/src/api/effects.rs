@@ -19,8 +19,9 @@ use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResp
 pub use hypercolor_types::api::effects::{
     ApplyEffectPresetRequest, ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet,
     EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
-    EffectPresetSummary, EffectSummary, InstalledEffectResponse,
+    EffectPresetSummary, EffectSummary, InstalledEffectResponse, UpdateActiveControlsRequest,
 };
+pub use hypercolor_types::api::output::{OutputPowerMode, SetOutputPowerRequest};
 
 /// Active effect response from `GET /api/v1/effects/active`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -149,7 +150,9 @@ pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<()
 pub async fn pause_effect() -> Result<(), String> {
     client::put_json_discard(
         "/api/v1/output/power",
-        &serde_json::json!({ "state": "paused" }),
+        &SetOutputPowerRequest {
+            state: OutputPowerMode::Paused,
+        },
     )
     .await
     .map_err(Into::into)
@@ -159,7 +162,9 @@ pub async fn pause_effect() -> Result<(), String> {
 pub async fn resume_effect() -> Result<(), String> {
     client::put_json_discard(
         "/api/v1/output/power",
-        &serde_json::json!({ "state": "running" }),
+        &SetOutputPowerRequest {
+            state: OutputPowerMode::Running,
+        },
     )
     .await
     .map_err(Into::into)
@@ -174,7 +179,9 @@ pub async fn stop_effect() -> Result<(), String> {
 
 /// Update effect control parameters.
 pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
-    let body = serde_json::json!({ "controls": controls });
+    let body = UpdateActiveControlsRequest {
+        controls: Some(controls.clone()),
+    };
     client::patch_json_discard("/api/v1/effects/active/controls", &body)
         .await
         .map_err(Into::into)
@@ -217,7 +224,9 @@ pub async fn update_effect_controls(
     use gloo_net::http::Method;
 
     let url = format!("/api/v1/effects/{}/controls", path_segment(effect_id));
-    let body = serde_json::json!({ "controls": controls });
+    let body = UpdateActiveControlsRequest {
+        controls: Some(controls.clone()),
+    };
     let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
         Method::PATCH,
         &url,

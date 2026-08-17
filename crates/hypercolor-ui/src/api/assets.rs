@@ -6,6 +6,8 @@ use web_sys::{File, FormData};
 
 use super::{ApiEnvelope, client};
 
+pub use hypercolor_types::api::assets::AssetUpdateRequest;
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MediaAssetRecord {
     pub id: String,
@@ -38,12 +40,6 @@ pub struct AssetUploadResponse {
     #[serde(flatten)]
     pub record: MediaAssetRecord,
     pub duplicate: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AssetUpdateRequest {
-    pub name: Option<String>,
-    pub tags: Option<Vec<String>>,
 }
 
 pub async fn list_assets() -> Result<AssetListResponse, String> {

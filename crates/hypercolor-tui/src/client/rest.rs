@@ -3,15 +3,18 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
+use hypercolor_types::api::controls::InvokeControlActionRequest;
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
 use hypercolor_types::api::effects::{
     ActiveEffectResponse as ApiActiveEffectResponse, ApplyEffectRequest,
     EffectDetailResponse as ApiEffectDetailResponse, EffectListResponse as ApiEffectListResponse,
-    EffectSummary as ApiEffectSummary, ResetControlsRequest,
+    EffectSummary as ApiEffectSummary, ResetControlsRequest, UpdateActiveControlsRequest,
 };
 use hypercolor_types::api::envelope::ApiErrorBody;
+use hypercolor_types::api::layers::PatchLayerControlsRequest;
+use hypercolor_types::api::library::AddFavoriteRequest;
 use hypercolor_types::api::scenes::{
     ActiveSceneResponse as ApiActiveSceneResponse, SceneListResponse as ApiSceneListResponse,
 };
@@ -365,7 +368,9 @@ impl DaemonClient {
         );
         let response = self
             .auth_request(self.http.patch(&url))
-            .json(&serde_json::json!({ "controls": controls }))
+            .json(&PatchLayerControlsRequest {
+                controls: Some(controls.clone()),
+            })
             .send()
             .await
             .with_context(|| format!("Failed to update controls for zone {zone_id}"))?;
@@ -386,7 +391,9 @@ impl DaemonClient {
             let url = format!("{}/api/v1/library/favorites", self.base_url);
             let response = self
                 .auth_request(self.http.post(&url))
-                .json(&serde_json::json!({ "effect": effect_id }))
+                .json(&AddFavoriteRequest {
+                    effect: effect_id.to_owned(),
+                })
                 .send()
                 .await?;
             ensure_success(response, &format!("Failed to add favorite {effect_id}")).await?;
@@ -399,7 +406,9 @@ impl DaemonClient {
         let url = format!("{}/api/v1/effects/active/controls", self.base_url);
         let response = self
             .auth_request(self.http.patch(&url))
-            .json(&serde_json::json!({ "controls": { control_id: value } }))
+            .json(&UpdateActiveControlsRequest {
+                controls: Some(serde_json::json!({ control_id: value })),
+            })
             .send()
             .await
             .with_context(|| "Failed to update control")?;
@@ -520,11 +529,6 @@ pub struct ControlSurfaceQuery<'a> {
 #[derive(Debug, Deserialize)]
 struct ControlSurfaceListResponse {
     surfaces: Vec<ControlSurfaceDocument>,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct InvokeControlActionRequest {
-    input: ControlValueMap,
 }
 
 #[derive(Debug, Deserialize)]

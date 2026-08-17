@@ -365,7 +365,7 @@ fn update_layer(
     on_layers_mutated: Callback<()>,
 ) {
     let layer_id = layer.id.to_string();
-    let request = api::UpdateLayerRequest::from(&layer);
+    let request = api::update_request_from_layer(&layer);
     leptos::task::spawn_local(async move {
         match api::update_layer(
             &scene_id,
