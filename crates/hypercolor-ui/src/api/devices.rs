@@ -10,9 +10,10 @@ use super::client;
 // hypercolor-types) — drift is now a compile error, not a runtime parse
 // failure. Pairing vocabulary likewise comes from hypercolor-types.
 pub use hypercolor_types::api::devices::{
-    DeviceConnectionSummary, DeviceListResponse, DeviceSummary, IdentifyAttachmentRequest,
-    IdentifyRequest, UpdateAttachmentsRequest, UpdateDeviceRequest, ZoneSummary,
-    ZoneTopologySummary,
+    ComponentBindingSummary, DeletePairingResponse, DeviceComponentsResponse,
+    DeviceComponentsUpdateResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
+    IdentifyAttachmentRequest, IdentifyRequest, PairDeviceResponse, UpdateAttachmentsRequest,
+    UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
 };
 pub use hypercolor_types::api::settings::SetBrightnessRequest;
 pub use hypercolor_types::attachment::ComponentBinding;
@@ -21,19 +22,6 @@ pub use hypercolor_types::pairing::{
     PairingFieldDescriptor, PairingFlowKind,
 };
 
-/// Response from `POST /api/v1/devices/:id/pair`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PairDeviceResponse {
-    pub status: PairDeviceStatus,
-    pub message: String,
-}
-
-/// Response from `DELETE /api/v1/devices/:id/pair`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DeletePairingResponse {
-    pub message: String,
-}
-
 /// Global brightness payload from `/api/v1/settings/brightness`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrightnessSettingsResponse {
@@ -41,33 +29,6 @@ pub struct BrightnessSettingsResponse {
 }
 
 // ── Attachment Types ────────────────────────────────────────────────────────
-
-/// Attachment binding summary from `GET /api/v1/devices/:id/attachments`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ComponentBindingSummary {
-    pub slot_id: String,
-    pub template_id: String,
-    pub template_name: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    pub enabled: bool,
-    pub instances: u32,
-    pub led_offset: u32,
-    pub effective_led_count: u32,
-}
-
-/// Device attachment profile summary from `GET /api/v1/devices/:id/attachments`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeviceComponentsResponse {
-    pub device_id: String,
-    pub device_name: String,
-    #[serde(default)]
-    pub slots: Vec<hypercolor_types::attachment::ComponentSlot>,
-    #[serde(default)]
-    pub bindings: Vec<ComponentBindingSummary>,
-    #[serde(default)]
-    pub suggested_zones: Vec<hypercolor_types::attachment::ComponentSuggestedZone>,
-}
 
 /// Template summary from `GET /api/v1/attachments/templates`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -191,7 +152,7 @@ pub async fn fetch_attachment_templates(
 pub async fn update_device_attachments(
     device_id: &str,
     req: &UpdateAttachmentsRequest,
-) -> Result<DeviceComponentsResponse, String> {
+) -> Result<DeviceComponentsUpdateResponse, String> {
     client::put_json(&format!("/api/v1/devices/{device_id}/attachments"), req)
         .await
         .map_err(Into::into)
