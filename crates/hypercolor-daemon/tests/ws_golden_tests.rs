@@ -1122,9 +1122,10 @@ fn every_binary_tag_matches_its_golden_fixture() {
 
     assert!(
         failures.is_empty(),
-        "binary wire format drifted from its golden fixtures. Changing these bytes \
-         breaks every deployed client, so it needs the spec 76 §0 dual-accept \
-         process, not a fixture rewrite.\n\n{}",
+        "binary wire format drifted from its golden fixtures. If you did not mean \
+         to change the wire, fix the encoder. If you did, update every in-repo \
+         client in this PR and re-bless with HYPERCOLOR_WS_GOLDEN_BLESS, then \
+         review the byte diff as the change (spec 76 §0, lockstep).\n\n{}",
         failures.join("\n\n")
     );
 }

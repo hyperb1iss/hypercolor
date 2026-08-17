@@ -145,10 +145,14 @@ offset  size  field
 6       4     timestamp_ms      u32
 10      2     width             u16
 12      2     height            u16
-14      1     format            u8 (2 = Jpeg)
+14      1     format            u8 (0 = Rgb, 1 = Rgba, 2 = Jpeg)
 15      N     device_id         UTF-8, N = device_id length
 15+N    ..    payload
 ```
+
+The layout carries the full format vocabulary, which is what lets one decoder
+serve display and interactive previews alike; the daemon only ever writes JPEG
+on this tag today.
 
 The identity is validated on both sides: non-empty, at most
 `DISPLAY_PREVIEW_ID_MAX_BYTES` (128) bytes, and free of control characters. The
