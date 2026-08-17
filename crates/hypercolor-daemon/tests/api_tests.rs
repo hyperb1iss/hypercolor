@@ -16354,3 +16354,103 @@ async fn settings_mutations_publish_local_change_hints() {
     .await
     .expect("timed out waiting for local-change hints");
 }
+
+/// Recursive key paths of a JSON value; arrays contribute their first
+/// element's shape (test scenarios keep them homogeneous).
+fn collect_key_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                out.push(path.clone());
+                collect_key_paths(child, &path, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if let Some(first) = items.first() {
+                collect_key_paths(first, &format!("{prefix}[]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The display-face response is the one REST shape with no shared
+/// `hypercolor_types::api` type behind it; the web UI mirrors it by
+/// hand. This pin and the UI's decode test read the SAME fixture file,
+/// so a daemon-side field rename must update the fixture, and the
+/// updated fixture then has to decode into the UI's mirror. The hole
+/// closes for real when the displays domain moves into
+/// `hypercolor_types::api`.
+#[tokio::test]
+async fn display_face_response_shape_matches_the_shared_fixture() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_response.status(), StatusCode::OK);
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"label":"gpu"}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let json = body_json(get_response).await;
+
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/rest_v1/display_face_shape.json"))
+            .expect("fixture parses");
+
+    let mut actual_paths = Vec::new();
+    collect_key_paths(&json["data"], "", &mut actual_paths);
+    let mut fixture_paths = Vec::new();
+    collect_key_paths(&fixture, "", &mut fixture_paths);
+    actual_paths.sort();
+    fixture_paths.sort();
+    assert_eq!(
+        actual_paths, fixture_paths,
+        "the face wire shape drifted from the shared fixture; update \
+         tests/fixtures/rest_v1/display_face_shape.json and re-run the UI \
+         decode test that reads it"
+    );
+}

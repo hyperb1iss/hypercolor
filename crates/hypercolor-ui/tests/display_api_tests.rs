@@ -404,51 +404,38 @@ fn hex_to_rgba_expands_css_shorthand() {
 /// struct and this crate mirrors it by hand, so nothing makes the compiler
 /// compare the two.
 ///
-/// Read what this does and does not buy, because the difference matters.
-/// The literal below is a hand-copied subset of the daemon's response,
-/// carrying the fields this crate reads rather than all seventeen a `Zone`
-/// serializes. This crate has no dependency on `hypercolor-daemon`, so the
-/// test cannot observe the real serializer. It therefore catches a rename
-/// on THIS side of the wire and nothing else: change the mirror alone and
-/// this fails, which is the mistake most likely to be made here.
-///
-/// It does NOT catch a daemon-side rename that updates the daemon's own
-/// pins and never touches this crate. The mirror and this literal would
-/// drift together and both suites would stay green. Closing that hole needs
-/// the shared type, not a bigger fixture, so treat that residue as live
-/// until the displays domain moves into `hypercolor_types::api` and the
-/// compiler takes the job over.
+/// The payload below is the SHARED fixture the daemon's
+/// `display_face_response_shape_matches_the_shared_fixture` pin asserts
+/// its live serializer against, key path by key path. A daemon-side field
+/// rename therefore has to update the fixture, and the updated fixture
+/// then has to decode here — which closes the drift a hand mirror allows.
+/// The residue that remains is value semantics (a field keeping its name
+/// while changing meaning); that goes away when the displays domain moves
+/// into `hypercolor_types::api` and the compiler takes the job over.
 #[test]
 fn display_face_response_decodes_the_daemon_shape() {
-    const DISPLAY_ID: &str = "6f1f2a3c-5d4e-4b7a-9c8d-0e1f2a3b4c5d";
-    const ZONE_ID: &str = "7a2b3c4d-6e5f-4a8b-9d0c-1e2f3a4b5c6d";
+    let wire: serde_json::Value = serde_json::from_str(include_str!(
+        "../../hypercolor-daemon/tests/fixtures/rest_v1/display_face_shape.json"
+    ))
+    .expect("shared fixture parses");
 
-    let wire = serde_json::json!({
-        "device_id": DISPLAY_ID,
-        "scene_id": "scene-a",
-        "effect": { "id": "clock", "name": "Clock" },
-        "zone": {
-            "id": ZONE_ID,
-            "display_target": {
-                "device_id": DISPLAY_ID,
-                "blend_mode": "alpha",
-                "opacity": 1.0
-            }
-        },
-        "live_scope": "scene",
-        "scene_assigned": true,
-        "default_assigned": false
-    });
+    let decoded: DisplayFaceResponse = serde_json::from_value(wire.clone())
+        .expect("daemon face payload should decode into the UI mirror");
 
-    let decoded: DisplayFaceResponse =
-        serde_json::from_value(wire).expect("daemon face payload should decode into the UI mirror");
-
-    assert_eq!(decoded.device_id, DISPLAY_ID);
-    assert_eq!(decoded.zone.id, ZONE_ID);
+    assert_eq!(decoded.device_id, wire["device_id"]);
+    assert_eq!(decoded.zone.id, wire["zone"]["id"]);
     assert_eq!(decoded.live_scope, DisplayFaceScope::Scene);
     let target = decoded
         .zone
         .display_target
         .expect("display target should decode");
-    assert_eq!(target.device_id.to_string(), DISPLAY_ID);
+    assert_eq!(
+        target.device_id.to_string(),
+        wire["zone"]["display_target"]["device_id"]
+    );
+    // The zone's patched control survives the tolerant decode.
+    assert!(
+        decoded.zone.controls.contains_key("label"),
+        "zone controls should carry the fixture's label control"
+    );
 }

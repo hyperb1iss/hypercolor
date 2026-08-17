@@ -401,6 +401,16 @@ async fn activate_scene_rejects_video_media_cap() {
     );
     assert_eq!(json["error"]["details"]["counts"]["video"], 3);
     assert_eq!(json["error"]["details"]["caps"]["video"], 2);
+    // Pin the renamed per-layer detail keys, not just counts and prose.
+    let first_layer = &json["error"]["details"]["layers"]["video"][0];
+    assert!(
+        first_layer["zone_id"].is_string(),
+        "layer details carry zone_id"
+    );
+    assert!(
+        first_layer["zone_name"].is_string(),
+        "layer details carry zone_name"
+    );
     assert_ne!(
         state.scene_manager.read().await.active_scene_id().copied(),
         Some(scene_id)

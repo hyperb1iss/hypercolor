@@ -1,0 +1,106 @@
+{
+  "device_id": "01a00e1a-c2b9-79e3-8e9b-4fc037edae83",
+  "scene_id": "00000000-0000-0000-0000-000000000000",
+  "effect": {
+    "id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
+    "name": "System Monitor",
+    "author": "test",
+    "version": "0.1.0",
+    "description": "System Monitor html effect",
+    "category": "display",
+    "tags": [
+      "test",
+      "html"
+    ],
+    "controls": [],
+    "audio_reactive": false,
+    "screen_reactive": false,
+    "input_reactive": false,
+    "source": {
+      "html": {
+        "path": "/tmp/System Monitor.html"
+      }
+    },
+    "license": null
+  },
+  "zone": {
+    "id": "01a00e1a-c2be-7c82-9c39-4d35657c142d",
+    "name": "Pump LCD Face",
+    "description": "Display face for Pump LCD",
+    "effect_id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
+    "controls": {
+      "label": {
+        "text": "gpu"
+      }
+    },
+    "preset_id": null,
+    "layers": [
+      {
+        "id": "01a00e1a-c2be-7c82-9c39-4d35657c142d",
+        "source": {
+          "type": "effect",
+          "effect_id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
+          "controls": {
+            "label": {
+              "text": "gpu"
+            }
+          }
+        },
+        "blend": "replace",
+        "opacity": 1.0,
+        "transform": {
+          "anchor": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "rotation": 0.0,
+          "fit": "cover"
+        },
+        "adjust": {
+          "brightness": 1.0,
+          "saturation": 1.0,
+          "hue_shift": 0.0,
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "tint_strength": 0.0,
+          "contrast": 0.0
+        },
+        "enabled": true
+      }
+    ],
+    "layout": {
+      "id": "display-face:01a00e1a-c2b9-79e3-8e9b-4fc037edae83",
+      "name": "Pump LCD Display Face",
+      "description": "Native-resolution face canvas for Pump LCD",
+      "canvas_width": 320,
+      "canvas_height": 320,
+      "zones": [],
+      "default_sampling_mode": {
+        "type": "bilinear"
+      },
+      "default_edge_behavior": "clamp",
+      "spaces": null,
+      "version": 1
+    },
+    "brightness": 1.0,
+    "enabled": true,
+    "color": null,
+    "display_target": {
+      "device_id": "01a00e1a-c2b9-79e3-8e9b-4fc037edae83"
+    },
+    "role": "display",
+    "controls_version": 1,
+    "layers_version": 0
+  },
+  "live_scope": "scene",
+  "scene_assigned": true,
+  "default_assigned": false
+}
