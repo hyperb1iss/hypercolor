@@ -12486,10 +12486,7 @@ async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
     assert_eq!(active_named.status(), StatusCode::OK);
     let active_named_json = body_json(active_named).await;
     assert_eq!(active_named_json["data"]["name"], "Sunset");
-    assert_eq!(
-        active_named_json["data"]["zone_id"],
-        named_primary_group_id
-    );
+    assert_eq!(active_named_json["data"]["zone_id"], named_primary_group_id);
 
     let deactivate = app
         .clone()
@@ -13812,9 +13809,7 @@ async fn active_scene_syncs_empty_screen_surface_for_display_device() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/zones/{group_id}/layers"
-                ))
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -13867,9 +13862,7 @@ async fn display_face_layer_stack_includes_legacy_face_beside_media() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/zones/{group_id}/layers"
-                ))
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -14128,9 +14121,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/zones/{group_id}/layers"
-                ))
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )

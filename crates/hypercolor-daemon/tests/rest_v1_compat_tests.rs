@@ -764,10 +764,12 @@ async fn renamed_routes_leave_nothing_behind() {
             &json!({ "sensor": "audio.level" }),
         ),
         empty_request("POST", "/api/v1/effects/current/reset"),
-        get(&format!(
-            "/api/v1/scenes/default/groups/{zone_id}/layers"
-        )),
-        json_request("POST", "/api/v1/config/get", &json!({ "key": "daemon.port" })),
+        get(&format!("/api/v1/scenes/default/groups/{zone_id}/layers")),
+        json_request(
+            "POST",
+            "/api/v1/config/get",
+            &json!({ "key": "daemon.port" }),
+        ),
         json_request(
             "POST",
             "/api/v1/config/set",

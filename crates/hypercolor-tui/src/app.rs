@@ -858,7 +858,9 @@ impl App {
                     async move {
                         let body = serde_json::to_value(&ctrl)?;
                         let target_zone_id = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
-                        client.apply_effect(&id, Some(&body), target_zone_id).await?;
+                        client
+                            .apply_effect(&id, Some(&body), target_zone_id)
+                            .await?;
                         let mut actions = refresh_status_and_scene(client).await?;
                         let message = match &target {
                             Some((_, zone_name)) => {

@@ -73,11 +73,9 @@ impl From<&SceneLayer> for UpdateLayerRequest {
 pub type LayerStackOutcome = MutationOutcome<LayerStackResponse>;
 
 pub async fn list_layers(scene_id: &str, zone_id: &str) -> Result<LayerStackResponse, String> {
-    client::fetch_json(&format!(
-        "/api/v1/scenes/{scene_id}/zones/{zone_id}/layers"
-    ))
-    .await
-    .map_err(Into::into)
+    client::fetch_json(&format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers"))
+        .await
+        .map_err(Into::into)
 }
 
 pub async fn create_layer(
