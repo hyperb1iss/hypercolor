@@ -2,6 +2,26 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::asset::MediaAssetRecord;
+
+/// Response from `GET /api/v1/assets`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssetListResponse {
+    pub items: Vec<MediaAssetRecord>,
+    pub total: usize,
+}
+
+/// Response from `POST /api/v1/assets`.
+///
+/// `duplicate` reports that the bytes already existed in the library, in
+/// which case `record` is the pre-existing asset rather than a new one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssetUploadResponse {
+    #[serde(flatten)]
+    pub record: MediaAssetRecord,
+    pub duplicate: bool,
+}
+
 /// Query parameters for `POST /api/v1/assets` (multipart upload).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetUploadQuery {

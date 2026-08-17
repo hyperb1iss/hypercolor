@@ -79,7 +79,7 @@ pub fn LayerPanel(
         assets
             .get()
             .into_iter()
-            .map(|asset| (asset.id, asset.name))
+            .map(|asset| (asset.id.to_string(), asset.name))
             .collect::<HashMap<String, String>>()
     });
     // Effect ids on a layer are UUIDs; resolve them to registry names so

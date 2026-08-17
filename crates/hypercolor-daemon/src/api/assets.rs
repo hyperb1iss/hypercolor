@@ -9,34 +9,21 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::asset::{
     AssetEvent, AssetLibraryError, AssetLibraryLimits, AssetTypeHint, AssetUploadOptions,
-    MediaAssetRecord,
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
-use serde::Serialize;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
-pub use hypercolor_types::api::assets::{AssetUpdateRequest, AssetUploadQuery};
+pub use hypercolor_types::api::assets::{
+    AssetListResponse, AssetUpdateRequest, AssetUploadQuery, AssetUploadResponse,
+};
 
 /// Multipart framing the upload route accepts on top of the asset bytes
 /// themselves.
 const ASSET_UPLOAD_FRAMING_ALLOWANCE_BYTES: u64 = 1024 * 1024;
-
-#[derive(Debug, Serialize)]
-pub struct AssetListResponse {
-    pub items: Vec<MediaAssetRecord>,
-    pub total: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AssetUploadResponse {
-    #[serde(flatten)]
-    pub record: MediaAssetRecord,
-    pub duplicate: bool,
-}
 
 #[derive(Debug)]
 struct ParsedUpload {
