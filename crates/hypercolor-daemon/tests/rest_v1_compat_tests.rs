@@ -744,8 +744,17 @@ async fn effects_active_binding_and_reset_paths_stay_routed() {
 }
 
 /// The wave C1b renames deleted their old paths outright. A rename that
-/// left an alias or a redirect behind would still answer here, so this
-/// asserts the exact absence rather than the new routes' presence.
+/// left an alias or a redirect behind would still serve the old behavior
+/// here, so this asserts the absence rather than the new routes'
+/// presence.
+///
+/// Most retired paths match no route at all and answer 404. The one
+/// exception is pinned deliberately: `/effects/current/controls` now
+/// falls through to the live `/effects/{id}/controls` sibling with `id`
+/// bound to the literal `current`, which fails UUID parsing and answers
+/// `400 malformed_request`. That is still a deletion — no handler treats
+/// `current` as the active effect any more — and pinning the specific
+/// status is what would catch someone re-adding one that does.
 #[tokio::test]
 async fn renamed_routes_leave_nothing_behind() {
     let (state, _tmp) = isolated_state();
@@ -753,36 +762,54 @@ async fn renamed_routes_leave_nothing_behind() {
     let zone_id = primary_zone_id(&app).await;
 
     let retired = [
-        json_request(
-            "PATCH",
-            "/api/v1/effects/current/controls",
-            &json!({ "controls": { "speed": 0.5 } }),
+        (
+            json_request(
+                "PATCH",
+                "/api/v1/effects/current/controls",
+                &json!({ "controls": { "speed": 0.5 } }),
+            ),
+            StatusCode::BAD_REQUEST,
         ),
-        json_request(
-            "PUT",
-            "/api/v1/effects/current/controls/speed/binding",
-            &json!({ "sensor": "audio.level" }),
+        (
+            json_request(
+                "PUT",
+                "/api/v1/effects/current/controls/speed/binding",
+                &json!({ "sensor": "audio.level" }),
+            ),
+            StatusCode::NOT_FOUND,
         ),
-        empty_request("POST", "/api/v1/effects/current/reset"),
-        get(&format!("/api/v1/scenes/default/groups/{zone_id}/layers")),
-        json_request(
-            "POST",
-            "/api/v1/config/get",
-            &json!({ "key": "daemon.port" }),
+        (
+            empty_request("POST", "/api/v1/effects/current/reset"),
+            StatusCode::NOT_FOUND,
         ),
-        json_request(
-            "POST",
-            "/api/v1/config/set",
-            &json!({ "key": "daemon.port", "value": 9420 }),
+        (
+            get(&format!("/api/v1/scenes/default/groups/{zone_id}/layers")),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json_request(
+                "POST",
+                "/api/v1/config/get",
+                &json!({ "key": "daemon.port" }),
+            ),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json_request(
+                "POST",
+                "/api/v1/config/set",
+                &json!({ "key": "daemon.port", "value": 9420 }),
+            ),
+            StatusCode::NOT_FOUND,
         ),
     ];
 
-    for request in retired {
+    for (request, expected) in retired {
         let uri = request.uri().to_string();
         let response = send(&app, request).await;
         assert_eq!(
             response.status(),
-            StatusCode::NOT_FOUND,
+            expected,
             "{uri} must be gone, not aliased or redirected"
         );
     }

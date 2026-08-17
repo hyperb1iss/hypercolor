@@ -978,11 +978,11 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(assign_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(assign_result["group"]["layout"]["canvas_width"], 320);
-    assert_eq!(assign_result["group"]["controls"]["title"]["text"], "CPU");
+    assert_eq!(assign_result["zone"]["layout"]["canvas_width"], 320);
+    assert_eq!(assign_result["zone"]["controls"]["title"]["text"], "CPU");
 
     let assign_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -1025,12 +1025,12 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(clear_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(clear_result["cleared"], true);
     assert_eq!(
-        clear_result["group"]["display_target"]["device_id"],
+        clear_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert!(clear_result["group"]["effect_id"].is_null());
+    assert!(clear_result["zone"]["effect_id"].is_null());
     assert_eq!(
-        clear_result["group"]["layers"].as_array().map(Vec::len),
+        clear_result["zone"]["layers"].as_array().map(Vec::len),
         Some(0)
     );
 
@@ -1734,7 +1734,7 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert_eq!(assign_result["live_scope"], "default");
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
 

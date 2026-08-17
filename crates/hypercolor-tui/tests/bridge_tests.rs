@@ -226,7 +226,7 @@ async fn control_surface_handler(
             },
             "schema_version": 1,
             "revision": 8,
-            "zones": [],
+            "groups": [],
             "fields": [],
             "actions": [],
             "values": {},

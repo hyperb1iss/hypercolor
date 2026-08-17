@@ -101,7 +101,7 @@ pub(super) async fn handle_set_display_face_with_state(
         return Ok(json!({
             "device": display_device_payload(&info, surface),
             "scene_id": cleared.scene_id.to_string(),
-            "group": cleared.zone,
+            "zone": cleared.zone,
             "scope": "scene",
             "live_scope": live_scope,
             "cleared": true,
@@ -162,7 +162,7 @@ pub(super) async fn handle_set_display_face_with_state(
         "device": display_device_payload(&info, surface),
         "scene_id": written.scene_id.to_string(),
         "effect": effect,
-        "group": written.zone,
+        "zone": written.zone,
         "scope": "scene",
         "live_scope": "scene",
         "cleared": false,
@@ -308,7 +308,7 @@ async fn handle_default_scope(
     Ok(json!({
         "device": display_device_payload(info, surface),
         "effect": effect,
-        "group": group,
+        "zone": group,
         "scope": "default",
         "live_scope": live_scope,
         "cleared": false,

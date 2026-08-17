@@ -8241,7 +8241,7 @@ async fn library_preset_apply_activates_effect_with_controls() {
 }
 
 #[tokio::test]
-async fn library_preset_apply_targets_a_named_zone_via_render_group() {
+async fn library_preset_apply_targets_a_named_zone_via_zone_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
 
@@ -8335,7 +8335,7 @@ async fn library_preset_apply_targets_a_named_zone_via_render_group() {
 }
 
 #[tokio::test]
-async fn reset_controls_targets_a_named_zone_via_render_group() {
+async fn reset_controls_targets_a_named_zone_via_zone_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
 
@@ -14014,7 +14014,7 @@ async fn patch_face_controls_updates_display_group() {
     assert_eq!(patch_response.status(), StatusCode::OK);
     let patch_json = body_json(patch_response).await;
     assert_eq!(
-        patch_json["data"]["group"]["controls"]["label"]["text"],
+        patch_json["data"]["zone"]["controls"]["label"]["text"],
         "gpu"
     );
 
@@ -14102,18 +14102,18 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
     assert_eq!(put_json["data"]["effect"]["id"], face.id.to_string());
     assert_eq!(put_json["data"]["effect"]["category"], "display");
     assert_eq!(
-        put_json["data"]["group"]["display_target"]["device_id"],
+        put_json["data"]["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(put_json["data"]["group"]["layout"]["canvas_width"], 320);
-    assert_eq!(put_json["data"]["group"]["layout"]["canvas_height"], 320);
+    assert_eq!(put_json["data"]["zone"]["layout"]["canvas_width"], 320);
+    assert_eq!(put_json["data"]["zone"]["layout"]["canvas_height"], 320);
     assert!(
-        put_json["data"]["group"]["layout"]["zones"]
+        put_json["data"]["zone"]["layout"]["zones"]
             .as_array()
             .expect("zones should serialize as an array")
             .is_empty()
     );
-    let group_id = put_json["data"]["group"]["id"]
+    let group_id = put_json["data"]["zone"]["id"]
         .as_str()
         .expect("display face group should include an id");
 
@@ -14153,7 +14153,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
     let get_json = body_json(get_response).await;
     assert_eq!(get_json["data"]["effect"]["id"], face.id.to_string());
     assert_eq!(
-        get_json["data"]["group"]["display_target"]["device_id"],
+        get_json["data"]["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
 
@@ -14246,13 +14246,10 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     assert_eq!(tint_response.status(), StatusCode::OK);
     let tint_json = body_json(tint_response).await;
     assert_eq!(
-        tint_json["data"]["group"]["display_target"]["blend_mode"],
+        tint_json["data"]["zone"]["display_target"]["blend_mode"],
         "tint"
     );
-    assert_eq!(
-        tint_json["data"]["group"]["display_target"]["opacity"],
-        0.35
-    );
+    assert_eq!(tint_json["data"]["zone"]["display_target"]["opacity"], 0.35);
 
     let replace_response = app
         .clone()
@@ -14269,11 +14266,11 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     assert_eq!(replace_response.status(), StatusCode::OK);
     let replace_json = body_json(replace_response).await;
     assert_eq!(
-        replace_json["data"]["group"]["display_target"]["blend_mode"], "replace",
+        replace_json["data"]["zone"]["display_target"]["blend_mode"], "replace",
         "explicit replace mode should serialize since it is no longer the default"
     );
     assert!(
-        replace_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        replace_json["data"]["zone"]["display_target"]["opacity"].is_null(),
         "replace mode should normalize opacity back to the default"
     );
 
@@ -14350,11 +14347,11 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
     let assign_b_json = body_json(assign_b).await;
     assert_eq!(assign_b_json["data"]["effect"]["id"], face_b.id.to_string());
     assert!(
-        assign_b_json["data"]["group"]["display_target"]["blend_mode"].is_null(),
+        assign_b_json["data"]["zone"]["display_target"]["blend_mode"].is_null(),
         "reassigning a face should reset composition mode to the blended default (alpha serializes as absent)"
     );
     assert!(
-        assign_b_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        assign_b_json["data"]["zone"]["display_target"]["opacity"].is_null(),
         "reassigning a face should reset opacity to the default"
     );
 
@@ -14398,7 +14395,7 @@ async fn face_survives_effect_swap() {
         .expect("failed to execute request");
     assert_eq!(assign_response.status(), StatusCode::OK);
     let assign_json = body_json(assign_response).await;
-    let face_group_id = assign_json["data"]["group"]["id"]
+    let face_group_id = assign_json["data"]["zone"]["id"]
         .as_str()
         .expect("face group id should be present")
         .to_owned();
@@ -14447,7 +14444,7 @@ async fn face_survives_effect_swap() {
     let face_json = body_json(face_response).await;
     assert_eq!(face_json["data"]["scene_id"], scene_id.to_string());
     assert_eq!(face_json["data"]["effect"]["id"], face.id.to_string());
-    assert_eq!(face_json["data"]["group"]["id"], face_group_id);
+    assert_eq!(face_json["data"]["zone"]["id"], face_group_id);
 
     let manager = state.scene_manager.read().await;
     let active_scene = manager.active_scene().expect("scene should remain active");

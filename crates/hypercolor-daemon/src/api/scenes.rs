@@ -479,14 +479,14 @@ pub(crate) async fn apply_scene_media_soft_admission(
 }
 
 fn media_admission_layer_detail(
-    group: &Zone,
+    zone: &Zone,
     layer: &SceneLayer,
     asset_id: AssetId,
     mime_type: &str,
 ) -> serde_json::Value {
     serde_json::json!({
-        "group_id": group.id.to_string(),
-        "group_name": &group.name,
+        "zone_id": zone.id.to_string(),
+        "zone_name": &zone.name,
         "layer_id": layer.id.to_string(),
         "layer_name": &layer.name,
         "asset_id": asset_id.to_string(),

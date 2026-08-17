@@ -109,7 +109,7 @@ Spec 64 makes multi-zone real: per-group LED sampling so output is correct,
 frames, and the backend capabilities Studio consumes.
 
 The data model is complete. This spec adds exactly one field to
-`hypercolor-types` (`Scene.zones_revision`, a version counter). The
+`hypercolor-types` (`Scene.groups_revision`, a version counter). The
 remaining work is a contained render-thread change, `SceneManager` methods,
 daemon API, capability/status surfacing, and verification. It is not a
 pipeline rewrite, but §12.1 is a real engine change, not cosmetic hardening.
@@ -255,7 +255,7 @@ is authoring surface.
   independent scene stack and automation is the north star but out of scope.
   v1 zones are its substrate.
 - **New render-group domain types.** `RenderGroup` stays the internal zone
-  type. The only persisted scene field added is `Scene.zones_revision`; event
+  type. The only persisted scene field added is `Scene.groups_revision`; event
   and status response shapes may grow to support the backend contract.
 - **A per-zone target for `effects/apply`.** `effects/apply` keeps targeting
   the `Primary` zone. Setting a non-primary zone's effect goes through the
@@ -309,7 +309,7 @@ disjoint device sets. The two compose cleanly and touch different fields of
 | ----------------------------------------- | --------------------------------------- | ---- |
 | Per-group LED sampling for multi-group scenes | `render_thread/render_groups.rs`    | 1    |
 | `UnassignedBehavior` enforcement         | render thread + `BackendManager`        | 1    |
-| Custom-zone lifecycle and assignment     | `SceneManager`, `Scene.zones_revision` | 2    |
+| Custom-zone lifecycle and assignment     | `SceneManager`, `Scene.groups_revision` | 2    |
 | `effects/apply` zone-preserving behavior | `api/effects.rs`                        | 2    |
 | `/api/v1/scenes/{id}/zones` REST surface | new `api/scenes_zones.rs`               | 3    |
 | Unassigned-behavior write route          | `api/scenes.rs` or `api/scenes_zones.rs`| 3    |
@@ -587,7 +587,7 @@ deliberately leaves that policy alone rather than retrofitting it, so the
 only new snapshot-locked surface is structural zone mutation. If a uniform
 policy is wanted, that is a separate change.
 
-A new `zones_revision: u64` on `Scene`, bumped on every create, delete,
+A new `groups_revision: u64` on `Scene`, bumped on every create, delete,
 assignment, role change, and unassigned-output policy change, gives the API
 an optimistic-concurrency token for scene routing edits and lets the UI detect
 a concurrent restructure. It is added with `#[serde(default)]`, the same
@@ -639,7 +639,7 @@ impl SceneManager {
 
 `assign_device_zone` is idempotent: assigning a device zone to the zone that
 already owns it updates its placement in place. Both methods bump
-`zones_revision` and call `refresh_active_render_groups` (§7.1).
+`groups_revision` and call `refresh_active_render_groups` (§7.1).
 
 ### 8.3 Why Position Resets on a Move
 
@@ -889,7 +889,7 @@ Studio turn on multi-zone affordances without unsafe probing.
 
 ### 11.1 Zone Rail Contract
 
-Studio reads the active scene's `groups` and the new `zones_revision`.
+Studio reads the active scene's `zones` and the new `zones_revision`.
 LED-role groups appear under Lights; display-role groups appear under
 Screens. Zone CRUD uses the `/api/v1/scenes/{id}/zones` endpoints and the
 `zone-crud` capability. Responses include the updated zone and
@@ -983,7 +983,7 @@ With per-group sampling (§12.1), `zones` holds `ZoneColors` only for assigned
 device, so the unit of "unassigned" is a device output, not a whole device.
 
 The render thread computes the unassigned-output set whenever the device
-roster or the scene's `zones_revision` changes: every device channel or
+roster or the scene's `groups_revision` changes: every device channel or
 segment present in the device registry that no `DeviceZone` in any zone's
 layout covers. It then applies the scene's `unassigned_behavior`:
 
@@ -1056,7 +1056,7 @@ when a second group exists.
 `Scene.groups` already serializes (the scene store persists it), and
 `RenderGroup` already has a custom `Serialize`/`Deserialize` that mirrors
 legacy effect fields for old clients. `Custom` zones are additional entries
-in an existing `Vec`. The one new field, `Scene.zones_revision`,
+in an existing `Vec`. The one new field, `Scene.groups_revision`,
 deserializes with `#[serde(default)]` to `0` for scenes written before this
 spec. No version bump, no migration pass.
 
@@ -1096,7 +1096,7 @@ shared type:      RenderGroup
 
 Spec 60 owns `RenderGroup.layers` and how a zone's canvas is produced. Spec
 64 owns the zone-set lifecycle, device assignment, and how zone canvases are
-sampled to devices. Spec 64 adds exactly one field (`Scene.zones_revision`)
+sampled to devices. Spec 64 adds exactly one field (`Scene.groups_revision`)
 and no fields to `RenderGroup`.
 
 ### 14.2 Shared Concern: The Renderable-Layer Predicate
@@ -1134,7 +1134,7 @@ As of 2026-05-17, Waves 1 through 4 are implemented in the backend.
 | Wave | Scope                                                                | Crates           |
 | ---- | -------------------------------------------------------------------- | ---------------- |
 | 1    | Per-group LED sampling; `UnassignedBehavior` enforcement; render tests | core, daemon   |
-| 2    | `SceneManager` zone lifecycle and assignment; `zones_revision`; zone-preserving effect/profile/layout apply | types, core, daemon |
+| 2    | `SceneManager` zone lifecycle and assignment; `groups_revision`; zone-preserving effect/profile/layout apply | types, core, daemon |
 | 3    | `/scenes/{id}/zones` REST surface; unassigned-behavior write route; capability advertisement | daemon |
 | 4    | Per-zone `ZonePreviewFrame`; WebSocket/status tests; Studio contract hardening | daemon |
 
@@ -1181,7 +1181,7 @@ workspace convention. Inline `#[cfg(test)]` is used only where the existing
   unassigned-behavior writes, capability advertisement, `If-Match` / `412`
   handling, and the §9.4 error matrix.
 - **Persistence**: a scene with `Custom` zones round-trips through the scene
-  store; `zones_revision` defaults to `0` on older scenes.
+  store; `groups_revision` defaults to `0` on older scenes.
 
 ### 16.2 Manual
 
@@ -1273,7 +1273,7 @@ Modified files:
 
 | Path                                                       | Change                                          |
 | ----------------------------------------------------------- | ----------------------------------------------- |
-| `crates/hypercolor-types/src/scene.rs`                      | Add `Scene.zones_revision`                     |
+| `crates/hypercolor-types/src/scene.rs`                      | Add `Scene.groups_revision`                     |
 | `crates/hypercolor-types/src/event.rs`                      | Add scene-level event for unassigned behavior or scene settings changes |
 | `crates/hypercolor-core/src/scene/mod.rs`                   | Zone lifecycle and assignment mutations         |
 | `crates/hypercolor-core/src/device/manager.rs`              | `BackendManager` unassigned clear path          |

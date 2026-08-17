@@ -296,7 +296,6 @@ The currently active effect and its live control values.
 
 {% api_endpoint(method="PATCH", path="/api/v1/effects/active/controls") %}
 Patch controls on the running effect. Changes take effect on the next frame.
-Note the path segment is `current`, not `active`.
 
 **Request body:**
 

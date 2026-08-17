@@ -115,8 +115,8 @@ Set the scene-level policy for outputs not assigned to a zone.
 
 ### Layers
 
-Layers are scoped to a zone via the `groups` path segment (the daemon's render
-group is the zone). The layer stack carries its own version, `layers_version`,
+Layers are scoped to a zone through the same `/zones/{zone_id}` prefix that
+serves zone CRUD. The layer stack carries its own version, `layers_version`,
 independent of `zones_revision`.
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
