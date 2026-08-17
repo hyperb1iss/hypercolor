@@ -6,7 +6,6 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 use tracing::warn;
 
 use hypercolor_driver_api::{
@@ -20,27 +19,13 @@ use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
-use super::{DeviceSummary, refreshed_device_summary, resolve_device_id_or_error};
+use super::{refreshed_device_summary, resolve_device_id_or_error};
 
 pub type GenericPairDeviceRequest = hypercolor_driver_api::PairDeviceRequest;
 
-#[derive(Debug, Serialize)]
-pub struct GenericPairDeviceResponse {
-    pub status: GenericPairDeviceStatus,
-    pub message: String,
-    pub activated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device: Option<DeviceSummary>,
-}
-
-#[derive(Debug, Serialize)]
-struct DeletePairingResponse {
-    status: String,
-    message: String,
-    disconnected: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    device: Option<DeviceSummary>,
-}
+pub use hypercolor_types::api::devices::{
+    DeletePairingResponse, PairDeviceResponse as GenericPairDeviceResponse,
+};
 
 /// `POST /api/v1/devices/:id/pair` — pair a discovered driver-backed device.
 pub async fn pair_device(

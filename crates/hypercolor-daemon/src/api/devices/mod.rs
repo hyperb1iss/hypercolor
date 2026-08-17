@@ -38,18 +38,21 @@ pub use hypercolor_types::api::devices::{IdentifyAttachmentRequest, ListDevicesQ
 
 pub use attachments::{
     ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
-    DeviceComponentsResponse, DeviceComponentsUpdateResponse, UpdateAttachmentsRequest,
-    delete_attachments, get_attachments, preview_attachments, update_attachments,
+    DeleteAttachmentsResponse, DeviceComponentsResponse, DeviceComponentsUpdateResponse,
+    UpdateAttachmentsRequest, delete_attachments, get_attachments, preview_attachments,
+    update_attachments,
 };
 pub use bindings::{get_device_bindings, rebind_device};
 pub use discovery::{DiscoverRequest, discover_devices};
 pub use logical::{
-    CreateLogicalDeviceRequest, ListLogicalDevicesQuery, LogicalDeviceListResponse,
-    LogicalDeviceSummary, UpdateLogicalDeviceRequest, create_logical_device, delete_logical_device,
-    get_logical_device, list_device_logical_devices, list_logical_devices, update_logical_device,
+    CreateLogicalDeviceRequest, DeleteLogicalDeviceResponse, ListLogicalDevicesQuery,
+    LogicalDeviceListResponse, LogicalDeviceSummary, UpdateLogicalDeviceRequest,
+    create_logical_device, delete_logical_device, get_logical_device, list_device_logical_devices,
+    list_logical_devices, update_logical_device,
 };
 pub use pairing::{
-    GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing, pair_device,
+    DeletePairingResponse, GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing,
+    pair_device,
 };
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -59,8 +62,9 @@ pub use pairing::{
 // re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
 pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
-    DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
-    IdentifyRequest, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
+    DeleteDeviceResponse, DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse,
+    DeviceSummary, IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest,
+    IdentifyZoneResponse, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
     UnresolvedBindingSummary, UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
 };
 
@@ -425,10 +429,10 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     }
     crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
 
-    ApiResponse::ok(serde_json::json!({
-        "id": device_id.to_string(),
-        "removed": true,
-    }))
+    ApiResponse::ok(DeleteDeviceResponse {
+        id: device_id.to_string(),
+        removed: true,
+    })
 }
 
 /// `POST /api/v1/devices/:id/identify` — Flash identification pattern.
@@ -538,12 +542,12 @@ pub async fn identify_device(
         direct_control,
     ));
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "identifying": true,
-        "duration_ms": duration_ms,
-        "color": color,
-    }))
+    ApiResponse::ok(IdentifyDeviceResponse {
+        device_id: device_id.to_string(),
+        identifying: true,
+        duration_ms,
+        color,
+    })
 }
 
 /// `POST /api/v1/devices/:id/zones/:zone_id/identify` — Flash a single zone.
@@ -650,14 +654,14 @@ pub async fn identify_zone(
         direct_control,
     ));
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "zone_id": zone_id,
-        "zone_name": zone_name,
-        "identifying": true,
-        "duration_ms": duration_ms,
-        "color": color,
-    }))
+    ApiResponse::ok(IdentifyZoneResponse {
+        device_id: device_id.to_string(),
+        zone_id,
+        zone_name,
+        identifying: true,
+        duration_ms,
+        color,
+    })
 }
 
 /// `POST /api/v1/devices/:id/attachments/:slot_id/identify` — Flash a single
@@ -784,15 +788,15 @@ pub async fn identify_attachment(
         direct_control,
     ));
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "slot_id": slot_id,
-        "binding_index": binding_index,
-        "instance": instance,
-        "identifying": true,
-        "duration_ms": duration_ms,
-        "color": color,
-    }))
+    ApiResponse::ok(IdentifyAttachmentResponse {
+        device_id: device_id.to_string(),
+        slot_id,
+        binding_index,
+        instance,
+        identifying: true,
+        duration_ms,
+        color,
+    })
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────
