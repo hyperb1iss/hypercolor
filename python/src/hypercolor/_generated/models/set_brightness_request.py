@@ -11,9 +11,10 @@ T = TypeVar("T", bound="SetBrightnessRequest")
 
 @_attrs_define
 class SetBrightnessRequest:
-    """
+    """Request body for `PUT /api/v1/settings/brightness`.
+
     Attributes:
-        brightness (int):
+        brightness (int): Master brightness percentage, 0-100.
     """
 
     brightness: int

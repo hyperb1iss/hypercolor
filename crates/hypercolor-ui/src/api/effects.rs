@@ -19,8 +19,9 @@ use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResp
 pub use hypercolor_types::api::effects::{
     ApplyEffectPresetRequest, ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet,
     EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
-    EffectPresetSummary, EffectSummary, InstalledEffectResponse,
+    EffectPresetSummary, EffectSummary, InstalledEffectResponse, UpdateActiveControlsRequest,
 };
+pub use hypercolor_types::api::output::{OutputPowerMode, SetOutputPowerRequest};
 
 /// Active effect response from `GET /api/v1/effects/active`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -37,7 +38,7 @@ pub struct ActiveEffectResponse {
     #[serde(default)]
     pub active_preset_modified: bool,
     #[serde(default)]
-    pub render_group_id: Option<String>,
+    pub zone_id: Option<String>,
     /// Server-side controls version (matches the `ETag` header).
     /// `Some` while an effect is running, `None` on the idle response.
     /// Clients that want optimistic concurrency echo this back via
@@ -87,7 +88,7 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
             control_values: effect.control_values,
             active_preset_id: effect.active_preset_id,
             active_preset_modified: effect.active_preset_modified,
-            render_group_id: effect.render_group_id,
+            zone_id: effect.zone_id,
             controls_version: effect.controls_version,
         })
     }))
@@ -111,19 +112,19 @@ pub async fn fetch_effect_presets(id: &str) -> Result<Vec<EffectPresetSummary>, 
 pub async fn apply_effect_preset(
     effect_id: &str,
     preset_id: &str,
-    render_group: Option<&str>,
+    zone_id: Option<&str>,
 ) -> Result<(), String> {
     let path = format!(
         "/api/v1/effects/{}/presets/{}/apply",
         path_segment(effect_id),
         path_segment(preset_id)
     );
-    match render_group {
-        Some(render_group) => {
+    match zone_id {
+        Some(zone_id) => {
             client::post_json_discard(
                 &path,
                 &ApplyEffectPresetRequest {
-                    render_group: Some(render_group.to_owned()),
+                    zone_id: Some(zone_id.to_owned()),
                 },
             )
             .await
@@ -149,7 +150,9 @@ pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<()
 pub async fn pause_effect() -> Result<(), String> {
     client::put_json_discard(
         "/api/v1/output/power",
-        &serde_json::json!({ "state": "paused" }),
+        &SetOutputPowerRequest {
+            state: OutputPowerMode::Paused,
+        },
     )
     .await
     .map_err(Into::into)
@@ -159,7 +162,9 @@ pub async fn pause_effect() -> Result<(), String> {
 pub async fn resume_effect() -> Result<(), String> {
     client::put_json_discard(
         "/api/v1/output/power",
-        &serde_json::json!({ "state": "running" }),
+        &SetOutputPowerRequest {
+            state: OutputPowerMode::Running,
+        },
     )
     .await
     .map_err(Into::into)
@@ -174,8 +179,10 @@ pub async fn stop_effect() -> Result<(), String> {
 
 /// Update effect control parameters.
 pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
-    let body = serde_json::json!({ "controls": controls });
-    client::patch_json_discard("/api/v1/effects/current/controls", &body)
+    let body = UpdateActiveControlsRequest {
+        controls: Some(controls.clone()),
+    };
+    client::patch_json_discard("/api/v1/effects/active/controls", &body)
         .await
         .map_err(Into::into)
 }
@@ -217,7 +224,9 @@ pub async fn update_effect_controls(
     use gloo_net::http::Method;
 
     let url = format!("/api/v1/effects/{}/controls", path_segment(effect_id));
-    let body = serde_json::json!({ "controls": controls });
+    let body = UpdateActiveControlsRequest {
+        controls: Some(controls.clone()),
+    };
     let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
         Method::PATCH,
         &url,
@@ -235,7 +244,7 @@ pub async fn update_effect_controls(
 
 /// Reset all controls on the active effect to their defaults.
 pub async fn reset_controls() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/current/reset")
+    client::post_empty("/api/v1/effects/active/reset")
         .await
         .map_err(Into::into)
 }

@@ -19,7 +19,7 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
 use hypercolor_types::event::HypercolorEvent;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::AppState;
@@ -29,27 +29,16 @@ use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
 
+pub use hypercolor_types::api::controls::{ControlSurfaceListQuery, InvokeControlActionRequest};
+
 const DEVICE_FIELD_NAME: &str = "name";
 const DEVICE_FIELD_ENABLED: &str = "enabled";
 const DEVICE_FIELD_BRIGHTNESS: &str = "brightness";
 const DEVICE_ACTION_IDENTIFY: &str = "identify";
 
-#[derive(Debug, Deserialize)]
-pub struct ControlSurfaceListQuery {
-    pub device_id: Option<String>,
-    pub driver_id: Option<String>,
-    pub include_driver: Option<bool>,
-}
-
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ControlSurfaceListResponse {
     pub surfaces: Vec<ControlSurfaceDocument>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct InvokeControlActionRequest {
-    #[serde(default)]
-    pub input: ControlValueMap,
 }
 
 /// `GET /api/v1/control-surfaces` - Return control surfaces for a UI view.

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use hypercolor_core::attachment::{effective_attachment_slots, normalize_attachment_profile_slots};
@@ -16,7 +15,6 @@ use hypercolor_types::attachment::{
     DeviceComponentProfile,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
@@ -25,63 +23,11 @@ use crate::logical_devices;
 
 use super::{ensure_default_logical_entry, resolve_device_id_or_error};
 
-#[derive(Debug, Deserialize, Default)]
-pub struct UpdateAttachmentsRequest {
-    #[serde(default)]
-    pub bindings: Vec<ComponentBinding>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DeviceComponentsResponse {
-    pub device_id: String,
-    pub device_name: String,
-    pub slots: Vec<ComponentSlot>,
-    pub bindings: Vec<ComponentBindingSummary>,
-    pub suggested_zones: Vec<ComponentSuggestedZone>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DeviceComponentsUpdateResponse {
-    pub device_id: String,
-    pub device_name: String,
-    pub slots: Vec<ComponentSlot>,
-    pub bindings: Vec<ComponentBindingSummary>,
-    pub suggested_zones: Vec<ComponentSuggestedZone>,
-    pub needs_layout_update: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ComponentBindingSummary {
-    pub slot_id: String,
-    pub template_id: String,
-    pub template_name: String,
-    pub name: Option<String>,
-    pub enabled: bool,
-    pub instances: u32,
-    pub led_offset: u32,
-    pub effective_led_count: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ComponentPreviewResponse {
-    pub device_id: String,
-    pub device_name: String,
-    pub zones: Vec<ComponentPreviewZone>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ComponentPreviewZone {
-    pub slot_id: String,
-    pub binding_index: usize,
-    pub instance: u32,
-    pub template_id: String,
-    pub template_name: String,
-    pub name: String,
-    pub led_start: u32,
-    pub led_count: u32,
-    pub topology: LedTopology,
-    pub led_positions: Vec<NormalizedPosition>,
-}
+pub use hypercolor_types::api::devices::{
+    ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
+    DeleteAttachmentsResponse, DeviceComponentsResponse, DeviceComponentsUpdateResponse,
+    UpdateAttachmentsRequest,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedComponentBinding {
@@ -234,10 +180,10 @@ pub async fn delete_attachments(
     };
     state.usb_protocol_configs.remove_device(device_id).await;
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": tracked.info.id.to_string(),
-        "deleted": deleted,
-    }))
+    ApiResponse::ok(DeleteAttachmentsResponse {
+        device_id: tracked.info.id.to_string(),
+        deleted,
+    })
 }
 
 async fn sync_usb_protocol_config(

@@ -5,7 +5,11 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use hypercolor_color::{Rgb, Rgba};
-use serde_json::{Map, Value, json};
+use hypercolor_types::api::controls::InvokeControlActionRequest;
+use hypercolor_types::controls::{
+    ApplyControlChangesRequest, ControlChange, ControlValue, ControlValueMap,
+};
+use serde_json::Value;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -174,15 +178,12 @@ async fn execute_set(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let changes = assignments_to_changes(&args.values)?;
-    let mut body = json!({
-        "surface_id": args.surface,
-        "changes": changes,
-        "dry_run": args.dry_run,
-    });
-    if let Some(revision) = args.expected_revision {
-        body["expected_revision"] = json!(revision);
-    }
+    let body = ApplyControlChangesRequest {
+        surface_id: args.surface.clone(),
+        expected_revision: args.expected_revision,
+        changes: assignments_to_changes(&args.values)?,
+        dry_run: args.dry_run,
+    };
 
     let path = format!("/control-surfaces/{}/values", urlencoded(&args.surface));
     let response = client.patch(&path, &body).await?;
@@ -199,8 +200,9 @@ async fn execute_action(
         .await?;
     ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
 
-    let input = assignments_to_map(&args.input)?;
-    let body = json!({ "input": input });
+    let body = InvokeControlActionRequest {
+        input: assignments_to_map(&args.input)?,
+    };
     let path = format!(
         "/control-surfaces/{}/actions/{}",
         urlencoded(&args.surface),
@@ -379,18 +381,18 @@ fn action_rows(surface: &Value, ctx: &OutputContext) -> Vec<Vec<String>> {
         .collect()
 }
 
-pub(crate) fn assignments_to_changes(assignments: &[String]) -> Result<Vec<Value>> {
+pub(crate) fn assignments_to_changes(assignments: &[String]) -> Result<Vec<ControlChange>> {
     assignments
         .iter()
         .map(|assignment| {
             let (field_id, value) = parse_assignment(assignment)?;
-            Ok(json!({ "field_id": field_id, "value": value }))
+            Ok(ControlChange { field_id, value })
         })
         .collect()
 }
 
-pub(crate) fn assignments_to_map(assignments: &[String]) -> Result<Map<String, Value>> {
-    let mut input = Map::new();
+pub(crate) fn assignments_to_map(assignments: &[String]) -> Result<ControlValueMap> {
+    let mut input = ControlValueMap::new();
     for assignment in assignments {
         let (field_id, value) = parse_assignment(assignment)?;
         input.insert(field_id, value);
@@ -398,7 +400,7 @@ pub(crate) fn assignments_to_map(assignments: &[String]) -> Result<Map<String, V
     Ok(input)
 }
 
-fn parse_assignment(assignment: &str) -> Result<(String, Value)> {
+fn parse_assignment(assignment: &str) -> Result<(String, ControlValue)> {
     let Some((field_id, raw)) = assignment.split_once('=') else {
         bail!("control assignment must be key=value: {assignment}");
     };
@@ -411,9 +413,9 @@ fn parse_assignment(assignment: &str) -> Result<(String, Value)> {
     ))
 }
 
-fn parse_control_value(raw: &str) -> Result<Value> {
+fn parse_control_value(raw: &str) -> Result<ControlValue> {
     if raw.eq_ignore_ascii_case("null") {
-        return Ok(json!({ "kind": "null" }));
+        return Ok(ControlValue::Null);
     }
 
     if let Some((kind, value)) = raw.split_once(':') {
@@ -421,100 +423,78 @@ fn parse_control_value(raw: &str) -> Result<Value> {
     }
 
     if let Ok(value) = raw.parse::<bool>() {
-        return Ok(json!({ "kind": "bool", "value": value }));
+        return Ok(ControlValue::Bool(value));
     }
     if let Ok(value) = raw.parse::<i64>() {
-        return Ok(json!({ "kind": "integer", "value": value }));
+        return Ok(ControlValue::Integer(value));
     }
     if let Ok(value) = raw.parse::<f64>() {
-        return Ok(json!({ "kind": "float", "value": value }));
+        return Ok(ControlValue::Float(value));
     }
-    Ok(json!({ "kind": "string", "value": raw }))
+    Ok(ControlValue::String(raw.to_owned()))
 }
 
-fn typed_control_value(kind: &str, value: &str) -> Result<Value> {
+fn typed_control_value(kind: &str, value: &str) -> Result<ControlValue> {
     match kind.replace(['-', '_'], "").to_ascii_lowercase().as_str() {
-        "null" => Ok(json!({ "kind": "null" })),
-        "bool" | "boolean" => Ok(json!({ "kind": "bool", "value": value.parse::<bool>()? })),
-        "int" | "integer" => Ok(json!({ "kind": "integer", "value": value.parse::<i64>()? })),
-        "float" | "number" => Ok(json!({ "kind": "float", "value": value.parse::<f64>()? })),
-        "string" | "str" => Ok(json!({ "kind": "string", "value": value })),
-        "secret" | "secretref" => Ok(json!({ "kind": "secret_ref", "value": value })),
-        "ip" | "ipaddress" => Ok(json!({ "kind": "ip_address", "value": value })),
-        "mac" | "macaddress" => Ok(json!({ "kind": "mac_address", "value": value })),
-        "duration" | "durationms" => Ok(json!({
-            "kind": "duration_ms",
-            "value": value.parse::<u64>()?,
-        })),
-        "enum" => Ok(json!({ "kind": "enum", "value": value })),
-        "flags" => Ok(json!({
-            "kind": "flags",
-            "value": split_list(value),
-        })),
+        "null" => Ok(ControlValue::Null),
+        "bool" | "boolean" => Ok(ControlValue::Bool(value.parse::<bool>()?)),
+        "int" | "integer" => Ok(ControlValue::Integer(value.parse::<i64>()?)),
+        "float" | "number" => Ok(ControlValue::Float(value.parse::<f64>()?)),
+        "string" | "str" => Ok(ControlValue::String(value.to_owned())),
+        "secret" | "secretref" => Ok(ControlValue::SecretRef(value.to_owned())),
+        "ip" | "ipaddress" => Ok(ControlValue::IpAddress(value.to_owned())),
+        "mac" | "macaddress" => Ok(ControlValue::MacAddress(value.to_owned())),
+        "duration" | "durationms" => Ok(ControlValue::DurationMs(value.parse::<u64>()?)),
+        "enum" => Ok(ControlValue::Enum(value.to_owned())),
+        "flags" => Ok(ControlValue::Flags(split_list(value))),
         "rgb" | "colorrgb" => {
             let color =
                 Rgb::from_hex(value).with_context(|| format!("invalid rgb color: {value}"))?;
-            Ok(json!({
-                "kind": "color_rgb",
-                "value": [color.r, color.g, color.b],
-            }))
+            Ok(ControlValue::ColorRgb([color.r, color.g, color.b]))
         }
         "rgba" | "colorrgba" => {
             let color =
                 Rgba::from_hex(value).with_context(|| format!("invalid rgba color: {value}"))?;
-            Ok(json!({
-                "kind": "color_rgba",
-                "value": [color.r, color.g, color.b, color.a],
-            }))
+            Ok(ControlValue::ColorRgba([
+                color.r, color.g, color.b, color.a,
+            ]))
         }
         "json" => json_to_control_value(value),
         _ => bail!("unknown control value kind: {kind}"),
     }
 }
 
-fn json_to_control_value(value: &str) -> Result<Value> {
+fn json_to_control_value(value: &str) -> Result<ControlValue> {
     let parsed: Value = serde_json::from_str(value).context("invalid json control value")?;
-    match parsed {
-        Value::Array(values) => Ok(json!({
-            "kind": "list",
-            "value": values.into_iter().map(json_value_to_control_value).collect::<Result<Vec<_>>>()?,
-        })),
-        Value::Object(values) => Ok(json!({
-            "kind": "object",
-            "value": values
-                .into_iter()
-                .map(|(key, value)| Ok((key, json_value_to_control_value(value)?)))
-                .collect::<Result<BTreeMap<_, _>>>()?,
-        })),
-        other => json_value_to_control_value(other),
-    }
+    json_value_to_control_value(parsed)
 }
 
-fn json_value_to_control_value(value: Value) -> Result<Value> {
+fn json_value_to_control_value(value: Value) -> Result<ControlValue> {
     match value {
-        Value::Null => Ok(json!({ "kind": "null" })),
-        Value::Bool(value) => Ok(json!({ "kind": "bool", "value": value })),
+        Value::Null => Ok(ControlValue::Null),
+        Value::Bool(value) => Ok(ControlValue::Bool(value)),
         Value::Number(value) => {
             if let Some(integer) = value.as_i64() {
-                Ok(json!({ "kind": "integer", "value": integer }))
+                Ok(ControlValue::Integer(integer))
             } else if let Some(float) = value.as_f64() {
-                Ok(json!({ "kind": "float", "value": float }))
+                Ok(ControlValue::Float(float))
             } else {
                 bail!("unsupported JSON number: {value}")
             }
         }
-        Value::String(value) => Ok(json!({ "kind": "string", "value": value })),
-        Value::Array(values) => Ok(json!({
-            "kind": "list",
-            "value": values.into_iter().map(json_value_to_control_value).collect::<Result<Vec<_>>>()?,
-        })),
-        Value::Object(values) => Ok(json!({
-            "kind": "object",
-            "value": values
+        Value::String(value) => Ok(ControlValue::String(value)),
+        Value::Array(values) => Ok(ControlValue::List(
+            values
+                .into_iter()
+                .map(json_value_to_control_value)
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        Value::Object(values) => Ok(ControlValue::Object(
+            values
                 .into_iter()
                 .map(|(key, value)| Ok((key, json_value_to_control_value(value)?)))
                 .collect::<Result<BTreeMap<_, _>>>()?,
-        })),
+        )),
     }
 }
 

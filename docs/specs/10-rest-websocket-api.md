@@ -1053,10 +1053,10 @@ Starts rendering the specified effect. If another effect is active, transitions 
 
 ---
 
-### 7.4 Get Current Effect
+### 7.4 Get Active Effect
 
 ```
-GET /api/v1/effects/current
+GET /api/v1/effects/active
 ```
 
 Returns the currently active effect with its live control values.
@@ -1095,10 +1095,10 @@ Returns `404` with code `not_found` if no effect is currently active (daemon is 
 
 ---
 
-### 7.5 Update Current Effect Controls
+### 7.5 Update Active Effect Controls
 
 ```
-PATCH /api/v1/effects/current/controls
+PATCH /api/v1/effects/active/controls
 ```
 
 Updates control values on the currently active effect. Only supplied controls are modified.
@@ -3216,6 +3216,13 @@ When `atomic: true` and any operation fails, all operations are rolled back:
 
 ## 14. WebSocket API
 
+> **Superseded on the message shapes.** Spec 76 wave 3.2c replaced the
+> `channels` + `config` subscribe with an array of `{topic, key?, config?}`
+> selectors, keyed `display_preview` and `interactive_preview`, and renamed the
+> `group`-spelled event fields to `zone`. The JSON shapes below record what this
+> spec's own wave shipped; `docs/content/api/websocket.md` and
+> `protocol/websocket-v1.json` are the live contract.
+
 ### 14.1 Connection
 
 **Endpoint:** `ws://127.0.0.1:9420/api/v1/ws`
@@ -3924,8 +3931,8 @@ PaginationMeta:
 | `GET`            | `/effects`                           | List effects                    |
 | `GET`            | `/effects/{id}`                      | Get effect details + controls   |
 | `POST`           | `/effects/{id}/apply`                | Apply effect                    |
-| `GET`            | `/effects/current`                   | Get current effect              |
-| `PATCH`          | `/effects/current/controls`          | Update active controls          |
+| `GET`            | `/effects/active`                    | Get active effect               |
+| `PATCH`          | `/effects/active/controls`           | Update active controls          |
 | `GET`            | `/effects/{id}/presets`              | List presets                    |
 | `POST`           | `/effects/{id}/presets`              | Create preset                   |
 | `PATCH`          | `/effects/{id}/presets/{name}`       | Update preset                   |

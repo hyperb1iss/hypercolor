@@ -17,9 +17,15 @@ T = TypeVar("T", bound="PatchLayerControlsRequest")
 
 @_attrs_define
 class PatchLayerControlsRequest:
-    """
-    Attributes:
-        controls (PatchLayerControlsRequestControls):
+    """Request body for
+    `PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls`.
+
+    `controls` carries no `#[serde(default)]` on purpose: the schema this
+    route publishes marks it required, and serde still admits an absent
+    field through `Option`'s own default.
+
+        Attributes:
+            controls (PatchLayerControlsRequestControls):
     """
 
     controls: PatchLayerControlsRequestControls

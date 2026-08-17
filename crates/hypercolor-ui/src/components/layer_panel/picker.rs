@@ -2,6 +2,7 @@
 //! a layer draft for the panel to commit.
 
 use hypercolor_leptos_ext::events::Input;
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
@@ -9,7 +10,7 @@ use leptos_icons::Icon;
 
 use super::source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, effect_category_label, effect_layer_source,
-    effect_picker_matches_query, effect_picker_mode, media_layer_source,
+    effect_picker_matches_query, effect_picker_mode, media_layer_source_for,
 };
 use crate::api;
 use crate::components::media_grid::MediaGrid;
@@ -278,16 +279,16 @@ fn MediaTab(
 
     // A click on a media card is an immediate add, so resolve the asset's
     // name for the layer and emit a draft — no persistent selection.
-    let pick_media = Callback::new(move |id: String| match media_layer_source(&id) {
-        Ok(source) => {
-            let name = assets.with_untracked(|list| {
-                list.iter()
-                    .find(|asset| asset.id == id)
-                    .map(|asset| asset.name.clone())
-            });
-            on_pick.run(NewLayerDraft { name, source });
-        }
-        Err(error) => toasts::toast_error(&error),
+    let pick_media = Callback::new(move |id: AssetId| {
+        let name = assets.with_untracked(|list| {
+            list.iter()
+                .find(|asset| asset.id == id)
+                .map(|asset| asset.name.clone())
+        });
+        on_pick.run(NewLayerDraft {
+            name,
+            source: media_layer_source_for(id),
+        });
     });
 
     view! {
@@ -301,7 +302,7 @@ fn MediaTab(
                 view! {
                     <MediaGrid
                         assets=filtered
-                        selected_id=Signal::derive(|| None::<String>)
+                        selected_id=Signal::derive(|| None::<AssetId>)
                         on_select=pick_media
                     />
                 }.into_any()

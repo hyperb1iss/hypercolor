@@ -377,25 +377,41 @@ mod tests {
         socket
             .send(Message::Text(
                 serde_json::json!({
-                    "type": "interactive_preview_open",
-                    "preview_id": "remote",
-                    "fps": 30,
-                    "width": 64,
-                    "height": 64,
-                    "format": "rgba"
+                    "type": "subscribe",
+                    "topics": [{
+                        "topic": "interactive_preview",
+                        "key": "remote",
+                        "config": {
+                            "fps": 30,
+                            "width": 64,
+                            "height": 64,
+                            "format": "rgba"
+                        }
+                    }]
                 })
                 .to_string()
                 .into(),
             ))
             .await
-            .expect("trusted local websocket should accept a preview command");
+            .expect("trusted local websocket should accept a preview subscription");
         let opened = message_json(
             socket
                 .recv()
                 .await
                 .expect("trusted local websocket should acknowledge the preview barrier"),
         );
-        assert_eq!(opened["type"], "interactive_preview_opened", "{opened}");
+        assert_eq!(opened["type"], "subscribed", "{opened}");
+        let preview = opened["topics"]
+            .as_array()
+            .expect("the acknowledgment lists live subscriptions")
+            .iter()
+            .find(|entry| entry["topic"] == "interactive_preview")
+            .expect("the interactive preview subscription is live");
+        assert_eq!(preview["key"], "remote", "{opened}");
+        assert!(
+            preview["publication_id"].as_u64().is_some_and(|id| id > 0),
+            "the acknowledgment carries the lane's publication: {opened}"
+        );
         assert_eq!(executor.lane_count(), 1);
 
         socket.shutdown().await;

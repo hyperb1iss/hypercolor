@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::{
@@ -26,28 +26,14 @@ use super::{
     resolve_preset_id, store_error_to_response, unix_epoch_ms,
 };
 
+pub use hypercolor_types::api::library::{ApplyPresetRequest, SavePresetRequest};
+
 // ── Request / Response Types ────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct PresetListResponse {
     pub items: Vec<EffectPreset>,
     pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SavePresetRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub effect: String,
-    pub controls: Option<serde_json::Value>,
-    pub tags: Option<Vec<String>>,
-}
-
-/// Optional body for `apply_preset` — scopes the apply to one zone.
-#[derive(Debug, Default, Deserialize)]
-pub struct ApplyPresetRequest {
-    /// Target zone (render-group id). Omitted targets the primary zone.
-    pub render_group: Option<String>,
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
@@ -249,10 +235,10 @@ pub async fn apply_preset(
         entry.metadata.clone()
     };
 
-    // A render_group naming a non-Primary zone takes the zone-scoped
+    // A zone_id naming a non-Primary zone takes the zone-scoped
     // path; naming the Primary (or omitting it) keeps legacy semantics.
-    let target_group = match crate::api::effects::parse_render_group(
-        body.as_ref().and_then(|body| body.render_group.as_deref()),
+    let target_group = match crate::api::effects::parse_zone_id_field(
+        body.as_ref().and_then(|body| body.zone_id.as_deref()),
     ) {
         Ok(target) => target,
         Err(error) => return error.into_response(),
@@ -428,8 +414,8 @@ async fn apply_preset_to_zone(
             trigger: ChangeTrigger::Api,
             previous,
             transition: None,
-            group_id: Some(group.id),
-            group_name: Some(group.name.clone()),
+            zone_id: Some(group.id),
+            zone_name: Some(group.name.clone()),
         });
     }
     mutation.record(crate::domain::scene::zone_changed_event(

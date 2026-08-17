@@ -54,7 +54,7 @@ test.describe("REST API", () => {
       const controls = firstControlPayload(active);
       expect(
         (
-          await api.patch("/api/v1/effects/current/controls", {
+          await api.patch("/api/v1/effects/active/controls", {
             data: {
               controls,
             },
@@ -62,7 +62,7 @@ test.describe("REST API", () => {
         ).ok(),
       ).toBeTruthy();
 
-      expect((await api.post("/api/v1/effects/current/reset")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/effects/active/reset")).ok()).toBeTruthy();
       expect((await api.post("/api/v1/effects/stop")).ok()).toBeTruthy();
 
       const status = await readEnvelope(await api.get("/api/v1/status"));

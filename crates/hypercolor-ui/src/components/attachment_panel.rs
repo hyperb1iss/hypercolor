@@ -431,9 +431,9 @@ pub fn WiringPanel(
                                                                     }
                                                                     // Build bindings
                                                                     let current = api::fetch_device_attachments(&did).await?;
-                                                                    let mut bindings: Vec<api::ComponentBindingRequest> = current.bindings.iter()
+                                                                    let mut bindings: Vec<api::ComponentBinding> = current.bindings.iter()
                                                                         .filter(|b| b.slot_id != slot_id)
-                                                                        .map(|b| api::ComponentBindingRequest {
+                                                                        .map(|b| api::ComponentBinding {
                                                                             slot_id: b.slot_id.clone(), template_id: b.template_id.clone(),
                                                                             name: b.name.clone(), enabled: b.enabled, instances: b.instances, led_offset: b.led_offset,
                                                                         }).collect();
@@ -444,7 +444,7 @@ pub fn WiringPanel(
                                                                             _ => template_ids.get(&i).cloned().unwrap_or_default(),
                                                                         };
                                                                         let count = row.led_count(&templates).unwrap_or(0);
-                                                                        bindings.push(api::ComponentBindingRequest {
+                                                                        bindings.push(api::ComponentBinding {
                                                                             slot_id: slot_id.clone(), template_id: tid,
                                                                             name: if row.name.is_empty() { None } else { Some(row.name.clone()) },
                                                                             enabled: true, instances: 1, led_offset: offset,
@@ -846,7 +846,7 @@ pub fn sync_wiring_to_layout(
                 &device.layout_device_id,
                 seeded,
             );
-            let req = api::UpdateLayoutApiRequest {
+            let req = api::UpdateLayoutRequest {
                 name: None,
                 description: None,
                 canvas_width: None,
@@ -897,7 +897,7 @@ fn sync_channel_name_to_active_layout(
                 return Ok(false);
             }
 
-            let req = api::UpdateLayoutApiRequest {
+            let req = api::UpdateLayoutRequest {
                 name: None,
                 description: None,
                 canvas_width: None,

@@ -9,7 +9,6 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::Response;
-use serde::Deserialize;
 use tracing::warn;
 
 use hypercolor_types::canvas::SurfaceDescriptor;
@@ -25,31 +24,16 @@ use crate::simulators::{
     SimulatedDisplayConfig, activate_simulated_displays, logical_device_ids_for_simulator,
 };
 
+pub use hypercolor_types::api::simulators::{
+    CreateSimulatedDisplayRequest, UpdateSimulatedDisplayRequest,
+};
+
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
 
 impl AsRef<[u8]> for OwnedDisplayJpeg {
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref().as_slice()
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateSimulatedDisplayRequest {
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub circular: bool,
-    pub enabled: Option<bool>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct UpdateSimulatedDisplayRequest {
-    pub name: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub circular: Option<bool>,
-    pub enabled: Option<bool>,
 }
 
 pub async fn list_simulated_displays(State(state): State<Arc<AppState>>) -> Response {

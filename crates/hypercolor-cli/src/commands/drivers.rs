@@ -2,7 +2,9 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use serde_json::{Value, json};
+use hypercolor_types::api::controls::InvokeControlActionRequest;
+use hypercolor_types::controls::ApplyControlChangesRequest;
+use serde_json::Value;
 
 use crate::client::DaemonClient;
 use crate::commands::controls;
@@ -139,14 +141,12 @@ async fn execute_set_control(
     let surface_id = driver_control_surface_id(client, &args.driver).await?;
     let assignment = format!("{}={}", args.field, args.value);
     let changes = controls::assignments_to_changes(&[assignment])?;
-    let mut body = json!({
-        "surface_id": surface_id,
-        "changes": changes,
-        "dry_run": args.dry_run,
-    });
-    if let Some(revision) = args.expected_revision {
-        body["expected_revision"] = json!(revision);
-    }
+    let body = ApplyControlChangesRequest {
+        expected_revision: args.expected_revision,
+        changes,
+        dry_run: args.dry_run,
+        surface_id: surface_id.clone(),
+    };
 
     let response = client
         .patch(
@@ -173,7 +173,7 @@ async fn execute_action(
                 urlencoded(&surface_id),
                 urlencoded(&args.action)
             ),
-            &json!({ "input": input }),
+            &InvokeControlActionRequest { input },
         )
         .await?;
     controls::render_action_response(&response, ctx)

@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use hypercolor_types::api::settings::SetBrightnessRequest;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat};
@@ -62,7 +63,9 @@ async fn execute_set(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = serde_json::json!({ "brightness": args.value.min(100) });
+    let body = SetBrightnessRequest {
+        brightness: u8::try_from(args.value.min(100)).unwrap_or(100),
+    };
     let response = client.put("/settings/brightness", &body).await?;
 
     match ctx.format {

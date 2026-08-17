@@ -63,7 +63,11 @@ fn pattern_specificity(pattern: &str, key: &str) -> Option<usize> {
     }
 
     let root = pattern.strip_suffix(".*").unwrap_or(pattern);
-    if key == root || key.strip_prefix(root).is_some_and(|rest| rest.starts_with('.')) {
+    if key == root
+        || key
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('.'))
+    {
         return Some(root.split('.').count());
     }
     None

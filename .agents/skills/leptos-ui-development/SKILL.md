@@ -43,7 +43,7 @@ WsManager (`src/ws.rs`) handles the daemon connection:
 
 - **Binary frames**: Header byte `0x03` = canvas frame data
 - **JSON messages**: Events, metrics, audio state
-- **Subscribe on connect**: `{ "type": "subscribe", "channels": ["events", "metrics"] }`
+- **Subscribe on connect**: `{ "type": "subscribe", "topics": [{ "topic": "events" }, { "topic": "metrics" }] }`
 - **Reconnection**: Exponential backoff 500ms → 15s
 
 ### CanvasFrame Structure

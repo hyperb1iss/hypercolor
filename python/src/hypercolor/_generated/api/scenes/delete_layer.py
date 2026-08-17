@@ -11,15 +11,15 @@ from ...types import Response
 
 def _get_kwargs(
     id: str,
-    group_id: str,
+    zone_id: str,
     layer_id: str,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "delete",
-        "url": "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}".format(
+        "url": "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}".format(
             id=quote(str(id), safe=""),
-            group_id=quote(str(group_id), safe=""),
+            zone_id=quote(str(zone_id), safe=""),
             layer_id=quote(str(layer_id), safe=""),
         ),
     }
@@ -70,7 +70,7 @@ def _build_response(
 
 def sync_detailed(
     id: str,
-    group_id: str,
+    zone_id: str,
     layer_id: str,
     *,
     client: AuthenticatedClient | Client,
@@ -79,7 +79,7 @@ def sync_detailed(
 
     Args:
         id (str):
-        group_id (str):
+        zone_id (str):
         layer_id (str):
 
     Raises:
@@ -92,7 +92,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        group_id=group_id,
+        zone_id=zone_id,
         layer_id=layer_id,
     )
 
@@ -105,7 +105,7 @@ def sync_detailed(
 
 async def asyncio_detailed(
     id: str,
-    group_id: str,
+    zone_id: str,
     layer_id: str,
     *,
     client: AuthenticatedClient | Client,
@@ -114,7 +114,7 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        group_id (str):
+        zone_id (str):
         layer_id (str):
 
     Raises:
@@ -127,7 +127,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        group_id=group_id,
+        zone_id=zone_id,
         layer_id=layer_id,
     )
 

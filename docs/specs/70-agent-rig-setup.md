@@ -280,7 +280,7 @@ remains for automation scenes and is documented as such.
 | 14 | `configure_scene`          | scenes      | W  | `POST/PATCH /scenes/{id}` + unassigned-behavior                    |
 | 15 | `configure_zones`          | scenes      | W  | zone CRUD + device assignment + zone layout                        |
 | 16 | `configure_layers`         | scenes      | W  | layer CRUD + order + controls                                      |
-| 17 | `set_effect_controls`      | effects     | W  | `PATCH /effects/current/controls`                                  |
+| 17 | `set_effect_controls`      | effects     | W  | `PATCH /effects/active/controls`                                  |
 | 18 | `save_profile`             | library     | W  | `POST /profiles`                                                   |
 
 Plus two smaller parity items folded into existing tools rather than

@@ -447,7 +447,7 @@ pub async fn set_unassigned_behavior(
     let groups_revision = groups_revision(&mutation, command.scene_id);
     mutation.record(HypercolorEvent::SceneSettingsChanged {
         scene_id: command.scene_id,
-        groups_revision,
+        zones_revision: groups_revision,
         kind: SceneSettingsChangeKind::UnassignedBehavior,
     });
 

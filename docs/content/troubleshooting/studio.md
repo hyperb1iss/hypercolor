@@ -12,7 +12,7 @@ Studio writes are guarded by optimistic concurrency: every zone, layer, and layo
 
 This toast means the daemon returned a `412 Precondition Failed` on the zone layout save. The daemon replied with a `precondition_failed` error carrying the authoritative revision in `error.details.current`; the UI cleared the live preview, reloaded the scene, and showed the toast.
 
-**Why it happens.** Every zone mutation (create, rename, delete, assign device, remove device, change unassigned behavior) increments the scene's `groups_revision`. The UI sends the revision it loaded as an `If-Match` header. If the revision on the server no longer matches, the write is rejected. This is not a bug; it prevents two simultaneous edits from silently clobbering each other.
+**Why it happens.** Every zone mutation (create, rename, delete, assign device, remove device, change unassigned behavior) increments the scene's `zones_revision`. The UI sends the revision it loaded as an `If-Match` header. If the revision on the server no longer matches, the write is rejected. This is not a bug; it prevents two simultaneous edits from silently clobbering each other.
 
 **What to do.** Wait for the scene to reload (it happens automatically after the toast), then repeat the action. The conflict was transient. If the same rejection loops more than twice, a background process (another browser tab, a CLI call, an MCP agent) is actively modifying the scene. Identify and stop it before continuing. The daemon's access-log middleware writes every request to the daemon log, so if you run the daemon with debug logging (`just daemon`) you can watch which client keeps issuing zone mutations:
 
@@ -21,7 +21,7 @@ This toast means the daemon returned a `412 Precondition Failed` on the zone lay
 journalctl --user -u hypercolor -f | grep '/zones'
 ```
 
-**In the zone layout canvas specifically.** The zone canvas save path (`PUT /api/v1/scenes/{id}/zones/{zone_id}/layout`) sends the active `groups_revision` as a precondition. A stale revision produces `ZoneOutcome::Stale` in the client, which triggers the "reloaded, try again" toast. The layout you had in the canvas is discarded on reload; redo the placement adjustments and save again.
+**In the zone layout canvas specifically.** The zone canvas save path (`PUT /api/v1/scenes/{id}/zones/{zone_id}/layout`) sends the active `zones_revision` as a precondition. A stale revision produces `ZoneOutcome::Stale` in the client, which triggers the "reloaded, try again" toast. The layout you had in the canvas is discarded on reload; redo the placement adjustments and save again.
 
 {% callout(type="tip") %}
 The zone canvas only accepts placement changes through the layout PUT. Adding or removing a device from a zone always goes through the device assignment endpoints. If you see a `422 Unprocessable Entity` (not a 412), you are hitting the output-set mismatch guard: the layout you are saving contains a different set of device outputs than the zone currently owns. Go back to device assignment, add the device there, then re-open the canvas.
@@ -106,7 +106,7 @@ If an effect at the top of the list is not visible, check its blend mode. The de
 
 ## Zone enable/disable not taking effect
 
-A zone that is disabled (`enabled: false`) still exists in the scene but its outputs receive no colors from the render loop; they hold last colors or go dark depending on the zone's shutdown behavior. The enabled toggle is a zone metadata field and goes through the zone PATCH endpoint at `/api/v1/scenes/{id}/zones/{zone_id}`. Metadata edits like enable/disable, rename, color, and brightness are not structural, so they do not enforce the `groups_revision` precondition; only a structural change (promoting a zone to primary) does. If the toggle fails silently, check the daemon log for a 5xx on the PATCH.
+A zone that is disabled (`enabled: false`) still exists in the scene but its outputs receive no colors from the render loop; they hold last colors or go dark depending on the zone's shutdown behavior. The enabled toggle is a zone metadata field and goes through the zone PATCH endpoint at `/api/v1/scenes/{id}/zones/{zone_id}`. Metadata edits like enable/disable, rename, color, and brightness are not structural, so they do not enforce the `zones_revision` precondition; only a structural change (promoting a zone to primary) does. If the toggle fails silently, check the daemon log for a 5xx on the PATCH.
 
 ## Unassigned devices are not turning off between zones
 
@@ -124,11 +124,11 @@ The Unassigned entry is only visible in genuinely multi-zone scenes. In a single
 
 ## REST API: debugging zone conflicts directly
 
-If you are scripting zone mutations or building an MCP workflow and hitting 412s, the daemon returns the current `groups_revision` in both the response body and the `ETag` header of any failed precondition response:
+If you are scripting zone mutations or building an MCP workflow and hitting 412s, the daemon returns the current `zones_revision` in both the response body and the `ETag` header of any failed precondition response:
 
 ```bash
-# Fetch the active scene to get its id and current groups_revision
-curl -s http://localhost:9420/api/v1/scenes/active | jq '{id: .data.id, rev: .data.groups_revision}'
+# Fetch the active scene to get its id and current zones_revision
+curl -s http://localhost:9420/api/v1/scenes/active | jq '{id: .data.id, rev: .data.zones_revision}'
 
 # Send a structural mutation with the correct revision. The zone
 # subroutes resolve the scene by id or name, not by the literal
@@ -141,6 +141,6 @@ curl -s -X POST http://localhost:9420/api/v1/scenes/<scene_id>/zones \
 
 The `If-Match` precondition is enforced for structural mutations: creating, deleting, or reassigning zones, promoting a zone to primary, and the zone layout PUT. Pure metadata edits (rename, color, brightness, enable/disable) skip the check, so an `If-Match` header on those is accepted but not validated.
 
-A successful mutation returns a new `groups_revision` in the response body and an updated `ETag` header. Chain sequential mutations by reading the new revision from each response rather than refetching the scene.
+A successful mutation returns a new `zones_revision` in the response body and an updated `ETag` header. Chain sequential mutations by reading the new revision from each response rather than refetching the scene.
 
 For more detail on the zone API contract, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).

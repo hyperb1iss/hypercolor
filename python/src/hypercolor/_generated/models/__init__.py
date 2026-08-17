@@ -126,10 +126,6 @@ from .assign_devices_request_device_zones_item import (
 )
 from .b_tree_map import BTreeMap
 from .b_tree_map_additional_property import BTreeMapAdditionalProperty
-from .broadcast_media_layer_group_response import BroadcastMediaLayerGroupResponse
-from .broadcast_media_layer_group_response_items_item import (
-    BroadcastMediaLayerGroupResponseItemsItem,
-)
 from .broadcast_media_layer_request import BroadcastMediaLayerRequest
 from .broadcast_media_layer_request_bindings_item import (
     BroadcastMediaLayerRequestBindingsItem,
@@ -142,6 +138,10 @@ from .broadcast_media_layer_response import BroadcastMediaLayerResponse
 from .broadcast_media_layer_target import BroadcastMediaLayerTarget
 from .broadcast_media_layer_target_adjust import BroadcastMediaLayerTargetAdjust
 from .broadcast_media_layer_target_transform import BroadcastMediaLayerTargetTransform
+from .broadcast_media_layer_zone_response import BroadcastMediaLayerZoneResponse
+from .broadcast_media_layer_zone_response_items_item import (
+    BroadcastMediaLayerZoneResponseItemsItem,
+)
 from .config_key_schema_entry import ConfigKeySchemaEntry
 from .config_mutation_response import ConfigMutationResponse
 from .control_access import ControlAccess
@@ -332,10 +332,8 @@ from .system_status import SystemStatus
 from .transition_request import TransitionRequest
 from .unassigned_behavior_response import UnassignedBehaviorResponse
 from .unresolved_binding_summary import UnresolvedBindingSummary
-from .update_current_controls_request import UpdateCurrentControlsRequest
-from .update_current_controls_request_controls import (
-    UpdateCurrentControlsRequestControls,
-)
+from .update_active_controls_request import UpdateActiveControlsRequest
+from .update_active_controls_request_controls import UpdateActiveControlsRequestControls
 from .update_device_request import UpdateDeviceRequest
 from .update_layer_request import UpdateLayerRequest
 from .update_layer_request_adjust import UpdateLayerRequestAdjust
@@ -460,8 +458,6 @@ __all__ = (
     "ApplyTransitionResponse",
     "AssignDevicesRequest",
     "AssignDevicesRequestDeviceZonesItem",
-    "BroadcastMediaLayerGroupResponse",
-    "BroadcastMediaLayerGroupResponseItemsItem",
     "BroadcastMediaLayerRequest",
     "BroadcastMediaLayerRequestBindingsItem",
     "BroadcastMediaLayerRequestPlayback",
@@ -470,6 +466,8 @@ __all__ = (
     "BroadcastMediaLayerTarget",
     "BroadcastMediaLayerTargetAdjust",
     "BroadcastMediaLayerTargetTransform",
+    "BroadcastMediaLayerZoneResponse",
+    "BroadcastMediaLayerZoneResponseItemsItem",
     "BTreeMap",
     "BTreeMapAdditionalProperty",
     "ConfigKeySchemaEntry",
@@ -654,8 +652,8 @@ __all__ = (
     "TransitionRequest",
     "UnassignedBehaviorResponse",
     "UnresolvedBindingSummary",
-    "UpdateCurrentControlsRequest",
-    "UpdateCurrentControlsRequestControls",
+    "UpdateActiveControlsRequest",
+    "UpdateActiveControlsRequestControls",
     "UpdateDeviceRequest",
     "UpdateLayerRequest",
     "UpdateLayerRequestAdjust",

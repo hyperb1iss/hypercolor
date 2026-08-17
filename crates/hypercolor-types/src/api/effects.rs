@@ -41,7 +41,7 @@ pub struct EffectPresetListResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEffectPresetRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group: Option<String>,
+    pub zone_id: Option<String>,
 }
 
 /// Response for `GET /api/v1/effects`.
@@ -100,8 +100,8 @@ pub struct ActiveEffectResponse {
     #[serde(default)]
     pub active_preset_modified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group_id: Option<String>,
-    /// Server-side version token for the group's controls. Clients
+    pub zone_id: Option<String>,
+    /// Server-side version token for the zone's controls. Clients
     /// that want to use optimistic concurrency on the effect-id PATCH
     /// endpoint echo this value back via `If-Match`. Idle responses
     /// omit it (there's nothing to version).
@@ -123,7 +123,7 @@ impl ActiveEffectResponse {
             control_values: HashMap::new(),
             active_preset_id: None,
             active_preset_modified: false,
-            render_group_id: None,
+            zone_id: None,
             controls_version: None,
             cover_image_url: None,
         }
@@ -179,12 +179,12 @@ pub struct ApplyEffectRequest {
     /// already carry the preset's values, possibly with user tweaks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset_id: Option<String>,
-    /// Optional target zone (render-group id). Omitted applies the effect
-    /// to the scene's Primary zone — the legacy behavior. A non-Primary
-    /// zone id renders the effect into that zone instead, leaving its
-    /// layout and device assignment untouched.
+    /// Optional target zone id. Omitted applies the effect to the
+    /// scene's Primary zone. A non-Primary zone id renders the effect
+    /// into that zone instead, leaving its layout and device assignment
+    /// untouched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group: Option<String>,
+    pub zone_id: Option<String>,
 }
 
 /// Transition override on apply.
@@ -196,20 +196,27 @@ pub struct TransitionRequest {
     pub duration_ms: Option<u64>,
 }
 
-/// Request body for `PATCH /api/v1/effects/current/controls`.
+/// Request body for `PATCH /api/v1/effects/active/controls`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateCurrentControlsRequest {
+pub struct UpdateActiveControlsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
     pub controls: Option<serde_json::Value>,
 }
 
-/// Optional body for `POST /api/v1/effects/current/reset` — scopes the
-/// reset to one zone (`render_group`); omitted resets the primary.
+/// Request body for `PUT /api/v1/effects/{id}/layout`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEffectLayoutRequest {
+    /// The spatial layout to associate with the effect.
+    pub layout_id: String,
+}
+
+/// Optional body for `POST /api/v1/effects/active/reset` — scopes the
+/// reset to one zone (`zone_id`); omitted resets the primary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ResetControlsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group: Option<String>,
+    pub zone_id: Option<String>,
 }
 
 /// `{ id, name }` reference to an effect.

@@ -244,12 +244,19 @@ pub const fn tags_disjoint(tag_sets: &[&[u8]]) -> bool {
 /// Declare the topic topology. Generates: a unit struct per topic
 /// implementing [`WsTopic`], a `TopicId` enum (wire-name mapping,
 /// `ALL`, `COUNT`, `bit()`), a `TopicSet` membership bitset, a static
-/// vtable table with `vtable(id)` lookup, and a compile-time
-/// assertion that no two topics claim the same binary tag.
+/// vtable table with `vtable(id)` lookup, a `RESERVED_TAGS` constant,
+/// and a compile-time assertion that no two topics claim the same
+/// binary tag and that none of them claims a reserved one.
+///
+/// The `reserved` clause names the transport envelope bytes no single
+/// topic owns. Listing them inside the macro is what keeps the fence
+/// automatic: a topic that quietly claims an envelope byte fails the
+/// build rather than a test.
 ///
 /// ```ignore
 /// define_ws_topics! {
 ///     registry Topics;
+///     reserved [0x0b, 0x0f, 0x10];
 ///     topic Events => "events" {
 ///         key: unkeyed, config: (), patch: NoPatch,
 ///         tags: [], control: false,
@@ -264,6 +271,7 @@ pub const fn tags_disjoint(tag_sets: &[&[u8]]) -> bool {
 macro_rules! define_ws_topics {
     (
         registry $registry:ident;
+        reserved [ $( $reserved:literal ),* $(,)? ];
         $( topic $topic:ident => $name:literal {
             key: $key:tt, config: $config:ty, patch: $patch:ty,
             tags: [ $( $tag:literal ),* ], control: $control:literal $(,)?
@@ -406,14 +414,23 @@ macro_rules! define_ws_topics {
             }
         }
 
-        // Two topics claiming one tag byte is a wire collision; make
-        // it a build error rather than a review finding.
+        impl $registry {
+            /// Binary tags no single topic owns: the transport envelopes
+            /// several topics share. Disjointness against every topic's
+            /// owned tags is asserted at compile time below.
+            pub const RESERVED_TAGS: &'static [u8] = &[ $( $reserved ),* ];
+        }
+
+        // Two topics claiming one tag byte is a wire collision, and so is
+        // a topic claiming a shared transport envelope; make both a build
+        // error rather than a review finding.
         const _: () = {
             assert!(
                 $crate::ws::topic::tags_disjoint(&[
+                    $registry::RESERVED_TAGS,
                     $( <$topic as $crate::ws::topic::WsTopic>::OWNED_TAGS, )+
                 ]),
-                "two topics claim the same binary tag"
+                "two topics claim the same binary tag, or a topic claims a reserved one"
             );
             // `bit()` shifts into a u32; topic 33 would overflow it.
             assert!(
@@ -429,16 +446,109 @@ macro_rules! define_ws_topics {
     (@keyed $key:ty) => { true };
 }
 
-/// A subscribe/unsubscribe selector on the wire: a topic name plus an
-/// optional key. Keyed topics carry `key`; unkeyed topics omit it —
+/// An unsubscribe selector on the wire: a topic name plus an optional
+/// key. Keyed topics carry `key`; unkeyed topics omit it —
 /// [`TopicKey::from_wire`] enforces both directions at the boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TopicSelector {
     /// The topic's wire name.
     pub topic: String,
     /// The subscription key for keyed topics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+}
+
+impl TopicSelector {
+    /// Select an unkeyed topic.
+    pub fn unkeyed(topic: impl Into<String>) -> Self {
+        Self {
+            topic: topic.into(),
+            key: None,
+        }
+    }
+
+    /// Select one key of a keyed topic.
+    pub fn keyed(topic: impl Into<String>, key: impl Into<String>) -> Self {
+        Self {
+            topic: topic.into(),
+            key: Some(key.into()),
+        }
+    }
+}
+
+/// One entry of a subscribe request: which subscription, and the config
+/// patch to apply to it. Config travels with its selector rather than in
+/// a separate map, so a patch can only ever name a subscription the same
+/// request is establishing.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TopicSubscription {
+    /// The topic's wire name.
+    pub topic: String,
+    /// The subscription key for keyed topics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Config patch for this subscription; absent leaves it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
+}
+
+impl TopicSubscription {
+    /// Subscribe to an unkeyed topic without touching its config.
+    pub fn unkeyed(topic: impl Into<String>) -> Self {
+        Self {
+            topic: topic.into(),
+            key: None,
+            config: None,
+        }
+    }
+
+    /// Subscribe to one key of a keyed topic without touching its config.
+    pub fn keyed(topic: impl Into<String>, key: impl Into<String>) -> Self {
+        Self {
+            topic: topic.into(),
+            key: Some(key.into()),
+            config: None,
+        }
+    }
+
+    /// Carry a config patch with this subscription.
+    #[must_use]
+    pub fn with_config(mut self, config: serde_json::Value) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// The selector half, dropping the config.
+    #[must_use]
+    pub fn selector(&self) -> TopicSelector {
+        TopicSelector {
+            topic: self.topic.clone(),
+            key: self.key.clone(),
+        }
+    }
+}
+
+/// One live subscription as the server reports it in a `hello`,
+/// `subscribed`, or `unsubscribed` message.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct ActiveSubscription {
+    /// The topic's wire name.
+    pub topic: String,
+    /// The subscription key for keyed topics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The subscription's effective config; absent for configless topics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
+    /// The publication this subscription's frames are fenced against.
+    ///
+    /// Only `interactive_preview` carries one: subscribing opens a render
+    /// lane, and the client needs the lane's identity to tell this
+    /// preview's frames from a previous incarnation's stragglers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_id: Option<u64>,
 }
 
 /// Per-connection keyed subscription store: for each topic, the set of

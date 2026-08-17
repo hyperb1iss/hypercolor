@@ -2851,8 +2851,8 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
                 {
                     saw_fallback_event = true;
                 }
-                HypercolorEvent::RenderGroupChanged {
-                    group_id: changed, ..
+                HypercolorEvent::ZoneChanged {
+                    zone_id: changed, ..
                 } if changed == group_id => {
                     saw_group_update = true;
                 }

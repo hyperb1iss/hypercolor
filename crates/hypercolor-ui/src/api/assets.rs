@@ -1,50 +1,14 @@
 //! User media asset API client.
 
 use gloo_net::http::Request;
-use serde::{Deserialize, Serialize};
 use web_sys::{File, FormData};
 
 use super::{ApiEnvelope, client};
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct MediaAssetRecord {
-    pub id: String,
-    pub name: String,
-    pub hash_sha256: String,
-    pub mime_type: String,
-    pub byte_len: u64,
-    pub intrinsic_width: Option<u32>,
-    pub intrinsic_height: Option<u32>,
-    pub duration_us: Option<u64>,
-    pub frame_count: Option<u32>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    pub created_at: String,
-    pub modified_at: String,
-    #[serde(default)]
-    pub scan_status: serde_json::Value,
-    #[serde(default)]
-    pub warnings: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct AssetListResponse {
-    pub items: Vec<MediaAssetRecord>,
-    pub total: usize,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct AssetUploadResponse {
-    #[serde(flatten)]
-    pub record: MediaAssetRecord,
-    pub duplicate: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AssetUpdateRequest {
-    pub name: Option<String>,
-    pub tags: Option<Vec<String>>,
-}
+pub use hypercolor_types::api::assets::{
+    AssetListResponse, AssetUpdateRequest, AssetUploadResponse,
+};
+pub use hypercolor_types::asset::{AssetId, MediaAssetRecord};
 
 pub async fn list_assets() -> Result<AssetListResponse, String> {
     client::fetch_json("/api/v1/assets")
@@ -53,7 +17,7 @@ pub async fn list_assets() -> Result<AssetListResponse, String> {
 }
 
 pub async fn update_asset(
-    id: &str,
+    id: AssetId,
     request: &AssetUpdateRequest,
 ) -> Result<MediaAssetRecord, String> {
     client::put_json(&format!("/api/v1/assets/{id}"), request)
@@ -61,7 +25,7 @@ pub async fn update_asset(
         .map_err(Into::into)
 }
 
-pub async fn delete_asset(id: &str) -> Result<(), String> {
+pub async fn delete_asset(id: AssetId) -> Result<(), String> {
     client::delete_empty(&format!("/api/v1/assets/{id}"))
         .await
         .map_err(Into::into)

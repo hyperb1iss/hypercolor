@@ -306,7 +306,7 @@ fn scene_with(zones: Vec<ZoneSummary>) -> ActiveScene {
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
         snapshot_locked: false,
-        groups_revision: 1,
+        zones_revision: 1,
         zones,
     }
 }

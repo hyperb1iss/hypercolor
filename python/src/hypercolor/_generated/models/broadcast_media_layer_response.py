@@ -7,8 +7,8 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.broadcast_media_layer_group_response import (
-        BroadcastMediaLayerGroupResponse,
+    from ..models.broadcast_media_layer_zone_response import (
+        BroadcastMediaLayerZoneResponse,
     )
 
 
@@ -19,23 +19,23 @@ T = TypeVar("T", bound="BroadcastMediaLayerResponse")
 class BroadcastMediaLayerResponse:
     """
     Attributes:
-        groups (list[BroadcastMediaLayerGroupResponse]):
+        zones (list[BroadcastMediaLayerZoneResponse]):
     """
 
-    groups: list[BroadcastMediaLayerGroupResponse]
+    zones: list[BroadcastMediaLayerZoneResponse]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        groups = []
-        for groups_item_data in self.groups:
-            groups_item = groups_item_data.to_dict()
-            groups.append(groups_item)
+        zones = []
+        for zones_item_data in self.zones:
+            zones_item = zones_item_data.to_dict()
+            zones.append(zones_item)
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "groups": groups,
+                "zones": zones,
             }
         )
 
@@ -43,20 +43,20 @@ class BroadcastMediaLayerResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.broadcast_media_layer_group_response import (
-            BroadcastMediaLayerGroupResponse,
+        from ..models.broadcast_media_layer_zone_response import (
+            BroadcastMediaLayerZoneResponse,
         )
 
         d = dict(src_dict)
-        groups = []
-        _groups = d.pop("groups")
-        for groups_item_data in _groups:
-            groups_item = BroadcastMediaLayerGroupResponse.from_dict(groups_item_data)
+        zones = []
+        _zones = d.pop("zones")
+        for zones_item_data in _zones:
+            zones_item = BroadcastMediaLayerZoneResponse.from_dict(zones_item_data)
 
-            groups.append(groups_item)
+            zones.append(zones_item)
 
         broadcast_media_layer_response = cls(
-            groups=groups,
+            zones=zones,
         )
 
         broadcast_media_layer_response.additional_properties = d

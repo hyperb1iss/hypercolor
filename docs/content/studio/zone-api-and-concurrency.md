@@ -7,7 +7,7 @@ weight = 120
 Studio composes a scene by issuing scoped REST mutations against the daemon's
 zone, scene, layer, and layout routes, and every structural mutation is guarded
 by an optimistic-concurrency token. A zone or scene write carries the active
-scene's `groups_revision`; a layer write carries the target zone's
+scene's `zones_revision`; a layer write carries the target zone's
 `layers_version`. The token rides as an `If-Match` precondition, the daemon
 replies `412 Precondition Failed` with the authoritative current value when it
 no longer matches, and the client surfaces that as a `Stale` outcome it can
@@ -77,11 +77,11 @@ the ephemeral Default scene; only user-created scenes appear in the list.
 ### Zones
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
-List the scene's zones with the current `groups_revision`.
+List the scene's zones with the current `zones_revision`.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
-Create a zone. `If-Match` enforces `groups_revision`.
+Create a zone. `If-Match` enforces `zones_revision`.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
@@ -94,7 +94,7 @@ precondition is enforced only for the structural `make_primary` edit.
 {% end %}
 
 {% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Delete a zone. `If-Match` enforces `groups_revision`.
+Delete a zone. `If-Match` enforces `zones_revision`.
 {% end %}
 
 {% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layout") %}
@@ -115,32 +115,32 @@ Set the scene-level policy for outputs not assigned to a zone.
 
 ### Layers
 
-Layers are scoped to a zone via the `groups` path segment (the daemon's render
-group is the zone). The layer stack carries its own version, `layers_version`,
-independent of `groups_revision`.
+Layers are scoped to a zone through the same `/zones/{zone_id}` prefix that
+serves zone CRUD. The layer stack carries its own version, `layers_version`,
+independent of `zones_revision`.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 List the zone's layer stack with its current `layers_version`.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 Add a layer. `If-Match` enforces `layers_version`. An optional `index` query
 sets the insertion position.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Replace a layer. `If-Match` enforces `layers_version`.
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Remove a layer. `If-Match` enforces `layers_version`.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/order") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/order") %}
 Reorder the stack with an exact permutation of layer ids.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls") %}
 Patch an effect layer's live controls.
 {% end %}
 
@@ -198,23 +198,23 @@ browser, the TUI, or the CLI, so a blind write would risk overwriting an edit
 the client never saw. Every structural mutation instead names the version it
 believes it is editing, and the daemon refuses the write if reality has moved on.
 
-### The token: `groups_revision` and `layers_version`
+### The token: `zones_revision` and `layers_version`
 
-Each scene carries a monotonic `groups_revision`. Any change to the set of zones
+Each scene carries a monotonic `zones_revision`. Any change to the set of zones
 or their structure (create, delete, make-primary, device assignment, zone layout
 placement, unassigned-behavior) bumps it. Each zone separately carries a
 `layers_version` that bumps on any layer-stack change (add, update, remove,
 reorder, controls patch).
 
 Both numbers ride out in two places on every successful response: in the JSON
-body (`groups_revision` / `layers_version`) and in the HTTP `ETag` header,
+body (`zones_revision` / `layers_version`) and in the HTTP `ETag` header,
 quoted, for example `ETag: "7"`. The client may read either.
 
 ### The precondition: `If-Match`
 
 To guard a mutation, send the version you are editing as an `If-Match` header.
 The daemon accepts the quoted form, the bare integer, or `*` (which is treated as
-"no precondition"). The header is parsed by `parse_if_match_groups_revision` for
+"no precondition"). The header is parsed by `parse_if_match_zones_revision` for
 zone and scene routes and `parse_if_match_layers_version` for layer routes. A
 non-integer that is not `*` is a `400 Bad Request`.
 
@@ -292,12 +292,12 @@ before any mutation runs.
 
 | Route family | Precondition | Notes |
 | --- | --- | --- |
-| `POST/DELETE /zones/...` | `groups_revision` | Create and delete enforce the precondition. |
-| `PATCH /zones/{id}` | `groups_revision` | Enforced only when the edit is structural (`make_primary`); name/color/brightness/enabled patches skip it. |
-| `PUT /zones/{id}/layout` | `groups_revision` | Placement-only; see below. |
-| `POST/DELETE /zones/{id}/devices...` | `groups_revision` | Reassigning or removing an output. |
-| `PATCH /unassigned-behavior` | `groups_revision` | Scene-level policy. |
-| `POST/PUT/DELETE/PATCH /groups/{id}/layers...` | `layers_version` | Per-zone stack version. |
+| `POST/DELETE /zones/...` | `zones_revision` | Create and delete enforce the precondition. |
+| `PATCH /zones/{id}` | `zones_revision` | Enforced only when the edit is structural (`make_primary`); name/color/brightness/enabled patches skip it. |
+| `PUT /zones/{id}/layout` | `zones_revision` | Placement-only; see below. |
+| `POST/DELETE /zones/{id}/devices...` | `zones_revision` | Reassigning or removing an output. |
+| `PATCH /unassigned-behavior` | `zones_revision` | Scene-level policy. |
+| `POST/PUT/DELETE/PATCH /zones/{id}/layers...` | `layers_version` | Per-zone stack version. |
 | `POST /layers/broadcast-media` | per-target `expected_layers_version` | Each fan-out target versions independently; a target may pass `null` to apply unconditionally. |
 
 {% callout(type="tip") %}
@@ -330,9 +330,9 @@ Adds and drops route through the device sub-routes instead:
 `POST /zones/{zone_id}/devices` moves an existing output into the zone (referenced
 by id) or places a brand-new one (carrying a full `Output`), and
 `DELETE /zones/{zone_id}/devices/{device_zone_id}` removes one. Both return the new
-`groups_revision` so a sequence of assignments can chain without a refetch.
+`zones_revision` so a sequence of assignments can chain without a refetch.
 
-In the web UI, `ZoneLayoutProvider` reads the active scene's `groups_revision`,
+In the web UI, `ZoneLayoutProvider` reads the active scene's `zones_revision`,
 sends it as the save's `If-Match`, and treats a `ZoneOutcome::Stale` as a signal
 to reload before saving again rather than overwriting.
 
@@ -444,7 +444,7 @@ sequenceDiagram
 
     UI->>API: PATCH /zones/{id} (If-Match: "7")
     alt revision still 7
-        API->>API: apply + persist (groups_revision -> 8)
+        API->>API: apply + persist (zones_revision -> 8)
         API-->>UI: 200 + ETag "8"
         API->>Bus: publish render-group changed
         Bus-->>Other: converge to revision 8

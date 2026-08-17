@@ -7,31 +7,29 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.broadcast_media_layer_group_response_items_item import (
-        BroadcastMediaLayerGroupResponseItemsItem,
+    from ..models.broadcast_media_layer_zone_response_items_item import (
+        BroadcastMediaLayerZoneResponseItemsItem,
     )
 
 
-T = TypeVar("T", bound="BroadcastMediaLayerGroupResponse")
+T = TypeVar("T", bound="BroadcastMediaLayerZoneResponse")
 
 
 @_attrs_define
-class BroadcastMediaLayerGroupResponse:
+class BroadcastMediaLayerZoneResponse:
     """
     Attributes:
-        group_id (str):
-        items (list[BroadcastMediaLayerGroupResponseItemsItem]):
+        items (list[BroadcastMediaLayerZoneResponseItemsItem]):
         layers_version (int):
+        zone_id (str):
     """
 
-    group_id: str
-    items: list[BroadcastMediaLayerGroupResponseItemsItem]
+    items: list[BroadcastMediaLayerZoneResponseItemsItem]
     layers_version: int
+    zone_id: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        group_id = self.group_id
-
         items = []
         for items_item_data in self.items:
             items_item = items_item_data.to_dict()
@@ -39,13 +37,15 @@ class BroadcastMediaLayerGroupResponse:
 
         layers_version = self.layers_version
 
+        zone_id = self.zone_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "group_id": group_id,
                 "items": items,
                 "layers_version": layers_version,
+                "zone_id": zone_id,
             }
         )
 
@@ -53,17 +53,15 @@ class BroadcastMediaLayerGroupResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.broadcast_media_layer_group_response_items_item import (
-            BroadcastMediaLayerGroupResponseItemsItem,
+        from ..models.broadcast_media_layer_zone_response_items_item import (
+            BroadcastMediaLayerZoneResponseItemsItem,
         )
 
         d = dict(src_dict)
-        group_id = d.pop("group_id")
-
         items = []
         _items = d.pop("items")
         for items_item_data in _items:
-            items_item = BroadcastMediaLayerGroupResponseItemsItem.from_dict(
+            items_item = BroadcastMediaLayerZoneResponseItemsItem.from_dict(
                 items_item_data
             )
 
@@ -71,14 +69,16 @@ class BroadcastMediaLayerGroupResponse:
 
         layers_version = d.pop("layers_version")
 
-        broadcast_media_layer_group_response = cls(
-            group_id=group_id,
+        zone_id = d.pop("zone_id")
+
+        broadcast_media_layer_zone_response = cls(
             items=items,
             layers_version=layers_version,
+            zone_id=zone_id,
         )
 
-        broadcast_media_layer_group_response.additional_properties = d
-        return broadcast_media_layer_group_response
+        broadcast_media_layer_zone_response.additional_properties = d
+        return broadcast_media_layer_zone_response
 
     @property
     def additional_keys(self) -> list[str]:

@@ -22,17 +22,22 @@ T = TypeVar("T", bound="UpdateLayerRequest")
 
 @_attrs_define
 class UpdateLayerRequest:
-    """
-    Attributes:
-        id (str):
-        source (UpdateLayerRequestSource):
-        adjust (UpdateLayerRequestAdjust | Unset):
-        bindings (list[UpdateLayerRequestBindingsItem] | Unset):
-        blend (str | Unset):
-        enabled (bool | Unset):
-        name (None | str | Unset):
-        opacity (float | Unset):
-        transform (UpdateLayerRequestTransform | Unset):
+    """Request body for
+    `PUT /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}`.
+
+    The whole layer is replaced, so every field the caller wants to keep
+    must be echoed back.
+
+        Attributes:
+            id (str):
+            source (UpdateLayerRequestSource):
+            adjust (UpdateLayerRequestAdjust | Unset):
+            bindings (list[UpdateLayerRequestBindingsItem] | Unset):
+            blend (str | Unset):
+            enabled (bool | Unset):
+            name (None | str | Unset):
+            opacity (float | Unset):
+            transform (UpdateLayerRequestTransform | Unset):
     """
 
     id: str

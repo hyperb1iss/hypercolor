@@ -9,7 +9,7 @@ WS_PROTOCOL_VERSION: Final = "1.0"
 WS_SUBPROTOCOL: Final = "hypercolor-v1"
 DEFAULT_WS_SUBSCRIPTIONS: Final = ("events",)
 
-WS_CHANNELS: Final = (
+WS_TOPICS: Final = (
     "frames",
     "spectrum",
     "events",
@@ -23,6 +23,7 @@ WS_CHANNELS: Final = (
     "device_metrics",
     "sensors",
     "display_preview",
+    "interactive_preview",
     "input_events",
 )
 WS_CAPABILITIES: Final = (
@@ -39,6 +40,7 @@ WS_CAPABILITIES: Final = (
     "device_metrics",
     "sensors",
     "display_preview",
+    "interactive_preview",
     "input_events",
     "commands",
     "canvas_format_jpeg",
@@ -67,14 +69,14 @@ BINARY_MESSAGE_TAGS: Final = MappingProxyType(
         "preview_chunk": 0x0F,
         "preview_cancel": 0x10,
         "extended_screen_zones": 0x11,
+        "wide_display_preview": 0x12,
     }
 )
-PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(
+PREVIEW_TOPIC_TAGS: Final = MappingProxyType(
     {
         0x03: "canvas",
         0x05: "screen_canvas",
         0x06: "web_viewport_canvas",
-        0x07: "display_preview",
     }
 )
 CANVAS_FORMAT_TAGS: Final = MappingProxyType(

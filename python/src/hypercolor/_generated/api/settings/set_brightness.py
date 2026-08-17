@@ -77,7 +77,7 @@ def sync_detailed(
     """Set global brightness
 
     Args:
-        body (SetBrightnessRequest):
+        body (SetBrightnessRequest): Request body for `PUT /api/v1/settings/brightness`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -106,7 +106,7 @@ async def asyncio_detailed(
     """Set global brightness
 
     Args:
-        body (SetBrightnessRequest):
+        body (SetBrightnessRequest): Request body for `PUT /api/v1/settings/brightness`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

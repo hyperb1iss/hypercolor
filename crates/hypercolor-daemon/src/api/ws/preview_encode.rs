@@ -11,10 +11,10 @@ use hypercolor_leptos_ext::ws::{
 };
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
+use hypercolor_leptos_ext::ws::registry::CanvasFormat;
+
 use super::preview_scale::{PreviewScaleFormat, PreviewScaleWorkspace};
-use super::protocol::{
-    CanvasFormat, validate_preview_surface_bytes, validate_preview_surface_resource,
-};
+use super::protocol::{validate_preview_surface_bytes, validate_preview_surface_resource};
 
 const PREVIEW_JPEG_QUALITY: u8 = 80;
 const PREVIEW_JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;

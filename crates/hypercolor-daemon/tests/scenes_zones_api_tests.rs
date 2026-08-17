@@ -213,7 +213,7 @@ async fn zone_crud_uses_groups_revision_etags() {
         .expect("zone id should be a string")
         .to_owned();
     assert_eq!(json["data"]["zone"]["role"], "custom");
-    assert_eq!(json["data"]["groups_revision"], 1);
+    assert_eq!(json["data"]["zones_revision"], 1);
 
     let response = send(
         &app,
@@ -331,7 +331,7 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
         );
     }
 
-    let next_revision = json["data"]["groups_revision"]
+    let next_revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
     let response = send(
@@ -366,7 +366,7 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
         );
     }
 
-    let revision = json["data"]["groups_revision"]
+    let revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
     let mut invalid_zone = sample_zone("primary-zone");
@@ -431,7 +431,7 @@ async fn unassigned_behavior_route_validates_fallback_zone() {
         .as_str()
         .expect("zone id should be a string")
         .to_owned();
-    let revision = json["data"]["groups_revision"]
+    let revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
 
@@ -511,7 +511,7 @@ async fn zone_layout_route_merges_placement_and_rejects_output_changes() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let revision = json["data"]["groups_revision"]
+    let revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
     let zone_id = json["data"]["items"]
@@ -545,7 +545,7 @@ async fn zone_layout_route_merges_placement_and_rejects_output_changes() {
     let output = &json["data"]["zone"]["layout"]["zones"][0];
     assert_eq!(output["display_order"].as_i64(), Some(9));
     assert_eq!(output["device_id"].as_str(), Some("mock:primary-zone"));
-    let next_revision = json["data"]["groups_revision"]
+    let next_revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
 

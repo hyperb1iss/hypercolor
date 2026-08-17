@@ -1,57 +1,15 @@
 //! Persisted media asset index.
 
-use chrono::{DateTime, Utc};
 use hypercolor_types::asset::AssetId;
 use serde::{Deserialize, Serialize};
 
+// The record vocabulary lives in hypercolor-types so the daemon's asset
+// responses and every client name the same struct; these re-exports keep
+// `crate::asset::*` paths stable inside core.
+pub use hypercolor_types::asset::{AssetScanStatus, AssetWarning, MediaAssetRecord};
+
 /// Current media asset index schema version.
 pub const INDEX_VERSION: u32 = 1;
-
-/// Metadata scan state for an asset record.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssetScanStatus {
-    #[default]
-    Pending,
-    Ready,
-    Unsupported {
-        reason: String,
-    },
-    Failed {
-        reason: String,
-    },
-    Unscanned,
-}
-
-/// Non-fatal policy warnings attached to an accepted asset.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AssetWarning {
-    PerAssetSoftCapExceeded { limit_bytes: u64 },
-    LibrarySoftCapExceeded { limit_bytes: u64 },
-}
-
-/// Persisted metadata for one user media asset.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MediaAssetRecord {
-    pub id: AssetId,
-    pub name: String,
-    pub hash_sha256: String,
-    pub mime_type: String,
-    pub byte_len: u64,
-    pub intrinsic_width: Option<u32>,
-    pub intrinsic_height: Option<u32>,
-    pub duration_us: Option<u64>,
-    pub frame_count: Option<u32>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    pub created_at: DateTime<Utc>,
-    pub modified_at: DateTime<Utc>,
-    #[serde(default)]
-    pub scan_status: AssetScanStatus,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<AssetWarning>,
-}
 
 /// Library event emitted for asset mutations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

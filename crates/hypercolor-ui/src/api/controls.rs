@@ -9,7 +9,7 @@ use hypercolor_types::controls::{
     ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
     ControlSurfaceDocument, ControlSurfaceId, ControlSurfaceRevision, ControlValueMap,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::client;
 
@@ -19,12 +19,7 @@ pub struct ControlSurfaceListResponse {
     pub surfaces: Vec<ControlSurfaceDocument>,
 }
 
-/// Request body for invoking a control-surface action.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct InvokeControlActionRequest {
-    #[serde(default)]
-    pub input: ControlValueMap,
-}
+pub use hypercolor_types::api::controls::InvokeControlActionRequest;
 
 /// Fetch surfaces selected by device, driver, or both.
 pub async fn fetch_control_surfaces(

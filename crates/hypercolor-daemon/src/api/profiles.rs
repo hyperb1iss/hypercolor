@@ -11,9 +11,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::HypercolorEvent;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::warn;
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -31,28 +30,11 @@ use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{Zone, ZoneRole};
 use hypercolor_types::spatial::SpatialLayout;
 
+pub use hypercolor_types::api::profiles::{
+    ApplyProfileRequest, CreateProfileRequest, UpdateProfileRequest,
+};
+
 // ── Request / Response Types ─────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct CreateProfileRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub brightness: Option<u8>,
-    #[serde(default)]
-    pub force: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateProfileRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub brightness: Option<u8>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ApplyProfileRequest {
-    pub transition_ms: Option<u32>,
-}
 
 #[derive(Debug, Serialize)]
 pub struct ProfileListResponse {

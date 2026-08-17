@@ -22,16 +22,17 @@ T = TypeVar("T", bound="BroadcastMediaLayerTarget")
 
 @_attrs_define
 class BroadcastMediaLayerTarget:
-    """
+    """One zone targeted by a broadcast media layer create.
+
     Attributes:
-        group_id (str):
+        zone_id (str):
         adjust (BroadcastMediaLayerTargetAdjust | Unset):
-        expected_layers_version (int | None | Unset):
-        index (int | None | Unset):
+        expected_layers_version (int | None | Unset): Per-zone optimistic-concurrency precondition.
+        index (int | None | Unset): Stack position within this zone; omitted appends on top.
         transform (BroadcastMediaLayerTargetTransform | Unset):
     """
 
-    group_id: str
+    zone_id: str
     adjust: BroadcastMediaLayerTargetAdjust | Unset = UNSET
     expected_layers_version: int | None | Unset = UNSET
     index: int | None | Unset = UNSET
@@ -39,7 +40,7 @@ class BroadcastMediaLayerTarget:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        group_id = self.group_id
+        zone_id = self.zone_id
 
         adjust: dict[str, Any] | Unset = UNSET
         if not isinstance(self.adjust, Unset):
@@ -65,7 +66,7 @@ class BroadcastMediaLayerTarget:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "group_id": group_id,
+                "zone_id": zone_id,
             }
         )
         if adjust is not UNSET:
@@ -89,7 +90,7 @@ class BroadcastMediaLayerTarget:
         )
 
         d = dict(src_dict)
-        group_id = d.pop("group_id")
+        zone_id = d.pop("zone_id")
 
         _adjust = d.pop("adjust", UNSET)
         adjust: BroadcastMediaLayerTargetAdjust | Unset
@@ -126,7 +127,7 @@ class BroadcastMediaLayerTarget:
             transform = BroadcastMediaLayerTargetTransform.from_dict(_transform)
 
         broadcast_media_layer_target = cls(
-            group_id=group_id,
+            zone_id=zone_id,
             adjust=adjust,
             expected_layers_version=expected_layers_version,
             index=index,

@@ -25,16 +25,19 @@ T = TypeVar("T", bound="BroadcastMediaLayerRequest")
 
 @_attrs_define
 class BroadcastMediaLayerRequest:
-    """
-    Attributes:
-        asset_id (str):
-        bindings (list[BroadcastMediaLayerRequestBindingsItem] | Unset):
-        blend (str | Unset):
-        enabled (bool | Unset):
-        name (None | str | Unset):
-        opacity (float | Unset):
-        playback (BroadcastMediaLayerRequestPlayback | Unset):
-        targets (list[BroadcastMediaLayerRequestTargetsItem] | Unset):
+    """Request body for `POST /api/v1/scenes/{id}/layers/broadcast-media`.
+
+    Creates one media layer per target zone in a single transaction.
+
+        Attributes:
+            asset_id (str):
+            bindings (list[BroadcastMediaLayerRequestBindingsItem] | Unset):
+            blend (str | Unset):
+            enabled (bool | Unset):
+            name (None | str | Unset):
+            opacity (float | Unset):
+            playback (BroadcastMediaLayerRequestPlayback | Unset):
+            targets (list[BroadcastMediaLayerRequestTargetsItem] | Unset):
     """
 
     asset_id: str

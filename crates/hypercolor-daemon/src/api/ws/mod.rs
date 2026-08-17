@@ -13,6 +13,7 @@ mod preview_scale;
 mod protocol;
 mod relays;
 mod session;
+mod topics;
 
 #[cfg(test)]
 mod tests;

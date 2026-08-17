@@ -834,8 +834,8 @@ impl App {
                     let client = self.client.clone();
                     let id = effect_id.clone();
                     async move {
-                        let render_group = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
-                        client.apply_effect(&id, None, render_group).await?;
+                        let target_zone_id = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
+                        client.apply_effect(&id, None, target_zone_id).await?;
                         let mut actions = refresh_status_and_scene(client).await?;
                         let message = match &target {
                             Some((_, zone_name)) => format!("Applied {id} \u{2192} {zone_name}"),
@@ -857,8 +857,10 @@ impl App {
                     let ctrl = controls.clone();
                     async move {
                         let body = serde_json::to_value(&ctrl)?;
-                        let render_group = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
-                        client.apply_effect(&id, Some(&body), render_group).await?;
+                        let target_zone_id = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
+                        client
+                            .apply_effect(&id, Some(&body), target_zone_id)
+                            .await?;
                         let mut actions = refresh_status_and_scene(client).await?;
                         let message = match &target {
                             Some((_, zone_name)) => {
@@ -898,7 +900,7 @@ impl App {
                 let json_value = control_value_to_json(value);
                 if let Some((scene_id, zone_id)) = self.zone_patch_target() {
                     // Optimistic local update so re-renders show the new
-                    // value immediately; render_group_changed confirms.
+                    // value immediately; zone_changed confirms.
                     self.update_local_zone_control(&zone_id, control_id, value.clone());
                     self.spawn_actions({
                         let client = self.client.clone();
@@ -934,14 +936,14 @@ impl App {
                 }
             }
             Action::ResetControls => {
-                // The daemon's reset is zone-scoped via render_group;
+                // The daemon's reset is zone-scoped via target_zone_id;
                 // None resets the primary zone.
                 let target = self.non_primary_target();
                 self.spawn_actions({
                     let client = self.client.clone();
                     async move {
-                        let render_group = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
-                        client.reset_controls(render_group).await?;
+                        let target_zone_id = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
+                        client.reset_controls(target_zone_id).await?;
                         let mut actions = refresh_status_and_scene(client).await?;
                         let message = match &target {
                             Some((_, zone_name)) => format!("Controls reset \u{2192} {zone_name}"),
@@ -1007,7 +1009,7 @@ impl App {
                     return;
                 };
                 let scene_id = scene.id.clone();
-                let revision = scene.groups_revision;
+                let revision = scene.zones_revision;
                 let enabled = *enabled;
                 self.spawn_actions({
                     let client = self.client.clone();

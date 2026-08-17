@@ -223,7 +223,7 @@ hypercolor effects reset
 Changes apply on the next rendered frame:
 
 ```bash
-curl -X PATCH http://localhost:9420/api/v1/effects/current/controls \
+curl -X PATCH http://localhost:9420/api/v1/effects/active/controls \
   -H "Content-Type: application/json" \
   -d '{"controls": {"speed": 3}}'
 ```

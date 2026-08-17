@@ -449,7 +449,7 @@ The glance-and-tweak home screen.
   calls `api::apply_effect("solid_color", Some(&ApplyEffectBody { .. }))`
   with `color` and `brightness` in the body; every later change goes
   through `api::update_controls`
-  (`PATCH /api/v1/effects/current/controls`) with the same keys.
+  (`PATCH /api/v1/effects/active/controls`) with the same keys.
 - Back returns to Now.
 
 ### 6.6 Settings (`/settings`)

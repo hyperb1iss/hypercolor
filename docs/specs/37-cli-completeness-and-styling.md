@@ -86,8 +86,8 @@ zero CLI exposure:
   no CLI equivalents.
 - **Effect layout associations.** `GET/PUT/DELETE /effects/{id}/layout` —
   linking a specific effect to a preferred layout — is entirely absent.
-- **Live control patching.** `PATCH /effects/current/controls` and `POST
-/effects/current/reset`. Today the only way to change controls is
+- **Live control patching.** `PATCH /effects/active/controls` and `POST
+/effects/active/reset`. Today the only way to change controls is
   `hypercolor effects activate <name> --param ...`, which re-applies the whole
   effect rather than patching the running instance.
 - **Effect rescan.** `POST /effects/rescan` — triggers a reload of the effect
@@ -380,8 +380,8 @@ hypercolor effects list                              # (existing)
 hypercolor effects info <name>                       # (existing)
 hypercolor effects activate <name> [--param ...]     # (existing)
 hypercolor effects stop                              # (existing)
-hypercolor effects patch --param key=value ...       # (new)  PATCH /effects/current/controls
-hypercolor effects reset                             # (new)  POST  /effects/current/reset
+hypercolor effects patch --param key=value ...       # (new)  PATCH /effects/active/controls
+hypercolor effects reset                             # (new)  POST  /effects/active/reset
 hypercolor effects rescan                            # (new)  POST  /effects/rescan
 hypercolor effects layout show <name>                # (new)  GET   /effects/{id}/layout
 hypercolor effects layout set <name> <layout-id>     # (new)  PUT   /effects/{id}/layout
@@ -1290,7 +1290,7 @@ audio.device ...` on the grounds that it is CLI config, not an API
    call. If the daemon grows a dedicated `PUT /audio/device` endpoint,
    we add a subcommand then.
 4. **Should `hypercolor effects patch` support `--json-patch` for complex
-   nested control shapes?** The daemon's `PATCH /effects/current/controls`
+   nested control shapes?** The daemon's `PATCH /effects/active/controls`
    accepts a JSON object today. `--param k=v` is easy; `--json-patch` would
    be for scripts that need more than scalar overrides. The spec defers
    this until a real use case appears.

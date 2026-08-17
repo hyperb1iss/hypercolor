@@ -115,6 +115,7 @@ impl TopicPatch<PreviewConfig> for PreviewPatch {
 
 define_ws_topics! {
     registry Topic;
+    reserved [0x0F, 0x10];
     topic Events => "events" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [], control: false,

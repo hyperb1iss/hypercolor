@@ -33,7 +33,7 @@ separate protocol mounted at `/mcp`, and it is the canonical AI-control path; th
 Everything the daemon serves lives at one of three places:
 
 - `/api/v1/...`: the REST and WebSocket surface (the bulk of the contract)
-- `/health` and `/preview`: top-level, not under `/api/v1`
+- `/health`: top-level, not under `/api/v1`
 - `/mcp`: the MCP server, top-level, mounted only when MCP is enabled
 
 The REST router groups its routes by domain. The full set, enumerated straight

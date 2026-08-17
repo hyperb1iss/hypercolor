@@ -10,11 +10,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{EffectCategory, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::api::AppState;
@@ -25,94 +24,16 @@ use crate::api::publish_render_group_changed;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::{DomainError, ResourceKind};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct DisplaySummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub family: String,
-    pub width: u32,
-    pub height: u32,
-    pub circular: bool,
-    /// Full surface description (shape, safe area, fps, pixel format) —
-    /// the same descriptor injected into face pages.
-    pub descriptor: DisplayDescriptor,
-}
+pub use hypercolor_types::api::displays::{
+    DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery, DisplaySummary,
+    SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DisplaySurfaceInfo {
     pub width: u32,
     pub height: u32,
     pub circular: bool,
-}
-
-/// Which assignment layer a face operation targets (spec 69 §3.6).
-///
-/// `default` persists across scenes (the display's own face); `scene`
-/// writes into the active scene's display zone, which always wins while
-/// that scene is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayFaceScope {
-    #[default]
-    Default,
-    Scene,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SetDisplayFaceRequest {
-    pub effect_id: String,
-    #[serde(default)]
-    pub controls: std::collections::HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(default)]
-    pub opacity: Option<f32>,
-    #[serde(default)]
-    pub scope: DisplayFaceScope,
-}
-
-/// Query parameters for `DELETE /api/v1/displays/{id}/face`.
-#[derive(Debug, Default, Deserialize)]
-pub struct DisplayFaceScopeQuery {
-    #[serde(default)]
-    pub scope: DisplayFaceScope,
-}
-
-/// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
-///
-/// The payload carries only the overrides the caller wants to change;
-/// existing control values on the zone are preserved unless their
-/// key appears in this map. `controls` is typed as raw JSON (rather than
-/// `HashMap<String, ControlValue>`) so callers can send natural shapes
-/// like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-/// mirrors the effects controls patch endpoint.
-#[derive(Debug, Deserialize)]
-pub struct UpdateDisplayFaceControlsRequest {
-    #[serde(default)]
-    pub controls: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateDisplayFaceCompositionRequest {
-    #[serde(default)]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(default)]
-    pub opacity: Option<f32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DisplayFaceResponse {
-    pub device_id: String,
-    pub scene_id: String,
-    pub effect: EffectMetadata,
-    pub group: Zone,
-    /// Which layer the returned assignment lives on.
-    pub live_scope: DisplayFaceScope,
-    /// Whether the active scene has its own face assignment for this display.
-    pub scene_assigned: bool,
-    /// Whether a persisted default face exists for this display.
-    pub default_assigned: bool,
 }
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
@@ -370,7 +291,7 @@ pub async fn set_display_face(
             default_assigned: true,
             device_id: device_id.to_string(),
             effect,
-            group: zone,
+            zone,
             live_scope: if scene_assigned {
                 DisplayFaceScope::Scene
             } else {
@@ -408,10 +329,10 @@ pub async fn set_display_face(
         default_assigned,
         device_id: device_id.to_string(),
         effect,
-        group: if composition_explicit {
+        zone: if composition_explicit {
             written.zone
         } else {
-            compact_display_face_assignment_group(written.zone)
+            compact_display_face_assignment_zone(written.zone)
         },
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
@@ -476,7 +397,7 @@ pub async fn patch_display_face_composition(
                 publish_render_group_changed(
                     state.as_ref(),
                     scene_id,
-                    &response.group,
+                    &response.zone,
                     ZoneChangeKind::Updated,
                 );
                 ApiResponse::ok(response)
@@ -486,7 +407,7 @@ pub async fn patch_display_face_composition(
     }
 
     let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
-        Ok(response) => (response.group, response.effect),
+        Ok(response) => (response.zone, response.effect),
         Err(error) => return error.into_response(),
     };
 
@@ -516,7 +437,7 @@ pub async fn patch_display_face_composition(
         },
         device_id: device_id.to_string(),
         effect,
-        group: written.zone,
+        zone: written.zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: written.scene_id.to_string(),
@@ -557,7 +478,7 @@ pub async fn delete_display_face(
             scene_manager
                 .active_scene()
                 .and_then(|scene| scene.display_group_for(device_id))
-                .is_some_and(display_group_has_face_assignment)
+                .is_some_and(display_zone_has_face_assignment)
         };
         match crate::domain::display::remove_default_display_overlay(state.as_ref(), device_id)
             .await
@@ -703,7 +624,7 @@ pub async fn patch_display_face_controls(
                 publish_render_group_changed(
                     state.as_ref(),
                     scene_id,
-                    &response.group,
+                    &response.zone,
                     ZoneChangeKind::ControlsPatched,
                 );
                 ApiResponse::ok(response)
@@ -713,7 +634,7 @@ pub async fn patch_display_face_controls(
     }
 
     let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
-        Ok(response) => (response.group, response.effect),
+        Ok(response) => (response.zone, response.effect),
         Err(error) => return error.into_response(),
     };
     let (normalized_controls, rejected) =
@@ -752,7 +673,7 @@ pub async fn patch_display_face_controls(
         },
         device_id: device_id.to_string(),
         effect,
-        group: written.zone,
+        zone: written.zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: written.scene_id.to_string(),
@@ -893,7 +814,7 @@ async fn current_display_face_assignment(
         default_assigned,
         device_id: device_id.to_string(),
         effect,
-        group,
+        zone: group,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: scene_id.to_string(),
@@ -1015,7 +936,7 @@ async fn display_face_layer_state(state: &AppState, device_id: DeviceId) -> (boo
         scene_manager
             .active_scene()
             .and_then(|scene| scene.display_group_for(device_id))
-            .is_some_and(display_group_has_face_assignment)
+            .is_some_and(display_zone_has_face_assignment)
     };
     let default_assigned = {
         let store = state.display_preferences.read().await;
@@ -1060,14 +981,14 @@ async fn current_default_face_assignment(
         default_assigned: true,
         device_id: device_id.to_string(),
         effect,
-        group: zone,
+        zone,
         live_scope: DisplayFaceScope::Default,
         scene_assigned: false,
         scene_id,
     })
 }
 
-fn compact_display_face_assignment_group(mut group: Zone) -> Zone {
+fn compact_display_face_assignment_zone(mut group: Zone) -> Zone {
     if let Some(target) = group.display_target.as_mut()
         && target.blend_mode == DisplayFaceBlendMode::Replace
         && (target.opacity - 1.0).abs() <= f32::EPSILON
@@ -1077,7 +998,7 @@ fn compact_display_face_assignment_group(mut group: Zone) -> Zone {
     group
 }
 
-fn display_group_has_face_assignment(group: &Zone) -> bool {
+fn display_zone_has_face_assignment(group: &Zone) -> bool {
     group.effect_id.is_some()
 }
 

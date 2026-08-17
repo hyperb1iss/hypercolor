@@ -171,6 +171,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -786,6 +787,7 @@ dependencies = [
  "js-sys",
  "leptos",
  "leptos-use",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "wasm-bindgen",
@@ -797,6 +799,7 @@ dependencies = [
 name = "hypercolor-types"
 version = "0.3.2"
 dependencies = [
+ "chrono",
  "hypercolor-color",
  "serde",
  "serde_json",

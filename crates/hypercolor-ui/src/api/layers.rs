@@ -1,12 +1,9 @@
 //! Scene layer-stack API client.
 
 use gloo_net::http::Method;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use hypercolor_types::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
-    SceneLayerId,
-};
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 
 use super::client;
 use super::client::MutationOutcome;
@@ -17,49 +14,24 @@ pub struct LayerStackResponse {
     pub layers_version: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct CreateLayerRequest {
-    pub name: Option<String>,
-    pub source: LayerSource,
-    pub blend: LayerBlendMode,
-    pub opacity: f32,
-    pub transform: LayerTransform,
-    pub adjust: LayerAdjust,
-    pub bindings: Vec<LayerBinding>,
-    pub enabled: bool,
-}
+pub use hypercolor_types::api::layers::{
+    CreateLayerRequest, LayerOrderRequest, PatchLayerControlsRequest, UpdateLayerRequest,
+};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct UpdateLayerRequest {
-    pub id: SceneLayerId,
-    pub name: Option<String>,
-    pub source: LayerSource,
-    pub blend: LayerBlendMode,
-    pub opacity: f32,
-    pub transform: LayerTransform,
-    pub adjust: LayerAdjust,
-    pub bindings: Vec<LayerBinding>,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LayerOrderRequest {
-    pub layer_ids: Vec<SceneLayerId>,
-}
-
-impl From<&SceneLayer> for UpdateLayerRequest {
-    fn from(layer: &SceneLayer) -> Self {
-        Self {
-            id: layer.id,
-            name: layer.name.clone(),
-            source: layer.source.clone(),
-            blend: layer.blend,
-            opacity: layer.opacity,
-            transform: layer.transform,
-            adjust: layer.adjust,
-            bindings: layer.bindings.clone(),
-            enabled: layer.enabled,
-        }
+/// Build a whole-layer replacement request that preserves every field of
+/// the layer as it stands.
+#[must_use]
+pub fn update_request_from_layer(layer: &SceneLayer) -> UpdateLayerRequest {
+    UpdateLayerRequest {
+        id: layer.id,
+        name: layer.name.clone(),
+        source: layer.source.clone(),
+        blend: layer.blend,
+        opacity: layer.opacity,
+        transform: layer.transform,
+        adjust: layer.adjust,
+        bindings: layer.bindings.clone(),
+        enabled: layer.enabled,
     }
 }
 
@@ -72,23 +44,21 @@ impl From<&SceneLayer> for UpdateLayerRequest {
 /// `Applied` carries the fresh stack and its new version.
 pub type LayerStackOutcome = MutationOutcome<LayerStackResponse>;
 
-pub async fn list_layers(scene_id: &str, group_id: &str) -> Result<LayerStackResponse, String> {
-    client::fetch_json(&format!(
-        "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
-    ))
-    .await
-    .map_err(Into::into)
+pub async fn list_layers(scene_id: &str, zone_id: &str) -> Result<LayerStackResponse, String> {
+    client::fetch_json(&format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers"))
+        .await
+        .map_err(Into::into)
 }
 
 pub async fn create_layer(
     scene_id: &str,
-    group_id: &str,
+    zone_id: &str,
     request: &CreateLayerRequest,
     expected_version: Option<u64>,
 ) -> Result<LayerStackOutcome, String> {
     client::send_json_versioned(
         Method::POST,
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers"),
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers"),
         Some(request),
         expected_version,
     )
@@ -98,14 +68,14 @@ pub async fn create_layer(
 
 pub async fn update_layer(
     scene_id: &str,
-    group_id: &str,
+    zone_id: &str,
     layer_id: &str,
     request: &UpdateLayerRequest,
     expected_version: Option<u64>,
 ) -> Result<LayerStackOutcome, String> {
     client::send_json_versioned(
         Method::PUT,
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}"),
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers/{layer_id}"),
         Some(request),
         expected_version,
     )
@@ -115,13 +85,13 @@ pub async fn update_layer(
 
 pub async fn delete_layer(
     scene_id: &str,
-    group_id: &str,
+    zone_id: &str,
     layer_id: &str,
     expected_version: Option<u64>,
 ) -> Result<LayerStackOutcome, String> {
     client::send_json_versioned::<(), _>(
         Method::DELETE,
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}"),
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers/{layer_id}"),
         None,
         expected_version,
     )
@@ -135,15 +105,17 @@ pub async fn delete_layer(
 /// controls, so a partial payload is fine. Guarded by `If-Match`.
 pub async fn patch_layer_controls(
     scene_id: &str,
-    group_id: &str,
+    zone_id: &str,
     layer_id: &str,
     controls: &serde_json::Value,
     expected_version: Option<u64>,
 ) -> Result<LayerStackOutcome, String> {
-    let body = serde_json::json!({ "controls": controls });
+    let body = PatchLayerControlsRequest {
+        controls: Some(controls.clone()),
+    };
     client::send_json_versioned(
         Method::PATCH,
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}/controls"),
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers/{layer_id}/controls"),
         Some(&body),
         expected_version,
     )
@@ -153,14 +125,14 @@ pub async fn patch_layer_controls(
 
 pub async fn reorder_layers(
     scene_id: &str,
-    group_id: &str,
+    zone_id: &str,
     layer_ids: Vec<SceneLayerId>,
     expected_version: Option<u64>,
 ) -> Result<LayerStackOutcome, String> {
     let request = LayerOrderRequest { layer_ids };
     client::send_json_versioned(
         Method::PATCH,
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/order"),
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers/order"),
         Some(&request),
         expected_version,
     )

@@ -7,7 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::api::AppState;
 use crate::api::effects::resolve_effect_metadata;
@@ -15,6 +15,8 @@ use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
 use super::unix_epoch_ms;
+
+pub use hypercolor_types::api::library::AddFavoriteRequest;
 
 // ── Request / Response Types ────────────────────────────────────────────
 
@@ -29,11 +31,6 @@ pub struct FavoriteSummary {
 pub struct FavoriteListResponse {
     pub items: Vec<FavoriteSummary>,
     pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddFavoriteRequest {
-    pub effect: String,
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────

@@ -3270,43 +3270,6 @@ async fn config_full_reset_is_not_blocked_by_an_invalid_driver_entry() {
     );
 }
 
-#[tokio::test]
-async fn preview_page_returns_html() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/preview")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let content_type = response
-        .headers()
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html content type, got {content_type}"
-    );
-
-    let body = body_text(response).await;
-    assert!(body.contains("Hypercolor Live Preview"));
-    assert!(body.contains("/api/v1/ws"));
-    assert!(body.contains("/api/v1/simulators/displays"));
-    assert!(body.contains("id=\"previewMode\""));
-    assert!(body.contains("show unavailable"));
-    assert!(body.contains("run-preview-servo.sh"));
-    assert!(body.contains("value=\"30\""));
-}
-
 async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
     let _ = insert_test_effect_with_presets(state, name, Vec::new()).await;
 }
@@ -6100,7 +6063,7 @@ async fn get_active_effect_returns_idle_payload_when_none() {
     assert_eq!(json["data"]["state"], "idle");
     assert!(json["data"]["id"].is_null());
     assert!(json["data"]["name"].is_null());
-    assert!(json["data"]["render_group_id"].is_null());
+    assert!(json["data"]["zone_id"].is_null());
 }
 
 #[tokio::test]
@@ -6132,7 +6095,7 @@ async fn apply_effect_upserts_primary_group() {
 }
 
 #[tokio::test]
-async fn apply_effect_targets_a_named_zone_via_render_group() {
+async fn apply_effect_targets_a_named_zone_via_zone_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
 
@@ -6160,7 +6123,7 @@ async fn apply_effect_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -6210,7 +6173,7 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -6226,12 +6189,12 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 Ok(timestamped) => {
                     if let HypercolorEvent::EffectStarted {
                         previous,
-                        group_id,
-                        group_name,
+                        zone_id,
+                        zone_name,
                         ..
                     } = timestamped.event
                     {
-                        break (previous, group_id, group_name);
+                        break (previous, zone_id, zone_name);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -6303,7 +6266,7 @@ async fn get_active_effect_returns_primary_group_info() {
     );
     assert_eq!(json["data"]["name"], "solid_color");
     assert_eq!(json["data"]["state"], "running");
-    assert_eq!(json["data"]["render_group_id"], primary_group_id.0);
+    assert_eq!(json["data"]["zone_id"], primary_group_id.0);
 }
 
 #[tokio::test]
@@ -6652,7 +6615,7 @@ async fn output_power_put_is_idempotent_and_publishes_effective_transitions_once
 }
 
 #[tokio::test]
-async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
+async fn stop_active_clears_primary_effect_id_but_keeps_scene() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -6860,7 +6823,7 @@ async fn pause_resume_preserves_effect_state_and_holds_static_output() {
 }
 
 #[tokio::test]
-async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
+async fn stop_active_quiesces_output_and_resume_wakes_pipeline() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     state.render_loop.write().await.start();
@@ -7034,14 +6997,14 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
 }
 
 #[tokio::test]
-async fn update_current_controls_requires_active_effect() {
+async fn update_active_controls_requires_active_effect() {
     let app = test_app();
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
                 .expect("failed to build request"),
@@ -7076,7 +7039,7 @@ async fn patch_controls_updates_primary_group_controls() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":7.25}}"#))
                 .expect("failed to build request"),
@@ -7604,7 +7567,7 @@ async fn effect_preset_stack_lists_and_applies_both_origins() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":4.0}}"#))
                 .expect("failed to build request"),
@@ -7670,7 +7633,7 @@ async fn apply_effect_rejects_preset_targeting_different_effect() {
 }
 
 #[tokio::test]
-async fn put_current_control_binding_updates_active_effect_schema() {
+async fn put_active_control_binding_updates_active_effect_schema() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -7702,7 +7665,7 @@ async fn put_current_control_binding_updates_active_effect_schema() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/effects/current/controls/speed/binding")
+                .uri("/api/v1/effects/active/controls/speed/binding")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&binding).expect("binding should serialize"),
@@ -7984,7 +7947,7 @@ async fn scene_activate_and_deactivate_publish_active_scene_events() {
 }
 
 #[tokio::test]
-async fn patch_current_controls_publishes_render_group_and_control_events() {
+async fn patch_active_controls_publishes_render_group_and_control_events() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -8007,7 +7970,7 @@ async fn patch_current_controls_publishes_render_group_and_control_events() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
                 .expect("failed to build request"),
@@ -8022,7 +7985,7 @@ async fn patch_current_controls_publishes_render_group_and_control_events() {
         while !saw_render_group_change || !saw_control_change {
             match events.recv().await {
                 Ok(timestamped) => match timestamped.event {
-                    HypercolorEvent::RenderGroupChanged {
+                    HypercolorEvent::ZoneChanged {
                         scene_id,
                         role,
                         kind,
@@ -8241,7 +8204,7 @@ async fn library_preset_apply_activates_effect_with_controls() {
 }
 
 #[tokio::test]
-async fn library_preset_apply_targets_a_named_zone_via_render_group() {
+async fn library_preset_apply_targets_a_named_zone_via_zone_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
 
@@ -8291,7 +8254,7 @@ async fn library_preset_apply_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -8335,7 +8298,7 @@ async fn library_preset_apply_targets_a_named_zone_via_render_group() {
 }
 
 #[tokio::test]
-async fn reset_controls_targets_a_named_zone_via_render_group() {
+async fn reset_controls_targets_a_named_zone_via_zone_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
 
@@ -8356,7 +8319,7 @@ async fn reset_controls_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                         "controls": { "speed": 7.25 },
                     }))
                     .expect("request body should serialize"),
@@ -8371,11 +8334,11 @@ async fn reset_controls_targets_a_named_zone_via_render_group() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/effects/current/reset")
+                .uri("/api/v1/effects/active/reset")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -9181,7 +9144,7 @@ async fn scene_crud_lifecycle() {
     assert_eq!(json["data"]["id"], scene_id);
     assert_eq!(json["data"]["kind"], "named");
     // A created scene is born with a Default zone (§5.2 output roster).
-    let groups = json["data"]["groups"]
+    let groups = json["data"]["zones"]
         .as_array()
         .expect("groups should serialize as an array");
     assert_eq!(groups.len(), 1);
@@ -9291,7 +9254,7 @@ async fn scene_deactivate_returns_to_default_scene() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Default");
     assert_eq!(json["data"]["kind"], "ephemeral");
-    let groups = json["data"]["groups"]
+    let groups = json["data"]["zones"]
         .as_array()
         .expect("groups should serialize as an array");
     assert_eq!(groups.len(), 1);
@@ -12486,10 +12449,7 @@ async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
     assert_eq!(active_named.status(), StatusCode::OK);
     let active_named_json = body_json(active_named).await;
     assert_eq!(active_named_json["data"]["name"], "Sunset");
-    assert_eq!(
-        active_named_json["data"]["render_group_id"],
-        named_primary_group_id
-    );
+    assert_eq!(active_named_json["data"]["zone_id"], named_primary_group_id);
 
     let deactivate = app
         .clone()
@@ -12517,7 +12477,7 @@ async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
     let active_default_json = body_json(active_default).await;
     assert_eq!(active_default_json["data"]["name"], "Aurora");
     assert_ne!(
-        active_default_json["data"]["render_group_id"],
+        active_default_json["data"]["zone_id"],
         named_primary_group_id
     );
 }
@@ -13785,7 +13745,7 @@ async fn active_scene_syncs_empty_screen_surface_for_display_device() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let groups = json["data"]["groups"]
+    let groups = json["data"]["zones"]
         .as_array()
         .expect("groups should be an array");
     let display_group = groups
@@ -13812,9 +13772,7 @@ async fn active_scene_syncs_empty_screen_surface_for_display_device() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
-                ))
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -13867,9 +13825,7 @@ async fn display_face_layer_stack_includes_legacy_face_beside_media() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
-                ))
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -13908,7 +13864,7 @@ async fn active_scene_does_not_sync_screen_surfaces_into_snapshot_scene() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["id"], scene_id.to_string());
-    assert_eq!(json["data"]["groups"].as_array().map(Vec::len), Some(0));
+    assert_eq!(json["data"]["zones"].as_array().map(Vec::len), Some(0));
 }
 
 #[tokio::test]
@@ -14021,7 +13977,7 @@ async fn patch_face_controls_updates_display_group() {
     assert_eq!(patch_response.status(), StatusCode::OK);
     let patch_json = body_json(patch_response).await;
     assert_eq!(
-        patch_json["data"]["group"]["controls"]["label"]["text"],
+        patch_json["data"]["zone"]["controls"]["label"]["text"],
         "gpu"
     );
 
@@ -14109,28 +14065,26 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
     assert_eq!(put_json["data"]["effect"]["id"], face.id.to_string());
     assert_eq!(put_json["data"]["effect"]["category"], "display");
     assert_eq!(
-        put_json["data"]["group"]["display_target"]["device_id"],
+        put_json["data"]["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(put_json["data"]["group"]["layout"]["canvas_width"], 320);
-    assert_eq!(put_json["data"]["group"]["layout"]["canvas_height"], 320);
+    assert_eq!(put_json["data"]["zone"]["layout"]["canvas_width"], 320);
+    assert_eq!(put_json["data"]["zone"]["layout"]["canvas_height"], 320);
     assert!(
-        put_json["data"]["group"]["layout"]["zones"]
+        put_json["data"]["zone"]["layout"]["zones"]
             .as_array()
             .expect("zones should serialize as an array")
             .is_empty()
     );
-    let group_id = put_json["data"]["group"]["id"]
+    let group_id = put_json["data"]["zone"]["id"]
         .as_str()
-        .expect("display face group should include an id");
+        .expect("display face zone should include an id");
 
     let layers_response = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
-                ))
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -14162,7 +14116,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
     let get_json = body_json(get_response).await;
     assert_eq!(get_json["data"]["effect"]["id"], face.id.to_string());
     assert_eq!(
-        get_json["data"]["group"]["display_target"]["device_id"],
+        get_json["data"]["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
 
@@ -14255,13 +14209,10 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     assert_eq!(tint_response.status(), StatusCode::OK);
     let tint_json = body_json(tint_response).await;
     assert_eq!(
-        tint_json["data"]["group"]["display_target"]["blend_mode"],
+        tint_json["data"]["zone"]["display_target"]["blend_mode"],
         "tint"
     );
-    assert_eq!(
-        tint_json["data"]["group"]["display_target"]["opacity"],
-        0.35
-    );
+    assert_eq!(tint_json["data"]["zone"]["display_target"]["opacity"], 0.35);
 
     let replace_response = app
         .clone()
@@ -14278,11 +14229,11 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     assert_eq!(replace_response.status(), StatusCode::OK);
     let replace_json = body_json(replace_response).await;
     assert_eq!(
-        replace_json["data"]["group"]["display_target"]["blend_mode"], "replace",
+        replace_json["data"]["zone"]["display_target"]["blend_mode"], "replace",
         "explicit replace mode should serialize since it is no longer the default"
     );
     assert!(
-        replace_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        replace_json["data"]["zone"]["display_target"]["opacity"].is_null(),
         "replace mode should normalize opacity back to the default"
     );
 
@@ -14359,11 +14310,11 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
     let assign_b_json = body_json(assign_b).await;
     assert_eq!(assign_b_json["data"]["effect"]["id"], face_b.id.to_string());
     assert!(
-        assign_b_json["data"]["group"]["display_target"]["blend_mode"].is_null(),
+        assign_b_json["data"]["zone"]["display_target"]["blend_mode"].is_null(),
         "reassigning a face should reset composition mode to the blended default (alpha serializes as absent)"
     );
     assert!(
-        assign_b_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        assign_b_json["data"]["zone"]["display_target"]["opacity"].is_null(),
         "reassigning a face should reset opacity to the default"
     );
 
@@ -14407,9 +14358,9 @@ async fn face_survives_effect_swap() {
         .expect("failed to execute request");
     assert_eq!(assign_response.status(), StatusCode::OK);
     let assign_json = body_json(assign_response).await;
-    let face_group_id = assign_json["data"]["group"]["id"]
+    let face_group_id = assign_json["data"]["zone"]["id"]
         .as_str()
-        .expect("face group id should be present")
+        .expect("face zone id should be present")
         .to_owned();
 
     for effect_name in ["Aurora", "Sunset"] {
@@ -14440,7 +14391,7 @@ async fn face_survives_effect_swap() {
     assert_eq!(active_effect.status(), StatusCode::OK);
     let active_effect_json = body_json(active_effect).await;
     assert_eq!(active_effect_json["data"]["name"], "Sunset");
-    assert_ne!(active_effect_json["data"]["render_group_id"], face_group_id);
+    assert_ne!(active_effect_json["data"]["zone_id"], face_group_id);
 
     let face_response = app
         .clone()
@@ -14456,7 +14407,7 @@ async fn face_survives_effect_swap() {
     let face_json = body_json(face_response).await;
     assert_eq!(face_json["data"]["scene_id"], scene_id.to_string());
     assert_eq!(face_json["data"]["effect"]["id"], face.id.to_string());
-    assert_eq!(face_json["data"]["group"]["id"], face_group_id);
+    assert_eq!(face_json["data"]["zone"]["id"], face_group_id);
 
     let manager = state.scene_manager.read().await;
     let active_scene = manager.active_scene().expect("scene should remain active");
@@ -15281,7 +15232,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         while removed_scene_ids.len() < 2 {
             match events.recv().await {
                 Ok(timestamped) => {
-                    if let HypercolorEvent::RenderGroupChanged {
+                    if let HypercolorEvent::ZoneChanged {
                         scene_id,
                         role,
                         kind,
@@ -16365,4 +16316,108 @@ async fn settings_mutations_publish_local_change_hints() {
     })
     .await
     .expect("timed out waiting for local-change hints");
+}
+
+/// Recursive key paths of a JSON value; arrays contribute their first
+/// element's shape (test scenarios keep them homogeneous).
+fn collect_key_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                out.push(path.clone());
+                collect_key_paths(child, &path, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if let Some(first) = items.first() {
+                collect_key_paths(first, &format!("{prefix}[]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// External HTTP clients read the face payload without any Rust type to
+/// hold them to it, so this pin is what keeps the published key paths
+/// stable: renaming a field in the shared
+/// `hypercolor_types::api::displays::DisplayFaceResponse` moves the
+/// daemon and every in-tree client together and would otherwise break
+/// only the outside world, silently.
+///
+/// The fixture is shared with the UI's
+/// `display_face_response_decodes_the_daemon_shape`, which decodes the
+/// same payload and so covers the value representations this key-path
+/// comparison cannot see.
+#[tokio::test]
+async fn display_face_response_shape_matches_the_shared_fixture() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_response.status(), StatusCode::OK);
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"label":"gpu"}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let json = body_json(get_response).await;
+
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/rest_v1/display_face_shape.json"))
+            .expect("fixture parses");
+
+    let mut actual_paths = Vec::new();
+    collect_key_paths(&json["data"], "", &mut actual_paths);
+    let mut fixture_paths = Vec::new();
+    collect_key_paths(&fixture, "", &mut fixture_paths);
+    actual_paths.sort();
+    fixture_paths.sort();
+    assert_eq!(
+        actual_paths, fixture_paths,
+        "the face wire shape drifted from the shared fixture; update \
+         tests/fixtures/rest_v1/display_face_shape.json and re-run the UI \
+         decode test that reads it"
+    );
 }

@@ -232,11 +232,11 @@ pub fn PresetToolbar(
         let pid = preset.id.clone();
         let refresh = refresh_presets;
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name,
                 description: None,
                 effect: eid.clone(),
-                controls: serde_json::Value::Object(controls_json),
+                controls: Some(serde_json::Value::Object(controls_json)),
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {
@@ -255,11 +255,11 @@ pub fn PresetToolbar(
         let target_zone = zones_ctx.focused_zone_id_untracked();
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name,
                 description: None,
                 effect: eid.clone(),
-                controls: serde_json::Value::Object(controls_json),
+                controls: Some(serde_json::Value::Object(controls_json)),
                 tags: None,
             };
             match api::create_preset(&req).await {
@@ -299,11 +299,13 @@ pub fn PresetToolbar(
         let refresh = refresh_presets;
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name: new_name,
                 description: None,
                 effect: eid,
-                controls: serde_json::Value::Object(controls_to_json(&preset.controls)),
+                controls: Some(serde_json::Value::Object(controls_to_json(
+                    &preset.controls,
+                ))),
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {

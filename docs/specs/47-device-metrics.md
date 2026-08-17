@@ -82,15 +82,12 @@ is fixed across the daemon.
 
 Channel: `device_metrics`
 
-Subscription example:
+Subscription example (the selector shape spec 76 wave 3.2c introduced):
 
 ```json
 {
   "type": "subscribe",
-  "channels": ["device_metrics"],
-  "config": {
-    "device_metrics": { "interval_ms": 500 }
-  }
+  "topics": [{ "topic": "device_metrics", "config": { "interval_ms": 500 } }]
 }
 ```
 

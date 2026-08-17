@@ -18,25 +18,25 @@ class ZoneResponse:
     """Response carrying one zone after a create/get/update.
 
     Attributes:
-        groups_revision (int):
         zone (ZoneResponseZone):
+        zones_revision (int):
     """
 
-    groups_revision: int
     zone: ZoneResponseZone
+    zones_revision: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        groups_revision = self.groups_revision
-
         zone = self.zone.to_dict()
+
+        zones_revision = self.zones_revision
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "groups_revision": groups_revision,
                 "zone": zone,
+                "zones_revision": zones_revision,
             }
         )
 
@@ -47,13 +47,13 @@ class ZoneResponse:
         from ..models.zone_response_zone import ZoneResponseZone
 
         d = dict(src_dict)
-        groups_revision = d.pop("groups_revision")
-
         zone = ZoneResponseZone.from_dict(d.pop("zone"))
 
+        zones_revision = d.pop("zones_revision")
+
         zone_response = cls(
-            groups_revision=groups_revision,
             zone=zone,
+            zones_revision=zones_revision,
         )
 
         zone_response.additional_properties = d

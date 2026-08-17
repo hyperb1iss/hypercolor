@@ -17,7 +17,12 @@ use hypercolor_core::bus::EventTimestamp;
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::BrowserInputPublicationId;
+use hypercolor_leptos_ext::ws::registry::{
+    CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, MetricsConfig, SpectrumConfig,
+    TopicId,
+};
 use hypercolor_leptos_ext::ws::{
+    DisplayPreviewFrame as WireDisplayPreviewFrame,
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
     PreviewCancelFrame, PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
@@ -29,6 +34,8 @@ use hypercolor_types::sensor::SystemSnapshot;
 use thiserror::Error;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Notify, broadcast, watch};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::cache::{
@@ -40,11 +47,11 @@ use super::cache::{
     try_encode_cached_canvas_preview_binary, try_encode_cached_zone_preview_binary_scaled,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane,
-    MetricsDisplayOutput, MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory,
-    MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces,
-    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
-    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+    ActiveFramesConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane, MetricsDisplayOutput,
+    MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory, MetricsPacing,
+    MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces, MetricsStages,
+    MetricsTimeline, MetricsWebsocket, ServerMessage, SubscriptionState, event_message_parts,
+    should_relay_event,
 };
 use crate::api::AppState;
 use crate::interactive_preview::PreviewResourceLease;
@@ -437,6 +444,21 @@ pub(super) fn preview_outbound_channel_with_limits(
 }
 
 impl PreviewOutboundSender {
+    /// The capability this sender would agree on with `peer`, without
+    /// agreeing to it. Staging the answer lets a subscribe reject on
+    /// something else entirely with the transport still untouched.
+    pub(super) fn project_negotiation(
+        &self,
+        peer: PreviewTransportCapability,
+    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
+        let state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self::negotiated_capability(&state, peer)
+    }
+
     pub(super) fn negotiate_transport(
         &self,
         peer: PreviewTransportCapability,
@@ -446,6 +468,21 @@ impl PreviewOutboundSender {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // Checked and applied under one lock: either the whole
+        // capability swap lands or the transport is left as it was.
+        let negotiated = Self::negotiated_capability(&state, peer)?;
+        state.capability = negotiated;
+        state.limits = PreviewOutboundLimits {
+            max_publication_bytes: negotiated.max_encoded_publication_bytes,
+            max_connection_bytes: negotiated.max_connection_bytes,
+        };
+        Ok(negotiated)
+    }
+
+    fn negotiated_capability(
+        state: &PreviewOutboundState,
+        peer: PreviewTransportCapability,
+    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
         if !state.current.is_empty()
             || !state.queued.is_empty()
             || !state.in_flight.is_empty()
@@ -463,13 +500,7 @@ impl PreviewOutboundSender {
                 .min(state.limits.max_connection_bytes),
             ..supported
         };
-        let negotiated = local.negotiated_with(peer);
-        state.capability = negotiated;
-        state.limits = PreviewOutboundLimits {
-            max_publication_bytes: negotiated.max_encoded_publication_bytes,
-            max_connection_bytes: negotiated.max_connection_bytes,
-        };
-        Ok(negotiated)
+        Ok(local.negotiated_with(peer))
     }
 
     pub(super) fn publish(
@@ -687,7 +718,11 @@ impl PreviewOutboundSender {
         Ok(true)
     }
 
-    pub(super) fn cancel_channel(&self, channel: WsChannel) -> Result<usize, PreviewOutboundError> {
+    pub(super) fn cancel_subscription(
+        &self,
+        topic: TopicId,
+        key: Option<&str>,
+    ) -> Result<usize, PreviewOutboundError> {
         let mut state = self
             .shared
             .state
@@ -703,7 +738,7 @@ impl PreviewOutboundSender {
             state
                 .current
                 .keys()
-                .filter(|stream| preview_stream_matches_channel(stream, channel))
+                .filter(|stream| preview_stream_matches_selection(stream, topic, key))
                 .cloned(),
         );
         let additional = streams
@@ -742,22 +777,32 @@ pub(super) enum PreviewOutboundItem {
     Cancellation(PreviewCancelFrame),
 }
 
-const fn preview_stream_matches_channel(stream: &PreviewStreamId, channel: WsChannel) -> bool {
-    match (stream, channel) {
-        (PreviewStreamId::Passive(frame_channel), WsChannel::Canvas) => {
+/// Whether a live preview stream belongs to one subscription. A `None`
+/// key on a keyed topic means "every key", which is what a topic-wide
+/// teardown needs.
+fn preview_stream_matches_selection(
+    stream: &PreviewStreamId,
+    topic: TopicId,
+    key: Option<&str>,
+) -> bool {
+    match (stream, topic) {
+        (PreviewStreamId::Passive(frame_channel), TopicId::Canvas) => {
             matches!(frame_channel, PreviewFrameChannel::Canvas)
         }
-        (PreviewStreamId::Passive(frame_channel), WsChannel::ScreenCanvas) => {
+        (PreviewStreamId::Passive(frame_channel), TopicId::ScreenCanvas) => {
             matches!(frame_channel, PreviewFrameChannel::ScreenCanvas)
         }
-        (PreviewStreamId::Passive(frame_channel), WsChannel::WebViewportCanvas) => {
+        (PreviewStreamId::Passive(frame_channel), TopicId::WebViewportCanvas) => {
             matches!(frame_channel, PreviewFrameChannel::WebViewportCanvas)
         }
-        (PreviewStreamId::Passive(frame_channel), WsChannel::DisplayPreview) => {
-            matches!(frame_channel, PreviewFrameChannel::DisplayPreview)
+        (PreviewStreamId::Display(device_id), TopicId::DisplayPreview) => {
+            key.is_none_or(|wanted| wanted == device_id)
         }
-        (PreviewStreamId::ScreenZones, WsChannel::ScreenZones)
-        | (PreviewStreamId::Zone { .. }, WsChannel::ZonePreview) => true,
+        (PreviewStreamId::Interactive(preview_id), TopicId::InteractivePreview) => {
+            key.is_none_or(|wanted| wanted == preview_id)
+        }
+        (PreviewStreamId::ScreenZones, TopicId::ScreenZones)
+        | (PreviewStreamId::Zone { .. }, TopicId::ZonePreview) => true,
         _ => false,
     }
 }
@@ -862,11 +907,7 @@ impl PreviewSendCursor {
         capability: PreviewTransportCapability,
     ) -> Result<Self, PreviewOutboundError> {
         let max_message_bytes = capability.max_message_bytes;
-        let identity_len = match publication.stream() {
-            PreviewStreamId::Passive(_) | PreviewStreamId::ScreenZones => 0,
-            PreviewStreamId::Zone { .. } => 32,
-            PreviewStreamId::Interactive(preview_id) => preview_id.len(),
-        };
+        let identity_len = publication.stream().identity_bytes();
         let envelope_len = PREVIEW_CHUNK_FIXED_HEADER_LEN
             .checked_add(identity_len)
             .ok_or_else(|| {
@@ -999,16 +1040,23 @@ impl PreviewCursorQueue {
         }
     }
 
-    pub(super) fn set_max_streams(
-        &mut self,
-        max_streams: usize,
+    /// Whether the queue's live cursors fit inside `capability`.
+    pub(super) fn check_capability(
+        &self,
+        capability: PreviewTransportCapability,
     ) -> Result<(), PreviewOutboundError> {
-        if self.cursors.len() > max_streams {
-            return Err(PreviewOutboundError::StreamBudgetExceeded {
-                maximum: max_streams,
+        if capability.version == PreviewTransportVersion::V1 {
+            if self.cursors.len() > capability.max_streams {
+                return Err(PreviewOutboundError::StreamBudgetExceeded {
+                    maximum: capability.max_streams,
+                });
+            }
+        } else if self.state_bytes > capability.max_cursor_state_bytes {
+            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
+                maximum: capability.max_cursor_state_bytes,
+                actual: self.state_bytes,
             });
         }
-        self.max_streams = max_streams;
         Ok(())
     }
 
@@ -1016,14 +1064,7 @@ impl PreviewCursorQueue {
         &mut self,
         capability: PreviewTransportCapability,
     ) -> Result<(), PreviewOutboundError> {
-        if capability.version == PreviewTransportVersion::V1 {
-            self.set_max_streams(capability.max_streams)?;
-        } else if self.state_bytes > capability.max_cursor_state_bytes {
-            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
-                maximum: capability.max_cursor_state_bytes,
-                actual: self.state_bytes,
-            });
-        }
+        self.check_capability(capability)?;
         self.max_streams = capability.max_streams;
         self.max_state_bytes = capability.max_cursor_state_bytes;
         self.version = capability.version;
@@ -1229,6 +1270,20 @@ fn decode_preview_fields(
                 format: frame.format,
             })
         }
+        PreviewStreamId::Display(device_id) => {
+            let frame = WireDisplayPreviewFrame::decode_bytes(encoded)
+                .map_err(|error| invalid(error.to_string()))?;
+            if frame.device_id != *device_id {
+                return Err(PreviewOutboundError::StreamMismatch);
+            }
+            Ok(PreviewWireFields {
+                frame_number: frame.frame_number,
+                timestamp_ms: frame.timestamp_ms,
+                width: frame.width,
+                height: frame.height,
+                format: frame.format,
+            })
+        }
         PreviewStreamId::Interactive(expected_preview_id) => {
             let frame = WireInteractivePreviewFrame::decode_bytes(encoded)
                 .map_err(|error| invalid(error.to_string()))?;
@@ -1310,7 +1365,8 @@ impl BackpressureReporter {
     fn record_drop(
         &mut self,
         json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
-        channel: &'static str,
+        topic: &'static str,
+        key: Option<&str>,
         current_fps: u32,
     ) {
         self.pending_drops = self.pending_drops.saturating_add(1);
@@ -1324,10 +1380,13 @@ impl BackpressureReporter {
 
         let dropped_frames = std::mem::take(&mut self.pending_drops);
         self.last_reported_at = Some(now);
-        enqueue_backpressure_notice(json_tx, channel, current_fps, dropped_frames);
+        enqueue_backpressure_notice(json_tx, topic, key, current_fps, dropped_frames);
         debug!(
-            channel,
-            dropped_frames, current_fps, "Dropping WebSocket binary payloads for slow consumer"
+            topic,
+            key,
+            dropped_frames,
+            current_fps,
+            "Dropping WebSocket binary payloads for slow consumer"
         );
     }
 }
@@ -1359,7 +1418,7 @@ pub(super) async fn relay_events(
             Ok(timestamped) => {
                 let should_relay = {
                     let subs = subscriptions.borrow();
-                    should_relay_event(&timestamped.event, subs.channels)
+                    should_relay_event(&timestamped.event, subs.topics())
                 };
                 if !should_relay {
                     continue;
@@ -1381,7 +1440,7 @@ pub(super) async fn relay_events(
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("WebSocket consumer lagged by {n} events");
-                if subscriptions.borrow().channels.contains(WsChannel::Events) {
+                if subscriptions.borrow().contains(TopicId::Events) {
                     let msg = ServerMessage::Event {
                         event: "resync_required".to_owned(),
                         timestamp: EventTimestamp::now().to_string(),
@@ -1419,8 +1478,10 @@ pub(super) async fn relay_frames(
         if active_frame_config.is_none() {
             active_frame_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Frames) {
-                    Some(ActiveFramesConfig::new(subs.config.frames.clone()))
+                if subs.contains(TopicId::Frames) {
+                    Some(ActiveFramesConfig::new(
+                        subs.config_of::<FramesConfig>(TopicId::Frames, None),
+                    ))
                 } else {
                     None
                 }
@@ -1480,7 +1541,7 @@ pub(super) async fn relay_frames(
             }
             FrameRelayMessage::Binary(bytes) => {
                 if binary_tx.try_send(bytes).is_err() {
-                    backpressure.record_drop(&json_tx, "frames", frame_config.config.fps);
+                    backpressure.record_drop(&json_tx, "frames", None, frame_config.config.fps);
                 }
             }
         }
@@ -1506,8 +1567,8 @@ pub(super) async fn relay_spectrum(
         if active_spectrum_config.is_none() {
             active_spectrum_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Spectrum) {
-                    Some(subs.config.spectrum.clone())
+                if subs.contains(TopicId::Spectrum) {
+                    Some(subs.config_of::<SpectrumConfig>(TopicId::Spectrum, None))
                 } else {
                     None
                 }
@@ -1563,7 +1624,7 @@ pub(super) async fn relay_spectrum(
             .try_send(cached_spectrum_payload(&spectrum, spectrum_config.bins))
             .is_err()
         {
-            backpressure.record_drop(&json_tx, "spectrum", spectrum_config.fps);
+            backpressure.record_drop(&json_tx, "spectrum", None, spectrum_config.fps);
         }
     }
 }
@@ -1591,8 +1652,8 @@ pub(super) async fn relay_canvas(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Canvas) {
-                    Some(subs.config.canvas.clone())
+                if subs.contains(TopicId::Canvas) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::Canvas, None))
                 } else {
                     None
                 }
@@ -1727,8 +1788,8 @@ pub(super) async fn relay_screen_canvas(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::ScreenCanvas) {
-                    Some(subs.config.screen_canvas.clone())
+                if subs.contains(TopicId::ScreenCanvas) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::ScreenCanvas, None))
                 } else {
                     None
                 }
@@ -1838,10 +1899,7 @@ pub(super) async fn relay_screen_zones(
     let mut zones_rx = None::<tokio::sync::watch::Receiver<hypercolor_core::bus::ScreenZonesFrame>>;
 
     loop {
-        let subscribed = subscriptions
-            .borrow()
-            .channels
-            .contains(WsChannel::ScreenZones);
+        let subscribed = subscriptions.borrow().contains(TopicId::ScreenZones);
         if subscribed && zones_rx.is_none() {
             let mut receiver = preview_runtime.screen_zones_receiver();
             receiver.mark_changed();
@@ -1938,8 +1996,8 @@ pub(super) async fn relay_web_viewport_canvas(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::WebViewportCanvas) {
-                    Some(subs.config.web_viewport_canvas.clone())
+                if subs.contains(TopicId::WebViewportCanvas) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::WebViewportCanvas, None))
                 } else {
                     None
                 }
@@ -2053,8 +2111,8 @@ pub(super) async fn relay_zone_preview(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::ZonePreview) {
-                    Some(subs.config.zone_preview.clone())
+                if subs.contains(TopicId::ZonePreview) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::ZonePreview, None))
                 } else {
                     None
                 }
@@ -2175,171 +2233,191 @@ fn sync_zone_preview_receiver(
     }
 }
 
-/// Relay composited display-preview JPEG frames for a client's selected
-/// display. Unlike the canvas/screen-canvas relays, this one is
-/// parameterized by `device_id` — switching the config's `device_id`
-/// detaches the old watch subscriber and attaches a fresh one for the
-/// new display.
+/// One followed display: a per-key task plus the handles that steer it.
+struct DisplayPreviewFollower {
+    cadence: watch::Sender<u32>,
+    cancel: CancellationToken,
+    task: JoinHandle<()>,
+}
+
+/// Supervise one relay task per live `display_preview` key.
 ///
-/// Pacing mirrors `relay_canvas`: the sleep branch is guarded by
-/// `pending_send` so the task never tight-loops when nothing has
-/// changed. If the underlying watch sender closes, the relay reattaches
-/// to the same requested device so normal display-worker rebuilds do not
-/// strand the client's subscription.
+/// `display_preview` is keyed by device, so a connection can follow
+/// several displays at once. A task per key keeps each display's pacing
+/// independent — a 30fps panel cannot starve a 2fps one — and each frame
+/// names its device in the header, so the client routes them without
+/// guessing from resolution.
 pub(super) async fn relay_display_preview(
     state: Arc<AppState>,
     display_frames: Arc<tokio::sync::RwLock<crate::display_frames::DisplayFrameRuntime>>,
     preview_tx: PreviewOutboundSender,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
-    use crate::display_frames::DisplayFrameSnapshot;
     use hypercolor_types::device::DeviceId;
     use std::str::FromStr;
 
-    /// Target the relay is currently following: which device, at what
-    /// fps, with a live watch receiver. Rebuilt whenever the client's
-    /// device_id changes or the channel goes idle.
-    struct ActiveTarget {
-        device_id: DeviceId,
-        fps: u32,
-        rx: watch::Receiver<Option<Arc<DisplayFrameSnapshot>>>,
-        last_frame_number: Option<u64>,
-        last_sent_at: Instant,
-        pending_send: bool,
-    }
-
-    let mut active: Option<ActiveTarget> = None;
+    let mut followers: HashMap<String, DisplayPreviewFollower> = HashMap::new();
 
     loop {
-        // Re-derive the desired target from the current subscription
-        // state. A closed receiver does not imply permanent device removal:
-        // display worker config changes also close and recreate the sender.
-        let desired = {
+        // A key naming a device this daemon cannot preview is dropped
+        // rather than refused: the subscription is legitimate, there is
+        // simply nothing to send until such a device appears.
+        let desired: Vec<(String, DeviceId, u32)> = {
             let subs = subscriptions.borrow();
-            if subs.channels.contains(WsChannel::DisplayPreview) {
-                subs.config
-                    .display_preview
-                    .device_id
-                    .as_ref()
-                    .and_then(|raw| DeviceId::from_str(raw).ok())
-                    .map(|id| (id, subs.config.display_preview.fps.max(1)))
-            } else {
-                None
-            }
+            subs.keyed_configs::<DisplayPreviewConfig>(TopicId::DisplayPreview)
+                .into_iter()
+                .filter_map(|(key, config)| {
+                    let device_id = DeviceId::from_str(&key).ok()?;
+                    Some((key, device_id, config.fps.max(1)))
+                })
+                .collect()
         };
 
-        match (&active, desired) {
-            (None, None) => {}
-            (Some(current), Some((want_id, want_fps))) if current.device_id == want_id => {
-                if current.fps != want_fps
-                    && let Some(target) = active.as_mut()
-                {
-                    target.fps = want_fps;
-                }
-            }
-            (_, None) => {
-                active = None;
-            }
-            (_, Some((want_id, want_fps))) => {
-                let known_display_device =
-                    state
-                        .device_registry
-                        .get(&want_id)
-                        .await
-                        .is_some_and(|tracked| {
-                            crate::api::displays::display_surface_info(&tracked.info).is_some()
-                        });
-                if !known_display_device {
-                    active = None;
-                    if subscriptions.changed().await.is_err() {
-                        break;
-                    }
-                    let _ = subscriptions.borrow_and_update();
-                    continue;
-                }
-                let rx = display_frames.write().await.subscribe(want_id);
-                // `watch::Sender::subscribe()` marks the new receiver as
-                // already-observed, so rx.changed() will not fire for the
-                // initial value. Prime pending_send when a snapshot exists
-                // so the first sleep tick delivers the current frame —
-                // otherwise clients would stall on connect until the
-                // daemon publishes a fresh frame.
-                let has_initial_frame = rx.borrow().is_some();
-                active = Some(ActiveTarget {
-                    device_id: want_id,
-                    fps: want_fps,
-                    rx,
-                    last_frame_number: None,
-                    last_sent_at: preview_initial_last_sent(),
-                    pending_send: has_initial_frame,
-                });
+        let retired: Vec<String> = followers
+            .keys()
+            .filter(|key| !desired.iter().any(|(wanted, _, _)| wanted == *key))
+            .cloned()
+            .collect();
+        for key in retired {
+            if let Some(follower) = followers.remove(&key) {
+                follower.cancel.cancel();
+                let _ = follower.task.await;
             }
         }
 
-        let Some(target) = active.as_mut() else {
-            if subscriptions.changed().await.is_err() {
-                break;
-            }
-            let _ = subscriptions.borrow_and_update();
-            continue;
-        };
-
-        tokio::select! {
-            changed = target.rx.changed() => {
-                if changed.is_err() {
-                    active = None;
-                    continue;
-                }
-                // Either a new frame or the terminal None marker.
-                // Inspect after the select to decide what to do.
-                target.pending_send = true;
-            }
-            changed = subscriptions.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let _ = subscriptions.borrow_and_update();
+        for (wire_key, device_id, fps) in desired {
+            if let Some(follower) = followers.get(&wire_key) {
+                let _ = follower.cadence.send(fps);
                 continue;
             }
-            () = tokio::time::sleep(preview_send_delay(target.last_sent_at, target.fps, Instant::now())), if target.pending_send => {
-                let snapshot = target.rx.borrow().as_ref().map(Arc::clone);
-                let Some(snapshot) = snapshot else {
-                    active = None;
-                    continue;
-                };
+            let known_display_device =
+                state
+                    .device_registry
+                    .get(&device_id)
+                    .await
+                    .is_some_and(|tracked| {
+                        crate::api::displays::display_surface_info(&tracked.info).is_some()
+                    });
+            if !known_display_device {
+                continue;
+            }
+            let (cadence, cadence_rx) = watch::channel(fps);
+            let cancel = CancellationToken::new();
+            let task = tokio::spawn(follow_display_preview(
+                Arc::clone(&state),
+                Arc::clone(&display_frames),
+                device_id,
+                wire_key.clone(),
+                cadence_rx,
+                preview_tx.clone(),
+                cancel.clone(),
+            ));
+            drop(followers.insert(
+                wire_key,
+                DisplayPreviewFollower {
+                    cadence,
+                    cancel,
+                    task,
+                },
+            ));
+        }
 
-                if target.last_frame_number == Some(snapshot.frame_number) {
-                    // No forward motion since last send — nothing to do.
-                    target.pending_send = false;
-                    continue;
+        if subscriptions.changed().await.is_err() {
+            break;
+        }
+        let _ = subscriptions.borrow_and_update();
+    }
+
+    for (_, follower) in followers {
+        follower.cancel.cancel();
+        let _ = follower.task.await;
+    }
+}
+
+/// Stream one display's frames until the subscription retires.
+///
+/// A closed watch sender is a display-worker rebuild, not device removal,
+/// so the task resubscribes as long as the registry still knows the
+/// device; once it does not, the task ends and the supervisor rebuilds it
+/// when the client's subscriptions next change.
+async fn follow_display_preview(
+    state: Arc<AppState>,
+    display_frames: Arc<tokio::sync::RwLock<crate::display_frames::DisplayFrameRuntime>>,
+    device_id: hypercolor_types::device::DeviceId,
+    wire_key: String,
+    mut cadence: watch::Receiver<u32>,
+    preview_tx: PreviewOutboundSender,
+    cancel: CancellationToken,
+) {
+    let mut last_frame_number: Option<u64> = None;
+    let mut last_sent_at = preview_initial_last_sent();
+
+    'attach: loop {
+        let mut frames = display_frames.write().await.subscribe(device_id);
+        // `watch::Sender::subscribe()` marks the new receiver as
+        // already-observed, so `changed()` will not fire for the initial
+        // value. Prime the send when a snapshot already exists, or the
+        // client would stall until the daemon publishes a fresh frame.
+        let mut pending_send = frames.borrow().is_some();
+
+        loop {
+            let fps = (*cadence.borrow()).max(1);
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                changed = frames.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    // Either a new frame or the terminal None marker;
+                    // the send path decides which.
+                    pending_send = true;
                 }
-
-                let Some(payload) = cached_display_preview_payload(&snapshot) else {
-                    target.last_sent_at = Instant::now();
-                    target.pending_send = false;
-                    continue;
-                };
-                if !publish_preview(
-                    &preview_tx,
-                    PreviewStreamId::Passive(PreviewFrameChannel::DisplayPreview),
-                    payload,
-                    "display_preview",
-                ) {
-                    // Advance last_sent_at so the next retry waits out a
-                    // full fps interval instead of spinning the encoder.
-                    // Clear pending_send too — if the consumer is slow
-                    // enough to fill the queue, a fresh rx.changed() will
-                    // re-arm us for whichever frame is current then.
-                    target.last_sent_at = Instant::now();
-                    target.pending_send = false;
-                    continue;
+                changed = cadence.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
                 }
-
-                target.last_frame_number = Some(snapshot.frame_number);
-                target.last_sent_at = Instant::now();
-                target.pending_send = false;
+                () = tokio::time::sleep(preview_send_delay(last_sent_at, fps, Instant::now())), if pending_send => {
+                    pending_send = false;
+                    let Some(snapshot) = frames.borrow().as_ref().map(Arc::clone) else {
+                        break;
+                    };
+                    if last_frame_number == Some(snapshot.frame_number) {
+                        // No forward motion since the last send.
+                        continue;
+                    }
+                    let Some(payload) = cached_display_preview_payload(device_id, &snapshot) else {
+                        last_sent_at = Instant::now();
+                        continue;
+                    };
+                    if publish_preview(
+                        &preview_tx,
+                        PreviewStreamId::Display(wire_key.clone()),
+                        payload,
+                        "display_preview",
+                    ) {
+                        last_frame_number = Some(snapshot.frame_number);
+                    }
+                    // Either way the clock advances, so a rejected
+                    // publication waits out a full interval instead of
+                    // spinning the encoder.
+                    last_sent_at = Instant::now();
+                }
             }
         }
+
+        let still_previewable =
+            state
+                .device_registry
+                .get(&device_id)
+                .await
+                .is_some_and(|tracked| {
+                    crate::api::displays::display_surface_info(&tracked.info).is_some()
+                });
+        if !still_previewable {
+            return;
+        }
+        continue 'attach;
     }
 }
 
@@ -2347,9 +2425,9 @@ fn preview_stream_demand(config: &CanvasConfig) -> PreviewStreamDemand {
     PreviewStreamDemand {
         fps: config.fps,
         format: match config.format {
-            super::protocol::CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
-            super::protocol::CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
-            super::protocol::CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
+            CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
+            CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
+            CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
         },
         width: config.width,
         height: config.height,
@@ -2382,8 +2460,11 @@ pub(super) async fn relay_metrics(
         if active_interval_ms.is_none() {
             active_interval_ms = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Metrics) {
-                    Some(subs.config.metrics.interval_ms)
+                if subs.contains(TopicId::Metrics) {
+                    Some(
+                        subs.config_of::<MetricsConfig>(TopicId::Metrics, None)
+                            .interval_ms,
+                    )
                 } else {
                     None
                 }
@@ -2411,7 +2492,7 @@ pub(super) async fn relay_metrics(
 
         let still_subscribed = {
             let subs = subscriptions.borrow();
-            subs.channels.contains(WsChannel::Metrics)
+            subs.contains(TopicId::Metrics)
         };
         if !still_subscribed {
             continue;
@@ -2447,8 +2528,11 @@ pub(super) async fn relay_device_metrics(
         if active_interval_ms.is_none() {
             active_interval_ms = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::DeviceMetrics) {
-                    Some(subs.config.device_metrics.interval_ms)
+                if subs.contains(TopicId::DeviceMetrics) {
+                    Some(
+                        subs.config_of::<MetricsConfig>(TopicId::DeviceMetrics, None)
+                            .interval_ms,
+                    )
                 } else {
                     None
                 }
@@ -2476,7 +2560,7 @@ pub(super) async fn relay_device_metrics(
 
         let still_subscribed = {
             let subs = subscriptions.borrow();
-            subs.channels.contains(WsChannel::DeviceMetrics)
+            subs.contains(TopicId::DeviceMetrics)
         };
         if !still_subscribed {
             continue;
@@ -2499,7 +2583,7 @@ pub(super) async fn relay_sensors(
     let mut sent_current_snapshot = false;
 
     loop {
-        if !subscriptions.borrow().channels.contains(WsChannel::Sensors) {
+        if !subscriptions.borrow().contains(TopicId::Sensors) {
             sent_current_snapshot = false;
             if subscriptions.changed().await.is_err() {
                 break;
@@ -2541,7 +2625,7 @@ pub(super) async fn relay_sensors(
                     continue;
                 }
 
-                if subscriptions.borrow().channels.contains(WsChannel::Sensors) {
+                if subscriptions.borrow().contains(TopicId::Sensors) {
                     let snapshot = Arc::clone(&rx.borrow_and_update());
                     enqueue_sensor_snapshot(&json_tx, snapshot.as_ref());
                 }
@@ -2644,14 +2728,16 @@ fn preview_surface_identity(frame: &hypercolor_core::bus::CanvasFrame) -> Previe
 
 fn enqueue_backpressure_notice(
     json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
-    channel: &str,
+    topic: &str,
+    key: Option<&str>,
     current_fps: u32,
     dropped_frames: u32,
 ) {
     let suggested_fps = current_fps.saturating_div(2).max(1);
     let message = ServerMessage::Backpressure {
         dropped_frames: dropped_frames.max(1),
-        channel: channel.to_owned(),
+        topic: topic.to_owned(),
+        key: key.map(str::to_owned),
         recommendation: "reduce_fps".to_owned(),
         suggested_fps,
     };
@@ -3618,18 +3704,22 @@ mod tests {
         let (json_tx, mut json_rx) = mpsc::channel::<Utf8Bytes>(8);
         let mut reporter = BackpressureReporter::default();
 
-        reporter.record_drop(&json_tx, "canvas", 60);
+        reporter.record_drop(&json_tx, "canvas", None, 60);
         let first = json_rx
             .try_recv()
             .expect("first notice should send immediately");
         let first: serde_json::Value =
             serde_json::from_str(first.as_str()).expect("first notice json should parse");
         assert_eq!(first["type"], "backpressure");
-        assert_eq!(first["channel"], "canvas");
+        assert_eq!(first["topic"], "canvas");
+        assert!(
+            first.get("key").is_none(),
+            "an unkeyed topic reports no key"
+        );
         assert_eq!(first["dropped_frames"], 1);
         assert_eq!(first["suggested_fps"], 30);
 
-        reporter.record_drop(&json_tx, "canvas", 60);
+        reporter.record_drop(&json_tx, "canvas", None, 60);
         assert!(json_rx.try_recv().is_err());
 
         reporter.last_reported_at = Some(
@@ -3637,7 +3727,7 @@ mod tests {
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now),
         );
-        reporter.record_drop(&json_tx, "canvas", 60);
+        reporter.record_drop(&json_tx, "canvas", None, 60);
 
         let second = json_rx
             .try_recv()
@@ -3645,7 +3735,7 @@ mod tests {
         let second: serde_json::Value =
             serde_json::from_str(second.as_str()).expect("second notice json should parse");
         assert_eq!(second["type"], "backpressure");
-        assert_eq!(second["channel"], "canvas");
+        assert_eq!(second["topic"], "canvas");
         assert_eq!(second["dropped_frames"], 2);
         assert_eq!(second["suggested_fps"], 30);
     }

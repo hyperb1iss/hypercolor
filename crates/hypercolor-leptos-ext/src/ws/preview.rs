@@ -20,6 +20,11 @@ pub const INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN: usize = 15;
 pub const WIDE_INTERACTIVE_PREVIEW_FRAME_TAG: u8 = 0x0D;
 pub const WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN: usize = 19;
 pub const INTERACTIVE_PREVIEW_ID_MAX_BYTES: usize = 128;
+pub const DISPLAY_PREVIEW_FRAME_TAG: u8 = 0x07;
+pub const DISPLAY_PREVIEW_FRAME_PREFIX_LEN: usize = 15;
+pub const WIDE_DISPLAY_PREVIEW_FRAME_TAG: u8 = 0x12;
+pub const WIDE_DISPLAY_PREVIEW_FRAME_PREFIX_LEN: usize = 19;
+pub const DISPLAY_PREVIEW_ID_MAX_BYTES: usize = 128;
 pub const PREVIEW_CHUNK_FRAME_TAG: u8 = 0x0F;
 pub const PREVIEW_CHUNK_FIXED_HEADER_LEN: usize = 55;
 pub const PREVIEW_MIN_MESSAGE_BYTES: usize =
@@ -54,13 +59,16 @@ pub enum PreviewTransportVersion {
     V2,
 }
 
+/// The passive preview surfaces: one canvas per connection, no identity
+/// beyond the channel byte. Display preview left this family when it
+/// became keyed by device — its frames carry the device id, so they
+/// have their own layout rather than a channel discriminant.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PreviewFrameChannel {
     Canvas = 0x03,
     ScreenCanvas = 0x05,
     WebViewportCanvas = 0x06,
-    DisplayPreview = 0x07,
 }
 
 impl PreviewFrameChannel {
@@ -78,7 +86,6 @@ impl TryFrom<u8> for PreviewFrameChannel {
             0x03 => Ok(Self::Canvas),
             0x05 => Ok(Self::ScreenCanvas),
             0x06 => Ok(Self::WebViewportCanvas),
-            0x07 => Ok(Self::DisplayPreview),
             actual => Err(PreviewFrameDecodeError::UnknownChannel { actual }),
         }
     }
@@ -153,6 +160,131 @@ pub struct InteractivePreviewFrame {
     pub height: u32,
     pub format: PreviewPixelFormat,
     pub payload: Bytes,
+}
+
+/// One display device's live output frame.
+///
+/// The device id rides in the header because `display_preview` is keyed
+/// by device: a connection following three displays receives three
+/// interleaved streams, and the frame has to say which display it came
+/// from rather than leaving the client to guess from resolution.
+///
+/// Wire layout (little endian):
+/// tag u8 | device_id_len u8 | frame u32 | timestamp u32 | width u16 |
+/// height u16 | format u8 | device_id utf-8 | payload
+///
+/// The wide layout swaps the u16 dimensions for u32 under its own tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayPreviewFrame {
+    pub device_id: String,
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: PreviewPixelFormat,
+    pub payload: Bytes,
+}
+
+impl DisplayPreviewFrame {
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        self.prefix_len()
+            .checked_add(self.device_id.len())
+            .and_then(|len| len.checked_add(self.payload.len()))
+            .expect("validated display preview frame length")
+    }
+
+    pub fn encode(&self) -> Result<Bytes, PreviewFrameDecodeError> {
+        validate_preview_stream_id(&self.device_id, DISPLAY_PREVIEW_ID_MAX_BYTES)?;
+        let id_len = u8::try_from(self.device_id.len()).map_err(|_| {
+            PreviewFrameDecodeError::PreviewIdTooLong {
+                maximum: DISPLAY_PREVIEW_ID_MAX_BYTES,
+                actual: self.device_id.len(),
+            }
+        })?;
+        validate_payload(self.width, self.height, self.format, &self.payload)?;
+        let encoded_len = self
+            .prefix_len()
+            .checked_add(self.device_id.len())
+            .and_then(|len| len.checked_add(self.payload.len()))
+            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(encoded_len)
+            .map_err(|_| PreviewFrameDecodeError::AllocationFailed { bytes: encoded_len })?;
+        out.put_u8(if self.uses_legacy_layout() {
+            DISPLAY_PREVIEW_FRAME_TAG
+        } else {
+            WIDE_DISPLAY_PREVIEW_FRAME_TAG
+        });
+        out.put_u8(id_len);
+        out.put_u32_le(self.frame_number);
+        out.put_u32_le(self.timestamp_ms);
+        if self.uses_legacy_layout() {
+            out.put_u16_le(u16::try_from(self.width).expect("legacy width fits"));
+            out.put_u16_le(u16::try_from(self.height).expect("legacy height fits"));
+        } else {
+            out.put_u32_le(self.width);
+            out.put_u32_le(self.height);
+        }
+        out.put_u8(self.format.tag());
+        out.extend_from_slice(self.device_id.as_bytes());
+        out.extend_from_slice(&self.payload);
+        Ok(Bytes::from(out))
+    }
+
+    #[must_use]
+    pub const fn uses_legacy_layout(&self) -> bool {
+        self.width <= u16::MAX as u32 && self.height <= u16::MAX as u32
+    }
+
+    #[must_use]
+    pub const fn prefix_len(&self) -> usize {
+        if self.uses_legacy_layout() {
+            DISPLAY_PREVIEW_FRAME_PREFIX_LEN
+        } else {
+            WIDE_DISPLAY_PREVIEW_FRAME_PREFIX_LEN
+        }
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
+        let header = IdentityFrameHeader::decode(input, DISPLAY_PREVIEW_LAYOUT)?;
+        let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
+        Ok(Self {
+            device_id: header.identity,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: Bytes::copy_from_slice(&input[header.payload_offset..end]),
+        })
+    }
+
+    pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
+        let header = IdentityFrameHeader::decode(input, DISPLAY_PREVIEW_LAYOUT)?;
+        let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
+        Ok(Self {
+            device_id: header.identity,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: input.slice(header.payload_offset..end),
+        })
+    }
 }
 
 impl PreviewFrame {
@@ -373,7 +505,7 @@ impl InteractivePreviewFrame {
     }
 
     pub fn encode(&self) -> Result<Bytes, PreviewFrameDecodeError> {
-        validate_interactive_preview_id(&self.preview_id)?;
+        validate_preview_stream_id(&self.preview_id, INTERACTIVE_PREVIEW_ID_MAX_BYTES)?;
         let id_len = u8::try_from(self.preview_id.len()).map_err(|_| {
             PreviewFrameDecodeError::PreviewIdTooLong {
                 maximum: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
@@ -425,7 +557,7 @@ impl InteractivePreviewFrame {
     }
 
     pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
-        let header = InteractivePreviewFrameHeader::decode(input)?;
+        let header = IdentityFrameHeader::decode(input, INTERACTIVE_PREVIEW_LAYOUT)?;
         let end = header.end_offset(input.len())?;
         validate_payload(
             header.width,
@@ -434,7 +566,7 @@ impl InteractivePreviewFrame {
             &input[header.payload_offset..end],
         )?;
         Ok(Self {
-            preview_id: header.preview_id,
+            preview_id: header.identity,
             frame_number: header.frame_number,
             timestamp_ms: header.timestamp_ms,
             width: header.width,
@@ -445,7 +577,7 @@ impl InteractivePreviewFrame {
     }
 
     pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
-        let header = InteractivePreviewFrameHeader::decode(input)?;
+        let header = IdentityFrameHeader::decode(input, INTERACTIVE_PREVIEW_LAYOUT)?;
         let end = header.end_offset(input.len())?;
         validate_payload(
             header.width,
@@ -454,7 +586,7 @@ impl InteractivePreviewFrame {
             &input[header.payload_offset..end],
         )?;
         Ok(Self {
-            preview_id: header.preview_id,
+            preview_id: header.identity,
             frame_number: header.frame_number,
             timestamp_ms: header.timestamp_ms,
             width: header.width,
@@ -633,6 +765,8 @@ pub enum PreviewStreamId {
         zone_id: [u8; 16],
     },
     Interactive(String),
+    /// One keyed `display_preview` subscription, identified by device.
+    Display(String),
     ScreenZones,
 }
 
@@ -643,6 +777,7 @@ impl PreviewStreamId {
             Self::Passive(_) | Self::ScreenZones => 0,
             Self::Zone { .. } => 32,
             Self::Interactive(preview_id) => preview_id.len(),
+            Self::Display(device_id) => device_id.len(),
         }
     }
 
@@ -659,7 +794,7 @@ impl PreviewStreamId {
                 Ok((1, ZONE_PREVIEW_FRAME_TAG, identity))
             }
             Self::Interactive(preview_id) => {
-                validate_interactive_preview_id(preview_id)?;
+                validate_preview_stream_id(preview_id, INTERACTIVE_PREVIEW_ID_MAX_BYTES)?;
                 Ok((
                     2,
                     INTERACTIVE_PREVIEW_FRAME_TAG,
@@ -667,6 +802,10 @@ impl PreviewStreamId {
                 ))
             }
             Self::ScreenZones => Ok((3, SCREEN_ZONES_FRAME_TAG, Vec::new())),
+            Self::Display(device_id) => {
+                validate_preview_stream_id(device_id, DISPLAY_PREVIEW_ID_MAX_BYTES)?;
+                Ok((4, DISPLAY_PREVIEW_FRAME_TAG, device_id.as_bytes().to_vec()))
+            }
         }
     }
 
@@ -679,19 +818,25 @@ impl PreviewStreamId {
                 scene_id: identity[..16].try_into().expect("identity has 16 bytes"),
                 zone_id: identity[16..].try_into().expect("identity has 16 bytes"),
             }),
-            2 if channel == INTERACTIVE_PREVIEW_FRAME_TAG => {
-                let preview_id = std::str::from_utf8(identity)
-                    .map_err(|_| {
-                        PreviewChunkError::Frame(PreviewFrameDecodeError::InvalidPreviewIdUtf8)
-                    })?
-                    .to_owned();
-                validate_interactive_preview_id(&preview_id).map_err(PreviewChunkError::Frame)?;
-                Ok(Self::Interactive(preview_id))
-            }
+            2 if channel == INTERACTIVE_PREVIEW_FRAME_TAG => Ok(Self::Interactive(
+                decode_stream_identity(identity, INTERACTIVE_PREVIEW_ID_MAX_BYTES)?,
+            )),
             3 if channel == SCREEN_ZONES_FRAME_TAG && identity.is_empty() => Ok(Self::ScreenZones),
+            4 if channel == DISPLAY_PREVIEW_FRAME_TAG => Ok(Self::Display(decode_stream_identity(
+                identity,
+                DISPLAY_PREVIEW_ID_MAX_BYTES,
+            )?)),
             _ => Err(PreviewChunkError::InvalidStreamIdentity),
         }
     }
+}
+
+fn decode_stream_identity(identity: &[u8], maximum: usize) -> Result<String, PreviewChunkError> {
+    let decoded = std::str::from_utf8(identity)
+        .map_err(|_| PreviewChunkError::Frame(PreviewFrameDecodeError::InvalidPreviewIdUtf8))?
+        .to_owned();
+    validate_preview_stream_id(&decoded, maximum).map_err(PreviewChunkError::Frame)?;
+    Ok(decoded)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2118,6 +2263,16 @@ fn validate_completed_publication(
                 && frame.height == metadata.height
                 && frame.format == metadata.format
         }
+        PreviewStreamId::Display(device_id) => {
+            let frame =
+                DisplayPreviewFrame::decode_bytes(encoded).map_err(PreviewChunkError::Frame)?;
+            frame.device_id == *device_id
+                && frame.frame_number == metadata.frame_number
+                && frame.timestamp_ms == metadata.timestamp_ms
+                && frame.width == metadata.width
+                && frame.height == metadata.height
+                && frame.format == metadata.format
+        }
         PreviewStreamId::ScreenZones => {
             validate_screen_zones_header_prefix(metadata, encoded.len(), encoded, limits)?
         }
@@ -2145,14 +2300,10 @@ fn publication_header_len(
             ZONE_PREVIEW_FRAME_HEADER_LEN
         }),
         PreviewStreamId::Interactive(preview_id) => {
-            validate_interactive_preview_id(preview_id).map_err(PreviewChunkError::Frame)?;
-            (if wide {
-                WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
-            } else {
-                INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
-            })
-            .checked_add(preview_id.len())
-            .ok_or(PreviewChunkError::LengthOverflow)
+            identity_publication_header_len(preview_id, INTERACTIVE_PREVIEW_LAYOUT, wide)
+        }
+        PreviewStreamId::Display(device_id) => {
+            identity_publication_header_len(device_id, DISPLAY_PREVIEW_LAYOUT, wide)
         }
         PreviewStreamId::ScreenZones => {
             if metadata.format != PreviewPixelFormat::Rgb {
@@ -2165,6 +2316,22 @@ fn publication_header_len(
             })
         }
     }
+}
+
+fn identity_publication_header_len(
+    identity: &str,
+    layout: IdentityFrameLayout,
+    wide: bool,
+) -> Result<usize, PreviewChunkError> {
+    validate_preview_stream_id(identity, layout.max_identity_bytes)
+        .map_err(PreviewChunkError::Frame)?;
+    (if wide {
+        layout.wide_prefix_len
+    } else {
+        layout.prefix_len
+    })
+    .checked_add(identity.len())
+    .ok_or(PreviewChunkError::LengthOverflow)
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -2372,9 +2539,13 @@ struct ZonePreviewFrameHeader {
     payload_offset: usize,
 }
 
+/// Header of an identity-prefixed preview frame. Interactive and display
+/// previews share one layout — tag, one-byte identity length, timing,
+/// dimensions, format, then the identity — so they share one decoder and
+/// differ only in the constants below.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct InteractivePreviewFrameHeader {
-    preview_id: String,
+struct IdentityFrameHeader {
+    identity: String,
     frame_number: u32,
     timestamp_ms: u32,
     width: u32,
@@ -2382,6 +2553,32 @@ struct InteractivePreviewFrameHeader {
     format: PreviewPixelFormat,
     payload_offset: usize,
 }
+
+/// The tags and bounds that distinguish one identity-prefixed family.
+#[derive(Debug, Clone, Copy)]
+struct IdentityFrameLayout {
+    tag: u8,
+    wide_tag: u8,
+    prefix_len: usize,
+    wide_prefix_len: usize,
+    max_identity_bytes: usize,
+}
+
+const INTERACTIVE_PREVIEW_LAYOUT: IdentityFrameLayout = IdentityFrameLayout {
+    tag: INTERACTIVE_PREVIEW_FRAME_TAG,
+    wide_tag: WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+    prefix_len: INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
+    wide_prefix_len: WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
+    max_identity_bytes: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+};
+
+const DISPLAY_PREVIEW_LAYOUT: IdentityFrameLayout = IdentityFrameLayout {
+    tag: DISPLAY_PREVIEW_FRAME_TAG,
+    wide_tag: WIDE_DISPLAY_PREVIEW_FRAME_TAG,
+    prefix_len: DISPLAY_PREVIEW_FRAME_PREFIX_LEN,
+    wide_prefix_len: WIDE_DISPLAY_PREVIEW_FRAME_PREFIX_LEN,
+    max_identity_bytes: DISPLAY_PREVIEW_ID_MAX_BYTES,
+};
 
 impl PreviewFrameHeader {
     fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
@@ -2547,13 +2744,13 @@ impl ZonePreviewFrameHeader {
     }
 }
 
-impl InteractivePreviewFrameHeader {
-    fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
-        let wide = input.first() == Some(&WIDE_INTERACTIVE_PREVIEW_FRAME_TAG);
+impl IdentityFrameHeader {
+    fn decode(input: &[u8], layout: IdentityFrameLayout) -> Result<Self, PreviewFrameDecodeError> {
+        let wide = input.first() == Some(&layout.wide_tag);
         let prefix_len = if wide {
-            WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
+            layout.wide_prefix_len
         } else {
-            INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
+            layout.prefix_len
         };
         if input.len() < prefix_len {
             return Err(PreviewFrameDecodeError::TooShort {
@@ -2561,7 +2758,7 @@ impl InteractivePreviewFrameHeader {
                 actual: input.len(),
             });
         }
-        if input[0] != INTERACTIVE_PREVIEW_FRAME_TAG && !wide {
+        if input[0] != layout.tag && !wide {
             return Err(PreviewFrameDecodeError::UnknownChannel { actual: input[0] });
         }
 
@@ -2569,9 +2766,9 @@ impl InteractivePreviewFrameHeader {
         if id_len == 0 {
             return Err(PreviewFrameDecodeError::EmptyPreviewId);
         }
-        if id_len > INTERACTIVE_PREVIEW_ID_MAX_BYTES {
+        if id_len > layout.max_identity_bytes {
             return Err(PreviewFrameDecodeError::PreviewIdTooLong {
-                maximum: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+                maximum: layout.max_identity_bytes,
                 actual: id_len,
             });
         }
@@ -2584,10 +2781,10 @@ impl InteractivePreviewFrameHeader {
                 actual: input.len(),
             });
         }
-        let preview_id = std::str::from_utf8(&input[prefix_len..payload_offset])
+        let identity = std::str::from_utf8(&input[prefix_len..payload_offset])
             .map_err(|_| PreviewFrameDecodeError::InvalidPreviewIdUtf8)?
             .to_owned();
-        validate_interactive_preview_id(&preview_id)?;
+        validate_preview_stream_id(&identity, layout.max_identity_bytes)?;
 
         let (width, height, format_offset) = if wide {
             (
@@ -2608,7 +2805,7 @@ impl InteractivePreviewFrameHeader {
         };
 
         Ok(Self {
-            preview_id,
+            identity,
             frame_number: u32::from_le_bytes(input[2..6].try_into().expect("slice has 4 bytes")),
             timestamp_ms: u32::from_le_bytes(input[6..10].try_into().expect("slice has 4 bytes")),
             width,
@@ -2678,6 +2875,75 @@ pub struct InteractivePreviewFrameView {
     pub height: u32,
     pub format: PreviewPixelFormat,
     pub payload: js_sys::Uint8Array,
+}
+
+#[cfg(feature = "ws-client-wasm")]
+#[derive(Debug, Clone)]
+pub struct DisplayPreviewFrameView {
+    pub device_id: String,
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: PreviewPixelFormat,
+    pub payload: js_sys::Uint8Array,
+}
+
+#[cfg(feature = "ws-client-wasm")]
+impl DisplayPreviewFrameView {
+    pub fn decode_array_buffer(
+        buffer: &js_sys::ArrayBuffer,
+    ) -> Result<Self, PreviewFrameDecodeError> {
+        let data = js_sys::Uint8Array::new(buffer);
+        let header = decode_identity_header_from_array(&data, DISPLAY_PREVIEW_LAYOUT)?;
+        let end = header.end_offset(data.length() as usize)?;
+        if header.format == PreviewPixelFormat::Jpeg {
+            validate_jpeg_array_dimensions(
+                &data,
+                header.payload_offset,
+                end,
+                header.width,
+                header.height,
+            )?;
+        }
+
+        Ok(Self {
+            device_id: header.identity,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: data.subarray(header.payload_offset as u32, end as u32),
+        })
+    }
+}
+
+/// Read just enough of a JS-owned buffer to decode an identity-prefixed
+/// header: the fixed prefix names the identity length, and the identity
+/// itself sits between the prefix and the payload.
+#[cfg(feature = "ws-client-wasm")]
+fn decode_identity_header_from_array(
+    data: &js_sys::Uint8Array,
+    layout: IdentityFrameLayout,
+) -> Result<IdentityFrameHeader, PreviewFrameDecodeError> {
+    let prefix_len = if data.get_index(0) == layout.wide_tag {
+        layout.wide_prefix_len
+    } else {
+        layout.prefix_len
+    };
+    let prefix = data.subarray(0, prefix_len as u32).to_vec();
+    if prefix.len() < prefix_len {
+        return Err(PreviewFrameDecodeError::TooShort {
+            expected: prefix_len,
+            actual: prefix.len(),
+        });
+    }
+    let header_len = prefix_len
+        .checked_add(usize::from(prefix[1]))
+        .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+    let header_bytes = data.subarray(0, header_len as u32).to_vec();
+    IdentityFrameHeader::decode(&header_bytes, layout)
 }
 
 #[cfg(feature = "ws-client-wasm")]
@@ -2843,23 +3109,7 @@ impl InteractivePreviewFrameView {
         buffer: &js_sys::ArrayBuffer,
     ) -> Result<Self, PreviewFrameDecodeError> {
         let data = js_sys::Uint8Array::new(buffer);
-        let prefix_len = if data.get_index(0) == WIDE_INTERACTIVE_PREVIEW_FRAME_TAG {
-            WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
-        } else {
-            INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
-        };
-        let prefix = data.subarray(0, prefix_len as u32).to_vec();
-        if prefix.len() < prefix_len {
-            return Err(PreviewFrameDecodeError::TooShort {
-                expected: prefix_len,
-                actual: prefix.len(),
-            });
-        }
-        let header_len = prefix_len
-            .checked_add(usize::from(prefix[1]))
-            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
-        let header_bytes = data.subarray(0, header_len as u32).to_vec();
-        let header = InteractivePreviewFrameHeader::decode(&header_bytes)?;
+        let header = decode_identity_header_from_array(&data, INTERACTIVE_PREVIEW_LAYOUT)?;
         let end = header.end_offset(data.length() as usize)?;
         if header.format == PreviewPixelFormat::Jpeg {
             validate_jpeg_array_dimensions(
@@ -2872,7 +3122,7 @@ impl InteractivePreviewFrameView {
         }
 
         Ok(Self {
-            preview_id: header.preview_id,
+            preview_id: header.identity,
             frame_number: header.frame_number,
             timestamp_ms: header.timestamp_ms,
             width: header.width,
@@ -2930,13 +3180,16 @@ pub enum PreviewFrameDecodeError {
     InvalidPreviewIdCharacter,
 }
 
-fn validate_interactive_preview_id(id: &str) -> Result<(), PreviewFrameDecodeError> {
+/// Validate a client-supplied stream identity: the interactive preview
+/// id and the display preview's device id ride the same header slot
+/// behind the same one-byte length, so they answer to the same rules.
+fn validate_preview_stream_id(id: &str, maximum: usize) -> Result<(), PreviewFrameDecodeError> {
     if id.is_empty() {
         return Err(PreviewFrameDecodeError::EmptyPreviewId);
     }
-    if id.len() > INTERACTIVE_PREVIEW_ID_MAX_BYTES {
+    if id.len() > maximum {
         return Err(PreviewFrameDecodeError::PreviewIdTooLong {
-            maximum: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+            maximum,
             actual: id.len(),
         });
     }

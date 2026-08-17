@@ -21,12 +21,14 @@ use hypercolor_daemon::api::ws::wire::{
     FrameZoneSelection, encode_frame_binary_selected, encode_spectrum_binary,
 };
 use hypercolor_leptos_ext::ws::{
-    EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
-    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkFrame,
-    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewPublicationMetadata,
-    PreviewStreamId, SCREEN_ZONES_FRAME_TAG, SPECTRUM_FRAME_TAG, ScreenZonesFrame, SpectrumFrame,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG,
-    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
+    DISPLAY_PREVIEW_FRAME_TAG, DisplayPreviewFrame, EXTENDED_SCREEN_ZONES_FRAME_TAG,
+    INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame, PREVIEW_CANCEL_FRAME_TAG,
+    PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkFrame, PreviewFrame,
+    PreviewFrameChannel, PreviewPixelFormat, PreviewPublicationMetadata, PreviewStreamId,
+    SCREEN_ZONES_FRAME_TAG, SPECTRUM_FRAME_TAG, ScreenZonesFrame, SpectrumFrame,
+    WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame,
 };
 use hypercolor_types::event::{FrameData, SpectrumData, ZoneColors};
 
@@ -50,14 +52,15 @@ const GOLDEN_ZONE_ID: [u8; 16] = [
 ];
 const GOLDEN_PREVIEW_ID: &str = "golden-preview";
 const GOLDEN_WIDE_PREVIEW_ID: &str = "golden-wide-preview";
+const GOLDEN_DEVICE_ID: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 
 /// Smallest width that forces a wide (`u32` dimension) preview layout.
 const WIDE_AXIS: u32 = 65_536;
 
-/// Wire tags declared by `hypercolor-leptos-ext`: ten preview constants, four
-/// preview channels, and spectrum. The `frames` tag is daemon-local and counted
-/// separately.
-const EXPECTED_DECLARED_TAG_COUNT: usize = 15;
+/// Wire tags declared by `hypercolor-leptos-ext`: twelve preview constants,
+/// three preview channels, and spectrum. The `frames` tag is daemon-local and
+/// counted separately.
+const EXPECTED_DECLARED_TAG_COUNT: usize = 16;
 
 /// Bytes of a wide frame's payload stored in its fixture file. The rest is a
 /// deterministic fill that would bloat the repository without freezing any
@@ -429,14 +432,25 @@ fn golden_web_viewport_preview() -> PreviewFrame {
     )
 }
 
-fn golden_display_preview() -> PreviewFrame {
-    golden_preview_frame(
-        PreviewFrameChannel::DisplayPreview,
-        2,
-        2,
-        PreviewPixelFormat::Rgb,
-        deterministic_bytes(2 * 2 * 3, 0x30),
-    )
+fn golden_display_preview() -> DisplayPreviewFrame {
+    DisplayPreviewFrame {
+        device_id: GOLDEN_DEVICE_ID.to_owned(),
+        frame_number: GOLDEN_FRAME_NUMBER,
+        timestamp_ms: GOLDEN_TIMESTAMP_MS,
+        width: 2,
+        height: 2,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(deterministic_bytes(2 * 2 * 3, 0x30)),
+    }
+}
+
+fn golden_wide_display_preview() -> DisplayPreviewFrame {
+    DisplayPreviewFrame {
+        width: WIDE_AXIS,
+        height: 1,
+        payload: Bytes::from(deterministic_bytes(WIDE_AXIS as usize * 3, 0xA0)),
+        ..golden_display_preview()
+    }
 }
 
 fn golden_wide_preview() -> PreviewFrame {
@@ -609,6 +623,34 @@ fn zone_preview_segments(frame: &ZonePreviewFrame) -> Vec<Segment> {
     segments
 }
 
+fn display_preview_segments(frame: &DisplayPreviewFrame) -> Vec<Segment> {
+    let wide = !frame.uses_legacy_layout();
+    let mut segments = vec![
+        seg(
+            1,
+            if wide {
+                "tag (wide display preview)"
+            } else {
+                "tag (display preview)"
+            },
+        ),
+        seg(1, "device_id length u8"),
+        seg(4, "frame_number u32le"),
+        seg(4, "timestamp_ms u32le"),
+    ];
+    if wide {
+        segments.push(seg(4, "width u32le"));
+        segments.push(seg(4, "height u32le"));
+    } else {
+        segments.push(seg(2, "width u16le"));
+        segments.push(seg(2, "height u16le"));
+    }
+    segments.push(seg(1, "format u8"));
+    segments.push(seg(frame.device_id.len(), "device_id utf8"));
+    segments.push(seg(frame.payload.len(), "payload"));
+    segments
+}
+
 fn interactive_preview_segments(frame: &InteractivePreviewFrame) -> Vec<Segment> {
     let wide = !frame.uses_legacy_layout();
     let mut segments = vec![
@@ -761,11 +803,6 @@ fn goldens() -> Vec<Golden> {
             "PreviewFrameChannel::WebViewportCanvas",
             golden_web_viewport_preview(),
         ),
-        (
-            "07-preview-display",
-            "PreviewFrameChannel::DisplayPreview",
-            golden_display_preview(),
-        ),
     ] {
         let input = format!("{}x{} {:?}", frame.width, frame.height, frame.format);
         let segments = preview_segments(&frame);
@@ -779,6 +816,23 @@ fn goldens() -> Vec<Golden> {
             frame.encode().to_vec(),
         ));
     }
+
+    let display = golden_display_preview();
+    goldens.push(Golden::new(
+        "07-preview-display",
+        DISPLAY_PREVIEW_FRAME_TAG,
+        "DISPLAY_PREVIEW_FRAME_TAG",
+        "hypercolor_leptos_ext::ws::DisplayPreviewFrame::encode",
+        format!(
+            "device_id \"{}\", {}x{} rgb",
+            display.device_id, display.width, display.height
+        ),
+        display_preview_segments(&display),
+        display
+            .encode()
+            .expect("display preview frame encodes")
+            .to_vec(),
+    ));
 
     let zone = golden_zone_preview();
     goldens.push(Golden::new(
@@ -883,6 +937,27 @@ fn goldens() -> Vec<Golden> {
         .stored_prefix(wide_interactive_header + WIDE_PAYLOAD_STORED_BYTES),
     );
 
+    let wide_display = golden_wide_display_preview();
+    let wide_display_header = wide_display.prefix_len() + wide_display.device_id.len();
+    goldens.push(
+        Golden::new(
+            "12-wide-display-preview",
+            WIDE_DISPLAY_PREVIEW_FRAME_TAG,
+            "WIDE_DISPLAY_PREVIEW_FRAME_TAG",
+            "hypercolor_leptos_ext::ws::DisplayPreviewFrame::encode",
+            format!(
+                "device_id \"{}\", {}x{} rgb (wide layout)",
+                wide_display.device_id, wide_display.width, wide_display.height
+            ),
+            display_preview_segments(&wide_display),
+            wide_display
+                .encode()
+                .expect("wide display preview frame encodes")
+                .to_vec(),
+        )
+        .stored_prefix(wide_display_header + WIDE_PAYLOAD_STORED_BYTES),
+    );
+
     let wide_screen_zones = golden_wide_screen_zones();
     goldens.push(Golden::new(
         "0e-wide-screen-zones",
@@ -912,7 +987,7 @@ fn goldens() -> Vec<Golden> {
             seg(1, "schema u8"),
             seg(
                 1,
-                "stream_kind u8 (0=passive, 1=zone, 2=interactive, 3=screen_zones)",
+                "stream_kind u8 (0=passive, 1=zone, 2=interactive, 3=screen_zones, 4=display)",
             ),
             seg(1, "channel tag u8"),
             seg(1, "format u8"),
@@ -1047,9 +1122,10 @@ fn every_binary_tag_matches_its_golden_fixture() {
 
     assert!(
         failures.is_empty(),
-        "binary wire format drifted from its golden fixtures. Changing these bytes \
-         breaks every deployed client, so it needs the spec 76 §0 dual-accept \
-         process, not a fixture rewrite.\n\n{}",
+        "binary wire format drifted from its golden fixtures. If you did not mean \
+         to change the wire, fix the encoder. If you did, update every in-repo \
+         client in this PR and re-bless with HYPERCOLOR_WS_GOLDEN_BLESS, then \
+         review the byte diff as the change (spec 76 §0, lockstep).\n\n{}",
         failures.join("\n\n")
     );
 }
@@ -1142,7 +1218,7 @@ fn wire_tag_constants_are_frozen() {
     assert_eq!(PreviewFrameChannel::Canvas.tag(), 0x03);
     assert_eq!(PreviewFrameChannel::ScreenCanvas.tag(), 0x05);
     assert_eq!(PreviewFrameChannel::WebViewportCanvas.tag(), 0x06);
-    assert_eq!(PreviewFrameChannel::DisplayPreview.tag(), 0x07);
+    assert_eq!(DISPLAY_PREVIEW_FRAME_TAG, 0x07);
     assert_eq!(ZONE_PREVIEW_FRAME_TAG, 0x08);
     assert_eq!(SCREEN_ZONES_FRAME_TAG, 0x09);
     assert_eq!(INTERACTIVE_PREVIEW_FRAME_TAG, 0x0a);
@@ -1153,6 +1229,7 @@ fn wire_tag_constants_are_frozen() {
     assert_eq!(PREVIEW_CHUNK_FRAME_TAG, 0x0f);
     assert_eq!(PREVIEW_CANCEL_FRAME_TAG, 0x10);
     assert_eq!(EXTENDED_SCREEN_ZONES_FRAME_TAG, 0x11);
+    assert_eq!(WIDE_DISPLAY_PREVIEW_FRAME_TAG, 0x12);
 }
 
 #[test]
@@ -1187,10 +1264,18 @@ fn fixtures_round_trip_through_the_leptos_ext_decoders() {
             "06-preview-web-viewport-canvas",
             golden_web_viewport_preview(),
         ),
-        ("07-preview-display", golden_display_preview()),
         ("0b-wide-preview", golden_wide_preview()),
     ] {
         let decoded = PreviewFrame::decode(&bytes_for(name)).expect("preview frame decodes");
+        assert_eq!(decoded, expected, "{name} round trip");
+    }
+
+    for (name, expected) in [
+        ("07-preview-display", golden_display_preview()),
+        ("12-wide-display-preview", golden_wide_display_preview()),
+    ] {
+        let decoded =
+            DisplayPreviewFrame::decode(&bytes_for(name)).expect("display preview decodes");
         assert_eq!(decoded, expected, "{name} round trip");
     }
 
@@ -1251,6 +1336,11 @@ fn wide_frame_payloads_are_written_verbatim() {
     let encoded = interactive.encode().expect("wide interactive encodes");
     let payload_offset = interactive.prefix_len() + interactive.preview_id.len();
     assert_eq!(&encoded[payload_offset..], &interactive.payload[..]);
+
+    let display = golden_wide_display_preview();
+    let encoded = display.encode().expect("wide display encodes");
+    let payload_offset = display.prefix_len() + display.device_id.len();
+    assert_eq!(&encoded[payload_offset..], &display.payload[..]);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

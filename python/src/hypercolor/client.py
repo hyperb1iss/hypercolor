@@ -31,7 +31,7 @@ from ._generated.api.effects import (
     get_effect as generated_get_effect,
     list_effects as generated_list_effects,
     stop_effect as generated_stop_effect,
-    update_current_controls as generated_update_current_controls,
+    update_active_controls as generated_update_active_controls,
 )
 from ._generated.api.layouts import (
     apply_layout as generated_apply_layout,
@@ -62,7 +62,7 @@ from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
 from ._generated.models.set_brightness_request import SetBrightnessRequest
-from ._generated.models.update_current_controls_request import UpdateCurrentControlsRequest
+from ._generated.models.update_active_controls_request import UpdateActiveControlsRequest
 from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.types import UNSET
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
@@ -399,11 +399,11 @@ class HypercolorClient:
         controls: Mapping[str, Any] | None = None,
         transition: TransitionSpec | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         """Apply an effect with optional control overrides.
 
-        ``render_group`` targets a specific zone by id; omitted applies to
+        ``zone_id`` targets a specific zone by id; omitted applies to
         the scene's primary zone.
         """
         body = _drop_none(
@@ -411,7 +411,7 @@ class HypercolorClient:
                 "controls": dict(controls) if controls is not None else None,
                 "transition": _to_json_mapping(transition),
                 "preset_id": preset_id,
-                "render_group": render_group,
+                "zone_id": zone_id,
             }
         )
         kwargs = (
@@ -432,10 +432,10 @@ class HypercolorClient:
         effect_id: str,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         """Apply a bundled or saved preset to an effect and optional zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
             "POST",
             f"/effects/{_quote_path(effect_id)}/presets/{_quote_path(preset_id)}/apply",
@@ -477,8 +477,8 @@ class HypercolorClient:
     ) -> ControlUpdateResult:
         """Update controls on the active effect."""
         return await self._generated_model(
-            generated_update_current_controls._get_kwargs(
-                body=UpdateCurrentControlsRequest.from_dict({"controls": dict(controls)}),
+            generated_update_active_controls._get_kwargs(
+                body=UpdateActiveControlsRequest.from_dict({"controls": dict(controls)}),
             ),
             ControlUpdateResult,
         )
@@ -503,11 +503,11 @@ class HypercolorClient:
             headers=_if_match_headers(if_match),
         )
 
-    async def reset_controls(self, *, render_group: str | None = None) -> MutationResult:
+    async def reset_controls(self, *, zone_id: str | None = None) -> MutationResult:
         """Reset effect controls to defaults, optionally scoped to one zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
-            "POST", "/effects/current/reset", MutationResult, body=body or None
+            "POST", "/effects/active/reset", MutationResult, body=body or None
         )
 
     async def get_control_surfaces(
@@ -765,7 +765,7 @@ class HypercolorClient:
     # ── Zones (render groups) ────────────────────────────────────────────
     #
     # Every zone structure mutation is guarded by an
-    # ``If-Match: <groups_revision>`` precondition. A stale revision raises
+    # ``If-Match: <zones_revision>`` precondition. A stale revision raises
     # HypercolorPreconditionError carrying the authoritative revision —
     # refetch, rebase, retry.
 
@@ -995,10 +995,10 @@ class HypercolorClient:
         self,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> PresetApplyResult:
         """Apply a saved preset, optionally scoped to one zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
             "POST",
             f"/library/presets/{_quote_path(preset_id)}/apply",

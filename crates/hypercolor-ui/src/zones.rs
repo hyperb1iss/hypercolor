@@ -15,7 +15,7 @@ use leptos::prelude::*;
 use crate::api;
 use crate::toasts;
 use crate::ws::SceneEventHint;
-use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_groups};
+use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_zones};
 
 /// Zone-level view of the active scene, provided at the app root.
 #[derive(Clone, Copy)]
@@ -195,7 +195,7 @@ pub fn provide_scene_contexts(
     let zones = Memo::new(move |_| {
         active_scene
             .get()
-            .map(|scene| surfaces_from_groups(&scene.groups))
+            .map(|scene| surfaces_from_zones(&scene.zones))
             .unwrap_or_default()
     });
     let led_zones = Memo::new(move |_| {
@@ -210,7 +210,7 @@ pub fn provide_scene_contexts(
     let multi_zone = Memo::new(move |_| {
         active_scene
             .get()
-            .is_some_and(|scene| led_zone_count(&scene.groups) > 1)
+            .is_some_and(|scene| led_zone_count(&scene.zones) > 1)
     });
 
     let refresh_active = Callback::new(move |()| active_scene_resource.refetch());
@@ -268,8 +268,8 @@ pub fn provide_scene_contexts(
             return current;
         };
 
-        let controls_only = hint.event_type == "render_group_changed"
-            && hint.render_group_change_kind
+        let controls_only = hint.event_type == "zone_changed"
+            && hint.zone_change_kind
                 == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched);
         if !controls_only {
             active_scene_resource.refetch();

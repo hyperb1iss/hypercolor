@@ -978,11 +978,11 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(assign_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(assign_result["group"]["layout"]["canvas_width"], 320);
-    assert_eq!(assign_result["group"]["controls"]["title"]["text"], "CPU");
+    assert_eq!(assign_result["zone"]["layout"]["canvas_width"], 320);
+    assert_eq!(assign_result["zone"]["controls"]["title"]["text"], "CPU");
 
     let assign_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -995,7 +995,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
 
     let mut saw_assign_event = false;
     while let Ok(timestamped) = assign_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -1025,12 +1025,12 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(clear_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(clear_result["cleared"], true);
     assert_eq!(
-        clear_result["group"]["display_target"]["device_id"],
+        clear_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert!(clear_result["group"]["effect_id"].is_null());
+    assert!(clear_result["zone"]["effect_id"].is_null());
     assert_eq!(
-        clear_result["group"]["layers"].as_array().map(Vec::len),
+        clear_result["zone"]["layers"].as_array().map(Vec::len),
         Some(0)
     );
 
@@ -1048,7 +1048,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
 
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -1299,7 +1299,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(trigger, ChangeTrigger::Mcp);
                 saw_started_event = true;
             }
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 scene_id: event_scene_id,
                 kind,
                 role,
@@ -1354,7 +1354,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(reason, EffectStopReason::Stopped);
                 saw_stopped_event = true;
             }
-            HypercolorEvent::RenderGroupChanged { kind, role, .. } => {
+            HypercolorEvent::ZoneChanged { kind, role, .. } => {
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
                 assert_eq!(kind, ZoneChangeKind::Updated);
                 saw_updated_group = true;
@@ -1734,7 +1734,7 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert_eq!(assign_result["live_scope"], "default");
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
 

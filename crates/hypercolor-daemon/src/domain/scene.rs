@@ -1296,9 +1296,9 @@ pub fn active_scene_changed_event(
 /// The zone-changed event both effect-apply paths record.
 #[must_use]
 pub fn zone_changed_event(scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) -> HypercolorEvent {
-    HypercolorEvent::RenderGroupChanged {
+    HypercolorEvent::ZoneChanged {
         scene_id,
-        group_id: zone.id,
+        zone_id: zone.id,
         role: zone.role,
         kind,
     }

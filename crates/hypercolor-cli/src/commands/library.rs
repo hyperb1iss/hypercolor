@@ -2,6 +2,10 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use hypercolor_types::api::library::{
+    AddFavoriteRequest, ApplyPresetRequest, PlaylistItemRequest, PlaylistTargetRequest,
+    SavePlaylistRequest, SavePresetRequest,
+};
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -291,7 +295,9 @@ async fn execute_favorites(
             }
         }
         FavoritesCommand::Add(add_args) => {
-            let body = serde_json::json!({ "effect": add_args.effect });
+            let body = AddFavoriteRequest {
+                effect: add_args.effect.clone(),
+            };
             let response = client.post("/library/favorites", &body).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
@@ -442,7 +448,7 @@ async fn execute_presets(
         }
         PresetsCommand::Apply(apply_args) => {
             let path = format!("/library/presets/{}/apply", urlencoded(&apply_args.preset));
-            let response = client.post(&path, &serde_json::json!({})).await?;
+            let response = client.post(&path, &ApplyPresetRequest::default()).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -708,13 +714,13 @@ async fn execute_create_preset(
         controls.insert(key.clone(), parse_control_literal(value));
     }
 
-    let body = serde_json::json!({
-        "name": args.name,
-        "description": args.description,
-        "effect": args.effect,
-        "controls": controls,
-        "tags": args.tag,
-    });
+    let body = SavePresetRequest {
+        name: args.name.clone(),
+        description: args.description.clone(),
+        effect: args.effect.clone(),
+        controls: Some(serde_json::Value::Object(controls)),
+        tags: Some(args.tag.clone()),
+    };
     let response = client.post("/library/presets", &body).await?;
 
     match ctx.format {
@@ -733,34 +739,32 @@ async fn execute_create_playlist(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let items: Vec<serde_json::Value> = args
+    let items: Vec<PlaylistItemRequest> = args
         .item
         .iter()
         .map(|item| {
             let target = match item.kind {
-                PlaylistItemKind::Effect => serde_json::json!({
-                    "type": "effect",
-                    "effect": item.target,
-                }),
-                PlaylistItemKind::Preset => serde_json::json!({
-                    "type": "preset",
-                    "preset_id": item.target,
-                }),
+                PlaylistItemKind::Effect => PlaylistTargetRequest::Effect {
+                    effect: item.target.clone(),
+                },
+                PlaylistItemKind::Preset => PlaylistTargetRequest::Preset {
+                    preset_id: item.target.clone(),
+                },
             };
-            serde_json::json!({
-                "target": target,
-                "duration_ms": item.duration_ms,
-                "transition_ms": item.transition_ms,
-            })
+            PlaylistItemRequest {
+                target,
+                duration_ms: item.duration_ms,
+                transition_ms: item.transition_ms,
+            }
         })
         .collect();
 
-    let body = serde_json::json!({
-        "name": args.name,
-        "description": args.description,
-        "loop_enabled": !args.no_loop,
-        "items": items,
-    });
+    let body = SavePlaylistRequest {
+        name: args.name.clone(),
+        description: args.description.clone(),
+        loop_enabled: Some(!args.no_loop),
+        items: Some(items),
+    };
     let response = client.post("/library/playlists", &body).await?;
 
     match ctx.format {

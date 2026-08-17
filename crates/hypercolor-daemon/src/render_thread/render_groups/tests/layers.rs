@@ -205,11 +205,11 @@ fn missing_media_layer_renders_transparent_black_and_reports_health() {
     assert!(matches!(
         runtime.drain_layer_runtime_events().as_slice(),
         [HypercolorEvent::LayerHealthChanged {
-            group_id,
+            zone_id,
             layer_id: event_layer_id,
             health: LayerHealth::AssetMissing,
             ..
-        }] if *group_id == group.id && *event_layer_id == layer_id
+        }] if *zone_id == group.id && *event_layer_id == layer_id
     ));
 }
 

@@ -63,7 +63,7 @@ pub struct WsContext {
     /// Latest per-display JPEG frame from the `display_preview` WS
     /// channel. Cleared when the selected display changes (handled by
     /// `set_display_preview_device`).
-    pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    pub display_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
@@ -298,7 +298,7 @@ impl EffectsContext {
                     (!prefs.control_values.is_empty())
                         .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
                 }),
-                render_group: target_zone_id.clone(),
+                zone_id: target_zone_id.clone(),
                 ..api::ApplyEffectBody::default()
             });
 
@@ -501,7 +501,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         canvas_frame: ws.canvas_frame,
         screen_canvas_frame: ws.screen_canvas_frame,
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
-        display_preview_frame: ws.display_preview_frame,
+        display_preview_frames: ws.display_preview_frames,
         interactive_preview_frames: ws.interactive_preview_frames,
         interactive_preview_lifecycles: ws.interactive_preview_lifecycles,
         interactive_preview_available: ws.interactive_preview_available,
@@ -606,16 +606,16 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             .unwrap_or_default()
     });
     // Per-zone effect state — what each LED zone is playing, derived
-    // from the shared scene (zip preserves surfaces_from_groups' 1:1
+    // from the shared scene (zip preserves surfaces_from_zones' 1:1
     // scene ordering) plus the effects index for display names.
     let zone_effects = Memo::new(move |_| {
         let Some(scene) = zones_ctx.active_scene.get() else {
             return Vec::new();
         };
-        let surfaces = crate::zones::surface::surfaces_from_groups(&scene.groups);
+        let surfaces = crate::zones::surface::surfaces_from_zones(&scene.zones);
         effects_index.with(|effects| {
             scene
-                .groups
+                .zones
                 .iter()
                 .zip(surfaces)
                 .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)

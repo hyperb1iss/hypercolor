@@ -103,7 +103,7 @@ impl DaemonClient {
 
         let subscribe_msg = serde_json::json!({
             "type": "subscribe",
-            "channels": ["events"]
+            "topics": [{ "topic": "events" }]
         });
         ws_write
             .send(Message::Text(subscribe_msg.to_string().into()))

@@ -817,7 +817,7 @@ GET    /api/v1/effects                          — List all effects (faces incl
 GET    /api/v1/effects?category=display         — Filter to face effects
 GET    /api/v1/effects/{id}                     — Full metadata + controls
 POST   /api/v1/effects/{id}/apply               — Apply effect (works for faces too)
-PATCH  /api/v1/effects/current/controls          — Update live controls
+PATCH  /api/v1/effects/active/controls          — Update live controls
 POST   /api/v1/effects/rescan                    — Re-discover effects
 ```
 

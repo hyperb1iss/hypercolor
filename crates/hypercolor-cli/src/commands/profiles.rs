@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use hypercolor_types::api::profiles::{ApplyProfileRequest, CreateProfileRequest};
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -146,11 +147,12 @@ async fn execute_create(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = serde_json::json!({
-        "name": args.name,
-        "description": args.description,
-        "force": args.force,
-    });
+    let body = CreateProfileRequest {
+        name: args.name.clone(),
+        description: args.description.clone(),
+        brightness: None,
+        force: args.force,
+    };
 
     let response = client.post("/profiles", &body).await?;
 
@@ -170,7 +172,9 @@ async fn execute_apply(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/profiles/{}/apply", urlencoded(&args.name));
-    let body = serde_json::json!({ "transition_ms": args.transition });
+    let body = ApplyProfileRequest {
+        transition_ms: Some(args.transition),
+    };
     let response = client.post(&path, &body).await?;
 
     match ctx.format {

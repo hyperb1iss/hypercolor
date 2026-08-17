@@ -9,7 +9,7 @@
 # Regenerating any byte below is a wire-format change. See README.md.
 0f                                              # tag
 01                                              # schema u8
-01                                              # stream_kind u8 (0=passive, 1=zone, 2=interactive, 3=screen_zones)
+01                                              # stream_kind u8 (0=passive, 1=zone, 2=interactive, 3=screen_zones, 4=display)
 08                                              # channel tag u8
 00                                              # format u8
 20 00                                           # stream_identity_len u16le

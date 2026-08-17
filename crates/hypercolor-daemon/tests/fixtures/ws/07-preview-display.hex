@@ -1,16 +1,20 @@
 # hypercolor websocket golden fixture
 # fixture: 07-preview-display
-# tag: 0x07 (PreviewFrameChannel::DisplayPreview)
-# encoder: hypercolor_leptos_ext::ws::PreviewFrame::try_encode
-# input: 2x2 Rgb
-# total-bytes: 26
-# stored-bytes: 26
+# tag: 0x07 (DISPLAY_PREVIEW_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::DisplayPreviewFrame::encode
+# input: device_id "3f2504e0-4f89-11d3-9a0c-0305e82c3301", 2x2 rgb
+# total-bytes: 63
+# stored-bytes: 63
 #
 # Regenerating any byte below is a wire-format change. See README.md.
-07                                              # tag (channel)
+07                                              # tag (display preview)
+24                                              # device_id length u8
 78 56 34 12                                     # frame_number u32le
 4e 61 bc 00                                     # timestamp_ms u32le
 02 00                                           # width u16le
 02 00                                           # height u16le
-00                                              # format u8 (0=rgb, 1=rgba, 2=jpeg)
+00                                              # format u8
+33 66 32 35 30 34 65 30 2d 34 66 38 39 2d 31 31 # device_id utf8 [+0x000]
+64 33 2d 39 61 30 63 2d 30 33 30 35 65 38 32 63 # device_id utf8 [+0x010]
+33 33 30 31                                     # device_id utf8 [+0x020]
 30 37 3e 45 4c 53 5a 61 68 6f 76 7d             # payload
