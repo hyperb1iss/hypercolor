@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Failures under set -e in this suite die silently in CI otherwise;
+# name the dying command and line.
+trap 'echo "cargo-cache-build-tests.sh: exit $? at line $LINENO: $BASH_COMMAND" >&2' ERR
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WRAPPER="$ROOT_DIR/scripts/cargo-cache-build.sh"
