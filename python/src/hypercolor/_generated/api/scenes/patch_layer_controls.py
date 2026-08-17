@@ -93,6 +93,7 @@ def sync_detailed(
         layer_id (str):
         body (PatchLayerControlsRequest): Request body for
             `PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls`.
+
             `controls` carries no `#[serde(default)]` on purpose: the schema this
             route publishes marks it required, and serde still admits an absent
             field through `Option`'s own default.
@@ -135,6 +136,7 @@ async def asyncio_detailed(
         layer_id (str):
         body (PatchLayerControlsRequest): Request body for
             `PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls`.
+
             `controls` carries no `#[serde(default)]` on purpose: the schema this
             route publishes marks it required, and serde still admits an absent
             field through `Option`'s own default.

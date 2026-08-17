@@ -12,7 +12,7 @@ T = TypeVar("T", bound="LayerOrderRequest")
 @_attrs_define
 class LayerOrderRequest:
     """Request body for
-    `PUT /api/v1/scenes/{id}/zones/{zone_id}/layers/order`.
+    `PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/order`.
 
         Attributes:
             layer_ids (list[str]): The zone's layers, bottom to top.

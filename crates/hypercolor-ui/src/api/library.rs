@@ -89,7 +89,9 @@ pub async fn fetch_favorites() -> Result<Vec<FavoriteSummary>, String> {
 pub async fn add_favorite(effect_id: &str) -> Result<(), String> {
     client::post_json_discard(
         "/api/v1/library/favorites",
-        &serde_json::json!({ "effect": effect_id }),
+        &AddFavoriteRequest {
+            effect: effect_id.to_owned(),
+        },
     )
     .await
     .map_err(Into::into)
