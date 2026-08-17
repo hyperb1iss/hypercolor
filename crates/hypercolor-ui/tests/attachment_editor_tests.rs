@@ -1,4 +1,4 @@
-use hypercolor_types::attachment::{ComponentCategory, ComponentSlot};
+use hypercolor_types::attachment::{ComponentCategory, ComponentOrigin, ComponentSlot};
 use hypercolor_ui::api::{ComponentBindingSummary, TemplateSummary};
 use hypercolor_ui::components::attachment_editor::{
     DraftRow, expand_bindings_to_drafts, summarize_channel,
@@ -22,9 +22,10 @@ fn template(id: &str, name: &str, category: ComponentCategory, led_count: u32) -
         name: name.to_owned(),
         vendor: "Lian Li".to_owned(),
         category,
-        origin: None,
+        origin: ComponentOrigin::BuiltIn,
         led_count,
         description: String::new(),
+        image_url: None,
         tags: Vec::new(),
     }
 }

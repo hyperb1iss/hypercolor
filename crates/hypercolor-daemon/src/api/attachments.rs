@@ -7,7 +7,6 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 use tokio::sync::RwLockWriteGuard;
 
 use hypercolor_core::attachment::{ComponentRegistry, TemplateFilter};
@@ -22,69 +21,12 @@ use crate::api::devices::Pagination;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
-pub use hypercolor_types::api::attachments::ListTemplatesQuery;
-
-#[derive(Debug, Serialize)]
-pub struct TemplateListResponse {
-    pub items: Vec<TemplateSummary>,
-    pub pagination: Pagination,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TemplateSummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: ComponentCategory,
-    pub origin: ComponentOrigin,
-    pub led_count: u32,
-    pub description: String,
-    pub image_url: Option<String>,
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TemplateDetail {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: ComponentCategory,
-    pub origin: ComponentOrigin,
-    pub led_count: u32,
-    pub description: String,
-    pub default_size: hypercolor_types::attachment::ComponentCanvasSize,
-    pub topology: hypercolor_types::spatial::LedTopology,
-    pub led_positions: Vec<hypercolor_types::spatial::NormalizedPosition>,
-    pub compatible_slots: Vec<hypercolor_types::attachment::ComponentCompatibility>,
-    pub tags: Vec<String>,
-    pub led_names: Option<Vec<String>>,
-    pub led_mapping: Option<Vec<u32>>,
-    pub image_url: Option<String>,
-    pub physical_size_mm: Option<(f32, f32)>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CategoryListResponse {
-    pub items: Vec<CategorySummary>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CategorySummary {
-    pub category: ComponentCategory,
-    pub count: usize,
-    pub label: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct VendorListResponse {
-    pub items: Vec<VendorSummary>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct VendorSummary {
-    pub vendor: String,
-    pub count: usize,
-}
+// Wire contracts live in hypercolor-types::api::attachments — shared
+// with the web UI and the TUI.
+pub use hypercolor_types::api::attachments::{
+    CategoryListResponse, CategorySummary, DeleteTemplateResponse, ListTemplatesQuery,
+    TemplateDetail, TemplateListResponse, TemplateSummary, VendorListResponse, VendorSummary,
+};
 
 /// `GET /api/v1/attachments/templates`
 pub async fn list_templates(
@@ -220,10 +162,10 @@ pub async fn delete_template(
         return DomainError::Internal(anyhow::anyhow!("{error}")).into_response();
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "id": removed.id,
-        "deleted": true,
-    }))
+    ApiResponse::ok(DeleteTemplateResponse {
+        id: removed.id,
+        deleted: true,
+    })
 }
 
 /// `GET /api/v1/attachments/categories`

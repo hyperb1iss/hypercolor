@@ -1,4 +1,4 @@
-use hypercolor_types::attachment::ComponentCategory;
+use hypercolor_types::attachment::{ComponentCategory, ComponentOrigin};
 use hypercolor_ui::api::TemplateSummary;
 use hypercolor_ui::components::component_picker::{filter_components, selected_result_index};
 
@@ -8,9 +8,10 @@ fn template(id: &str, name: &str, vendor: &str, category: ComponentCategory) -> 
         name: name.to_owned(),
         vendor: vendor.to_owned(),
         category,
-        origin: None,
+        origin: ComponentOrigin::BuiltIn,
         led_count: 16,
         description: String::new(),
+        image_url: None,
         tags: Vec::new(),
     }
 }
