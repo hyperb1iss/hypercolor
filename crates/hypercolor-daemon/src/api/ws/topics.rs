@@ -17,6 +17,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
 use hypercolor_leptos_ext::ws::registry::{CanvasConfig, TopicId};
+use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::trace;
@@ -201,7 +202,7 @@ pub(super) fn admit_config(
         | TopicId::ScreenCanvas
         | TopicId::WebViewportCanvas
         | TopicId::ZonePreview => {
-            let canvas: CanvasConfig = serde_json::from_value(config.clone())
+            let canvas = CanvasConfig::deserialize(config)
                 .expect("a validated canvas config deserializes into its own type");
             validate_passive_preview_shape(&canvas, format!("config.{}", topic.as_str()))
         }

@@ -86,7 +86,9 @@ impl SubscriptionState {
         C: serde::de::DeserializeOwned + Default,
     {
         match self.configs.config(topic.bit(), None) {
-            Some(stored) => serde_json::from_value(stored.clone())
+            // Borrowed, not cloned: relays re-read config on every frame
+            // they pace.
+            Some(stored) => C::deserialize(stored)
                 .expect("stored topic config round-trips through its own config type"),
             None => C::default(),
         }
