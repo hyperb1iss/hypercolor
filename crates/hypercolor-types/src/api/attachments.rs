@@ -41,7 +41,11 @@ pub struct ListTemplatesQuery {
 }
 
 /// Response for `GET /api/v1/attachments/templates`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// `Eq` is load-bearing beyond equality: f32 is not `Eq`, so deriving it
+// proves transitively that nothing in this response is a float. A float
+// here would be a wire hazard, because the shapes these types replace
+// were built with `json!`, which widens f32 to f64 and reprints it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateListResponse {
     #[serde(default)]
     pub items: Vec<TemplateSummary>,
