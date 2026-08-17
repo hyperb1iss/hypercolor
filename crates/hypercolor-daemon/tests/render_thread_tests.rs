@@ -803,7 +803,7 @@ impl InputSource for EventOnlySource {
 }
 
 async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>>, expected: bool) {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             let seen = transitions
                 .lock()
@@ -824,7 +824,7 @@ async fn wait_for_screen_capture_transition(
     transitions: &Arc<StdMutex<Vec<bool>>>,
     expected: bool,
 ) {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             let seen = transitions
                 .lock()
@@ -845,7 +845,7 @@ async fn wait_for_next_frame(
     rx: &mut watch::Receiver<FrameData>,
     previous_frame_number: u32,
 ) -> FrameData {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             rx.changed()
                 .await
@@ -857,14 +857,20 @@ async fn wait_for_next_frame(
         }
     })
     .await
-    .expect("expected the next frame within 2 seconds")
+    .expect("expected the next frame in time")
 }
+
+/// Deadline for liveness waits. Generous on purpose: these bound
+/// hangs, they do not assert latency, and 2-second versions flaked
+/// whenever the machine was loaded (CI Windows runners, parallel
+/// local suites).
+const WAIT_DEADLINE: Duration = Duration::from_secs(10);
 
 async fn wait_until<F>(description: &str, condition: F)
 where
     F: Fn() -> bool,
 {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             if condition() {
                 return;
@@ -887,7 +893,7 @@ where
 {
     let (deadline_tx, mut deadline_rx) = oneshot::channel();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(WAIT_DEADLINE);
         let _ = deadline_tx.send(());
     });
 
@@ -913,8 +919,14 @@ async fn wait_for_frame_where<F>(rx: &mut watch::Receiver<FrameData>, predicate:
 where
     F: Fn(&FrameData) -> bool,
 {
+    // The matching frame may already be latched; waiting for a fresh
+    // publication first would hang on a quiescent channel.
+    let current = rx.borrow_and_update().clone();
+    if predicate(&current) {
+        return current;
+    }
     let mut last_frame = None;
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             rx.changed()
                 .await
@@ -943,7 +955,7 @@ where
                 )
             },
         );
-        panic!("expected a matching frame within 2 seconds: {details}");
+        panic!("expected a matching frame in time: {details}");
     })
 }
 
@@ -965,7 +977,12 @@ async fn wait_for_canvas_where<F>(
 where
     F: Fn(&CanvasFrame) -> bool,
 {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    // The matching canvas may already be latched; see wait_for_frame_where.
+    let current = rx.borrow_and_update().clone();
+    if predicate(&current) {
+        return current;
+    }
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             rx.changed()
                 .await
@@ -977,14 +994,14 @@ where
         }
     })
     .await
-    .expect("expected a matching canvas within 2 seconds")
+    .expect("expected a matching canvas in time")
 }
 
 async fn wait_for_next_canvas_frame(
     rx: &mut watch::Receiver<CanvasFrame>,
     previous_frame_number: u32,
 ) -> CanvasFrame {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             rx.changed()
                 .await
@@ -996,7 +1013,7 @@ async fn wait_for_next_canvas_frame(
         }
     })
     .await
-    .expect("expected the next canvas frame within 2 seconds")
+    .expect("expected the next canvas frame in time")
 }
 
 #[cfg(feature = "wgpu")]
@@ -1242,7 +1259,7 @@ async fn render_thread_publishes_discrete_input_events() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     release_events.store(true, Ordering::Release);
 
-    let input_event = tokio::time::timeout(Duration::from_secs(2), async {
+    let input_event = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             match event_rx.recv().await {
                 Ok(timestamped) => {
@@ -1340,7 +1357,7 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
     let mut rt = RenderThread::spawn(state.clone());
     let _input_demand = demand_input(&rt, InputPublicationConsumer::Diagnostic, SourceKind::Audio);
 
-    let audio_event = tokio::time::timeout(Duration::from_secs(2), async {
+    let audio_event = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             match event_rx.recv().await {
                 Ok(timestamped) => {
@@ -1363,7 +1380,7 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
         }
     })
     .await
-    .expect("expected audio level update within 2 seconds");
+    .expect("expected audio level update in time");
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1649,7 +1666,7 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
-    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, canvas_rx.changed())
         .await
         .expect("timed out waiting for initial canvas")
         .expect("canvas sender should remain connected");
@@ -1801,13 +1818,13 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, canvas_rx.changed())
         .await
-        .expect("expected grouped scene canvas within 2 seconds")
+        .expect("expected grouped scene canvas in time")
         .expect("canvas sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), scene_canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, scene_canvas_rx.changed())
         .await
-        .expect("expected grouped scene authoritative scene canvas within 2 seconds")
+        .expect("expected grouped scene authoritative scene canvas in time")
         .expect("scene canvas sender should remain connected");
 
     {
@@ -1879,7 +1896,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     let mut rt = RenderThread::spawn(state.clone());
     let mut published_group_rx = group_canvas_sender.subscribe();
     let _ = wait_for_next_frame(&mut frame_rx, 0).await;
-    tokio::time::timeout(Duration::from_secs(2), published_group_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, published_group_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
@@ -1968,11 +1985,11 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     let mut group_canvas_rx = group_canvas_sender.subscribe();
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), scene_canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, scene_canvas_rx.changed())
         .await
         .expect("authoritative scene canvas should publish within timeout")
         .expect("scene canvas stream should stay open");
-    tokio::time::timeout(Duration::from_secs(2), group_canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, group_canvas_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
@@ -2306,7 +2323,7 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
     }
     let mut render_thread = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             if state.input_manager.lock().await.source_graph_generation() >= 3 {
                 break;
@@ -2570,9 +2587,9 @@ async fn primary_group_canvas_published_to_canvas_channel() {
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, canvas_rx.changed())
         .await
-        .expect("expected active-effect canvas within 2 seconds")
+        .expect("expected active-effect canvas in time")
         .expect("canvas sender should remain connected");
 
     {
@@ -2608,9 +2625,9 @@ async fn pipeline_keeps_slot_backed_canvas_when_recent_frames_are_retained() {
     let mut retained_frames = VecDeque::new();
 
     for _ in 0..6 {
-        tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        tokio::time::timeout(WAIT_DEADLINE, canvas_rx.changed())
             .await
-            .expect("expected retained-frame canvas within 2 seconds")
+            .expect("expected retained-frame canvas in time")
             .expect("canvas sender should remain connected");
 
         let canvas = canvas_rx.borrow().clone();
@@ -2651,13 +2668,13 @@ async fn pipeline_keeps_slot_backed_canvas_with_multiple_receivers() {
     let mut secondary_retained_frames = VecDeque::new();
 
     for _ in 0..8 {
-        tokio::time::timeout(Duration::from_secs(2), primary_canvas_rx.changed())
+        tokio::time::timeout(WAIT_DEADLINE, primary_canvas_rx.changed())
             .await
-            .expect("expected primary receiver canvas within 2 seconds")
+            .expect("expected primary receiver canvas in time")
             .expect("primary canvas sender should remain connected");
-        tokio::time::timeout(Duration::from_secs(2), secondary_canvas_rx.changed())
+        tokio::time::timeout(WAIT_DEADLINE, secondary_canvas_rx.changed())
             .await
-            .expect("expected secondary receiver canvas within 2 seconds")
+            .expect("expected secondary receiver canvas in time")
             .expect("secondary canvas sender should remain connected");
 
         let primary_canvas = primary_canvas_rx.borrow().clone();
@@ -3034,7 +3051,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     )
     .await;
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             if backend_manager.lock().await.mapped_device_count() == 0 {
                 break;
@@ -3489,7 +3506,7 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
             .try_read()
             .map_or(u64::MAX, |render_loop| render_loop.frame_number());
             format!(
-            "expected the next GPU retained frame within 2 seconds: render_loop.frame_number={} latest_watch_frame_number={} latest_watch_zone_count={}",
+            "expected the next GPU retained frame in time: render_loop.frame_number={} latest_watch_frame_number={} latest_watch_zone_count={}",
             loop_frame_number,
             latest_frame.frame_number,
             latest_frame.zones.len()
@@ -3504,12 +3521,12 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
     }
     let (deadline_tx, mut deadline_rx) = oneshot::channel();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(WAIT_DEADLINE);
         let _ = deadline_tx.send(());
     });
     tokio::select! {
         shutdown = rt.shutdown() => shutdown.expect("shutdown"),
-        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+        _ = &mut deadline_rx => panic!("render thread should stop in time"),
     }
 
     let initial_left = initial_frame
@@ -3653,12 +3670,12 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
     }
     let (deadline_tx, mut deadline_rx) = oneshot::channel();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(WAIT_DEADLINE);
         let _ = deadline_tx.send(());
     });
     tokio::select! {
         shutdown = rt.shutdown() => shutdown.expect("shutdown"),
-        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+        _ = &mut deadline_rx => panic!("render thread should stop in time"),
     }
 }
 
@@ -3720,7 +3737,7 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
     let expected_left = [0, 255, 255];
     let expected_right = [255, 0, 255];
 
-    let latest_frame = tokio::time::timeout(Duration::from_secs(2), async {
+    let latest_frame = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             frame_rx
                 .changed()
@@ -3758,7 +3775,7 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
             .unwrap_or_else(|_| "unavailable".to_owned());
         let last_frame = frame_rx.borrow().clone();
         panic!(
-            "expected deferred GPU sampling to publish the newest screen colors within 2 seconds: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={} performance={}",
+            "expected deferred GPU sampling to publish the newest screen colors in time: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={} performance={}",
             loop_frame_number,
             last_frame.frame_number,
             last_frame.zones.len(),
@@ -3772,12 +3789,12 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
     }
     let (deadline_tx, mut deadline_rx) = oneshot::channel();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(WAIT_DEADLINE);
         let _ = deadline_tx.send(());
     });
     tokio::select! {
         shutdown = rt.shutdown() => shutdown.expect("shutdown"),
-        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+        _ = &mut deadline_rx => panic!("render thread should stop in time"),
     }
 
     let initial_left = initial_frame
@@ -3870,7 +3887,7 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
     let expected_left = [255, 255, 255];
     let expected_right = [16, 32, 48];
 
-    let latest_frame = tokio::time::timeout(Duration::from_secs(2), async {
+    let latest_frame = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             frame_rx
                 .changed()
@@ -3903,7 +3920,7 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
             .map_or(0, |render_loop| render_loop.frame_number());
         let last_frame = frame_rx.borrow().clone();
         panic!(
-            "expected sustained deferred GPU sampling to publish the newest screen colors within 2 seconds: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={}",
+            "expected sustained deferred GPU sampling to publish the newest screen colors in time: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={}",
             loop_frame_number,
             last_frame.frame_number,
             last_frame.zones.len(),
@@ -3916,12 +3933,12 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
     }
     let (deadline_tx, mut deadline_rx) = oneshot::channel();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(WAIT_DEADLINE);
         let _ = deadline_tx.send(());
     });
     tokio::select! {
         shutdown = rt.shutdown() => shutdown.expect("shutdown"),
-        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+        _ = &mut deadline_rx => panic!("render thread should stop in time"),
     }
 
     let initial_left = initial_frame
@@ -4026,7 +4043,7 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
     .await
     .expect("renderer should acknowledge the layout update");
 
-    let updated_color = tokio::time::timeout(Duration::from_secs(2), async {
+    let updated_color = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             frame_rx
                 .changed()
@@ -4045,7 +4062,7 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
         }
     })
     .await
-    .expect("expected queued layout update within 2 seconds");
+    .expect("expected queued layout update in time");
 
     {
         let mut rl = state.render_loop.write().await;
@@ -4517,11 +4534,11 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, frame_rx.changed())
         .await
         .expect("timed out waiting for initial frame")
         .expect("frame sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, canvas_rx.changed())
         .await
         .expect("timed out waiting for initial canvas")
         .expect("canvas sender should remain connected");
@@ -4538,14 +4555,61 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         ..OutputPowerState::default()
     });
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("timed out waiting for cleared frame")
-        .expect("frame sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
-        .await
-        .expect("timed out waiting for cleared canvas")
-        .expect("canvas sender should remain connected");
+    // Frames already in flight when the power state flips can land
+    // ahead of the cleared publication, so a single `changed()` may
+    // resolve on a still-populated frame. Wait for the STATE, not for
+    // one notification. On timeout, dump what WAS observed: this test
+    // has failed on CI runners in ways that never reproduce locally,
+    // and a bare timeout message cannot distinguish "cleared frame
+    // never published" from "publications stopped entirely".
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    let mut frame_changes = 0_u32;
+    loop {
+        let (empty, frame_number, zone_count) = {
+            let frame = frame_rx.borrow_and_update();
+            (
+                frame.zones.is_empty(),
+                frame.frame_number,
+                frame.zones.len(),
+            )
+        };
+        if empty {
+            break;
+        }
+        let Ok(changed) = tokio::time::timeout_at(deadline, frame_rx.changed()).await else {
+            panic!(
+                "timed out waiting for cleared frame: observed {frame_changes} \
+                 changes since the sleep flip, last frame_number={frame_number} \
+                 with {zone_count} zones still populated"
+            )
+        };
+        changed.expect("frame sender should remain connected");
+        frame_changes += 1;
+    }
+    let mut canvas_changes = 0_u32;
+    loop {
+        let (blank, frame_number, lit_pixels) = {
+            let canvas = canvas_rx.borrow_and_update();
+            let lit = canvas
+                .rgba_bytes()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
+                .count();
+            (lit == 0, canvas.frame_number, lit)
+        };
+        if blank {
+            break;
+        }
+        let Ok(changed) = tokio::time::timeout_at(deadline, canvas_rx.changed()).await else {
+            panic!(
+                "timed out waiting for cleared canvas: observed {canvas_changes} \
+                 canvas changes since the sleep flip, last frame_number=\
+                 {frame_number} with {lit_pixels} lit pixels"
+            )
+        };
+        changed.expect("canvas sender should remain connected");
+        canvas_changes += 1;
+    }
 
     {
         let mut rl = state.render_loop.write().await;
