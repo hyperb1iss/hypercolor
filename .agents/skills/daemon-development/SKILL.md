@@ -81,9 +81,9 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 
 ## WebSocket Protocol
 
-Single endpoint at `/api/v1/ws`. Five channel types:
+Single endpoint at `/api/v1/ws`. Five of the fifteen topics:
 
-| Channel    | Data                                                 | Format                 |
+| Topic      | Data                                                 | Format                 |
 | ---------- | ---------------------------------------------------- | ---------------------- |
 | `events`   | State changes (effect applied, device connected)     | JSON                   |
 | `frames`   | LED color output per device                          | Binary                 |
@@ -97,7 +97,9 @@ Single endpoint at `/api/v1/ws`. Five channel types:
 { "type": "subscribe", "topics": [{ "topic": "events" }, { "topic": "metrics" }] }
 ```
 
-**Backpressure**: Slow consumers get dropped frames, not memory growth. The WS handler sends a `Backpressure` server message (JSON) with `dropped_frames`, `channel`, `recommendation: "reduce_fps"`, and `suggested_fps` so the UI can auto-throttle.
+**Backpressure**: Slow consumers get dropped frames, not memory growth. The WS handler sends a `Backpressure` server message (JSON) with `dropped_frames`, `topic`, `recommendation: "reduce_fps"`, and `suggested_fps` so the UI can auto-throttle.
+
+**Keyed topics**: `display_preview` (keyed by device) and `interactive_preview` (keyed by the client's preview id) hold one subscription per key, so a selector names both the topic and its key. Subscribing to `interactive_preview` is what opens its render lane.
 
 ## Event Bus (HypercolorBus)
 

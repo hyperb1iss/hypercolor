@@ -1,12 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "protocol": "hypercolor.websocket",
   "version": "1.0",
   "subprotocol": "hypercolor-v1",
   "default_subscriptions": [
     "events"
   ],
-  "channels": [
+  "topics": [
     {
       "name": "frames",
       "kind": "binary",
@@ -179,7 +179,6 @@
   "json_payloads": {
     "timed_input_event_v1": {
       "schema_version": 1,
-      "channel": "input_events",
       "event": "input_event_received",
       "required_fields": [
         "event"
@@ -190,11 +189,11 @@
         "physical_code": null,
         "repeat_count": 1
       },
-      "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload."
+      "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+      "topic": "input_events"
     },
     "input_source_status_changed_v1": {
       "schema_version": 1,
-      "channel": "events",
       "event": "input_source_status_changed",
       "required_fields": [
         "source_id",
@@ -215,14 +214,14 @@
         "lifecycle_issue_code": null,
         "freshness_issue_code": null
       },
-      "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents."
+      "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents.",
+      "topic": "events"
     }
   },
   "binary_messages": [
     {
       "name": "led_frame",
       "tag": 1,
-      "channel": "frames",
       "layout": [
         [
           "u8",
@@ -244,12 +243,12 @@
           "repeated_zone",
           "zones"
         ]
-      ]
+      ],
+      "topic": "frames"
     },
     {
       "name": "spectrum",
       "tag": 2,
-      "channel": "spectrum",
       "layout": [
         [
           "u8",
@@ -291,97 +290,98 @@
           "repeated_f32_le",
           "bins"
         ]
-      ]
+      ],
+      "topic": "spectrum"
     },
     {
       "name": "canvas",
       "tag": 3,
-      "channel": "canvas",
-      "layout": "preview_frame"
+      "layout": "preview_frame",
+      "topic": "canvas"
     },
     {
       "name": "screen_canvas",
       "tag": 5,
-      "channel": "screen_canvas",
-      "layout": "preview_frame"
+      "layout": "preview_frame",
+      "topic": "screen_canvas"
     },
     {
       "name": "screen_zones",
       "tag": 9,
-      "channel": "screen_zones",
-      "layout": "screen_zones_frame"
+      "layout": "screen_zones_frame",
+      "topic": "screen_zones"
     },
     {
       "name": "web_viewport_canvas",
       "tag": 6,
-      "channel": "web_viewport_canvas",
-      "layout": "preview_frame"
+      "layout": "preview_frame",
+      "topic": "web_viewport_canvas"
     },
     {
       "name": "zone_preview",
       "tag": 8,
-      "channel": "zone_preview",
-      "layout": "zone_preview_frame"
+      "layout": "zone_preview_frame",
+      "topic": "zone_preview"
     },
     {
       "name": "display_preview",
       "tag": 7,
-      "channel": "display_preview",
-      "layout": "display_preview_frame"
+      "layout": "display_preview_frame",
+      "topic": "display_preview"
     },
     {
       "name": "interactive_preview",
       "tag": 10,
-      "channel": "interactive_preview",
-      "layout": "interactive_preview_frame"
+      "layout": "interactive_preview_frame",
+      "topic": "interactive_preview"
     },
     {
       "name": "wide_preview",
       "tag": 11,
-      "channel": "preview_transport",
-      "layout": "wide_preview_frame"
+      "layout": "wide_preview_frame",
+      "topic": "preview_transport"
     },
     {
       "name": "wide_zone_preview",
       "tag": 12,
-      "channel": "zone_preview",
-      "layout": "wide_zone_preview_frame"
+      "layout": "wide_zone_preview_frame",
+      "topic": "zone_preview"
     },
     {
       "name": "wide_interactive_preview",
       "tag": 13,
-      "channel": "interactive_preview",
-      "layout": "wide_interactive_preview_frame"
+      "layout": "wide_interactive_preview_frame",
+      "topic": "interactive_preview"
     },
     {
       "name": "wide_screen_zones",
       "tag": 14,
-      "channel": "screen_zones",
-      "layout": "wide_screen_zones_frame"
+      "layout": "wide_screen_zones_frame",
+      "topic": "screen_zones"
     },
     {
       "name": "preview_chunk",
       "tag": 15,
-      "channel": "preview_transport",
-      "layout": "preview_chunk_frame"
+      "layout": "preview_chunk_frame",
+      "topic": "preview_transport"
     },
     {
       "name": "preview_cancel",
       "tag": 16,
-      "channel": "preview_transport",
-      "layout": "preview_cancel_frame"
+      "layout": "preview_cancel_frame",
+      "topic": "preview_transport"
     },
     {
       "name": "extended_screen_zones",
       "tag": 17,
-      "channel": "screen_zones",
-      "layout": "extended_screen_zones_frame"
+      "layout": "extended_screen_zones_frame",
+      "topic": "screen_zones"
     },
     {
       "name": "wide_display_preview",
       "tag": 18,
-      "channel": "display_preview",
-      "layout": "wide_display_preview_frame"
+      "layout": "wide_display_preview_frame",
+      "topic": "display_preview"
     }
   ],
   "preview_frame": {
@@ -903,7 +903,7 @@
       ]
     ]
   },
-  "channel_config": {
+  "topic_config": {
     "frames": {
       "fps": {
         "min": 1,

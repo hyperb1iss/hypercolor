@@ -2474,7 +2474,7 @@ async fn zone_layout_preview_rejects_invalid_sampling_radii() {
 }
 
 #[test]
-fn channel_config_apply_patch_supports_all_channels() {
+fn topic_config_apply_patch_supports_every_configurable_topic() {
     let state = SubscriptionState::default()
         .subscribed_unkeyed(
             &[
@@ -2510,7 +2510,7 @@ fn channel_config_apply_patch_supports_all_channels() {
 }
 
 #[test]
-fn channel_config_admits_wide_shapes_and_preserves_auto_dimensions() {
+fn topic_config_admits_wide_shapes_and_preserves_auto_dimensions() {
     let state = SubscriptionState::default()
         .subscribed_unkeyed(
             &["canvas", "screen_canvas"],
@@ -2529,7 +2529,7 @@ fn channel_config_admits_wide_shapes_and_preserves_auto_dimensions() {
 }
 
 #[test]
-fn channel_config_rejects_over_budget_shape_transactionally() {
+fn topic_config_rejects_over_budget_shape_transactionally() {
     let live = SubscriptionState::default()
         .subscribed_unkeyed(&["canvas", "zone_preview"], serde_json::Value::Null)
         .expect("bare subscribe applies");
@@ -2553,7 +2553,7 @@ fn channel_config_rejects_over_budget_shape_transactionally() {
 }
 
 #[test]
-fn channel_config_defaults_are_stable() {
+fn topic_config_defaults_are_stable() {
     let json = SubscriptionState::default()
         .subscribed_unkeyed(
             &[
@@ -4065,7 +4065,7 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
 }
 
 #[tokio::test]
-async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
+async fn an_interactive_preview_subscription_streams_addressed_frames_from_a_real_lane() {
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, _outbound, frames) = browser_preview_session(handle, routing, executor);
@@ -4104,7 +4104,7 @@ async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
 }
 
 #[tokio::test]
-async fn interactive_preview_open_without_executor_creates_no_input_attachment() {
+async fn an_interactive_preview_subscribe_without_an_executor_creates_no_input_attachment() {
     let (_source, handle, routing) = browser_preview_test_context();
     let registry = handle.registry();
     let (outbound, _frames) = preview_outbound_channel();
@@ -4156,7 +4156,7 @@ fn websocket_manifest_matches_protocol_constants() {
     )))
     .expect("websocket protocol manifest should parse");
 
-    let manifest_channels = manifest["channels"]
+    let manifest_topics = manifest["topics"]
         .as_array()
         .expect("manifest channels should be an array")
         .iter()
@@ -4171,7 +4171,7 @@ fn websocket_manifest_matches_protocol_constants() {
         .iter()
         .map(|topic| topic.as_str().to_owned())
         .collect::<Vec<_>>();
-    assert_eq!(manifest_channels, protocol_channels);
+    assert_eq!(manifest_topics, protocol_channels);
 
     let manifest_capabilities = manifest["capabilities"]
         .as_array()
@@ -4217,22 +4217,22 @@ fn websocket_manifest_matches_protocol_constants() {
         "zone_preview",
     ] {
         assert!(
-            manifest["channel_config"][channel]["width"]
+            manifest["topic_config"][channel]["width"]
                 .get("max")
                 .is_none()
         );
         assert!(
-            manifest["channel_config"][channel]["height"]
+            manifest["topic_config"][channel]["height"]
                 .get("max")
                 .is_none()
         );
     }
 
-    let input_channel = manifest_channels
+    let input_channel = manifest_topics
         .iter()
         .position(|channel| channel == "input_events")
         .and_then(|index| {
-            manifest["channels"]
+            manifest["topics"]
                 .as_array()
                 .and_then(|channels| channels.get(index))
         })

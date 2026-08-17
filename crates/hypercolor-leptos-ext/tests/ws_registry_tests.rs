@@ -396,10 +396,7 @@ fn a_failing_field_leaves_the_whole_config_untouched() {
 #[test]
 fn display_preview_cadence_stops_at_thirty() {
     for fps in [0_u32, 31] {
-        let patch = DisplayPreviewConfigPatch {
-            fps: Some(fps),
-            ..DisplayPreviewConfigPatch::default()
-        };
+        let patch = DisplayPreviewConfigPatch { fps: Some(fps) };
         let error = apply_patch_transactionally(&DisplayPreviewConfig::default(), &patch)
             .expect_err("cadence bound");
         assert_eq!(error.field, "fps");

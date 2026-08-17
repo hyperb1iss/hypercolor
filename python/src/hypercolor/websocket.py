@@ -22,7 +22,7 @@ from .constants import WS_SUBPROTOCOL
 from .ws_protocol import (
     BINARY_MESSAGE_TAGS,
     CANVAS_FORMAT_TAGS,
-    PREVIEW_CHANNEL_TAGS,
+    PREVIEW_TOPIC_TAGS,
     WS_CAPABILITIES,
 )
 
@@ -891,7 +891,7 @@ class HypercolorEventStream:
             return HypercolorEventStream._parse_led_frame(payload)
         if message_type == BINARY_MESSAGE_TAGS["spectrum"]:
             return HypercolorEventStream._parse_spectrum(payload)
-        if message_type in PREVIEW_CHANNEL_TAGS:
+        if message_type in PREVIEW_TOPIC_TAGS:
             return HypercolorEventStream._parse_canvas(payload)
         return HypercolorEventStream._parse_special_binary(message_type, payload)
 
@@ -1063,7 +1063,7 @@ class HypercolorEventStream:
             height=height,
             format=image_format,
             pixels=pixels,
-            channel=PREVIEW_CHANNEL_TAGS[payload[0]],
+            channel=PREVIEW_TOPIC_TAGS[payload[0]],
         )
 
     @staticmethod

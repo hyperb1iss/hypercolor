@@ -47,19 +47,19 @@ def test_ws_protocol_constants_match_manifest() -> None:
     manifest = msgspec.json.decode(PROTOCOL_MANIFEST.read_bytes())
     assert isinstance(manifest, dict)
 
-    channels = _expect_list(manifest["channels"])
+    topics = _expect_list(manifest["topics"])
     binary_messages = _expect_list(manifest["binary_messages"])
     preview_formats = _expect_dict(_expect_dict(manifest["preview_frame"])["formats"])
 
     assert manifest["version"] == ws_protocol.WS_PROTOCOL_VERSION
     assert manifest["subprotocol"] == ws_protocol.WS_SUBPROTOCOL
-    assert list(ws_protocol.WS_CHANNELS) == [str(channel["name"]) for channel in channels]
+    assert list(ws_protocol.WS_TOPICS) == [str(topic["name"]) for topic in topics]
     assert list(ws_protocol.WS_CAPABILITIES) == _expect_list(manifest["capabilities"])
     assert dict(ws_protocol.BINARY_MESSAGE_TAGS) == {
         str(message["name"]): int(message["tag"]) for message in binary_messages
     }
-    assert dict(ws_protocol.PREVIEW_CHANNEL_TAGS) == {
-        int(message["tag"]): str(message["channel"])
+    assert dict(ws_protocol.PREVIEW_TOPIC_TAGS) == {
+        int(message["tag"]): str(message["topic"])
         for message in binary_messages
         if message["layout"] == "preview_frame"
     }
@@ -878,6 +878,6 @@ def test_unknown_binary_tag_is_tolerated() -> None:
 
 
 def test_client_messages_are_text_frames() -> None:
-    encoded = _encode_text({"type": "subscribe", "channels": ["frames"]})
+    encoded = _encode_text({"type": "subscribe", "topics": [{"topic": "frames"}]})
 
     assert isinstance(encoded, str)

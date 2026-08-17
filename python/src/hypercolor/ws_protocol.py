@@ -9,7 +9,7 @@ WS_PROTOCOL_VERSION: Final = "1.0"
 WS_SUBPROTOCOL: Final = "hypercolor-v1"
 DEFAULT_WS_SUBSCRIPTIONS: Final = ("events",)
 
-WS_CHANNELS: Final = (
+WS_TOPICS: Final = (
     "frames",
     "spectrum",
     "events",
@@ -72,7 +72,7 @@ BINARY_MESSAGE_TAGS: Final = MappingProxyType(
         "wide_display_preview": 0x12,
     }
 )
-PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(
+PREVIEW_TOPIC_TAGS: Final = MappingProxyType(
     {
         0x03: "canvas",
         0x05: "screen_canvas",
