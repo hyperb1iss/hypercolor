@@ -94,7 +94,7 @@ Single endpoint at `/api/v1/ws`. Five channel types:
 **Subscribe on connect:**
 
 ```json
-{ "type": "subscribe", "channels": ["events", "metrics"] }
+{ "type": "subscribe", "topics": [{ "topic": "events" }, { "topic": "metrics" }] }
 ```
 
 **Backpressure**: Slow consumers get dropped frames, not memory growth. The WS handler sends a `Backpressure` server message (JSON) with `dropped_frames`, `channel`, `recommendation: "reduce_fps"`, and `suggested_fps` so the UI can auto-throttle.

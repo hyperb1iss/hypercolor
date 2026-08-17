@@ -6,7 +6,7 @@ The daemon WebSocket endpoint at `/api/v1/ws` streams real-time data to the UI.
 
 1. **Connect** to `ws://127.0.0.1:9420/api/v1/ws`
 2. **Set binary type**: `ws.set_binary_type(BinaryType::Arraybuffer)` — required for canvas frames
-3. **Subscribe**: Send JSON `{ "type": "subscribe", "channels": ["events", "metrics"] }`
+3. **Subscribe**: Send JSON `{ "type": "subscribe", "topics": [{ "topic": "events" }, { "topic": "metrics" }] }`
 4. **Receive**: Binary messages (canvas/frame data) and JSON messages (events/metrics/audio)
 
 ## Binary Frame Format

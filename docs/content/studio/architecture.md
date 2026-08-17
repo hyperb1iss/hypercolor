@@ -29,8 +29,8 @@ Studio reads from three app-root contexts and owns one of its own. The rule of t
 The active scene is one resource for the whole app. `provide_scene_contexts()` in `zones.rs` builds a `LocalResource` over `api::fetch_active_scene` and exposes it as a `Memo<Option<ActiveSceneResponse>>` on both `ZonesContext` and `ScenesContext`. A WebSocket effect refetches it on every scene event except pure control patches, which arrive at slider-drag rate and never change scene structure:
 
 ```rust
-let controls_only = hint.event_type == "render_group_changed"
-    && hint.render_group_change_kind
+let controls_only = hint.event_type == "zone_changed"
+    && hint.zone_change_kind
         == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched);
 if !controls_only {
     active_scene_resource.refetch();

@@ -352,25 +352,28 @@ One mechanism: route registration goes through a helper that records `(method, p
 All client-visible WS types move to `hypercolor-leptos-ext::ws` (feature `ws-core`), including the metrics payload tree (deleting the UI's 16 mirrors).
 
 ```rust
-// One declarative registry generates WsChannel, typed config/patch enums, validation,
+// One declarative registry generates TopicId, typed config/patch types, validation,
 // ack projection, and relay dispatch — runtime string dispatch from compile-time decls:
 define_ws_topics! {
-    events            { key: (),        config: EventsConfig,        codec: JsonOnly },
-    frames            { key: (),        config: FramesConfig,        codec: FramesCodec },      // owns tag 0x01
-    spectrum          { key: (),        config: SpectrumConfig,      codec: SpectrumCodec },    // owns 0x02
-    metrics           { key: (),        config: MetricsConfig,       codec: JsonOnly },
-    display_preview   { key: DeviceId,  config: DisplayPreviewConfig, codec: PreviewCodec },    // PreviewCodec owns its full tag SET (0x03, 0x05–0x11: canvas/screen/viewport/display/zone/wide/chunk/cancel/extended; 0x04 unassigned)
-    interactive_preview { key: PreviewId, config: InteractiveConfig,  codec: PreviewCodec },
-    /* … */
+    registry TopicId;
+    reserved [0x0b, 0x0f, 0x10];   // transport envelopes no single topic owns
+    events              { key: unkeyed,    config: (),                   tags: [] }
+    frames              { key: unkeyed,    config: FramesConfig,         tags: [0x01] }
+    spectrum            { key: unkeyed,    config: SpectrumConfig,       tags: [0x02] }
+    metrics             { key: unkeyed,    config: MetricsConfig,        tags: [] }
+    display_preview     { key: DeviceKey,  config: DisplayPreviewConfig, tags: [0x07, 0x12] }
+    interactive_preview { key: PreviewKey, config: InteractivePreviewConfig, tags: [0x0a, 0x0d] }
+    /* … 0x04 stays deliberately unassigned */
 }
 pub struct Subscription<T: WsTopic> { pub key: T::Key, pub config: T::Config }  // T::Key = () for unkeyed — invalid states unrepresentable
 ```
 
-- Registry entries declare the **full** associated-type set: `Key`, `Config`, `Patch` (with transactional tri-state application — a patch validates completely before any field lands), `Item` (relay payload), the relay source, and the ack projection — so the macro generates dispatch and validation with no hand-unrolled blocks left.
-- A codec owns its complete tag set (preview topics legitimately span multiple tags); a registry-wide assertion enforces **unique wire-tag ownership** across topics — display and interactive preview share `PreviewCodec` mechanics but own disjoint tag subsets. Every tag and byte layout is pinned by golden fixtures **before** extraction — updated deliberately in the same PR whenever a layout intentionally changes. The hand-written spectrum header is replaced by `SpectrumFrame::encode` (layout already proven equal by test).
-- Cadence: one internal `Cadence` type speaking `fps` only — `interval_ms` is deleted with both in-repo clients updated in the same PR. No handshake versioning, no dual-accept.
-- Keyed subscriptions unify `display_preview` (today 1-per-connection) and `interactive_preview` (today a bespoke session protocol) into N-concurrent keyed subscriptions, replacing the old message forms outright.
-- Adding a topic = one `define_ws_topics!` entry + one relay fn.
+- Registry entries declare the **full** associated-type set: `Key`, `Config`, `Patch` (with transactional tri-state application — a patch validates completely before any field lands), the control-tier gate, and the owned tag set, so the macro generates dispatch and validation with no hand-unrolled blocks left. Runtime facts (which relay serves a topic, what surface budget its config must fit) stay in the daemon's own table keyed by `TopicId`.
+- A topic owns its complete tag set (preview topics legitimately span several tags); a compile-time assertion enforces **unique wire-tag ownership** across topics and against the `reserved` list. Every tag and byte layout is pinned by golden fixtures — rewritten deliberately in the same PR whenever a layout intentionally changes. The hand-written spectrum header is replaced by `SpectrumFrame::encode` (layout already proven equal by test).
+- Subscribe and unsubscribe carry an array of selectors: a topic, its key when keyed, and that subscription's config patch. Config travelling with its selector is what makes a patch for a topic the request never named unrepresentable rather than merely refused.
+- Keyed subscriptions unify `display_preview` (was 1-per-connection with a tri-state target field) and `interactive_preview` (was a bespoke session protocol) into N-concurrent keyed subscriptions, replacing the old message forms outright. Keying display preview means its frames carry the device id, so it leaves the passive preview-canvas family for the identity-prefixed layout interactive preview already used.
+- Cadence: one internal `Cadence` type speaking `fps` only — `interval_ms` is deleted with both in-repo clients updated in the same PR. No handshake versioning, no dual-accept. **Still open after 3.2c:** integer fps cannot express the sub-1-fps cadences `interval_ms` allows (the TUI asks for 2000 ms), so the collapse needs a cadence type that can, or a decided floor.
+- Adding a topic = one `define_ws_topics!` entry + one relay registration.
 
 ---
 
@@ -523,13 +526,13 @@ pub trait DeviceBackendFactory: Send + Sync {
 
 **Wave C1 — the compat-ectomy** (after 2.3a/4.1 merge; before or interleaved with Phase 3; each an atomic PR with all in-repo clients updated in-PR)
 C1a **Error-surface flip**: every route renders the canonical `DomainError` envelope; delete `domain::legacy`, `into_v1_response`, and `ApiError` entirely; rewrite the matrix tests to pin canonical shapes; unblocks wave 2.2's nine deferred helpers (bespoke 404 prose normalizes, `ResourceKind::Driver` exists).
-C1b **Naming flip**: `current`→`active`, `groups`→`zones`, `/config/get|set`→resource routes — old routes deleted, not aliased.
+C1b **Naming flip**: `current`→`active`, `groups`→`zones`, `/config/get|set`→resource routes — old routes deleted, not aliased. The REST half shipped in C1b; the WS half (the `render_group_changed` event name and the `group_id`/`group_name`/`groups_revision` event fields) shipped in wave 3.2c, which owned that surface. Persisted scene files keep `groups` until C1c migrates them.
 C1c **Persisted-legacy deletion**: delete core's `migrate_config` (schema ≤3 path) and driver-inventory's legacy runtime-state import entry (already completed on the only install); update `types::control`'s keep-raw doc paragraph; schema bumps + release notes where shapes require it. (The legacy Zone codec deletes in 5.1, where its consumers restructure.)
 C1d **Deprecated-surface deletion**: migrate remaining callers off `hypercolor-color`'s `compat.rs` and delete it; delete the TS `audio/helpers` color re-export.
 
 **Phase 3 — contract rollout** (after 2)
 3.1 Worker(s): grow `types::api` to full coverage **in per-domain batches** (devices+scenes; effects+library; layouts+displays+assets; drivers+system), daemon + UI + TUI mirrors deleted in the same PR per batch.
-3.2 Fable: `define_ws_topics!` registry + codec/tag contracts. Worker: promote WS types to leptos-ext, migrate subscribes, keyed subscriptions replacing the old message forms outright (clients in the same PRs) — split extraction / topics / clients into separate PRs.
+3.2 Fable: `define_ws_topics!` registry + codec/tag contracts. Worker: promote WS types to leptos-ext, migrate subscribes, keyed subscriptions replacing the old message forms outright (clients in the same PRs) — split extraction / topics / clients into separate PRs. **Shipped:** 3.2a extraction, 3.2b daemon adoption, 3.2c the keyed wire with every client, the WS half of C1b's naming flip, and the deletion of the daemon's embedded `/preview` page (a fourth WS client that also shadowed the UI's own route). `interval_ms`→`Cadence` is the one §5 item 3.2c left open, for the reason recorded there.
 3.3 Worker: honest pagination everywhere (absorbed by C1a where it lands first) + registration-helper OpenAPI catalog (142-entry table dies).
 
 **Phase 4 — config** (after 0.9)
