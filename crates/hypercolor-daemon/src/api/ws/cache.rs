@@ -26,13 +26,12 @@ use hypercolor_leptos_ext::ws::{ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAM
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::scene::{SceneId, ZoneId};
 
+use hypercolor_leptos_ext::ws::registry::{CanvasFormat, FrameFormat};
+
 use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_payload_scaled_stateless,
 };
-use super::protocol::{
-    ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection,
-    validate_preview_surface_bytes,
-};
+use super::protocol::{ActiveFramesConfig, FrameZoneSelection, validate_preview_surface_bytes};
 use crate::api::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 

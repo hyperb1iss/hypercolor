@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
 use hypercolor_leptos_ext::ws::PreviewTransportCapability;
+use hypercolor_leptos_ext::ws::registry::{CanvasConfig, CanvasFormat, SpectrumConfig, TopicId};
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
@@ -45,17 +46,16 @@ use super::command::dispatch_command;
 use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
     BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, InteractivePreviewConfig,
-    MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage, SubscriptionState, WsChannel,
+    MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage, SubscriptionState, TopicSelection,
     WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
     validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
     PreviewCursorQueue, PreviewOutboundItem, PreviewOutboundSender, PreviewSendCursor,
     WS_PREVIEW_CHUNK_SENT_COUNT, WS_PREVIEW_PUBLICATION_SENT_COUNT, preview_outbound_channel,
-    publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
-    relay_frames, relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors,
-    relay_spectrum, relay_web_viewport_canvas, relay_zone_preview,
+    publish_subscriptions,
 };
+use super::topics::{RelayContext, spawn_relays};
 use crate::api::AppState;
 use crate::api::effects::active_primary_effect;
 use crate::api::layouts::validate_layout_sampling_radii;
@@ -266,15 +266,13 @@ async fn handle_socket(
             server: state.server_identity.clone(),
             state: build_hello_state(&state).await,
             capabilities: ws_capabilities(),
-            subscriptions: sorted_channel_names(subscriptions.channels),
+            subscriptions: sorted_channel_names(subscriptions.topics()),
         }
     };
     if send_json(&mut socket, &hello).await.is_err() {
         return;
     }
 
-    // Subscribe to the event bus and watch channels.
-    let event_rx = state.event_bus.subscribe_all();
     // JSON and small binary telemetry stay count-bounded. Preview surfaces use
     // a keyed, byte-accounted latest-value router below.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(WS_BUFFER_SIZE);
@@ -287,72 +285,16 @@ async fn handle_socket(
         preview_tx.clone(),
     );
 
-    // Spawn event relay tasks — each watches immutable subscription snapshots.
-    let relay_handle = tokio::spawn(relay_events(
-        event_rx,
-        json_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let frame_relay_handle = tokio::spawn(relay_frames(
-        Arc::clone(&state),
-        json_tx.clone(),
-        binary_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let spectrum_relay_handle = tokio::spawn(relay_spectrum(
-        Arc::clone(&state),
-        json_tx.clone(),
-        binary_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let canvas_power_rx = state.power_state.subscribe();
-    let canvas_relay_handle = tokio::spawn(relay_canvas(
-        Arc::clone(&state.preview_runtime),
-        canvas_power_rx,
-        preview_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let screen_canvas_relay_handle = tokio::spawn(relay_screen_canvas(
-        Arc::clone(&state.preview_runtime),
-        preview_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let screen_zones_relay_handle = tokio::spawn(relay_screen_zones(
-        Arc::clone(&state.preview_runtime),
-        subscriptions_rx.clone(),
-        preview_tx.clone(),
-    ));
-    let web_viewport_canvas_relay_handle = tokio::spawn(relay_web_viewport_canvas(
-        Arc::clone(&state.preview_runtime),
-        preview_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let zone_preview_relay_handle = tokio::spawn(relay_zone_preview(
-        Arc::clone(&state.preview_runtime),
-        preview_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let display_preview_relay_handle = tokio::spawn(relay_display_preview(
-        Arc::clone(&state),
-        Arc::clone(&state.display_frames),
-        preview_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let metrics_relay_handle = tokio::spawn(relay_metrics(
-        Arc::clone(&state),
-        json_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let device_metrics_relay_handle = tokio::spawn(relay_device_metrics(
-        Arc::clone(&state),
-        json_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
-    let sensors_relay_handle = tokio::spawn(relay_sensors(
-        Arc::clone(&state),
-        json_tx.clone(),
-        subscriptions_rx.clone(),
-    ));
+    // Spawn every registered relay task — each watches immutable
+    // subscription snapshots, and the registry decides which topics a
+    // task serves.
+    let relay_handles = spawn_relays(&RelayContext {
+        state: Arc::clone(&state),
+        json_tx: json_tx.clone(),
+        binary_tx: binary_tx.clone(),
+        preview_tx: preview_tx.clone(),
+        subscriptions: subscriptions_rx.clone(),
+    });
 
     let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -550,21 +492,7 @@ async fn handle_socket(
         }
     }
 
-    abort_and_join_relays([
-        relay_handle,
-        frame_relay_handle,
-        spectrum_relay_handle,
-        canvas_relay_handle,
-        screen_canvas_relay_handle,
-        screen_zones_relay_handle,
-        web_viewport_canvas_relay_handle,
-        display_preview_relay_handle,
-        zone_preview_relay_handle,
-        metrics_relay_handle,
-        device_metrics_relay_handle,
-        sensors_relay_handle,
-    ])
-    .await;
+    abort_and_join_relays(relay_handles).await;
     browser_previews.shutdown().await;
     while let Some(cursor) = preview_cursors.pop_next() {
         preview_rx.complete(cursor.publication());
@@ -584,7 +512,7 @@ async fn wait_for_shutdown(shutdown: Option<&CancellationToken>) {
     }
 }
 
-async fn abort_and_join_relays<const N: usize>(handles: [JoinHandle<()>; N]) {
+async fn abort_and_join_relays(handles: Vec<JoinHandle<()>>) {
     for handle in &handles {
         handle.abort();
     }
@@ -630,34 +558,38 @@ impl WsInputDemandLeases {
         }
     }
 
-    pub(super) fn synchronize(
-        &mut self,
+    /// Work out what engine demand a subscription state implies,
+    /// without registering any of it. Every rejection this projection
+    /// can raise happens before a single lease moves, so a subscribe
+    /// that fails here leaves the engine exactly as it was.
+    pub(super) fn project(
+        &self,
         subscriptions: &SubscriptionState,
-    ) -> Result<(), WsProtocolError> {
-        let screen_active = subscriptions.channels.contains(WsChannel::ScreenCanvas)
-            || subscriptions.channels.contains(WsChannel::ScreenZones);
+    ) -> Result<ProjectedInputDemand, WsProtocolError> {
+        let screen_canvas = subscriptions.config_of::<CanvasConfig>(TopicId::ScreenCanvas);
+        let screen_active = subscriptions.contains(TopicId::ScreenCanvas)
+            || subscriptions.contains(TopicId::ScreenZones);
         let (screen_demand, screen_requested_extent) = if screen_active {
-            let requested_hz =
-                NonZeroU32::new(subscriptions.config.screen_canvas.fps).ok_or_else(|| {
-                    WsProtocolError::invalid_config(
-                        "config.screen_canvas.fps",
-                        "expected a non-zero cadence",
-                    )
-                })?;
+            let requested_hz = NonZeroU32::new(screen_canvas.fps).ok_or_else(|| {
+                WsProtocolError::invalid_config(
+                    "config.screen_canvas.fps",
+                    "expected a non-zero cadence",
+                )
+            })?;
             let mut branches = Vec::with_capacity(2);
             let mut requested_extent = None;
-            if subscriptions.channels.contains(WsChannel::ScreenCanvas) {
+            if subscriptions.contains(TopicId::ScreenCanvas) {
                 let output = resolve_canvas_output_size(
                     self.screen_base_extent.width(),
                     self.screen_base_extent.height(),
-                    subscriptions.config.screen_canvas.width,
-                    subscriptions.config.screen_canvas.height,
+                    screen_canvas.width,
+                    screen_canvas.height,
                 )
                 .map_err(|error| {
                     WsProtocolError::invalid_config_resource(
                         "config.screen_canvas",
-                        subscriptions.config.screen_canvas.width,
-                        subscriptions.config.screen_canvas.height,
+                        screen_canvas.width,
+                        screen_canvas.height,
                         error.to_string(),
                     )
                 })?;
@@ -671,8 +603,8 @@ impl WsInputDemandLeases {
                         )
                     })?;
                 let extent_request = ScreenExtentRequest::bounded(
-                    NonZeroU32::new(subscriptions.config.screen_canvas.width),
-                    NonZeroU32::new(subscriptions.config.screen_canvas.height),
+                    NonZeroU32::new(screen_canvas.width),
+                    NonZeroU32::new(screen_canvas.height),
                     ScreenUpscalePolicy::Never,
                 );
                 branches.push(screen_branch_demand(
@@ -683,7 +615,7 @@ impl WsInputDemandLeases {
                 ));
                 requested_extent = Some(canvas_extent);
             }
-            if subscriptions.channels.contains(WsChannel::ScreenZones) {
+            if subscriptions.contains(TopicId::ScreenZones) {
                 let extent_request = ScreenExtentRequest::bounded(
                     NonZeroU32::new(self.screen_base_extent.width()),
                     NonZeroU32::new(self.screen_base_extent.height()),
@@ -703,43 +635,60 @@ impl WsInputDemandLeases {
             let requested_extent =
                 requested_extent.expect("an active screen subscription has an extent");
             (
-                InputPublicationDemand::default().with_screen_branches(branches),
+                Some(InputPublicationDemand::default().with_screen_branches(branches)),
                 Some(requested_extent),
             )
         } else {
-            (InputPublicationDemand::default(), None)
+            (None, None)
         };
 
-        Self::synchronize_domain(
-            &self.demands,
-            &mut self.spectrum,
-            subscriptions.channels.contains(WsChannel::Spectrum),
-            InputPublicationDemand::default().with_source(
-                hypercolor_core::input::SourceKind::Audio,
-                subscriptions.config.spectrum.fps,
-            ),
-        );
-        Self::synchronize_domain(
-            &self.demands,
-            &mut self.screen,
-            screen_active,
-            screen_demand,
-        );
-        Self::synchronize_domain(
-            &self.demands,
-            &mut self.interaction,
-            subscriptions.channels.contains(WsChannel::InputEvents),
-            InputPublicationDemand::default().with_source(
-                hypercolor_core::input::SourceKind::Interaction,
-                self.interaction_hz,
-            ),
-        );
-        #[cfg(test)]
-        {
-            self.screen_requested_extent = screen_requested_extent;
-        }
+        // Only the tests read the resolved extent back; production
+        // reads it through the registered branches instead.
         #[cfg(not(test))]
         let _ = screen_requested_extent;
+
+        Ok(ProjectedInputDemand {
+            spectrum: subscriptions.contains(TopicId::Spectrum).then(|| {
+                InputPublicationDemand::default().with_source(
+                    hypercolor_core::input::SourceKind::Audio,
+                    subscriptions
+                        .config_of::<SpectrumConfig>(TopicId::Spectrum)
+                        .fps,
+                )
+            }),
+            screen: screen_demand,
+            interaction: subscriptions.contains(TopicId::InputEvents).then(|| {
+                InputPublicationDemand::default().with_source(
+                    hypercolor_core::input::SourceKind::Interaction,
+                    self.interaction_hz,
+                )
+            }),
+            #[cfg(test)]
+            screen_requested_extent,
+        })
+    }
+
+    /// Register a projection. Infallible by construction: everything
+    /// that could refuse already did.
+    pub(super) fn commit(&mut self, projected: ProjectedInputDemand) {
+        Self::synchronize_domain(&self.demands, &mut self.spectrum, projected.spectrum);
+        Self::synchronize_domain(&self.demands, &mut self.screen, projected.screen);
+        Self::synchronize_domain(&self.demands, &mut self.interaction, projected.interaction);
+        #[cfg(test)]
+        {
+            self.screen_requested_extent = projected.screen_requested_extent;
+        }
+    }
+
+    /// Project and commit in one step. Production splits the two so a
+    /// later rejection cannot strand a half-applied lease.
+    #[cfg(test)]
+    pub(super) fn synchronize(
+        &mut self,
+        subscriptions: &SubscriptionState,
+    ) -> Result<(), WsProtocolError> {
+        let projected = self.project(subscriptions)?;
+        self.commit(projected);
         Ok(())
     }
 
@@ -751,19 +700,28 @@ impl WsInputDemandLeases {
     fn synchronize_domain(
         demands: &InputPublicationDemandHandle,
         registration: &mut Option<InputPublicationDemandRegistration>,
-        active: bool,
-        demand: InputPublicationDemand,
+        demand: Option<InputPublicationDemand>,
     ) {
-        match (registration.as_ref(), active) {
-            (Some(registration), true) => registration.update(demand),
-            (None, true) => {
+        match (registration.as_ref(), demand) {
+            (Some(registration), Some(demand)) => registration.update(demand),
+            (None, Some(demand)) => {
                 *registration =
                     Some(demands.register(InputPublicationConsumer::PassiveStream, demand));
             }
-            (Some(_), false) => *registration = None,
-            (None, false) => {}
+            (Some(_), None) => *registration = None,
+            (None, None) => {}
         }
     }
+}
+
+/// The engine demand one subscription state implies, computed but not
+/// yet registered.
+pub(super) struct ProjectedInputDemand {
+    spectrum: Option<InputPublicationDemand>,
+    screen: Option<InputPublicationDemand>,
+    interaction: Option<InputPublicationDemand>,
+    #[cfg(test)]
+    screen_requested_extent: Option<PixelExtent>,
 }
 
 fn screen_branch_demand(
@@ -1086,9 +1044,9 @@ const fn runtime_preview_spec(config: InteractivePreviewConfig) -> RuntimeIntera
         width: config.width,
         height: config.height,
         format: match config.format {
-            super::protocol::CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
-            super::protocol::CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
-            super::protocol::CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
+            CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
+            CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
+            CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
         },
     }
 }
@@ -1128,17 +1086,17 @@ fn authoritative_claim_error(preview_id: &str, error: AuthoritativeClaimError) -
 
 pub(super) fn authorize_subscription_channels(
     auth_context: RequestAuthContext,
-    channels: &[WsChannel],
+    selections: &[TopicSelection],
 ) -> Result<(), WsProtocolError> {
     if auth_context.can_control() {
         return Ok(());
     }
 
-    let restricted_channels: Vec<&'static str> = channels
+    let restricted_channels: Vec<&'static str> = selections
         .iter()
-        .copied()
-        .filter(|channel| channel.requires_control_subscription())
-        .map(WsChannel::as_str)
+        .map(|selection| selection.topic)
+        .filter(|topic| topic.requires_control())
+        .map(TopicId::as_str)
         .collect();
 
     if restricted_channels.is_empty() {
@@ -1151,23 +1109,70 @@ pub(super) fn authorize_subscription_channels(
     }
 }
 
+/// A transport capability both ends have agreed on but neither has
+/// adopted yet.
+pub(super) struct StagedPreviewTransport {
+    peer: PreviewTransportCapability,
+    negotiated: PreviewTransportCapability,
+}
+
+/// Work out the capability this subscribe would settle on, touching
+/// nothing. A subscribe that goes on to fail its demand projection must
+/// leave the connection speaking exactly the transport it spoke before.
+pub(super) fn stage_preview_transport(
+    encoded_capability: &str,
+    preview_outbound: &PreviewOutboundSender,
+    preview_cursors: &PreviewCursorQueue,
+) -> Result<StagedPreviewTransport, WsProtocolError> {
+    let peer = PreviewTransportCapability::decode(encoded_capability).map_err(|error| {
+        WsProtocolError::invalid_request(format!("Invalid preview_transport capability: {error}"))
+    })?;
+    let negotiated = preview_outbound
+        .project_negotiation(peer)
+        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
+    preview_cursors
+        .check_capability(negotiated)
+        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
+    Ok(StagedPreviewTransport { peer, negotiated })
+}
+
+/// Adopt a staged capability. The sender re-checks and swaps under one
+/// lock, and the cursor queue already proved it fits, so this either
+/// lands whole or refuses without changing anything.
+pub(super) fn commit_preview_transport(
+    staged: StagedPreviewTransport,
+    preview_outbound: &PreviewOutboundSender,
+    preview_cursors: &mut PreviewCursorQueue,
+    preview_capability: &mut PreviewTransportCapability,
+) -> Result<PreviewTransportCapability, WsProtocolError> {
+    let negotiated = preview_outbound
+        .negotiate_transport(staged.peer)
+        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
+    debug_assert_eq!(
+        negotiated, staged.negotiated,
+        "committing a staged transport must settle on what staging projected"
+    );
+    preview_cursors
+        .set_capability(negotiated)
+        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
+    *preview_capability = negotiated;
+    Ok(negotiated)
+}
+
+#[cfg(test)]
 pub(super) fn negotiate_preview_transport(
     encoded_capability: &str,
     preview_outbound: &PreviewOutboundSender,
     preview_cursors: &mut PreviewCursorQueue,
     preview_capability: &mut PreviewTransportCapability,
 ) -> Result<PreviewTransportCapability, WsProtocolError> {
-    let peer = PreviewTransportCapability::decode(encoded_capability).map_err(|error| {
-        WsProtocolError::invalid_request(format!("Invalid preview_transport capability: {error}"))
-    })?;
-    let negotiated = preview_outbound
-        .negotiate_transport(peer)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    preview_cursors
-        .set_capability(negotiated)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    *preview_capability = negotiated;
-    Ok(negotiated)
+    let staged = stage_preview_transport(encoded_capability, preview_outbound, preview_cursors)?;
+    commit_preview_transport(
+        staged,
+        preview_outbound,
+        preview_cursors,
+        preview_capability,
+    )
 }
 
 /// Process a client subscription/unsubscription message.
@@ -1204,7 +1209,11 @@ async fn handle_client_message(
             config,
             preview_transport,
         } => {
-            let parsed_channels = match parse_channels(&channels) {
+            // Validate the whole request first. Every step below builds
+            // a candidate and refuses on its own terms, so a request
+            // that names four topics and mis-configures the fourth
+            // leaves the connection exactly as it was.
+            let selections = match parse_channels(&channels) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     let _ = send_json(socket, &error.into_message()).await;
@@ -1212,25 +1221,45 @@ async fn handle_client_message(
                 }
             };
 
-            if let Err(error) = authorize_subscription_channels(auth_context, &parsed_channels) {
+            if let Err(error) = authorize_subscription_channels(auth_context, &selections) {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
 
-            let mut next_subscriptions = subscriptions.clone();
-            if let Some(config_patch) = config
-                && let Err(error) = next_subscriptions.config.apply_patch(config_patch)
+            let next_subscriptions = match subscriptions.subscribe(&selections, config.as_ref()) {
+                Ok(next) => next,
+                Err(error) => {
+                    let _ = send_json(socket, &error.into_message()).await;
+                    return;
+                }
+            };
+
+            let staged_transport = match preview_transport
+                .as_deref()
+                .map(|encoded| stage_preview_transport(encoded, preview_outbound, preview_cursors))
+                .transpose()
             {
-                let _ = send_json(socket, &error.into_message()).await;
-                return;
-            }
+                Ok(staged) => staged,
+                Err(error) => {
+                    let _ = send_json(socket, &error.into_message()).await;
+                    return;
+                }
+            };
 
-            for channel in &parsed_channels {
-                next_subscriptions.channels.insert(*channel);
-            }
-            if let Some(encoded_capability) = preview_transport
-                && let Err(error) = negotiate_preview_transport(
-                    &encoded_capability,
+            let projected_demand = match input_demand_leases.project(&next_subscriptions) {
+                Ok(projected) => projected,
+                Err(error) => {
+                    let _ = send_json(socket, &error.into_message()).await;
+                    return;
+                }
+            };
+
+            // Commit phase. The transport goes first because adopting it
+            // is the only step that can still refuse, and it refuses
+            // without having changed anything.
+            if let Some(staged) = staged_transport
+                && let Err(error) = commit_preview_transport(
+                    staged,
                     preview_outbound,
                     preview_cursors,
                     preview_capability,
@@ -1239,22 +1268,19 @@ async fn handle_client_message(
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
-            if let Err(error) = input_demand_leases.synchronize(&next_subscriptions) {
-                let _ = send_json(socket, &error.into_message()).await;
-                return;
-            }
+            input_demand_leases.commit(projected_demand);
             *subscriptions = next_subscriptions;
 
             let ack = ServerMessage::Subscribed {
-                channels: unique_sorted_channel_names(&parsed_channels),
-                config: subscriptions.config.filtered_json(subscriptions.channels),
+                channels: unique_sorted_channel_names(&selections),
+                config: subscriptions.config_projection(),
                 preview_transport: preview_capability.encode(),
             };
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
         ClientMessage::Unsubscribe { channels } => {
-            let parsed_channels = match parse_channels(&channels) {
+            let selections = match parse_channels(&channels) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     let _ = send_json(socket, &error.into_message()).await;
@@ -1262,24 +1288,25 @@ async fn handle_client_message(
                 }
             };
 
-            let mut next_subscriptions = subscriptions.clone();
-            for channel in &parsed_channels {
-                next_subscriptions.channels.remove(*channel);
-            }
-            if let Err(error) = input_demand_leases.synchronize(&next_subscriptions) {
-                let _ = send_json(socket, &error.into_message()).await;
-                return;
-            }
+            let next_subscriptions = subscriptions.unsubscribe(&selections);
+            let projected_demand = match input_demand_leases.project(&next_subscriptions) {
+                Ok(projected) => projected,
+                Err(error) => {
+                    let _ = send_json(socket, &error.into_message()).await;
+                    return;
+                }
+            };
+            input_demand_leases.commit(projected_demand);
             *subscriptions = next_subscriptions;
-            for channel in &parsed_channels {
-                if let Err(error) = preview_outbound.cancel_channel(*channel) {
-                    warn!(%error, channel = channel.as_str(), "Failed to cancel unsubscribed preview channel");
+            for selection in &selections {
+                if let Err(error) = preview_outbound.cancel_topic(selection.topic) {
+                    warn!(%error, channel = selection.topic.as_str(), "Failed to cancel unsubscribed preview channel");
                 }
             }
-            let remaining = sorted_channel_names(subscriptions.channels);
+            let remaining = sorted_channel_names(subscriptions.topics());
 
             let ack = ServerMessage::Unsubscribed {
-                channels: unique_sorted_channel_names(&parsed_channels),
+                channels: unique_sorted_channel_names(&selections),
                 remaining,
             };
             publish_subscriptions(subscriptions_tx, subscriptions);

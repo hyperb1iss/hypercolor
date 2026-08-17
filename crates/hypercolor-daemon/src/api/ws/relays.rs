@@ -17,6 +17,10 @@ use hypercolor_core::bus::EventTimestamp;
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::BrowserInputPublicationId;
+use hypercolor_leptos_ext::ws::registry::{
+    CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, MetricsConfig, SpectrumConfig,
+    TopicId,
+};
 use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
     PreviewCancelFrame, PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
@@ -40,11 +44,11 @@ use super::cache::{
     try_encode_cached_canvas_preview_binary, try_encode_cached_zone_preview_binary_scaled,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane,
-    MetricsDisplayOutput, MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory,
-    MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces,
-    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
-    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+    ActiveFramesConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane, MetricsDisplayOutput,
+    MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory, MetricsPacing,
+    MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces, MetricsStages,
+    MetricsTimeline, MetricsWebsocket, ServerMessage, SubscriptionState, event_message_parts,
+    should_relay_event,
 };
 use crate::api::AppState;
 use crate::interactive_preview::PreviewResourceLease;
@@ -437,6 +441,21 @@ pub(super) fn preview_outbound_channel_with_limits(
 }
 
 impl PreviewOutboundSender {
+    /// The capability this sender would agree on with `peer`, without
+    /// agreeing to it. Staging the answer lets a subscribe reject on
+    /// something else entirely with the transport still untouched.
+    pub(super) fn project_negotiation(
+        &self,
+        peer: PreviewTransportCapability,
+    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
+        let state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self::negotiated_capability(&state, peer)
+    }
+
     pub(super) fn negotiate_transport(
         &self,
         peer: PreviewTransportCapability,
@@ -446,6 +465,21 @@ impl PreviewOutboundSender {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // Checked and applied under one lock: either the whole
+        // capability swap lands or the transport is left as it was.
+        let negotiated = Self::negotiated_capability(&state, peer)?;
+        state.capability = negotiated;
+        state.limits = PreviewOutboundLimits {
+            max_publication_bytes: negotiated.max_encoded_publication_bytes,
+            max_connection_bytes: negotiated.max_connection_bytes,
+        };
+        Ok(negotiated)
+    }
+
+    fn negotiated_capability(
+        state: &PreviewOutboundState,
+        peer: PreviewTransportCapability,
+    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
         if !state.current.is_empty()
             || !state.queued.is_empty()
             || !state.in_flight.is_empty()
@@ -463,13 +497,7 @@ impl PreviewOutboundSender {
                 .min(state.limits.max_connection_bytes),
             ..supported
         };
-        let negotiated = local.negotiated_with(peer);
-        state.capability = negotiated;
-        state.limits = PreviewOutboundLimits {
-            max_publication_bytes: negotiated.max_encoded_publication_bytes,
-            max_connection_bytes: negotiated.max_connection_bytes,
-        };
-        Ok(negotiated)
+        Ok(local.negotiated_with(peer))
     }
 
     pub(super) fn publish(
@@ -687,7 +715,7 @@ impl PreviewOutboundSender {
         Ok(true)
     }
 
-    pub(super) fn cancel_channel(&self, channel: WsChannel) -> Result<usize, PreviewOutboundError> {
+    pub(super) fn cancel_topic(&self, topic: TopicId) -> Result<usize, PreviewOutboundError> {
         let mut state = self
             .shared
             .state
@@ -703,7 +731,7 @@ impl PreviewOutboundSender {
             state
                 .current
                 .keys()
-                .filter(|stream| preview_stream_matches_channel(stream, channel))
+                .filter(|stream| preview_stream_matches_topic(stream, topic))
                 .cloned(),
         );
         let additional = streams
@@ -742,22 +770,22 @@ pub(super) enum PreviewOutboundItem {
     Cancellation(PreviewCancelFrame),
 }
 
-const fn preview_stream_matches_channel(stream: &PreviewStreamId, channel: WsChannel) -> bool {
-    match (stream, channel) {
-        (PreviewStreamId::Passive(frame_channel), WsChannel::Canvas) => {
+const fn preview_stream_matches_topic(stream: &PreviewStreamId, topic: TopicId) -> bool {
+    match (stream, topic) {
+        (PreviewStreamId::Passive(frame_channel), TopicId::Canvas) => {
             matches!(frame_channel, PreviewFrameChannel::Canvas)
         }
-        (PreviewStreamId::Passive(frame_channel), WsChannel::ScreenCanvas) => {
+        (PreviewStreamId::Passive(frame_channel), TopicId::ScreenCanvas) => {
             matches!(frame_channel, PreviewFrameChannel::ScreenCanvas)
         }
-        (PreviewStreamId::Passive(frame_channel), WsChannel::WebViewportCanvas) => {
+        (PreviewStreamId::Passive(frame_channel), TopicId::WebViewportCanvas) => {
             matches!(frame_channel, PreviewFrameChannel::WebViewportCanvas)
         }
-        (PreviewStreamId::Passive(frame_channel), WsChannel::DisplayPreview) => {
+        (PreviewStreamId::Passive(frame_channel), TopicId::DisplayPreview) => {
             matches!(frame_channel, PreviewFrameChannel::DisplayPreview)
         }
-        (PreviewStreamId::ScreenZones, WsChannel::ScreenZones)
-        | (PreviewStreamId::Zone { .. }, WsChannel::ZonePreview) => true,
+        (PreviewStreamId::ScreenZones, TopicId::ScreenZones)
+        | (PreviewStreamId::Zone { .. }, TopicId::ZonePreview) => true,
         _ => false,
     }
 }
@@ -999,16 +1027,23 @@ impl PreviewCursorQueue {
         }
     }
 
-    pub(super) fn set_max_streams(
-        &mut self,
-        max_streams: usize,
+    /// Whether the queue's live cursors fit inside `capability`.
+    pub(super) fn check_capability(
+        &self,
+        capability: PreviewTransportCapability,
     ) -> Result<(), PreviewOutboundError> {
-        if self.cursors.len() > max_streams {
-            return Err(PreviewOutboundError::StreamBudgetExceeded {
-                maximum: max_streams,
+        if capability.version == PreviewTransportVersion::V1 {
+            if self.cursors.len() > capability.max_streams {
+                return Err(PreviewOutboundError::StreamBudgetExceeded {
+                    maximum: capability.max_streams,
+                });
+            }
+        } else if self.state_bytes > capability.max_cursor_state_bytes {
+            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
+                maximum: capability.max_cursor_state_bytes,
+                actual: self.state_bytes,
             });
         }
-        self.max_streams = max_streams;
         Ok(())
     }
 
@@ -1016,14 +1051,7 @@ impl PreviewCursorQueue {
         &mut self,
         capability: PreviewTransportCapability,
     ) -> Result<(), PreviewOutboundError> {
-        if capability.version == PreviewTransportVersion::V1 {
-            self.set_max_streams(capability.max_streams)?;
-        } else if self.state_bytes > capability.max_cursor_state_bytes {
-            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
-                maximum: capability.max_cursor_state_bytes,
-                actual: self.state_bytes,
-            });
-        }
+        self.check_capability(capability)?;
         self.max_streams = capability.max_streams;
         self.max_state_bytes = capability.max_cursor_state_bytes;
         self.version = capability.version;
@@ -1359,7 +1387,7 @@ pub(super) async fn relay_events(
             Ok(timestamped) => {
                 let should_relay = {
                     let subs = subscriptions.borrow();
-                    should_relay_event(&timestamped.event, subs.channels)
+                    should_relay_event(&timestamped.event, subs.topics())
                 };
                 if !should_relay {
                     continue;
@@ -1381,7 +1409,7 @@ pub(super) async fn relay_events(
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("WebSocket consumer lagged by {n} events");
-                if subscriptions.borrow().channels.contains(WsChannel::Events) {
+                if subscriptions.borrow().contains(TopicId::Events) {
                     let msg = ServerMessage::Event {
                         event: "resync_required".to_owned(),
                         timestamp: EventTimestamp::now().to_string(),
@@ -1419,8 +1447,10 @@ pub(super) async fn relay_frames(
         if active_frame_config.is_none() {
             active_frame_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Frames) {
-                    Some(ActiveFramesConfig::new(subs.config.frames.clone()))
+                if subs.contains(TopicId::Frames) {
+                    Some(ActiveFramesConfig::new(
+                        subs.config_of::<FramesConfig>(TopicId::Frames),
+                    ))
                 } else {
                     None
                 }
@@ -1506,8 +1536,8 @@ pub(super) async fn relay_spectrum(
         if active_spectrum_config.is_none() {
             active_spectrum_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Spectrum) {
-                    Some(subs.config.spectrum.clone())
+                if subs.contains(TopicId::Spectrum) {
+                    Some(subs.config_of::<SpectrumConfig>(TopicId::Spectrum))
                 } else {
                     None
                 }
@@ -1591,8 +1621,8 @@ pub(super) async fn relay_canvas(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Canvas) {
-                    Some(subs.config.canvas.clone())
+                if subs.contains(TopicId::Canvas) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::Canvas))
                 } else {
                     None
                 }
@@ -1727,8 +1757,8 @@ pub(super) async fn relay_screen_canvas(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::ScreenCanvas) {
-                    Some(subs.config.screen_canvas.clone())
+                if subs.contains(TopicId::ScreenCanvas) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::ScreenCanvas))
                 } else {
                     None
                 }
@@ -1838,10 +1868,7 @@ pub(super) async fn relay_screen_zones(
     let mut zones_rx = None::<tokio::sync::watch::Receiver<hypercolor_core::bus::ScreenZonesFrame>>;
 
     loop {
-        let subscribed = subscriptions
-            .borrow()
-            .channels
-            .contains(WsChannel::ScreenZones);
+        let subscribed = subscriptions.borrow().contains(TopicId::ScreenZones);
         if subscribed && zones_rx.is_none() {
             let mut receiver = preview_runtime.screen_zones_receiver();
             receiver.mark_changed();
@@ -1938,8 +1965,8 @@ pub(super) async fn relay_web_viewport_canvas(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::WebViewportCanvas) {
-                    Some(subs.config.web_viewport_canvas.clone())
+                if subs.contains(TopicId::WebViewportCanvas) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::WebViewportCanvas))
                 } else {
                     None
                 }
@@ -2053,8 +2080,8 @@ pub(super) async fn relay_zone_preview(
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::ZonePreview) {
-                    Some(subs.config.zone_preview.clone())
+                if subs.contains(TopicId::ZonePreview) {
+                    Some(subs.config_of::<CanvasConfig>(TopicId::ZonePreview))
                 } else {
                     None
                 }
@@ -2216,13 +2243,13 @@ pub(super) async fn relay_display_preview(
         // display worker config changes also close and recreate the sender.
         let desired = {
             let subs = subscriptions.borrow();
-            if subs.channels.contains(WsChannel::DisplayPreview) {
-                subs.config
-                    .display_preview
+            if subs.contains(TopicId::DisplayPreview) {
+                let config = subs.config_of::<DisplayPreviewConfig>(TopicId::DisplayPreview);
+                config
                     .device_id
                     .as_ref()
                     .and_then(|raw| DeviceId::from_str(raw).ok())
-                    .map(|id| (id, subs.config.display_preview.fps.max(1)))
+                    .map(|id| (id, config.fps.max(1)))
             } else {
                 None
             }
@@ -2347,9 +2374,9 @@ fn preview_stream_demand(config: &CanvasConfig) -> PreviewStreamDemand {
     PreviewStreamDemand {
         fps: config.fps,
         format: match config.format {
-            super::protocol::CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
-            super::protocol::CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
-            super::protocol::CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
+            CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
+            CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
+            CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
         },
         width: config.width,
         height: config.height,
@@ -2382,8 +2409,11 @@ pub(super) async fn relay_metrics(
         if active_interval_ms.is_none() {
             active_interval_ms = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::Metrics) {
-                    Some(subs.config.metrics.interval_ms)
+                if subs.contains(TopicId::Metrics) {
+                    Some(
+                        subs.config_of::<MetricsConfig>(TopicId::Metrics)
+                            .interval_ms,
+                    )
                 } else {
                     None
                 }
@@ -2411,7 +2441,7 @@ pub(super) async fn relay_metrics(
 
         let still_subscribed = {
             let subs = subscriptions.borrow();
-            subs.channels.contains(WsChannel::Metrics)
+            subs.contains(TopicId::Metrics)
         };
         if !still_subscribed {
             continue;
@@ -2447,8 +2477,11 @@ pub(super) async fn relay_device_metrics(
         if active_interval_ms.is_none() {
             active_interval_ms = {
                 let subs = subscriptions.borrow();
-                if subs.channels.contains(WsChannel::DeviceMetrics) {
-                    Some(subs.config.device_metrics.interval_ms)
+                if subs.contains(TopicId::DeviceMetrics) {
+                    Some(
+                        subs.config_of::<MetricsConfig>(TopicId::DeviceMetrics)
+                            .interval_ms,
+                    )
                 } else {
                     None
                 }
@@ -2476,7 +2509,7 @@ pub(super) async fn relay_device_metrics(
 
         let still_subscribed = {
             let subs = subscriptions.borrow();
-            subs.channels.contains(WsChannel::DeviceMetrics)
+            subs.contains(TopicId::DeviceMetrics)
         };
         if !still_subscribed {
             continue;
@@ -2499,7 +2532,7 @@ pub(super) async fn relay_sensors(
     let mut sent_current_snapshot = false;
 
     loop {
-        if !subscriptions.borrow().channels.contains(WsChannel::Sensors) {
+        if !subscriptions.borrow().contains(TopicId::Sensors) {
             sent_current_snapshot = false;
             if subscriptions.changed().await.is_err() {
                 break;
@@ -2541,7 +2574,7 @@ pub(super) async fn relay_sensors(
                     continue;
                 }
 
-                if subscriptions.borrow().channels.contains(WsChannel::Sensors) {
+                if subscriptions.borrow().contains(TopicId::Sensors) {
                     let snapshot = Arc::clone(&rx.borrow_and_update());
                     enqueue_sensor_snapshot(&json_tx, snapshot.as_ref());
                 }
