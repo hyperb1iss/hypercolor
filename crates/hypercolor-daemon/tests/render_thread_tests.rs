@@ -4558,32 +4558,57 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
     // Frames already in flight when the power state flips can land
     // ahead of the cleared publication, so a single `changed()` may
     // resolve on a still-populated frame. Wait for the STATE, not for
-    // one notification.
+    // one notification. On timeout, dump what WAS observed: this test
+    // has failed on CI runners in ways that never reproduce locally,
+    // and a bare timeout message cannot distinguish "cleared frame
+    // never published" from "publications stopped entirely".
     let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    let mut frame_changes = 0_u32;
     loop {
-        if frame_rx.borrow_and_update().zones.is_empty() {
+        let (empty, frame_number, zone_count) = {
+            let frame = frame_rx.borrow_and_update();
+            (
+                frame.zones.is_empty(),
+                frame.frame_number,
+                frame.zones.len(),
+            )
+        };
+        if empty {
             break;
         }
-        tokio::time::timeout_at(deadline, frame_rx.changed())
-            .await
-            .expect("timed out waiting for cleared frame")
-            .expect("frame sender should remain connected");
+        let Ok(changed) = tokio::time::timeout_at(deadline, frame_rx.changed()).await else {
+            panic!(
+                "timed out waiting for cleared frame: observed {frame_changes} \
+                 changes since the sleep flip, last frame_number={frame_number} \
+                 with {zone_count} zones still populated"
+            )
+        };
+        changed.expect("frame sender should remain connected");
+        frame_changes += 1;
     }
+    let mut canvas_changes = 0_u32;
     loop {
-        let blank = {
+        let (blank, frame_number, lit_pixels) = {
             let canvas = canvas_rx.borrow_and_update();
-            canvas
+            let lit = canvas
                 .rgba_bytes()
                 .chunks_exact(4)
-                .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0)
+                .filter(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
+                .count();
+            (lit == 0, canvas.frame_number, lit)
         };
         if blank {
             break;
         }
-        tokio::time::timeout_at(deadline, canvas_rx.changed())
-            .await
-            .expect("timed out waiting for cleared canvas")
-            .expect("canvas sender should remain connected");
+        let Ok(changed) = tokio::time::timeout_at(deadline, canvas_rx.changed()).await else {
+            panic!(
+                "timed out waiting for cleared canvas: observed {canvas_changes} \
+                 canvas changes since the sleep flip, last frame_number=\
+                 {frame_number} with {lit_pixels} lit pixels"
+            )
+        };
+        changed.expect("canvas sender should remain connected");
+        canvas_changes += 1;
     }
 
     {
