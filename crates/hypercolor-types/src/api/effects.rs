@@ -101,7 +101,7 @@ pub struct ActiveEffectResponse {
     pub active_preset_modified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone_id: Option<String>,
-    /// Server-side version token for the group's controls. Clients
+    /// Server-side version token for the zone's controls. Clients
     /// that want to use optimistic concurrency on the effect-id PATCH
     /// endpoint echo this value back via `If-Match`. Idle responses
     /// omit it (there's nothing to version).
@@ -179,10 +179,10 @@ pub struct ApplyEffectRequest {
     /// already carry the preset's values, possibly with user tweaks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset_id: Option<String>,
-    /// Optional target zone id. Omitted applies the effect
-    /// to the scene's Primary zone — the legacy behavior. A non-Primary
-    /// zone id renders the effect into that zone instead, leaving its
-    /// layout and device assignment untouched.
+    /// Optional target zone id. Omitted applies the effect to the
+    /// scene's Primary zone. A non-Primary zone id renders the effect
+    /// into that zone instead, leaving its layout and device assignment
+    /// untouched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone_id: Option<String>,
 }
