@@ -3,15 +3,19 @@
 //! These types describe the wire format on `/api/v1/ws`. Everything here is data —
 //! no network I/O, no caches, no runtime state.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::hash::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
+use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
+use hypercolor_leptos_ext::ws::registry::{
+    CanvasConfig, CanvasFormat, FramesConfig, TopicId, TopicSet,
+};
+use hypercolor_leptos_ext::ws::topic::{PatchError, SubscriptionTable};
 use hypercolor_leptos_ext::ws::{
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
     PreviewTransportCapability,
@@ -25,384 +29,289 @@ use crate::device_metrics::DeviceMetricsSnapshot;
 
 // ── Subscription Types ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum WsChannel {
-    Frames,
-    Spectrum,
-    Events,
-    FrameEvents,
-    Canvas,
-    ScreenCanvas,
-    ScreenZones,
-    WebViewportCanvas,
-    ZonePreview,
-    Metrics,
-    DeviceMetrics,
-    Sensors,
-    DisplayPreview,
-    InputEvents,
+/// One validated wire selector: the topic a client named plus the
+/// canonical key its key type parsed. Every topic is unkeyed today, so
+/// `key` is always `None`; routing it through the vtable anyway keeps
+/// the boundary — not the caller — in charge of what a key looks like.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TopicSelection {
+    pub(super) topic: TopicId,
+    pub(super) key: Option<String>,
 }
 
-impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 14] = [
-        Self::Frames,
-        Self::Spectrum,
-        Self::Events,
-        Self::FrameEvents,
-        Self::Canvas,
-        Self::ScreenCanvas,
-        Self::ScreenZones,
-        Self::WebViewportCanvas,
-        Self::ZonePreview,
-        Self::Metrics,
-        Self::DeviceMetrics,
-        Self::Sensors,
-        Self::DisplayPreview,
-        Self::InputEvents,
-    ];
-
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Frames => "frames",
-            Self::Spectrum => "spectrum",
-            Self::Events => "events",
-            Self::FrameEvents => "frame_events",
-            Self::Canvas => "canvas",
-            Self::ScreenCanvas => "screen_canvas",
-            Self::ScreenZones => "screen_zones",
-            Self::WebViewportCanvas => "web_viewport_canvas",
-            Self::ZonePreview => "zone_preview",
-            Self::Metrics => "metrics",
-            Self::DeviceMetrics => "device_metrics",
-            Self::Sensors => "sensors",
-            Self::DisplayPreview => "display_preview",
-            Self::InputEvents => "input_events",
-        }
-    }
-
-    pub(super) fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "frames" => Some(Self::Frames),
-            "spectrum" => Some(Self::Spectrum),
-            "events" => Some(Self::Events),
-            "frame_events" => Some(Self::FrameEvents),
-            "canvas" => Some(Self::Canvas),
-            "screen_canvas" => Some(Self::ScreenCanvas),
-            "screen_zones" => Some(Self::ScreenZones),
-            "web_viewport_canvas" => Some(Self::WebViewportCanvas),
-            "zone_preview" => Some(Self::ZonePreview),
-            "metrics" => Some(Self::Metrics),
-            "device_metrics" => Some(Self::DeviceMetrics),
-            "sensors" => Some(Self::Sensors),
-            "display_preview" => Some(Self::DisplayPreview),
-            "input_events" => Some(Self::InputEvents),
-            _ => None,
-        }
-    }
-
-    pub(super) fn is_supported(self) -> bool {
-        Self::SUPPORTED.contains(&self)
-    }
-
-    pub(super) const fn requires_control_subscription(self) -> bool {
-        matches!(
-            self,
-            Self::ScreenCanvas | Self::ScreenZones | Self::InputEvents
-        )
-    }
-
-    const fn bit(self) -> u16 {
-        match self {
-            Self::Frames => 1 << 0,
-            Self::Spectrum => 1 << 1,
-            Self::Events => 1 << 2,
-            Self::FrameEvents => 1 << 3,
-            Self::Canvas => 1 << 4,
-            Self::ScreenCanvas => 1 << 5,
-            Self::ScreenZones => 1 << 12,
-            Self::WebViewportCanvas => 1 << 6,
-            Self::ZonePreview => 1 << 7,
-            Self::Metrics => 1 << 8,
-            Self::DeviceMetrics => 1 << 9,
-            Self::Sensors => 1 << 10,
-            Self::DisplayPreview => 1 << 11,
-            Self::InputEvents => 1 << 13,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct ChannelSet(u16);
-
-impl ChannelSet {
-    pub(super) const fn contains(self, channel: WsChannel) -> bool {
-        self.0 & channel.bit() != 0
-    }
-
-    pub(super) fn insert(&mut self, channel: WsChannel) {
-        self.0 |= channel.bit();
-    }
-
-    pub(super) fn remove(&mut self, channel: WsChannel) {
-        self.0 &= !channel.bit();
-    }
-
-    pub(super) fn iter(self) -> impl Iterator<Item = WsChannel> {
-        WsChannel::SUPPORTED
-            .into_iter()
-            .filter(move |channel| self.contains(*channel))
-    }
-
-    pub(super) fn from_channels(channels: &[WsChannel]) -> Self {
-        let mut set = Self::default();
-        for channel in channels {
-            set.insert(*channel);
-        }
-        set
-    }
-}
-
+/// One connection's live subscriptions.
+///
+/// Membership and per-subscription config are two views of one fact, so
+/// they move together: [`SubscriptionState::admit`] is the only place a
+/// topic joins the set, and it materializes that topic's default config
+/// in the same step. Every client-visible change goes through
+/// [`SubscriptionState::subscribe`] or
+/// [`SubscriptionState::unsubscribe`], which build a whole replacement
+/// state the caller swaps in only after the runtime accepts it.
+///
+/// Config outlives membership on purpose: unsubscribing drops the topic
+/// from the set, and its config moves aside into [`DormantConfigs`] so a
+/// client that re-subscribes gets its own settings back rather than the
+/// defaults. The live table only ever holds live subscriptions, which is
+/// what its own contract promises and what `any_for` has to keep meaning.
 #[derive(Debug, Clone)]
 pub(super) struct SubscriptionState {
-    pub(super) channels: ChannelSet,
-    pub(super) config: ChannelConfig,
+    topics: TopicSet,
+    live: SubscriptionTable,
+    dormant: DormantConfigs,
 }
 
 impl Default for SubscriptionState {
+    /// A fresh connection starts subscribed to `events` and nothing else.
     fn default() -> Self {
-        let mut channels = ChannelSet::default();
-        channels.insert(WsChannel::Events);
-        Self {
-            channels,
-            config: ChannelConfig::default(),
-        }
+        let mut state = Self {
+            topics: TopicSet::EMPTY,
+            live: SubscriptionTable::default(),
+            dormant: DormantConfigs::default(),
+        };
+        state.admit(TopicId::Events, None);
+        state
     }
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
-pub(super) struct ChannelConfig {
-    pub(super) frames: FramesConfig,
-    pub(super) spectrum: SpectrumConfig,
-    pub(super) canvas: CanvasConfig,
-    pub(super) screen_canvas: CanvasConfig,
-    pub(super) web_viewport_canvas: CanvasConfig,
-    pub(super) zone_preview: CanvasConfig,
-    pub(super) metrics: MetricsConfig,
-    pub(super) device_metrics: MetricsConfig,
-    pub(super) display_preview: DisplayPreviewConfig,
+/// Config a client set for a topic it is not currently subscribed to.
+///
+/// Kept apart from the live subscription table on purpose: that table
+/// means "subscribed", and a config that outlives its subscription would
+/// make it lie. Keyed the same way, so the two halves stay swappable as
+/// keyed topics arrive.
+#[derive(Debug, Clone, Default)]
+struct DormantConfigs(BTreeMap<(u32, Option<String>), serde_json::Value>);
+
+impl DormantConfigs {
+    fn get(&self, bit: u32, key: Option<&str>) -> Option<&serde_json::Value> {
+        self.0.get(&(bit, key.map(str::to_owned)))
+    }
+
+    fn insert(&mut self, bit: u32, key: Option<String>, config: serde_json::Value) {
+        self.0.insert((bit, key), config);
+    }
+
+    fn take(&mut self, bit: u32, key: Option<&str>) -> Option<serde_json::Value> {
+        self.0.remove(&(bit, key.map(str::to_owned)))
+    }
 }
 
-impl ChannelConfig {
-    pub(super) fn apply_patch(&mut self, patch: ChannelConfigPatch) -> Result<(), WsProtocolError> {
-        let mut next = self.clone();
-        next.apply_patch_inner(patch)?;
-        *self = next;
-        Ok(())
+impl SubscriptionState {
+    pub(super) const fn topics(&self) -> TopicSet {
+        self.topics
     }
 
-    fn apply_patch_inner(&mut self, patch: ChannelConfigPatch) -> Result<(), WsProtocolError> {
-        if let Some(frames) = patch.frames {
-            if let Some(fps) = frames.fps {
-                validate_range(fps, 1, 60, "config.frames.fps", "expected 1..=60")?;
-                self.frames.fps = fps;
-            }
-            if let Some(format) = frames.format {
-                self.frames.format = format;
-            }
-            if let Some(zones) = frames.zones {
-                if zones.is_empty() {
-                    return Err(WsProtocolError::invalid_config(
-                        "config.frames.zones",
-                        "must not be empty",
-                    ));
-                }
-                self.frames.zones = zones;
-            }
-        }
-
-        if let Some(spectrum) = patch.spectrum {
-            if let Some(fps) = spectrum.fps {
-                validate_range(fps, 1, 60, "config.spectrum.fps", "expected 1..=60")?;
-                self.spectrum.fps = fps;
-            }
-            if let Some(bins) = spectrum.bins {
-                if ![8, 16, 32, 64, 128].contains(&bins) {
-                    return Err(WsProtocolError::invalid_config(
-                        "config.spectrum.bins",
-                        "expected one of [8, 16, 32, 64, 128]",
-                    ));
-                }
-                self.spectrum.bins = bins;
-            }
-        }
-
-        if let Some(canvas) = patch.canvas {
-            if let Some(fps) = canvas.fps {
-                validate_range(fps, 1, 60, "config.canvas.fps", "expected 1..=60")?;
-                self.canvas.fps = fps;
-            }
-            if let Some(format) = canvas.format {
-                self.canvas.format = format;
-            }
-            if let Some(width) = canvas.width {
-                self.canvas.width = width;
-            }
-            if let Some(height) = canvas.height {
-                self.canvas.height = height;
-            }
-            validate_passive_preview_shape(&self.canvas, "config.canvas")?;
-        }
-
-        if let Some(screen_canvas) = patch.screen_canvas {
-            if let Some(fps) = screen_canvas.fps {
-                validate_range(fps, 1, 60, "config.screen_canvas.fps", "expected 1..=60")?;
-                self.screen_canvas.fps = fps;
-            }
-            if let Some(format) = screen_canvas.format {
-                self.screen_canvas.format = format;
-            }
-            if let Some(width) = screen_canvas.width {
-                self.screen_canvas.width = width;
-            }
-            if let Some(height) = screen_canvas.height {
-                self.screen_canvas.height = height;
-            }
-            validate_passive_preview_shape(&self.screen_canvas, "config.screen_canvas")?;
-        }
-
-        if let Some(web_viewport_canvas) = patch.web_viewport_canvas {
-            if let Some(fps) = web_viewport_canvas.fps {
-                validate_range(
-                    fps,
-                    1,
-                    60,
-                    "config.web_viewport_canvas.fps",
-                    "expected 1..=60",
-                )?;
-                self.web_viewport_canvas.fps = fps;
-            }
-            if let Some(format) = web_viewport_canvas.format {
-                self.web_viewport_canvas.format = format;
-            }
-            if let Some(width) = web_viewport_canvas.width {
-                self.web_viewport_canvas.width = width;
-            }
-            if let Some(height) = web_viewport_canvas.height {
-                self.web_viewport_canvas.height = height;
-            }
-            validate_passive_preview_shape(
-                &self.web_viewport_canvas,
-                "config.web_viewport_canvas",
-            )?;
-        }
-
-        if let Some(zone_preview) = patch.zone_preview {
-            if let Some(fps) = zone_preview.fps {
-                validate_range(fps, 1, 60, "config.zone_preview.fps", "expected 1..=60")?;
-                self.zone_preview.fps = fps;
-            }
-            if let Some(format) = zone_preview.format {
-                self.zone_preview.format = format;
-            }
-            if let Some(width) = zone_preview.width {
-                self.zone_preview.width = width;
-            }
-            if let Some(height) = zone_preview.height {
-                self.zone_preview.height = height;
-            }
-            validate_passive_preview_shape(&self.zone_preview, "config.zone_preview")?;
-        }
-
-        if let Some(metrics) = patch.metrics
-            && let Some(interval_ms) = metrics.interval_ms
-        {
-            validate_range(
-                interval_ms,
-                100,
-                10_000,
-                "config.metrics.interval_ms",
-                "expected 100..=10000",
-            )?;
-            self.metrics.interval_ms = interval_ms;
-        }
-
-        if let Some(device_metrics) = patch.device_metrics
-            && let Some(interval_ms) = device_metrics.interval_ms
-        {
-            validate_range(
-                interval_ms,
-                100,
-                10_000,
-                "config.device_metrics.interval_ms",
-                "expected 100..=10000",
-            )?;
-            self.device_metrics.interval_ms = interval_ms;
-        }
-
-        if let Some(display_preview) = patch.display_preview {
-            // Double-Option: outer `Some` means the client sent the key;
-            // inner `None` explicitly clears the target (disabling the
-            // relay). Trim non-empty strings so accidental whitespace
-            // doesn't sneak a subscription through with no real device.
-            if let Some(device_id) = display_preview.device_id {
-                match device_id {
-                    Some(id) => {
-                        let trimmed = id.trim();
-                        if trimmed.is_empty() {
-                            return Err(WsProtocolError::invalid_config(
-                                "config.display_preview.device_id",
-                                "must be non-empty when provided",
-                            ));
-                        }
-                        self.display_preview.device_id = Some(trimmed.to_owned());
-                    }
-                    None => self.display_preview.device_id = None,
-                }
-            }
-            if let Some(fps) = display_preview.fps {
-                validate_range(fps, 1, 30, "config.display_preview.fps", "expected 1..=30")?;
-                self.display_preview.fps = fps;
-            }
-        }
-
-        Ok(())
+    pub(super) const fn contains(&self, topic: TopicId) -> bool {
+        self.topics.contains(topic)
     }
 
-    pub(super) fn filtered_json(&self, channels: ChannelSet) -> serde_json::Value {
+    /// This topic's config, live or dormant, or its default when the
+    /// client has never configured it. Dormant counts because the engine
+    /// reads across subscriptions: a `screen_zones`-only client still
+    /// borrows the `screen_canvas` cadence.
+    pub(super) fn config_of<C>(&self, topic: TopicId) -> C
+    where
+        C: serde::de::DeserializeOwned + Default,
+    {
+        match self.stored_config(topic.bit(), None) {
+            // Borrowed, not cloned: relays re-read config on every frame
+            // they pace.
+            Some(stored) => C::deserialize(stored)
+                .expect("stored topic config round-trips through its own config type"),
+            None => C::default(),
+        }
+    }
+
+    fn stored_config(&self, bit: u32, key: Option<&str>) -> Option<&serde_json::Value> {
+        self.live
+            .config(bit, key)
+            .or_else(|| self.dormant.get(bit, key))
+    }
+
+    /// The config stanza the subscribe acknowledgment echoes: every
+    /// live subscription that has config, in declaration order.
+    pub(super) fn config_projection(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();
-
-        for channel in channels.iter() {
-            let value = match channel {
-                WsChannel::Frames => serde_json::to_value(&self.frames),
-                WsChannel::Spectrum => serde_json::to_value(&self.spectrum),
-                WsChannel::Canvas => serde_json::to_value(&self.canvas),
-                WsChannel::ScreenCanvas => serde_json::to_value(&self.screen_canvas),
-                WsChannel::WebViewportCanvas => serde_json::to_value(&self.web_viewport_canvas),
-                WsChannel::ZonePreview => serde_json::to_value(&self.zone_preview),
-                WsChannel::Metrics => serde_json::to_value(&self.metrics),
-                WsChannel::DeviceMetrics => serde_json::to_value(&self.device_metrics),
-                WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
-                WsChannel::Events
-                | WsChannel::FrameEvents
-                | WsChannel::Sensors
-                | WsChannel::ScreenZones
-                | WsChannel::InputEvents => continue,
-            };
-
-            if let Ok(json_value) = value {
-                map.insert(channel.as_str().to_owned(), json_value);
+        for topic in self.topics.iter() {
+            for (_key, config) in self.live.entries_for(topic.bit()) {
+                map.insert(topic.as_str().to_owned(), config.clone());
             }
         }
-
         serde_json::Value::Object(map)
     }
+
+    /// Build the state a subscribe request would produce.
+    ///
+    /// The whole request is one transaction: every selector joins, every
+    /// config stanza applies, and every runtime admission runs against a
+    /// candidate copy. Any failure returns the error with the live state
+    /// untouched, so a request that names four topics and mis-configures
+    /// the fourth changes nothing.
+    pub(super) fn subscribe(
+        &self,
+        selections: &[TopicSelection],
+        patch: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<Self, WsProtocolError> {
+        let mut next = self.clone();
+        for selection in selections {
+            next.admit(selection.topic, selection.key.clone());
+        }
+
+        if let Some(patch) = patch {
+            // Declaration order, so a request carrying two bad stanzas
+            // always reports the same one.
+            for topic in TopicId::ALL.iter().copied() {
+                let Some(stanza) = patch.get(topic.as_str()) else {
+                    continue;
+                };
+                // A null stanza on a topic that takes config has always
+                // meant "no patch" on this wire, and clients still send
+                // it. Configless topics keep going to the vtable, which
+                // refuses null on apply.
+                if stanza.is_null() && topic.vtable().configurable {
+                    continue;
+                }
+                next.apply_patch(topic, stanza)?;
+            }
+        }
+
+        Ok(next)
+    }
+
+    /// Build the state an unsubscribe request would produce. Stored
+    /// config moves aside rather than dying, so a later re-subscribe
+    /// reinstates it.
+    pub(super) fn unsubscribe(&self, selections: &[TopicSelection]) -> Self {
+        let mut next = self.clone();
+        for selection in selections {
+            next.retire(selection.topic);
+        }
+        next
+    }
+
+    /// The single write path for joining: the set gains the topic and
+    /// the live table gains its config in the same step.
+    fn admit(&mut self, topic: TopicId, key: Option<String>) {
+        self.topics.insert(topic);
+        if !topic.vtable().configurable {
+            return;
+        }
+        let bit = topic.bit();
+        if self.live.config(bit, key.as_deref()).is_some() {
+            return;
+        }
+        let config = self
+            .dormant
+            .take(bit, key.as_deref())
+            .unwrap_or_else(|| (topic.vtable().default_config_json)());
+        self.live.insert(bit, key, config);
+    }
+
+    /// The single write path for leaving: the set loses the topic and
+    /// its live config moves to the dormant cache in the same step.
+    fn retire(&mut self, topic: TopicId) {
+        self.topics.remove(topic);
+        let bit = topic.bit();
+        let carried: Vec<(Option<String>, serde_json::Value)> = self
+            .live
+            .entries_for(bit)
+            .map(|(key, config)| (key.map(str::to_owned), config.clone()))
+            .collect();
+        for (key, config) in carried {
+            self.live.remove(bit, key.as_deref());
+            self.dormant.insert(bit, key, config);
+        }
+    }
+
+    fn apply_patch(
+        &mut self,
+        topic: TopicId,
+        stanza: &serde_json::Value,
+    ) -> Result<(), WsProtocolError> {
+        let bit = topic.bit();
+        let current = self
+            .stored_config(bit, None)
+            .cloned()
+            .unwrap_or_else(|| (topic.vtable().default_config_json)());
+        let next = (topic.vtable().apply_patch_json)(&current, stanza)
+            .map_err(|error| config_patch_error(topic, &error))?;
+        super::topics::admit_config(topic, &next)?;
+        // Membership decides which half owns the result, so configuring
+        // a topic the request never named cannot fake a subscription.
+        if self.topics.contains(topic) {
+            // For an unkeyed topic a set bit implies a live entry, so
+            // this insert only ever replaces. Keyed topics (3.2c) must
+            // patch per admitted key, or a patch would mint a live
+            // entry for a key that never subscribed.
+            debug_assert!(
+                self.live.config(bit, None).is_some(),
+                "patch target must already be live for its key"
+            );
+            self.live.insert(bit, None, next);
+        } else {
+            self.dormant.insert(bit, None, next);
+        }
+        Ok(())
+    }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct FramesConfig {
-    pub(super) fps: u32,
-    pub(super) format: FrameFormat,
-    pub(super) zones: Vec<String>,
+#[cfg(test)]
+impl SubscriptionState {
+    /// Whether the live table still means what its name says: a topic
+    /// that takes config has a live entry exactly when it is subscribed.
+    pub(super) fn live_table_agrees_with_membership(&self) -> bool {
+        TopicId::ALL.iter().copied().all(|topic| {
+            let live = self.live.any_for(topic.bit());
+            live == (self.topics.contains(topic) && topic.vtable().configurable)
+        })
+    }
+
+    /// Whether this topic's config is parked for a later re-subscribe.
+    pub(super) fn has_dormant_config(&self, topic: TopicId) -> bool {
+        self.dormant.get(topic.bit(), None).is_some()
+    }
+
+    /// Drive one subscribe request the way the wire drives it: channel
+    /// names in, the same parse, transaction, and admission out.
+    pub(super) fn subscribed(
+        &self,
+        channels: &[&str],
+        config: serde_json::Value,
+    ) -> Result<Self, WsProtocolError> {
+        let names: Vec<String> = channels.iter().map(|name| (*name).to_owned()).collect();
+        let selections = parse_channels(&names)?;
+        self.subscribe(&selections, config.as_object())
+    }
+
+    /// Drive one unsubscribe request the same way.
+    pub(super) fn unsubscribed(&self, channels: &[&str]) -> Self {
+        let names: Vec<String> = channels.iter().map(|name| (*name).to_owned()).collect();
+        let selections = parse_channels(&names).expect("test channel names parse");
+        self.unsubscribe(&selections)
+    }
+}
+
+/// Project a rejected patch onto the wire's error vocabulary.
+///
+/// A configless topic refuses config in two phases — a stanza with
+/// fields fails to deserialize, an explicit `null` fails to apply — and
+/// both are the same client mistake, so both get the same response.
+/// Field-level rejections name the field under its topic; whole-value
+/// rejections name the topic alone.
+fn config_patch_error(topic: TopicId, error: &PatchError) -> WsProtocolError {
+    if !topic.vtable().configurable {
+        return WsProtocolError::invalid_config(
+            format!("config.{}", topic.as_str()),
+            "topic accepts no config",
+        );
+    }
+
+    let field = match error.field {
+        "config" | "patch" => format!("config.{}", topic.as_str()),
+        field => format!("config.{}.{field}", topic.as_str()),
+    };
+    WsProtocolError::invalid_config(field, error.reason.clone())
 }
 
 #[derive(Debug, Clone)]
@@ -461,50 +370,9 @@ impl ActiveFramesConfig {
     }
 }
 
-impl Default for FramesConfig {
-    fn default() -> Self {
-        Self {
-            fps: 30,
-            format: FrameFormat::Binary,
-            zones: vec!["all".to_owned()],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct SpectrumConfig {
-    pub(super) fps: u32,
-    pub(super) bins: u16,
-}
-
-impl Default for SpectrumConfig {
-    fn default() -> Self {
-        Self { fps: 30, bins: 64 }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct CanvasConfig {
-    pub(super) fps: u32,
-    pub(super) format: CanvasFormat,
-    pub(super) width: u32,
-    pub(super) height: u32,
-}
-
-impl Default for CanvasConfig {
-    fn default() -> Self {
-        Self {
-            fps: 15,
-            format: CanvasFormat::Rgb,
-            width: 0,
-            height: 0,
-        }
-    }
-}
-
-fn validate_passive_preview_shape(
+pub(super) fn validate_passive_preview_shape(
     config: &CanvasConfig,
-    field: &'static str,
+    field: impl Into<String>,
 ) -> Result<(), WsProtocolError> {
     if config.width == 0 || config.height == 0 {
         return Ok(());
@@ -514,52 +382,6 @@ fn validate_passive_preview_shape(
         .map_err(|reason| {
             WsProtocolError::invalid_config_resource(field, config.width, config.height, reason)
         })
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct MetricsConfig {
-    pub(super) interval_ms: u32,
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self { interval_ms: 1000 }
-    }
-}
-
-/// Configuration for the per-display preview channel. `device_id` is
-/// `None` until the client sends its first subscribe with a target —
-/// once set, the relay task follows that device's JPEG frame watch and
-/// streams every new frame out as a binary `0x07` payload.
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct DisplayPreviewConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) device_id: Option<String>,
-    pub(super) fps: u32,
-}
-
-impl Default for DisplayPreviewConfig {
-    fn default() -> Self {
-        Self {
-            device_id: None,
-            fps: 15,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum FrameFormat {
-    Binary,
-    Json,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum CanvasFormat {
-    Rgb,
-    Rgba,
-    Jpeg,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -595,10 +417,14 @@ pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ClientMessage {
     /// Subscribe to one or more channels.
+    ///
+    /// `config` stays a raw object here: each stanza is validated by the
+    /// topic that owns it, through the registry vtable, so this message
+    /// does not need a field per topic.
     Subscribe {
         channels: Vec<String>,
         #[serde(default)]
-        config: Option<ChannelConfigPatch>,
+        config: Option<ConfigStanzas>,
         #[serde(default)]
         preview_transport: Option<String>,
     },
@@ -656,6 +482,59 @@ pub(super) enum ClientMessage {
         #[serde(deserialize_with = "deserialize_interactive_preview_id")]
         preview_id: String,
     },
+}
+
+/// The `config` object of a subscribe: one stanza per channel, keyed by
+/// wire name, with each stanza left as raw JSON for the topic that owns
+/// it to validate.
+///
+/// Naming a channel twice is refused rather than resolved. A client that
+/// sends two stanzas for one channel does not agree with itself about
+/// which config should win, and silently keeping the last one hides that
+/// from the only party who can fix it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct ConfigStanzas(serde_json::Map<String, serde_json::Value>);
+
+impl ConfigStanzas {
+    pub(super) const fn stanzas(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ConfigStanzas {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StanzaVisitor;
+
+        impl<'de> Visitor<'de> for StanzaVisitor {
+            type Value = serde_json::Map<String, serde_json::Value>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object of per-channel config stanzas")
+            }
+
+            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut stanzas = serde_json::Map::new();
+                while let Some(channel) = access.next_key::<String>()? {
+                    let stanza = access.next_value::<serde_json::Value>()?;
+                    if stanzas.contains_key(&channel) {
+                        return Err(de::Error::custom(format_args!(
+                            "duplicate config stanza `{channel}`"
+                        )));
+                    }
+                    stanzas.insert(channel, stanza);
+                }
+                Ok(stanzas)
+            }
+        }
+
+        deserializer.deserialize_map(StanzaVisitor).map(Self)
+    }
 }
 
 /// Wire form of one injected input edge from a browser preview.
@@ -958,105 +837,6 @@ where
             "browser input coordinates must be finite and normalized to [0, 1]",
         ))
     }
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub(super) struct ChannelConfigPatch {
-    #[serde(default)]
-    pub(super) frames: Option<FramesConfigPatch>,
-    #[serde(default)]
-    pub(super) spectrum: Option<SpectrumConfigPatch>,
-    #[serde(default)]
-    pub(super) canvas: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) screen_canvas: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) web_viewport_canvas: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) zone_preview: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) metrics: Option<MetricsConfigPatch>,
-    #[serde(default)]
-    pub(super) device_metrics: Option<MetricsConfigPatch>,
-    #[serde(default)]
-    pub(super) display_preview: Option<DisplayPreviewConfigPatch>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct FramesConfigPatch {
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-    #[serde(default)]
-    pub(super) format: Option<FrameFormat>,
-    #[serde(default)]
-    pub(super) zones: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct SpectrumConfigPatch {
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-    #[serde(default)]
-    pub(super) bins: Option<u16>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct CanvasConfigPatch {
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-    #[serde(default)]
-    pub(super) format: Option<CanvasFormat>,
-    #[serde(default)]
-    pub(super) width: Option<u32>,
-    #[serde(default)]
-    pub(super) height: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct MetricsConfigPatch {
-    #[serde(default)]
-    pub(super) interval_ms: Option<u32>,
-}
-
-/// Patch for `DisplayPreviewConfig`. `device_id` uses a double-Option so
-/// clients can distinguish "leave as-is" (`device_id: undefined`) from
-/// "clear the target" (`device_id: null`). Setting the outer `Some(None)`
-/// detaches the relay and stops emitting frames.
-///
-/// The custom `deserialize_with` is required because plain
-/// `Option<Option<String>>` with serde's default behavior collapses
-/// `null` and missing-key to the same `None` — losing the tri-state we
-/// need for "clear".
-#[derive(Debug, Deserialize)]
-pub(super) struct DisplayPreviewConfigPatch {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_double_option_string",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[allow(
-        clippy::option_option,
-        reason = "the patch protocol needs distinct states for missing, null, and string values"
-    )]
-    pub(super) device_id: Option<Option<String>>,
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-}
-
-/// Deserialize a double-Option so `null` maps to `Some(None)` (explicit
-/// clear) and a missing key keeps the outer `None` (via `#[serde(default)]`).
-/// Without this helper serde's default collapses both into `None`.
-#[allow(
-    clippy::option_option,
-    reason = "serde needs the tri-state shape to preserve missing-vs-null during patch application"
-)]
-fn deserialize_double_option_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// Server-to-client acknowledgment messages.
@@ -1618,20 +1398,23 @@ impl WsProtocolError {
         }
     }
 
-    pub(super) fn invalid_config(field: &'static str, message: &'static str) -> Self {
+    pub(super) fn invalid_config(field: impl Into<String>, reason: impl Into<String>) -> Self {
+        let field = field.into();
+        let reason = reason.into();
         Self {
             code: "invalid_config",
-            message: format!("Invalid configuration for {field}: {message}"),
-            details: Some(json!({"field": field, "reason": message})),
+            message: format!("Invalid configuration for {field}: {reason}"),
+            details: Some(json!({"field": field, "reason": reason})),
         }
     }
 
     pub(super) fn invalid_config_resource(
-        field: &'static str,
+        field: impl Into<String>,
         width: u32,
         height: u32,
         reason: String,
     ) -> Self {
+        let field = field.into();
         Self {
             code: "invalid_config",
             message: format!("Invalid configuration for {field}: {reason}"),
@@ -1642,14 +1425,6 @@ impl WsProtocolError {
                 "height": height,
                 "max_publication_bytes": MAX_PREVIEW_PUBLICATION_BYTES,
             })),
-        }
-    }
-
-    pub(super) fn unsupported_channel(channel: &str) -> Self {
-        Self {
-            code: "unsupported_channel",
-            message: format!("Channel '{channel}' is not supported by this server"),
-            details: Some(json!({"channel": channel})),
         }
     }
 
@@ -1675,20 +1450,8 @@ pub(super) fn frame_selection_hash(selected: &[String]) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn validate_range(
-    value: u32,
-    min: u32,
-    max: u32,
-    field: &'static str,
-    message: &'static str,
-) -> Result<(), WsProtocolError> {
-    if !(min..=max).contains(&value) {
-        return Err(WsProtocolError::invalid_config(field, message));
-    }
-    Ok(())
-}
-
-pub(super) fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsProtocolError> {
+/// Parse the wire's `channels` array into validated selectors.
+pub(super) fn parse_channels(channels: &[String]) -> Result<Vec<TopicSelection>, WsProtocolError> {
     if channels.is_empty() {
         return Err(WsProtocolError::invalid_request(
             "channels must contain at least one channel",
@@ -1697,37 +1460,43 @@ pub(super) fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsPr
 
     let mut parsed = Vec::with_capacity(channels.len());
     for channel in channels {
-        let parsed_channel = WsChannel::parse(channel).ok_or_else(|| {
+        let topic = TopicId::parse(channel).ok_or_else(|| {
             WsProtocolError::invalid_request(format!("Unknown channel '{channel}'"))
         })?;
-
-        if !parsed_channel.is_supported() {
-            return Err(WsProtocolError::unsupported_channel(channel));
-        }
-
-        parsed.push(parsed_channel);
+        // The key the topic's own key type accepts, canonicalized — the
+        // table stores what the boundary validated, never raw client text.
+        let key = (topic.vtable().validate_key)(None).map_err(|error| {
+            WsProtocolError::invalid_request(format!(
+                "Invalid key for channel '{channel}': {error}"
+            ))
+        })?;
+        parsed.push(TopicSelection { topic, key });
     }
 
     Ok(parsed)
 }
 
-pub(super) fn sorted_channel_names(channels: ChannelSet) -> Vec<String> {
-    let mut names: Vec<String> = channels
+pub(super) fn sorted_channel_names(topics: TopicSet) -> Vec<String> {
+    let mut names: Vec<String> = topics
         .iter()
-        .map(|channel| channel.as_str().to_owned())
+        .map(|topic| topic.as_str().to_owned())
         .collect();
     names.sort();
     names
 }
 
-pub(super) fn unique_sorted_channel_names(channels: &[WsChannel]) -> Vec<String> {
-    sorted_channel_names(ChannelSet::from_channels(channels))
+pub(super) fn unique_sorted_channel_names(selections: &[TopicSelection]) -> Vec<String> {
+    let mut topics = TopicSet::EMPTY;
+    for selection in selections {
+        topics.insert(selection.topic);
+    }
+    sorted_channel_names(topics)
 }
 
 pub(super) fn ws_capabilities() -> Vec<String> {
-    let mut capabilities: Vec<String> = WsChannel::SUPPORTED
+    let mut capabilities: Vec<String> = TopicId::ALL
         .iter()
-        .map(|channel| channel.as_str().to_owned())
+        .map(|topic| topic.as_str().to_owned())
         .collect();
     capabilities.push("commands".to_owned());
     capabilities.push("canvas_format_jpeg".to_owned());
@@ -1794,13 +1563,13 @@ pub(super) fn to_snake_case(input: &str) -> String {
 
 pub(super) fn should_relay_event(
     event: &hypercolor_types::event::HypercolorEvent,
-    channels: ChannelSet,
+    topics: TopicSet,
 ) -> bool {
     if matches!(
         event,
         hypercolor_types::event::HypercolorEvent::FrameRendered { .. }
     ) {
-        return channels.contains(WsChannel::FrameEvents);
+        return topics.contains(TopicId::FrameEvents);
     }
 
     // Host input events carry keystroke data and never ride the default
@@ -1810,8 +1579,8 @@ pub(super) fn should_relay_event(
         event,
         hypercolor_types::event::HypercolorEvent::InputEventReceived { .. }
     ) {
-        return channels.contains(WsChannel::InputEvents);
+        return topics.contains(TopicId::InputEvents);
     }
 
-    channels.contains(WsChannel::Events)
+    topics.contains(TopicId::Events)
 }

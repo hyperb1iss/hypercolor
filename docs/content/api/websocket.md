@@ -508,22 +508,30 @@ value, or a forbidden control-tier subscription.
 ```json
 {
   "type": "error",
-  "code": "unsupported_channel",
-  "message": "Channel 'bogus' is not supported by this server",
-  "details": { "channel": "bogus" }
+  "code": "invalid_config",
+  "message": "Invalid configuration for config.frames.fps: expected 1..=60",
+  "details": { "field": "config.frames.fps", "reason": "expected 1..=60" }
 }
 ```
 
-Error codes you may see: `invalid_request` (bad JSON or empty channel list),
-`invalid_config` (out-of-range or invalid config value, with `details.field`
-and `details.reason`), `unsupported_channel`, and `forbidden` (a control-tier
+Error codes you may see: `invalid_request` (bad JSON, an empty channel list, or
+an unknown channel name), `invalid_config` (an invalid config stanza, with
+`details.field` and `details.reason`), and `forbidden` (a control-tier
 subscription or mutation attempted without a control key).
 
 ## Channel configuration
 
 Each configurable channel carries parameters that control throughput and format.
-Send them in the `config` field of a `subscribe` message. Out-of-range values
-are rejected with an `invalid_config` error and the channel is left unchanged.
+Send them in the `config` field of a `subscribe` message. A rejected stanza
+fails the whole request with an `invalid_config` error, and every channel named
+in it is left exactly as it was.
+
+Each stanza is validated by the channel that owns it, so four shapes are
+refused rather than ignored: a value outside the documented range, a field the
+channel does not define, a stanza sent for a channel that takes no config
+(`events`, `frame_events`, `screen_zones`, `sensors`, `input_events`), and the
+same channel named twice in one `config` object. A `null` stanza on a
+configurable channel means "leave this channel alone".
 
 ### frames config
 

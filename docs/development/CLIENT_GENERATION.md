@@ -40,8 +40,8 @@ protocol/websocket-v1.json
 
 It records channel names, advertised capabilities, binary frame tags, preview
 pixel formats, and subscription config bounds. The daemon has a regression test
-that compares the manifest with `WsChannel::SUPPORTED`, `ws_capabilities()`,
-and the binary tag constants.
+that compares the manifest with `TopicId::ALL`, `ws_capabilities()`, and the
+binary tag constants.
 
 Python generates protocol constants from the manifest:
 
