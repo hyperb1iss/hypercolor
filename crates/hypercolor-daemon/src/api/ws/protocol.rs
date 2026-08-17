@@ -3,7 +3,7 @@
 //! These types describe the wire format on `/api/v1/ws`. Everything here is data —
 //! no network I/O, no caches, no runtime state.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::hash::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -50,12 +50,15 @@ pub(super) struct TopicSelection {
 /// state the caller swaps in only after the runtime accepts it.
 ///
 /// Config outlives membership on purpose: unsubscribing drops the topic
-/// from the set but keeps its stored config, so a client that
-/// re-subscribes gets its own settings back rather than the defaults.
+/// from the set, and its config moves aside into [`DormantConfigs`] so a
+/// client that re-subscribes gets its own settings back rather than the
+/// defaults. The live table only ever holds live subscriptions, which is
+/// what its own contract promises and what `any_for` has to keep meaning.
 #[derive(Debug, Clone)]
 pub(super) struct SubscriptionState {
     topics: TopicSet,
-    configs: SubscriptionTable,
+    live: SubscriptionTable,
+    dormant: DormantConfigs,
 }
 
 impl Default for SubscriptionState {
@@ -63,10 +66,34 @@ impl Default for SubscriptionState {
     fn default() -> Self {
         let mut state = Self {
             topics: TopicSet::EMPTY,
-            configs: SubscriptionTable::default(),
+            live: SubscriptionTable::default(),
+            dormant: DormantConfigs::default(),
         };
         state.admit(TopicId::Events, None);
         state
+    }
+}
+
+/// Config a client set for a topic it is not currently subscribed to.
+///
+/// Kept apart from the live subscription table on purpose: that table
+/// means "subscribed", and a config that outlives its subscription would
+/// make it lie. Keyed the same way, so the two halves stay swappable as
+/// keyed topics arrive.
+#[derive(Debug, Clone, Default)]
+struct DormantConfigs(BTreeMap<(u32, Option<String>), serde_json::Value>);
+
+impl DormantConfigs {
+    fn get(&self, bit: u32, key: Option<&str>) -> Option<&serde_json::Value> {
+        self.0.get(&(bit, key.map(str::to_owned)))
+    }
+
+    fn insert(&mut self, bit: u32, key: Option<String>, config: serde_json::Value) {
+        self.0.insert((bit, key), config);
+    }
+
+    fn take(&mut self, bit: u32, key: Option<&str>) -> Option<serde_json::Value> {
+        self.0.remove(&(bit, key.map(str::to_owned)))
     }
 }
 
@@ -79,13 +106,15 @@ impl SubscriptionState {
         self.topics.contains(topic)
     }
 
-    /// This topic's live config, or its default when the client has
-    /// never configured it. Configless topics deserialize `()`.
+    /// This topic's config, live or dormant, or its default when the
+    /// client has never configured it. Dormant counts because the engine
+    /// reads across subscriptions: a `screen_zones`-only client still
+    /// borrows the `screen_canvas` cadence.
     pub(super) fn config_of<C>(&self, topic: TopicId) -> C
     where
         C: serde::de::DeserializeOwned + Default,
     {
-        match self.configs.config(topic.bit(), None) {
+        match self.stored_config(topic.bit(), None) {
             // Borrowed, not cloned: relays re-read config on every frame
             // they pace.
             Some(stored) => C::deserialize(stored)
@@ -94,12 +123,18 @@ impl SubscriptionState {
         }
     }
 
+    fn stored_config(&self, bit: u32, key: Option<&str>) -> Option<&serde_json::Value> {
+        self.live
+            .config(bit, key)
+            .or_else(|| self.dormant.get(bit, key))
+    }
+
     /// The config stanza the subscribe acknowledgment echoes: every
     /// live subscription that has config, in declaration order.
     pub(super) fn config_projection(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();
         for topic in self.topics.iter() {
-            for (_key, config) in self.configs.entries_for(topic.bit()) {
+            for (_key, config) in self.live.entries_for(topic.bit()) {
                 map.insert(topic.as_str().to_owned(), config.clone());
             }
         }
@@ -145,22 +180,47 @@ impl SubscriptionState {
     }
 
     /// Build the state an unsubscribe request would produce. Stored
-    /// config survives so a later re-subscribe reinstates it.
+    /// config moves aside rather than dying, so a later re-subscribe
+    /// reinstates it.
     pub(super) fn unsubscribe(&self, selections: &[TopicSelection]) -> Self {
         let mut next = self.clone();
         for selection in selections {
-            next.topics.remove(selection.topic);
+            next.retire(selection.topic);
         }
         next
     }
 
-    /// The single write path for membership.
+    /// The single write path for joining: the set gains the topic and
+    /// the live table gains its config in the same step.
     fn admit(&mut self, topic: TopicId, key: Option<String>) {
         self.topics.insert(topic);
-        if topic.vtable().configurable && self.configs.config(topic.bit(), key.as_deref()).is_none()
-        {
-            self.configs
-                .insert(topic.bit(), key, (topic.vtable().default_config_json)());
+        if !topic.vtable().configurable {
+            return;
+        }
+        let bit = topic.bit();
+        if self.live.config(bit, key.as_deref()).is_some() {
+            return;
+        }
+        let config = self
+            .dormant
+            .take(bit, key.as_deref())
+            .unwrap_or_else(|| (topic.vtable().default_config_json)());
+        self.live.insert(bit, key, config);
+    }
+
+    /// The single write path for leaving: the set loses the topic and
+    /// its live config moves to the dormant cache in the same step.
+    fn retire(&mut self, topic: TopicId) {
+        self.topics.remove(topic);
+        let bit = topic.bit();
+        let carried: Vec<(Option<String>, serde_json::Value)> = self
+            .live
+            .entries_for(bit)
+            .map(|(key, config)| (key.map(str::to_owned), config.clone()))
+            .collect();
+        for (key, config) in carried {
+            self.live.remove(bit, key.as_deref());
+            self.dormant.insert(bit, key, config);
         }
     }
 
@@ -169,21 +229,41 @@ impl SubscriptionState {
         topic: TopicId,
         stanza: &serde_json::Value,
     ) -> Result<(), WsProtocolError> {
+        let bit = topic.bit();
         let current = self
-            .configs
-            .config(topic.bit(), None)
+            .stored_config(bit, None)
             .cloned()
             .unwrap_or_else(|| (topic.vtable().default_config_json)());
         let next = (topic.vtable().apply_patch_json)(&current, stanza)
             .map_err(|error| config_patch_error(topic, &error))?;
         super::topics::admit_config(topic, &next)?;
-        self.configs.insert(topic.bit(), None, next);
+        // Membership decides which half owns the result, so configuring
+        // a topic the request never named cannot fake a subscription.
+        if self.topics.contains(topic) {
+            self.live.insert(bit, None, next);
+        } else {
+            self.dormant.insert(bit, None, next);
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 impl SubscriptionState {
+    /// Whether the live table still means what its name says: a topic
+    /// that takes config has a live entry exactly when it is subscribed.
+    pub(super) fn live_table_agrees_with_membership(&self) -> bool {
+        TopicId::ALL.iter().copied().all(|topic| {
+            let live = self.live.any_for(topic.bit());
+            live == (self.topics.contains(topic) && topic.vtable().configurable)
+        })
+    }
+
+    /// Whether this topic's config is parked for a later re-subscribe.
+    pub(super) fn has_dormant_config(&self, topic: TopicId) -> bool {
+        self.dormant.get(topic.bit(), None).is_some()
+    }
+
     /// Drive one subscribe request the way the wire drives it: channel
     /// names in, the same parse, transaction, and admission out.
     pub(super) fn subscribed(

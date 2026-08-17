@@ -2592,10 +2592,16 @@ fn unsubscribing_keeps_the_config_a_resubscribe_reinstates() {
             serde_json::json!({"metrics": {"interval_ms": 250}}),
         )
         .expect("metrics subscribe applies");
+    assert!(configured.live_table_agrees_with_membership());
+    assert!(!configured.has_dormant_config(TopicId::Metrics));
 
+    // Unsubscribing parks the config rather than dropping it, and the
+    // live table stops claiming a topic nobody is subscribed to.
     let dropped = configured.unsubscribed(&["metrics"]);
     assert!(!dropped.contains(TopicId::Metrics));
     assert!(dropped.config_projection().get("metrics").is_none());
+    assert!(dropped.live_table_agrees_with_membership());
+    assert!(dropped.has_dormant_config(TopicId::Metrics));
 
     let restored = dropped
         .subscribed(&["metrics"], serde_json::Value::Null)
@@ -2605,6 +2611,42 @@ fn unsubscribing_keeps_the_config_a_resubscribe_reinstates() {
         250,
         "a resubscribe reinstates the client's own cadence, not the default"
     );
+    assert!(restored.live_table_agrees_with_membership());
+    assert!(
+        !restored.has_dormant_config(TopicId::Metrics),
+        "a reinstated config moves back rather than being copied"
+    );
+}
+
+#[test]
+fn the_live_table_never_claims_an_unsubscribed_topic() {
+    // Every shape that writes config: subscribe, patch-without-subscribe,
+    // unsubscribe, resubscribe. The live table has to agree with
+    // membership after each one, because that is what any_for promises.
+    let mut state = SubscriptionState::default();
+    assert!(state.live_table_agrees_with_membership());
+
+    state = state
+        .subscribed(
+            &["frames", "canvas"],
+            serde_json::json!({"frames": {"fps": 12}, "display_preview": {"fps": 9}}),
+        )
+        .expect("subscribe with an unrelated stanza applies");
+    assert!(
+        state.live_table_agrees_with_membership(),
+        "configuring an unsubscribed topic must not fake a subscription"
+    );
+    assert!(state.has_dormant_config(TopicId::DisplayPreview));
+
+    state = state.unsubscribed(&["frames"]);
+    assert!(state.live_table_agrees_with_membership());
+
+    state = state
+        .subscribed(&["frames", "display_preview"], serde_json::Value::Null)
+        .expect("resubscribe applies");
+    assert!(state.live_table_agrees_with_membership());
+    assert_eq!(state.config_projection()["frames"]["fps"], 12);
+    assert_eq!(state.config_projection()["display_preview"]["fps"], 9);
 }
 
 #[test]
@@ -2617,6 +2659,8 @@ fn config_lands_for_a_topic_the_request_does_not_subscribe() {
         state.config_projection().get("frames").is_none(),
         "an unsubscribed topic is not echoed"
     );
+    assert!(state.has_dormant_config(TopicId::Frames));
+    assert!(state.live_table_agrees_with_membership());
     assert_eq!(
         state
             .subscribed(&["frames"], serde_json::Value::Null)
