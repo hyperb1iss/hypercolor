@@ -77,8 +77,8 @@ impl DaemonClient {
         Ok(DaemonState {
             running: status.running,
             brightness: status.global_brightness,
-            fps_target: 0.0,
-            fps_actual: 0.0,
+            fps_target: status.render_loop.target_fps,
+            fps_actual: status.render_loop.actual_fps,
             effect_name: active_effect
                 .as_ref()
                 .and_then(|effect| effect.name.clone())
@@ -510,6 +510,23 @@ struct SystemStatusResponse {
     active_scene: Option<String>,
     #[serde(default)]
     active_scene_snapshot_locked: bool,
+    /// The daemon nests every FPS figure here. A flat `fps` field would
+    /// silently deserialize to its default and read as a stalled render
+    /// loop, which is exactly what the status view used to show.
+    #[serde(default)]
+    render_loop: RenderLoopStatus,
+}
+
+/// The `render_loop` block of `GET /api/v1/status`.
+#[derive(Debug, Default, Deserialize)]
+struct RenderLoopStatus {
+    #[serde(default)]
+    target_fps: f32,
+    /// Matches the `actual` figure the WebSocket `metrics` topic
+    /// publishes, so REST refreshes and metrics ticks agree on what the
+    /// number means.
+    #[serde(default)]
+    actual_fps: f32,
 }
 
 fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {

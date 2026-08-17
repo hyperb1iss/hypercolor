@@ -183,7 +183,18 @@ async fn get_status_maps_system_and_active_effect_responses() {
                         "device_count": 3,
                         "active_effect": "Rainbow Wave",
                         "active_scene": "Focus",
-                        "active_scene_snapshot_locked": true
+                        "active_scene_snapshot_locked": true,
+                        "render_loop": {
+                            "state": "running",
+                            "fps_tier": "sixty",
+                            "target_fps": 60,
+                            "ceiling_fps": 60,
+                            "capacity_fps": 59.8,
+                            "delivered_fps": 59.4,
+                            "actual_fps": 59.8,
+                            "consecutive_misses": 0,
+                            "total_frames": 12_000
+                        }
                     }
                 }))
             }),
@@ -214,6 +225,81 @@ async fn get_status_maps_system_and_active_effect_responses() {
     assert_eq!(status.scene_name.as_deref(), Some("Focus"));
     assert!(status.scene_snapshot_locked);
     assert_eq!(status.device_count, 3);
+    // FPS lives under render_loop. A flat field here would read zero and
+    // the status view would render a stalled render loop forever.
+    assert_eq!(status.fps_target, 60.0);
+    assert_eq!(status.fps_actual, 59.8);
+}
+
+/// A status refresh must not erase FPS.
+///
+/// Every daemon event triggers a REST status refresh, and the refreshed
+/// state replaces the whole `DaemonState` a metrics tick just filled in.
+/// While this mapping hardcoded zeros, FPS survived at most one metrics
+/// interval before the next event blanked it, so the dashboard gauge and
+/// title bar effectively never showed a number.
+#[tokio::test]
+async fn get_status_reads_fps_from_the_render_loop_block() {
+    let router = Router::new()
+        .route(
+            "/api/v1/status",
+            get(|| async {
+                Json(json!({
+                    "data": {
+                        "running": true,
+                        "global_brightness": 80,
+                        "device_count": 0,
+                        "active_effect": null,
+                        "active_scene": null,
+                        "render_loop": {
+                            "state": "running",
+                            "target_fps": 45,
+                            "actual_fps": 44.2
+                        }
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/effects/active",
+            get(|| async { Json(json!({ "data": null })) }),
+        );
+
+    let client = client_for(spawn_server(router).await);
+    let status = client.get_status().await.expect("fetch status");
+
+    assert_eq!(status.fps_target, 45.0);
+    assert_eq!(status.fps_actual, 44.2);
+}
+
+/// An absent render_loop block is tolerated rather than fatal.
+#[tokio::test]
+async fn get_status_survives_a_status_payload_without_a_render_loop() {
+    let router = Router::new()
+        .route(
+            "/api/v1/status",
+            get(|| async {
+                Json(json!({
+                    "data": {
+                        "running": false,
+                        "global_brightness": 10,
+                        "device_count": 0,
+                        "active_effect": null,
+                        "active_scene": null
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/effects/active",
+            get(|| async { Json(json!({ "data": null })) }),
+        );
+
+    let client = client_for(spawn_server(router).await);
+    let status = client.get_status().await.expect("fetch status");
+
+    assert_eq!(status.fps_target, 0.0);
+    assert_eq!(status.fps_actual, 0.0);
 }
 
 #[tokio::test]
