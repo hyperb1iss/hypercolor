@@ -1053,7 +1053,7 @@ Starts rendering the specified effect. If another effect is active, transitions 
 
 ---
 
-### 7.4 Get Current Effect
+### 7.4 Get Active Effect
 
 ```
 GET /api/v1/effects/active
@@ -1095,7 +1095,7 @@ Returns `404` with code `not_found` if no effect is currently active (daemon is 
 
 ---
 
-### 7.5 Update Current Effect Controls
+### 7.5 Update Active Effect Controls
 
 ```
 PATCH /api/v1/effects/active/controls
@@ -3924,8 +3924,8 @@ PaginationMeta:
 | `GET`            | `/effects`                           | List effects                    |
 | `GET`            | `/effects/{id}`                      | Get effect details + controls   |
 | `POST`           | `/effects/{id}/apply`                | Apply effect                    |
-| `GET`            | `/effects/active`                   | Get current effect              |
-| `PATCH`          | `/effects/active/controls`          | Update active controls          |
+| `GET`            | `/effects/active`                    | Get active effect               |
+| `PATCH`          | `/effects/active/controls`           | Update active controls          |
 | `GET`            | `/effects/{id}/presets`              | List presets                    |
 | `POST`           | `/effects/{id}/presets`              | Create preset                   |
 | `PATCH`          | `/effects/{id}/presets/{name}`       | Update preset                   |

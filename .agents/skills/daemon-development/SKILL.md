@@ -60,8 +60,8 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 | Prefix                          | Purpose                                                  |
 | ------------------------------- | -------------------------------------------------------- |
 | `/effects`                      | List, detail, apply, stop, rescan                        |
-| `/effects/active`               | Current effect state                                     |
-| `/effects/active/controls`     | Live control PATCH + reset                               |
+| `/effects/active`               | Active effect state                                      |
+| `/effects/active/controls`      | Live control PATCH + reset                               |
 | `/effects/{id}/apply`           | Apply an effect by ID                                    |
 | `/devices`                      | Connected devices, discover, identify, pair, attachments |
 | `/devices/{id}/logical-devices` | Per-device logical segmentation                          |
