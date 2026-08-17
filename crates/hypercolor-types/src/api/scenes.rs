@@ -58,6 +58,42 @@ pub struct ActiveSceneResponse {
     pub unassigned_behavior: UnassignedBehavior,
 }
 
+/// Response for `DELETE /api/v1/scenes/{id}`.
+///
+/// `id` echoes the identifier the caller sent, which may be a scene name
+/// rather than the resolved id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteSceneResponse {
+    pub id: String,
+    pub deleted: bool,
+}
+
+/// Response for `POST /api/v1/scenes/{id}/activate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivateSceneResponse {
+    pub scene: ActivatedSceneRef,
+    pub activated: bool,
+}
+
+/// The scene an activation resolved to, by id and name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivatedSceneRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// Response for `POST /api/v1/scenes/deactivate`.
+///
+/// `scene` is the synthesized default the daemon fell back to, and
+/// `previous_scene` the one that was active; either is `null` when the
+/// daemon had no scene in that role.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeactivateSceneResponse {
+    pub deactivated: bool,
+    pub previous_scene: Option<SceneSummary>,
+    pub scene: Option<SceneSummary>,
+}
+
 /// Request body for `POST /api/v1/scenes`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CreateSceneRequest {

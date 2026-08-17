@@ -21,9 +21,9 @@ use crate::domain::{DomainError, MutationContext, ResourceKind};
 // web UI and the TUI. OutputAssignment's untagged variant ORDER is part
 // of the wire contract; see the shared definition.
 pub use hypercolor_types::api::zones::{
-    AssignDevicesRequest, CreateZoneRequest, OutputAssignment, UnassignedBehaviorResponse,
-    UpdateUnassignedBehaviorRequest, UpdateZoneRequest, ZoneListResponse, ZoneMutationResponse,
-    ZoneResponse,
+    AssignDevicesRequest, CreateZoneRequest, DeleteZoneResponse, OutputAssignment,
+    UnassignedBehaviorResponse, UpdateUnassignedBehaviorRequest, UpdateZoneRequest,
+    ZoneListResponse, ZoneMutationResponse, ZoneResponse,
 };
 
 pub async fn list_zones(
@@ -168,11 +168,11 @@ pub async fn delete_zone(
     };
 
     attach_zones_revision_headers(
-        ApiResponse::ok(serde_json::json!({
-            "zone_id": zone_id,
-            "deleted": true,
-            "zones_revision": removed.groups_revision,
-        })),
+        ApiResponse::ok(DeleteZoneResponse {
+            zone_id,
+            deleted: true,
+            zones_revision: removed.groups_revision,
+        }),
         removed.groups_revision,
     )
 }

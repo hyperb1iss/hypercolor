@@ -28,7 +28,9 @@ const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 // Wire contracts live in hypercolor-types::api::scenes — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::scenes::{
-    ActiveSceneResponse, CreateSceneRequest, SceneListResponse, SceneSummary, UpdateSceneRequest,
+    ActivateSceneResponse, ActivatedSceneRef, ActiveSceneResponse, CreateSceneRequest,
+    DeactivateSceneResponse, DeleteSceneResponse, SceneListResponse, SceneSummary,
+    UpdateSceneRequest,
 };
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -176,10 +178,7 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
         };
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "id": id,
-        "deleted": true,
-    }))
+    ApiResponse::ok(DeleteSceneResponse { id, deleted: true })
 }
 
 /// `POST /api/v1/scenes/:id/activate` — Manually activate a scene.
@@ -233,13 +232,13 @@ pub async fn activate_scene(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(serde_json::json!({
-        "scene": {
-            "id": activated.scene_id.to_string(),
-            "name": activated.scene_name,
+    ApiResponse::ok(ActivateSceneResponse {
+        scene: ActivatedSceneRef {
+            id: activated.scene_id.to_string(),
+            name: activated.scene_name,
         },
-        "activated": true,
-    }))
+        activated: true,
+    })
 }
 
 /// `POST /api/v1/scenes/deactivate` — Return to the synthesized default scene.
@@ -254,11 +253,11 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(serde_json::json!({
-        "deactivated": true,
-        "previous_scene": deactivated.previous_scene.as_ref().map(scene_summary),
-        "scene": deactivated.current_scene.as_ref().map(scene_summary),
-    }))
+    ApiResponse::ok(DeactivateSceneResponse {
+        deactivated: true,
+        previous_scene: deactivated.previous_scene.as_ref().map(scene_summary),
+        scene: deactivated.current_scene.as_ref().map(scene_summary),
+    })
 }
 
 /// The scene summary every scene-library response carries.

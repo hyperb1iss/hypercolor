@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::scene::{UnassignedBehavior, Zone};
+use crate::scene::{UnassignedBehavior, Zone, ZoneId};
 use crate::spatial::Output;
 
 /// Response for `GET /api/v1/scenes/{id}/zones`.
@@ -31,6 +31,17 @@ pub struct ZoneResponse {
 pub struct ZoneMutationResponse {
     #[schema(value_type = Vec<Object>)]
     pub items: Vec<Zone>,
+    pub zones_revision: u64,
+}
+
+/// Response for `DELETE /api/v1/scenes/{id}/zones/{zone_id}`.
+///
+/// The revision is also carried in the response headers; it is repeated
+/// in the body so a client that only reads JSON stays in step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteZoneResponse {
+    pub zone_id: ZoneId,
+    pub deleted: bool,
     pub zones_revision: u64,
 }
 
