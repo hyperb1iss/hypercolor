@@ -45,6 +45,7 @@ pub struct ListTemplatesQuery {
 pub struct TemplateListResponse {
     #[serde(default)]
     pub items: Vec<TemplateSummary>,
+    #[serde(default)]
     pub pagination: Pagination,
 }
 

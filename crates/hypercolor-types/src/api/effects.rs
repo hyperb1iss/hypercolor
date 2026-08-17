@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::common::Pagination;
-use crate::effect::{ControlBinding, ControlDefinition, ControlValue, PresetTemplate};
+use crate::effect::{ControlDefinition, ControlValue, PresetTemplate};
 
 /// Origin of a preset in an effect's unified preset stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -215,48 +215,11 @@ pub struct UpdateActiveControlsRequest {
     pub controls: Option<serde_json::Value>,
 }
 
-/// Response for `PATCH /api/v1/effects/active/controls`.
-///
-/// `effect` is the active effect's name rather than a reference object —
-/// this route predates the `{ id, name }` convention its siblings use.
-/// `rejected` names the controls the daemon refused, with the reason.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UpdateActiveControlsResponse {
-    #[serde(default)]
-    pub effect: String,
-    #[serde(default)]
-    pub applied: HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub rejected: Vec<String>,
-}
-
-/// Response for `PATCH /api/v1/effects/{effect_id}/controls`.
-///
-/// The same body as the `active` sibling plus `controls_version`, the
-/// new server-side version token. It is also returned in the `ETag`
-/// header; clients echo it back via `If-Match` to get optimistic
-/// concurrency on the next PATCH.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UpdateEffectControlsResponse {
-    #[serde(default)]
-    pub effect: String,
-    #[serde(default)]
-    pub applied: HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub rejected: Vec<String>,
-    pub controls_version: u64,
-}
-
-/// Response for `PUT /api/v1/effects/active/controls/{name}/binding`.
-///
-/// `binding` is the stored binding after clamping, which can differ from
-/// the one the caller sent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SetControlBindingResponse {
-    pub effect: EffectRefSummary,
-    pub control: String,
-    pub binding: ControlBinding,
-}
+// The two control PATCH responses and the control-binding response are
+// deliberately NOT defined here. Their payloads carry f32 control values,
+// and the daemon builds them with `serde_json::json!`, which widens f32 to
+// f64 and prints the widened digits. A derived struct writes f32 directly,
+// so naming those shapes would change the bytes on the wire.
 
 /// Request body for `PUT /api/v1/effects/{id}/layout`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -67,9 +67,8 @@ pub use hypercolor_types::api::effects::{
     EffectLayoutApplyResult, EffectLayoutResponse, EffectListResponse, EffectPresetListResponse,
     EffectPresetOrigin, EffectPresetSummary, EffectRefSummary, EffectSummary,
     InstalledEffectResponse, LayoutLinkSummary, PauseEffectResponse, RescanResponse,
-    ResetControlsRequest, ResetControlsResponse, ResumeEffectResponse, SetControlBindingResponse,
-    SetEffectLayoutResponse, StopEffectResponse, TransitionRequest, UpdateActiveControlsRequest,
-    UpdateActiveControlsResponse, UpdateEffectControlsResponse,
+    ResetControlsRequest, ResetControlsResponse, ResumeEffectResponse, SetEffectLayoutResponse,
+    StopEffectResponse, TransitionRequest, UpdateActiveControlsRequest,
 };
 
 struct ResolvedEffectPreset {
@@ -1002,11 +1001,15 @@ pub async fn update_active_controls(
         );
     }
 
-    ApiResponse::ok(UpdateActiveControlsResponse {
-        effect: effect_name,
-        applied,
-        rejected,
-    })
+    // Held back from the wave 3.1c type promotion deliberately: `applied`
+    // carries f32 control values, and `json!` widens them to f64 while a
+    // derived struct does not, so naming this shape would reprint every
+    // non-representable float (0.1 -> 0.10000000149011612 today).
+    ApiResponse::ok(serde_json::json!({
+        "effect": effect_name,
+        "applied": applied,
+        "rejected": rejected,
+    }))
 }
 
 /// `PATCH /api/v1/effects/{effect_id}/controls` — Update controls on a
@@ -1110,12 +1113,13 @@ pub async fn update_effect_controls(
         );
     }
 
-    let body = ApiResponse::ok(UpdateEffectControlsResponse {
-        effect: effect_name,
-        applied,
-        rejected,
-        controls_version: new_version,
-    })
+    // Held back for the same f32 reprint reason as its `active` sibling.
+    let body = ApiResponse::ok(serde_json::json!({
+        "effect": effect_name,
+        "applied": applied,
+        "rejected": rejected,
+        "controls_version": new_version,
+    }))
     .into_response();
     attach_controls_version_headers(body, new_version)
 }
@@ -1219,14 +1223,17 @@ pub async fn set_active_control_binding(
         Err(error) => return error.into_response(),
     }
 
-    ApiResponse::ok(SetControlBindingResponse {
-        effect: EffectRefSummary {
-            id: effect_id,
-            name: effect_name,
+    // Held back: `ControlBinding` is six f32 fields, which a named struct
+    // would reprint at f32 precision instead of the widened f64 form the
+    // literal has always emitted.
+    ApiResponse::ok(serde_json::json!({
+        "effect": {
+            "id": effect_id,
+            "name": effect_name,
         },
-        control: control_id,
-        binding: normalized,
-    })
+        "control": control_id,
+        "binding": normalized,
+    }))
 }
 
 /// `POST /api/v1/effects/active/reset` — Reset all controls on the active

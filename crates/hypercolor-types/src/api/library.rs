@@ -1,12 +1,8 @@
 //! Library API contracts — `/api/v1/library/*`.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::api::common::Pagination;
-use crate::api::effects::EffectRefSummary;
-use crate::effect::ControlValue;
 use crate::library::{EffectPlaylist, EffectPreset};
 
 /// Request body for `POST /api/v1/library/favorites`.
@@ -34,6 +30,7 @@ pub struct FavoriteSummary {
 pub struct FavoriteListResponse {
     #[serde(default)]
     pub items: Vec<FavoriteSummary>,
+    #[serde(default)]
     pub pagination: Pagination,
 }
 
@@ -114,6 +111,7 @@ pub struct ApplyPresetRequest {
 pub struct PresetListResponse {
     #[serde(default)]
     pub items: Vec<EffectPreset>,
+    #[serde(default)]
     pub pagination: Pagination,
 }
 
@@ -127,36 +125,17 @@ pub struct DeletePresetResponse {
     pub deleted: bool,
 }
 
-/// `{ id, name }` reference to a saved preset.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PresetRefSummary {
-    pub id: String,
-    pub name: String,
-}
-
-/// Response for `POST /api/v1/library/presets/{id}/apply`.
-///
-/// `applied_controls` is what the effect actually took, and
-/// `rejected_controls` names the preset entries the effect's current
-/// control definitions refused — a preset saved against an older version
-/// of an effect applies partially rather than failing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ApplyPresetResponse {
-    pub preset: PresetRefSummary,
-    pub effect: EffectRefSummary,
-    #[serde(default)]
-    pub applied_controls: HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub rejected_controls: Vec<String>,
-    #[serde(default)]
-    pub warnings: Vec<String>,
-}
+// The preset apply response is deliberately NOT defined here: its
+// `applied_controls` map carries f32 control values, and the daemon builds
+// the body with `serde_json::json!`, which widens f32 to f64 and prints the
+// widened digits. Naming the shape would change the bytes on the wire.
 
 /// Response for `GET /api/v1/library/playlists`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaylistListResponse {
     #[serde(default)]
     pub items: Vec<EffectPlaylist>,
+    #[serde(default)]
     pub pagination: Pagination,
 }
 

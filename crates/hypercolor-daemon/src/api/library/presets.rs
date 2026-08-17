@@ -16,7 +16,7 @@ use hypercolor_types::scene::ZoneId;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
-use crate::api::effects::{EffectRefSummary, resolve_effect_metadata};
+use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -28,8 +28,7 @@ use super::{
 // Wire contracts live in hypercolor-types::api::library — shared with
 // the web UI and the TUI.
 pub use hypercolor_types::api::library::{
-    ApplyPresetRequest, ApplyPresetResponse, DeletePresetResponse, PresetListResponse,
-    PresetRefSummary, SavePresetRequest,
+    ApplyPresetRequest, DeletePresetResponse, PresetListResponse, SavePresetRequest,
 };
 
 // ── Handlers ────────────────────────────────────────────────────────────
@@ -325,19 +324,23 @@ pub async fn apply_preset(
     };
     crate::api::persist_runtime_session(&state).await;
 
-    ApiResponse::ok(ApplyPresetResponse {
-        preset: PresetRefSummary {
-            id: preset.id.to_string(),
-            name: preset.name,
+    // Held back from the wave 3.1c type promotion deliberately:
+    // `applied_controls` carries f32 control values, and `json!` widens
+    // them to f64 while a derived struct does not, so naming this shape
+    // would reprint every non-representable float.
+    ApiResponse::ok(serde_json::json!({
+        "preset": {
+            "id": preset.id.to_string(),
+            "name": preset.name,
         },
-        effect: EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name,
+        "effect": {
+            "id": metadata.id.to_string(),
+            "name": metadata.name,
         },
-        applied_controls: activation.applied,
-        rejected_controls: activation.rejected,
-        warnings: activation.warnings,
-    })
+        "applied_controls": activation.applied,
+        "rejected_controls": activation.rejected,
+        "warnings": activation.warnings,
+    }))
 }
 
 /// Apply a preset to a named non-Primary zone. When the zone already runs
@@ -425,19 +428,20 @@ async fn apply_preset_to_zone(
     }
     crate::api::persist_runtime_session(state).await;
 
-    ApiResponse::ok(ApplyPresetResponse {
-        preset: PresetRefSummary {
-            id: preset.id.to_string(),
-            name: preset.name.clone(),
+    // Held back for the same f32 reprint reason as the primary path.
+    ApiResponse::ok(serde_json::json!({
+        "preset": {
+            "id": preset.id.to_string(),
+            "name": preset.name,
         },
-        effect: EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name.clone(),
+        "effect": {
+            "id": metadata.id.to_string(),
+            "name": metadata.name,
         },
-        applied_controls: applied,
-        rejected_controls: rejected,
-        warnings: Vec::new(),
-    })
+        "applied_controls": applied,
+        "rejected_controls": rejected,
+        "warnings": Vec::<String>::new(),
+    }))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
