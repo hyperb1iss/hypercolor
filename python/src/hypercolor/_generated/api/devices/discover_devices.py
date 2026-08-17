@@ -78,7 +78,7 @@ def sync_detailed(
     """Start device discovery
 
     Args:
-        body (DiscoverRequest | Unset):
+        body (DiscoverRequest | Unset): Optional body for `POST /api/v1/devices/discover`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -107,7 +107,7 @@ async def asyncio_detailed(
     """Start device discovery
 
     Args:
-        body (DiscoverRequest | Unset):
+        body (DiscoverRequest | Unset): Optional body for `POST /api/v1/devices/discover`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

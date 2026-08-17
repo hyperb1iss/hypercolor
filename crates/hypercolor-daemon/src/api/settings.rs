@@ -14,9 +14,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use hypercolor_core::config::canonical_audio_device_id;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::audio::linux;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{debug, warn};
-use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
@@ -24,6 +23,8 @@ use crate::api::persist_runtime_session;
 use crate::domain::DomainError;
 use crate::session::{current_global_brightness, set_global_brightness};
 use hypercolor_types::event::HypercolorEvent;
+
+pub use hypercolor_types::api::settings::SetBrightnessRequest;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AudioDeviceInfo {
@@ -40,11 +41,6 @@ pub struct AudioDevicesResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BrightnessSettingsResponse {
-    pub brightness: u8,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct SetBrightnessRequest {
     pub brightness: u8,
 }
 

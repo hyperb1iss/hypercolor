@@ -4,8 +4,27 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::common::Pagination;
+use crate::attachment::ComponentBinding;
 use crate::device::{DeviceOrigin, DriverPresentation};
 use crate::pairing::DeviceAuthSummary;
+
+/// Query parameters for `GET /api/v1/devices`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListDevicesQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    /// Free-text filter over device name and model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+}
 
 /// Response for `GET /api/v1/devices`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -100,6 +119,80 @@ pub struct IdentifyRequest {
     pub duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+}
+
+/// Request body for
+/// `POST /api/v1/devices/{id}/attachments/{component_id}/identify`.
+///
+/// Carries the base identify parameters plus the selectors that narrow
+/// the blink to one attached component instance.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentifyAttachmentRequest {
+    #[serde(flatten)]
+    pub base: IdentifyRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<u32>,
+}
+
+/// Request body for `PUT /api/v1/devices/{id}/attachments`.
+///
+/// The binding list replaces the device's attachments wholesale.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateAttachmentsRequest {
+    #[serde(default)]
+    pub bindings: Vec<ComponentBinding>,
+}
+
+/// Optional body for `POST /api/v1/devices/discover`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DiscoverRequest {
+    /// Discovery targets to scan; omitted scans every enabled target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Block until the scan finishes instead of returning a scan id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<bool>,
+}
+
+/// Query parameters for `GET /api/v1/logical-devices`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListLogicalDevicesQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Filter to the logical devices carved out of one physical device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// Request body for `POST /api/v1/devices/{id}/logical-devices`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateLogicalDeviceRequest {
+    pub name: String,
+    pub led_start: u32,
+    pub led_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// Request body for `PUT /api/v1/logical-devices/{id}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateLogicalDeviceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 /// Response for `GET /api/v1/devices/bindings`.

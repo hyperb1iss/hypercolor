@@ -87,7 +87,8 @@ def sync_detailed(
     Args:
         id (str):
         zone_id (str):
-        body (LayerOrderRequest):
+        body (LayerOrderRequest): Request body for
+            `PUT /api/v1/scenes/{id}/zones/{zone_id}/layers/order`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -122,7 +123,8 @@ async def asyncio_detailed(
     Args:
         id (str):
         zone_id (str):
-        body (LayerOrderRequest):
+        body (LayerOrderRequest): Request body for
+            `PUT /api/v1/scenes/{id}/zones/{zone_id}/layers/order`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

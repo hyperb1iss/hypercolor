@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceOrigin};
@@ -21,29 +21,9 @@ use super::{
     Pagination, ensure_default_logical_entry, resolve_device_id_or_error, resolved_backend_id,
 };
 
-#[derive(Debug, Deserialize, Default)]
-pub struct ListLogicalDevicesQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-    pub physical_device: Option<String>,
-    pub enabled: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateLogicalDeviceRequest {
-    pub name: String,
-    pub led_start: u32,
-    pub led_count: u32,
-    pub enabled: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateLogicalDeviceRequest {
-    pub name: Option<String>,
-    pub led_start: Option<u32>,
-    pub led_count: Option<u32>,
-    pub enabled: Option<bool>,
-}
+pub use hypercolor_types::api::devices::{
+    CreateLogicalDeviceRequest, ListLogicalDevicesQuery, UpdateLogicalDeviceRequest,
+};
 
 #[derive(Debug, Serialize)]
 pub struct LogicalDeviceListResponse {

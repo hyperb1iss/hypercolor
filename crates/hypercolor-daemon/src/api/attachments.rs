@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::RwLockWriteGuard;
 
 use hypercolor_core::attachment::{ComponentRegistry, TemplateFilter};
@@ -22,20 +22,7 @@ use crate::api::devices::Pagination;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
-#[derive(Debug, Deserialize, Default)]
-pub struct ListTemplatesQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-    pub category: Option<String>,
-    pub vendor: Option<String>,
-    pub origin: Option<String>,
-    pub q: Option<String>,
-    pub controller_id: Option<String>,
-    pub model: Option<String>,
-    pub slot_id: Option<String>,
-    pub led_min: Option<u32>,
-    pub led_max: Option<u32>,
-}
+pub use hypercolor_types::api::attachments::ListTemplatesQuery;
 
 #[derive(Debug, Serialize)]
 pub struct TemplateListResponse {

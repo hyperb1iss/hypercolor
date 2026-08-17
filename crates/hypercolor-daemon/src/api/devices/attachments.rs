@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::debug;
 
 use hypercolor_core::attachment::{effective_attachment_slots, normalize_attachment_profile_slots};
@@ -25,11 +25,7 @@ use crate::logical_devices;
 
 use super::{ensure_default_logical_entry, resolve_device_id_or_error};
 
-#[derive(Debug, Deserialize, Default)]
-pub struct UpdateAttachmentsRequest {
-    #[serde(default)]
-    pub bindings: Vec<ComponentBinding>,
-}
+pub use hypercolor_types::api::devices::UpdateAttachmentsRequest;
 
 #[derive(Debug, Serialize)]
 pub struct DeviceComponentsResponse {

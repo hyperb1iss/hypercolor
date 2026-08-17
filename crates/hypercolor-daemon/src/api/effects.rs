@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::fs;
 use tracing::{info, warn};
 
@@ -46,6 +46,8 @@ use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
 use crate::session::set_output_stopped;
 
+pub use hypercolor_types::api::effects::SetEffectLayoutRequest;
+
 // ── Request / Response Types ─────────────────────────────────────────────
 
 const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
@@ -72,11 +74,6 @@ pub use hypercolor_types::api::effects::{
 struct ResolvedEffectPreset {
     id: PresetId,
     controls: HashMap<String, ControlValue>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SetEffectLayoutRequest {
-    pub layout_id: String,
 }
 
 #[derive(Debug)]

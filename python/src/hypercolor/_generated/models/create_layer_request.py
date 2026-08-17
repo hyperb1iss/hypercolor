@@ -22,16 +22,18 @@ T = TypeVar("T", bound="CreateLayerRequest")
 
 @_attrs_define
 class CreateLayerRequest:
-    """
-    Attributes:
-        source (CreateLayerRequestSource):
-        adjust (CreateLayerRequestAdjust | Unset):
-        bindings (list[CreateLayerRequestBindingsItem] | Unset):
-        blend (str | Unset):
-        enabled (bool | Unset):
-        name (None | str | Unset):
-        opacity (float | Unset):
-        transform (CreateLayerRequestTransform | Unset):
+    """Request body for
+    `POST /api/v1/scenes/{id}/zones/{zone_id}/layers`.
+
+        Attributes:
+            source (CreateLayerRequestSource):
+            adjust (CreateLayerRequestAdjust | Unset):
+            bindings (list[CreateLayerRequestBindingsItem] | Unset):
+            blend (str | Unset):
+            enabled (bool | Unset):
+            name (None | str | Unset):
+            opacity (float | Unset):
+            transform (CreateLayerRequestTransform | Unset):
     """
 
     source: CreateLayerRequestSource

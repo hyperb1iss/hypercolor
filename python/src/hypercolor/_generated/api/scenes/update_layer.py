@@ -91,7 +91,11 @@ def sync_detailed(
         id (str):
         zone_id (str):
         layer_id (str):
-        body (UpdateLayerRequest):
+        body (UpdateLayerRequest): Request body for
+            `PUT /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}`.
+
+            The whole layer is replaced, so every field the caller wants to keep
+            must be echoed back.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -129,7 +133,11 @@ async def asyncio_detailed(
         id (str):
         zone_id (str):
         layer_id (str):
-        body (UpdateLayerRequest):
+        body (UpdateLayerRequest): Request body for
+            `PUT /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}`.
+
+            The whole layer is replaced, so every field the caller wants to keep
+            must be echoed back.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

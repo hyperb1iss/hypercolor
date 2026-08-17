@@ -8,15 +8,15 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use utoipa::ToSchema;
 
 use hypercolor_core::scene::{LayerMutationError, SceneGroupLayerInsert, SceneManager};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback,
-    SceneLayer, SceneLayerId,
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
+    SceneLayerId,
 };
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
@@ -27,107 +27,10 @@ use crate::api::{AppState, scenes};
 use crate::domain::layer;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateLayerRequest {
-    pub name: Option<String>,
-    #[schema(value_type = Object)]
-    pub source: LayerSource,
-    #[serde(default)]
-    #[schema(value_type = String)]
-    pub blend: LayerBlendMode,
-    #[serde(default = "default_layer_opacity")]
-    pub opacity: f32,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub transform: LayerTransform,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub adjust: LayerAdjust,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub bindings: Vec<LayerBinding>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateLayerRequest {
-    #[schema(value_type = String)]
-    pub id: SceneLayerId,
-    pub name: Option<String>,
-    #[schema(value_type = Object)]
-    pub source: LayerSource,
-    #[serde(default)]
-    #[schema(value_type = String)]
-    pub blend: LayerBlendMode,
-    #[serde(default = "default_layer_opacity")]
-    pub opacity: f32,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub transform: LayerTransform,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub adjust: LayerAdjust,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub bindings: Vec<LayerBinding>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct LayerOrderRequest {
-    #[schema(value_type = Vec<String>)]
-    pub layer_ids: Vec<SceneLayerId>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct PatchLayerControlsRequest {
-    #[schema(value_type = Object)]
-    pub controls: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateLayerQuery {
-    pub index: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct BroadcastMediaLayerTarget {
-    #[schema(value_type = String)]
-    pub zone_id: ZoneId,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub transform: LayerTransform,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub adjust: LayerAdjust,
-    pub index: Option<usize>,
-    pub expected_layers_version: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct BroadcastMediaLayerRequest {
-    pub name: Option<String>,
-    #[schema(value_type = String)]
-    pub asset_id: AssetId,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub playback: MediaPlayback,
-    #[serde(default)]
-    #[schema(value_type = String)]
-    pub blend: LayerBlendMode,
-    #[serde(default = "default_layer_opacity")]
-    pub opacity: f32,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub bindings: Vec<LayerBinding>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub targets: Vec<BroadcastMediaLayerTarget>,
-}
+pub use hypercolor_types::api::layers::{
+    BroadcastMediaLayerRequest, BroadcastMediaLayerTarget, CreateLayerQuery, CreateLayerRequest,
+    LayerOrderRequest, PatchLayerControlsRequest, UpdateLayerRequest,
+};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LayerStackResponse {
@@ -246,7 +149,7 @@ pub async fn broadcast_media_layer(
         }) {
             return DomainError::not_found(ResourceKind::Zone, zone_id).into_response();
         }
-        (scene_id, body.into_layer_inserts())
+        (scene_id, broadcast_layer_inserts(body))
     };
 
     match layer::insert_layers(state.as_ref(), inserts.0, inserts.1, MutationContext::api()).await {
@@ -480,64 +383,32 @@ pub async fn patch_layer_controls(
     }
 }
 
-impl CreateLayerRequest {
-    fn into_layer(self, id: SceneLayerId) -> SceneLayer {
-        SceneLayer {
-            id,
-            name: self.name,
-            source: self.source,
-            blend: self.blend,
-            opacity: self.opacity,
-            transform: self.transform,
-            adjust: self.adjust,
-            bindings: self.bindings,
-            enabled: self.enabled,
-        }
-    }
-}
-
-impl UpdateLayerRequest {
-    fn into_layer(self) -> SceneLayer {
-        SceneLayer {
-            id: self.id,
-            name: self.name,
-            source: self.source,
-            blend: self.blend,
-            opacity: self.opacity,
-            transform: self.transform,
-            adjust: self.adjust,
-            bindings: self.bindings,
-            enabled: self.enabled,
-        }
-    }
-}
-
-impl BroadcastMediaLayerRequest {
-    fn into_layer_inserts(self) -> Vec<SceneGroupLayerInsert> {
-        let source = LayerSource::Media {
-            asset_id: self.asset_id,
-            playback: self.playback,
-        };
-        self.targets
-            .into_iter()
-            .map(|target| SceneGroupLayerInsert {
-                group_id: target.zone_id,
-                layer: SceneLayer {
-                    id: SceneLayerId::new(),
-                    name: self.name.clone(),
-                    source: source.clone(),
-                    blend: self.blend,
-                    opacity: self.opacity,
-                    transform: target.transform,
-                    adjust: target.adjust,
-                    bindings: self.bindings.clone(),
-                    enabled: self.enabled,
-                },
-                index: target.index,
-                expected_version: target.expected_layers_version,
-            })
-            .collect()
-    }
+/// Expand one broadcast request into a per-zone layer insert list.
+fn broadcast_layer_inserts(request: BroadcastMediaLayerRequest) -> Vec<SceneGroupLayerInsert> {
+    let source = LayerSource::Media {
+        asset_id: request.asset_id,
+        playback: request.playback,
+    };
+    request
+        .targets
+        .into_iter()
+        .map(|target| SceneGroupLayerInsert {
+            group_id: target.zone_id,
+            layer: SceneLayer {
+                id: SceneLayerId::new(),
+                name: request.name.clone(),
+                source: source.clone(),
+                blend: request.blend,
+                opacity: request.opacity,
+                transform: target.transform,
+                adjust: target.adjust,
+                bindings: request.bindings.clone(),
+                enabled: request.enabled,
+            },
+            index: target.index,
+            expected_version: target.expected_layers_version,
+        })
+        .collect()
 }
 
 enum StatusKind {
@@ -768,10 +639,6 @@ fn attach_layers_version_headers(mut response: Response, version: u64) -> Respon
     response
 }
 
-fn default_layer_opacity() -> f32 {
-    1.0
-}
-
 trait LayerSourceExt {
     fn media_asset_id(&self) -> Option<AssetId>;
 }
@@ -783,8 +650,4 @@ impl LayerSourceExt for LayerSource {
             _ => None,
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }

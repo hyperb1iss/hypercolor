@@ -6,8 +6,6 @@ use std::sync::atomic::Ordering;
 use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
-use utoipa::ToSchema;
 
 use hypercolor_types::config::HypercolorConfig;
 
@@ -16,12 +14,7 @@ use crate::api::envelope::ApiResponse;
 use crate::discovery;
 use crate::domain::DomainError;
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct DiscoverRequest {
-    pub targets: Option<Vec<String>>,
-    pub timeout_ms: Option<u64>,
-    pub wait: Option<bool>,
-}
+pub use hypercolor_types::api::devices::DiscoverRequest;
 
 /// `POST /api/v1/devices/discover` — Trigger device discovery.
 pub async fn discover_devices(

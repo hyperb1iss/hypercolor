@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::{
@@ -26,28 +26,14 @@ use super::{
     resolve_preset_id, store_error_to_response, unix_epoch_ms,
 };
 
+pub use hypercolor_types::api::library::{ApplyPresetRequest, SavePresetRequest};
+
 // ── Request / Response Types ────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct PresetListResponse {
     pub items: Vec<EffectPreset>,
     pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SavePresetRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub effect: String,
-    pub controls: Option<serde_json::Value>,
-    pub tags: Option<Vec<String>>,
-}
-
-/// Optional body for `apply_preset` — scopes the apply to one zone.
-#[derive(Debug, Default, Deserialize)]
-pub struct ApplyPresetRequest {
-    /// Target zone id. Omitted targets the primary zone.
-    pub zone_id: Option<String>,
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────

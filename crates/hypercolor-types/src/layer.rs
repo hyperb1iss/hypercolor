@@ -569,7 +569,7 @@ impl Default for BindingMap {
     }
 }
 
-fn default_layer_opacity() -> f32 {
+pub(crate) fn default_layer_opacity() -> f32 {
     1.0
 }
 
@@ -577,7 +577,7 @@ fn default_playback_speed() -> f32 {
     1.0
 }
 
-fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }
 

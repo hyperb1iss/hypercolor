@@ -6,7 +6,7 @@ use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
@@ -26,6 +26,8 @@ use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
+pub use hypercolor_types::api::config::ConfigApplyQuery;
+
 /// Render an internal config failure.
 ///
 /// The chain goes to tracing and the wire sees the canonical generic
@@ -36,20 +38,6 @@ fn internal_config_error(message: impl Into<String>) -> Response {
 use crate::scene_transactions::{
     PreparedLayoutUpdate, SceneTransaction, apply_prepared_layout_update_under_guard,
 };
-
-/// Whether a mutation re-applies the live sections it touches.
-///
-/// Live application is the default: a client that wants the value on
-/// disk without disturbing the running daemon asks for `?live=false`.
-#[derive(Debug, Deserialize)]
-pub struct ConfigApplyQuery {
-    #[serde(default = "live_apply_default")]
-    pub live: bool,
-}
-
-const fn live_apply_default() -> bool {
-    true
-}
 
 /// The outcome of a config write, reset, or whole-config reset.
 #[derive(Debug, Serialize, ToSchema)]
