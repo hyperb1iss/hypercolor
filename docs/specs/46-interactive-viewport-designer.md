@@ -805,7 +805,7 @@ The UI sends integer-valued floats; the effect rounds and stores.
 
 ### 9.1 Control PATCH
 
-The existing `PATCH /api/v1/effects/current/controls` endpoint is
+The existing `PATCH /api/v1/effects/active/controls` endpoint is
 insufficient for this modal. "Current effect" is a moving target —
 another UI client, the CLI, or an MCP tool can change the active
 effect between the moment the modal opens (snapshotting controls
@@ -1298,7 +1298,7 @@ repaint that follows is on Servo's timeline, not the render loop.
   frame differs from a scroll_y=0 frame (same URL). Uses the
   existing test harness.
 - WS control PATCH round-trip: open WS, PATCH `scroll_x`, read back
-  effect state via `GET /api/v1/effects/current`, verify value
+  effect state via `GET /api/v1/effects/active`, verify value
   propagated.
 
 ### 13.4 Cross-origin manual test

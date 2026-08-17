@@ -223,8 +223,8 @@ An effect is a visual program (HTML/Canvas, WGSL shader, or native Rust) that re
 GET    /api/v1/effects                      # List all effects
 GET    /api/v1/effects/:id                  # Get effect details + controls schema
 POST   /api/v1/effects/:id/apply            # Apply effect (start rendering)
-GET    /api/v1/effects/current              # Get currently active effect
-PATCH  /api/v1/effects/current/controls     # Update control values on the active effect
+GET    /api/v1/effects/active              # Get currently active effect
+PATCH  /api/v1/effects/active/controls     # Update control values on the active effect
 GET    /api/v1/effects/:id/presets          # List presets for an effect
 POST   /api/v1/effects/:id/presets          # Save current control values as a preset
 PATCH  /api/v1/effects/:id/presets/:name    # Update a preset
@@ -328,7 +328,7 @@ Content-Type: application/json
 **Update controls on the active effect:**
 
 ```http
-PATCH /api/v1/effects/current/controls
+PATCH /api/v1/effects/active/controls
 Content-Type: application/json
 
 {
@@ -2604,8 +2604,8 @@ The spec includes a `x-sunset-date` extension on deprecated operations.
 | `GET`    | `/effects`                         | List effects       |
 | `GET`    | `/effects/:id`                     | Effect details     |
 | `POST`   | `/effects/:id/apply`               | Apply effect       |
-| `GET`    | `/effects/current`                 | Current effect     |
-| `PATCH`  | `/effects/current/controls`        | Update controls    |
+| `GET`    | `/effects/active`                 | Current effect     |
+| `PATCH`  | `/effects/active/controls`        | Update controls    |
 | `GET`    | `/effects/:id/presets`             | List presets       |
 | `POST`   | `/effects/:id/presets`             | Save preset        |
 | `POST`   | `/effects/:id/presets/:name/apply` | Apply preset       |

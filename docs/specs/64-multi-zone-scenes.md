@@ -743,7 +743,7 @@ an `ETag`, and a structural request may carry an `If-Match` header. A
 mismatch returns `412 Precondition Failed` carrying the canonical error
 envelope: `code` is `precondition_failed`, `details` holds `expected` and
 `current`, and the `ETag` repeats `current`. This matches the `api/layers.rs`
-endpoints and `PATCH /effects/current/controls`, which run the same contract
+endpoints and `PATCH /effects/active/controls`, which run the same contract
 against `controls_version`. `412` is distinct from the `409 Conflict` this spec
 uses for snapshot-locked scenes. Metadata-only `PATCH` calls do not require
 `If-Match`.

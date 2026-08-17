@@ -196,15 +196,15 @@ pub struct TransitionRequest {
     pub duration_ms: Option<u64>,
 }
 
-/// Request body for `PATCH /api/v1/effects/current/controls`.
+/// Request body for `PATCH /api/v1/effects/active/controls`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateCurrentControlsRequest {
+pub struct UpdateActiveControlsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
     pub controls: Option<serde_json::Value>,
 }
 
-/// Optional body for `POST /api/v1/effects/current/reset` — scopes the
+/// Optional body for `POST /api/v1/effects/active/reset` — scopes the
 /// reset to one zone (`render_group`); omitted resets the primary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ResetControlsRequest {

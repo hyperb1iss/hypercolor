@@ -595,7 +595,7 @@ async fn update_control_wraps_payload_under_controls() {
     let router =
         Router::new()
             .route(
-                "/api/v1/effects/current/controls",
+                "/api/v1/effects/active/controls",
                 patch(
                     |State(captured): State<Arc<Mutex<Option<Value>>>>,
                      Json(payload): Json<Value>| async move {
@@ -966,7 +966,7 @@ async fn reset_controls_scopes_to_render_group() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/effects/current/reset",
+            "/api/v1/effects/active/reset",
             post(
                 |State(captured): State<Arc<Mutex<Option<Value>>>>,
                  Json(body): Json<Value>| async move {

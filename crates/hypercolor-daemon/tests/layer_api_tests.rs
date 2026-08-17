@@ -911,7 +911,7 @@ async fn top_level_current_controls_rejects_multiple_effect_layers() {
         &app,
         json_request(
             "PATCH",
-            "/api/v1/effects/current/controls".to_owned(),
+            "/api/v1/effects/active/controls".to_owned(),
             serde_json::json!({ "controls": { "speed": 2.0 } }),
         ),
     )

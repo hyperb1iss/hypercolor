@@ -175,7 +175,7 @@ pub async fn stop_effect() -> Result<(), String> {
 /// Update effect control parameters.
 pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
     let body = serde_json::json!({ "controls": controls });
-    client::patch_json_discard("/api/v1/effects/current/controls", &body)
+    client::patch_json_discard("/api/v1/effects/active/controls", &body)
         .await
         .map_err(Into::into)
 }
@@ -235,7 +235,7 @@ pub async fn update_effect_controls(
 
 /// Reset all controls on the active effect to their defaults.
 pub async fn reset_controls() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/current/reset")
+    client::post_empty("/api/v1/effects/active/reset")
         .await
         .map_err(Into::into)
 }

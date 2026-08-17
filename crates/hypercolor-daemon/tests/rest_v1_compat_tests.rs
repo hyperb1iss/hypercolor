@@ -684,7 +684,7 @@ async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
         &app,
         json_request(
             "PATCH",
-            "/api/v1/effects/current/controls",
+            "/api/v1/effects/active/controls",
             &json!({ "controls": { "speed": 3.0 } }),
         ),
     )
@@ -700,7 +700,7 @@ async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
     assert_keys(
         &json["data"],
         &["effect", "applied", "rejected"],
-        "legacy /effects/current/controls body",
+        "legacy /effects/active/controls body",
     );
     assert_eq!(json["data"]["effect"], json!("solid_color"));
 }
@@ -724,7 +724,7 @@ async fn legacy_effects_current_binding_and_reset_paths_stay_routed() {
         &app,
         json_request(
             "PUT",
-            "/api/v1/effects/current/controls/speed/binding",
+            "/api/v1/effects/active/controls/speed/binding",
             &json!({
                 "sensor": "cpu.load",
                 "sensor_min": 0.0,
@@ -738,7 +738,7 @@ async fn legacy_effects_current_binding_and_reset_paths_stay_routed() {
     assert_reached_v1_handler(binding).await;
 
     // `reset` accepts an absent body, which is part of its v1 contract.
-    let reset = send(&app, empty_request("POST", "/api/v1/effects/current/reset")).await;
+    let reset = send(&app, empty_request("POST", "/api/v1/effects/active/reset")).await;
     assert_eq!(reset.status(), StatusCode::OK);
     assert_envelope(&body_json(reset).await);
 }

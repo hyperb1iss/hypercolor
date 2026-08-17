@@ -779,7 +779,7 @@ async def test_get_effect_raises_not_found(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_update_controls_wraps_controls_payload(client: HypercolorClient) -> None:
-    route = respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -802,7 +802,7 @@ async def test_update_controls_wraps_controls_payload(client: HypercolorClient) 
 @respx.mock
 @pytest.mark.asyncio
 async def test_update_controls_raises_validation_error(client: HypercolorClient) -> None:
-    respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
+    respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
         return_value=httpx.Response(
             422,
             content=msgspec.json.encode(

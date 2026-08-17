@@ -1218,15 +1218,15 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(effects::get_active_effect_cover),
         )
         .route(
-            "/effects/current/controls",
-            axum::routing::patch(effects::update_current_controls),
+            "/effects/active/controls",
+            axum::routing::patch(effects::update_active_controls),
         )
         .route(
-            "/effects/current/controls/{name}/binding",
-            axum::routing::put(effects::set_current_control_binding),
+            "/effects/active/controls/{name}/binding",
+            axum::routing::put(effects::set_active_control_binding),
         )
         .route(
-            "/effects/current/reset",
+            "/effects/active/reset",
             axum::routing::post(effects::reset_controls),
         )
         .route("/effects/pause", axum::routing::post(effects::pause_effect))

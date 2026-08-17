@@ -294,7 +294,7 @@ binding, the resolved transition (`cut`, `0` today), and a `warnings` array.
 The currently active effect and its live control values.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/effects/current/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/effects/active/controls") %}
 Patch controls on the running effect. Changes take effect on the next frame.
 Note the path segment is `current`, not `active`.
 
@@ -310,12 +310,12 @@ Note the path segment is `current`, not `active`.
 ```
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/effects/current/controls/{name}/binding") %}
+{% api_endpoint(method="PUT", path="/api/v1/effects/active/controls/{name}/binding") %}
 Bind one named control on the running effect to an input source (audio band,
 sensor reading, etc.) so it modulates live instead of holding a fixed value.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/effects/current/reset") %}
+{% api_endpoint(method="POST", path="/api/v1/effects/active/reset") %}
 Reset every control on the running effect back to its default.
 {% end %}
 

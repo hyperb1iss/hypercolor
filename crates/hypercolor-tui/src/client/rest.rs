@@ -345,7 +345,7 @@ impl DaemonClient {
     }
 
     /// Patch effect controls on a zone through its legacy layer — the
-    /// zone-scoped equivalent of `PATCH /effects/current/controls`. The
+    /// zone-scoped equivalent of `PATCH /effects/active/controls`. The
     /// layer id is the zone id (see `Zone::legacy_layer_id`).
     ///
     /// Deliberately sends no `If-Match`: live control edits are
@@ -396,7 +396,7 @@ impl DaemonClient {
 
     /// Update a control value on the active effect.
     pub async fn update_control(&self, control_id: &str, value: &serde_json::Value) -> Result<()> {
-        let url = format!("{}/api/v1/effects/current/controls", self.base_url);
+        let url = format!("{}/api/v1/effects/active/controls", self.base_url);
         let response = self
             .auth_request(self.http.patch(&url))
             .json(&serde_json::json!({ "controls": { control_id: value } }))
@@ -410,7 +410,7 @@ impl DaemonClient {
     /// `render_group` scopes the reset to that zone's effect; `None`
     /// resets the primary zone (legacy behavior).
     pub async fn reset_controls(&self, render_group: Option<&str>) -> Result<()> {
-        let url = format!("{}/api/v1/effects/current/reset", self.base_url);
+        let url = format!("{}/api/v1/effects/active/reset", self.base_url);
         let body = ResetControlsRequest {
             render_group: render_group.map(ToOwned::to_owned),
         };

@@ -200,9 +200,9 @@ rather than replacing them.
 | Method | Path | Request | Success body | Notes |
 | --- | --- | --- | --- | --- |
 | POST | `/api/v1/effects/{id}/apply` | Empty or apply options | `200`, enveloped | `{id}` accepts an effect id or name |
-| PATCH | `/api/v1/effects/current/controls` | `{controls: {…}}` | `200`, enveloped `{effect, applied, rejected}` | **No `controls_version`, no ETag, and `If-Match` is not read at all**, while the `{id}` sibling has all three |
-| PUT | `/api/v1/effects/current/controls/{name}/binding` | A bare `ControlBinding` object (`{sensor, sensor_min, sensor_max, target_min, target_max, deadband?, smoothing?}`), **not** wrapped in a `binding` key | `200`, enveloped | |
-| POST | `/api/v1/effects/current/reset` | Empty | `200`, enveloped | |
+| PATCH | `/api/v1/effects/active/controls` | `{controls: {…}}` | `200`, enveloped `{effect, applied, rejected}` | **No `controls_version`, no ETag, and `If-Match` is not read at all**, while the `{id}` sibling has all three |
+| PUT | `/api/v1/effects/active/controls/{name}/binding` | A bare `ControlBinding` object (`{sensor, sensor_min, sensor_max, target_min, target_max, deadband?, smoothing?}`), **not** wrapped in a `binding` key | `200`, enveloped | |
+| POST | `/api/v1/effects/active/reset` | Empty | `200`, enveloped | |
 | GET/POST | `/api/v1/scenes/{id}/groups/{group_id}/layers` | Layer spec on POST | `200`/`201`, enveloped, ETag | `group_id` is a zone id; layers keep the `groups` spelling while zone CRUD uses `/zones/` |
 | PATCH | `/api/v1/scenes/{id}/groups/{group_id}/layers/order` | `{layer_ids: […]}` | `200`, enveloped, ETag | |
 | PUT/DELETE | `/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}` | Layer spec on PUT | `200`, enveloped, ETag | |
@@ -274,7 +274,7 @@ Frozen `If-Match` parsing quirks, identical across all three parsers:
 An unreadable header value is a syntax failure, which is why it is a 400 rather
 than the 422 a semantically-rejected request earns.
 
-Note the asymmetry, which is itself pinned: `PATCH /api/v1/effects/current/controls`
+Note the asymmetry, which is itself pinned: `PATCH /api/v1/effects/active/controls`
 takes no `HeaderMap` and therefore ignores `If-Match` entirely.
 
 ### 5.2 The 412 body

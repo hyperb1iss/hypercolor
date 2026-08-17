@@ -7034,14 +7034,14 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
 }
 
 #[tokio::test]
-async fn update_current_controls_requires_active_effect() {
+async fn update_active_controls_requires_active_effect() {
     let app = test_app();
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
                 .expect("failed to build request"),
@@ -7076,7 +7076,7 @@ async fn patch_controls_updates_primary_group_controls() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":7.25}}"#))
                 .expect("failed to build request"),
@@ -7604,7 +7604,7 @@ async fn effect_preset_stack_lists_and_applies_both_origins() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":4.0}}"#))
                 .expect("failed to build request"),
@@ -7702,7 +7702,7 @@ async fn put_current_control_binding_updates_active_effect_schema() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/effects/current/controls/speed/binding")
+                .uri("/api/v1/effects/active/controls/speed/binding")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&binding).expect("binding should serialize"),
@@ -8007,7 +8007,7 @@ async fn patch_current_controls_publishes_render_group_and_control_events() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
+                .uri("/api/v1/effects/active/controls")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
                 .expect("failed to build request"),
@@ -8371,7 +8371,7 @@ async fn reset_controls_targets_a_named_zone_via_render_group() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/effects/current/reset")
+                .uri("/api/v1/effects/active/reset")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({

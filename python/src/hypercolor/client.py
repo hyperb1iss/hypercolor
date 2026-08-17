@@ -31,7 +31,7 @@ from ._generated.api.effects import (
     get_effect as generated_get_effect,
     list_effects as generated_list_effects,
     stop_effect as generated_stop_effect,
-    update_current_controls as generated_update_current_controls,
+    update_active_controls as generated_update_active_controls,
 )
 from ._generated.api.layouts import (
     apply_layout as generated_apply_layout,
@@ -62,7 +62,7 @@ from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
 from ._generated.models.set_brightness_request import SetBrightnessRequest
-from ._generated.models.update_current_controls_request import UpdateCurrentControlsRequest
+from ._generated.models.update_active_controls_request import UpdateActiveControlsRequest
 from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.types import UNSET
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
@@ -477,8 +477,8 @@ class HypercolorClient:
     ) -> ControlUpdateResult:
         """Update controls on the active effect."""
         return await self._generated_model(
-            generated_update_current_controls._get_kwargs(
-                body=UpdateCurrentControlsRequest.from_dict({"controls": dict(controls)}),
+            generated_update_active_controls._get_kwargs(
+                body=UpdateActiveControlsRequest.from_dict({"controls": dict(controls)}),
             ),
             ControlUpdateResult,
         )
@@ -507,7 +507,7 @@ class HypercolorClient:
         """Reset effect controls to defaults, optionally scoped to one zone."""
         body = _drop_none({"render_group": render_group})
         return await self._request_model(
-            "POST", "/effects/current/reset", MutationResult, body=body or None
+            "POST", "/effects/active/reset", MutationResult, body=body or None
         )
 
     async def get_control_surfaces(

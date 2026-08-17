@@ -66,7 +66,7 @@ pub use hypercolor_types::api::effects::{
     EffectListResponse, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
     EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
     PauseEffectResponse, ResetControlsRequest, ResumeEffectResponse, TransitionRequest,
-    UpdateCurrentControlsRequest,
+    UpdateActiveControlsRequest,
 };
 
 struct ResolvedEffectPreset {
@@ -939,11 +939,11 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
     }))
 }
 
-/// `PATCH /api/v1/effects/current/controls` — Update controls on active effect
+/// `PATCH /api/v1/effects/active/controls` — Update controls on active effect
 /// without reloading/reinitializing the effect renderer.
-pub async fn update_current_controls(
+pub async fn update_active_controls(
     State(state): State<Arc<AppState>>,
-    body: Option<Json<UpdateCurrentControlsRequest>>,
+    body: Option<Json<UpdateActiveControlsRequest>>,
 ) -> Response {
     let controls = body
         .as_ref()
@@ -1024,14 +1024,14 @@ pub async fn update_current_controls(
 /// the current server version so the client can rebase.
 ///
 /// Callers that don't care about concurrency control omit the header;
-/// the endpoint then behaves like `update_current_controls`.
+/// the endpoint then behaves like `update_active_controls`.
 ///
 /// Implemented per Spec 46 § 9.1.
 pub async fn update_effect_controls(
     State(state): State<Arc<AppState>>,
     Path(effect_id_raw): Path<String>,
     headers: HeaderMap,
-    body: Option<Json<UpdateCurrentControlsRequest>>,
+    body: Option<Json<UpdateActiveControlsRequest>>,
 ) -> Response {
     let Ok(effect_uuid) = effect_id_raw.parse::<uuid::Uuid>() else {
         return DomainError::malformed("effect_id must be a valid UUID").into_response();
@@ -1183,9 +1183,9 @@ async fn primary_effect_by_id(
     Some((group, metadata))
 }
 
-/// `PUT /api/v1/effects/current/controls/{name}/binding` — Attach a live sensor
+/// `PUT /api/v1/effects/active/controls/{name}/binding` — Attach a live sensor
 /// binding to a control on the active effect.
-pub async fn set_current_control_binding(
+pub async fn set_active_control_binding(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     Json(binding): Json<ControlBinding>,
@@ -1231,7 +1231,7 @@ pub async fn set_current_control_binding(
     }))
 }
 
-/// `POST /api/v1/effects/current/reset` — Reset all controls on the active
+/// `POST /api/v1/effects/active/reset` — Reset all controls on the active
 /// effect back to their metadata-defined defaults. Accepts an optional
 /// `render_group` body field to reset a specific zone's effect instead of
 /// the primary.

@@ -1143,7 +1143,7 @@ A one-shot `hypercolor migrate` CLI subcommand walks
 ### 10.4 Concurrency: `layers_version` and Precedence
 
 `RenderGroup` already carries `controls_version: u64` for optimistic
-concurrency on `PATCH /api/v1/effects/current/controls`
+concurrency on `PATCH /api/v1/effects/active/controls`
 (`hypercolor-types/src/scene.rs:131`, `api/effects.rs:1022`). The
 existing wire contract uses an `If-Match` request header against the
 version, returns the current version as the `ETag` response header on
@@ -1201,7 +1201,7 @@ warning and keeps `layers`. A future spec removes legacy fields
 entirely; this version of the contract is a one-release transition.
 
 **Live PATCH at top-level.** The existing
-`PATCH /api/v1/effects/current/controls` continues to work for groups
+`PATCH /api/v1/effects/active/controls` continues to work for groups
 with exactly one effect layer (the common case) and continues to use
 `controls_version` for its precondition. For multi-layer groups, the
 daemon returns HTTP 422 with a body pointing the caller at the
@@ -1353,7 +1353,7 @@ endpoint posture.
 
 ### 11.3 Live Control Patching
 
-The existing `PATCH /api/v1/effects/current/controls` continues to work
+The existing `PATCH /api/v1/effects/active/controls` continues to work
 for the *active* layer's effect controls when there is exactly one effect
 layer in the active group. For multi-layer scenes, callers must use the
 layer-scoped endpoint:
