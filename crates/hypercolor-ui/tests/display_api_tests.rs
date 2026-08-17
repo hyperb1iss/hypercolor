@@ -1,6 +1,9 @@
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
-use hypercolor_ui::api::{ComponentBindingRequest, PairDeviceRequest, SetDisplayFaceRequest};
+use hypercolor_ui::api::{
+    ComponentBindingRequest, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
+    SetDisplayFaceRequest,
+};
 use hypercolor_ui::control_value_json::{
     controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value,
 };
@@ -394,4 +397,48 @@ fn hex_to_rgba_expands_css_shorthand() {
         panic!("full hex with alpha should parse");
     };
     assert_eq!(short_alpha, long_alpha);
+}
+
+/// The display-face response is the one REST shape in this crate with no
+/// shared `hypercolor_types::api` type behind it: the daemon builds its own
+/// struct and this crate mirrors it by hand. Nothing makes the compiler
+/// compare the two, so a field rename on either side desyncs the wire while
+/// both sides still build. This pins the exact JSON the daemon's own
+/// `api_tests` assert it emits, so the mirror cannot drift silently.
+///
+/// The fence retires when the displays domain moves into
+/// `hypercolor_types::api` and the compiler takes the job over.
+#[test]
+fn display_face_response_decodes_the_daemon_shape() {
+    const DISPLAY_ID: &str = "6f1f2a3c-5d4e-4b7a-9c8d-0e1f2a3b4c5d";
+    const ZONE_ID: &str = "7a2b3c4d-6e5f-4a8b-9d0c-1e2f3a4b5c6d";
+
+    let wire = serde_json::json!({
+        "device_id": DISPLAY_ID,
+        "scene_id": "scene-a",
+        "effect": { "id": "clock", "name": "Clock" },
+        "zone": {
+            "id": ZONE_ID,
+            "display_target": {
+                "device_id": DISPLAY_ID,
+                "blend_mode": "alpha",
+                "opacity": 1.0
+            }
+        },
+        "live_scope": "scene",
+        "scene_assigned": true,
+        "default_assigned": false
+    });
+
+    let decoded: DisplayFaceResponse =
+        serde_json::from_value(wire).expect("daemon face payload should decode into the UI mirror");
+
+    assert_eq!(decoded.device_id, DISPLAY_ID);
+    assert_eq!(decoded.zone.id, ZONE_ID);
+    assert_eq!(decoded.live_scope, DisplayFaceScope::Scene);
+    let target = decoded
+        .zone
+        .display_target
+        .expect("display target should decode");
+    assert_eq!(target.device_id.to_string(), DISPLAY_ID);
 }

@@ -1224,7 +1224,7 @@ async def test_scene_profile_display_and_diagnostics_helpers(
                     "device_id": "streamdeck",
                     "scene_id": "scene-a",
                     "effect": {"id": "clock", "name": "Clock"},
-                    "group": {"id": "group-a"},
+                    "zone": {"id": "zone-a"},
                 }
             ),
         )
