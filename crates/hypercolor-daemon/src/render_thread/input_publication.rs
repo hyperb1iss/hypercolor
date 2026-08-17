@@ -1163,10 +1163,13 @@ async fn run_pump(
                     // changes; one warning per streak keeps the log honest
                     // without flooding it at the retry cadence.
                     if exact_screen_failure_streak == 0 {
-                        tracing::warn!(%error, "exact screen publication transition failed");
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            "exact screen publication transition failed"
+                        );
                     } else if exact_screen_failure_streak.is_multiple_of(60) {
                         tracing::warn!(
-                            %error,
+                            error = format!("{error:#}"),
                             suppressed_failures = exact_screen_failure_streak,
                             "exact screen publication still failing"
                         );

@@ -71,6 +71,14 @@ use surface_pool::MacosSurfacePool;
 
 const WORKER_WAIT: Duration = Duration::from_millis(100);
 
+// BT.2408 diffuse white; identical to the target LED calibration default so
+// unsignalled HDR content maps through the tone map at unity.
+const DEFAULT_HDR_SOURCE_REFERENCE_WHITE_NITS: f32 = 203.0;
+// One stop of assumed highlight headroom for HDR frames whose surfaces carry
+// no IOSurfaceContentHeadroom, mirroring the stop the tone map reserves on
+// the output side.
+const DEFAULT_HDR_SOURCE_CONTENT_HEADROOM: f32 = 2.0;
+
 const PUBLICATION_PATH_UNKNOWN: u8 = 0;
 const PUBLICATION_PATH_CPU: u8 = 1;
 const PUBLICATION_PATH_NATIVE: u8 = 2;
@@ -638,6 +646,11 @@ impl MacosExactPublicationShared {
         if *source == next {
             return;
         }
+        tracing::debug!(
+            shared = ?std::ptr::from_ref(self),
+            installed = next.is_some(),
+            "macOS exact publication source changed"
+        );
         *source = next;
         self.advance_resolution_revision();
     }
@@ -1480,6 +1493,10 @@ impl InputSource for MacosScreenCaptureInput {
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
         let Some(source) = self.exact.source() else {
+            tracing::debug!(
+                shared = ?std::ptr::from_ref(self.exact.as_ref()),
+                "exact branch unresolvable: no publication source installed"
+            );
             return Ok(None);
         };
         let calibration = LedToneMapCalibration::try_new(
@@ -3011,17 +3028,26 @@ fn capture_colorimetry(frame: &MacosCaptureFrame) -> anyhow::Result<CaptureColor
                 "macOS HDR delivered metadata contradicts the capture frame"
             ));
         }
+        // ScreenCaptureKit only sometimes attaches ContentLightLevelInfo and
+        // IOSurfaceContentHeadroom; spec 76 requires a source reference white
+        // regardless and treats headroom as best-effort. When the OS stays
+        // silent, anchor reference white at BT.2408 diffuse white (203 nits,
+        // the same default as the target LED calibration, so unsignalled
+        // content maps through at unity) and assume one stop of highlight
+        // headroom, matching the output headroom the tone map reserves.
         let reference_white = delivered
             .source_reference_white_nits
-            .ok_or_else(|| anyhow!("macOS HDR capture is missing source reference white"))?;
+            .unwrap_or(DEFAULT_HDR_SOURCE_REFERENCE_WHITE_NITS);
+        // EDR headroom is dynamic: macOS reports it relative to the current
+        // display brightness, and at high brightness it legitimately reaches
+        // 1.0 (no room above SDR white right now). No real pixel can exceed
+        // reference white in that state, so giving the tone map its default
+        // rolloff space is visually identity while keeping the luminance
+        // contract well-formed.
         let headroom = delivered
             .content_headroom
-            .ok_or_else(|| anyhow!("macOS HDR capture is missing content headroom"))?;
-        if headroom <= 1.0 {
-            return Err(anyhow!(
-                "macOS HDR content headroom must be strictly greater than one"
-            ));
-        }
+            .filter(|headroom| *headroom > 1.0)
+            .unwrap_or(DEFAULT_HDR_SOURCE_CONTENT_HEADROOM);
         let reference_white = CapturePositiveScalar::try_new(reference_white)?;
         let peak = CapturePositiveScalar::try_new(reference_white.value() * headroom)?;
         Some(CaptureLuminanceContext::new(reference_white, peak)?)

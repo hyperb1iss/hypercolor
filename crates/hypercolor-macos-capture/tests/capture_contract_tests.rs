@@ -580,6 +580,19 @@ fn point_geometry_outside_storage_is_rejected_after_conversion() {
 }
 
 #[test]
+fn malformed_dirty_rects_degrade_to_full_content_damage() {
+    let mut sample = complete_sample();
+    sample.attachments.dirty_rects = MacosAttachment::Malformed;
+    let frame = decode_frame(&mut MacosFrameDecoder::new(1), sample.clone());
+    let expected = decode_frame(&mut MacosFrameDecoder::new(1), {
+        let mut missing = sample;
+        missing.attachments.dirty_rects = MacosAttachment::Missing;
+        missing
+    });
+    assert_eq!(frame.damage, expected.damage);
+}
+
+#[test]
 fn dirty_rects_remain_pixel_native_and_clip_to_storage() {
     let mut sample = complete_sample();
     sample.attachments.display_scale_factor = MacosAttachment::Value(2.0);

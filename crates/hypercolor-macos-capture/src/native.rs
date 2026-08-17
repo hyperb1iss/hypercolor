@@ -5755,7 +5755,21 @@ fn chroma_location(pixel_buffer: &CVBuffer) -> Result<MacosChromaLocation, Macos
             kCVImageBufferChromaLocation_TopLeft,
         )
     };
-    let value = color_attachment(pixel_buffer, location_key, "chroma_location")?;
+    // SAFETY: A null mode pointer explicitly requests no attachment-mode
+    // output, and the retained result survives the pixel-buffer query.
+    let Some(value) = (unsafe { pixel_buffer.attachment(location_key, ptr::null_mut()) }) else {
+        // ScreenCaptureKit display streams can deliver 4:2:0 buffers that
+        // carry the YCbCr matrix but no chroma-location attachment
+        // (observed on macOS 26). ITU-T H.273 defines left siting as the
+        // default for unsignalled 4:2:0 video and AVFoundation samples
+        // under the same assumption, so absence is a defaulting case, not
+        // a delivery-contract violation. A present-but-unrecognized value
+        // still fails below.
+        return Ok(MacosChromaLocation::Left);
+    };
+    let value = value
+        .downcast::<CFString>()
+        .map_err(|_| MacosCaptureError::UnsupportedColorAttachment("chroma_location"))?;
     match &*value {
         value if value == left => Ok(MacosChromaLocation::Left),
         value if value == center => Ok(MacosChromaLocation::Center),
@@ -5905,12 +5919,37 @@ fn point_rect(value: &CFType) -> Option<MacosPointRect> {
 }
 
 fn pixel_rect(value: &CFType) -> Option<MacosPixelRect> {
+    // ScreenCaptureKit has shipped dirty rects both as NSValue-wrapped
+    // CGRects and as CGRect dictionary representations; accept either.
+    let rect = ns_value_rect(value).or_else(|| dictionary_rect(value))?;
+    pixel_rect_from_cg(rect)
+}
+
+fn ns_value_rect(value: &CFType) -> Option<CGRect> {
     let object = <CFType as AsRef<AnyObject>>::as_ref(value);
-    let rect = object.downcast_ref::<NSValue>()?.get_rect()?;
-    let x = exact_i64(rect.origin.x)?;
-    let y = exact_i64(rect.origin.y)?;
-    let width = exact_u32(rect.size.width)?;
-    let height = exact_u32(rect.size.height)?;
+    object.downcast_ref::<NSValue>()?.get_rect()
+}
+
+fn dictionary_rect(value: &CFType) -> Option<CGRect> {
+    let dictionary = value.downcast_ref::<CFDictionary>()?;
+    let mut rect = CGRect::ZERO;
+    // SAFETY: The output points to initialized CGRect storage, and the input
+    // was type-checked as a CFDictionary.
+    unsafe { CGRectMakeWithDictionaryRepresentation(Some(dictionary), &mut rect) }.then_some(rect)
+}
+
+fn pixel_rect_from_cg(rect: CGRect) -> Option<MacosPixelRect> {
+    // Dirty rects are a damage hint. Scaled displays deliver fractional
+    // coordinates, so round outward to the containing integer rect: the
+    // damaged area must always be covered, never trimmed.
+    let left = rect.origin.x.floor();
+    let top = rect.origin.y.floor();
+    let right = (rect.origin.x + rect.size.width).ceil();
+    let bottom = (rect.origin.y + rect.size.height).ceil();
+    let x = exact_i64(left)?;
+    let y = exact_i64(top)?;
+    let width = exact_u32(right - left)?;
+    let height = exact_u32(bottom - top)?;
     MacosPixelRect::new(x, y, width, height).ok()
 }
 
@@ -5970,6 +6009,53 @@ mod tests {
         filter_id: u64,
         dynamic_range: MacosCaptureDynamicRange,
         completion: ScreenshotImageCompletion,
+    }
+
+    #[test]
+    fn fractional_dirty_rects_round_outward_to_cover_the_damage() {
+        let rect = objc2_core_foundation::CGRect {
+            origin: objc2_core_foundation::CGPoint { x: 10.25, y: 7.5 },
+            size: objc2_core_foundation::CGSize {
+                width: 99.5,
+                height: 41.25,
+            },
+        };
+        let pixel = super::pixel_rect_from_cg(rect).expect("fractional rect must decode");
+        assert_eq!(
+            (pixel.x, pixel.y, pixel.width, pixel.height),
+            (10, 7, 100, 42),
+        );
+    }
+
+    #[test]
+    fn chroma_location_defaults_to_left_when_unsignalled() {
+        let mut raw: *mut objc2_core_video::CVPixelBuffer = std::ptr::null_mut();
+        // SAFETY: The out-pointer is a valid stack slot and no attribute
+        // dictionary is supplied, matching the documented contract.
+        let status = unsafe {
+            objc2_core_video::CVPixelBufferCreate(
+                None,
+                4,
+                4,
+                0x3432_3076,
+                None,
+                std::ptr::NonNull::from(&mut raw),
+            )
+        };
+        assert_eq!(status, 0, "CVPixelBufferCreate failed: {status}");
+        // SAFETY: A zero status guarantees a retained, non-null buffer that
+        // this test now owns.
+        let buffer = unsafe {
+            objc2_core_foundation::CFRetained::from_raw(
+                std::ptr::NonNull::new(raw).expect("created pixel buffer"),
+            )
+        };
+
+        let location = super::chroma_location(&buffer);
+        assert!(
+            matches!(location, Ok(crate::MacosChromaLocation::Left)),
+            "unsignalled chroma location must default to left siting, got {location:?}",
+        );
     }
 
     #[derive(Default)]

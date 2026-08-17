@@ -1062,8 +1062,14 @@ fn validate_damage(
     dirty_rects: MacosAttachment<Vec<MacosPixelRect>>,
 ) -> Result<Vec<MacosPixelRect>, MacosCaptureError> {
     match dirty_rects {
-        MacosAttachment::Missing => Ok(vec![geometry.content_rect_pixels]),
-        MacosAttachment::Malformed => Err(MacosCaptureError::MalformedAttachment("dirty_rects")),
+        // Dirty rects are a damage hint, not frame data. When the
+        // attachment is absent or undecodable (macOS 26 reshaped the
+        // encoding once already), the conservative answer is that the
+        // whole content changed; dropping the frame turns a lost
+        // optimization into a dead capture pipeline.
+        MacosAttachment::Missing | MacosAttachment::Malformed => {
+            Ok(vec![geometry.content_rect_pixels])
+        }
         MacosAttachment::Value(rects) => rects
             .into_iter()
             .map(|rect| rect.clip_to(storage).map_err(MacosCaptureError::from))

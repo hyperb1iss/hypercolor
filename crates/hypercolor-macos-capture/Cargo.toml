@@ -21,6 +21,7 @@ capture-fixtures = []
 
 [dependencies]
 thiserror = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

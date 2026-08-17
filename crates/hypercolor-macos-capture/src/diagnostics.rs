@@ -373,6 +373,10 @@ impl CallbackCounters {
     }
 
     pub(crate) fn record_drop(&self, error: &MacosCaptureError) {
+        // Counters alone made a stream-killing first-frame error invisible
+        // at every log level; the exact variant must be readable in the
+        // debug log without a custom build.
+        tracing::debug!(%error, "macOS capture frame dropped");
         if matches!(
             error,
             MacosCaptureError::MalformedAttachment(_)
