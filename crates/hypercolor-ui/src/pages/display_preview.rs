@@ -41,7 +41,11 @@ pub fn DisplayPreviewPage() -> impl IntoView {
         selected_display.with(|display| display.as_ref().map(|item| item.id.clone()))
     });
     use_display_preview_subscription(ws, selected_display_id);
-    let preview_frame = Signal::derive(move || ws.display_preview_frame.get());
+    let preview_frame = Signal::derive(move || {
+        let device_id = selected_display_id.get()?;
+        ws.display_preview_frames
+            .with(|frames| frames.get(&device_id).cloned())
+    });
     let display_face = use_display_face_resource(
         selected_display_id,
         Signal::derive(move || face_refresh_tick.get()),
@@ -56,7 +60,7 @@ pub fn DisplayPreviewPage() -> impl IntoView {
 
             if current_scene_event.as_ref().is_some_and(|scene_event| {
                 scene_event.event_type == "active_scene_changed"
-                    || scene_event.render_group_role == Some(ZoneRole::Display)
+                    || scene_event.zone_role == Some(ZoneRole::Display)
             }) {
                 set_face_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
             }

@@ -254,7 +254,7 @@ async fn finish(
         mutation.record(zone_changed_event(scene_id, zone, zone_change_kind(kind)));
         mutation.record(HypercolorEvent::LayerStackChanged {
             scene_id,
-            group_id: zone.id,
+            zone_id: zone.id,
             layers_version: zone.layers_version,
             kind,
         });

@@ -18,12 +18,11 @@ the contract, not a curated subset. The same daemon also speaks
 http://localhost:9420
 ```
 
-Three paths sit outside the `/api/v1` tree:
+Two paths sit outside the `/api/v1` tree:
 
 | Path | Purpose |
 | --- | --- |
 | `/health` | Liveness check, no auth, returns `200 OK` when the daemon is up. |
-| `/preview` | Standalone canvas-preview HTML page. |
 | `/mcp` | MCP server (Streamable HTTP), mounted only when `mcp.enabled` is true. |
 
 Everything else lives under `/api/v1`. Axum 0.8 path parameters use brace

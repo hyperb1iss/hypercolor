@@ -900,7 +900,7 @@ impl App {
                 let json_value = control_value_to_json(value);
                 if let Some((scene_id, zone_id)) = self.zone_patch_target() {
                     // Optimistic local update so re-renders show the new
-                    // value immediately; render_group_changed confirms.
+                    // value immediately; zone_changed confirms.
                     self.update_local_zone_control(&zone_id, control_id, value.clone());
                     self.spawn_actions({
                         let client = self.client.clone();

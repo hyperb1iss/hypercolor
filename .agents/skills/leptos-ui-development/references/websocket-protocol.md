@@ -6,7 +6,7 @@ The daemon WebSocket endpoint at `/api/v1/ws` streams real-time data to the UI.
 
 1. **Connect** to `ws://127.0.0.1:9420/api/v1/ws`
 2. **Set binary type**: `ws.set_binary_type(BinaryType::Arraybuffer)` — required for canvas frames
-3. **Subscribe**: Send JSON `{ "type": "subscribe", "channels": ["events", "metrics"] }`
+3. **Subscribe**: Send JSON `{ "type": "subscribe", "topics": [{ "topic": "events" }, { "topic": "metrics" }] }`
 4. **Receive**: Binary messages (canvas/frame data) and JSON messages (events/metrics/audio)
 
 ## Binary Frame Format
@@ -47,13 +47,13 @@ Minimum valid message length: 14 bytes (header + metadata, no pixels). Width and
 { "type": "metrics", "data": { "fps": {...}, "frame_time": {...}, "stages": {...}, ... } }
 
 // Backpressure warning
-{ "type": "backpressure", "dropped_frames": 12, "channel": "canvas", "recommendation": "reduce_fps", "suggested_fps": 15 }
+{ "type": "backpressure", "dropped_frames": 12, "topic": "canvas", "recommendation": "reduce_fps", "suggested_fps": 15 }
 
 // Hello (sent on connect, includes current state)
 { "type": "hello", "state": { "effect": {...}, "fps": { "target": 30, "actual": 29.8 } } }
 
 // Subscribed (confirmation after subscribe request)
-{ "type": "subscribed", "config": { "canvas": { "fps": 30 } } }
+{ "type": "subscribed", "topics": [{ "topic": "canvas", "config": { "fps": 30 } }] }
 ```
 
 ## Reconnection State Machine
@@ -67,7 +67,7 @@ Connecting → (failure) → Disconnected (increment attempt, increase backoff)
 
 Backoff: 500ms initial, doubles each attempt, caps at 15s. Resets on successful connection.
 
-On reconnect: re-subscribe to channels, reset FPS smoothing state, clear stale frame data.
+On reconnect: re-subscribe to topics, reset FPS smoothing state, clear stale frame data.
 
 ## Backpressure Handling
 

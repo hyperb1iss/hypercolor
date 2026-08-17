@@ -10,16 +10,16 @@
 use std::collections::BTreeSet;
 
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasConfig, CanvasConfigPatch, DisplayPreviewConfig, DisplayPreviewConfigPatch, FramesConfig,
-    FramesConfigPatch, MetricsConfig, MetricsConfigPatch, SHARED_TRANSPORT_TAGS, SpectrumConfig,
-    SpectrumConfigPatch, TopicId,
+    CanvasConfig, CanvasConfigPatch, DeviceKey, DisplayPreviewConfig, DisplayPreviewConfigPatch,
+    FramesConfig, FramesConfigPatch, InteractivePreviewConfig, MetricsConfig, MetricsConfigPatch,
+    PreviewKey, SpectrumConfig, SpectrumConfigPatch, TopicId,
 };
-use hypercolor_leptos_ext::ws::topic::{TopicPatch, apply_patch_transactionally};
+use hypercolor_leptos_ext::ws::topic::{KeyError, TopicKey, apply_patch_transactionally};
 use serde_json::json;
 
 /// Wire names in declaration order. The daemon's capability list and its
 /// protocol manifest are both this sequence, so a reorder is a wire change.
-const WIRE_NAMES: [&str; 14] = [
+const WIRE_NAMES: [&str; 15] = [
     "frames",
     "spectrum",
     "events",
@@ -33,6 +33,7 @@ const WIRE_NAMES: [&str; 14] = [
     "device_metrics",
     "sensors",
     "display_preview",
+    "interactive_preview",
     "input_events",
 ];
 
@@ -49,7 +50,6 @@ fn every_wire_name_round_trips_through_parse() {
         assert_eq!(TopicId::parse(topic.as_str()), Some(topic));
     }
     assert_eq!(TopicId::parse("lasers"), None);
-    assert_eq!(TopicId::parse("interactive_preview"), None);
 }
 
 #[test]
@@ -65,7 +65,15 @@ fn control_tier_gates_screen_capture_and_host_input() {
         .filter(|topic| topic.requires_control())
         .map(|topic| topic.as_str())
         .collect();
-    assert_eq!(gated, vec!["screen_canvas", "screen_zones", "input_events"]);
+    assert_eq!(
+        gated,
+        vec![
+            "screen_canvas",
+            "screen_zones",
+            "interactive_preview",
+            "input_events"
+        ]
+    );
 }
 
 #[test]
@@ -114,6 +122,16 @@ fn default_configs_are_the_frozen_wire_defaults() {
         (TopicId::Metrics, json!({"interval_ms": 1000})),
         (TopicId::DeviceMetrics, json!({"interval_ms": 1000})),
         (TopicId::DisplayPreview, json!({"fps": 15})),
+        (
+            TopicId::InteractivePreview,
+            json!({
+                "target": "active_scene",
+                "fps": 30,
+                "width": 640,
+                "height": 480,
+                "format": "jpeg"
+            }),
+        ),
     ] {
         assert_eq!(
             (topic.vtable().default_config_json)(),
@@ -134,18 +152,18 @@ fn owned_and_shared_tags_cover_the_whole_binary_space() {
     assert_eq!(
         owned,
         vec![
-            0x01, 0x02, 0x03, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0c, 0x0e, 0x11
+            0x01, 0x02, 0x03, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0c, 0x0d, 0x0e, 0x11, 0x12
         ]
     );
 
     let mut all: Vec<u8> = owned;
-    all.extend_from_slice(SHARED_TRANSPORT_TAGS);
+    all.extend_from_slice(TopicId::RESERVED_TAGS);
     all.sort_unstable();
     assert_eq!(
         all,
         vec![
             0x01, 0x02, 0x03, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11
+            0x10, 0x11, 0x12
         ],
         "0x04 stays unassigned; every other tag has exactly one home"
     );
@@ -158,19 +176,94 @@ fn tag_owners_match_their_codecs() {
     assert_eq!(TopicId::Canvas.vtable().owned_tags, [0x03]);
     assert_eq!(TopicId::ScreenCanvas.vtable().owned_tags, [0x05]);
     assert_eq!(TopicId::WebViewportCanvas.vtable().owned_tags, [0x06]);
-    assert_eq!(TopicId::DisplayPreview.vtable().owned_tags, [0x07]);
+    assert_eq!(TopicId::DisplayPreview.vtable().owned_tags, [0x07, 0x12]);
+    assert_eq!(
+        TopicId::InteractivePreview.vtable().owned_tags,
+        [0x0a, 0x0d]
+    );
     assert_eq!(TopicId::ZonePreview.vtable().owned_tags, [0x08, 0x0c]);
     assert_eq!(TopicId::ScreenZones.vtable().owned_tags, [0x09, 0x0e, 0x11]);
     assert_eq!(TopicId::Metrics.vtable().owned_tags, [] as [u8; 0]);
 }
 
 #[test]
+fn only_the_preview_topics_take_a_key() {
+    let keyed: Vec<&str> = TopicId::ALL
+        .iter()
+        .filter(|topic| topic.vtable().keyed)
+        .map(|topic| topic.as_str())
+        .collect();
+    assert_eq!(keyed, vec!["display_preview", "interactive_preview"]);
+}
+
+#[test]
 fn unkeyed_topics_reject_a_wire_key() {
-    for topic in TopicId::ALL.iter().copied() {
-        assert!(!topic.vtable().keyed, "{} is unkeyed", topic.as_str());
+    for topic in TopicId::ALL
+        .iter()
+        .copied()
+        .filter(|topic| !topic.vtable().keyed)
+    {
         assert_eq!((topic.vtable().validate_key)(None), Ok(None));
         assert!((topic.vtable().validate_key)(Some("anything")).is_err());
     }
+}
+
+#[test]
+fn keyed_topics_require_a_key_and_canonicalize_it() {
+    for topic in [TopicId::DisplayPreview, TopicId::InteractivePreview] {
+        let vtable = topic.vtable();
+        assert_eq!(
+            (vtable.validate_key)(None),
+            Err(KeyError::MissingKey),
+            "{} needs a key",
+            topic.as_str()
+        );
+        assert_eq!(
+            (vtable.validate_key)(Some("main")),
+            Ok(Some("main".to_owned()))
+        );
+        assert!(
+            (vtable.validate_key)(Some("")).is_err(),
+            "{} rejects an empty key",
+            topic.as_str()
+        );
+        assert!(
+            (vtable.validate_key)(Some("bad\u{7f}key")).is_err(),
+            "{} rejects control characters",
+            topic.as_str()
+        );
+        assert!(
+            (vtable.validate_key)(Some(&"x".repeat(129))).is_err(),
+            "{} bounds the key length",
+            topic.as_str()
+        );
+    }
+}
+
+#[test]
+fn a_display_preview_key_is_trimmed_to_the_device_it_names() {
+    // The key ends up in a frame header, so padding a client sends must
+    // not become a distinct subscription from the same device unpadded.
+    assert_eq!(
+        (TopicId::DisplayPreview.vtable().validate_key)(Some("  device-abc  ")),
+        Ok(Some("device-abc".to_owned()))
+    );
+    assert!((TopicId::DisplayPreview.vtable().validate_key)(Some("   ")).is_err());
+
+    let key = DeviceKey::new("device-abc").expect("device key parses");
+    assert_eq!(key.as_str(), "device-abc");
+    assert_eq!(key.to_wire().as_deref(), Some("device-abc"));
+    assert_eq!(DeviceKey::from_wire(Some("device-abc")), Ok(key));
+}
+
+#[test]
+fn an_interactive_preview_key_is_the_clients_own_preview_id() {
+    // Unlike a device id, a preview id is opaque to the daemon, so it is
+    // taken verbatim rather than trimmed.
+    let key = PreviewKey::new(" main ").expect("preview key parses");
+    assert_eq!(key.as_str(), " main ");
+    assert_eq!(PreviewKey::from_wire(Some(" main ")), Ok(key));
+    assert!(matches!(PreviewKey::new(""), Err(KeyError::Invalid(_))));
 }
 
 #[test]
@@ -301,53 +394,9 @@ fn a_failing_field_leaves_the_whole_config_untouched() {
 }
 
 #[test]
-fn display_preview_target_is_a_tri_state() {
-    let absent: DisplayPreviewConfigPatch =
-        serde_json::from_value(json!({"fps": 10})).expect("fps-only patch parses");
-    assert!(absent.device_id.is_none(), "missing key leaves the target");
-
-    let cleared: DisplayPreviewConfigPatch =
-        serde_json::from_value(json!({"device_id": null})).expect("null patch parses");
-    assert_eq!(cleared.device_id, Some(None), "null clears the target");
-
-    let set: DisplayPreviewConfigPatch =
-        serde_json::from_value(json!({"device_id": "device-abc"})).expect("value patch parses");
-    assert_eq!(set.device_id, Some(Some("device-abc".to_owned())));
-
-    let mut config = DisplayPreviewConfig::default();
-    set.apply(&mut config).expect("target applies");
-    assert_eq!(config.device_id.as_deref(), Some("device-abc"));
-    absent.apply(&mut config).expect("cadence applies");
-    assert_eq!(config.device_id.as_deref(), Some("device-abc"));
-    assert_eq!(config.fps, 10);
-    cleared.apply(&mut config).expect("clear applies");
-    assert!(config.device_id.is_none());
-    assert_eq!(config.fps, 10);
-}
-
-#[test]
-fn display_preview_target_must_name_a_real_device() {
-    let patch: DisplayPreviewConfigPatch =
-        serde_json::from_value(json!({"device_id": "   "})).expect("whitespace parses");
-    let error = apply_patch_transactionally(&DisplayPreviewConfig::default(), &patch)
-        .expect_err("whitespace is not a device");
-    assert_eq!(error.field, "device_id");
-    assert_eq!(error.reason, "must be non-empty when provided");
-
-    let trimmed: DisplayPreviewConfigPatch =
-        serde_json::from_value(json!({"device_id": " device-abc "})).expect("padded parses");
-    let config = apply_patch_transactionally(&DisplayPreviewConfig::default(), &trimmed)
-        .expect("padding is trimmed");
-    assert_eq!(config.device_id.as_deref(), Some("device-abc"));
-}
-
-#[test]
 fn display_preview_cadence_stops_at_thirty() {
     for fps in [0_u32, 31] {
-        let patch = DisplayPreviewConfigPatch {
-            fps: Some(fps),
-            ..DisplayPreviewConfigPatch::default()
-        };
+        let patch = DisplayPreviewConfigPatch { fps: Some(fps) };
         let error = apply_patch_transactionally(&DisplayPreviewConfig::default(), &patch)
             .expect_err("cadence bound");
         assert_eq!(error.field, "fps");
@@ -356,10 +405,42 @@ fn display_preview_cadence_stops_at_thirty() {
 }
 
 #[test]
-fn a_detached_display_preview_omits_its_target_from_the_wire() {
+fn a_display_preview_config_carries_cadence_and_nothing_else() {
+    // The target device is the subscription key now, so it must not
+    // reappear as a config field a second client could disagree with.
     let config = DisplayPreviewConfig::default();
     assert_eq!(
-        serde_json::to_value(&config).expect("config serializes"),
+        serde_json::to_value(config).expect("config serializes"),
         json!({"fps": 15})
+    );
+    let error = (TopicId::DisplayPreview.vtable().apply_patch_json)(
+        &json!({"fps": 15}),
+        &json!({"device_id": "device-abc"}),
+    )
+    .expect_err("the device is the key, not a config field");
+    assert_eq!(error.field, "patch");
+}
+
+#[test]
+fn interactive_preview_dimensions_must_be_real() {
+    for patch in [json!({"width": 0}), json!({"height": 0})] {
+        let error = (TopicId::InteractivePreview.vtable().apply_patch_json)(
+            &(TopicId::InteractivePreview.vtable().default_config_json)(),
+            &patch,
+        )
+        .expect_err("an interactive preview lane has no server-picked size");
+        assert_eq!(error.reason, "must be non-zero");
+    }
+
+    let config = InteractivePreviewConfig::default();
+    assert_eq!(
+        serde_json::to_value(config).expect("config serializes"),
+        json!({
+            "target": "active_scene",
+            "fps": 30,
+            "width": 640,
+            "height": 480,
+            "format": "jpeg"
+        })
     );
 }

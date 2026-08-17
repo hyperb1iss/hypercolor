@@ -7,13 +7,14 @@ use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 use hypercolor_leptos_ext::ws::{
+    DISPLAY_PREVIEW_FRAME_TAG, DisplayPreviewFrame, DisplayPreviewFrameView,
     EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
     InteractivePreviewFrameView, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG,
     PreviewCancelFrame, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
     PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
-    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
-    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
-    ZonePreviewFrame, ZonePreviewFrameView,
+    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
+    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -53,7 +54,7 @@ pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivat
 pub const EFFECT_ERROR_EVENTS: &[&str] = &["effect_error"];
 pub const SCENE_EVENTS: &[&str] = &[
     "active_scene_changed",
-    "render_group_changed",
+    "zone_changed",
     "scene_library_changed",
     "scene_settings_changed",
 ];
@@ -414,7 +415,7 @@ pub struct MetricsWebsocket {
 #[serde(default)]
 pub struct BackpressureNotice {
     pub dropped_frames: u32,
-    pub channel: String,
+    pub topic: String,
     pub recommendation: String,
     pub suggested_fps: u32,
 }
@@ -433,14 +434,14 @@ pub struct SceneEventHint {
     pub event_type: String,
     pub scene_id: Option<String>,
     /// Zone (render group) the event names, for zone-tagged events like
-    /// `render_group_changed` and `layer_stack_changed`.
-    pub group_id: Option<String>,
+    /// `zone_changed` and `layer_stack_changed`.
+    pub zone_id: Option<String>,
     pub scene_name: Option<String>,
     pub scene_kind: Option<SceneKind>,
     pub scene_mutation_mode: Option<SceneMutationMode>,
     pub scene_snapshot_locked: Option<bool>,
-    pub render_group_role: Option<ZoneRole>,
-    pub render_group_change_kind: Option<ZoneChangeKind>,
+    pub zone_role: Option<ZoneRole>,
+    pub zone_change_kind: Option<ZoneChangeKind>,
     /// How the saved-scene library changed, for `scene_library_changed`.
     pub library_change_kind: Option<SceneLibraryChangeKind>,
 }
@@ -516,7 +517,7 @@ struct SensorsMessage {
 #[derive(Debug, Deserialize)]
 struct BackpressureMessage {
     dropped_frames: u32,
-    channel: String,
+    topic: String,
     recommendation: String,
     suggested_fps: u32,
 }
@@ -539,6 +540,8 @@ pub(super) enum PreviewBinaryMessage {
     Frame(PreviewFrameChannel, CanvasFrame),
     Zone(ZonePreviewFrameView),
     Interactive(String, CanvasFrame),
+    /// One display's output frame, named by the device it came from.
+    Display(String, CanvasFrame),
     ScreenZones(ScreenZonesFrame),
 }
 
@@ -621,6 +624,9 @@ fn decode_direct_preview(buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMes
     if let Some((preview_id, frame)) = decode_interactive_preview_frame(&buffer) {
         return Some(PreviewBinaryMessage::Interactive(preview_id, frame));
     }
+    if let Some((device_id, frame)) = decode_display_preview_frame(&buffer) {
+        return Some(PreviewBinaryMessage::Display(device_id, frame));
+    }
     if matches!(tag, ZONE_PREVIEW_FRAME_TAG | WIDE_ZONE_PREVIEW_FRAME_TAG) {
         return ZonePreviewFrameView::decode_array_buffer(&buffer)
             .ok()
@@ -690,6 +696,24 @@ fn decode_reassembled_preview(
                 },
             )
         }
+        PreviewStreamId::Display(expected_device_id) => {
+            let frame = DisplayPreviewFrame::decode_bytes(&publication.encoded).ok()?;
+            if frame.device_id != *expected_device_id {
+                return None;
+            }
+            PreviewBinaryMessage::Display(
+                frame.device_id,
+                CanvasFrame {
+                    channel: PreviewFrameChannel::Canvas,
+                    frame_number: frame.frame_number,
+                    timestamp_ms: frame.timestamp_ms,
+                    width: frame.width,
+                    height: frame.height,
+                    format: frame.format,
+                    payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
+                },
+            )
+        }
         PreviewStreamId::ScreenZones => {
             PreviewBinaryMessage::ScreenZones(ScreenZonesFrame::decode(&publication.encoded).ok()?)
         }
@@ -708,7 +732,10 @@ fn preview_metadata_matches(
         (
             PreviewBinaryMessage::Interactive(preview_id, frame),
             PreviewStreamId::Interactive(expected),
-        ) => preview_id == expected && canvas_metadata_matches(frame, metadata),
+        )
+        | (PreviewBinaryMessage::Display(preview_id, frame), PreviewStreamId::Display(expected)) => {
+            preview_id == expected && canvas_metadata_matches(frame, metadata)
+        }
         (PreviewBinaryMessage::Zone(frame), PreviewStreamId::Zone { scene_id, zone_id }) => {
             frame.scene_id == *scene_id
                 && frame.zone_id == *zone_id
@@ -757,6 +784,31 @@ pub(super) fn decode_interactive_preview_frame(
     let frame = InteractivePreviewFrameView::decode_array_buffer(buffer).ok()?;
     Some((
         frame.preview_id,
+        CanvasFrame {
+            channel: PreviewFrameChannel::Canvas,
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: frame.width,
+            height: frame.height,
+            format: frame.format,
+            payload: frame.payload,
+        },
+    ))
+}
+
+pub(super) fn decode_display_preview_frame(
+    buffer: &js_sys::ArrayBuffer,
+) -> Option<(String, CanvasFrame)> {
+    let tag = js_sys::Uint8Array::new(buffer).get_index(0);
+    if !matches!(
+        tag,
+        DISPLAY_PREVIEW_FRAME_TAG | WIDE_DISPLAY_PREVIEW_FRAME_TAG
+    ) {
+        return None;
+    }
+    let frame = DisplayPreviewFrameView::decode_array_buffer(buffer).ok()?;
+    Some((
+        frame.device_id,
         CanvasFrame {
             channel: PreviewFrameChannel::Canvas,
             frame_number: frame.frame_number,
@@ -901,11 +953,19 @@ pub(super) fn handle_json_message(
             }
         }
         "subscribed" => {
+            // The acknowledgment reports every live subscription, so the
+            // canvas cadence is whichever entry names that topic.
             let preview_target = msg
-                .get("config")
-                .and_then(|config| config.get("canvas"))
+                .get("topics")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|topics| {
+                    topics.iter().find(|entry| {
+                        entry.get("topic").and_then(serde_json::Value::as_str) == Some("canvas")
+                    })
+                })
+                .and_then(|entry| entry.get("config"))
                 .and_then(|canvas| canvas.get("fps"))
-                .and_then(|fps| fps.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .and_then(|fps| u32::try_from(fps).ok())
                 .unwrap_or_default();
             if preview_target > 0 {
@@ -914,7 +974,7 @@ pub(super) fn handle_json_message(
         }
         "backpressure" => {
             if let Ok(message) = BackpressureMessage::deserialize(msg) {
-                if message.channel == "canvas"
+                if message.topic == "canvas"
                     && message.recommendation == "reduce_fps"
                     && message.suggested_fps > 0
                 {
@@ -924,7 +984,7 @@ pub(super) fn handle_json_message(
                 }
                 let notice = BackpressureNotice {
                     dropped_frames: message.dropped_frames,
-                    channel: message.channel,
+                    topic: message.topic,
                     recommendation: message.recommendation,
                     suggested_fps: message.suggested_fps,
                 };
@@ -1076,8 +1136,8 @@ pub fn extract_effect_error_hint(
 /// within its zone — two groups can carry the same layer id — and
 /// the daemon keys health by group as well, so scene and group ride along
 /// or one group's health would clobber another group's row.
-pub fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -> String {
-    format!("{scene_id}/{group_id}/{layer_id}")
+pub fn layer_health_key(scene_id: &str, zone_id: &str, layer_id: &str) -> String {
+    format!("{scene_id}/{zone_id}/{layer_id}")
 }
 
 /// Decode a `layer_health_changed` event into its `(health-map key, health)`.
@@ -1085,10 +1145,10 @@ pub fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -> Strin
 /// without scene + group the key would collide across zones.
 pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
     let scene_id = data.get("scene_id")?.as_str()?;
-    let group_id = data.get("group_id")?.as_str()?;
+    let zone_id = data.get("zone_id")?.as_str()?;
     let layer_id = data.get("layer_id")?.as_str()?;
     let health = LayerHealth::deserialize(data.get("health")?).ok()?;
-    Some((layer_health_key(scene_id, group_id, layer_id), health))
+    Some((layer_health_key(scene_id, zone_id, layer_id), health))
 }
 
 /// Whether any *current* layer in a zone is in a degraded health
@@ -1104,7 +1164,7 @@ pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHe
 pub fn group_has_degraded_layer(
     layer_health: &HashMap<String, LayerHealth>,
     scene_id: &str,
-    group_id: &str,
+    zone_id: &str,
     current_layer_ids: &[String],
 ) -> bool {
     layer_health.iter().any(|(key, health)| {
@@ -1115,7 +1175,7 @@ pub fn group_has_degraded_layer(
             return false;
         }
         let mut parts = key.splitn(3, '/');
-        if parts.next() != Some(scene_id) || parts.next() != Some(group_id) {
+        if parts.next() != Some(scene_id) || parts.next() != Some(zone_id) {
             return false;
         }
         parts
@@ -1129,12 +1189,12 @@ pub fn extract_scene_event_hint(
     scene_data: &serde_json::Value,
 ) -> SceneEventHint {
     // `kind` is overloaded across the scene event family: a ZoneChangeKind
-    // on render_group_changed, a SceneLibraryChangeKind on
+    // on zone_changed, a SceneLibraryChangeKind on
     // scene_library_changed, and a SceneKind elsewhere. Scope each parse
     // to its event so the fields can't shadow one another.
-    let is_render_group_changed = event_type == "render_group_changed";
+    let is_zone_changed = event_type == "zone_changed";
     let is_library_changed = event_type == "scene_library_changed";
-    let generic_kind = (!is_render_group_changed && !is_library_changed)
+    let generic_kind = (!is_zone_changed && !is_library_changed)
         .then(|| scene_data.get("kind"))
         .flatten();
 
@@ -1146,8 +1206,8 @@ pub fn extract_scene_event_hint(
             .or_else(|| scene_data.get("id"))
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
-        group_id: scene_data
-            .get("group_id")
+        zone_id: scene_data
+            .get("zone_id")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
         scene_name: scene_data
@@ -1170,11 +1230,11 @@ pub fn extract_scene_event_hint(
             .get("current_snapshot_locked")
             .or_else(|| scene_data.get("snapshot_locked"))
             .and_then(serde_json::Value::as_bool),
-        render_group_role: scene_data
+        zone_role: scene_data
             .get("role")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
-        render_group_change_kind: is_render_group_changed
+        zone_change_kind: is_zone_changed
             .then(|| scene_data.get("kind"))
             .flatten()
             .cloned()
@@ -1192,7 +1252,7 @@ pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
         // Library CRUD and scene-settings tweaks never change what's
         // rendering right now.
         "scene_library_changed" | "scene_settings_changed" => false,
-        "render_group_changed" => hint.render_group_role != Some(ZoneRole::Display),
+        "zone_changed" => hint.zone_role != Some(ZoneRole::Display),
         _ => true,
     }
 }

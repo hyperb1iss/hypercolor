@@ -51,7 +51,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def render(manifest: dict[str, Any]) -> str:
-    channels = [str(channel["name"]) for channel in expect_list(manifest["channels"])]
+    topics = [str(topic["name"]) for topic in expect_list(manifest["topics"])]
     binary_messages = expect_list(manifest["binary_messages"])
     preview_messages = [
         message for message in binary_messages if message.get("layout") == "preview_frame"
@@ -70,8 +70,8 @@ def render(manifest: dict[str, Any]) -> str:
         f"WS_SUBPROTOCOL: Final = {quote(str(manifest['subprotocol']))}",
         *tuple_assignment("DEFAULT_WS_SUBSCRIPTIONS", manifest["default_subscriptions"]),
         "",
-        "WS_CHANNELS: Final = (",
-        *[f"    {quote(channel)}," for channel in channels],
+        "WS_TOPICS: Final = (",
+        *[f"    {quote(topic)}," for topic in topics],
         ")",
         *tuple_assignment("WS_CAPABILITIES", manifest["capabilities"]),
         "",
@@ -83,10 +83,10 @@ def render(manifest: dict[str, Any]) -> str:
         ],
         "    }",
         ")",
-        "PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(",
+        "PREVIEW_TOPIC_TAGS: Final = MappingProxyType(",
         "    {",
         *[
-            f"        0x{int(message['tag']):02X}: {quote(str(message['channel']))},"
+            f"        0x{int(message['tag']):02X}: {quote(str(message['topic']))},"
             for message in preview_messages
         ],
         "    }",

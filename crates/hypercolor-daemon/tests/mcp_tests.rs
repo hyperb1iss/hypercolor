@@ -995,7 +995,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
 
     let mut saw_assign_event = false;
     while let Ok(timestamped) = assign_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -1048,7 +1048,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
 
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -1299,7 +1299,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(trigger, ChangeTrigger::Mcp);
                 saw_started_event = true;
             }
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 scene_id: event_scene_id,
                 kind,
                 role,
@@ -1354,7 +1354,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(reason, EffectStopReason::Stopped);
                 saw_stopped_event = true;
             }
-            HypercolorEvent::RenderGroupChanged { kind, role, .. } => {
+            HypercolorEvent::ZoneChanged { kind, role, .. } => {
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
                 assert_eq!(kind, ZoneChangeKind::Updated);
                 saw_updated_group = true;

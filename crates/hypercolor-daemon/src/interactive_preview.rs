@@ -1547,7 +1547,7 @@ fn catalog_event_invalidates(event: &HypercolorEvent) -> bool {
             | HypercolorEvent::SceneTransitionStarted { .. }
             | HypercolorEvent::SceneTransitionComplete { .. }
             | HypercolorEvent::SceneEnabled { .. }
-            | HypercolorEvent::RenderGroupChanged { .. }
+            | HypercolorEvent::ZoneChanged { .. }
             | HypercolorEvent::LayerStackChanged { .. }
             | HypercolorEvent::SceneSettingsChanged { .. }
             | HypercolorEvent::SceneLibraryChanged { .. }

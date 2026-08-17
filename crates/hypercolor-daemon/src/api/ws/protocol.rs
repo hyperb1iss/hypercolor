@@ -8,14 +8,16 @@ use std::fmt;
 use std::hash::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
 use hypercolor_leptos_ext::ws::registry::{
     CanvasConfig, CanvasFormat, FramesConfig, TopicId, TopicSet,
 };
-use hypercolor_leptos_ext::ws::topic::{PatchError, SubscriptionTable};
+use hypercolor_leptos_ext::ws::topic::{
+    ActiveSubscription, PatchError, SubscriptionTable, TopicSelector, TopicSubscription,
+};
 use hypercolor_leptos_ext::ws::{
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
     PreviewTransportCapability,
@@ -30,13 +32,21 @@ use crate::device_metrics::DeviceMetricsSnapshot;
 // ── Subscription Types ───────────────────────────────────────────────────
 
 /// One validated wire selector: the topic a client named plus the
-/// canonical key its key type parsed. Every topic is unkeyed today, so
-/// `key` is always `None`; routing it through the vtable anyway keeps
-/// the boundary — not the caller — in charge of what a key looks like.
+/// canonical key its key type parsed. Unkeyed topics carry `None`; keyed
+/// ones carry whatever their key type accepted, never the raw client
+/// text, because the boundary — not the caller — decides what a key is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TopicSelection {
     pub(super) topic: TopicId,
     pub(super) key: Option<String>,
+}
+
+/// One validated subscribe entry: a selection plus the config patch that
+/// travelled with it.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SubscriptionRequest {
+    pub(super) selection: TopicSelection,
+    pub(super) config: Option<serde_json::Value>,
 }
 
 /// One connection's live subscriptions.
@@ -74,6 +84,14 @@ impl Default for SubscriptionState {
     }
 }
 
+/// One live subscription, as the relays and the acknowledgment read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LiveSubscription<'a> {
+    pub(super) topic: TopicId,
+    pub(super) key: Option<&'a str>,
+    pub(super) config: &'a serde_json::Value,
+}
+
 /// Config a client set for a topic it is not currently subscribed to.
 ///
 /// Kept apart from the live subscription table on purpose: that table
@@ -106,15 +124,15 @@ impl SubscriptionState {
         self.topics.contains(topic)
     }
 
-    /// This topic's config, live or dormant, or its default when the
-    /// client has never configured it. Dormant counts because the engine
-    /// reads across subscriptions: a `screen_zones`-only client still
-    /// borrows the `screen_canvas` cadence.
-    pub(super) fn config_of<C>(&self, topic: TopicId) -> C
+    /// One subscription's config, live or dormant, or the topic's default
+    /// when the client has never configured that key. Dormant counts
+    /// because the engine reads across subscriptions: a `screen_zones`-only
+    /// client still borrows the `screen_canvas` cadence.
+    pub(super) fn config_of<C>(&self, topic: TopicId, key: Option<&str>) -> C
     where
         C: serde::de::DeserializeOwned + Default,
     {
-        match self.stored_config(topic.bit(), None) {
+        match self.stored_config(topic.bit(), key) {
             // Borrowed, not cloned: relays re-read config on every frame
             // they pace.
             Some(stored) => C::deserialize(stored)
@@ -123,57 +141,89 @@ impl SubscriptionState {
         }
     }
 
+    /// Every live key of a keyed topic with its typed config, in key
+    /// order. Relays that fan out across keys walk this.
+    pub(super) fn keyed_configs<C>(&self, topic: TopicId) -> Vec<(String, C)>
+    where
+        C: serde::de::DeserializeOwned,
+    {
+        self.live
+            .entries_for(topic.bit())
+            .filter_map(|(key, config)| {
+                let key = key?.to_owned();
+                let config = C::deserialize(config)
+                    .expect("stored topic config round-trips through its own config type");
+                Some((key, config))
+            })
+            .collect()
+    }
+
     fn stored_config(&self, bit: u32, key: Option<&str>) -> Option<&serde_json::Value> {
         self.live
             .config(bit, key)
             .or_else(|| self.dormant.get(bit, key))
     }
 
-    /// The config stanza the subscribe acknowledgment echoes: every
-    /// live subscription that has config, in declaration order.
-    pub(super) fn config_projection(&self) -> serde_json::Value {
-        let mut map = serde_json::Map::new();
-        for topic in self.topics.iter() {
-            for (_key, config) in self.live.entries_for(topic.bit()) {
-                map.insert(topic.as_str().to_owned(), config.clone());
-            }
-        }
-        serde_json::Value::Object(map)
+    /// Whether one specific subscription is live.
+    #[cfg(test)]
+    pub(super) fn holds(&self, topic: TopicId, key: Option<&str>) -> bool {
+        self.live.config(topic.bit(), key).is_some()
+    }
+
+    /// Every live subscription, topic declaration order then key order.
+    pub(super) fn live_subscriptions(&self) -> impl Iterator<Item = LiveSubscription<'_>> {
+        TopicId::ALL.iter().copied().flat_map(move |topic| {
+            self.live
+                .entries_for(topic.bit())
+                .map(move |(key, config)| LiveSubscription { topic, key, config })
+        })
+    }
+
+    /// The subscription snapshot every acknowledgment carries. Configless
+    /// topics report no `config` at all rather than a bare `null`.
+    pub(super) fn projection(&self) -> Vec<ActiveSubscription> {
+        self.live_subscriptions()
+            .map(|live| ActiveSubscription {
+                topic: live.topic.as_str().to_owned(),
+                key: live.key.map(str::to_owned),
+                config: (!live.config.is_null()).then(|| live.config.clone()),
+                publication_id: None,
+            })
+            .collect()
     }
 
     /// Build the state a subscribe request would produce.
     ///
-    /// The whole request is one transaction: every selector joins, every
-    /// config stanza applies, and every runtime admission runs against a
-    /// candidate copy. Any failure returns the error with the live state
-    /// untouched, so a request that names four topics and mis-configures
-    /// the fourth changes nothing.
+    /// The whole request is one transaction: every entry joins, its config
+    /// patch applies against the subscription it named, and every runtime
+    /// admission runs on a candidate copy. Any failure returns the error
+    /// with the live state untouched, so a request that names four
+    /// subscriptions and mis-configures the fourth changes nothing.
     pub(super) fn subscribe(
         &self,
-        selections: &[TopicSelection],
-        patch: Option<&serde_json::Map<String, serde_json::Value>>,
+        requests: &[SubscriptionRequest],
     ) -> Result<Self, WsProtocolError> {
         let mut next = self.clone();
-        for selection in selections {
-            next.admit(selection.topic, selection.key.clone());
+        for request in requests {
+            next.admit(request.selection.topic, request.selection.key.clone());
         }
-
-        if let Some(patch) = patch {
-            // Declaration order, so a request carrying two bad stanzas
-            // always reports the same one.
-            for topic in TopicId::ALL.iter().copied() {
-                let Some(stanza) = patch.get(topic.as_str()) else {
-                    continue;
-                };
-                // A null stanza on a topic that takes config has always
-                // meant "no patch" on this wire, and clients still send
-                // it. Configless topics keep going to the vtable, which
-                // refuses null on apply.
-                if stanza.is_null() && topic.vtable().configurable {
-                    continue;
-                }
-                next.apply_patch(topic, stanza)?;
+        // Request order, so a client that sends two bad patches always
+        // hears about the first one it wrote.
+        for request in requests {
+            let Some(patch) = request.config.as_ref() else {
+                continue;
+            };
+            // A null patch on a topic that takes config means "no patch",
+            // exactly as an absent one does. Configless topics still go
+            // to the vtable, which refuses null on apply.
+            if patch.is_null() && request.selection.topic.vtable().configurable {
+                continue;
             }
+            next.apply_patch(
+                request.selection.topic,
+                request.selection.key.as_deref(),
+                patch,
+            )?;
         }
 
         Ok(next)
@@ -185,18 +235,19 @@ impl SubscriptionState {
     pub(super) fn unsubscribe(&self, selections: &[TopicSelection]) -> Self {
         let mut next = self.clone();
         for selection in selections {
-            next.retire(selection.topic);
+            next.retire(selection.topic, selection.key.as_deref());
         }
         next
     }
 
     /// The single write path for joining: the set gains the topic and
-    /// the live table gains its config in the same step.
+    /// the live table gains that key's config in the same step.
+    ///
+    /// Configless topics store a `null` config, so "has a live entry" and
+    /// "is subscribed" mean the same thing for every topic and the table
+    /// alone answers membership questions per key.
     fn admit(&mut self, topic: TopicId, key: Option<String>) {
         self.topics.insert(topic);
-        if !topic.vtable().configurable {
-            return;
-        }
         let bit = topic.bit();
         if self.live.config(bit, key.as_deref()).is_some() {
             return;
@@ -208,87 +259,132 @@ impl SubscriptionState {
         self.live.insert(bit, key, config);
     }
 
-    /// The single write path for leaving: the set loses the topic and
-    /// its live config moves to the dormant cache in the same step.
-    fn retire(&mut self, topic: TopicId) {
-        self.topics.remove(topic);
+    /// The single write path for leaving: the live table loses that key
+    /// and its config moves to the dormant cache in the same step. The
+    /// topic leaves the set only once its last key is gone.
+    fn retire(&mut self, topic: TopicId, key: Option<&str>) {
         let bit = topic.bit();
-        let carried: Vec<(Option<String>, serde_json::Value)> = self
-            .live
-            .entries_for(bit)
-            .map(|(key, config)| (key.map(str::to_owned), config.clone()))
-            .collect();
-        for (key, config) in carried {
-            self.live.remove(bit, key.as_deref());
-            self.dormant.insert(bit, key, config);
+        if let Some(config) = self.live.config(bit, key).cloned() {
+            self.live.remove(bit, key);
+            if !config.is_null() {
+                self.dormant.insert(bit, key.map(str::to_owned), config);
+            }
+        }
+        if !self.live.any_for(bit) {
+            self.topics.remove(topic);
         }
     }
 
     fn apply_patch(
         &mut self,
         topic: TopicId,
-        stanza: &serde_json::Value,
+        key: Option<&str>,
+        patch: &serde_json::Value,
     ) -> Result<(), WsProtocolError> {
         let bit = topic.bit();
         let current = self
-            .stored_config(bit, None)
+            .stored_config(bit, key)
             .cloned()
             .unwrap_or_else(|| (topic.vtable().default_config_json)());
-        let next = (topic.vtable().apply_patch_json)(&current, stanza)
+        let next = (topic.vtable().apply_patch_json)(&current, patch)
             .map_err(|error| config_patch_error(topic, &error))?;
         super::topics::admit_config(topic, &next)?;
-        // Membership decides which half owns the result, so configuring
-        // a topic the request never named cannot fake a subscription.
-        if self.topics.contains(topic) {
-            // For an unkeyed topic a set bit implies a live entry, so
-            // this insert only ever replaces. Keyed topics (3.2c) must
-            // patch per admitted key, or a patch would mint a live
-            // entry for a key that never subscribed.
-            debug_assert!(
-                self.live.config(bit, None).is_some(),
-                "patch target must already be live for its key"
-            );
-            self.live.insert(bit, None, next);
-        } else {
-            self.dormant.insert(bit, None, next);
-        }
+        // Every patch arrives attached to a selector the same request
+        // admitted, so the live entry for this key always exists by now.
+        debug_assert!(
+            self.live.config(bit, key).is_some(),
+            "patch target must already be live for its key"
+        );
+        self.live.insert(bit, key.map(str::to_owned), next);
         Ok(())
     }
 }
 
 #[cfg(test)]
 impl SubscriptionState {
-    /// Whether the live table still means what its name says: a topic
-    /// that takes config has a live entry exactly when it is subscribed.
+    /// Whether the live table still means what its name says: a topic has
+    /// at least one live entry exactly when it is in the membership set.
     pub(super) fn live_table_agrees_with_membership(&self) -> bool {
-        TopicId::ALL.iter().copied().all(|topic| {
-            let live = self.live.any_for(topic.bit());
-            live == (self.topics.contains(topic) && topic.vtable().configurable)
-        })
+        TopicId::ALL
+            .iter()
+            .copied()
+            .all(|topic| self.live.any_for(topic.bit()) == self.topics.contains(topic))
     }
 
-    /// Whether this topic's config is parked for a later re-subscribe.
-    pub(super) fn has_dormant_config(&self, topic: TopicId) -> bool {
-        self.dormant.get(topic.bit(), None).is_some()
+    /// Whether this subscription's config is parked for a re-subscribe.
+    pub(super) fn has_dormant_config(&self, topic: TopicId, key: Option<&str>) -> bool {
+        self.dormant.get(topic.bit(), key).is_some()
     }
 
-    /// Drive one subscribe request the way the wire drives it: channel
-    /// names in, the same parse, transaction, and admission out.
+    /// Drive one subscribe request the way the wire drives it: wire
+    /// entries in, the same parse, transaction, and admission out.
     pub(super) fn subscribed(
         &self,
-        channels: &[&str],
+        entries: Vec<TopicSubscription>,
+    ) -> Result<Self, WsProtocolError> {
+        self.subscribe(&parse_subscriptions(&entries)?)
+    }
+
+    /// Subscribe to unkeyed topics, pulling each one's config out of a
+    /// map keyed by topic name. A test convenience: the wire itself
+    /// carries config inside each selector, which is what makes a patch
+    /// for a topic the request never named unrepresentable.
+    pub(super) fn subscribed_unkeyed(
+        &self,
+        topics: &[&str],
         config: serde_json::Value,
     ) -> Result<Self, WsProtocolError> {
-        let names: Vec<String> = channels.iter().map(|name| (*name).to_owned()).collect();
-        let selections = parse_channels(&names)?;
-        self.subscribe(&selections, config.as_object())
+        let entries = topics
+            .iter()
+            .map(|topic| TopicSubscription {
+                topic: (*topic).to_owned(),
+                key: None,
+                config: config.get(*topic).cloned(),
+            })
+            .collect();
+        self.subscribed(entries)
     }
 
     /// Drive one unsubscribe request the same way.
-    pub(super) fn unsubscribed(&self, channels: &[&str]) -> Self {
-        let names: Vec<String> = channels.iter().map(|name| (*name).to_owned()).collect();
-        let selections = parse_channels(&names).expect("test channel names parse");
+    pub(super) fn unsubscribed(&self, selectors: Vec<TopicSelector>) -> Self {
+        let selections = parse_selectors(&selectors).expect("test selectors parse");
         self.unsubscribe(&selections)
+    }
+
+    /// Unsubscribe from unkeyed topics by name.
+    pub(super) fn unsubscribed_unkeyed(&self, topics: &[&str]) -> Self {
+        self.unsubscribed(
+            topics
+                .iter()
+                .map(|topic| TopicSelector::unkeyed(*topic))
+                .collect(),
+        )
+    }
+
+    /// The live configs viewed as `{topic: config}` for unkeyed topics and
+    /// `{topic: {key: config}}` for keyed ones. A test-shaped view of
+    /// [`Self::projection`], which is what the wire actually carries.
+    pub(super) fn config_by_topic(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for live in self.live_subscriptions() {
+            if live.config.is_null() {
+                continue;
+            }
+            match live.key {
+                None => {
+                    map.insert(live.topic.as_str().to_owned(), live.config.clone());
+                }
+                Some(key) => {
+                    let entry = map
+                        .entry(live.topic.as_str().to_owned())
+                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let Some(keyed) = entry.as_object_mut() {
+                        keyed.insert(key.to_owned(), live.config.clone());
+                    }
+                }
+            }
+        }
+        serde_json::Value::Object(map)
     }
 }
 
@@ -384,22 +480,6 @@ pub(super) fn validate_passive_preview_shape(
         })
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum InteractivePreviewTarget {
-    #[default]
-    ActiveScene,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(super) struct InteractivePreviewConfig {
-    pub(super) target: InteractivePreviewTarget,
-    pub(super) fps: u32,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) format: CanvasFormat,
-}
-
 /// Hard transport ceiling for one complete WebSocket message or frame.
 pub(crate) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum decoded surface bytes admitted for one preview publication.
@@ -416,20 +496,20 @@ pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ClientMessage {
-    /// Subscribe to one or more channels.
+    /// Subscribe to one or more topics.
     ///
-    /// `config` stays a raw object here: each stanza is validated by the
-    /// topic that owns it, through the registry vtable, so this message
-    /// does not need a field per topic.
+    /// Each entry names a topic, its key when the topic is keyed, and an
+    /// optional config patch. Config rides with its selector, so a patch
+    /// can only ever target a subscription the same request establishes,
+    /// and the topic that owns the config validates it through the
+    /// registry vtable.
     Subscribe {
-        channels: Vec<String>,
-        #[serde(default)]
-        config: Option<ConfigStanzas>,
+        topics: Vec<TopicSubscription>,
         #[serde(default)]
         preview_transport: Option<String>,
     },
-    /// Unsubscribe from one or more channels.
-    Unsubscribe { channels: Vec<String> },
+    /// Unsubscribe from one or more topics.
+    Unsubscribe { topics: Vec<TopicSelector> },
     /// REST-equivalent command execution over WS.
     Command {
         id: String,
@@ -446,25 +526,6 @@ pub(super) enum ClientMessage {
     },
     /// Clear one transient per-zone layout preview.
     ZoneLayoutPreviewClear { scene_id: String, zone_id: String },
-    /// Open one interactive preview within this connection.
-    InteractivePreviewOpen {
-        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
-        preview_id: String,
-        #[serde(default)]
-        target: InteractivePreviewTarget,
-        #[serde(deserialize_with = "deserialize_interactive_preview_fps")]
-        fps: u32,
-        #[serde(deserialize_with = "deserialize_interactive_preview_dimension")]
-        width: u32,
-        #[serde(deserialize_with = "deserialize_interactive_preview_dimension")]
-        height: u32,
-        format: CanvasFormat,
-    },
-    /// Close one interactive preview within this connection.
-    InteractivePreviewClose {
-        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
-        preview_id: String,
-    },
     /// Inject browser-preview input edges into one active preview.
     InputInject {
         #[serde(deserialize_with = "deserialize_interactive_preview_id")]
@@ -482,59 +543,6 @@ pub(super) enum ClientMessage {
         #[serde(deserialize_with = "deserialize_interactive_preview_id")]
         preview_id: String,
     },
-}
-
-/// The `config` object of a subscribe: one stanza per channel, keyed by
-/// wire name, with each stanza left as raw JSON for the topic that owns
-/// it to validate.
-///
-/// Naming a channel twice is refused rather than resolved. A client that
-/// sends two stanzas for one channel does not agree with itself about
-/// which config should win, and silently keeping the last one hides that
-/// from the only party who can fix it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct ConfigStanzas(serde_json::Map<String, serde_json::Value>);
-
-impl ConfigStanzas {
-    pub(super) const fn stanzas(&self) -> &serde_json::Map<String, serde_json::Value> {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for ConfigStanzas {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct StanzaVisitor;
-
-        impl<'de> Visitor<'de> for StanzaVisitor {
-            type Value = serde_json::Map<String, serde_json::Value>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an object of per-channel config stanzas")
-            }
-
-            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut stanzas = serde_json::Map::new();
-                while let Some(channel) = access.next_key::<String>()? {
-                    let stanza = access.next_value::<serde_json::Value>()?;
-                    if stanzas.contains_key(&channel) {
-                        return Err(de::Error::custom(format_args!(
-                            "duplicate config stanza `{channel}`"
-                        )));
-                    }
-                    stanzas.insert(channel, stanza);
-                }
-                Ok(stanzas)
-            }
-        }
-
-        deserializer.deserialize_map(StanzaVisitor).map(Self)
-    }
 }
 
 /// Wire form of one injected input edge from a browser preview.
@@ -627,32 +635,6 @@ where
     validate_interactive_preview_id(&preview_id)
         .map_err(|error| serde::de::Error::custom(error.message))?;
     Ok(preview_id)
-}
-
-fn deserialize_interactive_preview_fps<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let fps = u32::deserialize(deserializer)?;
-    if !(1..=60).contains(&fps) {
-        return Err(serde::de::Error::custom(
-            "interactive preview fps must be in 1..=60",
-        ));
-    }
-    Ok(fps)
-}
-
-fn deserialize_interactive_preview_dimension<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let dimension = u32::deserialize(deserializer)?;
-    if dimension == 0 {
-        return Err(serde::de::Error::custom(
-            "interactive preview dimensions must be nonzero",
-        ));
-    }
-    Ok(dimension)
 }
 
 pub(super) fn validate_interactive_preview_shape(
@@ -849,29 +831,17 @@ pub(super) enum ServerMessage {
         server: ServerIdentity,
         state: HelloState,
         capabilities: Vec<String>,
-        subscriptions: Vec<String>,
+        subscriptions: Vec<ActiveSubscription>,
     },
-    /// Subscribe acknowledgment.
+    /// Subscribe acknowledgment: the connection's whole live subscription
+    /// set, so a client always learns the state it ended up in rather
+    /// than only the delta it asked for.
     Subscribed {
-        channels: Vec<String>,
-        config: serde_json::Value,
+        topics: Vec<ActiveSubscription>,
         preview_transport: String,
     },
-    /// Unsubscribe acknowledgment.
-    Unsubscribed {
-        channels: Vec<String>,
-        remaining: Vec<String>,
-    },
-    /// Interactive preview open acknowledgment.
-    InteractivePreviewOpened {
-        preview_id: String,
-        connection_incarnation: u64,
-        publication_id: u64,
-        already_open: bool,
-        config: InteractivePreviewConfig,
-    },
-    /// Interactive preview close acknowledgment.
-    InteractivePreviewClosed { preview_id: String, closed: bool },
+    /// Unsubscribe acknowledgment, carrying what remains.
+    Unsubscribed { topics: Vec<ActiveSubscription> },
     /// Addressed input injection acknowledgment.
     InputInjected {
         preview_id: String,
@@ -905,10 +875,12 @@ pub(super) enum ServerMessage {
         timestamp: String,
         data: SystemSnapshot,
     },
-    /// Backpressure warning for dropped binary channel payloads.
+    /// Backpressure warning for dropped binary payloads on one topic.
     Backpressure {
         dropped_frames: u32,
-        channel: String,
+        topic: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
         recommendation: String,
         suggested_fps: u32,
     },
@@ -1450,47 +1422,66 @@ pub(super) fn frame_selection_hash(selected: &[String]) -> u64 {
     hasher.finish()
 }
 
-/// Parse the wire's `channels` array into validated selectors.
-pub(super) fn parse_channels(channels: &[String]) -> Result<Vec<TopicSelection>, WsProtocolError> {
-    if channels.is_empty() {
+/// Validate one wire selector into a topic plus its canonical key.
+fn parse_selector(topic: &str, key: Option<&str>) -> Result<TopicSelection, WsProtocolError> {
+    let parsed = TopicId::parse(topic)
+        .ok_or_else(|| WsProtocolError::invalid_request(format!("Unknown topic '{topic}'")))?;
+    // The key the topic's own key type accepts, canonicalized — the
+    // table stores what the boundary validated, never raw client text.
+    let key = (parsed.vtable().validate_key)(key).map_err(|error| {
+        WsProtocolError::invalid_request(format!("Invalid key for topic '{topic}': {error}"))
+    })?;
+    Ok(TopicSelection { topic: parsed, key })
+}
+
+/// Parse a subscribe message's `topics` array into validated requests.
+pub(super) fn parse_subscriptions(
+    entries: &[TopicSubscription],
+) -> Result<Vec<SubscriptionRequest>, WsProtocolError> {
+    if entries.is_empty() {
         return Err(WsProtocolError::invalid_request(
-            "channels must contain at least one channel",
+            "topics must contain at least one subscription",
         ));
     }
 
-    let mut parsed = Vec::with_capacity(channels.len());
-    for channel in channels {
-        let topic = TopicId::parse(channel).ok_or_else(|| {
-            WsProtocolError::invalid_request(format!("Unknown channel '{channel}'"))
-        })?;
-        // The key the topic's own key type accepts, canonicalized — the
-        // table stores what the boundary validated, never raw client text.
-        let key = (topic.vtable().validate_key)(None).map_err(|error| {
-            WsProtocolError::invalid_request(format!(
-                "Invalid key for channel '{channel}': {error}"
-            ))
-        })?;
-        parsed.push(TopicSelection { topic, key });
+    let mut parsed: Vec<SubscriptionRequest> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let selection = parse_selector(&entry.topic, entry.key.as_deref())?;
+        // Two entries for one subscription means the client does not
+        // agree with itself about which config wins; resolving that
+        // silently would hide it from the only party who can fix it.
+        if parsed
+            .iter()
+            .any(|existing| existing.selection == selection)
+        {
+            return Err(WsProtocolError::invalid_request(format!(
+                "Duplicate subscription for topic '{}'",
+                entry.topic
+            )));
+        }
+        parsed.push(SubscriptionRequest {
+            selection,
+            config: entry.config.clone(),
+        });
     }
 
     Ok(parsed)
 }
 
-pub(super) fn sorted_channel_names(topics: TopicSet) -> Vec<String> {
-    let mut names: Vec<String> = topics
-        .iter()
-        .map(|topic| topic.as_str().to_owned())
-        .collect();
-    names.sort();
-    names
-}
-
-pub(super) fn unique_sorted_channel_names(selections: &[TopicSelection]) -> Vec<String> {
-    let mut topics = TopicSet::EMPTY;
-    for selection in selections {
-        topics.insert(selection.topic);
+/// Parse an unsubscribe message's `topics` array into validated selectors.
+pub(super) fn parse_selectors(
+    selectors: &[TopicSelector],
+) -> Result<Vec<TopicSelection>, WsProtocolError> {
+    if selectors.is_empty() {
+        return Err(WsProtocolError::invalid_request(
+            "topics must contain at least one subscription",
+        ));
     }
-    sorted_channel_names(topics)
+
+    selectors
+        .iter()
+        .map(|selector| parse_selector(&selector.topic, selector.key.as_deref()))
+        .collect()
 }
 
 pub(super) fn ws_capabilities() -> Vec<String> {

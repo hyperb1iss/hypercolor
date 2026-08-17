@@ -12,12 +12,18 @@ These bytes are a contract with every shipped web UI, TUI, and third-party
 client. Rewriting a fixture to make a test pass is the failure mode this
 directory exists to prevent.
 
-A deliberate wire change goes through the compatibility doctrine in
-`docs/specs/76-internal-api-unification.md` §0: the new form ships dual-accept
-behind the subscribe handshake's version field, old readers keep working for at
-least one release, and the fixture for the old layout stays until the compat
-window closes. New layouts get their own fixture rather than replacing an
-existing one.
+A deliberate wire change goes through the lockstep doctrine in
+`docs/specs/76-internal-api-unification.md` §0: the new form replaces the old
+one outright, every in-repo client moves in the same PR, and no dual-accept or
+version-gated fallback ships. So a fixture for a changed layout is **replaced in
+place**, deliberately, in the same commit that changes the layout — the fixture
+is an intentionality fence, not a compatibility record. A layout that is genuinely
+new, rather than a changed one, gets its own fixture.
+
+The distinction that matters is who rewrites a fixture and why. Rewriting one to
+make a red test go green is the failure this directory exists to prevent.
+Rewriting one because you changed the wire on purpose, and reviewing the byte
+diff as the change, is the workflow.
 
 ## File format
 
@@ -31,8 +37,8 @@ description of the input, and two load-bearing counts:
 - `stored-bytes` — how many of those bytes this file carries, checked against
   the bytes actually parsed out of it.
 
-The two counts are equal for every fixture except the three wide-layout preview
-frames (`0b`, `0c`, `0d`). A wide frame needs an axis above 65535, so its
+The two counts are equal for every fixture except the four wide-layout preview
+frames (`0b`, `0c`, `0d`, `12`). A wide frame needs an axis above 65535, so its
 smallest legal RGB payload is 196 608 bytes. Those fixtures commit the full
 header plus the first 16 payload bytes; the remainder is a deterministic fill
 that would add hundreds of kilobytes of hex without pinning any layout the

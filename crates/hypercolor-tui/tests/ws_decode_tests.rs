@@ -196,7 +196,6 @@ fn decode_non_canvas_preview_channels_return_none() {
     for channel in [
         PreviewFrameChannel::ScreenCanvas,
         PreviewFrameChannel::WebViewportCanvas,
-        PreviewFrameChannel::DisplayPreview,
     ] {
         let data = PreviewFrame {
             channel,

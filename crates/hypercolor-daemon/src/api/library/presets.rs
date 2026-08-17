@@ -414,8 +414,8 @@ async fn apply_preset_to_zone(
             trigger: ChangeTrigger::Api,
             previous,
             transition: None,
-            group_id: Some(group.id),
-            group_name: Some(group.name.clone()),
+            zone_id: Some(group.id),
+            zone_name: Some(group.name.clone()),
         });
     }
     mutation.record(crate::domain::scene::zone_changed_event(

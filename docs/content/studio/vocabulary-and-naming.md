@@ -125,14 +125,16 @@ The headline domain types in `crates/hypercolor-types/src/scene.rs` already carr
 
 The REST surface agrees too. Every route and payload field spells the concept `zones`: the layer stack hangs off `/scenes/{id}/zones/{zone_id}/layers`, the active-scene response carries `zones` and `zones_revision`, and an effect targets a zone through `zone_id`.
 
-Two surfaces still carry the older vocabulary, and both are deliberate. Persisted scene files on disk keep their `groups` and `groups_revision` fields, because renaming them would require migrating saved user scenes. WebSocket event payloads keep theirs as well, including the `event_type` string `"render_group_changed"`, which classifies through the Rust enum `ZoneChangeKind`:
+The WebSocket surface agrees now too. Its event payloads spell the concept `zone_id`, `zone_name`, and `zones_revision`, and the event that fires when a zone changes is `zone_changed`:
 
 ```rust
-// crates/hypercolor-ui/src/ws/messages.rs: the WS wire literal is unchanged
-let is_render_group_changed = event_type == "render_group_changed";
+// crates/hypercolor-ui/src/ws/messages.rs
+let is_zone_changed = event_type == "zone_changed";
 ```
 
-So when you document a surface, read its actual names: `zones` for REST, `render_group_changed` and friends for WebSocket events, and `ZoneRole`'s `primary` / `custom` / `display` variant strings throughout. When you write user-facing or conceptual prose, use the **vocabulary table** words. For the binary frame and event details, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) and [the WebSocket reference](@/api/websocket.md).
+One surface still carries the older vocabulary, deliberately. Persisted scene files on disk keep their `groups` and `groups_revision` fields, because renaming them would require migrating saved user scenes. The daemon reads the persisted `groups` field and serves it under the `zones` name.
+
+So when you document a surface, read its actual names: `zones` everywhere on the wire, `groups` in a saved scene file on disk, and `ZoneRole`'s `primary` / `custom` / `display` variant strings throughout. When you write user-facing or conceptual prose, use the **vocabulary table** words. For the binary frame and event details, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) and [the WebSocket reference](@/api/websocket.md).
 
 ## Quick reference
 

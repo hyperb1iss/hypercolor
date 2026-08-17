@@ -268,8 +268,8 @@ pub fn provide_scene_contexts(
             return current;
         };
 
-        let controls_only = hint.event_type == "render_group_changed"
-            && hint.render_group_change_kind
+        let controls_only = hint.event_type == "zone_changed"
+            && hint.zone_change_kind
                 == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched);
         if !controls_only {
             active_scene_resource.refetch();

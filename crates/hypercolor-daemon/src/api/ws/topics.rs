@@ -11,18 +11,27 @@
 //! `zone_preview` fans out to every live scene zone inside its own
 //! relay. A table keyed by topic would have to invent a task per entry
 //! and lose both.
+//!
+//! `display_preview`'s registered relay is a supervisor that spawns a
+//! follower per subscribed device. `interactive_preview` has no
+//! connection-wide task at all, because subscribing is what opens its
+//! render lane, so it is registered as a per-key session source and the
+//! coverage fence still names every topic exactly once.
 
 use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
-use hypercolor_leptos_ext::ws::registry::{CanvasConfig, TopicId};
+use hypercolor_leptos_ext::ws::registry::{CanvasConfig, InteractivePreviewConfig, TopicId};
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::trace;
 
-use super::protocol::{SubscriptionState, WsProtocolError, validate_passive_preview_shape};
+use super::protocol::{
+    SubscriptionState, WsProtocolError, validate_interactive_preview_shape,
+    validate_passive_preview_shape,
+};
 use super::relays::{
     PreviewOutboundSender, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
     relay_frames, relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors,
@@ -39,11 +48,22 @@ pub(super) struct RelayContext {
     pub(super) subscriptions: watch::Receiver<SubscriptionState>,
 }
 
+/// Where one topic's frames come from.
+enum RelaySource {
+    /// A task this connection spawns once and keeps for its lifetime.
+    Connection(fn(&RelayContext) -> JoinHandle<()>),
+    /// Tasks the subscription itself opens and closes, one per key.
+    /// `interactive_preview` works this way because subscribing opens a
+    /// render lane: there is nothing for a connection-wide task to do
+    /// until a key exists, and closing the key must close the lane.
+    PerKeySession,
+}
+
 /// One relay task and the topics it serves.
 struct RelayRegistration {
     /// Topics this task feeds. More than one means the task routes.
     topics: &'static [TopicId],
-    spawn: fn(&RelayContext) -> JoinHandle<()>,
+    source: RelaySource,
 }
 
 /// Every relay a connection spawns, once each.
@@ -52,138 +72,146 @@ static RELAYS: &[RelayRegistration] = &[
         // One bus subscription carries all three, and the relay routes by
         // event kind rather than opening three broadcast receivers.
         topics: &[TopicId::Events, TopicId::FrameEvents, TopicId::InputEvents],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_events(
                 context.state.event_bus.subscribe_all(),
                 context.json_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::Frames],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_frames(
                 Arc::clone(&context.state),
                 context.json_tx.clone(),
                 context.binary_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::Spectrum],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_spectrum(
                 Arc::clone(&context.state),
                 context.json_tx.clone(),
                 context.binary_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::Canvas],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_canvas(
                 Arc::clone(&context.state.preview_runtime),
                 context.state.power_state.subscribe(),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::ScreenCanvas],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_screen_canvas(
                 Arc::clone(&context.state.preview_runtime),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::ScreenZones],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_screen_zones(
                 Arc::clone(&context.state.preview_runtime),
                 context.subscriptions.clone(),
                 context.preview_tx.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::WebViewportCanvas],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_web_viewport_canvas(
                 Arc::clone(&context.state.preview_runtime),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         // Fans out to one stream per live scene zone inside the relay.
         topics: &[TopicId::ZonePreview],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_zone_preview(
                 Arc::clone(&context.state.preview_runtime),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::DisplayPreview],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_display_preview(
                 Arc::clone(&context.state),
                 Arc::clone(&context.state.display_frames),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::Metrics],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_metrics(
                 Arc::clone(&context.state),
                 context.json_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::DeviceMetrics],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_device_metrics(
                 Arc::clone(&context.state),
                 context.json_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
     },
     RelayRegistration {
         topics: &[TopicId::Sensors],
-        spawn: |context| {
+        source: RelaySource::Connection(|context| {
             tokio::spawn(relay_sensors(
                 Arc::clone(&context.state),
                 context.json_tx.clone(),
                 context.subscriptions.clone(),
             ))
-        },
+        }),
+    },
+    RelayRegistration {
+        topics: &[TopicId::InteractivePreview],
+        source: RelaySource::PerKeySession,
     },
 ];
 
-/// Spawn every relay this connection needs.
+/// Spawn every connection-wide relay. Per-key session topics are absent
+/// on purpose: their tasks belong to the subscription, not the socket.
 pub(super) fn spawn_relays(context: &RelayContext) -> Vec<JoinHandle<()>> {
     RELAYS
         .iter()
-        .map(|registration| {
-            trace!(topics = ?registration.topics, "Spawning WebSocket relay");
-            (registration.spawn)(context)
+        .filter_map(|registration| match registration.source {
+            RelaySource::Connection(spawn) => {
+                trace!(topics = ?registration.topics, "Spawning WebSocket relay");
+                Some(spawn(context))
+            }
+            RelaySource::PerKeySession => None,
         })
         .collect()
 }
@@ -205,6 +233,11 @@ pub(super) fn admit_config(
             let canvas = CanvasConfig::deserialize(config)
                 .expect("a validated canvas config deserializes into its own type");
             validate_passive_preview_shape(&canvas, format!("config.{}", topic.as_str()))
+        }
+        TopicId::InteractivePreview => {
+            let preview = InteractivePreviewConfig::deserialize(config)
+                .expect("a validated interactive preview config deserializes into its own type");
+            validate_interactive_preview_shape(preview.width, preview.height, preview.format)
         }
         TopicId::Frames
         | TopicId::Spectrum
@@ -239,7 +272,6 @@ mod tests {
                 );
             }
         }
-
         let missing: Vec<&str> = TopicId::ALL
             .iter()
             .filter(|topic| !served.contains(topic))
@@ -250,7 +282,7 @@ mod tests {
 
     #[test]
     fn relays_are_fewer_than_topics_because_the_event_relay_routes_three() {
-        assert_eq!(RELAYS.len(), 12);
-        assert_eq!(TopicId::COUNT, 14);
+        assert_eq!(RELAYS.len(), 13);
+        assert_eq!(TopicId::COUNT, 15);
     }
 }

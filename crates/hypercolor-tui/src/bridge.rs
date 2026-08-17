@@ -215,7 +215,7 @@ async fn refresh_for_event(
         "effect_control_changed"
         | "effect_layer_added"
         | "effect_layer_removed"
-        | "render_group_changed" => {
+        | "zone_changed" => {
             *scene_refetch_deadline = Some(tokio::time::Instant::now() + SCENE_REFETCH_COALESCE);
         }
         "active_scene_changed" => {

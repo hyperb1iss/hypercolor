@@ -3,7 +3,8 @@
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
     DEFAULT_PREVIEW_MAX_CHUNK_COUNT, DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
-    DEFAULT_PREVIEW_MAX_MESSAGE_BYTES, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
+    DEFAULT_PREVIEW_MAX_MESSAGE_BYTES, DISPLAY_PREVIEW_FRAME_PREFIX_LEN, DISPLAY_PREVIEW_FRAME_TAG,
+    DISPLAY_PREVIEW_ID_MAX_BYTES, DisplayPreviewFrame, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
     EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
     INTERACTIVE_PREVIEW_FRAME_TAG, INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame,
     PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG,
@@ -12,10 +13,10 @@ use hypercolor_leptos_ext::ws::{
     PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
     PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability, PreviewTransportVersion,
     SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
-    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, split_preview_publication,
-    split_preview_publication_with_capability,
+    WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_HEADER_LEN, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
+    ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
+    split_preview_publication, split_preview_publication_with_capability,
 };
 
 fn jpeg_payload(width: u32, height: u32, len: usize) -> Bytes {
@@ -192,7 +193,7 @@ fn preview_frame_roundtrips_rgba_payload() {
 #[test]
 fn preview_frame_keeps_jpeg_payload_variable_length() {
     let frame = PreviewFrame {
-        channel: PreviewFrameChannel::DisplayPreview,
+        channel: PreviewFrameChannel::WebViewportCanvas,
         frame_number: 7,
         timestamp_ms: 11,
         width: 640,
@@ -311,6 +312,110 @@ fn zone_preview_frame_decode_bytes_matches_decode() {
         ZonePreviewFrame::decode(&encoded).expect("slice decode"),
         ZonePreviewFrame::decode_bytes(&encoded).expect("bytes decode"),
     );
+}
+
+#[test]
+fn display_preview_frame_names_the_device_it_came_from() {
+    let frame = DisplayPreviewFrame {
+        device_id: "3f2504e0-4f89-11d3-9a0c-0305e82c3301".to_owned(),
+        frame_number: 44,
+        timestamp_ms: 1234,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8]),
+    };
+    let encoded = frame.encode().expect("display frame should encode");
+
+    assert_eq!(encoded[0], DISPLAY_PREVIEW_FRAME_TAG);
+    assert_eq!(
+        encoded.len(),
+        DISPLAY_PREVIEW_FRAME_PREFIX_LEN + frame.device_id.len() + 8
+    );
+    assert_eq!(DisplayPreviewFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn display_preview_decode_bytes_shares_payload_buffer() {
+    let frame = DisplayPreviewFrame {
+        device_id: "display-a".to_owned(),
+        frame_number: 1,
+        timestamp_ms: 2,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[9, 8, 7]),
+    };
+    let encoded = frame.encode().expect("display frame should encode");
+    let decoded = DisplayPreviewFrame::decode_bytes(&encoded).expect("frame should decode");
+    let payload_offset = DISPLAY_PREVIEW_FRAME_PREFIX_LEN + frame.device_id.len();
+
+    assert_eq!(decoded, frame);
+    assert_eq!(
+        decoded.payload.as_ptr() as usize,
+        encoded.as_ptr() as usize + payload_offset,
+    );
+}
+
+#[test]
+fn display_preview_frame_rejects_invalid_device_ids() {
+    let empty = DisplayPreviewFrame {
+        device_id: String::new(),
+        frame_number: 1,
+        timestamp_ms: 1,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[1, 2, 3]),
+    };
+    assert_eq!(empty.encode(), Err(PreviewFrameDecodeError::EmptyPreviewId));
+
+    let too_long = DisplayPreviewFrame {
+        device_id: "x".repeat(DISPLAY_PREVIEW_ID_MAX_BYTES + 1),
+        ..empty
+    };
+    assert_eq!(
+        too_long.encode(),
+        Err(PreviewFrameDecodeError::PreviewIdTooLong {
+            maximum: DISPLAY_PREVIEW_ID_MAX_BYTES,
+            actual: DISPLAY_PREVIEW_ID_MAX_BYTES + 1,
+        })
+    );
+}
+
+#[test]
+fn a_wide_display_preview_frame_keeps_its_full_dimensions() {
+    let frame = DisplayPreviewFrame {
+        device_id: "wall".to_owned(),
+        frame_number: 5,
+        timestamp_ms: 6,
+        width: 70_001,
+        height: 3,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(vec![0; 70_001 * 3 * 3]),
+    };
+    let encoded = frame.encode().expect("wide display frame should encode");
+
+    assert_eq!(encoded[0], WIDE_DISPLAY_PREVIEW_FRAME_TAG);
+    assert_eq!(DisplayPreviewFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn display_and_interactive_previews_do_not_decode_as_each_other() {
+    let display = DisplayPreviewFrame {
+        device_id: "display-a".to_owned(),
+        frame_number: 1,
+        timestamp_ms: 2,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[9, 8, 7]),
+    }
+    .encode()
+    .expect("display frame should encode");
+
+    assert!(InteractivePreviewFrame::decode(&display).is_err());
+    assert!(PreviewFrame::decode(&display).is_err());
 }
 
 #[test]
@@ -625,7 +730,7 @@ fn legacy_preview_layout_is_byte_for_byte_stable() {
 #[test]
 fn wide_preview_layouts_round_trip_without_truncation() {
     let passive = PreviewFrame {
-        channel: PreviewFrameChannel::DisplayPreview,
+        channel: PreviewFrameChannel::WebViewportCanvas,
         frame_number: 1,
         timestamp_ms: 2,
         width: 70_001,

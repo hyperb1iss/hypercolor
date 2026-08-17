@@ -3216,6 +3216,13 @@ When `atomic: true` and any operation fails, all operations are rolled back:
 
 ## 14. WebSocket API
 
+> **Superseded on the message shapes.** Spec 76 wave 3.2c replaced the
+> `channels` + `config` subscribe with an array of `{topic, key?, config?}`
+> selectors, keyed `display_preview` and `interactive_preview`, and renamed the
+> `group`-spelled event fields to `zone`. The JSON shapes below record what this
+> spec's own wave shipped; `docs/content/api/websocket.md` and
+> `protocol/websocket-v1.json` are the live contract.
+
 ### 14.1 Connection
 
 **Endpoint:** `ws://127.0.0.1:9420/api/v1/ws`

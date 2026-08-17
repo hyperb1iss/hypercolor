@@ -14,19 +14,113 @@
 //! # Tag ownership
 //!
 //! A topic owns the binary tags only its own codec writes, and the
-//! macro asserts at compile time that no two topics claim the same
-//! byte. Three tags are deliberately unowned and listed in
-//! [`SHARED_TRANSPORT_TAGS`]: the wide passive preview frame, the
-//! preview chunk, and the preview cancellation are transport envelopes
-//! that four passive preview topics share, so no single topic can claim
-//! them. Interactive preview is not a subscribable topic at all — it is
-//! a session protocol keyed by preview id — so its two tags sit in the
-//! same reserved list.
+//! macro asserts at compile time that no two topics claim the same byte
+//! and that none of them claims a reserved one. Three tags are
+//! deliberately unowned and sit in the macro's `reserved` clause: the
+//! wide passive preview frame, the preview chunk, and the preview
+//! cancellation are transport envelopes that several topics share, so no
+//! single topic can claim them.
+//!
+//! # Keys
+//!
+//! Two topics are keyed. `display_preview` is keyed by device, so one
+//! connection can follow several displays at once and each frame names
+//! the device it came from. `interactive_preview` is keyed by the
+//! client's preview id: subscribing opens a render lane and
+//! unsubscribing closes it, which is why it is a control-tier topic.
 
 use serde::{Deserialize, Serialize};
 
-use super::topic::{NoPatch, PatchError, TopicPatch};
+use super::preview::{DISPLAY_PREVIEW_ID_MAX_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES};
+use super::topic::{KeyError, NoPatch, PatchError, TopicKey, TopicPatch};
 use crate::define_ws_topics;
+
+/// The `display_preview` subscription key: the device whose display
+/// surface this subscription follows. One connection holds as many
+/// display previews as it names distinct devices.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DeviceKey(String);
+
+impl DeviceKey {
+    /// Build a key from a device id, validating it the way the wire does.
+    pub fn new(device_id: impl Into<String>) -> Result<Self, KeyError> {
+        let device_id = device_id.into();
+        let trimmed = device_id.trim();
+        validate_identity(trimmed, DISPLAY_PREVIEW_ID_MAX_BYTES, "device id")?;
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// The device id this subscription follows.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TopicKey for DeviceKey {
+    fn to_wire(&self) -> Option<String> {
+        Some(self.0.clone())
+    }
+
+    fn from_wire(key: Option<&str>) -> Result<Self, KeyError> {
+        Self::new(key.ok_or(KeyError::MissingKey)?)
+    }
+}
+
+/// The `interactive_preview` subscription key: the client-chosen preview
+/// id. It also identifies the preview's binary frames and every message
+/// addressed at one live preview.
+///
+/// Unlike a device id, a preview id is opaque to the daemon, so it is
+/// taken verbatim rather than trimmed: two ids differing only in padding
+/// are two previews, which is the client's business and not ours.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PreviewKey(String);
+
+impl PreviewKey {
+    /// Build a key from a preview id, validating it the way the wire does.
+    pub fn new(preview_id: impl Into<String>) -> Result<Self, KeyError> {
+        let preview_id = preview_id.into();
+        validate_identity(&preview_id, INTERACTIVE_PREVIEW_ID_MAX_BYTES, "preview id")?;
+        Ok(Self(preview_id))
+    }
+
+    /// The preview id this subscription drives.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TopicKey for PreviewKey {
+    fn to_wire(&self) -> Option<String> {
+        Some(self.0.clone())
+    }
+
+    fn from_wire(key: Option<&str>) -> Result<Self, KeyError> {
+        Self::new(key.ok_or(KeyError::MissingKey)?)
+    }
+}
+
+/// Both keyed topics carry a client-supplied identity that ends up in a
+/// binary frame header behind a one-byte length, so the same three rules
+/// apply to each: non-empty, bounded, and free of control characters.
+fn validate_identity(value: &str, max_bytes: usize, subject: &str) -> Result<(), KeyError> {
+    if value.is_empty() {
+        return Err(KeyError::Invalid(format!("{subject} must not be empty")));
+    }
+    if value.len() > max_bytes {
+        return Err(KeyError::Invalid(format!(
+            "{subject} cannot exceed {max_bytes} UTF-8 bytes"
+        )));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(KeyError::Invalid(format!(
+            "{subject} cannot contain control characters"
+        )));
+    }
+    Ok(())
+}
 
 /// Frame delivery encoding for the `frames` topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -257,41 +351,27 @@ impl TopicPatch<MetricsConfig> for MetricsConfigPatch {
     }
 }
 
-/// Per-subscription configuration for the `display_preview` topic.
-/// `device_id` stays `None` until a client names a target; clearing it
-/// detaches the relay from the device's frame stream.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Per-subscription configuration for the `display_preview` topic. The
+/// target device is the subscription's key, not a config field, so a
+/// connection following three displays holds three subscriptions rather
+/// than one slot it keeps retargeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DisplayPreviewConfig {
-    /// Target device, or `None` while the subscription is detached.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
     /// Delivery cadence in frames per second.
     pub fps: u32,
 }
 
 impl Default for DisplayPreviewConfig {
     fn default() -> Self {
-        Self {
-            device_id: None,
-            fps: 15,
-        }
+        Self { fps: 15 }
     }
 }
 
-/// Patch for [`DisplayPreviewConfig`]. `device_id` is a double-`Option`
-/// because the three client intents are distinct on the wire: an absent
-/// key leaves the target alone, `null` clears it, and a string sets it.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// Patch for [`DisplayPreviewConfig`].
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DisplayPreviewConfigPatch {
-    /// Tri-state target update.
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
-    #[allow(
-        clippy::option_option,
-        reason = "the patch protocol needs distinct states for missing, null, and string values"
-    )]
-    pub device_id: Option<Option<String>>,
     /// Replacement cadence.
     #[serde(default)]
     pub fps: Option<u32>,
@@ -299,26 +379,104 @@ pub struct DisplayPreviewConfigPatch {
 
 impl TopicPatch<DisplayPreviewConfig> for DisplayPreviewConfigPatch {
     fn apply(&self, config: &mut DisplayPreviewConfig) -> Result<(), PatchError> {
-        if let Some(device_id) = self.device_id.clone() {
-            match device_id {
-                Some(id) => {
-                    // Trim so accidental whitespace cannot sneak a
-                    // subscription through with no real device behind it.
-                    let trimmed = id.trim();
-                    if trimmed.is_empty() {
-                        return Err(PatchError::new(
-                            "device_id",
-                            "must be non-empty when provided",
-                        ));
-                    }
-                    config.device_id = Some(trimmed.to_owned());
-                }
-                None => config.device_id = None,
-            }
-        }
         if let Some(fps) = self.fps {
             validate_range(fps, 1, 30, "fps", "expected 1..=30")?;
             config.fps = fps;
+        }
+        Ok(())
+    }
+}
+
+/// What an interactive preview renders.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractivePreviewTarget {
+    /// The scene currently active on the daemon.
+    #[default]
+    ActiveScene,
+}
+
+/// Per-subscription configuration for the `interactive_preview` topic.
+///
+/// Unlike the passive preview surfaces, an interactive preview has no
+/// server-picked size: the daemon opens a render lane at exactly the
+/// requested shape, so zero dimensions are rejected rather than resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractivePreviewConfig {
+    /// What the preview renders.
+    pub target: InteractivePreviewTarget,
+    /// Delivery cadence in frames per second.
+    pub fps: u32,
+    /// Render width in pixels.
+    pub width: u32,
+    /// Render height in pixels.
+    pub height: u32,
+    /// Pixel encoding.
+    pub format: CanvasFormat,
+}
+
+impl Default for InteractivePreviewConfig {
+    fn default() -> Self {
+        Self {
+            target: InteractivePreviewTarget::ActiveScene,
+            fps: 30,
+            width: DEFAULT_INTERACTIVE_PREVIEW_WIDTH,
+            height: DEFAULT_INTERACTIVE_PREVIEW_HEIGHT,
+            format: CanvasFormat::Jpeg,
+        }
+    }
+}
+
+/// Default interactive preview width when a client subscribes without one.
+pub const DEFAULT_INTERACTIVE_PREVIEW_WIDTH: u32 = 640;
+/// Default interactive preview height when a client subscribes without one.
+pub const DEFAULT_INTERACTIVE_PREVIEW_HEIGHT: u32 = 480;
+
+/// Patch for [`InteractivePreviewConfig`].
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractivePreviewConfigPatch {
+    /// Replacement target.
+    #[serde(default)]
+    pub target: Option<InteractivePreviewTarget>,
+    /// Replacement cadence.
+    #[serde(default)]
+    pub fps: Option<u32>,
+    /// Replacement render width.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Replacement render height.
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Replacement pixel encoding.
+    #[serde(default)]
+    pub format: Option<CanvasFormat>,
+}
+
+impl TopicPatch<InteractivePreviewConfig> for InteractivePreviewConfigPatch {
+    fn apply(&self, config: &mut InteractivePreviewConfig) -> Result<(), PatchError> {
+        if let Some(target) = self.target {
+            config.target = target;
+        }
+        if let Some(fps) = self.fps {
+            validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
+            config.fps = fps;
+        }
+        if let Some(width) = self.width {
+            if width == 0 {
+                return Err(PatchError::new("width", "must be non-zero"));
+            }
+            config.width = width;
+        }
+        if let Some(height) = self.height {
+            if height == 0 {
+                return Err(PatchError::new("height", "must be non-zero"));
+            }
+            config.height = height;
+        }
+        if let Some(format) = self.format {
+            config.format = format;
         }
         Ok(())
     }
@@ -338,24 +496,14 @@ fn validate_range(
     }
 }
 
-/// Deserialize a double-`Option` so `null` maps to `Some(None)` (explicit
-/// clear) and a missing key keeps the outer `None` through
-/// `#[serde(default)]`. Serde's own behavior collapses both into `None`.
-#[allow(
-    clippy::option_option,
-    reason = "serde needs the tri-state shape to preserve missing-vs-null during patch application"
-)]
-fn deserialize_double_option_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer).map(Some)
-}
-
 define_ws_topics! {
     registry TopicId;
+
+    // Transport envelopes no single topic owns: `0x0b` is the wide form
+    // of the passive preview frame that four topics publish, and `0x0f`
+    // and `0x10` are the chunk and cancellation envelopes every preview
+    // stream rides. `0x04` stays deliberately unassigned.
+    reserved [0x0b, 0x0f, 0x10];
 
     topic Frames => "frames" {
         key: unkeyed, config: FramesConfig, patch: FramesConfigPatch,
@@ -406,40 +554,15 @@ define_ws_topics! {
         tags: [], control: false,
     }
     topic DisplayPreview => "display_preview" {
-        key: unkeyed, config: DisplayPreviewConfig, patch: DisplayPreviewConfigPatch,
-        tags: [0x07], control: false,
+        key: DeviceKey, config: DisplayPreviewConfig, patch: DisplayPreviewConfigPatch,
+        tags: [0x07, 0x12], control: false,
+    }
+    topic InteractivePreview => "interactive_preview" {
+        key: PreviewKey, config: InteractivePreviewConfig, patch: InteractivePreviewConfigPatch,
+        tags: [0x0a, 0x0d], control: true,
     }
     topic InputEvents => "input_events" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [], control: true,
     }
 }
-
-/// Binary tags no single topic owns.
-///
-/// `0x0b` is the wide form of the passive preview frame, which four
-/// topics publish; `0x0f` and `0x10` are the chunk and cancellation
-/// envelopes every preview stream rides. `0x0a` and `0x0d` belong to
-/// interactive preview, a keyed session protocol rather than a
-/// subscribable topic.
-pub const SHARED_TRANSPORT_TAGS: &[u8] = &[0x0a, 0x0b, 0x0d, 0x0f, 0x10];
-
-// The shared tags are as exclusive as the owned ones: a topic quietly
-// claiming a transport envelope byte would collide on the wire without
-// the per-topic assertion ever noticing.
-const _: () = {
-    assert!(
-        super::topic::tags_disjoint(&[
-            SHARED_TRANSPORT_TAGS,
-            <Frames as super::topic::WsTopic>::OWNED_TAGS,
-            <Spectrum as super::topic::WsTopic>::OWNED_TAGS,
-            <Canvas as super::topic::WsTopic>::OWNED_TAGS,
-            <ScreenCanvas as super::topic::WsTopic>::OWNED_TAGS,
-            <ScreenZones as super::topic::WsTopic>::OWNED_TAGS,
-            <WebViewportCanvas as super::topic::WsTopic>::OWNED_TAGS,
-            <ZonePreview as super::topic::WsTopic>::OWNED_TAGS,
-            <DisplayPreview as super::topic::WsTopic>::OWNED_TAGS,
-        ]),
-        "a topic claims a shared preview transport tag"
-    );
-};

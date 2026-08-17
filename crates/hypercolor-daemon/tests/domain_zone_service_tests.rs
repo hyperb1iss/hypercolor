@@ -179,7 +179,7 @@ async fn create_zone_adds_a_custom_zone_and_announces_it() {
     assert!(
         seen.iter().any(|event| matches!(
             event,
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 kind: ZoneChangeKind::Created,
                 ..
             }
@@ -364,7 +364,7 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     assert!(
         seen.iter().any(|event| matches!(
             event,
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 kind: ZoneChangeKind::Removed,
                 ..
             }

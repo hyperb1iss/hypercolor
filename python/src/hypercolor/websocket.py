@@ -22,7 +22,7 @@ from .constants import WS_SUBPROTOCOL
 from .ws_protocol import (
     BINARY_MESSAGE_TAGS,
     CANVAS_FORMAT_TAGS,
-    PREVIEW_CHANNEL_TAGS,
+    PREVIEW_TOPIC_TAGS,
     WS_CAPABILITIES,
 )
 
@@ -48,13 +48,23 @@ _PREVIEW_TRANSPORT_LIMITS = _preview_transport_limits()
 
 
 @dataclass(slots=True)
+class ActiveSubscription:
+    """One live subscription as the daemon reports it."""
+
+    topic: str
+    key: str | None = None
+    config: JsonObject | None = None
+    publication_id: int | None = None
+
+
+@dataclass(slots=True)
 class HelloMessage:
     """Initial hello payload sent by the daemon."""
 
     version: str
     state: JsonObject
     capabilities: list[str]
-    subscriptions: list[str]
+    subscriptions: list[ActiveSubscription]
 
 
 @dataclass(slots=True)
@@ -135,6 +145,19 @@ class InteractivePreviewData:
     """Connection-scoped interactive preview frame."""
 
     preview_id: str
+    frame_number: int
+    timestamp_ms: int
+    width: int
+    height: int
+    format: str
+    pixels: bytes
+
+
+@dataclass(slots=True)
+class DisplayPreviewData:
+    """One display's output frame, named by the device it came from."""
+
+    device_id: str
     frame_number: int
     timestamp_ms: int
     width: int
@@ -508,6 +531,7 @@ type WsMessage = (
     | SpectrumData
     | CanvasData
     | InteractivePreviewData
+    | DisplayPreviewData
     | ZonePreviewData
     | ScreenZonesData
     | BinaryMessage
@@ -518,6 +542,7 @@ type _BinaryWsMessage = (
     | SpectrumData
     | CanvasData
     | InteractivePreviewData
+    | DisplayPreviewData
     | ZonePreviewData
     | ScreenZonesData
     | BinaryMessage
@@ -585,6 +610,7 @@ class HypercolorEventStream:
         self._spectrum_handlers: list[EventHandler] = []
         self._canvas_handlers: list[EventHandler] = []
         self._interactive_preview_handlers: list[EventHandler] = []
+        self._display_preview_handlers: list[EventHandler] = []
         self._screen_zones_handlers: list[EventHandler] = []
         self._metrics_handlers: list[EventHandler] = []
         self._pending_responses: dict[str, asyncio.Future[CommandResponse]] = {}
@@ -630,22 +656,46 @@ class HypercolorEventStream:
 
     async def subscribe(
         self,
-        *channels: str,
+        *topics: str,
+        key: str | None = None,
         config: Mapping[str, Any] | None = None,
     ) -> None:
-        """Subscribe to one or more channels."""
+        """Subscribe to one or more topics.
+
+        A keyed topic (``display_preview``, ``interactive_preview``) takes
+        its key here, so a call names one keyed subscription at a time.
+        """
+        await self.subscribe_many(
+            [
+                {
+                    "topic": topic,
+                    **({"key": key} if key is not None else {}),
+                    **({"config": dict(config)} if config is not None else {}),
+                }
+                for topic in topics
+            ]
+        )
+
+    async def subscribe_many(self, topics: list[Mapping[str, Any]]) -> None:
+        """Subscribe to several topics, each with its own key and config."""
         payload: JsonObject = {
             "type": "subscribe",
-            "channels": list(channels),
+            "topics": [dict(topic) for topic in topics],
             "preview_transport": _PREVIEW_TRANSPORT_CAPABILITY,
         }
-        if config is not None:
-            payload["config"] = dict(config)
         await self._send_json(payload)
 
-    async def unsubscribe(self, *channels: str) -> None:
-        """Unsubscribe from one or more channels."""
-        await self._send_json({"type": "unsubscribe", "channels": list(channels)})
+    async def unsubscribe(self, *topics: str, key: str | None = None) -> None:
+        """Unsubscribe from one or more topics."""
+        await self._send_json(
+            {
+                "type": "unsubscribe",
+                "topics": [
+                    {"topic": topic, **({"key": key} if key is not None else {})}
+                    for topic in topics
+                ],
+            }
+        )
 
     async def open_interactive_preview(
         self,
@@ -657,22 +707,26 @@ class HypercolorEventStream:
         format: str = "jpeg",
         target: str = "active_scene",
     ) -> None:
-        """Open or reconfigure one connection-scoped interactive preview."""
-        await self._send_json(
-            {
-                "type": "interactive_preview_open",
-                "preview_id": preview_id,
+        """Open or reconfigure one interactive preview.
+
+        Opening is a keyed subscribe: the preview id is the key, and the
+        daemon opens the render lane when the subscription is admitted.
+        """
+        await self.subscribe(
+            "interactive_preview",
+            key=preview_id,
+            config={
                 "target": target,
                 "fps": fps,
                 "width": width,
                 "height": height,
                 "format": format,
-            }
+            },
         )
 
     async def close_interactive_preview(self, preview_id: str) -> None:
-        """Close one connection-scoped interactive preview."""
-        await self._send_json({"type": "interactive_preview_close", "preview_id": preview_id})
+        """Close one interactive preview by retiring its subscription."""
+        await self.unsubscribe("interactive_preview", key=preview_id)
 
     async def inject_preview_input(
         self,
@@ -725,6 +779,10 @@ class HypercolorEventStream:
     def on_interactive_preview(self, handler: EventHandler) -> None:
         """Register a handler for addressed interactive preview frames."""
         self._interactive_preview_handlers.append(handler)
+
+    def on_display_preview(self, handler: EventHandler) -> None:
+        """Register a handler for keyed display preview frames."""
+        self._display_preview_handlers.append(handler)
 
     def on_screen_zones(self, handler: EventHandler) -> None:
         """Register a handler for screen zone-grid frames."""
@@ -807,7 +865,7 @@ class HypercolorEventStream:
                 version=str(payload["version"]),
                 state=_expect_dict(payload.get("state")),
                 capabilities=_expect_list_of_str(payload.get("capabilities")),
-                subscriptions=_expect_list_of_str(payload.get("subscriptions")),
+                subscriptions=_parse_subscriptions(payload.get("subscriptions")),
             )
         if message_type == "event":
             return EventMessage(
@@ -843,7 +901,7 @@ class HypercolorEventStream:
             return HypercolorEventStream._parse_led_frame(payload)
         if message_type == BINARY_MESSAGE_TAGS["spectrum"]:
             return HypercolorEventStream._parse_spectrum(payload)
-        if message_type in PREVIEW_CHANNEL_TAGS:
+        if message_type in PREVIEW_TOPIC_TAGS:
             return HypercolorEventStream._parse_canvas(payload)
         return HypercolorEventStream._parse_special_binary(message_type, payload)
 
@@ -916,8 +974,22 @@ class HypercolorEventStream:
             BINARY_MESSAGE_TAGS["extended_screen_zones"],
         ):
             return HypercolorEventStream._parse_screen_zones(payload)
-        if message_type == BINARY_MESSAGE_TAGS["interactive_preview"]:
-            return HypercolorEventStream._parse_interactive_preview(payload)
+        if message_type in (
+            BINARY_MESSAGE_TAGS["interactive_preview"],
+            BINARY_MESSAGE_TAGS["wide_interactive_preview"],
+        ):
+            return HypercolorEventStream._parse_interactive_preview(
+                payload,
+                wide=message_type == BINARY_MESSAGE_TAGS["wide_interactive_preview"],
+            )
+        if message_type in (
+            BINARY_MESSAGE_TAGS["display_preview"],
+            BINARY_MESSAGE_TAGS["wide_display_preview"],
+        ):
+            return HypercolorEventStream._parse_display_preview(
+                payload,
+                wide=message_type == BINARY_MESSAGE_TAGS["wide_display_preview"],
+            )
         return BinaryMessage(tag=message_type, payload=payload)
 
     async def _dispatch_json(self, message: WsMessage) -> None:
@@ -943,6 +1015,9 @@ class HypercolorEventStream:
                 await _run_handler(handler, message)
         elif isinstance(message, CanvasData):
             for handler in self._canvas_handlers:
+                await _run_handler(handler, message)
+        elif isinstance(message, DisplayPreviewData):
+            for handler in self._display_preview_handlers:
                 await _run_handler(handler, message)
         elif isinstance(message, InteractivePreviewData):
             for handler in self._interactive_preview_handlers:
@@ -1010,7 +1085,7 @@ class HypercolorEventStream:
             height=height,
             format=image_format,
             pixels=pixels,
-            channel=PREVIEW_CHANNEL_TAGS[payload[0]],
+            channel=PREVIEW_TOPIC_TAGS[payload[0]],
         )
 
     @staticmethod
@@ -1031,31 +1106,77 @@ class HypercolorEventStream:
         )
 
     @staticmethod
-    def _parse_interactive_preview(payload: bytes) -> InteractivePreviewData:
-        if len(payload) < 15:
-            msg = "Interactive preview frame is shorter than its prefix"
+    def _parse_display_preview(payload: bytes, *, wide: bool = False) -> DisplayPreviewData:
+        """Decode a keyed display frame.
+
+        Display and interactive previews share one identity-prefixed
+        header layout, so this reuses that parse and renames the identity
+        to the device it actually is.
+        """
+        frame = HypercolorEventStream._parse_identity_preview(
+            payload, subject="Display preview device id", wide=wide
+        )
+        return DisplayPreviewData(
+            device_id=frame.preview_id,
+            frame_number=frame.frame_number,
+            timestamp_ms=frame.timestamp_ms,
+            width=frame.width,
+            height=frame.height,
+            format=frame.format,
+            pixels=frame.pixels,
+        )
+
+    @staticmethod
+    def _parse_interactive_preview(
+        payload: bytes,
+        *,
+        wide: bool = False,
+    ) -> InteractivePreviewData:
+        return HypercolorEventStream._parse_identity_preview(
+            payload, subject="Interactive preview id", wide=wide
+        )
+
+    @staticmethod
+    def _parse_identity_preview(
+        payload: bytes,
+        *,
+        subject: str,
+        wide: bool = False,
+    ) -> InteractivePreviewData:
+        """Decode an identity-prefixed preview frame.
+
+        Interactive and display previews share this layout. The wide form
+        widens both dimensions to u32 and pushes the identity out by four
+        bytes; nothing else moves.
+        """
+        prefix_len = 19 if wide else 15
+        if len(payload) < prefix_len:
+            msg = f"{subject} frame is shorter than its prefix"
             raise ValueError(msg)
         preview_id_len = payload[1]
         if preview_id_len == 0:
-            msg = "Interactive preview id cannot be empty"
+            msg = f"{subject} cannot be empty"
             raise ValueError(msg)
         if preview_id_len > 128:
-            msg = "Interactive preview id exceeds 128 bytes"
+            msg = f"{subject} exceeds 128 bytes"
             raise ValueError(msg)
-        payload_offset = 15 + preview_id_len
+        payload_offset = prefix_len + preview_id_len
         if len(payload) < payload_offset:
-            msg = "Interactive preview frame has a truncated preview id"
+            msg = f"{subject} frame has a truncated identity"
             raise ValueError(msg)
         frame_number, timestamp_ms = struct.unpack_from("<II", payload, 2)
-        width, height = struct.unpack_from("<HH", payload, 10)
-        format_byte = payload[14]
+        if wide:
+            width, height = struct.unpack_from("<II", payload, 10)
+        else:
+            width, height = struct.unpack_from("<HH", payload, 10)
+        format_byte = payload[prefix_len - 1]
         image_format = CANVAS_FORMAT_TAGS.get(format_byte)
         if image_format is None:
-            msg = f"Unknown interactive preview format: {format_byte:#x}"
+            msg = f"Unknown {subject} preview format: {format_byte:#x}"
             raise ValueError(msg)
-        preview_id = payload[15:payload_offset].decode("utf-8")
+        preview_id = payload[prefix_len:payload_offset].decode("utf-8")
         if any(unicodedata.category(character) == "Cc" for character in preview_id):
-            msg = "Interactive preview id contains a control character"
+            msg = f"{subject} contains a control character"
             raise ValueError(msg)
         image = payload[payload_offset:]
         bytes_per_pixel = {"rgb": 3, "rgba": 4}.get(image_format)
@@ -1063,8 +1184,7 @@ class HypercolorEventStream:
             expected = width * height * bytes_per_pixel
             if len(image) < expected:
                 msg = (
-                    "Interactive preview payload is too short: "
-                    f"expected {expected} bytes, got {len(image)}"
+                    f"{subject} payload is too short: expected {expected} bytes, got {len(image)}"
                 )
                 raise ValueError(msg)
             image = image[:expected]
@@ -1169,3 +1289,24 @@ def _expect_list_of_str(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _parse_subscriptions(value: Any) -> list[ActiveSubscription]:
+    """Read the live subscription entries a hello or acknowledgment carries."""
+    if not isinstance(value, list):
+        return []
+    entries: list[ActiveSubscription] = []
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("topic"), str):
+            continue
+        key = item.get("key")
+        publication_id = item.get("publication_id")
+        entries.append(
+            ActiveSubscription(
+                topic=item["topic"],
+                key=key if isinstance(key, str) else None,
+                config=_optional_dict(item.get("config")),
+                publication_id=publication_id if isinstance(publication_id, int) else None,
+            )
+        )
+    return entries

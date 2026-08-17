@@ -23,7 +23,6 @@ pub mod library;
 pub mod local;
 pub mod openapi;
 pub mod output;
-pub mod preview;
 pub mod profiles;
 pub mod scenes;
 pub mod scenes_zones;
@@ -772,14 +771,12 @@ pub(crate) fn publish_render_group_changed(
     group: &Zone,
     kind: ZoneChangeKind,
 ) {
-    state
-        .event_bus
-        .publish(HypercolorEvent::RenderGroupChanged {
-            scene_id,
-            group_id: group.id,
-            role: group.role,
-            kind,
-        });
+    state.event_bus.publish(HypercolorEvent::ZoneChanged {
+        scene_id,
+        zone_id: group.id,
+        role: group.role,
+        kind,
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -847,8 +844,8 @@ async fn clear_active_scene_effect_groups(
         mutation.record(HypercolorEvent::EffectStopped {
             effect: effect.clone(),
             reason: EffectStopReason::Error,
-            group_id: Some(zone.id),
-            group_name: Some(zone.name.clone()),
+            zone_id: Some(zone.id),
+            zone_name: Some(zone.name.clone()),
         });
         mutation.record(crate::domain::scene::zone_changed_event(
             scene_id,
@@ -1483,7 +1480,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     }
     let mut router = Router::new()
         .nest("/api/v1", api)
-        .route("/preview", axum::routing::get(preview::preview_page))
         .route("/health", axum::routing::get(system::health_check));
 
     if mcp_config.enabled {

@@ -3270,43 +3270,6 @@ async fn config_full_reset_is_not_blocked_by_an_invalid_driver_entry() {
     );
 }
 
-#[tokio::test]
-async fn preview_page_returns_html() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/preview")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let content_type = response
-        .headers()
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html content type, got {content_type}"
-    );
-
-    let body = body_text(response).await;
-    assert!(body.contains("Hypercolor Live Preview"));
-    assert!(body.contains("/api/v1/ws"));
-    assert!(body.contains("/api/v1/simulators/displays"));
-    assert!(body.contains("id=\"previewMode\""));
-    assert!(body.contains("show unavailable"));
-    assert!(body.contains("run-preview-servo.sh"));
-    assert!(body.contains("value=\"30\""));
-}
-
 async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
     let _ = insert_test_effect_with_presets(state, name, Vec::new()).await;
 }
@@ -6226,12 +6189,12 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 Ok(timestamped) => {
                     if let HypercolorEvent::EffectStarted {
                         previous,
-                        group_id,
-                        group_name,
+                        zone_id,
+                        zone_name,
                         ..
                     } = timestamped.event
                     {
-                        break (previous, group_id, group_name);
+                        break (previous, zone_id, zone_name);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -8022,7 +7985,7 @@ async fn patch_active_controls_publishes_render_group_and_control_events() {
         while !saw_render_group_change || !saw_control_change {
             match events.recv().await {
                 Ok(timestamped) => match timestamped.event {
-                    HypercolorEvent::RenderGroupChanged {
+                    HypercolorEvent::ZoneChanged {
                         scene_id,
                         role,
                         kind,
@@ -15269,7 +15232,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         while removed_scene_ids.len() < 2 {
             match events.recv().await {
                 Ok(timestamped) => {
-                    if let HypercolorEvent::RenderGroupChanged {
+                    if let HypercolorEvent::ZoneChanged {
                         scene_id,
                         role,
                         kind,
