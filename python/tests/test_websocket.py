@@ -15,6 +15,7 @@ from hypercolor import websocket as websocket_module, ws_protocol
 from hypercolor.websocket import (
     BinaryMessage,
     CanvasData,
+    DisplayPreviewData,
     EventMessage,
     FrameData,
     HelloMessage,
@@ -132,21 +133,24 @@ def test_parse_canvas() -> None:
     assert message.pixels == pixels
 
 
-def test_parse_display_preview_jpeg() -> None:
+def test_parse_keyed_display_preview_jpeg() -> None:
     jpeg = b"\xff\xd8\xff\xe0preview"
-    payload = bytearray()
-    payload.extend(b"\x07")
+    device_id = b"device-abc"
+    payload = bytearray((0x07, len(device_id)))
     payload.extend(struct.pack("<II", 8, 1001))
     payload.extend(struct.pack("<HH", 64, 32))
     payload.extend(b"\x02")
+    payload.extend(device_id)
     payload.extend(jpeg)
 
-    message = HypercolorEventStream._parse_canvas(bytes(payload))
+    message = HypercolorEventStream._decode_binary(bytes(payload))
 
-    assert isinstance(message, CanvasData)
-    assert message.channel == "display_preview"
+    assert isinstance(message, DisplayPreviewData)
+    assert message.device_id == "device-abc"
+    assert message.frame_number == 8
     assert message.format == "jpeg"
     assert message.width == 64
+    assert message.height == 32
     assert message.pixels == jpeg
 
 
@@ -204,7 +208,7 @@ def test_interactive_preview_rejects_truncated_raw_payloads(
 
 
 def test_unknown_json_message_falls_back_to_event() -> None:
-    message = HypercolorEventStream._decode_json('{"type":"subscribed","channels":["events"]}')
+    message = HypercolorEventStream._decode_json('{"type":"subscribed","topics":[{"topic":"events"}]}')
 
     assert isinstance(message, EventMessage)
     assert message.event == "subscribed"

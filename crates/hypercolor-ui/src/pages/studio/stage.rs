@@ -159,31 +159,12 @@ fn SurfaceStage() -> impl IntoView {
             .cloned()
     });
 
-    let screen_frame = RwSignal::new(None::<CanvasFrame>);
-    Effect::new(move |previous_device: Option<Option<String>>| {
-        let current_device = display_device.get();
-        if previous_device.as_ref() != Some(&current_device) {
-            screen_frame.set(None);
-        }
-        current_device
-    });
-    Effect::new(move |_| {
-        let frame = ws.display_preview_frame.get();
-        // The channel carries no device id, so accept a frame only when
-        // its resolution matches the selected screen. That rejects an
-        // in-flight frame from the previously selected screen; two
-        // identically sized screens still need daemon-side frame tagging
-        // to be fully distinguishable.
-        let belongs_to_target = match (&frame, selected_display.get()) {
-            (Some(frame), Some(display)) => {
-                frame.width == display.width && frame.height == display.height
-            }
-            (None, _) => true,
-            (Some(_), None) => false,
-        };
-        if belongs_to_target {
-            screen_frame.set(frame);
-        }
+    // Display preview frames are keyed by device, so the selected screen
+    // reads its own stream directly.
+    let screen_frame = Signal::derive(move || {
+        let device_id = display_device.get()?;
+        ws.display_preview_frames
+            .with(|frames| frames.get(&device_id).cloned())
     });
 
     // The display-preview stream carries no FPS, so the Screen caption is

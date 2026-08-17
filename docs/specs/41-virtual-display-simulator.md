@@ -327,13 +327,14 @@ page:
 
 This keeps the preview shell familiar and avoids needless UI sprawl.
 
-The browser preview mode switch landed on 2026-04-11. `/preview` can now poll
-simulator frames via the inspection API while keeping the original live canvas
-WebSocket mode intact.
+The browser preview mode switch landed on 2026-04-11 as a standalone HTML page
+the daemon served itself. Spec 76 wave 3.2c deleted that page: the web UI's own
+`/preview` route renders the same surface with the real preview pipeline, and
+the daemon's route was shadowing it whenever the daemon served the UI.
 
-The `/displays` workspace now also deep-links into that shell with
+The `/displays` workspace deep-links into the UI's shell with
 `/preview?display=<id>`, so a selected simulator can jump from the in-app
-display preview to the dedicated browser inspection surface in one click.
+display preview to the full-screen inspection surface in one click.
 
 ### 7.4 TUI
 

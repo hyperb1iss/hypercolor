@@ -28,18 +28,19 @@ test("websocket handshake, subscribe ack, and live events flow through the proxy
     expect(hello.type).toBe("hello");
     expect(hello.version).toBe("1.0");
     expect(hello.capabilities).toContain("events");
-    expect(hello.subscriptions).toEqual(["events"]);
+    expect(hello.subscriptions.map((entry) => entry.topic)).toEqual(["events"]);
 
     socket.send(
       JSON.stringify({
         type: "subscribe",
-        channels: ["metrics"],
+        topics: [{ topic: "metrics" }],
       }),
     );
 
     const ack = await inbox.waitFor((message) => message.type === "subscribed");
-    expect(ack.channels).toEqual(["metrics"]);
-    expect(ack.config.metrics).toBeTruthy();
+    const metrics = ack.topics.find((entry) => entry.topic === "metrics");
+    expect(metrics).toBeTruthy();
+    expect(metrics.config).toBeTruthy();
 
     const effects = await readEnvelope(await api.get("/api/v1/effects"));
     const runnableEffect = findRunnableEffect(effects.items, ["Audio Pulse", "Gradient", "Rainbow"]);

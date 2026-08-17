@@ -372,8 +372,9 @@ function collectFrames(daemon: string, frameCount: number, captureMs: number): P
         ws.addEventListener('open', () => {
             ws.send(
                 JSON.stringify({
-                    channels: ['canvas'],
-                    config: { canvas: { format: 'rgba', fps: 30, height: 0, width: 0 } },
+                    topics: [
+                        { config: { format: 'rgba', fps: 30, height: 0, width: 0 }, topic: 'canvas' },
+                    ],
                     type: 'subscribe',
                 }),
             )

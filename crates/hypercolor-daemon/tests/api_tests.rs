@@ -3270,43 +3270,6 @@ async fn config_full_reset_is_not_blocked_by_an_invalid_driver_entry() {
     );
 }
 
-#[tokio::test]
-async fn preview_page_returns_html() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/preview")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let content_type = response
-        .headers()
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html content type, got {content_type}"
-    );
-
-    let body = body_text(response).await;
-    assert!(body.contains("Hypercolor Live Preview"));
-    assert!(body.contains("/api/v1/ws"));
-    assert!(body.contains("/api/v1/simulators/displays"));
-    assert!(body.contains("id=\"previewMode\""));
-    assert!(body.contains("show unavailable"));
-    assert!(body.contains("run-preview-servo.sh"));
-    assert!(body.contains("value=\"30\""));
-}
-
 async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
     let _ = insert_test_effect_with_presets(state, name, Vec::new()).await;
 }

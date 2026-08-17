@@ -3,7 +3,7 @@
  * Display face screenshot capture tool.
  *
  * Assigns each display-category effect (face) to the Face Dev simulator
- * displays, subscribes the `display_preview` WebSocket channel per device so
+ * displays, subscribes the keyed `display_preview` WebSocket topic per device so
  * the display worker encodes simulator frames, then snapshots
  * `/displays/{id}/preview.jpg` into the shared screenshot drafts tree:
  *
@@ -256,14 +256,28 @@ async function main(): Promise<void> {
         ws.onopen = () => res()
         ws.onerror = () => reject(new Error('websocket connection failed'))
     })
-    const follow = (deviceId: string) =>
+    // display_preview is keyed by device, so following a second simulator
+    // adds a subscription rather than retargeting the first. Each capture
+    // drops the previous key so only one display streams at a time.
+    let followed: string | undefined
+    const follow = (deviceId: string) => {
+        if (followed === deviceId) return
+        if (followed !== undefined) {
+            ws.send(
+                JSON.stringify({
+                    topics: [{ key: followed, topic: 'display_preview' }],
+                    type: 'unsubscribe',
+                }),
+            )
+        }
         ws.send(
             JSON.stringify({
-                channels: ['display_preview'],
-                config: { display_preview: { device_id: deviceId, fps: 15 } },
+                topics: [{ config: { fps: 15 }, key: deviceId, topic: 'display_preview' }],
                 type: 'subscribe',
             }),
         )
+        followed = deviceId
+    }
 
     let failures = 0
     const startedAt = Date.now()

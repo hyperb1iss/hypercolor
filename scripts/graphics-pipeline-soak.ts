@@ -372,8 +372,7 @@ async function observe(config: Config): Promise<{ samples: MetricSample[]; backp
             socket.send(
                 JSON.stringify({
                     type: "subscribe",
-                    channels: ["metrics"],
-                    config: { metrics: { interval_ms: config.intervalMs } },
+                    topics: [{ topic: "metrics", config: { interval_ms: config.intervalMs } }],
                 }),
             )
         }

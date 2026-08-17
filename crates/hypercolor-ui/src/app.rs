@@ -63,7 +63,7 @@ pub struct WsContext {
     /// Latest per-display JPEG frame from the `display_preview` WS
     /// channel. Cleared when the selected display changes (handled by
     /// `set_display_preview_device`).
-    pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    pub display_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
@@ -501,7 +501,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         canvas_frame: ws.canvas_frame,
         screen_canvas_frame: ws.screen_canvas_frame,
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
-        display_preview_frame: ws.display_preview_frame,
+        display_preview_frames: ws.display_preview_frames,
         interactive_preview_frames: ws.interactive_preview_frames,
         interactive_preview_lifecycles: ws.interactive_preview_lifecycles,
         interactive_preview_available: ws.interactive_preview_available,

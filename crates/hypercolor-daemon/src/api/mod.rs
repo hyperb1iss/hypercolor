@@ -23,7 +23,6 @@ pub mod library;
 pub mod local;
 pub mod openapi;
 pub mod output;
-pub mod preview;
 pub mod profiles;
 pub mod scenes;
 pub mod scenes_zones;
@@ -1481,7 +1480,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     }
     let mut router = Router::new()
         .nest("/api/v1", api)
-        .route("/preview", axum::routing::get(preview::preview_page))
         .route("/health", axum::routing::get(system::health_check));
 
     if mcp_config.enabled {
