@@ -1,6 +1,6 @@
 //! Multi-zone scene API client — Spec 64 `/scenes/{id}/zones/*` routes.
 //!
-//! Every mutation is guarded by an `If-Match: "<groups_revision>"`
+//! Every mutation is guarded by an `If-Match: "<zones_revision>"`
 //! precondition, mirroring the layer-stack concurrency model in
 //! [`super::layers`]. The daemon replies `412` with the authoritative
 //! `current` revision when the precondition fails; that is surfaced as
@@ -21,8 +21,8 @@ use hypercolor_types::spatial::SpatialLayout;
 use super::client;
 use super::client::MutationOutcome;
 
-/// Outcome of a zone mutation guarded by a `groups_revision` precondition.
-/// `Stale { current }` carries the daemon's authoritative `groups_revision`
+/// Outcome of a zone mutation guarded by a `zones_revision` precondition.
+/// `Stale { current }` carries the daemon's authoritative `zones_revision`
 /// to rebase on before retrying.
 pub type ZoneOutcome<T> = MutationOutcome<T>;
 
@@ -118,7 +118,7 @@ pub async fn delete_zone(
 /// Reassign device outputs into `zone_id`. Existing outputs are
 /// referenced by id and moved between zones; brand-new ones carry a
 /// full `Output` so an unplaced device can be placed for the first
-/// time. Returns the new `groups_revision` so a follow-up mutation can
+/// time. Returns the new `zones_revision` so a follow-up mutation can
 /// chain without a refetch.
 ///
 /// `preserve_placement` keeps the geometry the caller supplied instead of
@@ -142,12 +142,12 @@ pub async fn assign_devices(
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|response| response.groups_revision))
+    .map(|outcome| outcome.map(|response| response.zones_revision))
     .map_err(Into::into)
 }
 
 /// Remove one device output from `zone_id`. Returns the new
-/// `groups_revision` so sequential removals can chain without a refetch.
+/// `zones_revision` so sequential removals can chain without a refetch.
 pub async fn unassign_device(
     scene_id: &str,
     zone_id: &str,
@@ -161,7 +161,7 @@ pub async fn unassign_device(
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|response| response.groups_revision))
+    .map(|outcome| outcome.map(|response| response.zones_revision))
     .map_err(Into::into)
 }
 

@@ -189,7 +189,7 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
             expected_prefix = b"/api/v1/effects/aurora%2Fmain/presets/"
             assert request.url.raw_path.startswith(expected_prefix)
             if request.url.raw_path.endswith(b"/saved-bright/apply"):
-                assert json.loads(request.content) == {"render_group": "zone-left"}
+                assert json.loads(request.content) == {"zone_id": "zone-left"}
             else:
                 assert request.url.raw_path.endswith(b"/bundled-calm/apply")
                 assert request.content == b""
@@ -218,7 +218,7 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
         result = client.apply_effect_preset(
             "aurora/main",
             "saved-bright",
-            render_group="zone-left",
+            zone_id="zone-left",
         )
         ungrouped_result = client.apply_effect_preset("aurora/main", "bundled-calm")
     finally:

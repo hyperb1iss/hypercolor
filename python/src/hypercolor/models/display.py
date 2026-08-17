@@ -25,4 +25,4 @@ class DisplayFaceAssignment(msgspec.Struct, kw_only=True):
     device_id: str
     scene_id: str
     effect: dict[str, Any]
-    group: dict[str, Any]
+    zone: dict[str, Any]

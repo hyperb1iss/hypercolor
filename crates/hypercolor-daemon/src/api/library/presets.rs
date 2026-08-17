@@ -46,8 +46,8 @@ pub struct SavePresetRequest {
 /// Optional body for `apply_preset` — scopes the apply to one zone.
 #[derive(Debug, Default, Deserialize)]
 pub struct ApplyPresetRequest {
-    /// Target zone (render-group id). Omitted targets the primary zone.
-    pub render_group: Option<String>,
+    /// Target zone id. Omitted targets the primary zone.
+    pub zone_id: Option<String>,
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
@@ -249,10 +249,10 @@ pub async fn apply_preset(
         entry.metadata.clone()
     };
 
-    // A render_group naming a non-Primary zone takes the zone-scoped
+    // A zone_id naming a non-Primary zone takes the zone-scoped
     // path; naming the Primary (or omitting it) keeps legacy semantics.
-    let target_group = match crate::api::effects::parse_render_group(
-        body.as_ref().and_then(|body| body.render_group.as_deref()),
+    let target_group = match crate::api::effects::parse_zone_id_field(
+        body.as_ref().and_then(|body| body.zone_id.as_deref()),
     ) {
         Ok(target) => target,
         Err(error) => return error.into_response(),

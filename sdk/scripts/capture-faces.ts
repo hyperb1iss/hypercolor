@@ -64,7 +64,7 @@ interface FaceLayer {
 
 interface FaceState {
     effect: { id: string }
-    group: { layers: FaceLayer[] }
+    zone: { layers: FaceLayer[] }
 }
 
 /** Prior assignment snapshot used to restore a simulator after capture. */
@@ -155,7 +155,7 @@ async function getPriorFace(daemon: string, deviceId: string): Promise<PriorFace
     } catch {
         return null
     }
-    const layer = state.group.layers[0]
+    const layer = state.zone.layers[0]
     return {
         blendMode: layer?.blend ?? 'replace',
         controls: layer?.source.controls ?? {},

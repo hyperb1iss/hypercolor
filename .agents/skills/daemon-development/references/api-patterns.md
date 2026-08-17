@@ -45,7 +45,7 @@ Constructors: `ApiResponse::ok(data)` (200), `ApiResponse::created(data)` (201),
 
 ## Control Update Flow
 
-`PATCH /api/v1/effects/current/controls` with control key-value pairs:
+`PATCH /api/v1/effects/active/controls` with control key-value pairs:
 
 1. Parse `ControlValue` from JSON
 2. Lock `EffectEngine`

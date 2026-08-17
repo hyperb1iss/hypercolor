@@ -274,7 +274,7 @@ The daemon exposes REST + WebSocket on `:9420` (Axum):
 
 - `GET /api/v1/effects`: List all effects
 - `POST /api/v1/effects/{id}/apply`: Apply effect to devices
-- `PATCH /api/v1/effects/current/controls`: Update live controls
+- `PATCH /api/v1/effects/active/controls`: Update live controls
 - `GET /api/v1/devices`: Connected devices
 - `GET/POST/DELETE /api/v1/library/favorites`: Favorites CRUD
 - `GET/POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate`: Scene management

@@ -167,7 +167,7 @@ class SyncHypercolorClient:
         controls: Mapping[str, Any] | None = None,
         transition: TransitionSpec | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         return self._run(
             self._client.apply_effect(
@@ -175,7 +175,7 @@ class SyncHypercolorClient:
                 controls=controls,
                 transition=transition,
                 preset_id=preset_id,
-                render_group=render_group,
+                zone_id=zone_id,
             )
         )
 
@@ -184,13 +184,13 @@ class SyncHypercolorClient:
         effect_id: str,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         return self._run(
             self._client.apply_effect_preset(
                 effect_id,
                 preset_id,
-                render_group=render_group,
+                zone_id=zone_id,
             )
         )
 
@@ -205,8 +205,8 @@ class SyncHypercolorClient:
             self._client.update_effect_controls(effect_id, controls, if_match=if_match)
         )
 
-    def reset_controls(self, *, render_group: str | None = None) -> MutationResult:
-        return self._run(self._client.reset_controls(render_group=render_group))
+    def reset_controls(self, *, zone_id: str | None = None) -> MutationResult:
+        return self._run(self._client.reset_controls(zone_id=zone_id))
 
     def update_controls(
         self,

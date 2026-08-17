@@ -116,7 +116,7 @@ pub fn DevicesPage() -> impl IntoView {
     let device_zones = Memo::new(move |_| {
         let mut map = std::collections::HashMap::<String, String>::new();
         if let Some(scene) = zones_ctx.active_scene.get() {
-            for group in &scene.groups {
+            for group in &scene.zones {
                 if group.role == ZoneRole::Display {
                     continue;
                 }

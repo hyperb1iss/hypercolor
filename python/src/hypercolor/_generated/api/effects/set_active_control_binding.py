@@ -15,7 +15,7 @@ def _get_kwargs(
 
     _kwargs: dict[str, Any] = {
         "method": "put",
-        "url": "/api/v1/effects/current/controls/{name}/binding".format(
+        "url": "/api/v1/effects/active/controls/{name}/binding".format(
             name=quote(str(name), safe=""),
         ),
     }
@@ -69,7 +69,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Set current effect control binding
+    """Set active effect control binding
 
     Args:
         name (str):
@@ -98,7 +98,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Set current effect control binding
+    """Set active effect control binding
 
     Args:
         name (str):

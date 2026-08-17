@@ -50,7 +50,7 @@ pub async fn create_zone(
         return DomainError::validation_field("name", "zone name must not be empty")
             .into_response();
     }
-    let expected_revision = match parse_if_match_groups_revision(&headers) {
+    let expected_revision = match parse_if_match_zones_revision(&headers) {
         Ok(version) => version,
         Err(message) => return DomainError::malformed(message).into_response(),
     };
@@ -111,7 +111,7 @@ pub async fn update_zone(
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
         return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
-    let expected_revision = match parse_if_match_groups_revision(&headers) {
+    let expected_revision = match parse_if_match_zones_revision(&headers) {
         Ok(version) => version,
         Err(message) => return DomainError::malformed(message).into_response(),
     };
@@ -144,7 +144,7 @@ pub async fn delete_zone(
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
         return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
-    let expected_revision = match parse_if_match_groups_revision(&headers) {
+    let expected_revision = match parse_if_match_zones_revision(&headers) {
         Ok(version) => version,
         Err(message) => return DomainError::malformed(message).into_response(),
     };
@@ -167,11 +167,11 @@ pub async fn delete_zone(
         Err(error) => return error.into_response(),
     };
 
-    attach_groups_revision_headers(
+    attach_zones_revision_headers(
         ApiResponse::ok(serde_json::json!({
             "zone_id": zone_id,
             "deleted": true,
-            "groups_revision": removed.groups_revision,
+            "zones_revision": removed.groups_revision,
         })),
         removed.groups_revision,
     )
@@ -200,7 +200,7 @@ pub async fn assign_devices(
             return DomainError::validation(error).into_response();
         }
     }
-    let expected_revision = match parse_if_match_groups_revision(&headers) {
+    let expected_revision = match parse_if_match_zones_revision(&headers) {
         Ok(version) => version,
         Err(message) => return DomainError::malformed(message).into_response(),
     };
@@ -240,7 +240,7 @@ pub async fn unassign_device(
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
         return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
-    let expected_revision = match parse_if_match_groups_revision(&headers) {
+    let expected_revision = match parse_if_match_zones_revision(&headers) {
         Ok(version) => version,
         Err(message) => return DomainError::malformed(message).into_response(),
     };
@@ -281,7 +281,7 @@ pub async fn update_zone_layout(
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
         return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
-    let expected_revision = match parse_if_match_groups_revision(&headers) {
+    let expected_revision = match parse_if_match_zones_revision(&headers) {
         Ok(version) => version,
         Err(message) => return DomainError::malformed(message).into_response(),
     };
@@ -315,7 +315,7 @@ pub async fn update_unassigned_behavior(
     headers: HeaderMap,
     Json(body): Json<UpdateUnassignedBehaviorRequest>,
 ) -> Response {
-    let expected_revision = match parse_if_match_groups_revision(&headers) {
+    let expected_revision = match parse_if_match_zones_revision(&headers) {
         Ok(version) => version,
         Err(message) => return DomainError::malformed(message).into_response(),
     };
@@ -360,37 +360,37 @@ enum StatusKind {
     Created,
 }
 
-fn zones_response(groups: Vec<Zone>, groups_revision: u64, status: StatusKind) -> Response {
+fn zones_response(zones: Vec<Zone>, zones_revision: u64, status: StatusKind) -> Response {
     let body = ZoneListResponse {
-        items: groups,
-        groups_revision,
+        items: zones,
+        zones_revision,
     };
     let response = match status {
         StatusKind::Ok => ApiResponse::ok(body),
         StatusKind::Created => ApiResponse::created(body),
     };
-    attach_groups_revision_headers(response, groups_revision)
+    attach_zones_revision_headers(response, zones_revision)
 }
 
-fn zone_response(zone: Zone, groups_revision: u64, status: StatusKind) -> Response {
+fn zone_response(zone: Zone, zones_revision: u64, status: StatusKind) -> Response {
     let body = ZoneResponse {
         zone,
-        groups_revision,
+        zones_revision,
     };
     let response = match status {
         StatusKind::Ok => ApiResponse::ok(body),
         StatusKind::Created => ApiResponse::created(body),
     };
-    attach_groups_revision_headers(response, groups_revision)
+    attach_zones_revision_headers(response, zones_revision)
 }
 
-fn unassigned_behavior_response(behavior: UnassignedBehavior, groups_revision: u64) -> Response {
-    attach_groups_revision_headers(
+fn unassigned_behavior_response(behavior: UnassignedBehavior, zones_revision: u64) -> Response {
+    attach_zones_revision_headers(
         ApiResponse::ok(UnassignedBehaviorResponse {
             unassigned_behavior: behavior,
-            groups_revision,
+            zones_revision,
         }),
-        groups_revision,
+        zones_revision,
     )
 }
 
@@ -398,7 +398,7 @@ fn parse_zone_id(raw: &str) -> Result<ZoneId, uuid::Error> {
     raw.parse::<uuid::Uuid>().map(ZoneId)
 }
 
-fn parse_if_match_groups_revision(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
+fn parse_if_match_zones_revision(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
     let Some(value) = headers.get(header::IF_MATCH) else {
         return Ok(None);
     };
@@ -412,10 +412,10 @@ fn parse_if_match_groups_revision(headers: &HeaderMap) -> Result<Option<u64>, &'
     trimmed
         .parse::<u64>()
         .map(Some)
-        .map_err(|_| "If-Match must be a non-negative integer groups_revision")
+        .map_err(|_| "If-Match must be a non-negative integer zones_revision")
 }
 
-fn attach_groups_revision_headers(mut response: Response, version: u64) -> Response {
+fn attach_zones_revision_headers(mut response: Response, version: u64) -> Response {
     if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
         response.headers_mut().insert(header::ETAG, etag);
     }

@@ -33,7 +33,7 @@ use crate::toasts;
 use crate::ws::CanvasFrame;
 use crate::ws::messages::group_has_degraded_layer;
 
-use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use super::zone_controls::unassigned_behavior_label;
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -101,7 +101,7 @@ fn SurfaceStage() -> impl IntoView {
     let selected_surface = Memo::new(move |_| {
         let id = studio.selected_surface_id.get()?;
         let scene = studio.active_scene.get()?;
-        surfaces_from_groups(&scene.groups)
+        surfaces_from_zones(&scene.zones)
             .into_iter()
             .find(|surface| surface.id == id)
     });
@@ -503,7 +503,7 @@ fn UnassignedStage() -> impl IntoView {
             ("hold".to_owned(), "Hold last colors".to_owned()),
         ];
         if let Some(scene) = studio.active_scene.get() {
-            for surface in surfaces_from_groups(&scene.groups)
+            for surface in surfaces_from_zones(&scene.zones)
                 .into_iter()
                 .filter(|surface| surface.kind == SurfaceKind::Light)
             {
@@ -529,7 +529,7 @@ fn UnassignedStage() -> impl IntoView {
             match api::zones::update_unassigned_behavior(
                 &scene.id,
                 &behavior,
-                Some(scene.groups_revision),
+                Some(scene.zones_revision),
             )
             .await
             {

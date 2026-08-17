@@ -575,7 +575,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     result = await client.apply_effect_preset(
         "aurora/main",
         "bundled-calm",
-        render_group="zone-left",
+        zone_id="zone-left",
     )
 
     assert list_route.called
@@ -583,7 +583,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     assert presets[0].editable is False
     assert presets[1].origin is EffectPresetOrigin.SAVED
     assert presets[1].editable is True
-    assert json.loads(apply_route.calls[0].request.content) == {"render_group": "zone-left"}
+    assert json.loads(apply_route.calls[0].request.content) == {"zone_id": "zone-left"}
     assert result.effect.id == "aurora/main"
 
 
@@ -779,7 +779,7 @@ async def test_get_effect_raises_not_found(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_update_controls_wraps_controls_payload(client: HypercolorClient) -> None:
-    route = respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -802,7 +802,7 @@ async def test_update_controls_wraps_controls_payload(client: HypercolorClient) 
 @respx.mock
 @pytest.mark.asyncio
 async def test_update_controls_raises_validation_error(client: HypercolorClient) -> None:
-    respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
+    respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
         return_value=httpx.Response(
             422,
             content=msgspec.json.encode(
@@ -1224,7 +1224,7 @@ async def test_scene_profile_display_and_diagnostics_helpers(
                     "device_id": "streamdeck",
                     "scene_id": "scene-a",
                     "effect": {"id": "clock", "name": "Clock"},
-                    "group": {"id": "group-a"},
+                    "zone": {"id": "zone-a"},
                 }
             ),
         )

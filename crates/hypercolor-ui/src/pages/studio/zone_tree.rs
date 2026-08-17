@@ -23,7 +23,7 @@ use super::device_card::{CardMode, StudioDeviceCard};
 use super::device_grouping::{
     DeviceMeta, ZoneDeviceRow, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
-use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use super::zone_add_device::ZoneAddDevice;
 use super::zone_controls::{NewZoneControl, ZoneControls};
 
@@ -62,7 +62,7 @@ pub fn ZoneTree() -> impl IntoView {
         studio
             .active_scene
             .get()
-            .map(|scene| surfaces_from_groups(&scene.groups))
+            .map(|scene| surfaces_from_zones(&scene.zones))
             .unwrap_or_default()
     });
     let lights = Memo::new(move |_| {
@@ -128,7 +128,7 @@ pub fn ZoneTree() -> impl IntoView {
             .into_iter()
             .map(|surface| {
                 let outputs = scene
-                    .groups
+                    .zones
                     .iter()
                     .find(|group| group.id.to_string() == surface.id)
                     .map(|group| group.layout.zones.clone())
@@ -153,7 +153,7 @@ pub fn ZoneTree() -> impl IntoView {
         };
         let by_id = device_by_id.get();
         let search = studio.device_search.get().trim().to_lowercase();
-        let mut base_rows = unassigned_device_rows(&scene.groups, &device_metas.get());
+        let mut base_rows = unassigned_device_rows(&scene.zones, &device_metas.get());
         sort_device_rows(&mut base_rows);
         retain_by_search(&mut base_rows, &search);
         base_rows

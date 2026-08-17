@@ -185,7 +185,7 @@ pub fn StudioDeviceCard(
         studio.active_scene.with_untracked(|scene| {
             scene.as_ref().and_then(|scene| {
                 scene
-                    .groups
+                    .zones
                     .iter()
                     .find(|group| group.id.to_string() == select)
                     .map(|group| group.layout.clone())
@@ -625,7 +625,7 @@ fn card_ops_menu(
                 .as_ref()
                 .map(|scene| {
                     scene
-                        .groups
+                        .zones
                         .iter()
                         .filter(|group| group.role != ZoneRole::Display)
                         .filter(|group| group.id.to_string() != current.get_value())
@@ -710,7 +710,7 @@ fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_id
         .map(|id| api::zones::OutputAssignment::Existing { id })
         .collect::<Vec<_>>();
     let scene_id = scene.id.clone();
-    let revision = scene.groups_revision;
+    let revision = scene.zones_revision;
     spawn_local(async move {
         match api::zones::assign_devices(
             &scene_id,
@@ -974,7 +974,7 @@ fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
 }
 
 /// Unassign every output this device has in `zone_id`. The removals run in
-/// sequence because each one bumps `groups_revision`; threading the new
+/// sequence because each one bumps `zones_revision`; threading the new
 /// revision into the next call lets a multi-output controller leave the
 /// zone in a single user action.
 fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
@@ -983,7 +983,7 @@ fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: St
         return;
     };
     let output_ids: Vec<String> = scene
-        .groups
+        .zones
         .iter()
         .find(|group| group.id.to_string() == zone_id)
         .map(|group| {
@@ -1000,7 +1000,7 @@ fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: St
         return;
     }
     let scene_id = scene.id.clone();
-    let mut revision = scene.groups_revision;
+    let mut revision = scene.zones_revision;
     spawn_local(async move {
         for output_id in output_ids {
             match api::zones::unassign_device(&scene_id, &zone_id, &output_id, Some(revision)).await
@@ -1104,7 +1104,7 @@ fn screen_surface_id_for_device(studio: StudioContext, device_id: &str) -> Optio
     studio.active_scene.with_untracked(|scene| {
         scene.as_ref().and_then(|scene| {
             scene
-                .groups
+                .zones
                 .iter()
                 .find(|group| {
                     group.role == ZoneRole::Display

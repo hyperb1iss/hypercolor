@@ -36,7 +36,7 @@ pub fn split_zone_rows(
 }
 
 /// Flip one zone's `enabled` flag through the revision-guarded zone
-/// PATCH. A stale `groups_revision` means the scene changed under us:
+/// PATCH. A stale `zones_revision` means the scene changed under us:
 /// refresh the shared scene and ask the user to retry — never clobber.
 pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool) {
     let Some(scene) = zones_ctx.active_scene.get_untracked() else {
@@ -44,7 +44,7 @@ pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool)
         return;
     };
     let scene_id = scene.id;
-    let revision = scene.groups_revision;
+    let revision = scene.zones_revision;
     spawn_local(async move {
         let request = api::zones::UpdateZoneRequest {
             enabled: Some(enabled),

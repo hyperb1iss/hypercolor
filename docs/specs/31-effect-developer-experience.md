@@ -1533,7 +1533,7 @@ EFFECTS
   hypercolor effects stop
 
 LIVE CONTROL
-  curl -X PATCH localhost:9420/api/v1/effects/current/controls \
+  curl -X PATCH localhost:9420/api/v1/effects/active/controls \
     -H 'Content-Type: application/json' \
     -d '{"controls": {"speed": 7, "brightness": 90}}'
 
@@ -1608,9 +1608,9 @@ SETTINGS
 
 ```
 1. hypercolor effects activate iris
-2. PATCH /api/v1/effects/current/controls → {"controls": {"speed": 3}}
+2. PATCH /api/v1/effects/active/controls → {"controls": {"speed": 3}}
 3. Observe result
-4. PATCH /api/v1/effects/current/controls → {"controls": {"speed": 7}}
+4. PATCH /api/v1/effects/active/controls → {"controls": {"speed": 7}}
 5. hypercolor library presets create "iris-fast" --effect iris -c speed=7
 ```
 
@@ -1631,7 +1631,7 @@ reference above as context, plus behavioral guidance:
 
 - Always use `--json` when parsing output programmatically
 - Prefer `hypercolor effects activate` over raw curl for effect activation
-- Use `PATCH /effects/current/controls` for live control tweaking (no CLI
+- Use `PATCH /effects/active/controls` for live control tweaking (no CLI
   equivalent currently)
 - Don't restart the daemon without asking the user
 - When installing effects, validate first

@@ -300,7 +300,7 @@ Assign or clear an HTML display-face effect on a display device (an LCD or simil
 The target effect must be in the `Display` category **and** be an HTML source; anything else returns an invalid-parameter error. This is the only path to drive a display face; `set_effect` will refuse a display effect.
 
 - **Required:** `device` (string): display device ID or exact display name.
-- **Optional:** `effect_id` (string): display-face effect UUID, exact name, or source stem; omit when clearing. `clear` (boolean): when true, removes the assignment on the chosen scope. `scope` (enum): `default` (the default) persists the face across scenes; `scene` writes the active scene's display zone and wins while that scene is active. `controls` (object): control overrides stored on the display-face group.
+- **Optional:** `effect_id` (string): display-face effect UUID, exact name, or source stem; omit when clearing. `clear` (boolean): when true, removes the assignment on the chosen scope. `scope` (enum): `default` (the default) persists the face across scenes; `scene` writes the active scene's display zone and wins while that scene is active. `controls` (object): control overrides stored on the display-face zone.
 
 ```json
 {

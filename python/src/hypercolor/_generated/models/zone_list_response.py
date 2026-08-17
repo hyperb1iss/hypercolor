@@ -18,28 +18,28 @@ class ZoneListResponse:
     """Response for `GET /api/v1/scenes/{id}/zones`.
 
     Attributes:
-        groups_revision (int):
         items (list[ZoneListResponseItemsItem]):
+        zones_revision (int):
     """
 
-    groups_revision: int
     items: list[ZoneListResponseItemsItem]
+    zones_revision: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        groups_revision = self.groups_revision
-
         items = []
         for items_item_data in self.items:
             items_item = items_item_data.to_dict()
             items.append(items_item)
 
+        zones_revision = self.zones_revision
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "groups_revision": groups_revision,
                 "items": items,
+                "zones_revision": zones_revision,
             }
         )
 
@@ -50,8 +50,6 @@ class ZoneListResponse:
         from ..models.zone_list_response_items_item import ZoneListResponseItemsItem
 
         d = dict(src_dict)
-        groups_revision = d.pop("groups_revision")
-
         items = []
         _items = d.pop("items")
         for items_item_data in _items:
@@ -59,9 +57,11 @@ class ZoneListResponse:
 
             items.append(items_item)
 
+        zones_revision = d.pop("zones_revision")
+
         zone_list_response = cls(
-            groups_revision=groups_revision,
             items=items,
+            zones_revision=zones_revision,
         )
 
         zone_list_response.additional_properties = d

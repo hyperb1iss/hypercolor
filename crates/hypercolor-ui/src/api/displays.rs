@@ -37,9 +37,9 @@ pub struct DisplayFaceEffect {
     pub presets: Vec<PresetTemplate>,
 }
 
-/// Render-group details carried inside a display-face assignment response.
+/// Zone details carried inside a display-face assignment response.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DisplayFaceGroup {
+pub struct DisplayFaceZone {
     pub id: String,
     #[serde(default)]
     pub controls: HashMap<String, ControlValue>,
@@ -74,7 +74,7 @@ pub struct DisplayFaceResponse {
     pub device_id: String,
     pub scene_id: String,
     pub effect: DisplayFaceEffect,
-    pub group: DisplayFaceGroup,
+    pub zone: DisplayFaceZone,
     /// Which layer the returned assignment lives on.
     #[serde(default)]
     pub live_scope: DisplayFaceScope,

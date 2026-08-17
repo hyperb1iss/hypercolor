@@ -29,14 +29,14 @@ class ActiveEffectResponse:
             active_preset_modified (bool | Unset):
             control_values (ActiveEffectResponseControlValues | Unset):
             controls (list[ControlDefinition] | Unset):
-            controls_version (int | None | Unset): Server-side version token for the group's controls. Clients
+            controls_version (int | None | Unset): Server-side version token for the zone's controls. Clients
                 that want to use optimistic concurrency on the effect-id PATCH
                 endpoint echo this value back via `If-Match`. Idle responses
                 omit it (there's nothing to version).
             cover_image_url (None | str | Unset):
             id (None | str | Unset):
             name (None | str | Unset):
-            render_group_id (None | str | Unset):
+            zone_id (None | str | Unset):
     """
 
     state: str
@@ -48,7 +48,7 @@ class ActiveEffectResponse:
     cover_image_url: None | str | Unset = UNSET
     id: None | str | Unset = UNSET
     name: None | str | Unset = UNSET
-    render_group_id: None | str | Unset = UNSET
+    zone_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,11 +97,11 @@ class ActiveEffectResponse:
         else:
             name = self.name
 
-        render_group_id: None | str | Unset
-        if isinstance(self.render_group_id, Unset):
-            render_group_id = UNSET
+        zone_id: None | str | Unset
+        if isinstance(self.zone_id, Unset):
+            zone_id = UNSET
         else:
-            render_group_id = self.render_group_id
+            zone_id = self.zone_id
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -126,8 +126,8 @@ class ActiveEffectResponse:
             field_dict["id"] = id
         if name is not UNSET:
             field_dict["name"] = name
-        if render_group_id is not UNSET:
-            field_dict["render_group_id"] = render_group_id
+        if zone_id is not UNSET:
+            field_dict["zone_id"] = zone_id
 
         return field_dict
 
@@ -206,14 +206,14 @@ class ActiveEffectResponse:
 
         name = _parse_name(d.pop("name", UNSET))
 
-        def _parse_render_group_id(data: object) -> None | str | Unset:
+        def _parse_zone_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        render_group_id = _parse_render_group_id(d.pop("render_group_id", UNSET))
+        zone_id = _parse_zone_id(d.pop("zone_id", UNSET))
 
         active_effect_response = cls(
             state=state,
@@ -225,7 +225,7 @@ class ActiveEffectResponse:
             cover_image_url=cover_image_url,
             id=id,
             name=name,
-            render_group_id=render_group_id,
+            zone_id=zone_id,
         )
 
         active_effect_response.additional_properties = d

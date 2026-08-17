@@ -206,5 +206,5 @@ whenever you want it back.
   hide, identify, and remove.
 - [Scenes](@/studio/scenes.md): saving and switching whole-rig configurations.
 - [Zone API and concurrency](@/studio/zone-api-and-concurrency.md): the REST
-  routes and the `groups_revision` optimistic-concurrency contract behind every
+  routes and the `zones_revision` optimistic-concurrency contract behind every
   move you just made.

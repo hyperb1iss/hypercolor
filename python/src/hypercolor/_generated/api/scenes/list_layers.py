@@ -11,14 +11,14 @@ from ...types import Response
 
 def _get_kwargs(
     id: str,
-    group_id: str,
+    zone_id: str,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "get",
-        "url": "/api/v1/scenes/{id}/groups/{group_id}/layers".format(
+        "url": "/api/v1/scenes/{id}/zones/{zone_id}/layers".format(
             id=quote(str(id), safe=""),
-            group_id=quote(str(group_id), safe=""),
+            zone_id=quote(str(zone_id), safe=""),
         ),
     }
 
@@ -68,7 +68,7 @@ def _build_response(
 
 def sync_detailed(
     id: str,
-    group_id: str,
+    zone_id: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
@@ -76,7 +76,7 @@ def sync_detailed(
 
     Args:
         id (str):
-        group_id (str):
+        zone_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -88,7 +88,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        group_id=group_id,
+        zone_id=zone_id,
     )
 
     response = client.get_httpx_client().request(
@@ -100,7 +100,7 @@ def sync_detailed(
 
 async def asyncio_detailed(
     id: str,
-    group_id: str,
+    zone_id: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
@@ -108,7 +108,7 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        group_id (str):
+        zone_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,7 +120,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        group_id=group_id,
+        zone_id=zone_id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)

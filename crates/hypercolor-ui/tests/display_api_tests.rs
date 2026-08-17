@@ -1,6 +1,9 @@
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
-use hypercolor_ui::api::{ComponentBindingRequest, PairDeviceRequest, SetDisplayFaceRequest};
+use hypercolor_ui::api::{
+    ComponentBindingRequest, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
+    SetDisplayFaceRequest,
+};
 use hypercolor_ui::control_value_json::{
     controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value,
 };
@@ -394,4 +397,45 @@ fn hex_to_rgba_expands_css_shorthand() {
         panic!("full hex with alpha should parse");
     };
     assert_eq!(short_alpha, long_alpha);
+}
+
+/// The display-face response is the one REST shape in this crate with no
+/// shared `hypercolor_types::api` type behind it: the daemon builds its own
+/// struct and this crate mirrors it by hand, so nothing makes the compiler
+/// compare the two.
+///
+/// The payload below is the SHARED fixture the daemon's
+/// `display_face_response_shape_matches_the_shared_fixture` pin asserts
+/// its live serializer against, key path by key path. A daemon-side field
+/// rename therefore has to update the fixture, and the updated fixture
+/// then has to decode here — which closes the drift a hand mirror allows.
+/// The residue that remains is value semantics (a field keeping its name
+/// while changing meaning); that goes away when the displays domain moves
+/// into `hypercolor_types::api` and the compiler takes the job over.
+#[test]
+fn display_face_response_decodes_the_daemon_shape() {
+    let wire: serde_json::Value = serde_json::from_str(include_str!(
+        "../../hypercolor-daemon/tests/fixtures/rest_v1/display_face_shape.json"
+    ))
+    .expect("shared fixture parses");
+
+    let decoded: DisplayFaceResponse = serde_json::from_value(wire.clone())
+        .expect("daemon face payload should decode into the UI mirror");
+
+    assert_eq!(decoded.device_id, wire["device_id"]);
+    assert_eq!(decoded.zone.id, wire["zone"]["id"]);
+    assert_eq!(decoded.live_scope, DisplayFaceScope::Scene);
+    let target = decoded
+        .zone
+        .display_target
+        .expect("display target should decode");
+    assert_eq!(
+        target.device_id.to_string(),
+        wire["zone"]["display_target"]["device_id"]
+    );
+    // The zone's patched control survives the tolerant decode.
+    assert!(
+        decoded.zone.controls.contains_key("label"),
+        "zone controls should carry the fixture's label control"
+    );
 }
