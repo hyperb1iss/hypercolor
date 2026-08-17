@@ -10,11 +10,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
-use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{EffectCategory, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-use serde::Serialize;
 use tracing::warn;
 
 use crate::api::AppState;
@@ -26,43 +25,15 @@ use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::displays::{
-    DisplayFaceScope, DisplayFaceScopeQuery, SetDisplayFaceRequest,
-    UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+    DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery, DisplaySummary,
+    SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
 };
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DisplaySummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub family: String,
-    pub width: u32,
-    pub height: u32,
-    pub circular: bool,
-    /// Full surface description (shape, safe area, fps, pixel format) —
-    /// the same descriptor injected into face pages.
-    pub descriptor: DisplayDescriptor,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DisplaySurfaceInfo {
     pub width: u32,
     pub height: u32,
     pub circular: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DisplayFaceResponse {
-    pub device_id: String,
-    pub scene_id: String,
-    pub effect: EffectMetadata,
-    pub zone: Zone,
-    /// Which layer the returned assignment lives on.
-    pub live_scope: DisplayFaceScope,
-    /// Whether the active scene has its own face assignment for this display.
-    pub scene_assigned: bool,
-    /// Whether a persisted default face exists for this display.
-    pub default_assigned: bool,
 }
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);

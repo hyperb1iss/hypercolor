@@ -11,6 +11,7 @@
 //! bare placeholder. Uploads accept multiple files in one gesture.
 
 use hypercolor_leptos_ext::events::{Change, Input};
+use hypercolor_types::asset::AssetId;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -56,7 +57,7 @@ pub fn MediaPage() -> impl IntoView {
     let (search, set_search) = signal(String::new());
     let (kind_filter, set_kind_filter) = signal("all".to_owned());
     let (refresh_tick, set_refresh_tick) = signal(0_u64);
-    let (selected_id, set_selected_id) = signal(None::<String>);
+    let (selected_id, set_selected_id) = signal(None::<AssetId>);
     let (uploading, set_uploading) = signal(false);
     // Nested dragenter/dragleave pairs from child elements balance out; the
     // veil shows while the depth is positive.
@@ -99,7 +100,7 @@ pub fn MediaPage() -> impl IntoView {
             .as_ref()
             .is_some_and(|id| items.iter().any(|asset| asset.id == *id));
         if !still_visible {
-            set_selected_id.set(items.first().map(|asset| asset.id.clone()));
+            set_selected_id.set(items.first().map(|asset| asset.id));
         }
     });
 
@@ -144,7 +145,7 @@ pub fn MediaPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             let total = files.len();
             let mut uploaded = 0_usize;
-            let mut last: Option<(String, String, bool)> = None;
+            let mut last: Option<(AssetId, String, bool)> = None;
             for file in files {
                 let file_name = file.name();
                 match api::upload_asset(file).await {
@@ -476,7 +477,7 @@ fn MediaDetail(
             tags: Some(parse_tags(&draft_tags.get_untracked())),
         };
         leptos::task::spawn_local(async move {
-            match api::update_asset(&asset.id, &request).await {
+            match api::update_asset(asset.id, &request).await {
                 Ok(_) => {
                     on_changed.run(());
                     toasts::toast_success("Media metadata saved");
@@ -491,7 +492,7 @@ fn MediaDetail(
             return;
         };
         leptos::task::spawn_local(async move {
-            match api::delete_asset(&asset.id).await {
+            match api::delete_asset(asset.id).await {
                 Ok(()) => {
                     on_changed.run(());
                     toasts::toast_success("Media removed");

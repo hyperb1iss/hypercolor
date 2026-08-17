@@ -221,10 +221,17 @@ pub fn media_layer_source(asset_id: &str) -> Result<LayerSource, String> {
         .trim()
         .parse::<AssetId>()
         .map_err(|_| format!("media id is not a valid identifier: {asset_id}"))?;
-    Ok(LayerSource::Media {
+    Ok(media_layer_source_for(asset_id))
+}
+
+/// Build a media layer source from an asset id the caller already holds
+/// typed — the library grid path, where parsing cannot fail.
+#[must_use]
+pub fn media_layer_source_for(asset_id: AssetId) -> LayerSource {
+    LayerSource::Media {
         asset_id,
         playback: MediaPlayback::default(),
-    })
+    }
 }
 
 /// Initial blend mode for a layer added through the picker.

@@ -403,19 +403,20 @@ fn hex_to_rgba_expands_css_shorthand() {
     assert_eq!(short_alpha, long_alpha);
 }
 
-/// The display-face response is the one REST shape in this crate with no
-/// shared `hypercolor_types::api` type behind it: the daemon builds its own
-/// struct and this crate mirrors it by hand, so nothing makes the compiler
-/// compare the two.
+/// Round-trip fence for the display-face wire shape.
 ///
-/// The payload below is the SHARED fixture the daemon's
-/// `display_face_response_shape_matches_the_shared_fixture` pin asserts
-/// its live serializer against, key path by key path. A daemon-side field
-/// rename therefore has to update the fixture, and the updated fixture
-/// then has to decode here — which closes the drift a hand mirror allows.
-/// The residue that remains is value semantics (a field keeping its name
-/// while changing meaning); that goes away when the displays domain moves
-/// into `hypercolor_types::api` and the compiler takes the job over.
+/// The daemon serializes `hypercolor_types::api::displays::DisplayFaceResponse`
+/// and this crate deserializes that same struct, so field renames are a
+/// compile error and need no test. What the compiler cannot see is a
+/// change to a field's VALUE representation — a type swap, a different
+/// enum tagging, a serde attribute — which keeps every key path intact
+/// and so also slips past the daemon's
+/// `display_face_response_shape_matches_the_shared_fixture` pin, since
+/// that one compares key paths and never decodes.
+///
+/// This test closes that gap by decoding the daemon's recorded payload:
+/// the fixture is a real captured response, and it has to keep parsing
+/// into the shared type value for value.
 #[test]
 fn display_face_response_decodes_the_daemon_shape() {
     let wire: serde_json::Value = serde_json::from_str(include_str!(
@@ -424,10 +425,10 @@ fn display_face_response_decodes_the_daemon_shape() {
     .expect("shared fixture parses");
 
     let decoded: DisplayFaceResponse = serde_json::from_value(wire.clone())
-        .expect("daemon face payload should decode into the UI mirror");
+        .expect("daemon face payload should decode into the shared type");
 
     assert_eq!(decoded.device_id, wire["device_id"]);
-    assert_eq!(decoded.zone.id, wire["zone"]["id"]);
+    assert_eq!(decoded.zone.id.to_string(), wire["zone"]["id"]);
     assert_eq!(decoded.live_scope, DisplayFaceScope::Scene);
     let target = decoded
         .zone
