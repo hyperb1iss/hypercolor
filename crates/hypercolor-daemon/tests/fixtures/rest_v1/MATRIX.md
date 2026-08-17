@@ -191,11 +191,12 @@ hardcoded 50, which is a distinct shape from both groups above.
 
 ---
 
-## 3. Legacy paths
+## 3. Paths whose bodies deviate from their siblings
 
-These paths stay routed and keep their legacy projections. Spec 76 §4.4 adds
-canonical spellings (`active` for `current`, `zones` for `groups`) beside them
-rather than replacing them.
+Every path here is canonical: wave C1b renamed `current` to `active` and
+`groups` to `zones` and deleted the old spellings outright, so nothing in this
+table has a second address. What earns a row is a body or header contract that
+diverges from the neighbouring routes, noted per row.
 
 | Method | Path | Request | Success body | Notes |
 | --- | --- | --- | --- | --- |
@@ -203,10 +204,10 @@ rather than replacing them.
 | PATCH | `/api/v1/effects/active/controls` | `{controls: {…}}` | `200`, enveloped `{effect, applied, rejected}` | **No `controls_version`, no ETag, and `If-Match` is not read at all**, while the `{id}` sibling has all three |
 | PUT | `/api/v1/effects/active/controls/{name}/binding` | A bare `ControlBinding` object (`{sensor, sensor_min, sensor_max, target_min, target_max, deadband?, smoothing?}`), **not** wrapped in a `binding` key | `200`, enveloped | |
 | POST | `/api/v1/effects/active/reset` | Empty | `200`, enveloped | |
-| GET/POST | `/api/v1/scenes/{id}/groups/{group_id}/layers` | Layer spec on POST | `200`/`201`, enveloped, ETag | `group_id` is a zone id; layers keep the `groups` spelling while zone CRUD uses `/zones/` |
-| PATCH | `/api/v1/scenes/{id}/groups/{group_id}/layers/order` | `{layer_ids: […]}` | `200`, enveloped, ETag | |
-| PUT/DELETE | `/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}` | Layer spec on PUT | `200`, enveloped, ETag | |
-| PATCH | `/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls` | `{controls: {…}}` | `200`, enveloped, ETag | |
+| GET/POST | `/api/v1/scenes/{id}/zones/{zone_id}/layers` | Layer spec on POST | `200`/`201`, enveloped, ETag | Layer stacks and zone CRUD share the `/zones/{zone_id}` prefix |
+| PATCH | `/api/v1/scenes/{id}/zones/{zone_id}/layers/order` | `{layer_ids: […]}` | `200`, enveloped, ETag | |
+| PUT/DELETE | `/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}` | Layer spec on PUT | `200`, enveloped, ETag | |
+| PATCH | `/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls` | `{controls: {…}}` | `200`, enveloped, ETag | |
 | GET | `/api/v1/config` | Empty | `200`, enveloped whole config | Secret-classified sections render as `{redacted: true}`: every `drivers` entry, plus any top-level section the build does not model |
 | GET | `/api/v1/config/keys/{key}` | Dotted key as one **path segment** | `200`, enveloped `{key, value}` | `key` echoes the *normalized* key; a 404 message echoes the caller's raw key; a malformed key (empty segment) is `400 bad_request` |
 | PUT | `/api/v1/config/keys/{key}` | **The value itself** as the JSON body; `?live=` (default `true`) gates the live apply | `200`, enveloped `{key, value, live, requires_restart, pending_restart, path}` | The body is typed JSON, so `true` is boolean and `"hello"` is a string. Returns `500 internal_error` when no `ConfigManager` is wired |
@@ -255,7 +256,7 @@ use a strong, quoted, bare integer: `ETag: "7"`.
 | --- | --- | --- |
 | `controls_version` | `GET /api/v1/effects/active` | `PATCH /api/v1/effects/{id}/controls` |
 | `groups_revision` | `GET /api/v1/scenes/{id}/zones`, `GET /api/v1/scenes/{id}/zones/{zone_id}` | The seven zone mutators (create/update/delete zone, assign/unassign devices, update zone layout, update unassigned behavior) |
-| `layers_version` | `GET /api/v1/scenes/{id}/groups/{group_id}/layers` | The five layer mutators (create, update, delete, reorder, patch controls) |
+| `layers_version` | `GET /api/v1/scenes/{id}/zones/{zone_id}/layers` | The five layer mutators (create, update, delete, reorder, patch controls) |
 
 Successful mutations echo the **advanced** version in both the ETag and the body.
 
@@ -302,7 +303,7 @@ property of the route, not of the body.
 | --- | --- |
 | `PATCH /api/v1/effects/{id}/controls` | `controls_version` |
 | Zone mutators under `/api/v1/scenes/{id}/zones…` and `/api/v1/scenes/{id}/unassigned-behavior` | `groups_revision` |
-| Layer mutators under `/api/v1/scenes/{id}/groups/{group_id}/layers…` | `layers_version` |
+| Layer mutators under `/api/v1/scenes/{id}/zones/{zone_id}/layers…` | `layers_version` |
 
 ### 5.3 The WebSocket origin rejection
 

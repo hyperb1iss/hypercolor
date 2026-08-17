@@ -896,27 +896,27 @@ Values are `"off"`, `"hold"`, or `{ "fallback": "<zone_uuid>" }`.
 Each zone (render group) stacks layers: effects, faces, and media composited
 with a blend mode and opacity.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 List the layers in a zone.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 Add a layer to a zone.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/order") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/order") %}
 Reorder the layers in a zone.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Update one layer (blend mode, opacity, transform, color, source binding).
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Delete a layer.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls") %}
 Patch the control values on one layer's source effect.
 {% end %}
 

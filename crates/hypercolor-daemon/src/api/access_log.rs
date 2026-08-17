@@ -124,7 +124,7 @@ fn quiet_success_request(method: &Method, path: &str) -> bool {
     let segments = path.split('/').collect::<Vec<_>>();
     matches!(
         segments.as_slice(),
-        ["", "api", "v1", "scenes", _, "groups", _, "layers"]
+        ["", "api", "v1", "scenes", _, "zones", _, "layers"]
     )
 }
 
@@ -271,7 +271,7 @@ mod tests {
             select_level(
                 200,
                 &Method::GET,
-                "/api/v1/scenes/scene-id/groups/group-id/layers"
+                "/api/v1/scenes/scene-id/zones/zone-id/layers"
             ),
             Level::DEBUG
         );
@@ -283,7 +283,7 @@ mod tests {
             select_level(
                 200,
                 &Method::DELETE,
-                "/api/v1/scenes/scene-id/groups/group-id/layers/layer-id"
+                "/api/v1/scenes/scene-id/zones/zone-id/layers/layer-id"
             ),
             Level::INFO
         );

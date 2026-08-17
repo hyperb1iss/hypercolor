@@ -71,7 +71,7 @@ use crate::api::{
             hypercolor_types::api::output::SetOutputPowerRequest,
             layers::BroadcastMediaLayerRequest,
             layers::BroadcastMediaLayerTarget,
-            layers::BroadcastMediaLayerGroupResponse,
+            layers::BroadcastMediaLayerZoneResponse,
             layers::BroadcastMediaLayerResponse,
             layers::CreateLayerRequest,
             layers::UpdateLayerRequest,
@@ -861,40 +861,40 @@ pub const ROUTES: &[RouteSpec] = &[
     )
     .with_request_body("BroadcastMediaLayerRequest", true),
     RouteSpec::get(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers",
         "list_layers",
         "scenes",
         "List zone layers",
     ),
     RouteSpec::post(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers",
         "create_layer",
         "scenes",
         "Create zone layer",
     )
     .with_request_body("CreateLayerRequest", true),
     RouteSpec::patch(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers/order",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers/order",
         "reorder_layers",
         "scenes",
         "Reorder zone layers",
     )
     .with_request_body("LayerOrderRequest", true),
     RouteSpec::put(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
         "update_layer",
         "scenes",
         "Update zone layer",
     )
     .with_request_body("UpdateLayerRequest", true),
     RouteSpec::delete(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
         "delete_layer",
         "scenes",
         "Delete zone layer",
     ),
     RouteSpec::patch(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
         "patch_layer_controls",
         "scenes",
         "Patch zone layer controls",

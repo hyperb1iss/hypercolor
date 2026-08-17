@@ -218,7 +218,7 @@ async fn install_scene(
         layers_version: 0,
     };
     let scene_id = scene.id;
-    let group_id = group.id;
+    let zone_id = group.id;
     scene.groups = vec![group];
 
     let mut manager = state.scene_manager.write().await;
@@ -226,7 +226,7 @@ async fn install_scene(
     manager
         .activate(&scene_id, None)
         .expect("scene should activate");
-    (scene_id, group_id)
+    (scene_id, zone_id)
 }
 
 async fn install_scene_with_two_groups(
@@ -448,7 +448,7 @@ async fn active_scene_broadcast_enforces_livestream_cap() {
         insert_stream_asset(&state, "camera-a.stream", "https://1.1.1.1/live-a.m3u8").await;
     let second_stream =
         insert_stream_asset(&state, "camera-b.stream", "https://8.8.8.8/live-b.m3u8").await;
-    let (scene_id, group_id) =
+    let (scene_id, zone_id) =
         install_scene(&state, effect.id, vec![media_layer(first_stream)]).await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -459,7 +459,7 @@ async fn active_scene_broadcast_enforces_livestream_cap() {
             format!("/api/v1/scenes/{scene_id}/layers/broadcast-media"),
             serde_json::json!({
                 "asset_id": second_stream,
-                "targets": [{ "group_id": group_id }]
+                "targets": [{ "zone_id": zone_id }]
             }),
         ),
     )
@@ -483,7 +483,7 @@ async fn inactive_scene_broadcast_skips_livestream_cap() {
         insert_stream_asset(&state, "camera-a.stream", "https://1.1.1.1/live-a.m3u8").await;
     let second_stream =
         insert_stream_asset(&state, "camera-b.stream", "https://8.8.8.8/live-b.m3u8").await;
-    let (target_scene, group_id) =
+    let (target_scene, zone_id) =
         install_scene(&state, effect.id, vec![media_layer(first_stream)]).await;
     // Installing a second scene activates it, leaving target_scene inactive.
     let _active = install_scene(&state, effect.id, Vec::new()).await;
@@ -496,7 +496,7 @@ async fn inactive_scene_broadcast_skips_livestream_cap() {
             format!("/api/v1/scenes/{target_scene}/layers/broadcast-media"),
             serde_json::json!({
                 "asset_id": second_stream,
-                "targets": [{ "group_id": group_id }]
+                "targets": [{ "zone_id": zone_id }]
             }),
         ),
     )
@@ -543,9 +543,9 @@ async fn activate_scene_downshifts_when_media_cost_exceeds_soft_cap() {
 async fn layer_crud_returns_etags_and_stale_versions() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "aurora").await;
-    let (scene_id, group_id) = install_scene(&state, effect.id, Vec::new()).await;
+    let (scene_id, zone_id) = install_scene(&state, effect.id, Vec::new()).await;
     let app = test_app_with_state(Arc::clone(&state));
-    let base_uri = format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers");
+    let base_uri = format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers");
     let mut events = state.event_bus.subscribe_all();
 
     let list_response = send(&app, empty_request("GET", base_uri.clone())).await;
@@ -585,7 +585,7 @@ async fn layer_crud_returns_etags_and_stale_versions() {
             group_id: event_group_id,
             layers_version: 1,
             kind: LayerStackChangeKind::Created,
-        } if event_scene_id == scene_id && event_group_id == group_id
+        } if event_scene_id == scene_id && event_group_id == zone_id
     ));
     let create_json = body_json(create_response).await;
     assert_eq!(create_json["data"]["layers_version"], 1);
@@ -631,7 +631,7 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
                 "opacity": 0.6,
                 "targets": [
                     {
-                        "group_id": primary_id,
+                        "zone_id": primary_id,
                         "expected_layers_version": 0,
                         "transform": {
                             "anchor": { "x": 0.25, "y": 0.5 },
@@ -641,7 +641,7 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
                         }
                     },
                     {
-                        "group_id": display_id,
+                        "zone_id": display_id,
                         "expected_layers_version": 0,
                         "transform": {
                             "anchor": { "x": 0.75, "y": 0.5 },
@@ -657,33 +657,33 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
-    let groups = json["data"]["groups"].as_array().expect("groups");
-    assert_eq!(groups.len(), 2);
-    assert_eq!(groups[0]["group_id"], primary_id.to_string());
-    assert_eq!(groups[0]["layers_version"], 1);
-    assert_eq!(groups[0]["items"].as_array().expect("items").len(), 2);
-    assert_eq!(groups[0]["items"][1]["source"]["type"], "media");
+    let zones = json["data"]["zones"].as_array().expect("zones");
+    assert_eq!(zones.len(), 2);
+    assert_eq!(zones[0]["zone_id"], primary_id.to_string());
+    assert_eq!(zones[0]["layers_version"], 1);
+    assert_eq!(zones[0]["items"].as_array().expect("items").len(), 2);
+    assert_eq!(zones[0]["items"][1]["source"]["type"], "media");
     assert_eq!(
-        groups[0]["items"][1]["source"]["asset_id"],
+        zones[0]["items"][1]["source"]["asset_id"],
         asset_id.to_string()
     );
-    assert_eq!(groups[0]["items"][1]["transform"]["anchor"]["x"], 0.25);
-    assert_eq!(groups[1]["group_id"], display_id.to_string());
-    assert_eq!(groups[1]["layers_version"], 1);
-    assert_eq!(groups[1]["items"][1]["transform"]["anchor"]["x"], 0.75);
+    assert_eq!(zones[0]["items"][1]["transform"]["anchor"]["x"], 0.25);
+    assert_eq!(zones[1]["zone_id"], display_id.to_string());
+    assert_eq!(zones[1]["layers_version"], 1);
+    assert_eq!(zones[1]["items"][1]["transform"]["anchor"]["x"], 0.75);
 
     let mut changed_groups = Vec::new();
     while changed_groups.len() < 2 {
         let event = events.recv().await.expect("layer event");
         if let HypercolorEvent::LayerStackChanged {
             scene_id: event_scene_id,
-            group_id,
+            group_id: zone_id,
             layers_version: 1,
             kind: LayerStackChangeKind::Created,
         } = event.event
         {
             assert_eq!(event_scene_id, scene_id);
-            changed_groups.push(group_id);
+            changed_groups.push(zone_id);
         }
     }
     assert!(changed_groups.contains(&primary_id));
@@ -699,7 +699,7 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
                 "asset_id": asset_id,
                 "targets": [
                     {
-                        "group_id": primary_id,
+                        "zone_id": primary_id,
                         "expected_layers_version": 0
                     }
                 ]
@@ -717,7 +717,7 @@ async fn scene_wide_media_broadcast_accepts_end_index_after_legacy_effect_layer(
     let effect = insert_effect(&state, "broadcast-legacy-index").await;
     let existing_asset = insert_mp4_asset(&state, "existing.mp4", 7).await;
     let broadcast_asset = insert_lottie_asset(&state).await;
-    let (scene_id, group_id) =
+    let (scene_id, zone_id) =
         install_scene(&state, effect.id, vec![media_layer(existing_asset)]).await;
     let app = test_app_with_state(Arc::clone(&state));
     let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
@@ -731,7 +731,7 @@ async fn scene_wide_media_broadcast_accepts_end_index_after_legacy_effect_layer(
                 "asset_id": broadcast_asset,
                 "targets": [
                     {
-                        "group_id": group_id,
+                        "zone_id": zone_id,
                         "index": 2,
                         "expected_layers_version": 0
                     }
@@ -743,7 +743,7 @@ async fn scene_wide_media_broadcast_accepts_end_index_after_legacy_effect_layer(
 
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
-    let items = json["data"]["groups"][0]["items"]
+    let items = json["data"]["zones"][0]["items"]
         .as_array()
         .expect("broadcast response should include items");
     assert_eq!(items.len(), 3);
@@ -765,7 +765,7 @@ async fn scene_wide_media_broadcast_rejects_missing_group() {
     let app = test_app_with_state(Arc::clone(&state));
     let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
 
-    let missing_group_id = ZoneId::new();
+    let missing_zone_id = ZoneId::new();
     let response = send(
         &app,
         json_request(
@@ -774,8 +774,8 @@ async fn scene_wide_media_broadcast_rejects_missing_group() {
             serde_json::json!({
                 "asset_id": asset_id,
                 "targets": [
-                    { "group_id": primary_id },
-                    { "group_id": missing_group_id }
+                    { "zone_id": primary_id },
+                    { "zone_id": missing_zone_id }
                 ]
             }),
         ),
@@ -812,9 +812,9 @@ async fn layer_reorder_rejects_bad_membership_and_returns_next_version() {
     };
     let base_id = base.id;
     let overlay_id = overlay.id;
-    let (scene_id, group_id) = install_scene(&state, effect.id, vec![base, overlay]).await;
+    let (scene_id, zone_id) = install_scene(&state, effect.id, vec![base, overlay]).await;
     let app = test_app_with_state(Arc::clone(&state));
-    let uri = format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/order");
+    let uri = format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers/order");
 
     let bad_response = send(
         &app,
@@ -858,9 +858,9 @@ async fn layer_controls_patch_uses_layers_version() {
     let effect = insert_effect(&state, "controls").await;
     let layer = effect_layer(effect.id, 0.5);
     let layer_id = layer.id;
-    let (scene_id, group_id) = install_scene(&state, effect.id, vec![layer]).await;
+    let (scene_id, zone_id) = install_scene(&state, effect.id, vec![layer]).await;
     let app = test_app_with_state(Arc::clone(&state));
-    let uri = format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}/controls");
+    let uri = format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers/{layer_id}/controls");
 
     let response = send(
         &app,

@@ -918,14 +918,14 @@ async fn update_zone_sends_if_match_revision() {
 #[tokio::test]
 async fn patch_zone_controls_targets_legacy_layer_without_if_match() {
     let router = Router::new().route(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
         patch(
-            |Path((scene_id, group_id, layer_id)): Path<(String, String, String)>,
+            |Path((scene_id, zone_id, layer_id)): Path<(String, String, String)>,
              headers: HeaderMap,
              Json(body): Json<Value>| async move {
                 assert_eq!(scene_id, "scene-1");
                 // Legacy layer id == zone id
-                assert_eq!(group_id, ZONE_B);
+                assert_eq!(zone_id, ZONE_B);
                 assert_eq!(layer_id, ZONE_B);
                 assert!(headers.get(header::IF_MATCH).is_none());
                 assert_eq!(body, json!({ "controls": { "speed": 0.9 } }));

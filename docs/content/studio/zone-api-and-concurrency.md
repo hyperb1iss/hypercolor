@@ -119,28 +119,28 @@ Layers are scoped to a zone via the `groups` path segment (the daemon's render
 group is the zone). The layer stack carries its own version, `layers_version`,
 independent of `groups_revision`.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 List the zone's layer stack with its current `layers_version`.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 Add a layer. `If-Match` enforces `layers_version`. An optional `index` query
 sets the insertion position.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Replace a layer. `If-Match` enforces `layers_version`.
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Remove a layer. `If-Match` enforces `layers_version`.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/order") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/order") %}
 Reorder the stack with an exact permutation of layer ids.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls") %}
 Patch an effect layer's live controls.
 {% end %}
 
@@ -297,7 +297,7 @@ before any mutation runs.
 | `PUT /zones/{id}/layout` | `groups_revision` | Placement-only; see below. |
 | `POST/DELETE /zones/{id}/devices...` | `groups_revision` | Reassigning or removing an output. |
 | `PATCH /unassigned-behavior` | `groups_revision` | Scene-level policy. |
-| `POST/PUT/DELETE/PATCH /groups/{id}/layers...` | `layers_version` | Per-zone stack version. |
+| `POST/PUT/DELETE/PATCH /zones/{id}/layers...` | `layers_version` | Per-zone stack version. |
 | `POST /layers/broadcast-media` | per-target `expected_layers_version` | Each fan-out target versions independently; a target may pass `null` to apply unconditionally. |
 
 {% callout(type="tip") %}

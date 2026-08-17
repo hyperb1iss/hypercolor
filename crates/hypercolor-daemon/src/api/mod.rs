@@ -1322,19 +1322,19 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(layers::broadcast_media_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers",
+            "/scenes/{id}/zones/{zone_id}/layers",
             axum::routing::get(layers::list_layers).post(layers::create_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/order",
+            "/scenes/{id}/zones/{zone_id}/layers/order",
             axum::routing::patch(layers::reorder_layers),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
             axum::routing::put(layers::update_layer).delete(layers::delete_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
             axum::routing::patch(layers::patch_layer_controls),
         )
         // ── Profiles ─────────────────────────────────────────────────

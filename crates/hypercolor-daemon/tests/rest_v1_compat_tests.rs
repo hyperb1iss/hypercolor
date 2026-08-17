@@ -743,15 +743,58 @@ async fn legacy_effects_current_binding_and_reset_paths_stay_routed() {
     assert_envelope(&body_json(reset).await);
 }
 
+/// The wave C1b renames deleted their old paths outright. A rename that
+/// left an alias or a redirect behind would still answer here, so this
+/// asserts the exact absence rather than the new routes' presence.
 #[tokio::test]
-async fn legacy_scene_groups_layer_paths_stay_routed() {
+async fn renamed_routes_leave_nothing_behind() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
-    let group_id = primary_zone_id(&app).await;
+    let zone_id = primary_zone_id(&app).await;
 
-    // Layers are addressed through `/groups/`, while zone CRUD on the very
-    // same object is addressed through `/zones/`. Both spellings are v1.
-    let base = format!("/api/v1/scenes/default/groups/{group_id}/layers");
+    let retired = [
+        json_request(
+            "PATCH",
+            "/api/v1/effects/current/controls",
+            &json!({ "controls": { "speed": 0.5 } }),
+        ),
+        json_request(
+            "PUT",
+            "/api/v1/effects/current/controls/speed/binding",
+            &json!({ "sensor": "audio.level" }),
+        ),
+        empty_request("POST", "/api/v1/effects/current/reset"),
+        get(&format!(
+            "/api/v1/scenes/default/groups/{zone_id}/layers"
+        )),
+        json_request("POST", "/api/v1/config/get", &json!({ "key": "daemon.port" })),
+        json_request(
+            "POST",
+            "/api/v1/config/set",
+            &json!({ "key": "daemon.port", "value": 9420 }),
+        ),
+    ];
+
+    for request in retired {
+        let uri = request.uri().to_string();
+        let response = send(&app, request).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{uri} must be gone, not aliased or redirected"
+        );
+    }
+}
+
+#[tokio::test]
+async fn scene_zone_layer_paths_stay_routed() {
+    let (state, _tmp) = isolated_state();
+    let app = test_app(&state);
+    let zone_id = primary_zone_id(&app).await;
+
+    // Layer stacks and zone CRUD address the same object through the same
+    // `/zones/` segment.
+    let base = format!("/api/v1/scenes/default/zones/{zone_id}/layers");
     let listed = send(&app, get(&base)).await;
     assert_eq!(listed.status(), StatusCode::OK);
     assert_eq!(etag(&listed), "\"0\"");
@@ -984,8 +1027,8 @@ async fn zone_precondition_failure_renders_the_canonical_412() {
 async fn layer_precondition_failure_renders_the_canonical_412() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
-    let group_id = primary_zone_id(&app).await;
-    let base = format!("/api/v1/scenes/default/groups/{group_id}/layers");
+    let zone_id = primary_zone_id(&app).await;
+    let base = format!("/api/v1/scenes/default/zones/{zone_id}/layers");
     let body = json!({
         "source": { "type": "color_fill", "rgba": [1.0, 0.0, 0.5, 1.0] },
         "blend": "alpha",

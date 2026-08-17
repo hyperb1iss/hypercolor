@@ -359,7 +359,7 @@ impl DaemonClient {
     ) -> Result<()> {
         let zone = path_segment(zone_id);
         let url = format!(
-            "{}/api/v1/scenes/{}/groups/{zone}/layers/{zone}/controls",
+            "{}/api/v1/scenes/{}/zones/{zone}/layers/{zone}/controls",
             self.base_url,
             path_segment(scene_id),
         );

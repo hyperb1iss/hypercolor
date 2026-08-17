@@ -13813,7 +13813,7 @@ async fn active_scene_syncs_empty_screen_surface_for_display_device() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+                    "/api/v1/scenes/{scene_id}/zones/{group_id}/layers"
                 ))
                 .body(Body::empty())
                 .expect("failed to build request"),
@@ -13868,7 +13868,7 @@ async fn display_face_layer_stack_includes_legacy_face_beside_media() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+                    "/api/v1/scenes/{scene_id}/zones/{group_id}/layers"
                 ))
                 .body(Body::empty())
                 .expect("failed to build request"),
@@ -14129,7 +14129,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+                    "/api/v1/scenes/{scene_id}/zones/{group_id}/layers"
                 ))
                 .body(Body::empty())
                 .expect("failed to build request"),

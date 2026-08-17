@@ -1300,12 +1300,12 @@ Status codes:
 ### 11.2 Layer Endpoints (New)
 
 ```
-GET    /api/v1/scenes/{id}/groups/{group_id}/layers
-POST   /api/v1/scenes/{id}/groups/{group_id}/layers
+GET    /api/v1/scenes/{id}/zones/{zone_id}/layers
+POST   /api/v1/scenes/{id}/zones/{zone_id}/layers
 POST   /api/v1/scenes/{id}/layers/broadcast-media
-PUT    /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}
-DELETE /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}
-PATCH  /api/v1/scenes/{id}/groups/{group_id}/layers/order
+PUT    /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}
+DELETE /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}
+PATCH  /api/v1/scenes/{id}/zones/{zone_id}/layers/order
 ```
 
 The PATCH `order` endpoint accepts `{ "layer_ids": [...] }` and reorders
@@ -1359,7 +1359,7 @@ layer in the active group. For multi-layer scenes, callers must use the
 layer-scoped endpoint:
 
 ```
-PATCH /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls
+PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls
 ```
 
 The request body is:
