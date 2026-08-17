@@ -125,9 +125,17 @@ impl SubscriptionState {
             // Declaration order, so a request carrying two bad stanzas
             // always reports the same one.
             for topic in TopicId::ALL.iter().copied() {
-                if let Some(stanza) = patch.get(topic.as_str()) {
-                    next.apply_patch(topic, stanza)?;
+                let Some(stanza) = patch.get(topic.as_str()) else {
+                    continue;
+                };
+                // A null stanza on a topic that takes config has always
+                // meant "no patch" on this wire, and clients still send
+                // it. Configless topics keep going to the vtable, which
+                // refuses null on apply.
+                if stanza.is_null() && topic.vtable().configurable {
+                    continue;
                 }
+                next.apply_patch(topic, stanza)?;
             }
         }
 

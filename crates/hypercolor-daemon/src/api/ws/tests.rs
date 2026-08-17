@@ -2518,6 +2518,20 @@ fn config_for_a_configless_topic_is_refused_the_same_way_in_both_phases() {
 }
 
 #[test]
+fn a_null_stanza_leaves_a_configurable_topic_alone() {
+    let state = SubscriptionState::default()
+        .subscribed(
+            &["metrics"],
+            serde_json::json!({"metrics": {"interval_ms": 250}}),
+        )
+        .expect("metrics subscribe applies")
+        .subscribed(&["metrics"], serde_json::json!({"metrics": null}))
+        .expect("a null stanza is not a patch");
+
+    assert_eq!(state.config_projection()["metrics"]["interval_ms"], 250);
+}
+
+#[test]
 fn config_for_an_unrecognized_channel_is_ignored() {
     let state = SubscriptionState::default()
         .subscribed(&["metrics"], serde_json::json!({"lasers": {"fps": 1}}))
