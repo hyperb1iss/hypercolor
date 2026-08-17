@@ -6,64 +6,63 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.error_code import ErrorCode
-from ..types import UNSET, Unset
-
-T = TypeVar("T", bound="ErrorBody")
+T = TypeVar("T", bound="ResponseMeta")
 
 
 @_attrs_define
-class ErrorBody:
-    """Error detail payload.
+class ResponseMeta:
+    """Response metadata included in every envelope.
 
-    Attributes:
-        code (ErrorCode): Machine-readable error codes matching the spec.
-        message (str): Human-readable description.
-        details (Any | Unset): Additional context (validation errors, conflicting IDs, etc.).
+    Field-for-field the wire shape v1 already emits, so canonical and
+    legacy envelopes stay mergeable in clients.
+
+        Attributes:
+            api_version (str): API version string.
+            request_id (str): Per-request correlation ID, prefixed `req_`.
+            timestamp (str): ISO 8601 UTC timestamp of response generation.
     """
 
-    code: ErrorCode
-    message: str
-    details: Any | Unset = UNSET
+    api_version: str
+    request_id: str
+    timestamp: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        code = self.code.value
+        api_version = self.api_version
 
-        message = self.message
+        request_id = self.request_id
 
-        details = self.details
+        timestamp = self.timestamp
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "code": code,
-                "message": message,
+                "api_version": api_version,
+                "request_id": request_id,
+                "timestamp": timestamp,
             }
         )
-        if details is not UNSET:
-            field_dict["details"] = details
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        code = ErrorCode(d.pop("code"))
+        api_version = d.pop("api_version")
 
-        message = d.pop("message")
+        request_id = d.pop("request_id")
 
-        details = d.pop("details", UNSET)
+        timestamp = d.pop("timestamp")
 
-        error_body = cls(
-            code=code,
-            message=message,
-            details=details,
+        response_meta = cls(
+            api_version=api_version,
+            request_id=request_id,
+            timestamp=timestamp,
         )
 
-        error_body.additional_properties = d
-        return error_body
+        response_meta.additional_properties = d
+        return response_meta
 
     @property
     def additional_keys(self) -> list[str]:

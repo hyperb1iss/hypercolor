@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::scene::SceneId;
@@ -24,9 +24,10 @@ use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::{build_runtime_session_snapshot, persist_layout_auto_exclusions, persist_layouts};
 use crate::discovery;
+use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
 use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
 use crate::runtime_state::RuntimeSessionError;
@@ -205,7 +206,7 @@ pub async fn list_layouts(
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
-        return ApiError::validation("limit must be between 1 and 200");
+        return DomainError::validation("limit must be between 1 and 200").into_response();
     }
     let offset = query.offset.unwrap_or(0);
 
@@ -250,9 +251,10 @@ pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     let layouts = state.layouts.read().await;
     let key = match resolve_layout_key(&layouts, &id) {
         Ok(Some(key)) => key,
-        Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+        Ok(None) => return DomainError::not_found(ResourceKind::Layout, &id).into_response(),
         Err(ResolveLayoutError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Layout name is ambiguous: {name}"))
+                .into_response();
         }
     };
 
@@ -280,7 +282,7 @@ pub async fn create_layout(
 async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest) -> Response {
     let normalized_name = match normalize_layout_name(&body.name) {
         Ok(name) => name,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
     #[cfg(feature = "persistence-test-hooks")]
     state
@@ -300,7 +302,7 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
     let canvas_width = body.canvas_width.unwrap_or(default_canvas_width);
     let canvas_height = body.canvas_height.unwrap_or(default_canvas_height);
     if let Err(error) = validate_canvas_dimensions(canvas_width, canvas_height) {
-        return ApiError::validation(error);
+        return DomainError::validation(error).into_response();
     }
 
     let mut layouts = state.layouts.write().await;
@@ -308,7 +310,8 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
         .values()
         .any(|layout| layout.name.eq_ignore_ascii_case(&normalized_name))
     {
-        return ApiError::conflict(format!("Layout already exists: {normalized_name}"));
+        return DomainError::conflict(format!("Layout already exists: {normalized_name}"))
+            .into_response();
     }
 
     #[cfg(feature = "persistence-test-hooks")]
@@ -377,7 +380,7 @@ async fn update_layout_workflow(
     if let Some(zones) = &body.zones {
         for output in zones {
             if let Err(error) = validate_output_sampling_radii(output) {
-                return ApiError::validation(error);
+                return DomainError::validation(error).into_response();
             }
         }
     }
@@ -399,9 +402,10 @@ async fn update_layout_workflow(
     let mut layouts = state.layouts.write().await;
     let key = match resolve_layout_key(&layouts, &id) {
         Ok(Some(key)) => key,
-        Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+        Ok(None) => return DomainError::not_found(ResourceKind::Layout, &id).into_response(),
         Err(ResolveLayoutError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Layout name is ambiguous: {name}"))
+                .into_response();
         }
     };
 
@@ -426,7 +430,7 @@ async fn update_layout_workflow(
     if let Some(name) = name {
         let normalized_name = match normalize_layout_name(&name) {
             Ok(name) => name,
-            Err(error) => return ApiError::validation(error),
+            Err(error) => return DomainError::validation(error).into_response(),
         };
         updated.name = normalized_name;
     }
@@ -439,14 +443,14 @@ async fn update_layout_workflow(
         updated.canvas_height = h;
     }
     if let Err(error) = validate_canvas_dimensions(updated.canvas_width, updated.canvas_height) {
-        return ApiError::validation(error);
+        return DomainError::validation(error).into_response();
     }
 
     if let Some(zones) = zones {
         updated.zones = zones;
     }
     if let Err(error) = SpatialEngine::try_new(updated.clone()) {
-        return ApiError::validation(error.to_string());
+        return DomainError::validation(error.to_string()).into_response();
     }
 
     let summary = LayoutSummary {
@@ -511,9 +515,10 @@ async fn apply_layout_workflow(state: Arc<AppState>, id: String) -> Response {
         let layouts = state.layouts.read().await;
         let key = match resolve_layout_key(&layouts, &id) {
             Ok(Some(key)) => key,
-            Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+            Ok(None) => return DomainError::not_found(ResourceKind::Layout, &id).into_response(),
             Err(ResolveLayoutError::AmbiguousName(name)) => {
-                return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+                return DomainError::conflict(format!("Layout name is ambiguous: {name}"))
+                    .into_response();
             }
         };
         layouts
@@ -550,10 +555,10 @@ pub async fn preview_layout(
 
 async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) -> Response {
     if let Err(error) = validate_canvas_dimensions(layout.canvas_width, layout.canvas_height) {
-        return ApiError::validation(error);
+        return DomainError::validation(error).into_response();
     }
     if let Err(error) = validate_layout_sampling_radii(&layout) {
-        return ApiError::validation(error);
+        return DomainError::validation(error).into_response();
     }
 
     #[cfg(feature = "persistence-test-hooks")]
@@ -631,9 +636,10 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     let mut layouts = state.layouts.write().await;
     let key = match resolve_layout_key(&layouts, &id) {
         Ok(Some(key)) => key,
-        Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+        Ok(None) => return DomainError::not_found(ResourceKind::Layout, &id).into_response(),
         Err(ResolveLayoutError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Layout name is ambiguous: {name}"))
+                .into_response();
         }
     };
 
@@ -748,7 +754,7 @@ fn layout_store_persistence_error_response(
         message.push_str("; ");
         message.push_str(&rollback_error);
     }
-    ApiError::internal(message)
+    DomainError::Internal(anyhow::anyhow!(message)).into_response()
 }
 
 async fn admit_persisted_layout_update_under_guard(
@@ -849,13 +855,17 @@ fn layout_update_error_response(error: LayoutUpdateError) -> Response {
         LayoutUpdateError::SpatialPlan(_)
         | LayoutUpdateError::Transaction(LayoutTransactionRejection::PreparationFailed {
             ..
-        }) => ApiError::validation(error.to_string()),
+        }) => DomainError::validation(error.to_string()).into_response(),
         LayoutUpdateError::Transaction(LayoutTransactionRejection::Superseded)
-        | LayoutUpdateError::PersistenceSuperseded => ApiError::conflict(error.to_string()),
+        | LayoutUpdateError::PersistenceSuperseded => {
+            DomainError::conflict(error.to_string()).into_response()
+        }
         LayoutUpdateError::Transaction(LayoutTransactionRejection::RendererStopped)
         | LayoutUpdateError::Coordinator(_)
         | LayoutUpdateError::Persistence(_)
-        | LayoutUpdateError::PersistenceRollback(_) => ApiError::internal(error.to_string()),
+        | LayoutUpdateError::PersistenceRollback(_) => {
+            DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response()
+        }
     }
 }
 

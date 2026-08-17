@@ -605,7 +605,8 @@ async fn layer_crud_returns_etags_and_stale_versions() {
     assert_eq!(stale_response.status(), StatusCode::PRECONDITION_FAILED);
     assert_eq!(response_etag(&stale_response), "\"1\"");
     let stale_json = body_json(stale_response).await;
-    assert_eq!(stale_json["current"], 1);
+    assert_eq!(stale_json["error"]["code"], "precondition_failed");
+    assert_eq!(stale_json["error"]["details"]["current"], 1);
 }
 
 #[tokio::test]
@@ -787,7 +788,7 @@ async fn scene_wide_media_broadcast_rejects_missing_group() {
         json["error"]["message"]
             .as_str()
             .expect("message should be a string")
-            .contains("Zone not found")
+            .contains("zone not found")
     );
 }
 

@@ -8,14 +8,20 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::asset::{
-    AssetEvent, AssetLibraryError, AssetTypeHint, AssetUploadOptions, MediaAssetRecord,
+    AssetEvent, AssetLibraryError, AssetLibraryLimits, AssetTypeHint, AssetUploadOptions,
+    MediaAssetRecord,
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
+
+/// Multipart framing the upload route accepts on top of the asset bytes
+/// themselves.
+const ASSET_UPLOAD_FRAMING_ALLOWANCE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct AssetListResponse {
@@ -64,7 +70,7 @@ pub async fn list_assets(State(state): State<Arc<AppState>>) -> Response {
 pub async fn get_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetId>) -> Response {
     let library = state.asset_library.read().await;
     let Some(record) = library.get(id).cloned() else {
-        return ApiError::not_found(format!("Asset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Asset, id).into_response();
     };
     ApiResponse::ok(record)
 }
@@ -76,7 +82,7 @@ pub async fn upload_asset(
 ) -> Response {
     let parsed = match parse_upload(multipart, query.r#type.as_deref()).await {
         Ok(parsed) => parsed,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let mut options = AssetUploadOptions::new(parsed.name);
     options.tags = parsed.tags;
@@ -112,7 +118,7 @@ pub async fn update_asset(
         let mut library = state.asset_library.write().await;
         match library.update_metadata(id, body.name, body.tags) {
             Ok(Some(update)) => update,
-            Ok(None) => return ApiError::not_found(format!("Asset not found: {id}")),
+            Ok(None) => return DomainError::not_found(ResourceKind::Asset, id).into_response(),
             Err(error) => return asset_error_response(error),
         }
     };
@@ -128,7 +134,7 @@ pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<Ass
         let mut library = state.asset_library.write().await;
         match library.remove(id) {
             Ok(Some(event)) => event,
-            Ok(None) => return ApiError::not_found(format!("Asset not found: {id}")),
+            Ok(None) => return DomainError::not_found(ResourceKind::Asset, id).into_response(),
             Err(error) => return asset_error_response(error),
         }
     };
@@ -144,7 +150,7 @@ pub async fn get_asset_blob(
     let (record, path) = {
         let library = state.asset_library.read().await;
         let Some(record) = library.get(id).cloned() else {
-            return ApiError::not_found(format!("Asset not found: {id}"));
+            return DomainError::not_found(ResourceKind::Asset, id).into_response();
         };
         let path = match library.object_path_for_hash(&record.hash_sha256) {
             Ok(path) => path,
@@ -160,9 +166,10 @@ pub async fn get_asset_blob(
             Some(HeaderValue::from_static("attachment")),
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            ApiError::not_found(format!("Asset blob not found: {id}"))
+            DomainError::not_found(ResourceKind::Asset, format!("{id}/blob")).into_response()
         }
-        Err(error) => ApiError::internal(format!("Failed to read asset blob: {error}")),
+        Err(error) => DomainError::Internal(anyhow::anyhow!("Failed to read asset blob: {error}"))
+            .into_response(),
     }
 }
 
@@ -173,7 +180,7 @@ pub async fn get_asset_thumbnail(
     let path = {
         let library = state.asset_library.read().await;
         if !library.contains(id) {
-            return ApiError::not_found(format!("Asset not found: {id}"));
+            return DomainError::not_found(ResourceKind::Asset, id).into_response();
         }
         library.thumbnail_path(id)
     };
@@ -181,21 +188,24 @@ pub async fn get_asset_thumbnail(
     match tokio::fs::read(&path).await {
         Ok(bytes) => binary_response("image/webp".to_owned(), bytes, None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            ApiError::not_found(format!("Asset thumbnail not found: {id}"))
+            DomainError::not_found(ResourceKind::Asset, format!("{id}/thumbnail")).into_response()
         }
-        Err(error) => ApiError::internal(format!("Failed to read asset thumbnail: {error}")),
+        Err(error) => {
+            DomainError::Internal(anyhow::anyhow!("Failed to read asset thumbnail: {error}"))
+                .into_response()
+        }
     }
 }
 
 async fn parse_upload(
     mut multipart: Multipart,
     query_type_hint: Option<&str>,
-) -> Result<ParsedUpload, Response> {
+) -> Result<ParsedUpload, DomainError> {
     let mut file_bytes = None;
     let mut file_name = None;
     let mut display_name = None;
     let mut tags = Vec::new();
-    let mut type_hint = parse_type_hint(query_type_hint).map_err(ApiError::bad_request)?;
+    let mut type_hint = parse_type_hint(query_type_hint).map_err(DomainError::malformed)?;
 
     while let Some(field) = multipart
         .next_field()
@@ -220,20 +230,23 @@ async fn parse_upload(
                 let raw = field.text().await.map_err(|error| {
                     multipart_error_response("Failed to read asset tags", error)
                 })?;
-                tags = parse_tags(&raw).map_err(ApiError::bad_request)?;
+                tags = parse_tags(&raw).map_err(DomainError::malformed)?;
             }
             Some("type") => {
                 let raw = field.text().await.map_err(|error| {
                     multipart_error_response("Failed to read asset type hint", error)
                 })?;
-                type_hint = parse_type_hint(Some(&raw)).map_err(ApiError::bad_request)?;
+                type_hint = parse_type_hint(Some(&raw)).map_err(DomainError::malformed)?;
             }
             _ => {}
         }
     }
 
     let Some(bytes) = file_bytes else {
-        return Err(ApiError::bad_request(
+        // A multipart body missing a required part is structurally
+        // incomplete, so it reads the same here as it does on the effect
+        // upload route.
+        return Err(DomainError::malformed(
             "Missing multipart file field named \"file\".",
         ));
     };
@@ -250,13 +263,21 @@ async fn parse_upload(
     })
 }
 
-fn multipart_error_response(context: &str, error: MultipartError) -> Response {
-    let message = format!("{context}: {error}");
+fn multipart_error_response(context: &str, error: MultipartError) -> DomainError {
     if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        ApiError::payload_too_large(message)
-    } else {
-        ApiError::bad_request(message)
+        return DomainError::PayloadTooLarge {
+            limit_bytes: asset_upload_body_limit_bytes(),
+        };
     }
+    DomainError::malformed(format!("{context}: {error}"))
+}
+
+/// The byte ceiling the asset upload route enforces: the asset library's
+/// hard per-file cap plus the multipart framing allowance.
+pub(crate) fn asset_upload_body_limit_bytes() -> u64 {
+    AssetLibraryLimits::default()
+        .hard_file_cap_bytes
+        .saturating_add(ASSET_UPLOAD_FRAMING_ALLOWANCE_BYTES)
 }
 
 fn parse_type_hint(raw: Option<&str>) -> Result<Option<AssetTypeHint>, String> {
@@ -287,19 +308,20 @@ fn parse_tags(raw: &str) -> Result<Vec<String>, String> {
 
 fn asset_error_response(error: AssetLibraryError) -> Response {
     match error {
-        AssetLibraryError::HardCapExceeded {
-            byte_len,
-            hard_cap_bytes,
-        } => ApiError::payload_too_large(format!(
-            "Uploaded asset exceeds the hard cap ({byte_len} bytes > {hard_cap_bytes} bytes)."
-        )),
+        AssetLibraryError::HardCapExceeded { hard_cap_bytes, .. } => DomainError::PayloadTooLarge {
+            limit_bytes: hard_cap_bytes,
+        }
+        .into_response(),
         AssetLibraryError::UnsupportedMediaType { reason } => {
-            ApiError::unsupported_media_type(reason)
+            DomainError::unsupported_media_type(reason).into_response()
         }
         AssetLibraryError::DecodeImage(error) => {
-            ApiError::validation(format!("Failed to decode image asset: {error}"))
+            DomainError::validation(format!("Failed to decode image asset: {error}"))
+                .into_response()
         }
-        AssetLibraryError::InvalidHashPath { .. } => ApiError::internal(error.to_string()),
+        AssetLibraryError::InvalidHashPath { .. } => {
+            DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response()
+        }
         AssetLibraryError::CreateDir { .. }
         | AssetLibraryError::Read { .. }
         | AssetLibraryError::Write { .. }
@@ -307,8 +329,12 @@ fn asset_error_response(error: AssetLibraryError) -> Response {
         | AssetLibraryError::Sync { .. }
         | AssetLibraryError::ParseIndex { .. }
         | AssetLibraryError::SerializeIndex(_)
-        | AssetLibraryError::EncodeThumbnail { .. } => ApiError::internal(error.to_string()),
-        AssetLibraryError::NotFound(id) => ApiError::not_found(format!("Asset not found: {id}")),
+        | AssetLibraryError::EncodeThumbnail { .. } => {
+            DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response()
+        }
+        AssetLibraryError::NotFound(id) => {
+            DomainError::not_found(ResourceKind::Asset, id).into_response()
+        }
     }
 }
 

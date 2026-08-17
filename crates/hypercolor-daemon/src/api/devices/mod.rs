@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use tracing::{debug, warn};
 
@@ -30,7 +30,7 @@ use hypercolor_types::device::{
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
+use crate::api::envelope::ApiResponse;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
@@ -112,7 +112,7 @@ enum ResolveDeviceError {
         (
             status = 422,
             description = "Query validation failed",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "devices"
@@ -123,14 +123,14 @@ pub async fn list_devices(
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
-        return ApiError::validation("limit must be between 1 and 200");
+        return DomainError::validation("limit must be between 1 and 200").into_response();
     }
     let offset = query.offset.unwrap_or(0);
 
     let devices = state.device_registry.list().await;
     let status_filter = match parse_status_filter(query.status.as_deref()) {
         Ok(filter) => filter,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
     let backend_filter = query
         .backend_id
@@ -246,7 +246,7 @@ pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Respons
         (
             status = 404,
             description = "Device was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "devices"
@@ -254,11 +254,11 @@ pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Respons
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
@@ -288,20 +288,21 @@ pub async fn update_device(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     if body.name.is_none() && body.enabled.is_none() && body.brightness.is_none() {
-        return ApiError::validation(
+        return DomainError::validation(
             "At least one field must be provided: name, enabled, or brightness",
-        );
+        )
+        .into_response();
     }
 
     let normalized_name = match body.name {
         Some(name) => {
             let trimmed = name.trim();
             if trimmed.is_empty() {
-                return ApiError::validation("Device name must not be empty");
+                return DomainError::validation("Device name must not be empty").into_response();
             }
             Some(trimmed.to_owned())
         }
@@ -309,7 +310,10 @@ pub async fn update_device(
     };
     let normalized_brightness = match body.brightness {
         Some(brightness) if brightness <= 100 => Some(percent_to_brightness(brightness)),
-        Some(_) => return ApiError::validation("Device brightness must be between 0 and 100"),
+        Some(_) => {
+            return DomainError::validation("Device brightness must be between 0 and 100")
+                .into_response();
+        }
         None => None,
     };
 
@@ -319,9 +323,10 @@ pub async fn update_device(
             Ok(core_discovery::UserEnabledStateResult::Applied) => true,
             Ok(core_discovery::UserEnabledStateResult::MissingLifecycle) => false,
             Err(error) => {
-                return ApiError::internal(format!(
+                return DomainError::Internal(anyhow::anyhow!(
                     "Failed to update device state for {id}: {error}"
-                ));
+                ))
+                .into_response();
             }
         }
     } else {
@@ -338,7 +343,7 @@ pub async fn update_device(
         )
         .await
     else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     if !enabled_handled_by_lifecycle && let Some(enabled) = body.enabled {
@@ -358,7 +363,10 @@ pub async fn update_device(
 
     if let Err(error) = persist_device_settings_for(&state, device_id, &updated.user_settings).await
     {
-        return ApiError::internal(format!("Failed to persist device settings: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist device settings: {error}"
+        ))
+        .into_response();
     }
     sync_device_output_brightness(&state, device_id, &updated.user_settings).await;
     publish_device_settings_changed(&state, device_id, &updated.user_settings);
@@ -392,11 +400,11 @@ pub async fn update_device(
 pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let driver_id = tracked.info.driver_id().to_owned();
     let removed = if let Some(driver) = state.driver_registry.get(&driver_id)
@@ -417,9 +425,10 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
         if let Err(error) = inventory.update_driver_guarded(&guard, &driver_id, |current| {
             provider.forget_device(current, &device)
         }) {
-            return ApiError::internal(format!(
+            return DomainError::Internal(anyhow::anyhow!(
                 "Failed to forget {driver_id} discovery inventory: {error}"
-            ));
+            ))
+            .into_response();
         }
         let removed = state.device_registry.remove(&device_id).await;
         drop(guard);
@@ -429,7 +438,7 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     };
 
     if removed.is_none() {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     }
     crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
 
@@ -447,21 +456,24 @@ pub async fn identify_device(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let duration_ms = body.as_ref().and_then(|b| b.duration_ms).unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
-        return ApiError::validation("duration_ms must be between 1 and 120000");
+        return DomainError::validation("duration_ms must be between 1 and 120000").into_response();
     }
     let requested_color = match body.as_ref().and_then(|b| b.color.as_deref()) {
         Some(color) => match Rgb::from_hex(color.trim()) {
             Ok(color) => Some(color),
-            Err(_) => return ApiError::validation("color must be a hex value (RRGGBB or RGB)"),
+            Err(_) => {
+                return DomainError::validation("color must be a hex value (RRGGBB or RGB)")
+                    .into_response();
+            }
         },
         None => None,
     };
@@ -473,10 +485,11 @@ pub async fn identify_device(
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
     let led_count = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if led_count == 0 {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Device has no LEDs to identify: {}",
             tracked.info.name
-        ));
+        ))
+        .into_response();
     }
 
     let backend_id = resolved_backend_id(&tracked.info);
@@ -489,7 +502,7 @@ pub async fn identify_device(
             .await
         {
             Ok(prepared) => prepared,
-            Err(error) => return into_v1_response(error),
+            Err(error) => return error.into_response(),
         };
     debug!(
         backend_id = %backend_id,
@@ -516,7 +529,7 @@ pub async fn identify_device(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return into_v1_response(error);
+        return error.into_response();
     }
 
     tracing::info!(
@@ -562,34 +575,38 @@ pub async fn identify_zone(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let zone_index = match resolve_zone_index(&tracked.info, &zone_id) {
         Ok(index) => index,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let total_leds = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if total_leds == 0 {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Device has no LEDs to identify: {}",
             tracked.info.name
-        ));
+        ))
+        .into_response();
     }
 
     let duration_ms = body.as_ref().and_then(|b| b.duration_ms).unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
-        return ApiError::validation("duration_ms must be between 1 and 120000");
+        return DomainError::validation("duration_ms must be between 1 and 120000").into_response();
     }
     let requested_color = match body.as_ref().and_then(|b| b.color.as_deref()) {
         Some(color) => match Rgb::from_hex(color.trim()) {
             Ok(color) => Some(color),
-            Err(_) => return ApiError::validation("color must be a hex value (RRGGBB or RGB)"),
+            Err(_) => {
+                return DomainError::validation("color must be a hex value (RRGGBB or RGB)")
+                    .into_response();
+            }
         },
         None => None,
     };
@@ -609,7 +626,7 @@ pub async fn identify_zone(
             .await
         {
             Ok(prepared) => prepared,
-            Err(error) => return into_v1_response(error),
+            Err(error) => return error.into_response(),
         };
 
     if let Err(error) = start_identify_output(
@@ -625,7 +642,7 @@ pub async fn identify_zone(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return into_v1_response(error);
+        return error.into_response();
     }
 
     let zone_name = tracked.info.zones[zone_index].name.clone();
@@ -673,19 +690,20 @@ pub async fn identify_attachment(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let total_leds = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if total_leds == 0 {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Device has no LEDs to identify: {}",
             tracked.info.name
-        ));
+        ))
+        .into_response();
     }
 
     let duration_ms = body
@@ -693,12 +711,15 @@ pub async fn identify_attachment(
         .and_then(|b| b.base.duration_ms)
         .unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
-        return ApiError::validation("duration_ms must be between 1 and 120000");
+        return DomainError::validation("duration_ms must be between 1 and 120000").into_response();
     }
     let requested_color = match body.as_ref().and_then(|b| b.base.color.as_deref()) {
         Some(color) => match Rgb::from_hex(color.trim()) {
             Ok(color) => Some(color),
-            Err(_) => return ApiError::validation("color must be a hex value (RRGGBB or RGB)"),
+            Err(_) => {
+                return DomainError::validation("color must be a hex value (RRGGBB or RGB)")
+                    .into_response();
+            }
         },
         None => None,
     };
@@ -728,7 +749,7 @@ pub async fn identify_attachment(
             identify_color,
         ) {
             Ok(frame) => frame,
-            Err(msg) => return ApiError::not_found(msg),
+            Err(error) => return error.into_response(),
         }
     };
 
@@ -739,7 +760,7 @@ pub async fn identify_attachment(
             .await
         {
             Ok(prepared) => prepared,
-            Err(error) => return into_v1_response(error),
+            Err(error) => return error.into_response(),
         };
 
     if let Err(error) = start_identify_output(
@@ -755,7 +776,7 @@ pub async fn identify_attachment(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return into_v1_response(error);
+        return error.into_response();
     }
 
     tracing::info!(
@@ -1438,11 +1459,7 @@ fn identify_color_channels(color: Rgb) -> [u8; 3] {
 // ── Identify helpers ─────────────────────────────────────────────────────
 
 /// Resolve a zone specifier (`"zone_0"`, `"0"`, or zone name) to an index.
-#[allow(
-    clippy::result_large_err,
-    reason = "API helpers return ready-made HTTP responses for ergonomic handler control flow"
-)]
-fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, Response> {
+fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, DomainError> {
     // Try "zone_N" format
     if let Some(stripped) = zone_id.strip_prefix("zone_")
         && let Ok(index) = stripped.parse::<usize>()
@@ -1466,16 +1483,7 @@ fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, Respons
         }
     }
 
-    Err(ApiError::not_found(format!(
-        "Zone not found: {zone_id} (device has {} zone(s): {})",
-        info.zones.len(),
-        info.zones
-            .iter()
-            .enumerate()
-            .map(|(i, z)| format!("zone_{i}={}", z.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )))
+    Err(DomainError::not_found(ResourceKind::Zone, zone_id))
 }
 
 /// Build a full-device LED frame with only one zone lit.
@@ -1512,7 +1520,7 @@ fn build_attachment_identify_frame(
     target: ComponentIdentifyTarget<'_>,
     total_leds: usize,
     color: [u8; 3],
-) -> Result<Vec<[u8; 3]>, String> {
+) -> Result<Vec<[u8; 3]>, DomainError> {
     let ComponentIdentifyTarget {
         device_id,
         slot_id,
@@ -1522,23 +1530,13 @@ fn build_attachment_identify_frame(
     let device_key = device_id.to_string();
     let profile = profiles
         .get(&device_key)
-        .ok_or_else(|| format!("No attachment profile for device {device_id}"))?;
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Profile, device_id))?;
 
     let slot = profile
         .slots
         .iter()
         .find(|s| s.id == slot_id)
-        .ok_or_else(|| {
-            format!(
-                "Slot '{slot_id}' not found (available: {})",
-                profile
-                    .slots
-                    .iter()
-                    .map(|s| s.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
+        .ok_or_else(|| DomainError::not_found(ResourceKind::AttachmentSlot, slot_id))?;
 
     let slot_bindings: Vec<(usize, &ComponentBinding)> = profile
         .bindings
@@ -1548,7 +1546,10 @@ fn build_attachment_identify_frame(
         .collect();
 
     if slot_bindings.is_empty() {
-        return Err(format!("No enabled bindings in slot '{slot_id}'"));
+        return Err(DomainError::validation_field(
+            "slot_id",
+            format!("No enabled bindings in slot '{slot_id}'"),
+        ));
     }
     let (start, led_count) = if let Some(instance_index) = instance {
         resolve_attachment_instance_range(
@@ -1577,7 +1578,7 @@ fn resolve_attachment_instance_range(
     slot: &ComponentSlot,
     binding_index: usize,
     instance_index: u32,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize), DomainError> {
     let available = slot_bindings
         .iter()
         .map(|(index, _)| index.to_string())
@@ -1587,20 +1588,26 @@ fn resolve_attachment_instance_range(
         .iter()
         .find(|(index, _)| *index == binding_index)
         .ok_or_else(|| {
-            format!(
-                "Binding index {binding_index} not found in slot '{slot_id}' (available: {available})",
-                slot_id = slot.id
+            DomainError::validation_field(
+                "binding_index",
+                format!(
+                    "Binding index {binding_index} not found in slot '{slot_id}' (available: {available})",
+                    slot_id = slot.id
+                ),
             )
         })?;
 
-    let template = registry
-        .get(&binding.template_id)
-        .ok_or_else(|| format!("Attachment template '{}' not found", binding.template_id))?;
+    let template = registry.get(&binding.template_id).ok_or_else(|| {
+        DomainError::not_found(ResourceKind::AttachmentTemplate, &binding.template_id)
+    })?;
     let total_instances = binding.instances.max(1);
     if instance_index >= total_instances {
-        return Err(format!(
-            "Instance {instance_index} out of range for binding {binding_index} in slot '{slot_id}' (instances: {total_instances})",
-            slot_id = slot.id
+        return Err(DomainError::validation_field(
+            "instance",
+            format!(
+                "Instance {instance_index} out of range for binding {binding_index} in slot '{slot_id}' (instances: {total_instances})",
+                slot_id = slot.id
+            ),
         ));
     }
 
@@ -1620,16 +1627,16 @@ fn resolve_attachment_component_range(
     slot_bindings: &[(usize, &ComponentBinding)],
     slot: &ComponentSlot,
     component_index: usize,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize), DomainError> {
     let mut sorted = slot_bindings
         .iter()
         .map(|(binding_index, binding)| {
             let template = registry.get(&binding.template_id).ok_or_else(|| {
-                format!("Attachment template '{}' not found", binding.template_id)
+                DomainError::not_found(ResourceKind::AttachmentTemplate, &binding.template_id)
             })?;
             Ok((*binding_index, *binding, template))
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, DomainError>>()?;
     sorted.sort_by(|left, right| {
         left.1
             .led_offset
@@ -1658,8 +1665,11 @@ fn resolve_attachment_component_range(
         .iter()
         .map(|(_, binding)| usize::try_from(binding.instances.max(1)).unwrap_or(usize::MAX))
         .fold(0_usize, usize::saturating_add);
-    Err(format!(
-        "Component index {component_index} out of range for slot '{slot_id}' (available components: {available})",
-        slot_id = slot.id
+    Err(DomainError::validation_field(
+        "binding_index",
+        format!(
+            "Component index {component_index} out of range for slot '{slot_id}' (available components: {available})",
+            slot_id = slot.id
+        ),
     ))
 }

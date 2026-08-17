@@ -78,8 +78,7 @@ Hypercolor exposes multiple API surfaces because different consumers have fundam
 {
   "error": {
     "code": "not_found",
-    "message": "Effect 'nonexistent' does not exist",
-    "details": {}
+    "message": "effect not found: nonexistent"
   },
   "meta": {
     "api_version": "1.0",
@@ -89,19 +88,26 @@ Hypercolor exposes multiple API surfaces because different consumers have fundam
 }
 ```
 
+`details` is optional and carries structured context (validation fields,
+conflicting IDs, version numbers). The key is omitted entirely when the error has
+no context to hand back.
+
 **Standard error codes:**
 
-| HTTP Status | Code               | Meaning                                          |
-| ----------- | ------------------ | ------------------------------------------------ |
-| 400         | `bad_request`      | Malformed request body or invalid parameters     |
-| 401         | `unauthorized`     | Missing or invalid API key (network access only) |
-| 403         | `forbidden`        | Insufficient permissions for this operation      |
-| 404         | `not_found`        | Resource does not exist                          |
-| 409         | `conflict`         | State conflict (e.g., device already connected)  |
-| 422         | `validation_error` | Request body fails schema validation             |
-| 429         | `rate_limited`     | Too many requests (network access only)          |
-| 500         | `internal_error`   | Unexpected daemon error                          |
-| 503         | `unavailable`      | Daemon is starting up or shutting down           |
+| HTTP Status | Code                     | Meaning                                           |
+| ----------- | ------------------------ | ------------------------------------------------- |
+| 400         | `malformed_request`      | Request could not be parsed at all                |
+| 401         | `unauthorized`           | Missing or invalid API key (network access only)  |
+| 403         | `forbidden`              | Insufficient permissions for this operation       |
+| 404         | `not_found`              | Resource does not exist                           |
+| 409         | `conflict`               | State conflict (e.g., device already connected)   |
+| 412         | `precondition_failed`    | An `If-Match` version precondition failed         |
+| 413         | `payload_too_large`      | Request body exceeds the route's size limit       |
+| 415         | `unsupported_media_type` | The `Content-Type` is not decodable by this route |
+| 422         | `validation_error`       | Request is well-formed but semantically invalid   |
+| 429         | `rate_limited`           | Too many requests (network access only)           |
+| 500         | `internal_error`         | Unexpected daemon error                           |
+| 503         | `device_unavailable`     | The device exists but cannot serve the request    |
 
 **Pagination** (for list endpoints):
 

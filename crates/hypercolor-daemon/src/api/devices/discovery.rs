@@ -5,15 +5,16 @@ use std::sync::atomic::Ordering;
 
 use axum::Json;
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::discovery;
+use crate::domain::DomainError;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DiscoverRequest {
@@ -38,7 +39,7 @@ pub async fn discover_devices(
         state.driver_registry.as_ref(),
     ) {
         Ok(targets) => targets,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
     let timeout = discovery::normalize_timeout_ms(body.as_ref().and_then(|b| b.timeout_ms));
     let wait_for_completion = body.as_ref().and_then(|b| b.wait).unwrap_or(false);
@@ -48,7 +49,7 @@ pub async fn discover_devices(
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return ApiError::conflict("A discovery scan is already in progress");
+        return DomainError::conflict("A discovery scan is already in progress").into_response();
     }
 
     let scan_id = format!("scan_{}", uuid::Uuid::now_v7());

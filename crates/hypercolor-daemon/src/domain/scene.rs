@@ -684,7 +684,7 @@ impl AppState {
 /// # Errors
 ///
 /// Only pre-admission rejections: a stale base revision
-/// ([`DomainError::PreconditionFailed`]) or a snapshot that will not
+/// ([`DomainError::Conflict`]) or a snapshot that will not
 /// serialize ([`DomainError::Internal`]). Once the bytes are admitted
 /// the mutation is committed, and where they ended up is reported by
 /// [`SceneCommit::durability`].
@@ -712,11 +712,22 @@ pub async fn commit_scene(
         let mut manager = state.scene_manager.write().await;
         let current_revision = state.scene_commits.revision();
         if current_revision != base_revision {
-            return Err(DomainError::PreconditionFailed {
-                resource: ResourceKind::Scene,
-                expected: base_revision,
-                current: current_revision,
-            });
+            // Losing the commit compare-and-swap is a state conflict, not
+            // a failed caller precondition: no request carries a scene
+            // commit revision, so a 412 here would be indistinguishable
+            // from the `If-Match` failures the zone and layer routes
+            // really do serve, and a client would rebase its version
+            // token onto a counter it does not track.
+            return Err(DomainError::conflict_details(
+                format!(
+                    "Scene state changed while applying this request; current revision is {current_revision}"
+                ),
+                serde_json::json!({
+                    "kind": "scene_commit_superseded",
+                    "expected_revision": base_revision,
+                    "current_revision": current_revision,
+                }),
+            ));
         }
 
         let previous = std::mem::replace(&mut *manager, candidate);
@@ -821,8 +832,8 @@ pub const COMMIT_ATTEMPTS: usize = 4;
 ///
 /// # Errors
 ///
-/// Whatever `build` returns, or the last
-/// [`DomainError::PreconditionFailed`] when every attempt loses.
+/// Whatever `build` returns, or the last [`DomainError::Conflict`] when
+/// every attempt loses.
 pub async fn commit_retrying<T>(
     state: &AppState,
     mut build: impl FnMut(&mut SceneMutation) -> Result<Option<T>, DomainError>,
@@ -835,7 +846,7 @@ pub async fn commit_retrying<T>(
         };
         match commit_scene(state, mutation).await {
             Ok(commit) => return Ok(Some((value, commit))),
-            Err(conflict @ DomainError::PreconditionFailed { .. }) => {
+            Err(conflict @ DomainError::Conflict { .. }) => {
                 last_conflict = Some(conflict);
             }
             Err(error) => return Err(error),
@@ -923,7 +934,7 @@ pub struct SceneActivated {
 ///
 /// [`DomainError::NotFound`] for an unknown scene,
 /// [`DomainError::Validation`] when the scene exceeds its hard media
-/// producer caps, and [`DomainError::PreconditionFailed`] when a
+/// producer caps, and [`DomainError::Conflict`] when a
 /// concurrent scene mutation lands first.
 pub async fn activate_scene(
     state: &AppState,
@@ -1059,7 +1070,7 @@ pub struct SceneDeactivated {
 /// # Errors
 ///
 /// [`DomainError::Conflict`] when the scene cannot be added, and
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn create_scene(
     state: &AppState,
@@ -1107,7 +1118,7 @@ pub async fn create_scene(
 /// # Errors
 ///
 /// [`DomainError::NotFound`] for an unknown scene, and
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn update_scene(
     state: &AppState,
@@ -1152,7 +1163,7 @@ pub async fn update_scene(
 ///
 /// [`DomainError::NotFound`] for an unknown scene,
 /// [`DomainError::Conflict`] for the Default scene, and
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn delete_scene(
     state: &AppState,
@@ -1199,7 +1210,7 @@ pub async fn delete_scene(
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn deactivate_scene(
     state: &AppState,

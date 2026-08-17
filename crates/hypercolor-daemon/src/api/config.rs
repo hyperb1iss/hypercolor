@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use utoipa::ToSchema;
@@ -23,7 +23,16 @@ use hypercolor_types::config_registry::{
 };
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
+
+/// Render an internal config failure.
+///
+/// The chain goes to tracing and the wire sees the canonical generic
+/// message, so a serialization fault cannot leak a config path or value.
+fn internal_config_error(message: impl Into<String>) -> Response {
+    DomainError::Internal(anyhow::anyhow!(message.into())).into_response()
+}
 use crate::scene_transactions::{
     PreparedLayoutUpdate, SceneTransaction, apply_prepared_layout_update_under_guard,
 };
@@ -67,7 +76,7 @@ pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
     let config = config_snapshot(&state);
     let value = match serde_json::to_value(config) {
         Ok(value) => value,
-        Err(error) => return ApiError::internal(format!("Failed to serialize config: {error}")),
+        Err(error) => return internal_config_error(format!("Failed to serialize config: {error}")),
     };
 
     ApiResponse::ok(redact_document(value))
@@ -85,17 +94,17 @@ pub async fn get_config_key(
     Path(key): Path<String>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
-        return ApiError::bad_request(format!("Malformed config key: {key}"));
+        return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
     }
 
     let config = config_snapshot(&state);
     let value = match serde_json::to_value(config) {
         Ok(value) => value,
-        Err(error) => return ApiError::internal(format!("Failed to serialize config: {error}")),
+        Err(error) => return internal_config_error(format!("Failed to serialize config: {error}")),
     };
 
     let Some(found) = get_json_path(&value, &key) else {
-        return ApiError::not_found(format!("Unknown config key: {key}"));
+        return DomainError::not_found(ResourceKind::ConfigKey, key).into_response();
     };
 
     ApiResponse::ok(serde_json::json!({
@@ -115,7 +124,7 @@ pub async fn put_config_key(
     Json(value): Json<serde_json::Value>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
-        return ApiError::bad_request(format!("Malformed config key: {key}"));
+        return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
     }
 
     write_config_key(&state, &key, value, apply.live).await
@@ -128,7 +137,7 @@ pub async fn delete_config_key(
     Query(apply): Query<ConfigApplyQuery>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
-        return ApiError::bad_request(format!("Malformed config key: {key}"));
+        return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
     }
 
     reset_config_state(&state, Some(&key), apply.live).await
@@ -149,14 +158,14 @@ async fn write_config_key(
     live_requested: bool,
 ) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
-        return ApiError::internal("Config manager unavailable in this runtime");
+        return internal_config_error("Config manager unavailable in this runtime");
     };
 
     let current_snapshot = Arc::clone(&manager.get());
     let current = (*current_snapshot).clone();
     let mut root = match serde_json::to_value(&current) {
         Ok(v) => v,
-        Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
+        Err(e) => return internal_config_error(format!("Failed to serialize config: {e}")),
     };
 
     let key = raw_key.to_owned();
@@ -186,7 +195,8 @@ async fn write_config_key(
     }
 
     if !set_json_path(&mut root, &key, parsed_value.clone()) {
-        return ApiError::validation(format!("Invalid config key path: {raw_key}"));
+        return DomainError::validation(format!("Invalid config key path: {raw_key}"))
+            .into_response();
     }
 
     let updated: HypercolorConfig = match serde_json::from_value(root) {
@@ -199,7 +209,7 @@ async fn write_config_key(
         return rejected_value(&rejection.key, "driver validation", &rejection.detail);
     }
     if let Err(error) = updated.capture.validate() {
-        return ApiError::validation(error.to_string());
+        return DomainError::validation(error.to_string()).into_response();
     }
 
     if apply_capture {
@@ -211,13 +221,13 @@ async fn write_config_key(
                 let effective_root = match serde_json::to_value(&**effective_config) {
                     Ok(value) => value,
                     Err(error) => {
-                        return ApiError::internal(format!(
+                        return internal_config_error(format!(
                             "Failed to serialize canonicalized config: {error}"
                         ));
                     }
                 };
                 let Some(effective_value) = get_json_path(&effective_root, &key).cloned() else {
-                    return ApiError::internal(format!(
+                    return internal_config_error(format!(
                         "Canonicalized config is missing expected key: {key}"
                     ));
                 };
@@ -229,22 +239,25 @@ async fn write_config_key(
                 ));
             }
             Err(CaptureConfigTransactionError::Conflict) => {
-                return ApiError::conflict(
+                return DomainError::conflict(
                     "Capture config changed while its live runtime was prepared; retry the update",
-                );
+                )
+                .into_response();
             }
             Err(CaptureConfigTransactionError::Prepare(error)) => {
-                return ApiError::validation(format!(
+                return DomainError::validation(format!(
                     "Failed to prepare live screen capture config: {error}"
-                ));
+                ))
+                .into_response();
             }
             Err(CaptureConfigTransactionError::Persist(error)) => {
-                return ApiError::internal(format!("Failed to persist config: {error}"));
+                return internal_config_error(format!("Failed to persist config: {error}"));
             }
             Err(CaptureConfigTransactionError::Commit(error)) => {
-                return ApiError::conflict(format!(
+                return DomainError::conflict(format!(
                     "Screen capture graph changed during live apply: {error}"
-                ));
+                ))
+                .into_response();
             }
         }
     }
@@ -262,19 +275,19 @@ async fn write_config_key(
         *config = reapplied.unwrap_or_else(|| updated.clone());
     });
     if let Err(e) = manager.save() {
-        return ApiError::internal(format!("Failed to persist config: {e}"));
+        return internal_config_error(format!("Failed to persist config: {e}"));
     }
     let effective_config = manager.get();
     let effective_root = match serde_json::to_value(&**effective_config) {
         Ok(value) => value,
         Err(error) => {
-            return ApiError::internal(format!(
+            return internal_config_error(format!(
                 "Failed to serialize canonicalized config: {error}"
             ));
         }
     };
     let Some(effective_value) = get_json_path(&effective_root, &key).cloned() else {
-        return ApiError::internal(format!(
+        return internal_config_error(format!(
             "Canonicalized config is missing expected key: {}",
             key
         ));
@@ -497,7 +510,7 @@ async fn reset_config_state(
     live_requested: bool,
 ) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
-        return ApiError::internal("Config manager unavailable in this runtime");
+        return internal_config_error("Config manager unavailable in this runtime");
     };
 
     let current_snapshot = Arc::clone(&manager.get());
@@ -505,20 +518,21 @@ async fn reset_config_state(
     let updated: HypercolorConfig = if let Some(key) = requested_key.as_deref() {
         let mut current = match serde_json::to_value(&*current_snapshot) {
             Ok(v) => v,
-            Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
+            Err(e) => return internal_config_error(format!("Failed to serialize config: {e}")),
         };
         let defaults = match serde_json::to_value(HypercolorConfig::default()) {
             Ok(v) => v,
             Err(e) => {
-                return ApiError::internal(format!("Failed to serialize default config: {e}"));
+                return internal_config_error(format!("Failed to serialize default config: {e}"));
             }
         };
         let Some(default_value) = get_json_path(&defaults, key) else {
-            return ApiError::not_found(format!("Unknown config key: {key}"));
+            return DomainError::not_found(ResourceKind::ConfigKey, key).into_response();
         };
 
         if !set_json_path(&mut current, key, default_value.clone()) {
-            return ApiError::validation(format!("Invalid config key path: {key}"));
+            return DomainError::validation(format!("Invalid config key path: {key}"))
+                .into_response();
         }
 
         match serde_json::from_value(current) {
@@ -540,7 +554,7 @@ async fn reset_config_state(
         return rejected_value(&rejection.key, "driver validation", &rejection.detail);
     }
     if let Err(error) = updated.capture.validate() {
-        return ApiError::validation(error.to_string());
+        return DomainError::validation(error.to_string()).into_response();
     }
 
     let sections = live_sections_for(requested_key.as_deref());
@@ -551,22 +565,25 @@ async fn reset_config_state(
         {
             Ok(()) => true,
             Err(CaptureConfigTransactionError::Conflict) => {
-                return ApiError::conflict(
+                return DomainError::conflict(
                     "Capture config changed while its live runtime was prepared; retry the reset",
-                );
+                )
+                .into_response();
             }
             Err(CaptureConfigTransactionError::Prepare(error)) => {
-                return ApiError::validation(format!(
+                return DomainError::validation(format!(
                     "Failed to prepare live screen capture config: {error}"
-                ));
+                ))
+                .into_response();
             }
             Err(CaptureConfigTransactionError::Persist(error)) => {
-                return ApiError::internal(format!("Failed to persist config: {error}"));
+                return internal_config_error(format!("Failed to persist config: {error}"));
             }
             Err(CaptureConfigTransactionError::Commit(error)) => {
-                return ApiError::conflict(format!(
+                return DomainError::conflict(format!(
                     "Screen capture graph changed during live apply: {error}"
-                ));
+                ))
+                .into_response();
             }
         }
     } else {
@@ -609,7 +626,7 @@ async fn reset_config_state(
         *config = reapplied.unwrap_or(updated);
     });
     if let Err(e) = manager.save() {
-        return ApiError::internal(format!("Failed to persist config: {e}"));
+        return internal_config_error(format!("Failed to persist config: {e}"));
     }
 
     let live_applied =
@@ -723,9 +740,10 @@ fn validate_driver_config_scope(
 /// the error actionable.
 fn rejected_value(key: &str, class: &str, detail: &str) -> Response {
     if config_registry::is_redacted(key) {
-        ApiError::validation(format!("Value for '{key}' failed {class}"))
+        DomainError::validation(format!("Value for '{key}' failed {class}")).into_response()
     } else {
-        ApiError::validation(format!("Value for '{key}' failed {class}: {detail}"))
+        DomainError::validation(format!("Value for '{key}' failed {class}: {detail}"))
+            .into_response()
     }
 }
 

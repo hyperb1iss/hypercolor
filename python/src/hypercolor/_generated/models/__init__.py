@@ -4,7 +4,8 @@ from .action_confirmation import ActionConfirmation
 from .action_confirmation_level import ActionConfirmationLevel
 from .active_effect_response import ActiveEffectResponse
 from .active_effect_response_control_values import ActiveEffectResponseControlValues
-from .api_error_response import ApiErrorResponse
+from .api_error_body import ApiErrorBody
+from .api_error_detail import ApiErrorDetail
 from .api_response_active_effect_response import ApiResponseActiveEffectResponse
 from .api_response_active_effect_response_data import (
     ApiResponseActiveEffectResponseData,
@@ -248,8 +249,6 @@ from .effect_preset_summary import EffectPresetSummary
 from .effect_preset_summary_controls import EffectPresetSummaryControls
 from .effect_ref_summary import EffectRefSummary
 from .effect_summary import EffectSummary
-from .error_body import ErrorBody
-from .error_code import ErrorCode
 from .gpu_compositor_probe_status import GpuCompositorProbeStatus
 from .gradient_stop import GradientStop
 from .health_checks import HealthChecks
@@ -308,6 +307,7 @@ from .rejected_control_change_attempted_value import RejectedControlChangeAttemp
 from .render_acceleration_status import RenderAccelerationStatus
 from .render_loop_status import RenderLoopStatus
 from .render_surface_status import RenderSurfaceStatus
+from .response_meta import ResponseMeta
 from .resume_effect_response import ResumeEffectResponse
 from .ring_def import RingDef
 from .room_adjacency import RoomAdjacency
@@ -380,7 +380,8 @@ __all__ = (
     "ActionConfirmationLevel",
     "ActiveEffectResponse",
     "ActiveEffectResponseControlValues",
-    "ApiErrorResponse",
+    "ApiErrorBody",
+    "ApiErrorDetail",
     "ApiResponseActiveEffectResponse",
     "ApiResponseActiveEffectResponseData",
     "ApiResponseActiveEffectResponseDataControlValues",
@@ -570,8 +571,6 @@ __all__ = (
     "EffectPresetSummaryControls",
     "EffectRefSummary",
     "EffectSummary",
-    "ErrorBody",
-    "ErrorCode",
     "GpuCompositorProbeStatus",
     "GradientStop",
     "HealthChecks",
@@ -630,6 +629,7 @@ __all__ = (
     "RenderAccelerationStatus",
     "RenderLoopStatus",
     "RenderSurfaceStatus",
+    "ResponseMeta",
     "ResumeEffectResponse",
     "RingDef",
     "RoomAdjacency",

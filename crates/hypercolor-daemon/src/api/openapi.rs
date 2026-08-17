@@ -38,9 +38,8 @@ use crate::api::{
     components(
         schemas(
             envelope::Meta,
-            envelope::ErrorCode,
-            envelope::ErrorBody,
-            envelope::ApiErrorResponse,
+            hypercolor_types::api::envelope::ApiErrorDetail,
+            hypercolor_types::api::envelope::ApiErrorBody,
             envelope::ApiResponse<system::SystemStatus>,
             envelope::ApiResponse<system::ServerInfo>,
             envelope::ApiResponse<drivers::DriverListResponse>,

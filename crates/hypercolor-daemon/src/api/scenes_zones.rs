@@ -5,17 +5,17 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, header};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 
 use hypercolor_core::scene::{OutputPlacement, ZoneMetaPatch};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
 
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::layouts::{validate_layout_sampling_radii, validate_output_sampling_radii};
 use crate::api::{AppState, scenes};
 use crate::domain::zone;
-use crate::domain::{DomainError, MutationContext, ResourceKind, legacy};
+use crate::domain::{DomainError, MutationContext, ResourceKind};
 
 // Wire contracts live in hypercolor-types::api::zones — shared with the
 // web UI and the TUI. OutputAssignment's untagged variant ORDER is part
@@ -32,10 +32,10 @@ pub async fn list_zones(
 ) -> Response {
     let manager = state.scene_manager.read().await;
     let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
     let Some(scene) = manager.get(&scene_id) else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
     zones_response(scene.groups.clone(), scene.groups_revision, StatusKind::Ok)
 }
@@ -47,14 +47,15 @@ pub async fn create_zone(
     Json(body): Json<CreateZoneRequest>,
 ) -> Response {
     if body.name.trim().is_empty() {
-        return ApiError::bad_request("zone name must not be empty");
+        return DomainError::validation_field("name", "zone name must not be empty")
+            .into_response();
     }
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
 
     let fallback_canvas = {
@@ -77,13 +78,7 @@ pub async fn create_zone(
     .await
     {
         Ok(written) => zone_response(written.zone, written.groups_revision, StatusKind::Created),
-        // A blank name has always been a 400 here, not the canonical
-        // 422 the domain validation error renders.
-        Err(DomainError::Validation {
-            field: Some(field),
-            message,
-        }) if field == "name" => ApiError::bad_request(message),
-        Err(error) => zone_error_response(error, &scene_id_raw),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -92,17 +87,17 @@ pub async fn get_zone(
     Path((scene_id_raw, zone_id_raw)): Path<(String, String)>,
 ) -> Response {
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
-        return ApiError::bad_request("zone_id must be a valid UUID");
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let manager = state.scene_manager.read().await;
     let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
     let Some(scene) = manager.get(&scene_id) else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
     let Some(zone) = scene.groups.iter().find(|zone| zone.id == zone_id) else {
-        return ApiError::not_found(format!("Zone not found: {zone_id}"));
+        return DomainError::not_found(ResourceKind::Zone, zone_id).into_response();
     };
     zone_response(zone.clone(), scene.groups_revision, StatusKind::Ok)
 }
@@ -114,14 +109,14 @@ pub async fn update_zone(
     Json(body): Json<UpdateZoneRequest>,
 ) -> Response {
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
-        return ApiError::bad_request("zone_id must be a valid UUID");
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
 
     match zone::update_zone(
@@ -137,7 +132,7 @@ pub async fn update_zone(
     .await
     {
         Ok(written) => zone_response(written.zone, written.groups_revision, StatusKind::Ok),
-        Err(error) => zone_error_response(error, &scene_id_raw),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -147,14 +142,14 @@ pub async fn delete_zone(
     headers: HeaderMap,
 ) -> Response {
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
-        return ApiError::bad_request("zone_id must be a valid UUID");
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
 
     let removed = match zone::delete_zone(
@@ -169,7 +164,7 @@ pub async fn delete_zone(
     .await
     {
         Ok(removed) => removed,
-        Err(error) => return zone_error_response(error, &scene_id_raw),
+        Err(error) => return error.into_response(),
     };
 
     attach_groups_revision_headers(
@@ -189,21 +184,25 @@ pub async fn assign_devices(
     Json(body): Json<AssignDevicesRequest>,
 ) -> Response {
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
-        return ApiError::bad_request("zone_id must be a valid UUID");
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     if body.device_zones.is_empty() {
-        return ApiError::bad_request("device_zones must include at least one item");
+        return DomainError::validation_field(
+            "device_zones",
+            "device_zones must include at least one item",
+        )
+        .into_response();
     }
     for assignment in &body.device_zones {
         if let OutputAssignment::New(output) = assignment
             && let Err(error) = validate_output_sampling_radii(output)
         {
-            return ApiError::validation(error);
+            return DomainError::validation(error).into_response();
         }
     }
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let placement = if body.preserve_placement {
         OutputPlacement::Preserve
@@ -212,7 +211,7 @@ pub async fn assign_devices(
     };
 
     let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
 
     match zone::assign_outputs(
@@ -229,7 +228,7 @@ pub async fn assign_devices(
     .await
     {
         Ok(written) => zones_response(written.zones, written.groups_revision, StatusKind::Ok),
-        Err(error) => zone_error_response(error, &scene_id_raw),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -239,14 +238,14 @@ pub async fn unassign_device(
     headers: HeaderMap,
 ) -> Response {
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
-        return ApiError::bad_request("zone_id must be a valid UUID");
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
 
     match zone::unassign_output(
@@ -262,7 +261,7 @@ pub async fn unassign_device(
     .await
     {
         Ok(written) => zones_response(written.zones, written.groups_revision, StatusKind::Ok),
-        Err(error) => zone_error_response(error, &scene_id_raw),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -277,17 +276,17 @@ pub async fn update_zone_layout(
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
     if let Err(error) = validate_layout_sampling_radii(&layout) {
-        return ApiError::validation(error);
+        return DomainError::validation(error).into_response();
     }
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
-        return ApiError::bad_request("zone_id must be a valid UUID");
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
 
     let written = match zone::set_zone_layout(
@@ -303,7 +302,7 @@ pub async fn update_zone_layout(
     .await
     {
         Ok(written) => written,
-        Err(error) => return zone_error_response(error, &scene_id_raw),
+        Err(error) => return error.into_response(),
     };
 
     state.zone_layout_previews.clear(scene_id, zone_id).await;
@@ -318,10 +317,10 @@ pub async fn update_unassigned_behavior(
 ) -> Response {
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
 
     match zone::set_unassigned_behavior(
@@ -336,7 +335,7 @@ pub async fn update_unassigned_behavior(
     .await
     {
         Ok(written) => unassigned_behavior_response(written.behavior, written.groups_revision),
-        Err(error) => zone_error_response(error, &scene_id_raw),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -393,35 +392,6 @@ fn unassigned_behavior_response(behavior: UnassignedBehavior, groups_revision: u
         }),
         groups_revision,
     )
-}
-
-/// The zone family's frozen v1 error prose.
-///
-/// The `groups_revision` precondition renders as the shape this family
-/// has always sent — a bare `{ error, current }` with the revision as
-/// `ETag` — rather than the canonical 412 envelope, and the not-found
-/// arms name the resource the way these paths always have.
-fn zone_error_response(error: DomainError, scene_label: &str) -> Response {
-    match error {
-        DomainError::NotFound {
-            kind: ResourceKind::Scene,
-            ..
-        } => ApiError::not_found(format!("Scene not found: {scene_label}")),
-        DomainError::NotFound {
-            kind: ResourceKind::Zone,
-            id,
-        } => ApiError::not_found(format!("Zone not found: {id}")),
-        DomainError::NotFound {
-            kind: ResourceKind::Device,
-            id,
-        } => ApiError::not_found(format!("Device zone not found: {id}")),
-        DomainError::PreconditionFailed {
-            resource: ResourceKind::Zone,
-            current,
-            ..
-        } => legacy::revision_mismatch_response("groups_revision", current),
-        other => legacy::scene_family_error_response(other),
-    }
 }
 
 fn parse_zone_id(raw: &str) -> Result<ZoneId, uuid::Error> {

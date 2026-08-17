@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Extension, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
 use hypercolor_leptos_ext::ws::PreviewTransportCapability;
@@ -91,7 +91,10 @@ pub(crate) async fn ws_handler(
     auth_context: Option<Extension<RequestAuthContext>>,
 ) -> Response {
     if !ws_origin_allowed(&state, &headers) {
-        return StatusCode::FORBIDDEN.into_response();
+        return crate::domain::DomainError::forbidden(
+            "Origin is not permitted to open a WebSocket against this daemon",
+        )
+        .into_response();
     }
 
     let auth_context =

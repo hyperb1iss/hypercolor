@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -19,8 +19,8 @@ use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
-use crate::domain::DomainError;
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 
 use super::{ensure_default_logical_entry, resolve_device_id_or_error};
@@ -99,11 +99,11 @@ pub async fn get_attachments(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let mut profile = {
@@ -128,18 +128,18 @@ pub async fn update_attachments(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let slots = effective_attachment_slots(&tracked.info, &body.bindings);
     let resolved = {
         let registry = state.attachment_registry.read().await;
         match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
             Ok(bindings) => bindings,
-            Err(error) => return into_v1_response(error),
+            Err(error) => return error.into_response(),
         }
     };
 
@@ -155,7 +155,10 @@ pub async fn update_attachments(
         let mut profiles = state.attachment_profiles.write().await;
         profiles.update(&device_key, profile.clone());
         if let Err(error) = profiles.save() {
-            return ApiError::internal(format!("Failed to persist attachment profile: {error}"));
+            return DomainError::Internal(anyhow::anyhow!(
+                "Failed to persist attachment profile: {error}"
+            ))
+            .into_response();
         }
     }
     sync_usb_protocol_config(state.as_ref(), device_id, &tracked.info, &profile).await;
@@ -182,18 +185,18 @@ pub async fn preview_attachments(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let slots = effective_attachment_slots(&tracked.info, &body.bindings);
     let resolved = {
         let registry = state.attachment_registry.read().await;
         match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
             Ok(bindings) => bindings,
-            Err(error) => return into_v1_response(error),
+            Err(error) => return error.into_response(),
         }
     };
 
@@ -211,20 +214,21 @@ pub async fn delete_attachments(
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let deleted = {
         let mut profiles = state.attachment_profiles.write().await;
         let deleted = profiles.remove(&tracked.info.id.to_string()).is_some();
         if deleted && let Err(error) = profiles.save() {
-            return ApiError::internal(format!(
+            return DomainError::Internal(anyhow::anyhow!(
                 "Failed to persist attachment profile deletion: {error}"
-            ));
+            ))
+            .into_response();
         }
         deleted
     };

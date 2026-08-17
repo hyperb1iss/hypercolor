@@ -666,8 +666,8 @@ async fn a_stale_revision_outranks_an_unresolvable_output_reference() {
     .await;
     assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
     let json = body_json(response).await;
-    assert_eq!(json["error"], "groups_revision mismatch");
-    assert_eq!(json["current"], current);
+    assert_eq!(json["error"]["code"], "precondition_failed");
+    assert_eq!(json["error"]["details"]["current"], current);
 
     // With a current revision the same request reports the reference.
     let response = send(
@@ -688,15 +688,14 @@ async fn a_stale_revision_outranks_an_unresolvable_output_reference() {
     assert!(
         body_json(response).await["error"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("Device zone not found")),
+            .is_some_and(|message| message.contains("device not found")),
         "the unresolvable reference should name itself once the revision is current"
     );
 }
 
 /// A blank zone name is a client mistake the daemon can answer without
-/// looking anything up, and it answers `400` — not the `404` it would
-/// give for the scene, and not the canonical `422` the domain validation
-/// error renders.
+/// looking anything up, so it answers the same `422` whether or not the
+/// scene resolves — the name is rejected before the lookup runs.
 #[tokio::test]
 async fn a_blank_zone_name_is_rejected_before_the_scene_is_resolved() {
     let (state, _tmp) = isolated_state_with_tempdir();
@@ -714,7 +713,7 @@ async fn a_blank_zone_name_is_rejected_before_the_scene_is_resolved() {
         .await;
         assert_eq!(
             response.status(),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             "a blank name answers the same way whether or not the scene exists ({scene})"
         );
     }

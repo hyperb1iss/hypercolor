@@ -1,11 +1,10 @@
-//! REST v1 compatibility matrix: the frozen wire shapes.
+//! REST wire matrix: the pinned shapes.
 //!
-//! Every assertion here describes what the daemon emits **today**, including
-//! the parts that are wrong. Spec 76 §0 makes v1 responses immutable for the
-//! duration of the API-unification program: canonical routes get the corrected
-//! contracts, v1 paths keep serving the legacy projection. A failure here means
-//! a v1 wire shape moved, which is a compatibility break in the daemon, not a
-//! test that needs updating.
+//! Every assertion here describes what the daemon emits. Under Spec 76 §0's
+//! lockstep doctrine these pins are intentionality fences, not freezes: a
+//! deliberate shape change updates the pin, every in-repo client, and this
+//! file in the same PR, while an unintended byte shift still fails CI. A
+//! failure here that nobody meant is a wire regression.
 //!
 //! The human-readable companion is `tests/fixtures/rest_v1/MATRIX.md`; the two
 //! are edited together.
@@ -193,16 +192,23 @@ fn assert_envelope(body: &Value) {
     assert_meta(&body["meta"]);
 }
 
-/// The v1 error envelope: `{ error: { code, message, details }, meta }`.
+/// The canonical error envelope: `{ error: { code, message, details? }, meta }`.
 ///
-/// `details` carries no `skip_serializing_if`, so it is always present and is
-/// explicitly `null` on the many errors that have no context to attach.
-fn assert_error_envelope(body: &Value, code: &str) {
-    assert_keys(body, &["error", "meta"], "v1 error envelope");
+/// `details` carries `skip_serializing_if = "Option::is_none"`, so the key is
+/// **absent** — not null — on errors with no structured context. Key-set
+/// equality against the expected presence is what makes this a fence: a
+/// `details` block appearing where none was intended fails as loudly as one
+/// disappearing.
+fn assert_error_envelope(body: &Value, code: &str, details: DetailsPresence) {
+    assert_keys(body, &["error", "meta"], "canonical error envelope");
     assert_meta(&body["meta"]);
     let error = &body["error"];
-    assert_keys(error, &["code", "message", "details"], "v1 error body");
-    assert_eq!(error["code"], json!(code), "error.code is frozen");
+    let expected: &[&str] = match details {
+        DetailsPresence::Absent => &["code", "message"],
+        DetailsPresence::Present => &["code", "message", "details"],
+    };
+    assert_keys(error, expected, "canonical error body");
+    assert_eq!(error["code"], json!(code), "error.code is pinned");
     assert!(
         error["message"].is_string(),
         "error.message should be a string, got {}",
@@ -210,18 +216,36 @@ fn assert_error_envelope(body: &Value, code: &str) {
     );
 }
 
-/// The bare, envelope-free 412 body: `{ error: <string>, current: <u64> }`.
+/// Whether an error carries structured context, which decides its key set.
+#[derive(Clone, Copy)]
+enum DetailsPresence {
+    Absent,
+    Present,
+}
+
+/// The canonical 412 body: the error envelope with `precondition_failed` and
+/// a `details` object carrying both versions.
 ///
-/// Three independent copies of this exist (`controls_version`,
-/// `groups_revision`, `layers_version`). None of them carry `meta` or an
-/// `error.code`, and `current` sits at the top level as a sibling of `error`.
-fn assert_precondition_body(body: &Value, message: &str, current: u64) {
-    assert_keys(body, &["error", "current"], "v1 precondition-failed body");
-    assert_eq!(body["error"], json!(message), "412 error string is frozen");
+/// One rendering serves all three version counters (`controls_version`,
+/// `groups_revision`, `layers_version`) — the counter's identity lives in the
+/// route, not in a bespoke body shape. A client rebases off
+/// `error.details.current` (or the `ETag`, which carries the same value).
+fn assert_precondition_body(body: &Value, expected: u64, current: u64) {
+    assert_error_envelope(body, "precondition_failed", DetailsPresence::Present);
+    assert_keys(
+        &body["error"]["details"],
+        &["expected", "current"],
+        "412 details",
+    );
     assert_eq!(
-        body["current"],
+        body["error"]["details"]["expected"],
+        json!(expected),
+        "412 names the version the caller asked for"
+    );
+    assert_eq!(
+        body["error"]["details"]["current"],
         json!(current),
-        "412 carries the server's current version at the top level"
+        "412 names the version the resource holds"
     );
 }
 
@@ -814,7 +838,11 @@ async fn config_key_reads_report_unknown_keys_through_the_error_envelope() {
     let response = send(&app, get("/api/v1/config/keys/nope.not.a.key")).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_error_envelope(&body_json(response).await, "not_found");
+    assert_error_envelope(
+        &body_json(response).await,
+        "not_found",
+        DetailsPresence::Absent,
+    );
 }
 
 #[tokio::test]
@@ -840,9 +868,9 @@ async fn config_key_writes_take_the_value_as_the_body() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
-    // Without a live `ConfigManager` this state cannot persist, and the
-    // frozen behavior of that case is a 500 through the standard error
-    // envelope rather than a routing failure.
+    // Without a live `ConfigManager` this state cannot persist, and that
+    // case answers 500 through the standard error envelope rather than a
+    // routing failure.
     let response = send(
         &app,
         json_request("PUT", "/api/v1/config/keys/daemon.port", &json!(9420)),
@@ -850,7 +878,11 @@ async fn config_key_writes_take_the_value_as_the_body() {
     .await;
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_error_envelope(&body_json(response).await, "internal_error");
+    assert_error_envelope(
+        &body_json(response).await,
+        "internal_error",
+        DetailsPresence::Absent,
+    );
 }
 
 #[tokio::test]
@@ -865,13 +897,17 @@ async fn config_key_deletes_reset_one_key() {
     .await;
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_error_envelope(&body_json(response).await, "internal_error");
+    assert_error_envelope(
+        &body_json(response).await,
+        "internal_error",
+        DetailsPresence::Absent,
+    );
 }
 
 // ── Error shapes ─────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn error_envelope_is_frozen_with_an_explicit_null_details() {
+async fn error_envelope_omits_details_when_the_error_carries_none() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
@@ -883,16 +919,22 @@ async fn error_envelope_is_frozen_with_an_explicit_null_details() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let json = body_json(response).await;
-    assert_error_envelope(&json, "not_found");
+    assert_error_envelope(&json, "not_found", DetailsPresence::Absent);
     assert_eq!(
         json["error"]["details"],
         Value::Null,
-        "details has no skip_serializing_if, so it serializes as an explicit null"
+        "serde_json reads an absent key as Null; the key-set assertion above is \
+         what proves it was never serialized"
+    );
+    assert_eq!(
+        json["error"]["message"],
+        json!("scene not found: 00000000-0000-0000-0000-000000000001"),
+        "not-found prose is derived from the resource kind, not hand-written per route"
     );
 }
 
 #[tokio::test]
-async fn zone_precondition_failure_uses_the_bare_error_current_shape() {
+async fn zone_precondition_failure_renders_the_canonical_412() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
@@ -915,7 +957,7 @@ async fn zone_precondition_failure_uses_the_bare_error_current_shape() {
     assert_eq!(created.status(), StatusCode::CREATED);
     assert_eq!(etag(&created), "\"1\"");
 
-    // Replaying the now-stale precondition trips the 412 projection.
+    // Replaying the now-stale precondition trips the 412.
     let stale = send(
         &app,
         if_match(
@@ -935,11 +977,11 @@ async fn zone_precondition_failure_uses_the_bare_error_current_shape() {
         "\"1\"",
         "the 412 itself carries the current ETag so clients can rebase"
     );
-    assert_precondition_body(&body_json(stale).await, "groups_revision mismatch", 1);
+    assert_precondition_body(&body_json(stale).await, 0, 1);
 }
 
 #[tokio::test]
-async fn layer_precondition_failure_uses_the_bare_error_current_shape() {
+async fn layer_precondition_failure_renders_the_canonical_412() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
     let group_id = primary_zone_id(&app).await;
@@ -957,11 +999,11 @@ async fn layer_precondition_failure_uses_the_bare_error_current_shape() {
 
     assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
     assert_eq!(etag(&stale), "\"1\"");
-    assert_precondition_body(&body_json(stale).await, "layers_version mismatch", 1);
+    assert_precondition_body(&body_json(stale).await, 0, 1);
 }
 
 #[tokio::test]
-async fn controls_precondition_failure_uses_the_bare_error_current_shape() {
+async fn controls_precondition_failure_renders_the_canonical_412() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
@@ -1020,7 +1062,7 @@ async fn controls_precondition_failure_uses_the_bare_error_current_shape() {
 
     assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
     assert_eq!(etag(&stale), format!("\"{next}\""));
-    assert_precondition_body(&body_json(stale).await, "controls_version mismatch", next);
+    assert_precondition_body(&body_json(stale).await, version, next);
 }
 
 #[tokio::test]
@@ -1049,7 +1091,8 @@ async fn if_match_parsing_quirks_are_frozen() {
     assert_eq!(wildcard.status(), StatusCode::CREATED);
 
     // A weak validator is rejected outright: `W/` survives the quote trim and
-    // then fails the integer parse.
+    // then fails the integer parse. Parsing is unchanged; only the rendering
+    // is canonical, and an unreadable header value is a 400, not a 422.
     let weak = send(
         &app,
         if_match(
@@ -1059,14 +1102,21 @@ async fn if_match_parsing_quirks_are_frozen() {
     )
     .await;
     assert_eq!(weak.status(), StatusCode::BAD_REQUEST);
-    assert_error_envelope(&body_json(weak).await, "bad_request");
+    assert_error_envelope(
+        &body_json(weak).await,
+        "malformed_request",
+        DetailsPresence::Absent,
+    );
 }
 
 #[tokio::test]
-async fn rejected_websocket_origin_is_an_empty_bodied_403() {
+async fn rejected_websocket_origin_serves_the_canonical_forbidden_envelope() {
     let (state, _tmp) = isolated_state();
     let addr = spawn_server(&state).await;
 
+    // `tower::oneshot` cannot reach this handler: the `WebSocketUpgrade`
+    // extractor answers first without a live hyper connection, so the origin
+    // check needs real I/O to exercise.
     let response = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/ws"))
         .header(http::header::CONNECTION, "Upgrade")
@@ -1079,16 +1129,9 @@ async fn rejected_websocket_origin_is_an_empty_bodied_403() {
         .expect("upgrade request should reach the daemon");
 
     assert_eq!(response.status().as_u16(), StatusCode::FORBIDDEN.as_u16());
-    assert!(
-        response.headers().get(http::header::CONTENT_TYPE).is_none(),
-        "the origin rejection sets no content type"
-    );
-    assert!(
-        response
-            .bytes()
-            .await
-            .expect("response body should read")
-            .is_empty(),
-        "the origin rejection carries no body at all, not even an error envelope"
-    );
+    let json: Value = response
+        .json()
+        .await
+        .expect("the origin rejection carries the canonical envelope");
+    assert_error_envelope(&json, "forbidden", DetailsPresence::Absent);
 }

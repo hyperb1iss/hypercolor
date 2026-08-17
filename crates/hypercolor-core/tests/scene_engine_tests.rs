@@ -590,7 +590,13 @@ fn scene_manager_reorder_layers_requires_exact_permutation() {
     let stale = mgr
         .reorder_group_layers(group_id, vec![base_id, top_id], Some(0))
         .expect_err("stale reorder should fail");
-    assert_eq!(stale, LayerMutationError::Stale { current: 1 });
+    assert_eq!(
+        stale,
+        LayerMutationError::Stale {
+            expected: 0,
+            current: 1
+        }
+    );
 }
 
 #[test]
@@ -644,7 +650,13 @@ fn scene_manager_patch_layer_effect_controls_uses_layers_version() {
             Some(0),
         )
         .expect_err("stale control patch should fail");
-    assert_eq!(stale, LayerMutationError::Stale { current: 1 });
+    assert_eq!(
+        stale,
+        LayerMutationError::Stale {
+            expected: 0,
+            current: 1
+        }
+    );
 }
 
 #[test]

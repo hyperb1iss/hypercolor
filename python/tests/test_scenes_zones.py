@@ -290,8 +290,8 @@ async def test_stale_revision_raises_precondition_error(client: HypercolorClient
                 {
                     "error": {
                         "code": "precondition_failed",
-                        "message": "groups_revision mismatch",
-                        "details": {},
+                        "message": "version mismatch: expected 13, current 14",
+                        "details": {"expected": 13, "current": 14},
                     },
                     "meta": {
                         "api_version": "1.0",

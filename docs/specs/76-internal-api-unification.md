@@ -151,9 +151,9 @@ pub enum DomainError {
 }
 ```
 
-- `impl IntoResponse for DomainError` — the codebase's first, and after wave C1 the ONLY error rendering: every route serves the canonical envelope `{ error: { code, message, details }, meta }`; `PreconditionFailed` → 412 with `ETag` set by the REST adapter. The transitional per-path legacy shims (`domain::legacy`, `into_v1_response`) exist only so the service lift could land without coupled client changes, and are deleted in C1 with all clients updated in the same PR.
+- `impl IntoResponse for DomainError` — the ONLY error rendering: every route serves the canonical envelope `{ error: { code, message, details }, meta }`, with `details` omitted when the error carries no context; `PreconditionFailed` → 412 with `ETag` set by the REST adapter. The transitional per-path legacy shims (`domain::legacy`, `into_v1_response`) were deleted in C1a with all clients updated in the same PR. Beyond the §2.1 sketch the enum carries `Malformed` (400), `Unauthorized` (401), `Forbidden` (403), `PayloadTooLarge` (413), `UnsupportedMediaType` (415), and `RateLimited` (429), because auth, media-type, and rate-limit semantics cannot fold into `Validation` without changing what a client is told; `Validation`, `Conflict`, and `Forbidden` carry an optional structured `details` value.
 - `impl From<DomainError> for McpToolError`; WS command results serialize the same `ApiErrorBody` — one form, no handshake versioning.
-- `ApiError` (the `Response` factory) is deleted in C1; `Result<T, Response>` is forbidden and lint-gated post-migration.
+- `ApiError` (the `Response` factory) was deleted in C1a; `Result<T, Response>` is forbidden and scan-gated by `daemon/tests/api_error_surface_tests.rs`.
 
 ### 2.2 Service signatures
 

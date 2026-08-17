@@ -10,7 +10,7 @@ Studio writes are guarded by optimistic concurrency: every zone, layer, and layo
 
 ## Save rejected: "Scene changed elsewhere — reloaded, try again"
 
-This toast means the daemon returned a `412 Precondition Failed` on the zone layout save. The daemon replied with a `groups_revision mismatch` error and the current revision number; the UI cleared the live preview, reloaded the scene, and showed the toast.
+This toast means the daemon returned a `412 Precondition Failed` on the zone layout save. The daemon replied with a `precondition_failed` error carrying the authoritative revision in `error.details.current`; the UI cleared the live preview, reloaded the scene, and showed the toast.
 
 **Why it happens.** Every zone mutation (create, rename, delete, assign device, remove device, change unassigned behavior) increments the scene's `groups_revision`. The UI sends the revision it loaded as an `If-Match` header. If the revision on the server no longer matches, the write is rejected. This is not a bug; it prevents two simultaneous edits from silently clobbering each other.
 

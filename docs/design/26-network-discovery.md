@@ -180,7 +180,7 @@ endpoints (`/api/v1/config*`) must redact the following fields in responses:
 > won't expose it. But if env var values are ever surfaced in a debug/status
 > endpoint, they must be redacted.
 
-**Rejected requests** use the existing `ApiError::unauthorized()` envelope:
+**Rejected requests** use the standard `DomainError::unauthorized()` envelope:
 
 ```json
 {
@@ -406,7 +406,7 @@ the same `ServerIdentity` fields. Additive change — no existing fields removed
 **Files:** `crates/hypercolor-daemon/tests/auth_tests.rs`
 
 - Test: no key configured -> all requests pass
-- Test: key configured -> missing key returns 401 with `ApiError` envelope
+- Test: key configured -> missing key returns 401 with the canonical error envelope
 - Test: key configured -> correct key returns 200
 - Test: exempt endpoints (`/health`, `/api/v1/server`) pass without key
 - Test: `?token=` query param works (NOT `?api_key=`)

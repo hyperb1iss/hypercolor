@@ -158,7 +158,7 @@ pub struct EffectApplied {
 /// [`DomainError::Validation`] for a display face, an unimplemented
 /// transition, or a zone that refuses the effect,
 /// [`DomainError::Conflict`] when the active scene is snapshot-locked,
-/// and [`DomainError::PreconditionFailed`] when a concurrent scene
+/// and [`DomainError::Conflict`] when a concurrent scene
 /// mutation lands first.
 pub async fn apply_effect(
     state: &AppState,
@@ -288,7 +288,7 @@ pub struct EffectStopped {
 /// # Errors
 ///
 /// [`DomainError::Conflict`] when the active scene is snapshot-locked,
-/// and [`DomainError::PreconditionFailed`] when a concurrent scene
+/// and [`DomainError::Conflict`] when a concurrent scene
 /// mutation lands first.
 pub async fn stop_effect(
     state: &AppState,
@@ -423,7 +423,7 @@ pub enum ControlsRefusal {
 /// # Errors
 ///
 /// [`DomainError::Conflict`] when the active scene is snapshot-locked
-/// and [`DomainError::PreconditionFailed`] when a concurrent scene
+/// and [`DomainError::Conflict`] when a concurrent scene
 /// mutation lands first. A refusal that names the zone's own state comes
 /// back as `Ok(Err(ControlsRefusal))`, because each transport renders
 /// those three cases on its own frozen wire.
@@ -572,7 +572,7 @@ pub async fn set_control_binding(
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn invalidate_active_zones(state: &AppState) -> Result<SceneCommit, DomainError> {
     // A dropped invalidation leaves the active scene's resolved zones

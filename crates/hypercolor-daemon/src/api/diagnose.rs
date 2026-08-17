@@ -4,16 +4,17 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::system::{InputStatus, actionable_input_diagnostics, input_status_snapshot};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
+use crate::domain::DomainError;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 
 const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
@@ -745,11 +746,12 @@ fn round_2(value: f64) -> f64 {
 
 /// `POST /api/v1/diagnose/memory` — Capture Servo memory profiler output.
 pub async fn memory_diagnostics() -> Response {
+    // Windows withholds the report rather than serving it: the embedded
+    // memory reporter can abort the daemon there.
     #[cfg(all(feature = "servo", target_os = "windows"))]
     {
-        ApiError::not_found(
-            "Servo memory diagnostics are disabled on Windows because the embedded memory reporter can abort the daemon",
-        )
+        DomainError::not_found(crate::domain::ResourceKind::Diagnostic, "servo-memory")
+            .into_response()
     }
 
     #[cfg(all(feature = "servo", not(target_os = "windows")))]
@@ -758,18 +760,21 @@ pub async fn memory_diagnostics() -> Response {
             .await
         {
             Ok(Ok(snapshot)) => ApiResponse::ok(snapshot),
-            Ok(Err(error)) => {
-                ApiError::internal(format!("Failed to collect Servo memory report: {error}"))
-            }
-            Err(error) => ApiError::internal(format!(
+            Ok(Err(error)) => DomainError::Internal(anyhow::anyhow!(
+                "Failed to collect Servo memory report: {error}"
+            ))
+            .into_response(),
+            Err(error) => DomainError::Internal(anyhow::anyhow!(
                 "Servo memory diagnostics worker task failed: {error}"
-            )),
+            ))
+            .into_response(),
         }
     }
 
     #[cfg(not(feature = "servo"))]
     {
-        ApiError::not_found("Servo memory diagnostics are not available in this build")
+        DomainError::not_found(crate::domain::ResourceKind::Diagnostic, "servo-memory")
+            .into_response()
     }
 }
 

@@ -842,12 +842,13 @@ Version lifecycle:
    The modal reads the new version from either location and
    advances its draft token before the next PATCH.
 3. If the server's current version differs from the request's
-   `If-Match`, it returns `412 Precondition Failed` with a body
-   containing the current server version so the client can decide
-   whether to reload or retry. The reconciliation dialog fires at
-   this point: "Another client changed this effect's controls while
-   you were editing. Reload and re-apply, or overwrite?" — default
-   action is "Reload."
+   `If-Match`, it returns `412 Precondition Failed` with
+   `code: "precondition_failed"` and `details` carrying `expected`
+   and `current`, plus the current version in the `ETag`, so the
+   client can decide whether to reload or retry. The
+   reconciliation dialog fires at this point: "Another client
+   changed this effect's controls while you were editing. Reload
+   and re-apply, or overwrite?" — default action is "Reload."
 
 Live mid-drag PATCHes (viewport rect at 80 ms throttle, § 6.1) use
 this loop: each successful throttled PATCH pulls back the new

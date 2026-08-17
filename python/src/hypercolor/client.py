@@ -1356,11 +1356,6 @@ def _decode_error_details(content: bytes) -> ApiErrorDetails | None:
     if not isinstance(payload, dict):
         return None
     error = payload.get("error")
-    # Some replies (notably 412 revision mismatches) carry a bare string
-    # reason plus context at the top level, not the usual error object.
-    if isinstance(error, str):
-        details = {key: value for key, value in payload.items() if key not in {"error", "meta"}}
-        return ApiErrorDetails(code="error", message=error, details=details or None)
     if not isinstance(error, dict):
         return None
     code = error.get("code")

@@ -35,8 +35,7 @@ Errors use:
 {
   "error": {
     "code": "not_found",
-    "message": "Preset not found: foo",
-    "details": null
+    "message": "preset not found: foo"
   },
   "meta": {}
 }

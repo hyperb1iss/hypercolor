@@ -20,8 +20,9 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::settings;
+use crate::domain::{DomainError, ResourceKind};
 use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewRuntime};
 use crate::session::current_global_brightness;
@@ -930,7 +931,7 @@ pub async fn get_sensor(State(state): State<Arc<AppState>>, Path(label): Path<St
         return ApiResponse::ok(reading);
     }
 
-    ApiError::not_found(format!("sensor '{label}' was not found"))
+    DomainError::not_found(ResourceKind::Sensor, &label).into_response()
 }
 
 /// `GET /api/v1/server` — Lightweight server identity for discovery probes.

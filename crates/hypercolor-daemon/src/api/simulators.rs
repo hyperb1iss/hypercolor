@@ -17,8 +17,8 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
-use crate::domain::DomainError;
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};
 use crate::simulators::{
@@ -63,13 +63,13 @@ pub async fn get_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let store = state.simulated_displays.read().await;
     match store.get(device_id) {
         Some(config) => ApiResponse::ok(config),
-        None => ApiError::not_found(format!("Simulated display not found: {device_id}")),
+        None => DomainError::not_found(ResourceKind::SimulatedDisplay, device_id).into_response(),
     }
 }
 
@@ -87,7 +87,7 @@ pub async fn create_simulated_display(
     };
 
     if let Err(error) = validate_simulator_config(&config) {
-        return ApiError::validation(error);
+        return DomainError::validation(error).into_response();
     }
     let config = config.normalized();
 
@@ -103,7 +103,10 @@ pub async fn create_simulated_display(
     )
     .await
     {
-        return ApiError::internal(format!("Failed to activate simulated display: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to activate simulated display: {error}"
+        ))
+        .into_response();
     }
 
     ApiResponse::created(config)
@@ -116,13 +119,14 @@ pub async fn patch_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     let updated = {
         let mut store = state.simulated_displays.write().await;
         let Some(existing) = store.get(device_id) else {
-            return ApiError::not_found(format!("Simulated display not found: {device_id}"));
+            return DomainError::not_found(ResourceKind::SimulatedDisplay, device_id)
+                .into_response();
         };
 
         let updated = SimulatedDisplayConfig {
@@ -135,7 +139,7 @@ pub async fn patch_simulated_display(
         };
 
         if let Err(error) = validate_simulator_config(&updated) {
-            return ApiError::validation(error);
+            return DomainError::validation(error).into_response();
         }
         let updated = updated.normalized();
 
@@ -150,7 +154,10 @@ pub async fn patch_simulated_display(
     )
     .await
     {
-        return ApiError::internal(format!("Failed to refresh simulated display: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to refresh simulated display: {error}"
+        ))
+        .into_response();
     }
 
     ApiResponse::ok(updated)
@@ -162,14 +169,15 @@ pub async fn delete_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     match tokio::spawn(delete_simulated_display_workflow(state, device_id)).await {
         Ok(response) => response,
-        Err(error) => ApiError::internal(format!(
+        Err(error) => DomainError::Internal(anyhow::anyhow!(
             "Simulated display deletion workflow failed: {error}"
-        )),
+        ))
+        .into_response(),
     }
 }
 
@@ -179,7 +187,7 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
         store.remove(device_id)
     };
     if removed.is_none() {
-        return ApiError::not_found(format!("Simulated display not found: {device_id}"));
+        return DomainError::not_found(ResourceKind::SimulatedDisplay, device_id).into_response();
     }
     crate::api::persist_simulated_displays(&state).await;
 
@@ -194,14 +202,20 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
     )
     .await
     {
-        return ApiError::internal(format!("Failed to disconnect simulated display: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to disconnect simulated display: {error}"
+        ))
+        .into_response();
     }
 
     {
         let mut store = state.logical_devices.write().await;
         store.retain(|_, entry| entry.physical_device_id != device_id);
         if let Err(error) = logical_devices::save_segments(&state.logical_devices_path, &store) {
-            return ApiError::internal(format!("Failed to persist logical devices: {error}"));
+            return DomainError::Internal(anyhow::anyhow!(
+                "Failed to persist logical devices: {error}"
+            ))
+            .into_response();
         }
     }
 
@@ -234,7 +248,7 @@ pub async fn get_simulated_display_frame(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(error) => return into_v1_response(error),
+        Err(error) => return error.into_response(),
     };
 
     if state
@@ -244,7 +258,7 @@ pub async fn get_simulated_display_frame(
         .get(device_id)
         .is_none()
     {
-        return ApiError::not_found(format!("Simulated display not found: {device_id}"));
+        return DomainError::not_found(ResourceKind::SimulatedDisplay, device_id).into_response();
     }
 
     if let Some(frame) = state
@@ -262,9 +276,7 @@ pub async fn get_simulated_display_frame(
         ))));
     }
 
-    ApiError::not_found(format!(
-        "Simulated display frame not available: {device_id}"
-    ))
+    DomainError::not_found(ResourceKind::DisplayPreview, device_id).into_response()
 }
 
 fn jpeg_response(body: Bytes) -> Response {

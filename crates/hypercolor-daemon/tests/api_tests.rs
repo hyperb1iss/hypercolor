@@ -3005,7 +3005,7 @@ async fn config_key_routes_reject_a_malformed_key() {
             .expect("failed to execute request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "bad_request");
+        assert_eq!(json["error"]["code"], "malformed_request");
     }
 }
 
@@ -3493,8 +3493,9 @@ async fn install_effect_upload_rejects_invalid_html() {
         .await
         .expect("failed to execute upload request");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
     let errors = json["error"]["details"]["errors"]
         .as_array()
         .expect("validation errors should be present");
@@ -3533,8 +3534,9 @@ async fn install_effect_upload_rejects_duplicate_preset_ids() {
             .await
             .expect("failed to execute upload request");
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "validation_error");
         let errors = json["error"]["details"]["errors"]
             .as_array()
             .expect("validation errors should be present");
@@ -5571,12 +5573,9 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message")
-            .contains("unsupported driver-level control impact")
-    );
+    // An internal failure names itself in tracing, never on the wire.
+    assert_eq!(json["error"]["code"], "internal_error");
+    assert_eq!(json["error"]["message"], "internal error");
 }
 
 #[tokio::test]
@@ -5631,12 +5630,9 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message")
-            .contains("unsupported device-level control impact")
-    );
+    // An internal failure names itself in tracing, never on the wire.
+    assert_eq!(json["error"]["code"], "internal_error");
+    assert_eq!(json["error"]["message"], "internal error");
 }
 
 #[tokio::test]
@@ -7229,8 +7225,9 @@ async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
         .expect("failed to execute request");
     assert_eq!(stale_response.status(), StatusCode::PRECONDITION_FAILED);
     let stale_body = body_json(stale_response).await;
+    assert_eq!(stale_body["error"]["code"], "precondition_failed");
     assert_eq!(
-        stale_body["current"]
+        stale_body["error"]["details"]["current"]
             .as_u64()
             .expect("stale response should expose current version"),
         next_controls_version
@@ -9901,9 +9898,9 @@ async fn apply_profile_rejects_unimplemented_transition_requests() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "bad_request");
+    assert_eq!(json["error"]["code"], "validation_error");
     assert!(
         json["error"]["message"]
             .as_str()
@@ -10010,12 +10007,9 @@ async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("profile effect not found"),
-    );
+    // An internal failure names itself in tracing, never on the wire.
+    assert_eq!(json["error"]["code"], "internal_error");
+    assert_eq!(json["error"]["message"], "internal error");
 
     let active_layout = {
         let spatial = state.spatial_engine.read().await;
@@ -12374,9 +12368,9 @@ async fn apply_effect_rejects_unimplemented_transition_requests() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "bad_request");
+    assert_eq!(json["error"]["code"], "validation_error");
     assert!(
         json["error"]["message"]
             .as_str()
