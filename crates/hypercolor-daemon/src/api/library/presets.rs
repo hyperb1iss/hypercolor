@@ -6,7 +6,6 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::{
@@ -17,7 +16,7 @@ use hypercolor_types::scene::ZoneId;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
-use crate::api::effects::resolve_effect_metadata;
+use crate::api::effects::{EffectRefSummary, resolve_effect_metadata};
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -26,15 +25,12 @@ use super::{
     resolve_preset_id, store_error_to_response, unix_epoch_ms,
 };
 
-pub use hypercolor_types::api::library::{ApplyPresetRequest, SavePresetRequest};
-
-// ── Request / Response Types ────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct PresetListResponse {
-    pub items: Vec<EffectPreset>,
-    pub pagination: crate::api::devices::Pagination,
-}
+// Wire contracts live in hypercolor-types::api::library — shared with
+// the web UI and the TUI.
+pub use hypercolor_types::api::library::{
+    ApplyPresetRequest, ApplyPresetResponse, DeletePresetResponse, PresetListResponse,
+    PresetRefSummary, SavePresetRequest,
+};
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -203,10 +199,10 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
             kind: LibraryChangeKind::Removed,
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "id": preset_id.to_string(),
-        "deleted": true,
-    }))
+    ApiResponse::ok(DeletePresetResponse {
+        id: preset_id.to_string(),
+        deleted: true,
+    })
 }
 
 /// `POST /api/v1/library/presets/:id/apply` — activate a preset immediately.
@@ -329,19 +325,19 @@ pub async fn apply_preset(
     };
     crate::api::persist_runtime_session(&state).await;
 
-    ApiResponse::ok(serde_json::json!({
-        "preset": {
-            "id": preset.id.to_string(),
-            "name": preset.name,
+    ApiResponse::ok(ApplyPresetResponse {
+        preset: PresetRefSummary {
+            id: preset.id.to_string(),
+            name: preset.name,
         },
-        "effect": {
-            "id": metadata.id.to_string(),
-            "name": metadata.name,
+        effect: EffectRefSummary {
+            id: metadata.id.to_string(),
+            name: metadata.name,
         },
-        "applied_controls": activation.applied,
-        "rejected_controls": activation.rejected,
-        "warnings": activation.warnings,
-    }))
+        applied_controls: activation.applied,
+        rejected_controls: activation.rejected,
+        warnings: activation.warnings,
+    })
 }
 
 /// Apply a preset to a named non-Primary zone. When the zone already runs
@@ -429,19 +425,19 @@ async fn apply_preset_to_zone(
     }
     crate::api::persist_runtime_session(state).await;
 
-    ApiResponse::ok(serde_json::json!({
-        "preset": {
-            "id": preset.id.to_string(),
-            "name": preset.name,
+    ApiResponse::ok(ApplyPresetResponse {
+        preset: PresetRefSummary {
+            id: preset.id.to_string(),
+            name: preset.name.clone(),
         },
-        "effect": {
-            "id": metadata.id.to_string(),
-            "name": metadata.name,
+        effect: EffectRefSummary {
+            id: metadata.id.to_string(),
+            name: metadata.name.clone(),
         },
-        "applied_controls": applied,
-        "rejected_controls": rejected,
-        "warnings": Vec::<String>::new(),
-    }))
+        applied_controls: applied,
+        rejected_controls: rejected,
+        warnings: Vec::new(),
+    })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
