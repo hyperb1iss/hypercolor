@@ -7,6 +7,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::{IntoResponse, Response};
+use serde::Serialize;
 use tokio::sync::RwLockWriteGuard;
 
 use hypercolor_core::attachment::{ComponentRegistry, TemplateFilter};
@@ -24,9 +25,34 @@ use crate::domain::{DomainError, ResourceKind};
 // Wire contracts live in hypercolor-types::api::attachments — shared
 // with the web UI and the TUI.
 pub use hypercolor_types::api::attachments::{
-    CategoryListResponse, CategorySummary, DeleteTemplateResponse, ListTemplatesQuery,
-    TemplateDetail, TemplateListResponse, TemplateSummary, VendorListResponse, VendorSummary,
+    ListTemplatesQuery, TemplateDetail, TemplateListResponse, TemplateSummary,
 };
+
+// The category and vendor facets and the per-template item routes are not
+// in spec 78's Appendix A, so their shapes stay daemon-local rather than
+// entering the shared contract on the way to deletion.
+#[derive(Debug, Serialize)]
+pub struct CategoryListResponse {
+    pub items: Vec<CategorySummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CategorySummary {
+    pub category: ComponentCategory,
+    pub count: usize,
+    pub label: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VendorListResponse {
+    pub items: Vec<VendorSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VendorSummary {
+    pub vendor: String,
+    pub count: usize,
+}
 
 /// `GET /api/v1/attachments/templates`
 pub async fn list_templates(
@@ -162,10 +188,10 @@ pub async fn delete_template(
         return DomainError::Internal(anyhow::anyhow!("{error}")).into_response();
     }
 
-    ApiResponse::ok(DeleteTemplateResponse {
-        id: removed.id,
-        deleted: true,
-    })
+    ApiResponse::ok(serde_json::json!({
+        "id": removed.id,
+        "deleted": true,
+    }))
 }
 
 /// `GET /api/v1/attachments/categories`

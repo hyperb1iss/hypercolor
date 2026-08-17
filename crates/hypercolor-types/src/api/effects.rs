@@ -268,13 +268,6 @@ pub struct ResetControlsRequest {
     pub zone_id: Option<String>,
 }
 
-/// Response for `POST /api/v1/effects/active/reset`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResetControlsResponse {
-    pub effect: EffectRefSummary,
-    pub reset: bool,
-}
-
 /// `{ id, name }` reference to an effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct EffectRefSummary {
@@ -298,17 +291,6 @@ pub struct ResumeEffectResponse {
     pub resumed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<EffectRefSummary>,
-}
-
-/// Response for `POST /api/v1/effects/stop`.
-///
-/// `released_network_devices` counts the streaming network devices that
-/// were handed back when the effect stopped.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StopEffectResponse {
-    pub stopped: bool,
-    #[serde(default)]
-    pub released_network_devices: usize,
 }
 
 /// Layout link summary in apply responses.

@@ -67,8 +67,8 @@ pub use hypercolor_types::api::effects::{
     EffectLayoutApplyResult, EffectLayoutResponse, EffectListResponse, EffectPresetListResponse,
     EffectPresetOrigin, EffectPresetSummary, EffectRefSummary, EffectSummary,
     InstalledEffectResponse, LayoutLinkSummary, PauseEffectResponse, RescanResponse,
-    ResetControlsRequest, ResetControlsResponse, ResumeEffectResponse, SetEffectLayoutResponse,
-    StopEffectResponse, TransitionRequest, UpdateActiveControlsRequest,
+    ResetControlsRequest, ResumeEffectResponse, SetEffectLayoutResponse, TransitionRequest,
+    UpdateActiveControlsRequest,
 };
 
 struct ResolvedEffectPreset {
@@ -930,10 +930,10 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(StopEffectResponse {
-        stopped: true,
-        released_network_devices: stopped.released_network_devices,
-    })
+    ApiResponse::ok(serde_json::json!({
+        "stopped": true,
+        "released_network_devices": stopped.released_network_devices,
+    }))
 }
 
 /// `PATCH /api/v1/effects/active/controls` — Update controls on active effect
@@ -1278,13 +1278,13 @@ pub async fn reset_controls(
 
     info!(effect = %effect_name, "Controls reset to defaults");
 
-    ApiResponse::ok(ResetControlsResponse {
-        effect: EffectRefSummary {
-            id: effect_id.to_string(),
-            name: effect_name,
+    ApiResponse::ok(serde_json::json!({
+        "effect": {
+            "id": effect_id.to_string(),
+            "name": effect_name,
         },
-        reset: true,
-    })
+        "reset": true,
+    }))
 }
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
