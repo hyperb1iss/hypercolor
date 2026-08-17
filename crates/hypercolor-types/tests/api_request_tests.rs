@@ -4,18 +4,116 @@
 //! emits when optional fields are unset, and what the daemon accepts
 //! coming the other way.
 
+use hypercolor_types::api::assets::AssetUpdateRequest;
 use hypercolor_types::api::controls::InvokeControlActionRequest;
 use hypercolor_types::api::devices::{
     DiscoverRequest, IdentifyAttachmentRequest, IdentifyRequest, UpdateAttachmentsRequest,
 };
 use hypercolor_types::api::displays::{DisplayFaceScope, DisplayFaceScopeQuery};
-use hypercolor_types::api::layers::PatchLayerControlsRequest;
-use hypercolor_types::api::library::{
-    PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest,
+use hypercolor_types::api::layers::{
+    CreateLayerRequest, PatchLayerControlsRequest, UpdateLayerRequest,
 };
-use hypercolor_types::api::profiles::ApplyProfileRequest;
+use hypercolor_types::api::library::{
+    PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest, SavePresetRequest,
+};
+use hypercolor_types::api::profiles::{ApplyProfileRequest, CreateProfileRequest};
+use hypercolor_types::api::scenes::CreateSceneRequest;
 use hypercolor_types::controls::{ControlValue, ControlValueMap};
+use hypercolor_types::pairing::PairDeviceRequest;
 use serde_json::json;
+
+/// Assert that a payload carrying explicit `null`s for the named fields
+/// decodes to the same value as one that omits them entirely.
+///
+/// Naming these shapes into shared types moved several clients from
+/// emitting `"field": null` to omitting the key. This is the fence that
+/// keeps the two spellings interchangeable at the daemon.
+macro_rules! assert_null_and_absent_agree {
+    ($ty:ty, $base:expr, $($field:literal),+ $(,)?) => {{
+        let absent_payload: serde_json::Value = $base;
+        let mut null_payload = absent_payload.clone();
+        {
+            let object = null_payload
+                .as_object_mut()
+                .expect("fixture payload must be a JSON object");
+            $( object.insert($field.to_owned(), serde_json::Value::Null); )+
+        }
+
+        let absent: $ty = serde_json::from_value(absent_payload)
+            .expect(concat!(stringify!($ty), " must decode with the fields absent"));
+        let explicit_null: $ty = serde_json::from_value(null_payload)
+            .expect(concat!(stringify!($ty), " must decode with explicit nulls"));
+
+        assert_eq!(
+            absent,
+            explicit_null,
+            concat!(stringify!($ty), ": absent and explicit-null must decode alike"),
+        );
+    }};
+}
+
+#[test]
+fn absent_and_explicit_null_optional_fields_decode_alike() {
+    assert_null_and_absent_agree!(AssetUpdateRequest, json!({}), "name", "tags");
+    assert_null_and_absent_agree!(
+        CreateProfileRequest,
+        json!({ "name": "evening" }),
+        "description",
+        "brightness",
+    );
+    assert_null_and_absent_agree!(
+        CreateSceneRequest,
+        json!({ "name": "movie-night" }),
+        "description",
+        "enabled",
+        "mutation_mode",
+    );
+    assert_null_and_absent_agree!(
+        SavePresetRequest,
+        json!({ "name": "warm", "effect": "aurora" }),
+        "description",
+        "controls",
+        "tags",
+    );
+    assert_null_and_absent_agree!(
+        SavePlaylistRequest,
+        json!({ "name": "rotation" }),
+        "description",
+        "loop_enabled",
+        "items",
+    );
+    assert_null_and_absent_agree!(
+        PlaylistItemRequest,
+        json!({ "target": { "type": "effect", "effect": "aurora" } }),
+        "duration_ms",
+        "transition_ms",
+    );
+    assert_null_and_absent_agree!(
+        CreateLayerRequest,
+        json!({ "source": { "type": "screen_region" } }),
+        "name",
+    );
+    assert_null_and_absent_agree!(
+        UpdateLayerRequest,
+        json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "source": { "type": "screen_region" },
+        }),
+        "name",
+    );
+}
+
+#[test]
+fn absent_and_empty_pairing_values_decode_alike() {
+    let absent: PairDeviceRequest = serde_json::from_value(json!({ "activate_after_pair": true }))
+        .expect("pairing request decodes without values");
+    let empty: PairDeviceRequest =
+        serde_json::from_value(json!({ "values": {}, "activate_after_pair": true }))
+            .expect("pairing request decodes with an empty values map");
+
+    assert_eq!(absent, empty);
+    assert!(absent.values.is_empty());
+}
 
 #[test]
 fn unset_optional_request_fields_are_absent_not_null() {
