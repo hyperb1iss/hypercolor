@@ -2,7 +2,27 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::common::Pagination;
 use crate::spatial::Output;
+
+/// Summary row from `GET /api/v1/layouts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutSummary {
+    pub id: String,
+    pub name: String,
+    pub canvas_width: u32,
+    pub canvas_height: u32,
+    pub zone_count: usize,
+    #[serde(default)]
+    pub is_active: bool,
+}
+
+/// Paginated response from `GET /api/v1/layouts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutListResponse {
+    pub items: Vec<LayoutSummary>,
+    pub pagination: Pagination,
+}
 
 /// Query parameters for `GET /api/v1/layouts`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

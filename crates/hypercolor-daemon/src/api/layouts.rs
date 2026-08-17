@@ -18,7 +18,6 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
-use serde::Serialize;
 #[cfg(feature = "persistence-test-hooks")]
 use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
@@ -38,26 +37,8 @@ use crate::scene_transactions::{
 };
 
 pub use hypercolor_types::api::layouts::{
-    CreateLayoutRequest, LayoutListQuery, UpdateLayoutRequest,
+    CreateLayoutRequest, LayoutListQuery, LayoutListResponse, LayoutSummary, UpdateLayoutRequest,
 };
-
-// ── Request / Response Types ─────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct LayoutListResponse {
-    pub items: Vec<LayoutSummary>,
-    pub pagination: super::devices::Pagination,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LayoutSummary {
-    pub id: String,
-    pub name: String,
-    pub canvas_width: u32,
-    pub canvas_height: u32,
-    pub zone_count: usize,
-    pub is_active: bool,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LayoutPersistenceStatus {

@@ -1,30 +1,10 @@
 //! Layout-related API types and fetch functions.
 
-use serde::{Deserialize, Serialize};
-
 use super::client;
 
-// ── Types ───────────────────────────────────────────────────────────────────
-
-/// Layout summary from `GET /api/v1/layouts`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LayoutSummary {
-    pub id: String,
-    pub name: String,
-    pub canvas_width: u32,
-    pub canvas_height: u32,
-    pub zone_count: usize,
-    #[serde(default)]
-    pub is_active: bool,
-}
-
-/// Paginated layout list response.
-#[derive(Debug, Deserialize)]
-pub struct LayoutListResponse {
-    pub items: Vec<LayoutSummary>,
-}
-
-pub use hypercolor_types::api::layouts::{CreateLayoutRequest, UpdateLayoutRequest};
+pub use hypercolor_types::api::layouts::{
+    CreateLayoutRequest, LayoutListResponse, LayoutSummary, UpdateLayoutRequest,
+};
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
