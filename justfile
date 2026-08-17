@@ -467,6 +467,7 @@ app-bundle-assets *args='': app-bundle-binaries
 [unix]
 app-bundle *args='': app-assets app-bundle-assets
     cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
+    ./scripts/macos-dev-postsign.sh
 
 [windows]
 app-bundle *args='': app-assets app-bundle-assets

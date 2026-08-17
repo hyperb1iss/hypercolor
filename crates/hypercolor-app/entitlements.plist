@@ -6,6 +6,11 @@
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
+  <!-- Servo links Homebrew dylibs (freetype and friends) signed by other
+       teams; hardened-runtime library validation would refuse to load
+       them once the bundle itself is certificate-signed. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
   <key>com.apple.security.network.client</key>
   <true/>
   <key>com.apple.security.network.server</key>

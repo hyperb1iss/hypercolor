@@ -95,6 +95,17 @@ Recording or Input Monitoring to a bundle signed this way, the grants
 survive rebuilds. Stale rows from earlier ad-hoc builds can be removed
 in System Settings with the minus button.
 
+Two more pieces happen automatically during `just app-bundle`, both
+mirroring the release lane. The entitlements include
+`disable-library-validation` because Servo links Homebrew dylibs signed
+by other teams, which hardened-runtime library validation would refuse
+once the bundle is certificate-signed. And
+`scripts/macos-dev-postsign.sh` re-signs the daemon with the
+`tech.hyperbliss.hypercolor.sidecar` identifier after the Tauri build,
+because the daemon ownership handshake verifies that identity chain
+between the app and its sidecar; Tauri alone would sign it with a
+filename-derived identifier the handshake rejects.
+
 Release DMGs use a real Developer ID plus notarization through
 `just mac-installer`; see [RELEASING.md](RELEASING.md). The dev
 certificate is for local iteration only and never ships.
