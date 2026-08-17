@@ -43,7 +43,7 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
                 },
                 "controls": {
                     "type": "object",
-                    "description": "Optional control overrides to store on the display face group.",
+                    "description": "Optional control overrides to store on the display face zone.",
                     "additionalProperties": true
                 }
             },

@@ -14115,7 +14115,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
     );
     let group_id = put_json["data"]["zone"]["id"]
         .as_str()
-        .expect("display face group should include an id");
+        .expect("display face zone should include an id");
 
     let layers_response = app
         .clone()
@@ -14397,7 +14397,7 @@ async fn face_survives_effect_swap() {
     let assign_json = body_json(assign_response).await;
     let face_group_id = assign_json["data"]["zone"]["id"]
         .as_str()
-        .expect("face group id should be present")
+        .expect("face zone id should be present")
         .to_owned();
 
     for effect_name in ["Aurora", "Sunset"] {

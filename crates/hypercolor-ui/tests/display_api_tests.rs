@@ -401,13 +401,23 @@ fn hex_to_rgba_expands_css_shorthand() {
 
 /// The display-face response is the one REST shape in this crate with no
 /// shared `hypercolor_types::api` type behind it: the daemon builds its own
-/// struct and this crate mirrors it by hand. Nothing makes the compiler
-/// compare the two, so a field rename on either side desyncs the wire while
-/// both sides still build. This pins the exact JSON the daemon's own
-/// `api_tests` assert it emits, so the mirror cannot drift silently.
+/// struct and this crate mirrors it by hand, so nothing makes the compiler
+/// compare the two.
 ///
-/// The fence retires when the displays domain moves into
-/// `hypercolor_types::api` and the compiler takes the job over.
+/// Read what this does and does not buy, because the difference matters.
+/// The literal below is a hand-copied subset of the daemon's response,
+/// carrying the fields this crate reads rather than all seventeen a `Zone`
+/// serializes. This crate has no dependency on `hypercolor-daemon`, so the
+/// test cannot observe the real serializer. It therefore catches a rename
+/// on THIS side of the wire and nothing else: change the mirror alone and
+/// this fails, which is the mistake most likely to be made here.
+///
+/// It does NOT catch a daemon-side rename that updates the daemon's own
+/// pins and never touches this crate. The mirror and this literal would
+/// drift together and both suites would stay green. Closing that hole needs
+/// the shared type, not a bigger fixture, so treat that residue as live
+/// until the displays domain moves into `hypercolor_types::api` and the
+/// compiler takes the job over.
 #[test]
 fn display_face_response_decodes_the_daemon_shape() {
     const DISPLAY_ID: &str = "6f1f2a3c-5d4e-4b7a-9c8d-0e1f2a3b4c5d";
