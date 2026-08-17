@@ -5307,6 +5307,7 @@ dependencies = [
  "leptos",
  "leptos-use",
  "proptest",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
