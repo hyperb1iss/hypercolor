@@ -526,11 +526,12 @@ Send them in the `config` field of a `subscribe` message. A rejected stanza
 fails the whole request with an `invalid_config` error, and every channel named
 in it is left exactly as it was.
 
-Each stanza is validated by the channel that owns it, so three shapes are
+Each stanza is validated by the channel that owns it, so four shapes are
 refused rather than ignored: a value outside the documented range, a field the
-channel does not define, and a stanza sent for a channel that takes no config
-(`events`, `frame_events`, `screen_zones`, `sensors`, `input_events`). A `null`
-stanza on a configurable channel means "leave this channel alone".
+channel does not define, a stanza sent for a channel that takes no config
+(`events`, `frame_events`, `screen_zones`, `sensors`, `input_events`), and the
+same channel named twice in one `config` object. A `null` stanza on a
+configurable channel means "leave this channel alone".
 
 ### frames config
 

@@ -8,7 +8,7 @@ use std::fmt;
 use std::hash::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
+use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
@@ -336,7 +336,7 @@ pub(super) enum ClientMessage {
     Subscribe {
         channels: Vec<String>,
         #[serde(default)]
-        config: Option<serde_json::Map<String, serde_json::Value>>,
+        config: Option<ConfigStanzas>,
         #[serde(default)]
         preview_transport: Option<String>,
     },
@@ -394,6 +394,59 @@ pub(super) enum ClientMessage {
         #[serde(deserialize_with = "deserialize_interactive_preview_id")]
         preview_id: String,
     },
+}
+
+/// The `config` object of a subscribe: one stanza per channel, keyed by
+/// wire name, with each stanza left as raw JSON for the topic that owns
+/// it to validate.
+///
+/// Naming a channel twice is refused rather than resolved. A client that
+/// sends two stanzas for one channel does not agree with itself about
+/// which config should win, and silently keeping the last one hides that
+/// from the only party who can fix it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct ConfigStanzas(serde_json::Map<String, serde_json::Value>);
+
+impl ConfigStanzas {
+    pub(super) const fn stanzas(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ConfigStanzas {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StanzaVisitor;
+
+        impl<'de> Visitor<'de> for StanzaVisitor {
+            type Value = serde_json::Map<String, serde_json::Value>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object of per-channel config stanzas")
+            }
+
+            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut stanzas = serde_json::Map::new();
+                while let Some(channel) = access.next_key::<String>()? {
+                    let stanza = access.next_value::<serde_json::Value>()?;
+                    if stanzas.contains_key(&channel) {
+                        return Err(de::Error::custom(format_args!(
+                            "duplicate config stanza `{channel}`"
+                        )));
+                    }
+                    stanzas.insert(channel, stanza);
+                }
+                Ok(stanzas)
+            }
+        }
+
+        deserializer.deserialize_map(StanzaVisitor).map(Self)
+    }
 }
 
 /// Wire form of one injected input edge from a browser preview.

@@ -45,10 +45,10 @@ use super::cache::{
 use super::command::dispatch_command;
 use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
-    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, InteractivePreviewConfig,
-    MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage, SubscriptionState, TopicSelection,
-    WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
-    validate_interactive_preview_shape, ws_capabilities,
+    BrowserInputEdgeWire, ClientMessage, ConfigStanzas, HelloFps, HelloState,
+    InteractivePreviewConfig, MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage,
+    SubscriptionState, TopicSelection, WsProtocolError, parse_channels, sorted_channel_names,
+    unique_sorted_channel_names, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
     PreviewCursorQueue, PreviewOutboundItem, PreviewOutboundSender, PreviewSendCursor,
@@ -1226,7 +1226,9 @@ async fn handle_client_message(
                 return;
             }
 
-            let next_subscriptions = match subscriptions.subscribe(&selections, config.as_ref()) {
+            let next_subscriptions = match subscriptions
+                .subscribe(&selections, config.as_ref().map(ConfigStanzas::stanzas))
+            {
                 Ok(next) => next,
                 Err(error) => {
                     let _ = send_json(socket, &error.into_message()).await;

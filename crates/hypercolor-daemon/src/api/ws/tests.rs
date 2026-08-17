@@ -2518,6 +2518,48 @@ fn config_for_a_configless_topic_is_refused_the_same_way_in_both_phases() {
 }
 
 #[test]
+fn a_repeated_config_stanza_is_refused_rather_than_resolved() {
+    // Two stanzas for one channel means the client does not agree with
+    // itself about which config wins. Taking the last one silently would
+    // hide that from the only party who can fix it.
+    let repeated = r#"{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":100},"metrics":{"interval_ms":900}}}"#;
+    let error = serde_json::from_str::<ClientMessage>(repeated)
+        .expect_err("a repeated config stanza must not resolve to the last one");
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate config stanza `metrics`"),
+        "expected a duplicate-stanza rejection, got: {error}"
+    );
+
+    // One stanza for the same channel still parses and carries its value.
+    let single =
+        r#"{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":900}}}"#;
+    let message: ClientMessage =
+        serde_json::from_str(single).expect("a single stanza per channel parses");
+    let ClientMessage::Subscribe { config, .. } = message else {
+        panic!("expected a subscribe");
+    };
+    let config = config.expect("the stanza survives parsing");
+    assert_eq!(config.stanzas()["metrics"]["interval_ms"], 900);
+}
+
+#[test]
+fn an_absent_or_null_config_object_is_no_config_at_all() {
+    for raw in [
+        r#"{"type":"subscribe","channels":["metrics"]}"#,
+        r#"{"type":"subscribe","channels":["metrics"],"config":null}"#,
+    ] {
+        let message: ClientMessage =
+            serde_json::from_str(raw).expect("subscribe without config parses");
+        let ClientMessage::Subscribe { config, .. } = message else {
+            panic!("expected a subscribe");
+        };
+        assert!(config.is_none(), "{raw}");
+    }
+}
+
+#[test]
 fn a_null_stanza_leaves_a_configurable_topic_alone() {
     let state = SubscriptionState::default()
         .subscribed(
