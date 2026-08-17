@@ -399,11 +399,11 @@ class HypercolorClient:
         controls: Mapping[str, Any] | None = None,
         transition: TransitionSpec | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         """Apply an effect with optional control overrides.
 
-        ``render_group`` targets a specific zone by id; omitted applies to
+        ``zone_id`` targets a specific zone by id; omitted applies to
         the scene's primary zone.
         """
         body = _drop_none(
@@ -411,7 +411,7 @@ class HypercolorClient:
                 "controls": dict(controls) if controls is not None else None,
                 "transition": _to_json_mapping(transition),
                 "preset_id": preset_id,
-                "render_group": render_group,
+                "zone_id": zone_id,
             }
         )
         kwargs = (
@@ -432,10 +432,10 @@ class HypercolorClient:
         effect_id: str,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         """Apply a bundled or saved preset to an effect and optional zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
             "POST",
             f"/effects/{_quote_path(effect_id)}/presets/{_quote_path(preset_id)}/apply",
@@ -503,9 +503,9 @@ class HypercolorClient:
             headers=_if_match_headers(if_match),
         )
 
-    async def reset_controls(self, *, render_group: str | None = None) -> MutationResult:
+    async def reset_controls(self, *, zone_id: str | None = None) -> MutationResult:
         """Reset effect controls to defaults, optionally scoped to one zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
             "POST", "/effects/active/reset", MutationResult, body=body or None
         )
@@ -995,10 +995,10 @@ class HypercolorClient:
         self,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> PresetApplyResult:
         """Apply a saved preset, optionally scoped to one zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
             "POST",
             f"/library/presets/{_quote_path(preset_id)}/apply",

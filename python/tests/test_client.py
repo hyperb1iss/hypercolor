@@ -575,7 +575,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     result = await client.apply_effect_preset(
         "aurora/main",
         "bundled-calm",
-        render_group="zone-left",
+        zone_id="zone-left",
     )
 
     assert list_route.called
@@ -583,7 +583,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     assert presets[0].editable is False
     assert presets[1].origin is EffectPresetOrigin.SAVED
     assert presets[1].editable is True
-    assert json.loads(apply_route.calls[0].request.content) == {"render_group": "zone-left"}
+    assert json.loads(apply_route.calls[0].request.content) == {"zone_id": "zone-left"}
     assert result.effect.id == "aurora/main"
 
 

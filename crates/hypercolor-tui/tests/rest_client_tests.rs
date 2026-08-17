@@ -834,7 +834,7 @@ async fn get_scenes_maps_summaries() {
 }
 
 #[tokio::test]
-async fn apply_effect_sends_render_group_and_controls() {
+async fn apply_effect_sends_zone_id_and_controls() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -858,12 +858,12 @@ async fn apply_effect_sends_render_group_and_controls() {
         .expect("apply effect");
 
     let body = captured.lock().await.clone().expect("captured apply body");
-    assert_eq!(body["render_group"], json!(ZONE_B));
+    assert_eq!(body["zone_id"], json!(ZONE_B));
     assert_eq!(body["controls"], json!({ "speed": 0.5 }));
 }
 
 #[tokio::test]
-async fn apply_effect_omits_render_group_for_primary() {
+async fn apply_effect_omits_zone_id_for_primary() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -962,7 +962,7 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
 }
 
 #[tokio::test]
-async fn reset_controls_scopes_to_render_group() {
+async fn reset_controls_scopes_to_zone() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -985,7 +985,7 @@ async fn reset_controls_scopes_to_render_group() {
         .expect("zone-scoped reset");
     assert_eq!(
         captured.lock().await.clone().expect("captured body"),
-        json!({ "render_group": ZONE_B })
+        json!({ "zone_id": ZONE_B })
     );
 
     client.reset_controls(None).await.expect("primary reset");

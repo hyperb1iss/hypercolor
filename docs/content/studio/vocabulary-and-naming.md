@@ -1,12 +1,12 @@
 +++
 title = "Vocabulary & naming"
-description = "The locked Studio vocabulary, the kill list (never 'rooms' or 'All Lights'), the plain-words rendering rules, and how the wire-safe Rust rename maps onto it."
+description = "The locked Studio vocabulary, the kill list (never 'rooms' or 'All Lights'), the plain-words rendering rules, and how each wire surface spells the concept."
 weight = 130
 +++
 
 The Studio vocabulary is locked. A **scene** is a whole-rig config, a **zone** is a flexible partition of that scene's canvas, and the default zone is always called **"Default zone."** Smart-home language ("rooms," "All Lights," "Lights") never appears in user-facing strings, and a layer's content kind always renders in plain words ("Effect," "Media," "Color"), never as a raw enum name or a UUID. This page is the canonical reference for that vocabulary, the words that are banned, and the small set of rendering rules in `crates/hypercolor-ui/src/zones/surface.rs` that enforce them.
 
-The internal Rust type names that back these concepts are documented in [Studio architecture](@/studio/architecture.md). They differ from the user-facing words by design, and the difference is wire-safe; the relevant subtlety is summarized at the end of this page.
+The internal Rust type names that back these concepts are documented in [Studio architecture](@/studio/architecture.md). They differ from the user-facing words by design; which wire surface spells the concept which way is summarized at the end of this page.
 
 {% callout(type="warning") %}
 This is not a style preference. The model and its naming were locked by the project owner in design doc 55 to keep one term per concept across the UI, the API, the TUI, the CLI, and the docs. A new label for an existing concept is a regression, not a synonym.
@@ -119,23 +119,25 @@ This is the fallback. A layer's top-line caption prefers the user's own name for
 
 `UNASSIGNED_SURFACE_ID = "__unassigned__"` is a synthetic rail entry, deliberately not a UUID so it can never collide with a real `ZoneId`. It is not a surface: it has no layer stack and no Stage editor. It only appears in a genuinely multi-zone scene, and it surfaces the scene's unassigned-lights policy rather than acting as a catch-all "All Lights" bucket. Treat it as a status row, not a zone, in both prose and screenshots.
 
-## The internal rename is wire-safe
+## Where the wire agrees with the vocabulary, and where it does not yet
 
 The headline domain types in `crates/hypercolor-types/src/scene.rs` already carry the locked names: `Zone`, `ZoneRole`, and (in `spatial.rs`) `Output` and `OutputComponent`. The user-facing word and the Rust type now agree for these. The full type map, including the satellite renames and the in-flight crates, lives in [Studio architecture](@/studio/architecture.md); do not duplicate it here.
 
-The one subtlety worth flagging when you write docs: the rename is a **Rust-identifier rename, not a wire change.** Serialized field names and enum-variant strings are frozen so persisted scenes and the REST and WebSocket contracts never shift. The clearest live example is the scene-change event, whose `event_type` string is still `"render_group_changed"` on the wire even though the Rust enum that classifies it is `ZoneChangeKind`:
+The REST surface agrees too. Every route and payload field spells the concept `zones`: the layer stack hangs off `/scenes/{id}/zones/{zone_id}/layers`, the active-scene response carries `zones` and `zones_revision`, and an effect targets a zone through `zone_id`.
+
+Two surfaces still carry the older vocabulary, and both are deliberate. Persisted scene files on disk keep their `groups` and `groups_revision` fields, because renaming them would require migrating saved user scenes. WebSocket event payloads keep theirs as well, including the `event_type` string `"render_group_changed"`, which classifies through the Rust enum `ZoneChangeKind`:
 
 ```rust
-// crates/hypercolor-ui/src/ws/messages.rs: the wire literal is frozen
+// crates/hypercolor-ui/src/ws/messages.rs: the WS wire literal is unchanged
 let is_render_group_changed = event_type == "render_group_changed";
 ```
 
-So when you document the API, use the **wire** names (`groups`, `render_group_changed`, `ZoneRole`'s `primary` / `custom` / `display` variant strings), not the renamed Rust identifiers. When you write user-facing or conceptual prose, use the **vocabulary table** words. The two never contradict each other as long as you pick the register that matches the surface you are documenting. For the binary frame and event details, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) and [the WebSocket reference](@/api/websocket.md).
+So when you document a surface, read its actual names: `zones` for REST, `render_group_changed` and friends for WebSocket events, and `ZoneRole`'s `primary` / `custom` / `display` variant strings throughout. When you write user-facing or conceptual prose, use the **vocabulary table** words. For the binary frame and event details, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) and [the WebSocket reference](@/api/websocket.md).
 
 ## Quick reference
 
 - Scene = whole-rig config. Zone = a partition of that scene's canvas. Default zone = "Default zone," never "Primary," never "All Lights."
 - Layer source renders in plain words: Effect, Media, Screen capture, Web page, Color.
 - Never "rooms," never smart-home framing. Scenes and zones are not home-automation nouns.
-- User-facing prose follows the vocabulary table; API docs follow the frozen wire names; Rust type names are in [architecture](@/studio/architecture.md).
+- User-facing prose follows the vocabulary table; API docs follow each surface's own wire names; Rust type names are in [architecture](@/studio/architecture.md).
 - Enforcement lives in `zones/surface.rs`: `surface_name`, `is_blank_default_name`, `layer_source_kind`.

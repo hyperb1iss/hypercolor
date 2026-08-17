@@ -244,12 +244,12 @@ impl DaemonClient {
     }
 
     /// Apply an effect by ID, optionally with control overrides and a
-    /// target zone (`render_group`). No target = the scene's primary zone.
+    /// target zone (`zone_id`). No target = the scene's primary zone.
     pub async fn apply_effect(
         &self,
         effect_id: &str,
         controls: Option<&serde_json::Value>,
-        render_group: Option<&str>,
+        zone_id: Option<&str>,
     ) -> Result<()> {
         let url = format!(
             "{}/api/v1/effects/{}/apply",
@@ -258,7 +258,7 @@ impl DaemonClient {
         );
         let body = ApplyEffectRequest {
             controls: controls.cloned(),
-            render_group: render_group.map(ToOwned::to_owned),
+            zone_id: zone_id.map(ToOwned::to_owned),
             ..ApplyEffectRequest::default()
         };
         let response = self
@@ -407,12 +407,12 @@ impl DaemonClient {
     }
 
     /// Reset the active effect's controls to their defaults. A
-    /// `render_group` scopes the reset to that zone's effect; `None`
+    /// `zone_id` scopes the reset to that zone's effect; `None`
     /// resets the primary zone (legacy behavior).
-    pub async fn reset_controls(&self, render_group: Option<&str>) -> Result<()> {
+    pub async fn reset_controls(&self, zone_id: Option<&str>) -> Result<()> {
         let url = format!("{}/api/v1/effects/active/reset", self.base_url);
         let body = ResetControlsRequest {
-            render_group: render_group.map(ToOwned::to_owned),
+            zone_id: zone_id.map(ToOwned::to_owned),
         };
         let response = self
             .auth_request(self.http.post(&url))

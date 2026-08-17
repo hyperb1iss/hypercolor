@@ -298,7 +298,7 @@ impl EffectsContext {
                     (!prefs.control_values.is_empty())
                         .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
                 }),
-                render_group: target_zone_id.clone(),
+                zone_id: target_zone_id.clone(),
                 ..api::ApplyEffectBody::default()
             });
 

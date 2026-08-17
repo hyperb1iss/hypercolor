@@ -899,7 +899,7 @@ async fn layer_controls_patch_uses_layers_version() {
 }
 
 #[tokio::test]
-async fn top_level_current_controls_rejects_multiple_effect_layers() {
+async fn top_level_active_controls_rejects_multiple_effect_layers() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "multi").await;
     let layer_a = effect_layer(effect.id, 0.5);

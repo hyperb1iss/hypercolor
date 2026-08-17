@@ -6100,7 +6100,7 @@ async fn get_active_effect_returns_idle_payload_when_none() {
     assert_eq!(json["data"]["state"], "idle");
     assert!(json["data"]["id"].is_null());
     assert!(json["data"]["name"].is_null());
-    assert!(json["data"]["render_group_id"].is_null());
+    assert!(json["data"]["zone_id"].is_null());
 }
 
 #[tokio::test]
@@ -6132,7 +6132,7 @@ async fn apply_effect_upserts_primary_group() {
 }
 
 #[tokio::test]
-async fn apply_effect_targets_a_named_zone_via_render_group() {
+async fn apply_effect_targets_a_named_zone_via_zone_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
 
@@ -6160,7 +6160,7 @@ async fn apply_effect_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -6210,7 +6210,7 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -6303,7 +6303,7 @@ async fn get_active_effect_returns_primary_group_info() {
     );
     assert_eq!(json["data"]["name"], "solid_color");
     assert_eq!(json["data"]["state"], "running");
-    assert_eq!(json["data"]["render_group_id"], primary_group_id.0);
+    assert_eq!(json["data"]["zone_id"], primary_group_id.0);
 }
 
 #[tokio::test]
@@ -6652,7 +6652,7 @@ async fn output_power_put_is_idempotent_and_publishes_effective_transitions_once
 }
 
 #[tokio::test]
-async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
+async fn stop_active_clears_primary_effect_id_but_keeps_scene() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -6860,7 +6860,7 @@ async fn pause_resume_preserves_effect_state_and_holds_static_output() {
 }
 
 #[tokio::test]
-async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
+async fn stop_active_quiesces_output_and_resume_wakes_pipeline() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     state.render_loop.write().await.start();
@@ -7670,7 +7670,7 @@ async fn apply_effect_rejects_preset_targeting_different_effect() {
 }
 
 #[tokio::test]
-async fn put_current_control_binding_updates_active_effect_schema() {
+async fn put_active_control_binding_updates_active_effect_schema() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -7984,7 +7984,7 @@ async fn scene_activate_and_deactivate_publish_active_scene_events() {
 }
 
 #[tokio::test]
-async fn patch_current_controls_publishes_render_group_and_control_events() {
+async fn patch_active_controls_publishes_render_group_and_control_events() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -8291,7 +8291,7 @@ async fn library_preset_apply_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -8356,7 +8356,7 @@ async fn reset_controls_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                         "controls": { "speed": 7.25 },
                     }))
                     .expect("request body should serialize"),
@@ -8375,7 +8375,7 @@ async fn reset_controls_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -12487,7 +12487,7 @@ async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
     let active_named_json = body_json(active_named).await;
     assert_eq!(active_named_json["data"]["name"], "Sunset");
     assert_eq!(
-        active_named_json["data"]["render_group_id"],
+        active_named_json["data"]["zone_id"],
         named_primary_group_id
     );
 
@@ -12517,7 +12517,7 @@ async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
     let active_default_json = body_json(active_default).await;
     assert_eq!(active_default_json["data"]["name"], "Aurora");
     assert_ne!(
-        active_default_json["data"]["render_group_id"],
+        active_default_json["data"]["zone_id"],
         named_primary_group_id
     );
 }
@@ -14440,7 +14440,7 @@ async fn face_survives_effect_swap() {
     assert_eq!(active_effect.status(), StatusCode::OK);
     let active_effect_json = body_json(active_effect).await;
     assert_eq!(active_effect_json["data"]["name"], "Sunset");
-    assert_ne!(active_effect_json["data"]["render_group_id"], face_group_id);
+    assert_ne!(active_effect_json["data"]["zone_id"], face_group_id);
 
     let face_response = app
         .clone()

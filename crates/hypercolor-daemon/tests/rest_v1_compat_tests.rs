@@ -669,7 +669,7 @@ async fn legacy_effect_apply_path_stays_routed() {
 }
 
 #[tokio::test]
-async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
+async fn effects_active_controls_keeps_its_unversioned_shape() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
@@ -693,7 +693,7 @@ async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
         response.headers().get(http::header::ETAG).is_none(),
-        "the legacy `current` route carries no ETag, unlike its `{{id}}` sibling"
+        "the `active` route carries no ETag, unlike its `{{id}}` sibling"
     );
     let json = body_json(response).await;
     assert_envelope(&json);
@@ -706,7 +706,7 @@ async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
 }
 
 #[tokio::test]
-async fn legacy_effects_current_binding_and_reset_paths_stay_routed() {
+async fn effects_active_binding_and_reset_paths_stay_routed() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
