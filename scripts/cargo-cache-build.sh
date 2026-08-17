@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# A setup failure under set -e otherwise dies with no output at all;
+# CI has eaten six silent exit-1s from this script in one day. Name
+# the dying command instead of leaving a bare exit code.
+trap 'echo "cargo-cache-build.sh: exit $? at line $LINENO: $BASH_COMMAND" >&2' ERR
+
 # Shared Cargo build wrapper.
 # Keeps Rust/C/C++ artifacts in stable cache locations and opportunistically
 # enables compiler caches so whole-workspace builds warm up instead of starting
