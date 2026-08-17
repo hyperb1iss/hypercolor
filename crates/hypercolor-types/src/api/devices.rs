@@ -433,6 +433,7 @@ pub struct PairDeviceResponse {
     pub message: String,
     /// Whether the device was connected and started rendering as part of
     /// the pairing.
+    #[serde(default)]
     pub activated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceSummary>,
@@ -441,9 +442,11 @@ pub struct PairDeviceResponse {
 /// Response for `DELETE /api/v1/devices/{id}/pair`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeletePairingResponse {
+    #[serde(default)]
     pub status: String,
     pub message: String,
     /// Whether forgetting the credentials also dropped a live connection.
+    #[serde(default)]
     pub disconnected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceSummary>,
