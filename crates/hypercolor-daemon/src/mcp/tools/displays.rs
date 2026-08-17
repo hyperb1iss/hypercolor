@@ -52,6 +52,7 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }

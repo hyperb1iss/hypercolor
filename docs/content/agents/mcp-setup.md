@@ -5,7 +5,7 @@ weight = 10
 template = "page.html"
 +++
 
-The Hypercolor daemon ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 16 tools, 5 resources, and 3 prompts over Streamable HTTP. This page gets it running and wired into your assistant. There is one thing to do before anything else: turn it on.
+The Hypercolor daemon ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 17 tools, 5 resources, and 3 prompts over Streamable HTTP. This page gets it running and wired into your assistant. There is one thing to do before anything else: turn it on.
 
 {% callout(type="warning") %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404 and no client can connect. Enabling it is step one below.
@@ -174,7 +174,7 @@ Point the MCP URL at the discovered host and port (`http://<host>:9420/mcp`), bi
 Once the server is connected, learn what it can do:
 
 - **[Agents & MCP](@/agents/_index.md)**: The three-primitive model and how MCP and the CLI complement each other.
-- **[Tools reference](@/agents/tools-reference.md)**: All 16 tools with arguments, defaults, enums, and worked calls.
+- **[Tools reference](@/agents/tools-reference.md)**: All 17 tools with arguments, defaults, enums, and worked calls.
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources and their payload shapes.
 - **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts and when each fits.
 - **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell when an agent cannot speak MCP.

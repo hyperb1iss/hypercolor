@@ -70,7 +70,7 @@ Browse the catalog instead of guessing an effect name. Filter `list_effects` to 
 
 ### 3. Apply it
 
-Call `set_effect`. The required argument is `query`, which does fuzzy and natural-language matching, so a description works as well as an exact name. Pass `controls` to tune it. `transition_ms` is accepted and echoed for forward compatibility, but effect switches are immediate today.
+Call `set_effect`. The required argument is `query`, which does fuzzy and natural-language matching, so a description works as well as an exact name. Pass `controls` to tune it. Those two are the whole schema: effect switches are immediate cuts, so the tool takes no transition argument, and sending one is refused rather than ignored.
 
 ```json
 // set_effect with
@@ -231,7 +231,7 @@ hypercolor devices list --status disconnected -j
 
 ### 3. Run diagnostics
 
-Call the `diagnose` tool. The schema accepts `device_id` and `checks` for forward compatibility, mirroring the `transition_ms` treatment elsewhere, but the live handler ignores both: every call runs the full-system pass. That is fine for this playbook, since the full pass includes the per-device output queues you need. The tool returns an `overall_status`, a `findings[]` array with per-finding `severity`, and a deep `metrics` object covering frame rate, render-window timing, and per-device output queues.
+Call the `diagnose` tool. It takes no arguments: every call runs the full-system pass across every device, which is what this playbook wants anyway, since that pass includes the per-device output queues you need. The tool returns an `overall_status`, a `findings[]` array with per-finding `severity`, and a deep `metrics` object covering frame rate, render-window timing, and per-device output queues.
 
 ```json
 // diagnose with {} → returns (abridged)

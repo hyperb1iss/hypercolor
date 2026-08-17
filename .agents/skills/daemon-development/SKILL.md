@@ -189,24 +189,30 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 
 ## MCP Server Integration
 
-14 tools exposed via Model Context Protocol for AI control:
+17 tools exposed via Model Context Protocol for AI control:
 
-| Tool              | Purpose                                                                        |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `set_effect`      | Apply effect by name/query (fuzzy match) with optional controls and transition |
-| `list_effects`    | Browse effect catalog with category/audio_reactive filters                     |
-| `stop_effect`     | Stop the active effect                                                         |
-| `set_color`       | Apply a solid color effect                                                     |
-| `get_devices`     | List connected devices                                                         |
-| `set_brightness`  | Set global brightness (0-255)                                                  |
-| `get_status`      | Current daemon state snapshot                                                  |
-| `activate_scene`  | Activate a scene by name/ID                                                    |
-| `list_scenes`     | List all scenes                                                                |
-| `create_scene`    | Create a new scene                                                             |
-| `get_audio_state` | Audio analysis snapshot                                                        |
-| `set_profile`     | Apply a lighting profile                                                       |
-| `get_layout`      | Get the active spatial layout                                                  |
-| `diagnose`        | System diagnostics                                                             |
+| Tool                | Purpose                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| `set_effect`        | Apply effect by name/query (fuzzy match) with optional controls  |
+| `list_effects`      | Browse effect catalog with category/audio_reactive filters       |
+| `stop_effect`       | Stop the active effect and clear its controls (destructive)      |
+| `set_color`         | Apply a solid color effect                                       |
+| `set_output_power`  | Pause or resume output without discarding effect state           |
+| `get_devices`       | List connected devices                                           |
+| `set_brightness`    | Set global brightness (0-100 percent)                            |
+| `get_status`        | Current daemon state snapshot                                    |
+| `activate_scene`    | Activate a scene by name/ID                                      |
+| `list_scenes`       | List all scenes                                                  |
+| `create_scene`      | Create a new scene                                               |
+| `get_audio_state`   | Audio analysis snapshot                                          |
+| `get_sensor_data`   | System telemetry snapshot or one named sensor reading            |
+| `set_display_face`  | Assign an HTML display face to a display device                  |
+| `set_profile`       | Apply a lighting profile                                         |
+| `get_layout`        | Get the active spatial layout                                    |
+| `diagnose`          | Full-system diagnostics                                          |
+
+Every tool declares its own `read_only` and `destructive` annotations; a tool
+is destructive when it discards state the caller cannot recover.
 
 5 resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://profiles`, `hypercolor://audio`. The MCP server uses fuzzy matching for effect/profile names.
 

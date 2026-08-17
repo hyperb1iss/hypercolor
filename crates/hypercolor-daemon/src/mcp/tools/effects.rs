@@ -13,6 +13,7 @@ use crate::domain::effect::{
     ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog, stop_effect,
 };
 use hypercolor_types::effect::{ControlValue, EffectCategory};
+use strum::VariantNames;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -32,24 +33,14 @@ pub(super) fn build_set_effect() -> ToolDefinition {
                     "type": "object",
                     "description": "Optional effect parameter overrides as key-value pairs",
                     "additionalProperties": true
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade duration in milliseconds. Effect transitions are not implemented yet, so only 0 (immediate cut) is accepted.",
-                    "default": 0,
-                    "minimum": 0,
-                    "maximum": 0
-                },
-                "devices": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional list of device IDs to target. Omit to apply to all devices."
                 }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -64,7 +55,10 @@ pub(super) fn build_list_effects() -> ToolDefinition {
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["ambient", "reactive", "audio", "gaming", "productivity", "utility", "interactive", "generative"],
+                    // Generated from EffectCategory so the advertised
+                    // vocabulary cannot drift from the one the daemon
+                    // matches against.
+                    "enum": EffectCategory::VARIANTS,
                     "description": "Filter by effect category"
                 },
                 "audio_reactive": {
@@ -88,10 +82,12 @@ pub(super) fn build_list_effects() -> ToolDefinition {
                     "default": 0,
                     "minimum": 0
                 }
-            }
+            },
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -103,18 +99,12 @@ pub(super) fn build_stop_effect() -> ToolDefinition {
         description: "Destructively stop the current effect, clear its live controls and preset provenance, and release network-device ownership. Use set_output_power with state 'paused' for a reversible blackout.".into(),
         input_schema: json!({
             "type": "object",
-            "properties": {
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Fade-out duration in milliseconds",
-                    "default": 300,
-                    "minimum": 0,
-                    "maximum": 5000
-                }
-            }
+            "properties": {},
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -123,7 +113,7 @@ pub(super) fn build_set_color() -> ToolDefinition {
     ToolDefinition {
         name: "set_color".into(),
         title: "Set Solid Color".into(),
-        description: "Set a solid color on all or specific RGB devices. Accepts CSS color names ('coral', 'dodgerblue'), hex codes ('#ff6ac1'), RGB values ('rgb(255, 106, 193)'), HSL values ('hsl(330, 100%, 71%)'), or natural language descriptions ('warm sunset orange', 'deep ocean blue').".into(),
+        description: "Set a solid color across the LED pipeline. Accepts CSS color names ('coral', 'dodgerblue'), hex codes ('#ff6ac1'), RGB values ('rgb(255, 106, 193)'), HSL values ('hsl(330, 100%, 71%)'), or natural language descriptions ('warm sunset orange', 'deep ocean blue').".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -143,17 +133,14 @@ pub(super) fn build_set_color() -> ToolDefinition {
                     "default": 0,
                     "minimum": 0,
                     "maximum": 0
-                },
-                "devices": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional list of device IDs. Omit to apply to all devices."
                 }
             },
-            "required": ["color"]
+            "required": ["color"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -168,14 +155,6 @@ pub(super) async fn handle_set_effect_with_state(
         .get("query")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("query".into()))?;
-
-    // Absent means the caller asked for no transition, which the daemon
-    // renders as an immediate cut. It used to default to 500 and echo
-    // that back without ever applying it.
-    let transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
 
     let effect_catalog = {
         let registry = state.effect_registry.read().await;
@@ -234,7 +213,7 @@ pub(super) async fn handle_set_effect_with_state(
             controls: normalized_controls.clone(),
             preset_id: None,
             target_zone: None,
-            transition: RequestedTransition::of_duration(transition_ms),
+            transition: RequestedTransition::cut(),
         },
         MutationContext::mcp(),
     )
@@ -320,25 +299,18 @@ pub(super) async fn handle_list_effects_with_state(
 }
 
 pub(super) async fn handle_stop_effect_with_state(
-    params: &Value,
+    _params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    let transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(300);
-
     let Some(stopped) = stop_effect(state, MutationContext::mcp()).await? else {
         return Ok(json!({
             "stopped": false,
-            "transition_ms": transition_ms,
             "effect": null
         }));
     };
 
     Ok(json!({
         "stopped": true,
-        "transition_ms": transition_ms,
         "released_network_devices": stopped.released_network_devices,
         "effect": {
             "id": stopped.effect.id,

@@ -36,10 +36,12 @@ pub(super) fn build_activate_scene() -> ToolDefinition {
                     "maximum": 10000
                 }
             },
-            "required": ["name"]
+            "required": ["name"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -57,10 +59,12 @@ pub(super) fn build_list_scenes() -> ToolDefinition {
                     "description": "Only show enabled scenes",
                     "default": false
                 }
-            }
+            },
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -95,20 +99,9 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                             "type": "string",
                             "enum": ["schedule", "sunset", "sunrise", "device_connect", "device_disconnect", "audio_beat", "webhook"],
                             "description": "Trigger type"
-                        },
-                        "cron": {
-                            "type": "string",
-                            "description": "Cron expression for schedule triggers"
                         }
                     },
                     "required": ["type"]
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade duration when activated",
-                    "default": 1000,
-                    "minimum": 0,
-                    "maximum": 30000
                 },
                 "enabled": {
                     "type": "boolean",
@@ -122,10 +115,12 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                     "default": "live"
                 }
             },
-            "required": ["name", "profile_id", "trigger"]
+            "required": ["name", "profile_id", "trigger"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: false,
         idempotent: false,
     }
 }

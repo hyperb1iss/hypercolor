@@ -256,7 +256,7 @@ fn tool_to_mcp(tool: &tools::ToolDefinition) -> Tool {
     .with_annotations(
         ToolAnnotations::new()
             .read_only(tool.read_only)
-            .destructive(false)
+            .destructive(tool.destructive)
             .idempotent(tool.idempotent)
             .open_world(false),
     )

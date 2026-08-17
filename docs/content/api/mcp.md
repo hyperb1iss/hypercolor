@@ -1,6 +1,6 @@
 +++
 title = "MCP server"
-description = "Hypercolor's Model Context Protocol server: 16 tools, 5 resources, 3 prompts over Streamable HTTP. Canonical docs live in Agents."
+description = "Hypercolor's Model Context Protocol server: 17 tools, 5 resources, 3 prompts over Streamable HTTP. Canonical docs live in Agents."
 weight = 80
 +++
 
@@ -16,7 +16,7 @@ shapes, and the prompt templates) lives in the **Agents** section. Start there:
 
 - [Agents & MCP overview](@/agents/_index.md): MCP vs CLI and the three primitives
 - [MCP setup](@/agents/mcp-setup.md): Claude Code / Desktop / Cursor / Zed config
-- [Tools reference](@/agents/tools-reference.md): all 16 tools, full JSON schema
+- [Tools reference](@/agents/tools-reference.md): all 17 tools, full JSON schema
 - [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
 - [Prompt templates](@/agents/prompt-templates.md): the 3 shipped prompts
 {% end %}
@@ -31,7 +31,7 @@ HTTP with optional Server-Sent Events for streaming.
 | --- | --- |
 | Transport | Streamable HTTP (`streamable-http`) |
 | Default URL | `http://localhost:9420/mcp` |
-| Tools | 16 |
+| Tools | 17 |
 | Resources | 5 (`state`, `devices`, `effects`, `audio`, `profiles`) |
 | Prompts | 3 (`mood_lighting`, `troubleshoot`, `setup_automation`) |
 | Default state | **disabled** |
@@ -90,7 +90,7 @@ The three MCP primitives map cleanly onto Hypercolor's engine.
 
 {% mermaid() %}
 graph TD
-  A[MCP client] -->|tools| T[16 tools: set_effect, get_status, ...]
+  A[MCP client] -->|tools| T[17 tools: set_effect, get_status, ...]
   A -->|resources| R[5 resources: hypercolor://state, devices, ...]
   A -->|prompts| P[3 prompts: mood_lighting, troubleshoot, setup_automation]
   T --> E[Daemon engine + event bus]
@@ -119,24 +119,25 @@ below is a map; the [tools reference](@/agents/tools-reference.md) carries the f
 input schemas, defaults, enums, and a worked call plus response for each tool.
 {% end %}
 
-| Tool | Read-only | Idempotent |
-| --- | --- | --- |
-| `set_effect` | No | Yes |
-| `list_effects` | Yes | Yes |
-| `stop_effect` | No | Yes |
-| `set_color` | No | Yes |
-| `get_devices` | Yes | Yes |
-| `set_brightness` | No | Yes |
-| `get_status` | Yes | Yes |
-| `activate_scene` | No | Yes |
-| `list_scenes` | Yes | Yes |
-| `create_scene` | No | No |
-| `get_audio_state` | Yes | Yes |
-| `get_sensor_data` | Yes | Yes |
-| `set_display_face` | No | Yes |
-| `set_profile` | No | Yes |
-| `get_layout` | Yes | Yes |
-| `diagnose` | Yes | Yes |
+| Tool | Read-only | Destructive | Idempotent |
+| --- | --- | --- | --- |
+| `set_effect` | No | Yes | Yes |
+| `list_effects` | Yes | No | Yes |
+| `stop_effect` | No | Yes | Yes |
+| `set_color` | No | Yes | Yes |
+| `set_output_power` | No | No | Yes |
+| `get_devices` | Yes | No | Yes |
+| `set_brightness` | No | No | Yes |
+| `get_status` | Yes | No | Yes |
+| `activate_scene` | No | Yes | Yes |
+| `list_scenes` | Yes | No | Yes |
+| `create_scene` | No | No | No |
+| `get_audio_state` | Yes | No | Yes |
+| `get_sensor_data` | Yes | No | Yes |
+| `set_display_face` | No | Yes | Yes |
+| `set_profile` | No | Yes | Yes |
+| `get_layout` | Yes | No | Yes |
+| `diagnose` | Yes | No | Yes |
 
 `set_effect` and `set_color` accept fuzzy input: an exact effect name, a partial
 match, or a natural-language description ("calm blue waves", "warm sunset orange").

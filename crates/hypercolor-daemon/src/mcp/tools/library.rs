@@ -19,19 +19,14 @@ pub(super) fn build_set_profile() -> ToolDefinition {
                 "query": {
                     "type": "string",
                     "description": "Profile name or description to search for"
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade transition duration in milliseconds",
-                    "default": 1000,
-                    "minimum": 0,
-                    "maximum": 10000
                 }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }

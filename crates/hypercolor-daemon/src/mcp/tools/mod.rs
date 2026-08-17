@@ -5,6 +5,7 @@
 //! handler in a per-cluster submodule.
 
 use serde_json::{Value, json};
+use std::sync::LazyLock;
 
 use crate::api::AppState;
 
@@ -30,6 +31,16 @@ pub struct ToolDefinition {
     pub output_schema: Value,
     /// Whether this tool only reads state (never modifies).
     pub read_only: bool,
+    /// Whether this tool may overwrite state a caller cannot recover.
+    ///
+    /// A tool is destructive when running it discards something the
+    /// client did not supply and cannot get back: the running effect's
+    /// live control values, a scene's whole layer tree, a display's
+    /// assigned face. A reversible value write (brightness, output
+    /// power) or a pure creation (a new scene) is additive, not
+    /// destructive. Meaningful only when [`Self::read_only`] is false;
+    /// read-only tools declare `false`.
+    pub destructive: bool,
     /// Whether repeated calls with the same input produce the same result.
     pub idempotent: bool,
 }
@@ -57,6 +68,42 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// Refuse arguments a tool's schema does not declare.
+///
+/// `additionalProperties: false` is a promise to the caller, and nothing
+/// downstream of `rmcp` enforces it, so a deleted parameter would keep
+/// being accepted and silently dropped. Silently dropping an argument is
+/// the exact failure the phantom-parameter rule exists to prevent: a
+/// caller who asks for a transition and gets a cut must learn that,
+/// whether the parameter was never real or has since been removed.
+///
+/// Tools whose schema does not close stay permissive, so this adds no
+/// refusal a tool did not ask for.
+fn reject_undeclared_params(name: &str, params: &Value) -> Result<(), ToolError> {
+    let Some(arguments) = params.as_object() else {
+        return Ok(());
+    };
+    static DEFINITIONS: LazyLock<Vec<ToolDefinition>> = LazyLock::new(build_tool_definitions);
+
+    let Some(tool) = DEFINITIONS.iter().find(|tool| tool.name == name) else {
+        return Ok(());
+    };
+    if tool.input_schema["additionalProperties"] != Value::Bool(false) {
+        return Ok(());
+    }
+
+    let declared = tool.input_schema["properties"].as_object();
+    for key in arguments.keys() {
+        if !declared.is_some_and(|declared| declared.contains_key(key)) {
+            return Err(ToolError::InvalidParam {
+                param: key.clone(),
+                reason: format!("{name} does not accept a '{key}' argument"),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn default_output_schema() -> Value {
     json!({
         "type": "object",
@@ -70,6 +117,7 @@ pub async fn execute_tool_with_state(
     params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
+    reject_undeclared_params(name, params)?;
     match name {
         "set_effect" => effects::handle_set_effect_with_state(params, state).await,
         "list_effects" => effects::handle_list_effects_with_state(params, state).await,
