@@ -32,7 +32,7 @@ pub struct SceneSummary {
 }
 
 /// Response for `GET /api/v1/scenes/active` — the active scene with its
-/// full render-group (zone) set.
+/// full zone set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActiveSceneResponse {
     pub id: String,
@@ -48,11 +48,11 @@ pub struct ActiveSceneResponse {
     #[serde(default)]
     pub mutation_mode: SceneMutationMode,
     #[serde(default)]
-    pub groups: Vec<Zone>,
-    /// Monotonic render-group structure counter. Carried as the
-    /// `If-Match` precondition for every zone mutation (Spec 64).
+    pub zones: Vec<Zone>,
+    /// Monotonic zone-structure counter. Carried as the `If-Match`
+    /// precondition for every zone mutation (Spec 64).
     #[serde(default)]
-    pub groups_revision: u64,
+    pub zones_revision: u64,
     /// Scene-level policy for device outputs claimed by no zone (§9.4).
     #[serde(default)]
     pub unassigned_behavior: UnassignedBehavior,

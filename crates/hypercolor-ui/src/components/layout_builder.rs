@@ -789,7 +789,7 @@ pub(crate) struct ZoneCanvasActions {
 #[component]
 pub(crate) fn ZoneLayoutProvider(
     /// The active scene — the source of the zone set and the
-    /// `groups_revision` carried as each save's `If-Match` precondition.
+    /// `zones_revision` carried as each save's `If-Match` precondition.
     #[prop(into)]
     active_scene: Signal<Option<api::ActiveSceneResponse>>,
     /// The selected zone's id (a `Zone` id). `None`, an unknown
@@ -797,7 +797,7 @@ pub(crate) fn ZoneLayoutProvider(
     #[prop(into)]
     selected_zone_id: Signal<Option<String>>,
     /// Re-fetch the active scene after a save so the tree and Stage pick
-    /// up the new `groups_revision`.
+    /// up the new `zones_revision`.
     refresh_scene: Callback<()>,
     children: Children,
 ) -> impl IntoView {
@@ -866,7 +866,7 @@ pub(crate) fn ZoneLayoutProvider(
         active_scene.with(|scene| {
             let group = scene
                 .as_ref()?
-                .groups
+                .zones
                 .iter()
                 .find(|group| group.id.to_string() == zone_id)?;
             if group.role == ZoneRole::Display {
@@ -897,7 +897,7 @@ pub(crate) fn ZoneLayoutProvider(
         let loaded = active_scene.with_untracked(|scene| {
             scene.as_ref().and_then(|scene| {
                 scene
-                    .groups
+                    .zones
                     .iter()
                     .find(|group| group.id.to_string() == zone_id)
                     .map(|group| group.layout.clone())
@@ -925,7 +925,7 @@ pub(crate) fn ZoneLayoutProvider(
         };
         let Some((scene_id, revision)) = active_scene
             .get_untracked()
-            .map(|scene| (scene.id, scene.groups_revision))
+            .map(|scene| (scene.id, scene.zones_revision))
         else {
             return;
         };

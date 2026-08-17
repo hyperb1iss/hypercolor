@@ -66,7 +66,7 @@ pub use hypercolor_types::api::effects::{
     EffectListResponse, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
     EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
     PauseEffectResponse, ResetControlsRequest, ResumeEffectResponse, TransitionRequest,
-    UpdateCurrentControlsRequest,
+    UpdateActiveControlsRequest,
 };
 
 struct ResolvedEffectPreset {
@@ -468,7 +468,7 @@ pub async fn apply_effect_preset(
         Path(id),
         Some(Json(ApplyEffectRequest {
             preset_id: Some(preset_id),
-            render_group: body.and_then(|Json(body)| body.render_group),
+            zone_id: body.and_then(|Json(body)| body.zone_id),
             ..ApplyEffectRequest::default()
         })),
     )
@@ -748,7 +748,7 @@ pub async fn apply_effect(
     // Resolve the optional target zone; a parsed id is matched against
     // the active scene inside the service.
     let target_group =
-        match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
+        match parse_zone_id_field(body.as_ref().and_then(|body| body.zone_id.as_deref())) {
             Ok(target) => target,
             Err(error) => return error.into_response(),
         };
@@ -839,7 +839,7 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         control_values: resolved_control_values(&meta, &group),
         active_preset_id: group.preset_id.map(|preset| preset.to_string()),
         active_preset_modified,
-        render_group_id: Some(group.id.to_string()),
+        zone_id: Some(group.id.to_string()),
         controls_version: Some(controls_version),
         cover_image_url: effect_cover_image_url(&meta),
     };
@@ -939,11 +939,11 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
     }))
 }
 
-/// `PATCH /api/v1/effects/current/controls` — Update controls on active effect
+/// `PATCH /api/v1/effects/active/controls` — Update controls on active effect
 /// without reloading/reinitializing the effect renderer.
-pub async fn update_current_controls(
+pub async fn update_active_controls(
     State(state): State<Arc<AppState>>,
-    body: Option<Json<UpdateCurrentControlsRequest>>,
+    body: Option<Json<UpdateActiveControlsRequest>>,
 ) -> Response {
     let controls = body
         .as_ref()
@@ -1024,14 +1024,14 @@ pub async fn update_current_controls(
 /// the current server version so the client can rebase.
 ///
 /// Callers that don't care about concurrency control omit the header;
-/// the endpoint then behaves like `update_current_controls`.
+/// the endpoint then behaves like `update_active_controls`.
 ///
 /// Implemented per Spec 46 § 9.1.
 pub async fn update_effect_controls(
     State(state): State<Arc<AppState>>,
     Path(effect_id_raw): Path<String>,
     headers: HeaderMap,
-    body: Option<Json<UpdateCurrentControlsRequest>>,
+    body: Option<Json<UpdateActiveControlsRequest>>,
 ) -> Response {
     let Ok(effect_uuid) = effect_id_raw.parse::<uuid::Uuid>() else {
         return DomainError::malformed("effect_id must be a valid UUID").into_response();
@@ -1183,9 +1183,9 @@ async fn primary_effect_by_id(
     Some((group, metadata))
 }
 
-/// `PUT /api/v1/effects/current/controls/{name}/binding` — Attach a live sensor
+/// `PUT /api/v1/effects/active/controls/{name}/binding` — Attach a live sensor
 /// binding to a control on the active effect.
-pub async fn set_current_control_binding(
+pub async fn set_active_control_binding(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     Json(binding): Json<ControlBinding>,
@@ -1231,16 +1231,16 @@ pub async fn set_current_control_binding(
     }))
 }
 
-/// `POST /api/v1/effects/current/reset` — Reset all controls on the active
+/// `POST /api/v1/effects/active/reset` — Reset all controls on the active
 /// effect back to their metadata-defined defaults. Accepts an optional
-/// `render_group` body field to reset a specific zone's effect instead of
+/// `zone_id` body field to reset a specific zone's effect instead of
 /// the primary.
 pub async fn reset_controls(
     State(state): State<Arc<AppState>>,
     body: Option<Json<ResetControlsRequest>>,
 ) -> Response {
     let target_group =
-        match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
+        match parse_zone_id_field(body.as_ref().and_then(|body| body.zone_id.as_deref())) {
             Ok(target) => target,
             Err(error) => return error.into_response(),
         };
@@ -1614,16 +1614,16 @@ pub(crate) async fn active_group_effect(
     Some((group, metadata))
 }
 
-/// Parse an optional `render_group` request field into a [`ZoneId`].
+/// Parse an optional `zone_id` request field into a [`ZoneId`].
 /// An id that is not a UUID is malformed syntax, not a value the
 /// domain weighs.
-pub(crate) fn parse_render_group(raw: Option<&str>) -> Result<Option<ZoneId>, DomainError> {
+pub(crate) fn parse_zone_id_field(raw: Option<&str>) -> Result<Option<ZoneId>, DomainError> {
     match raw {
         None => Ok(None),
         Some(raw) => raw
             .parse::<uuid::Uuid>()
             .map(|uuid| Some(ZoneId(uuid)))
-            .map_err(|_| DomainError::malformed(format!("Invalid render_group id: {raw}"))),
+            .map_err(|_| DomainError::malformed(format!("Invalid zone_id: {raw}"))),
     }
 }
 

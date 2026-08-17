@@ -595,7 +595,7 @@ async fn update_control_wraps_payload_under_controls() {
     let router =
         Router::new()
             .route(
-                "/api/v1/effects/current/controls",
+                "/api/v1/effects/active/controls",
                 patch(
                     |State(captured): State<Arc<Mutex<Option<Value>>>>,
                      Json(payload): Json<Value>| async move {
@@ -719,11 +719,11 @@ async fn get_active_scene_maps_zones_and_lock_state() {
                     "priority": 0,
                     "kind": "named",
                     "mutation_mode": "snapshot",
-                    "groups": [
+                    "zones": [
                         zone_json(ZONE_A, "Primary", "primary", Some(EFFECT_RAINBOW), true),
                         zone_json(ZONE_B, "Shelf", "custom", None, false),
                     ],
-                    "groups_revision": 42,
+                    "zones_revision": 42,
                     "unassigned_behavior": "off"
                 }
             }))
@@ -740,7 +740,7 @@ async fn get_active_scene_maps_zones_and_lock_state() {
     assert_eq!(scene.id, "scene-1");
     assert_eq!(scene.name, "Desk");
     assert!(scene.snapshot_locked);
-    assert_eq!(scene.groups_revision, 42);
+    assert_eq!(scene.zones_revision, 42);
     assert!(scene.multi_zone());
     assert_eq!(scene.zones.len(), 2);
 
@@ -834,7 +834,7 @@ async fn get_scenes_maps_summaries() {
 }
 
 #[tokio::test]
-async fn apply_effect_sends_render_group_and_controls() {
+async fn apply_effect_sends_zone_id_and_controls() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -858,12 +858,12 @@ async fn apply_effect_sends_render_group_and_controls() {
         .expect("apply effect");
 
     let body = captured.lock().await.clone().expect("captured apply body");
-    assert_eq!(body["render_group"], json!(ZONE_B));
+    assert_eq!(body["zone_id"], json!(ZONE_B));
     assert_eq!(body["controls"], json!({ "speed": 0.5 }));
 }
 
 #[tokio::test]
-async fn apply_effect_omits_render_group_for_primary() {
+async fn apply_effect_omits_zone_id_for_primary() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -918,14 +918,14 @@ async fn update_zone_sends_if_match_revision() {
 #[tokio::test]
 async fn patch_zone_controls_targets_legacy_layer_without_if_match() {
     let router = Router::new().route(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
         patch(
-            |Path((scene_id, group_id, layer_id)): Path<(String, String, String)>,
+            |Path((scene_id, zone_id, layer_id)): Path<(String, String, String)>,
              headers: HeaderMap,
              Json(body): Json<Value>| async move {
                 assert_eq!(scene_id, "scene-1");
                 // Legacy layer id == zone id
-                assert_eq!(group_id, ZONE_B);
+                assert_eq!(zone_id, ZONE_B);
                 assert_eq!(layer_id, ZONE_B);
                 assert!(headers.get(header::IF_MATCH).is_none());
                 assert_eq!(body, json!({ "controls": { "speed": 0.9 } }));
@@ -962,11 +962,11 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
 }
 
 #[tokio::test]
-async fn reset_controls_scopes_to_render_group() {
+async fn reset_controls_scopes_to_zone() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/effects/current/reset",
+            "/api/v1/effects/active/reset",
             post(
                 |State(captured): State<Arc<Mutex<Option<Value>>>>,
                  Json(body): Json<Value>| async move {
@@ -985,7 +985,7 @@ async fn reset_controls_scopes_to_render_group() {
         .expect("zone-scoped reset");
     assert_eq!(
         captured.lock().await.clone().expect("captured body"),
-        json!({ "render_group": ZONE_B })
+        json!({ "zone_id": ZONE_B })
     );
 
     client.reset_controls(None).await.expect("primary reset");

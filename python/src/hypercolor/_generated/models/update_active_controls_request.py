@@ -9,23 +9,23 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.update_current_controls_request_controls import (
-        UpdateCurrentControlsRequestControls,
+    from ..models.update_active_controls_request_controls import (
+        UpdateActiveControlsRequestControls,
     )
 
 
-T = TypeVar("T", bound="UpdateCurrentControlsRequest")
+T = TypeVar("T", bound="UpdateActiveControlsRequest")
 
 
 @_attrs_define
-class UpdateCurrentControlsRequest:
-    """Request body for `PATCH /api/v1/effects/current/controls`.
+class UpdateActiveControlsRequest:
+    """Request body for `PATCH /api/v1/effects/active/controls`.
 
     Attributes:
-        controls (UpdateCurrentControlsRequestControls | Unset):
+        controls (UpdateActiveControlsRequestControls | Unset):
     """
 
-    controls: UpdateCurrentControlsRequestControls | Unset = UNSET
+    controls: UpdateActiveControlsRequestControls | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,24 +43,24 @@ class UpdateCurrentControlsRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.update_current_controls_request_controls import (
-            UpdateCurrentControlsRequestControls,
+        from ..models.update_active_controls_request_controls import (
+            UpdateActiveControlsRequestControls,
         )
 
         d = dict(src_dict)
         _controls = d.pop("controls", UNSET)
-        controls: UpdateCurrentControlsRequestControls | Unset
+        controls: UpdateActiveControlsRequestControls | Unset
         if isinstance(_controls, Unset):
             controls = UNSET
         else:
-            controls = UpdateCurrentControlsRequestControls.from_dict(_controls)
+            controls = UpdateActiveControlsRequestControls.from_dict(_controls)
 
-        update_current_controls_request = cls(
+        update_active_controls_request = cls(
             controls=controls,
         )
 
-        update_current_controls_request.additional_properties = d
-        return update_current_controls_request
+        update_active_controls_request.additional_properties = d
+        return update_active_controls_request
 
     @property
     def additional_keys(self) -> list[str]:

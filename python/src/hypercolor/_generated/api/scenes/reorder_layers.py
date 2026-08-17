@@ -12,7 +12,7 @@ from ...types import Response
 
 def _get_kwargs(
     id: str,
-    group_id: str,
+    zone_id: str,
     *,
     body: LayerOrderRequest,
 ) -> dict[str, Any]:
@@ -20,9 +20,9 @@ def _get_kwargs(
 
     _kwargs: dict[str, Any] = {
         "method": "patch",
-        "url": "/api/v1/scenes/{id}/groups/{group_id}/layers/order".format(
+        "url": "/api/v1/scenes/{id}/zones/{zone_id}/layers/order".format(
             id=quote(str(id), safe=""),
-            group_id=quote(str(group_id), safe=""),
+            zone_id=quote(str(zone_id), safe=""),
         ),
     }
 
@@ -77,7 +77,7 @@ def _build_response(
 
 def sync_detailed(
     id: str,
-    group_id: str,
+    zone_id: str,
     *,
     client: AuthenticatedClient | Client,
     body: LayerOrderRequest,
@@ -86,7 +86,7 @@ def sync_detailed(
 
     Args:
         id (str):
-        group_id (str):
+        zone_id (str):
         body (LayerOrderRequest):
 
     Raises:
@@ -99,7 +99,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        group_id=group_id,
+        zone_id=zone_id,
         body=body,
     )
 
@@ -112,7 +112,7 @@ def sync_detailed(
 
 async def asyncio_detailed(
     id: str,
-    group_id: str,
+    zone_id: str,
     *,
     client: AuthenticatedClient | Client,
     body: LayerOrderRequest,
@@ -121,7 +121,7 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        group_id (str):
+        zone_id (str):
         body (LayerOrderRequest):
 
     Raises:
@@ -134,7 +134,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        group_id=group_id,
+        zone_id=zone_id,
         body=body,
     )
 

@@ -113,7 +113,7 @@ enabled. The auth and rate-limiting model is documented in full on the
 ## Concurrency: revisions and `If-Match`
 
 Scene-zone structural edits use optimistic concurrency. A `GET` on a scene's
-zones returns a `groups_revision` and an `ETag` header carrying the same
+zones returns a `zones_revision` and an `ETag` header carrying the same
 revision. Send that value back as `If-Match` on the mutating request. If the
 revision is stale, the daemon rejects the write with `412 Precondition Failed`
 rather than clobbering a concurrent edit. The Studio zone editor relies on this
@@ -294,9 +294,8 @@ binding, the resolved transition (`cut`, `0` today), and a `warnings` array.
 The currently active effect and its live control values.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/effects/current/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/effects/active/controls") %}
 Patch controls on the running effect. Changes take effect on the next frame.
-Note the path segment is `current`, not `active`.
 
 **Request body:**
 
@@ -310,12 +309,12 @@ Note the path segment is `current`, not `active`.
 ```
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/effects/current/controls/{name}/binding") %}
+{% api_endpoint(method="PUT", path="/api/v1/effects/active/controls/{name}/binding") %}
 Bind one named control on the running effect to an input source (audio band,
 sensor reading, etc.) so it modulates live instead of holding a fixed value.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/effects/current/reset") %}
+{% api_endpoint(method="POST", path="/api/v1/effects/active/reset") %}
 Reset every control on the running effect back to its default.
 {% end %}
 
@@ -792,12 +791,12 @@ is no top-level `/zones` collection.
 {{ img(path="img/ui/ui-studio-zones.webp", alt="Building zones in Studio") }}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
-List a scene's zones. The response includes `groups_revision` and an `ETag`
+List a scene's zones. The response includes `zones_revision` and an `ETag`
 header carrying the same revision for optimistic concurrency.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
-Create a zone in a scene. Send `If-Match` with the last seen `groups_revision`;
+Create a zone in a scene. Send `If-Match` with the last seen `zones_revision`;
 a stale revision returns `412 Precondition Failed`.
 
 **Request body:**
@@ -896,27 +895,27 @@ Values are `"off"`, `"hold"`, or `{ "fallback": "<zone_uuid>" }`.
 Each zone (render group) stacks layers: effects, faces, and media composited
 with a blend mode and opacity.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 List the layers in a zone.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 Add a layer to a zone.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/order") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/order") %}
 Reorder the layers in a zone.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Update one layer (blend mode, opacity, transform, color, source binding).
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Delete a layer.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls") %}
 Patch the control values on one layer's source effect.
 {% end %}
 

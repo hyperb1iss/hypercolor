@@ -117,7 +117,7 @@ pub fn LayerPanel(
             .get()
             .map(|scene| {
                 scene
-                    .groups
+                    .zones
                     .into_iter()
                     .map(|group| (group.id.to_string(), group.name))
                     .collect::<Vec<_>>()
@@ -129,14 +129,14 @@ pub fn LayerPanel(
     let scopes = Signal::derive(move || {
         active_scene
             .get()
-            .map(|scene| available_add_layer_scopes(&scene.groups))
+            .map(|scene| available_add_layer_scopes(&scene.zones))
             .unwrap_or_default()
     });
     let selected_group_role = Signal::derive(move || {
         let selected = selected_group_id.get()?;
         active_scene
             .get()?
-            .groups
+            .zones
             .into_iter()
             .find(|group| group.id.to_string() == selected)
             .map(|group| group.role)
@@ -152,7 +152,7 @@ pub fn LayerPanel(
             toasts::toast_error("No surface is selected");
             return;
         };
-        let targets = resolve_add_layer_targets(scope, &scene.groups, &group_id);
+        let targets = resolve_add_layer_targets(scope, &scene.zones, &group_id);
         if targets.is_empty() {
             toasts::toast_error("No target surfaces for that scope");
             return;

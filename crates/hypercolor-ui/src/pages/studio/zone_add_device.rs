@@ -56,13 +56,13 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
             .filter_map(|device| {
                 let device_layout_id = device.layout_device_id.as_str();
                 let outputs_outside_target = scene
-                    .groups
+                    .zones
                     .iter()
                     .filter(|group| group.id.to_string() != target)
                     .flat_map(|group| group.layout.zones.iter())
                     .filter(|output| output.device_id == device_layout_id)
                     .count();
-                let any_output = scene.groups.iter().any(|group| {
+                let any_output = scene.zones.iter().any(|group| {
                     group
                         .layout
                         .zones
@@ -73,7 +73,7 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
                 if any_output && outputs_outside_target == 0 {
                     return None;
                 }
-                let location = device_location(&scene.groups, device_layout_id, &target);
+                let location = device_location(&scene.zones, device_layout_id, &target);
                 Some((
                     device.layout_device_id.clone(),
                     format!("{} ({location})", device.name),
@@ -167,7 +167,7 @@ pub(super) fn assign_device_to_zone(
         return;
     };
     let mut assignments: Vec<OutputAssignment> = Vec::new();
-    for group in &scene.groups {
+    for group in &scene.zones {
         if group.id.to_string() == zone_id {
             continue;
         }
@@ -184,7 +184,7 @@ pub(super) fn assign_device_to_zone(
         // A seeded footprint is fitted to a canvas aspect ratio, so it has to
         // be built against the canvas it will actually live on.
         let canvas = scene
-            .groups
+            .zones
             .iter()
             .find(|group| group.id.to_string() == zone_id)
             .map_or((MINT_CANVAS_WIDTH, MINT_CANVAS_HEIGHT), |group| {
@@ -201,7 +201,7 @@ pub(super) fn assign_device_to_zone(
         return;
     }
     let scene_id = scene.id.clone();
-    let revision = scene.groups_revision;
+    let revision = scene.zones_revision;
     let device_name = device.name.clone();
     spawn_local(async move {
         match api::zones::assign_devices(

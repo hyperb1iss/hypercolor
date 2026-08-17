@@ -208,7 +208,7 @@ hypercolor effects rescan                 # Re-scan the library for new effects
 ```
 
 `effects patch` updates the live effect without re-applying it; it targets
-`PATCH /api/v1/effects/current/controls` and requires at least one `--param`.
+`PATCH /api/v1/effects/active/controls` and requires at least one `--param`.
 Run `hypercolor effects rescan` after dropping a freshly built HTML effect into
 the effects directory so the daemon picks it up.
 

@@ -298,7 +298,7 @@ impl EffectsContext {
                     (!prefs.control_values.is_empty())
                         .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
                 }),
-                render_group: target_zone_id.clone(),
+                zone_id: target_zone_id.clone(),
                 ..api::ApplyEffectBody::default()
             });
 
@@ -606,16 +606,16 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             .unwrap_or_default()
     });
     // Per-zone effect state — what each LED zone is playing, derived
-    // from the shared scene (zip preserves surfaces_from_groups' 1:1
+    // from the shared scene (zip preserves surfaces_from_zones' 1:1
     // scene ordering) plus the effects index for display names.
     let zone_effects = Memo::new(move |_| {
         let Some(scene) = zones_ctx.active_scene.get() else {
             return Vec::new();
         };
-        let surfaces = crate::zones::surface::surfaces_from_groups(&scene.groups);
+        let surfaces = crate::zones::surface::surfaces_from_zones(&scene.zones);
         effects_index.with(|effects| {
             scene
-                .groups
+                .zones
                 .iter()
                 .zip(surfaces)
                 .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)

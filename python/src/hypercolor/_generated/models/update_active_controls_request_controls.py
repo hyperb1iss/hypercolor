@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="UpdateCurrentControlsRequestControls")
+T = TypeVar("T", bound="UpdateActiveControlsRequestControls")
 
 
 @_attrs_define
-class UpdateCurrentControlsRequestControls:
+class UpdateActiveControlsRequestControls:
     """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -25,10 +25,10 @@ class UpdateCurrentControlsRequestControls:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        update_current_controls_request_controls = cls()
+        update_active_controls_request_controls = cls()
 
-        update_current_controls_request_controls.additional_properties = d
-        return update_current_controls_request_controls
+        update_active_controls_request_controls.additional_properties = d
+        return update_active_controls_request_controls
 
     @property
     def additional_keys(self) -> list[str]:

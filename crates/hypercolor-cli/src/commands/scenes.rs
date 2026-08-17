@@ -224,11 +224,11 @@ async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()
                     "no"
                 }
             ));
-            let groups = response
-                .get("groups")
+            let zones = response
+                .get("zones")
                 .and_then(serde_json::Value::as_array)
                 .map_or(0, Vec::len);
-            ctx.info(&format!("Groups         {groups}"));
+            ctx.info(&format!("Zones          {zones}"));
             println!();
         }
     }

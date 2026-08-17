@@ -366,7 +366,7 @@ async fn execute_patch(
     }
 
     let body = serde_json::json!({ "controls": controls });
-    let response = client.patch("/effects/current/controls", &body).await?;
+    let response = client.patch("/effects/active/controls", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -381,7 +381,7 @@ async fn execute_patch(
 
 async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     let response = client
-        .post("/effects/current/reset", &serde_json::json!({}))
+        .post("/effects/active/reset", &serde_json::json!({}))
         .await?;
 
     match ctx.format {

@@ -227,7 +227,7 @@ enum DetailsPresence {
 /// a `details` object carrying both versions.
 ///
 /// One rendering serves all three version counters (`controls_version`,
-/// `groups_revision`, `layers_version`) — the counter's identity lives in the
+/// `zones_revision`, `layers_version`) — the counter's identity lives in the
 /// route, not in a bespoke body shape. A client rebases off
 /// `error.details.current` (or the `ETag`, which carries the same value).
 fn assert_precondition_body(body: &Value, expected: u64, current: u64) {
@@ -669,7 +669,7 @@ async fn legacy_effect_apply_path_stays_routed() {
 }
 
 #[tokio::test]
-async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
+async fn effects_active_controls_keeps_its_unversioned_shape() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
@@ -684,7 +684,7 @@ async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
         &app,
         json_request(
             "PATCH",
-            "/api/v1/effects/current/controls",
+            "/api/v1/effects/active/controls",
             &json!({ "controls": { "speed": 3.0 } }),
         ),
     )
@@ -693,20 +693,20 @@ async fn legacy_effects_current_controls_keeps_its_unversioned_shape() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
         response.headers().get(http::header::ETAG).is_none(),
-        "the legacy `current` route carries no ETag, unlike its `{{id}}` sibling"
+        "the `active` route carries no ETag, unlike its `{{id}}` sibling"
     );
     let json = body_json(response).await;
     assert_envelope(&json);
     assert_keys(
         &json["data"],
         &["effect", "applied", "rejected"],
-        "legacy /effects/current/controls body",
+        "legacy /effects/active/controls body",
     );
     assert_eq!(json["data"]["effect"], json!("solid_color"));
 }
 
 #[tokio::test]
-async fn legacy_effects_current_binding_and_reset_paths_stay_routed() {
+async fn effects_active_binding_and_reset_paths_stay_routed() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
@@ -724,7 +724,7 @@ async fn legacy_effects_current_binding_and_reset_paths_stay_routed() {
         &app,
         json_request(
             "PUT",
-            "/api/v1/effects/current/controls/speed/binding",
+            "/api/v1/effects/active/controls/speed/binding",
             &json!({
                 "sensor": "cpu.load",
                 "sensor_min": 0.0,
@@ -738,20 +738,92 @@ async fn legacy_effects_current_binding_and_reset_paths_stay_routed() {
     assert_reached_v1_handler(binding).await;
 
     // `reset` accepts an absent body, which is part of its v1 contract.
-    let reset = send(&app, empty_request("POST", "/api/v1/effects/current/reset")).await;
+    let reset = send(&app, empty_request("POST", "/api/v1/effects/active/reset")).await;
     assert_eq!(reset.status(), StatusCode::OK);
     assert_envelope(&body_json(reset).await);
 }
 
+/// The wave C1b renames deleted their old paths outright. A rename that
+/// left an alias or a redirect behind would still serve the old behavior
+/// here, so this asserts the absence rather than the new routes'
+/// presence.
+///
+/// Most retired paths match no route at all and answer 404. The one
+/// exception is pinned deliberately: `/effects/current/controls` now
+/// falls through to the live `/effects/{id}/controls` sibling with `id`
+/// bound to the literal `current`, which fails UUID parsing and answers
+/// `400 malformed_request`. That is still a deletion — no handler treats
+/// `current` as the active effect any more — and pinning the specific
+/// status is what would catch someone re-adding one that does.
 #[tokio::test]
-async fn legacy_scene_groups_layer_paths_stay_routed() {
+async fn renamed_routes_leave_nothing_behind() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
-    let group_id = primary_zone_id(&app).await;
+    let zone_id = primary_zone_id(&app).await;
 
-    // Layers are addressed through `/groups/`, while zone CRUD on the very
-    // same object is addressed through `/zones/`. Both spellings are v1.
-    let base = format!("/api/v1/scenes/default/groups/{group_id}/layers");
+    let retired = [
+        (
+            json_request(
+                "PATCH",
+                "/api/v1/effects/current/controls",
+                &json!({ "controls": { "speed": 0.5 } }),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json_request(
+                "PUT",
+                "/api/v1/effects/current/controls/speed/binding",
+                &json!({ "sensor": "audio.level" }),
+            ),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            empty_request("POST", "/api/v1/effects/current/reset"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            get(&format!("/api/v1/scenes/default/groups/{zone_id}/layers")),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json_request(
+                "POST",
+                "/api/v1/config/get",
+                &json!({ "key": "daemon.port" }),
+            ),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json_request(
+                "POST",
+                "/api/v1/config/set",
+                &json!({ "key": "daemon.port", "value": 9420 }),
+            ),
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+
+    for (request, expected) in retired {
+        let uri = request.uri().to_string();
+        let response = send(&app, request).await;
+        assert_eq!(
+            response.status(),
+            expected,
+            "{uri} must be gone, not aliased or redirected"
+        );
+    }
+}
+
+#[tokio::test]
+async fn scene_zone_layer_paths_stay_routed() {
+    let (state, _tmp) = isolated_state();
+    let app = test_app(&state);
+    let zone_id = primary_zone_id(&app).await;
+
+    // Layer stacks and zone CRUD address the same object through the same
+    // `/zones/` segment.
+    let base = format!("/api/v1/scenes/default/zones/{zone_id}/layers");
     let listed = send(&app, get(&base)).await;
     assert_eq!(listed.status(), StatusCode::OK);
     assert_eq!(etag(&listed), "\"0\"");
@@ -984,8 +1056,8 @@ async fn zone_precondition_failure_renders_the_canonical_412() {
 async fn layer_precondition_failure_renders_the_canonical_412() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
-    let group_id = primary_zone_id(&app).await;
-    let base = format!("/api/v1/scenes/default/groups/{group_id}/layers");
+    let zone_id = primary_zone_id(&app).await;
+    let base = format!("/api/v1/scenes/default/zones/{zone_id}/layers");
     let body = json!({
         "source": { "type": "color_fill", "rgba": [1.0, 0.0, 0.5, 1.0] },
         "blend": "alpha",

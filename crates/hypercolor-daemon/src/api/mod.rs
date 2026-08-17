@@ -1218,15 +1218,15 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(effects::get_active_effect_cover),
         )
         .route(
-            "/effects/current/controls",
-            axum::routing::patch(effects::update_current_controls),
+            "/effects/active/controls",
+            axum::routing::patch(effects::update_active_controls),
         )
         .route(
-            "/effects/current/controls/{name}/binding",
-            axum::routing::put(effects::set_current_control_binding),
+            "/effects/active/controls/{name}/binding",
+            axum::routing::put(effects::set_active_control_binding),
         )
         .route(
-            "/effects/current/reset",
+            "/effects/active/reset",
             axum::routing::post(effects::reset_controls),
         )
         .route("/effects/pause", axum::routing::post(effects::pause_effect))
@@ -1322,19 +1322,19 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(layers::broadcast_media_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers",
+            "/scenes/{id}/zones/{zone_id}/layers",
             axum::routing::get(layers::list_layers).post(layers::create_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/order",
+            "/scenes/{id}/zones/{zone_id}/layers/order",
             axum::routing::patch(layers::reorder_layers),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
             axum::routing::put(layers::update_layer).delete(layers::delete_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
             axum::routing::patch(layers::patch_layer_controls),
         )
         // ── Profiles ─────────────────────────────────────────────────
