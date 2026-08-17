@@ -987,7 +987,7 @@ fn goldens() -> Vec<Golden> {
             seg(1, "schema u8"),
             seg(
                 1,
-                "stream_kind u8 (0=passive, 1=zone, 2=interactive, 3=screen_zones)",
+                "stream_kind u8 (0=passive, 1=zone, 2=interactive, 3=screen_zones, 4=display)",
             ),
             seg(1, "channel tag u8"),
             seg(1, "format u8"),
@@ -1335,6 +1335,11 @@ fn wide_frame_payloads_are_written_verbatim() {
     let encoded = interactive.encode().expect("wide interactive encodes");
     let payload_offset = interactive.prefix_len() + interactive.preview_id.len();
     assert_eq!(&encoded[payload_offset..], &interactive.payload[..]);
+
+    let display = golden_wide_display_preview();
+    let encoded = display.encode().expect("wide display encodes");
+    let payload_offset = display.prefix_len() + display.device_id.len();
+    assert_eq!(&encoded[payload_offset..], &display.payload[..]);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

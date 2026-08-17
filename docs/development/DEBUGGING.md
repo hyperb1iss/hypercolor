@@ -317,28 +317,31 @@ curl -s -X POST http://localhost:9420/api/v1/devices/abc123/identify \
 Bidirectional WebSocket for real-time event streaming, binary frame data,
 performance metrics, and REST-equivalent command execution.
 
-### Channels
+### Topics
 
-| Channel    | Default      | Description                     | Config Options                                |
-| ---------- | ------------ | ------------------------------- | --------------------------------------------- |
-| `events`   | subscribed   | System events and state changes | none                                          |
-| `frames`   | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `format` (binary/json), `zones` |
-| `spectrum` | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)         |
-| `canvas`   | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)             |
-| `metrics`  | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)                     |
+A few of the fifteen; the full list lives in `protocol/websocket-v1.json`.
+
+| Topic             | Key       | Default      | Description                     | Config Options                                |
+| ----------------- | --------- | ------------ | ------------------------------- | --------------------------------------------- |
+| `events`          | —         | subscribed   | System events and state changes | none                                          |
+| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `format` (binary/json), `zones` |
+| `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)         |
+| `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)             |
+| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)                     |
+| `display_preview` | device id | unsubscribed | One display's JPEG output       | `fps` (1-30)                                  |
 
 ### Client → Server Messages
 
-**Subscribe:**
+**Subscribe:** each entry names a topic, its key when the topic is keyed, and
+that subscription's config patch.
 
 ```json
 {
   "type": "subscribe",
-  "channels": ["frames", "metrics"],
-  "config": {
-    "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
-    "metrics": { "interval_ms": 500 }
-  }
+  "topics": [
+    { "topic": "frames", "config": { "fps": 30, "format": "binary", "zones": ["all"] } },
+    { "topic": "metrics", "config": { "interval_ms": 500 } }
+  ]
 }
 ```
 
@@ -347,7 +350,7 @@ performance metrics, and REST-equivalent command execution.
 ```json
 {
   "type": "unsubscribe",
-  "channels": ["frames"]
+  "topics": [{ "topic": "frames" }]
 }
 ```
 
@@ -443,7 +446,7 @@ performance metrics, and REST-equivalent command execution.
 {
   "type": "backpressure",
   "dropped_frames": 12,
-  "channel": "frames",
+  "topic": "frames",
   "recommendation": "Reduce fps or enable selective frame filtering",
   "suggested_fps": 15
 }
@@ -488,7 +491,7 @@ performance metrics, and REST-equivalent command execution.
 websocat ws://localhost:9420/api/v1/ws
 
 # Subscribe to metrics every 500ms
-echo '{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":500}}}' | \
+echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":500}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 ```
 
@@ -1027,7 +1030,7 @@ RUST_LOG=hypercolor_core::device::usb_backend=debug just daemon 2>&1 | grep -i "
 curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
 
 # 2. Monitor frame data via WebSocket
-echo '{"type":"subscribe","channels":["frames"],"config":{"frames":{"fps":1,"format":"json"}}}' | \
+echo '{"type":"subscribe","topics":[{"topic":"frames","config":{"fps":1,"format":"json"}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 
 # 3. Trace the render pipeline stages
@@ -1038,7 +1041,7 @@ RUST_LOG=hypercolor_daemon::render_thread=trace just daemon
 
 ```bash
 # 1. Subscribe to metrics via WebSocket
-echo '{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":500}}}' | \
+echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":500}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 
 # 2. Check per-stage timing breakdown in metrics output

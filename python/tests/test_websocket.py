@@ -13,6 +13,7 @@ import pytest
 
 from hypercolor import websocket as websocket_module, ws_protocol
 from hypercolor.websocket import (
+    ActiveSubscription,
     BinaryMessage,
     CanvasData,
     DisplayPreviewData,
@@ -70,12 +71,19 @@ def test_ws_protocol_constants_match_manifest() -> None:
 
 def test_decode_hello_message() -> None:
     message = HypercolorEventStream._decode_json(
-        '{"type":"hello","version":"1.0","state":{"running":true},"capabilities":["events"],"subscriptions":["events"]}'
+        '{"type":"hello","version":"1.0","state":{"running":true},'
+        '"capabilities":["events"],'
+        '"subscriptions":[{"topic":"events"},'
+        '{"topic":"display_preview","key":"device-abc","config":{"fps":15}}]}'
     )
 
     assert isinstance(message, HelloMessage)
     assert message.version == "1.0"
     assert message.capabilities == ["events"]
+    assert message.subscriptions == [
+        ActiveSubscription(topic="events"),
+        ActiveSubscription(topic="display_preview", key="device-abc", config={"fps": 15}),
+    ]
 
 
 def test_parse_led_frame() -> None:
@@ -152,6 +160,45 @@ def test_parse_keyed_display_preview_jpeg() -> None:
     assert message.width == 64
     assert message.height == 32
     assert message.pixels == jpeg
+
+
+def test_parse_wide_display_preview() -> None:
+    pixels = bytes(range(12))
+    device_id = b"device-abc"
+    payload = bytearray((0x12, len(device_id)))
+    payload.extend(struct.pack("<II", 3, 4))
+    payload.extend(struct.pack("<II", 4, 1))
+    payload.extend(b"\x00")
+    payload.extend(device_id)
+    payload.extend(pixels)
+
+    message = HypercolorEventStream._decode_binary(bytes(payload))
+
+    assert isinstance(message, DisplayPreviewData)
+    assert message.device_id == "device-abc"
+    assert message.width == 4
+    assert message.height == 1
+    assert message.format == "rgb"
+    assert message.pixels == pixels
+
+
+def test_parse_wide_interactive_preview() -> None:
+    pixels = bytes(range(12))
+    preview_id = b"main"
+    payload = bytearray((0x0D, len(preview_id)))
+    payload.extend(struct.pack("<II", 5, 6))
+    payload.extend(struct.pack("<II", 4, 1))
+    payload.extend(b"\x00")
+    payload.extend(preview_id)
+    payload.extend(pixels)
+
+    message = HypercolorEventStream._decode_binary(bytes(payload))
+
+    assert isinstance(message, InteractivePreviewData)
+    assert message.preview_id == "main"
+    assert message.width == 4
+    assert message.height == 1
+    assert message.pixels == pixels
 
 
 def test_parse_addressed_interactive_preview() -> None:

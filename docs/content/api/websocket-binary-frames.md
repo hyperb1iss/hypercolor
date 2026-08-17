@@ -66,10 +66,10 @@ magic numbers, taken straight from the source constants.
 | `0x07` | Display preview | tag + identity length | `DISPLAY_PREVIEW_FRAME_TAG` |
 | `0x08` | Zone preview | single byte | `ZONE_PREVIEW_FRAME_TAG` |
 | `0x09` | Screen zones (ambilight grid) | single byte | `SCREEN_ZONES_FRAME_TAG` |
-| `0x0A` | Addressed interactive preview | single byte | `INTERACTIVE_PREVIEW_FRAME_TAG` |
+| `0x0A` | Addressed interactive preview | tag + identity length | `INTERACTIVE_PREVIEW_FRAME_TAG` |
 | `0x0B` | Wide passive preview | single byte | `WIDE_PREVIEW_FRAME_TAG` |
 | `0x0C` | Wide zone preview | single byte | `WIDE_ZONE_PREVIEW_FRAME_TAG` |
-| `0x0D` | Wide interactive preview | single byte | `WIDE_INTERACTIVE_PREVIEW_FRAME_TAG` |
+| `0x0D` | Wide interactive preview | tag + identity length | `WIDE_INTERACTIVE_PREVIEW_FRAME_TAG` |
 | `0x0E` | Wide screen zones | single byte | `WIDE_SCREEN_ZONES_FRAME_TAG` |
 | `0x0F` | Preview chunk envelope | tag + schema | `PREVIEW_CHUNK_FRAME_TAG` |
 | `0x10` | Preview publication cancellation | tag + schema | `PREVIEW_CANCEL_FRAME_TAG` |
@@ -278,7 +278,7 @@ chunks without resizing or truncation.
 offset  size  field
 0       1     tag = 0x0F
 1       1     schema = 1
-2       1     stream_kind (0=passive, 1=zone, 2=interactive, 3=screen_zones)
+2       1     stream_kind (0=passive, 1=zone, 2=interactive, 3=screen_zones, 4=display)
 3       1     channel tag
 4       1     pixel format
 5       2     stream_identity_len u16
@@ -296,7 +296,8 @@ offset  size  field
 ```
 
 The stream identity is empty for passive and screen-zone streams, 32 raw UUID
-bytes for a zone stream, and the UTF-8 preview id for an interactive stream.
+bytes for a zone stream, the UTF-8 preview id for an interactive stream, and the
+UTF-8 device id for a display stream.
 Clients reassemble by stream and publication id, require contiguous ordered
 chunks with stable metadata, and bound both per-publication and per-connection
 memory. Reassembly state is connection-scoped and must be cleared on reconnect.
@@ -316,7 +317,7 @@ identity (`PREVIEW_CANCEL_FIXED_HEADER_LEN = 14`, `PREVIEW_CANCEL_SCHEMA = 1`).
 offset  size  field
 0       1     tag = 0x10
 1       1     schema = 1
-2       1     stream_kind (0=passive, 1=zone, 2=interactive, 3=screen_zones)
+2       1     stream_kind (0=passive, 1=zone, 2=interactive, 3=screen_zones, 4=display)
 3       1     channel tag
 4       2     stream_identity_len u16
 6       8     publication_id u64

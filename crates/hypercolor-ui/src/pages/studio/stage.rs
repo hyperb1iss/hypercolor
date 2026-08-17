@@ -30,7 +30,6 @@ use crate::display_preview_state::use_display_preview_subscription;
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 use crate::toasts;
-use crate::ws::CanvasFrame;
 use crate::ws::messages::group_has_degraded_layer;
 
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};

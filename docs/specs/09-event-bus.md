@@ -2168,6 +2168,13 @@ impl IpcListener {
 
 ## 9. WebSocket Bridge
 
+> **Superseded on the message shapes.** Spec 76 wave 3.2c replaced the
+> `channels` + `config` subscribe with an array of `{topic, key?, config?}`
+> selectors, keyed `display_preview` and `interactive_preview`, and renamed the
+> `group`-spelled event fields to `zone`. The JSON shapes below record what this
+> spec's own wave shipped; `docs/content/api/websocket.md` and
+> `protocol/websocket-v1.json` are the live contract.
+
 The WebSocket at `ws://127.0.0.1:9420/api/v1/ws` is the primary real-time channel for the Leptos web frontend. It carries JSON messages for commands and events, plus binary messages for frame and spectrum data.
 
 ### 9.1 Connection & Handshake

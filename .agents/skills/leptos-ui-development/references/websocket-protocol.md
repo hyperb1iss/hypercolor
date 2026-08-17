@@ -53,7 +53,7 @@ Minimum valid message length: 14 bytes (header + metadata, no pixels). Width and
 { "type": "hello", "state": { "effect": {...}, "fps": { "target": 30, "actual": 29.8 } } }
 
 // Subscribed (confirmation after subscribe request)
-{ "type": "subscribed", "config": { "canvas": { "fps": 30 } } }
+{ "type": "subscribed", "topics": [{ "topic": "canvas", "config": { "fps": 30 } }] }
 ```
 
 ## Reconnection State Machine

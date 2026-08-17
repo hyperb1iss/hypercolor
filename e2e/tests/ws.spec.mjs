@@ -38,8 +38,8 @@ test("websocket handshake, subscribe ack, and live events flow through the proxy
     );
 
     const ack = await inbox.waitFor((message) => message.type === "subscribed");
+    expect(ack.topics.map((entry) => entry.topic)).toEqual(["events", "metrics"]);
     const metrics = ack.topics.find((entry) => entry.topic === "metrics");
-    expect(metrics).toBeTruthy();
     expect(metrics.config).toBeTruthy();
 
     const effects = await readEnvelope(await api.get("/api/v1/effects"));

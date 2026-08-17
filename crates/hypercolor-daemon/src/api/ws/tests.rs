@@ -1970,6 +1970,139 @@ fn try_receive_preview_publication(
     }
 }
 
+/// A keyed display preview frame for one device.
+fn display_preview_frame_for(device_id: &str, frame_number: u32, payload_len: usize) -> Bytes {
+    WireDisplayPreviewFrame {
+        device_id: device_id.to_owned(),
+        frame_number,
+        timestamp_ms: frame_number,
+        width: 1,
+        height: 1,
+        format: WirePreviewPixelFormat::Jpeg,
+        payload: Bytes::from(jpeg_test_payload(1, 1, payload_len)),
+    }
+    .encode()
+    .expect("keyed display preview test frame")
+}
+
+#[test]
+fn cancelling_one_key_leaves_a_sibling_subscription_streaming() {
+    // Retiring one display must not cancel another's stream. The router
+    // holds one entry per stream identity, so this is the check that the
+    // per-key match is a key match and not a topic match.
+    let (sender, receiver) = preview_outbound_channel();
+    for device in ["device-a", "device-b"] {
+        sender
+            .publish(
+                PreviewStreamId::Display(device.to_owned()),
+                display_preview_frame_for(device, 1, 64),
+                None,
+            )
+            .expect("each device publishes its own stream");
+    }
+
+    let cancelled = sender
+        .cancel_subscription(TopicId::DisplayPreview, Some("device-a"))
+        .expect("cancelling one key succeeds");
+    assert_eq!(cancelled, 1, "exactly one stream is retired");
+
+    let mut cancellations = Vec::new();
+    let mut publications = Vec::new();
+    while let Some(item) = receiver.try_recv() {
+        match item {
+            PreviewOutboundItem::Cancellation(cancellation) => {
+                cancellations.push(cancellation.stream.clone());
+            }
+            PreviewOutboundItem::Publication(publication) => {
+                publications.push(publication.stream().clone());
+            }
+        }
+    }
+    assert_eq!(
+        cancellations,
+        vec![PreviewStreamId::Display("device-a".to_owned())]
+    );
+    assert!(
+        publications.contains(&PreviewStreamId::Display("device-b".to_owned())),
+        "the sibling keeps streaming: {publications:?}"
+    );
+    assert!(
+        !publications.contains(&PreviewStreamId::Display("device-a".to_owned())),
+        "the retired key's queued publication is dropped: {publications:?}"
+    );
+}
+
+#[test]
+fn cancelling_a_keyed_topic_without_a_key_retires_every_key() {
+    // A topic-wide teardown (the connection closing, say) has no key, and
+    // that has to mean "all of them" rather than "none of them".
+    let (sender, _receiver) = preview_outbound_channel();
+    for device in ["device-a", "device-b"] {
+        sender
+            .publish(
+                PreviewStreamId::Display(device.to_owned()),
+                display_preview_frame_for(device, 1, 64),
+                None,
+            )
+            .expect("each device publishes its own stream");
+    }
+
+    assert_eq!(
+        sender
+            .cancel_subscription(TopicId::DisplayPreview, None)
+            .expect("a keyless cancel succeeds"),
+        2
+    );
+}
+
+#[test]
+fn a_keyed_display_publication_survives_chunking_and_reassembly() {
+    // Display preview joined the chunked transport with a new stream kind,
+    // so a publication that has to be split must come back naming the same
+    // device — narrow and wide alike.
+    for (label, width, height) in [("narrow", 64_u32, 64_u32), ("wide", 70_001, 1)] {
+        let device_id = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        let frame = WireDisplayPreviewFrame {
+            device_id: device_id.to_owned(),
+            frame_number: 9,
+            timestamp_ms: 11,
+            width,
+            height,
+            format: WirePreviewPixelFormat::Rgb,
+            payload: Bytes::from(vec![0x5A; (width as usize) * (height as usize) * 3]),
+        };
+        let encoded = frame.encode().expect("display frame encodes");
+        let metadata = hypercolor_leptos_ext::ws::PreviewPublicationMetadata {
+            stream: PreviewStreamId::Display(device_id.to_owned()),
+            publication_id: 7,
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: frame.width,
+            height: frame.height,
+            format: frame.format,
+        };
+        let chunks =
+            hypercolor_leptos_ext::ws::split_preview_publication(&encoded, &metadata, 4096)
+                .unwrap_or_else(|error| panic!("{label} display publication splits: {error}"));
+        assert!(chunks.len() > 1, "{label} publication is actually chunked");
+
+        let mut reassembler = hypercolor_leptos_ext::ws::PreviewChunkReassembler::new(
+            hypercolor_leptos_ext::ws::PreviewReassemblyLimits::default(),
+        );
+        let mut completed = None;
+        for chunk in &chunks {
+            completed = reassembler
+                .push(chunk)
+                .unwrap_or_else(|error| panic!("{label} chunk is accepted: {error}"));
+        }
+        let completed = completed.unwrap_or_else(|| panic!("{label} publication reassembles"));
+        assert_eq!(completed.metadata, metadata, "{label} metadata round-trips");
+        let decoded = WireDisplayPreviewFrame::decode_bytes(&completed.encoded)
+            .unwrap_or_else(|error| panic!("{label} reassembled frame decodes: {error}"));
+        assert_eq!(decoded, frame, "{label} frame round-trips");
+    }
+}
+
 #[test]
 fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
     let _guard = WS_CACHE_TEST_LOCK
@@ -3794,6 +3927,56 @@ fn an_interactive_preview_subscribe_rejects_invalid_render_config() {
                 .with_config(serde_json::json!({"target": "another_connection"})),
         ])
         .expect_err("unsupported interactive preview target must be rejected");
+}
+
+#[tokio::test]
+async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized() {
+    // Reconciliation walks the requested previews in key order, so a
+    // request whose later preview is unopenable can reach an earlier
+    // one's lane before it learns that. The whole subscribe is abandoned,
+    // so the resize has to be abandoned with it. The keys here are
+    // deliberately ordered: "alpha" is resized before "omega" refuses.
+    let (_source, handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut session, _outbound, _frames) = browser_preview_session(handle, routing, executor);
+
+    let original = interactive_preview_config();
+    subscribe_interactive_preview(&mut session, "alpha", original)
+        .await
+        .expect("the first preview opens");
+    let publication = session
+        .publication_id("alpha")
+        .expect("the first preview publishes");
+
+    let mut resized = original;
+    resized.width = 320;
+    resized.height = 240;
+    // This shape fits the wire's publication budget but not the
+    // executor's resource capacity, so it is the lane — not config
+    // admission — that refuses, after "alpha" was already resized.
+    let mut refused = original;
+    refused.width = 4_096;
+    refused.height = 4_096;
+    let error =
+        subscribe_interactive_previews(&mut session, &[("alpha", resized), ("omega", refused)])
+            .await
+            .expect_err("an unopenable preview refuses the whole reconcile");
+    assert_eq!(error.code, "invalid_request");
+
+    assert!(
+        session.publication_id("omega").is_none(),
+        "the refused preview left no lane behind"
+    );
+    assert_eq!(
+        session.publication_id("alpha"),
+        Some(publication),
+        "the surviving preview keeps its identity"
+    );
+    assert_eq!(
+        session.preview_config("alpha"),
+        Some(original),
+        "the surviving preview is back at the shape it had"
+    );
 }
 
 #[tokio::test]

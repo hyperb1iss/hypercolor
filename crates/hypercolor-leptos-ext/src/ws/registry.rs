@@ -70,6 +70,10 @@ impl TopicKey for DeviceKey {
 /// The `interactive_preview` subscription key: the client-chosen preview
 /// id. It also identifies the preview's binary frames and every message
 /// addressed at one live preview.
+///
+/// Unlike a device id, a preview id is opaque to the daemon, so it is
+/// taken verbatim rather than trimmed: two ids differing only in padding
+/// are two previews, which is the client's business and not ours.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PreviewKey(String);
 

@@ -724,11 +724,25 @@ impl WsManager {
             let device = display_preview_device.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            let wanted = (state == ConnectionState::Connected && window_visible && is_visible)
+
+            // A dropped socket takes its subscriptions with it, so the
+            // followed key is forgotten here, above the handle guard. The
+            // handle is nulled on close without notifying anything, so a
+            // reset below the guard would never run, and the effect would
+            // come back from a reconnect believing it still followed the
+            // right device and skip the re-subscribe.
+            if state != ConnectionState::Connected {
+                if followed_display.get_value().is_some() {
+                    followed_display.set_value(None);
+                    set_display_preview_frames.update(HashMap::clear);
+                }
+                return;
+            }
+
+            let wanted = (window_visible && is_visible)
                 .then_some(device)
                 .flatten()
                 .filter(|device_id| !device_id.is_empty());
-
             if followed_display.get_value() == wanted {
                 return;
             }
@@ -737,9 +751,7 @@ impl WsManager {
             };
 
             if let Some(previous) = followed_display.get_value() {
-                if state == ConnectionState::Connected {
-                    super::preview::send_display_preview_unsubscribe(&ws, &previous);
-                }
+                super::preview::send_display_preview_unsubscribe(&ws, &previous);
                 set_display_preview_frames.update(|frames| {
                     frames.remove(&previous);
                 });

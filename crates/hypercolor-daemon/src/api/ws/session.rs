@@ -769,6 +769,17 @@ pub(super) struct BrowserPreviewSession {
     previews: HashMap<String, BrowserPreviewBinding>,
 }
 
+/// One change a reconcile made, and what it takes to undo it.
+enum AppliedPreviewChange {
+    /// The preview did not exist before; closing it undoes the change.
+    Opened { preview_id: String },
+    /// The preview existed with this shape; restoring it undoes the change.
+    Reshaped {
+        preview_id: String,
+        previous: InteractivePreviewConfig,
+    },
+}
+
 struct BrowserPreviewBinding {
     attachment: BrowserInputAttachment,
     config: InteractivePreviewConfig,
@@ -797,11 +808,11 @@ impl BrowserPreviewSession {
     /// Bring the open previews in line with the connection's live
     /// `interactive_preview` subscriptions.
     ///
-    /// Opens run first because they are the only step that can refuse:
-    /// one that fails closes whatever this call had already opened and
-    /// leaves every pre-existing preview alone, so the caller can abandon
-    /// the whole subscribe with nothing half-applied. Closes run last and
-    /// cannot fail.
+    /// Opens and reshapes run first, because they are the only steps that
+    /// can refuse. A failure undoes everything this call did — closing
+    /// what it opened and restoring the shape of what it resized — so the
+    /// caller can abandon the whole subscribe with nothing half-applied.
+    /// Closes run last and cannot fail.
     pub(super) async fn reconcile(
         &mut self,
         subscriptions: &SubscriptionState,
@@ -809,25 +820,25 @@ impl BrowserPreviewSession {
         let desired =
             subscriptions.keyed_configs::<InteractivePreviewConfig>(TopicId::InteractivePreview);
 
-        let mut opened_here: Vec<String> = Vec::new();
+        let mut applied: Vec<AppliedPreviewChange> = Vec::new();
         for (preview_id, config) in &desired {
-            if self
-                .previews
-                .get(preview_id)
-                .is_some_and(|binding| binding.config == *config)
-            {
+            let previous = self.previews.get(preview_id).map(|binding| binding.config);
+            if previous == Some(*config) {
                 continue;
             }
-            let was_open = self.previews.contains_key(preview_id);
             if let Err(error) = self.open(preview_id.clone(), *config).await {
-                for rollback in opened_here {
-                    let _ = self.close(rollback).await;
-                }
+                self.undo(applied).await;
                 return Err(error);
             }
-            if !was_open {
-                opened_here.push(preview_id.clone());
-            }
+            applied.push(match previous {
+                Some(previous) => AppliedPreviewChange::Reshaped {
+                    preview_id: preview_id.clone(),
+                    previous,
+                },
+                None => AppliedPreviewChange::Opened {
+                    preview_id: preview_id.clone(),
+                },
+            });
         }
 
         let stale: Vec<String> = self
@@ -840,6 +851,35 @@ impl BrowserPreviewSession {
             let _ = self.close(preview_id).await;
         }
         Ok(())
+    }
+
+    /// Undo this reconcile's changes in reverse order.
+    ///
+    /// Restoring a shape can itself refuse — the lane it targets may be
+    /// gone by now — and there is nothing better to do than say so: the
+    /// subscription state the caller is about to abandon is still the one
+    /// the next reconcile will measure against, so the lane converges on
+    /// the next subscribe either way.
+    async fn undo(&mut self, applied: Vec<AppliedPreviewChange>) {
+        for change in applied.into_iter().rev() {
+            match change {
+                AppliedPreviewChange::Opened { preview_id } => {
+                    let _ = self.close(preview_id).await;
+                }
+                AppliedPreviewChange::Reshaped {
+                    preview_id,
+                    previous,
+                } => {
+                    if let Err(error) = self.open(preview_id.clone(), previous).await {
+                        warn!(
+                            %preview_id,
+                            %error.message,
+                            "Failed to restore an interactive preview shape after a refused subscribe"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     async fn open(
@@ -939,6 +979,12 @@ impl BrowserPreviewSession {
         } else {
             false
         }
+    }
+
+    /// The shape one open preview is currently rendering at.
+    #[cfg(test)]
+    pub(super) fn preview_config(&self, preview_id: &str) -> Option<InteractivePreviewConfig> {
+        self.previews.get(preview_id).map(|binding| binding.config)
     }
 
     /// This connection's server-assigned identity. Interactive preview
@@ -1320,10 +1366,17 @@ async fn handle_client_message(
                 }
             };
 
-            // Commit phase. The transport goes first because adopting it
-            // refuses without having changed anything; the interactive
-            // preview lanes go next because they are the only remaining
-            // step that can refuse, and they roll back what they opened.
+            // Commit phase, ordered by what a refusal costs. The
+            // interactive preview lanes go first because they are the only
+            // step whose refusal is undoable: reconciling back to the
+            // subscriptions this request is abandoning to closes whatever
+            // it opened. Adopting the transport goes second because it
+            // refuses without having changed anything, so a refusal there
+            // only has to undo the lanes.
+            if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
             if let Some(staged) = staged_transport
                 && let Err(error) = commit_preview_transport(
                     staged,
@@ -1332,10 +1385,9 @@ async fn handle_client_message(
                     preview_capability,
                 )
             {
-                let _ = send_json(socket, &error.into_message()).await;
-                return;
-            }
-            if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
+                if let Err(undo) = browser_previews.reconcile(subscriptions).await {
+                    warn!(%undo.message, "Failed to release preview lanes after a refused subscribe");
+                }
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }

@@ -37,9 +37,9 @@ type MetricSample = {
 }
 
 type BackpressureSample = {
-    channel: string
     droppedFrames: number
     suggestedFps: number
+    topic: string
 }
 
 type Check = {
@@ -407,9 +407,9 @@ async function observe(config: Config): Promise<{ samples: MetricSample[]; backp
 
             if (type === "backpressure") {
                 backpressure.push({
-                    channel: stringAt(message, ["channel"]),
                     droppedFrames: numberAt(message, ["dropped_frames"]),
                     suggestedFps: numberAt(message, ["suggested_fps"]),
+                    topic: stringAt(message, ["topic"]),
                 })
             }
         }
