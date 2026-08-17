@@ -5,19 +5,19 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.update_current_controls_request import UpdateCurrentControlsRequest
+from ...models.update_active_controls_request import UpdateActiveControlsRequest
 from ...types import Response
 
 
 def _get_kwargs(
     *,
-    body: UpdateCurrentControlsRequest,
+    body: UpdateActiveControlsRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "patch",
-        "url": "/api/v1/effects/current/controls",
+        "url": "/api/v1/effects/active/controls",
     }
 
     _kwargs["json"] = body.to_dict()
@@ -72,13 +72,13 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateCurrentControlsRequest,
+    body: UpdateActiveControlsRequest,
 ) -> Response[Any]:
-    """Update current effect controls
+    """Update active effect controls
 
     Args:
-        body (UpdateCurrentControlsRequest): Request body for `PATCH
-            /api/v1/effects/current/controls`.
+        body (UpdateActiveControlsRequest): Request body for `PATCH
+            /api/v1/effects/active/controls`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -102,13 +102,13 @@ def sync_detailed(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateCurrentControlsRequest,
+    body: UpdateActiveControlsRequest,
 ) -> Response[Any]:
-    """Update current effect controls
+    """Update active effect controls
 
     Args:
-        body (UpdateCurrentControlsRequest): Request body for `PATCH
-            /api/v1/effects/current/controls`.
+        body (UpdateActiveControlsRequest): Request body for `PATCH
+            /api/v1/effects/active/controls`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

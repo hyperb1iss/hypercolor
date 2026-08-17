@@ -27,17 +27,17 @@ class ApplyEffectRequest:
             preset selection without a follow-up round-trip. If `controls` is
             also provided, the explicit controls win (they're presumed to
             already carry the preset's values, possibly with user tweaks).
-        render_group (None | str | Unset): Optional target zone (render-group id). Omitted applies the effect
+        transition (None | TransitionRequest | Unset):
+        zone_id (None | str | Unset): Optional target zone id. Omitted applies the effect
             to the scene's Primary zone — the legacy behavior. A non-Primary
             zone id renders the effect into that zone instead, leaving its
             layout and device assignment untouched.
-        transition (None | TransitionRequest | Unset):
     """
 
     controls: ApplyEffectRequestControls | Unset = UNSET
     preset_id: None | str | Unset = UNSET
-    render_group: None | str | Unset = UNSET
     transition: None | TransitionRequest | Unset = UNSET
+    zone_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,12 +53,6 @@ class ApplyEffectRequest:
         else:
             preset_id = self.preset_id
 
-        render_group: None | str | Unset
-        if isinstance(self.render_group, Unset):
-            render_group = UNSET
-        else:
-            render_group = self.render_group
-
         transition: dict[str, Any] | None | Unset
         if isinstance(self.transition, Unset):
             transition = UNSET
@@ -67,6 +61,12 @@ class ApplyEffectRequest:
         else:
             transition = self.transition
 
+        zone_id: None | str | Unset
+        if isinstance(self.zone_id, Unset):
+            zone_id = UNSET
+        else:
+            zone_id = self.zone_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -74,10 +74,10 @@ class ApplyEffectRequest:
             field_dict["controls"] = controls
         if preset_id is not UNSET:
             field_dict["preset_id"] = preset_id
-        if render_group is not UNSET:
-            field_dict["render_group"] = render_group
         if transition is not UNSET:
             field_dict["transition"] = transition
+        if zone_id is not UNSET:
+            field_dict["zone_id"] = zone_id
 
         return field_dict
 
@@ -103,15 +103,6 @@ class ApplyEffectRequest:
 
         preset_id = _parse_preset_id(d.pop("preset_id", UNSET))
 
-        def _parse_render_group(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        render_group = _parse_render_group(d.pop("render_group", UNSET))
-
         def _parse_transition(data: object) -> None | TransitionRequest | Unset:
             if data is None:
                 return data
@@ -129,11 +120,20 @@ class ApplyEffectRequest:
 
         transition = _parse_transition(d.pop("transition", UNSET))
 
+        def _parse_zone_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        zone_id = _parse_zone_id(d.pop("zone_id", UNSET))
+
         apply_effect_request = cls(
             controls=controls,
             preset_id=preset_id,
-            render_group=render_group,
             transition=transition,
+            zone_id=zone_id,
         )
 
         apply_effect_request.additional_properties = d
