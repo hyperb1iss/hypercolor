@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::common::Pagination;
-use crate::effect::{ControlDefinition, ControlValue, PresetTemplate};
+use crate::effect::{ControlBinding, ControlDefinition, ControlValue, PresetTemplate};
 
 /// Origin of a preset in an effect's unified preset stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -164,6 +164,17 @@ pub struct InstalledEffectResponse {
     pub presets: usize,
 }
 
+/// Response for `POST /api/v1/effects/rescan`.
+///
+/// Counts describe what the rescan changed in the registry, so an
+/// all-zero response means the effect directories were already current.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RescanResponse {
+    pub added: usize,
+    pub removed: usize,
+    pub updated: usize,
+}
+
 /// Request body for `POST /api/v1/effects/{id}/apply`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEffectRequest {
@@ -204,11 +215,86 @@ pub struct UpdateActiveControlsRequest {
     pub controls: Option<serde_json::Value>,
 }
 
+/// Response for `PATCH /api/v1/effects/active/controls`.
+///
+/// `effect` is the active effect's name rather than a reference object —
+/// this route predates the `{ id, name }` convention its siblings use.
+/// `rejected` names the controls the daemon refused, with the reason.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateActiveControlsResponse {
+    #[serde(default)]
+    pub effect: String,
+    #[serde(default)]
+    pub applied: HashMap<String, ControlValue>,
+    #[serde(default)]
+    pub rejected: Vec<String>,
+}
+
+/// Response for `PATCH /api/v1/effects/{effect_id}/controls`.
+///
+/// The same body as the `active` sibling plus `controls_version`, the
+/// new server-side version token. It is also returned in the `ETag`
+/// header; clients echo it back via `If-Match` to get optimistic
+/// concurrency on the next PATCH.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateEffectControlsResponse {
+    #[serde(default)]
+    pub effect: String,
+    #[serde(default)]
+    pub applied: HashMap<String, ControlValue>,
+    #[serde(default)]
+    pub rejected: Vec<String>,
+    pub controls_version: u64,
+}
+
+/// Response for `PUT /api/v1/effects/active/controls/{name}/binding`.
+///
+/// `binding` is the stored binding after clamping, which can differ from
+/// the one the caller sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetControlBindingResponse {
+    pub effect: EffectRefSummary,
+    pub control: String,
+    pub binding: ControlBinding,
+}
+
 /// Request body for `PUT /api/v1/effects/{id}/layout`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetEffectLayoutRequest {
     /// The spatial layout to associate with the effect.
     pub layout_id: String,
+}
+
+/// Response for `GET /api/v1/effects/{id}/layout`.
+///
+/// `resolved` reports whether the linked layout still exists; a stale
+/// link answers `resolved: false` with a `null` `layout` rather than a
+/// 404, because the association itself is real.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout_id: String,
+    pub resolved: bool,
+    pub layout: Option<LayoutLinkSummary>,
+}
+
+/// Response for `PUT /api/v1/effects/{id}/layout`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout: LayoutLinkSummary,
+    pub linked: bool,
+}
+
+/// Response for `DELETE /api/v1/effects/{id}/layout`.
+///
+/// `layout_id` is the association that was removed, and `null` with
+/// `deleted: false` when the effect had no layout linked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteEffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout_id: Option<String>,
+    pub deleted: bool,
 }
 
 /// Optional body for `POST /api/v1/effects/active/reset` — scopes the
@@ -217,6 +303,13 @@ pub struct SetEffectLayoutRequest {
 pub struct ResetControlsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone_id: Option<String>,
+}
+
+/// Response for `POST /api/v1/effects/active/reset`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetControlsResponse {
+    pub effect: EffectRefSummary,
+    pub reset: bool,
 }
 
 /// `{ id, name }` reference to an effect.
@@ -242,6 +335,17 @@ pub struct ResumeEffectResponse {
     pub resumed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<EffectRefSummary>,
+}
+
+/// Response for `POST /api/v1/effects/stop`.
+///
+/// `released_network_devices` counts the streaming network devices that
+/// were handed back when the effect stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopEffectResponse {
+    pub stopped: bool,
+    #[serde(default)]
+    pub released_network_devices: usize,
 }
 
 /// Layout link summary in apply responses.

@@ -20,6 +20,7 @@ pub use hypercolor_types::api::effects::{
     ApplyEffectPresetRequest, ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet,
     EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
     EffectPresetSummary, EffectSummary, InstalledEffectResponse, UpdateActiveControlsRequest,
+    UpdateEffectControlsResponse,
 };
 pub use hypercolor_types::api::output::{OutputPowerMode, SetOutputPowerRequest};
 
@@ -203,14 +204,6 @@ pub enum UpdateControlsOutcome {
     Stale { current: u64 },
 }
 
-/// Successful control-PATCH payload — the envelope data carries the new
-/// `controls_version` (also present in the `ETag` header; the body is
-/// simpler to extract with `gloo_net`).
-#[derive(Debug, Deserialize)]
-struct ControlsVersionResponse {
-    controls_version: u64,
-}
-
 /// Scoped control PATCH against a specific effect id with optional
 /// optimistic-concurrency precondition.
 ///
@@ -227,7 +220,7 @@ pub async fn update_effect_controls(
     let body = UpdateActiveControlsRequest {
         controls: Some(controls.clone()),
     };
-    let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
+    let outcome = client::send_json_versioned::<_, UpdateEffectControlsResponse>(
         Method::PATCH,
         &url,
         Some(&body),

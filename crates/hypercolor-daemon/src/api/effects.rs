@@ -10,7 +10,6 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use serde::Serialize;
 use tokio::fs;
 use tracing::{info, warn};
 
@@ -64,11 +63,13 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
     ActiveEffectResponse, ApplyEffectPresetRequest, ApplyEffectRequest, ApplyEffectResponse,
-    ApplyTransitionResponse, EffectCapabilitySet, EffectDetailResponse, EffectLayoutApplyResult,
-    EffectListResponse, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
-    EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
-    PauseEffectResponse, ResetControlsRequest, ResumeEffectResponse, TransitionRequest,
-    UpdateActiveControlsRequest,
+    ApplyTransitionResponse, DeleteEffectLayoutResponse, EffectCapabilitySet, EffectDetailResponse,
+    EffectLayoutApplyResult, EffectLayoutResponse, EffectListResponse, EffectPresetListResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectRefSummary, EffectSummary,
+    InstalledEffectResponse, LayoutLinkSummary, PauseEffectResponse, RescanResponse,
+    ResetControlsRequest, ResetControlsResponse, ResumeEffectResponse, SetControlBindingResponse,
+    SetEffectLayoutResponse, StopEffectResponse, TransitionRequest, UpdateActiveControlsRequest,
+    UpdateActiveControlsResponse, UpdateEffectControlsResponse,
 };
 
 struct ResolvedEffectPreset {
@@ -499,15 +500,15 @@ pub async fn get_effect_layout(
     };
 
     let summary = layout.as_ref().map(layout_link_summary);
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(EffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout_id": layout_id,
-        "resolved": summary.is_some(),
-        "layout": summary,
-    }))
+        layout_id,
+        resolved: summary.is_some(),
+        layout: summary,
+    })
 }
 
 /// `PUT /api/v1/effects/:id/layout` — Associate an effect with a layout.
@@ -572,14 +573,14 @@ pub async fn set_effect_layout(
         return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(SetEffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout": layout_link_summary(&layout),
-        "linked": true,
-    }))
+        layout: layout_link_summary(&layout),
+        linked: true,
+    })
 }
 
 /// `DELETE /api/v1/effects/:id/layout` — Remove an effect -> layout association.
@@ -623,14 +624,14 @@ pub async fn delete_effect_layout(
         return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(DeleteEffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout_id": removed_layout_id,
-        "deleted": removed_layout_id.is_some(),
-    }))
+        deleted: removed_layout_id.is_some(),
+        layout_id: removed_layout_id,
+    })
 }
 
 /// `POST /api/v1/effects/:id/apply` — Start rendering an effect.
@@ -930,10 +931,10 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(serde_json::json!({
-        "stopped": true,
-        "released_network_devices": stopped.released_network_devices,
-    }))
+    ApiResponse::ok(StopEffectResponse {
+        stopped: true,
+        released_network_devices: stopped.released_network_devices,
+    })
 }
 
 /// `PATCH /api/v1/effects/active/controls` — Update controls on active effect
@@ -1001,11 +1002,11 @@ pub async fn update_active_controls(
         );
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": effect_name,
-        "applied": applied,
-        "rejected": rejected,
-    }))
+    ApiResponse::ok(UpdateActiveControlsResponse {
+        effect: effect_name,
+        applied,
+        rejected,
+    })
 }
 
 /// `PATCH /api/v1/effects/{effect_id}/controls` — Update controls on a
@@ -1109,12 +1110,12 @@ pub async fn update_effect_controls(
         );
     }
 
-    let body = ApiResponse::ok(serde_json::json!({
-        "effect": effect_name,
-        "applied": applied,
-        "rejected": rejected,
-        "controls_version": new_version,
-    }))
+    let body = ApiResponse::ok(UpdateEffectControlsResponse {
+        effect: effect_name,
+        applied,
+        rejected,
+        controls_version: new_version,
+    })
     .into_response();
     attach_controls_version_headers(body, new_version)
 }
@@ -1218,14 +1219,14 @@ pub async fn set_active_control_binding(
         Err(error) => return error.into_response(),
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect_name,
+    ApiResponse::ok(SetControlBindingResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect_name,
         },
-        "control": control_id,
-        "binding": normalized,
-    }))
+        control: control_id,
+        binding: normalized,
+    })
 }
 
 /// `POST /api/v1/effects/active/reset` — Reset all controls on the active
@@ -1270,13 +1271,13 @@ pub async fn reset_controls(
 
     info!(effect = %effect_name, "Controls reset to defaults");
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id.to_string(),
-            "name": effect_name,
+    ApiResponse::ok(ResetControlsResponse {
+        effect: EffectRefSummary {
+            id: effect_id.to_string(),
+            name: effect_name,
         },
-        "reset": true,
-    }))
+        reset: true,
+    })
 }
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
@@ -1425,13 +1426,6 @@ pub async fn install_effect(
         controls: entry.metadata.controls.len(),
         presets: entry.metadata.presets.len(),
     })
-}
-
-#[derive(Debug, Serialize)]
-pub struct RescanResponse {
-    pub added: usize,
-    pub removed: usize,
-    pub updated: usize,
 }
 
 pub(crate) fn resolve_effect_metadata(
