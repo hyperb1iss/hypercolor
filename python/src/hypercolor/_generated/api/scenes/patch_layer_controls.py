@@ -91,7 +91,12 @@ def sync_detailed(
         id (str):
         zone_id (str):
         layer_id (str):
-        body (PatchLayerControlsRequest):
+        body (PatchLayerControlsRequest): Request body for
+            `PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls`.
+
+            `controls` carries no `#[serde(default)]` on purpose: the schema this
+            route publishes marks it required, and serde still admits an absent
+            field through `Option`'s own default.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -129,7 +134,12 @@ async def asyncio_detailed(
         id (str):
         zone_id (str):
         layer_id (str):
-        body (PatchLayerControlsRequest):
+        body (PatchLayerControlsRequest): Request body for
+            `PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls`.
+
+            `controls` carries no `#[serde(default)]` on purpose: the schema this
+            route publishes marks it required, and serde still admits an absent
+            field through `Option`'s own default.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

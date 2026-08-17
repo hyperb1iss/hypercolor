@@ -1,7 +1,7 @@
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 use hypercolor_ui::api::{
-    ComponentBindingRequest, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
+    ComponentBinding, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
     SetDisplayFaceRequest,
 };
 use hypercolor_ui::control_value_json::{
@@ -88,7 +88,7 @@ fn pair_device_request_serializes_canonical_shape() {
 
 #[test]
 fn attachment_binding_request_keeps_explicit_defaults_on_wire() {
-    let payload = serde_json::to_value(ComponentBindingRequest {
+    let payload = serde_json::to_value(ComponentBinding {
         slot_id: "slot-1".to_owned(),
         template_id: "template-1".to_owned(),
         name: None,
@@ -98,11 +98,15 @@ fn attachment_binding_request_keeps_explicit_defaults_on_wire() {
     })
     .expect("attachment binding request should serialize");
 
+    // enabled, instances, and led_offset all carry serde defaults on the
+    // daemon side, so the point of this pin is that the UI states them
+    // rather than letting the daemon reconstruct them.
     assert_eq!(
         payload,
         serde_json::json!({
             "slot_id": "slot-1",
             "template_id": "template-1",
+            "name": null,
             "enabled": true,
             "instances": 1,
             "led_offset": 0

@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -27,6 +27,10 @@ use super::{
     store_error_to_response, unix_epoch_ms,
 };
 
+pub use hypercolor_types::api::library::{
+    PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest,
+};
+
 const DEFAULT_PLAYLIST_ITEM_DURATION_MS: u64 = 30_000;
 
 // ── Request / Response Types ────────────────────────────────────────────
@@ -44,28 +48,6 @@ pub struct ActivePlaylistResponse {
     pub loop_enabled: bool,
     pub item_count: usize,
     pub started_at_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PlaylistTargetRequest {
-    Effect { effect: String },
-    Preset { preset_id: String },
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PlaylistItemRequest {
-    pub target: PlaylistTargetRequest,
-    pub duration_ms: Option<u64>,
-    pub transition_ms: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SavePlaylistRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub loop_enabled: Option<bool>,
-    pub items: Option<Vec<PlaylistItemRequest>>,
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────

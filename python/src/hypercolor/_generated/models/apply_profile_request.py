@@ -13,7 +13,8 @@ T = TypeVar("T", bound="ApplyProfileRequest")
 
 @_attrs_define
 class ApplyProfileRequest:
-    """
+    """Optional body for `POST /api/v1/profiles/{id}/apply`.
+
     Attributes:
         transition_ms (int | None | Unset):
     """

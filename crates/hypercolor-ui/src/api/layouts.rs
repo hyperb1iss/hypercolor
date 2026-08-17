@@ -24,32 +24,7 @@ pub struct LayoutListResponse {
     pub items: Vec<LayoutSummary>,
 }
 
-/// Request body for creating a layout.
-#[derive(Debug, Serialize)]
-pub struct CreateLayoutRequest {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canvas_width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canvas_height: Option<u32>,
-}
-
-/// Request body for updating a layout.
-#[derive(Debug, Serialize)]
-pub struct UpdateLayoutApiRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canvas_width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canvas_height: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zones: Option<Vec<hypercolor_types::spatial::Output>>,
-}
+pub use hypercolor_types::api::layouts::{CreateLayoutRequest, UpdateLayoutRequest};
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
@@ -81,10 +56,7 @@ pub async fn create_layout(req: &CreateLayoutRequest) -> Result<LayoutSummary, S
 }
 
 /// Update a layout (metadata + optionally zones).
-pub async fn update_layout(
-    id: &str,
-    req: &UpdateLayoutApiRequest,
-) -> Result<LayoutSummary, String> {
+pub async fn update_layout(id: &str, req: &UpdateLayoutRequest) -> Result<LayoutSummary, String> {
     client::put_json(&format!("/api/v1/layouts/{id}"), req)
         .await
         .map_err(Into::into)

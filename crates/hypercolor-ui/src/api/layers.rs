@@ -1,12 +1,9 @@
 //! Scene layer-stack API client.
 
 use gloo_net::http::Method;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use hypercolor_types::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
-    SceneLayerId,
-};
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 
 use super::client;
 use super::client::MutationOutcome;
@@ -17,49 +14,24 @@ pub struct LayerStackResponse {
     pub layers_version: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct CreateLayerRequest {
-    pub name: Option<String>,
-    pub source: LayerSource,
-    pub blend: LayerBlendMode,
-    pub opacity: f32,
-    pub transform: LayerTransform,
-    pub adjust: LayerAdjust,
-    pub bindings: Vec<LayerBinding>,
-    pub enabled: bool,
-}
+pub use hypercolor_types::api::layers::{
+    CreateLayerRequest, LayerOrderRequest, PatchLayerControlsRequest, UpdateLayerRequest,
+};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct UpdateLayerRequest {
-    pub id: SceneLayerId,
-    pub name: Option<String>,
-    pub source: LayerSource,
-    pub blend: LayerBlendMode,
-    pub opacity: f32,
-    pub transform: LayerTransform,
-    pub adjust: LayerAdjust,
-    pub bindings: Vec<LayerBinding>,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LayerOrderRequest {
-    pub layer_ids: Vec<SceneLayerId>,
-}
-
-impl From<&SceneLayer> for UpdateLayerRequest {
-    fn from(layer: &SceneLayer) -> Self {
-        Self {
-            id: layer.id,
-            name: layer.name.clone(),
-            source: layer.source.clone(),
-            blend: layer.blend,
-            opacity: layer.opacity,
-            transform: layer.transform,
-            adjust: layer.adjust,
-            bindings: layer.bindings.clone(),
-            enabled: layer.enabled,
-        }
+/// Build a whole-layer replacement request that preserves every field of
+/// the layer as it stands.
+#[must_use]
+pub fn update_request_from_layer(layer: &SceneLayer) -> UpdateLayerRequest {
+    UpdateLayerRequest {
+        id: layer.id,
+        name: layer.name.clone(),
+        source: layer.source.clone(),
+        blend: layer.blend,
+        opacity: layer.opacity,
+        transform: layer.transform,
+        adjust: layer.adjust,
+        bindings: layer.bindings.clone(),
+        enabled: layer.enabled,
     }
 }
 
@@ -138,7 +110,9 @@ pub async fn patch_layer_controls(
     controls: &serde_json::Value,
     expected_version: Option<u64>,
 ) -> Result<LayerStackOutcome, String> {
-    let body = serde_json::json!({ "controls": controls });
+    let body = PatchLayerControlsRequest {
+        controls: Some(controls.clone()),
+    };
     client::send_json_versioned(
         Method::PATCH,
         &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layers/{layer_id}/controls"),

@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
@@ -17,14 +17,10 @@ use crate::display_frames::DisplayOutputMetricsSnapshot;
 use crate::domain::DomainError;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 
+pub use hypercolor_types::api::diagnose::DiagnoseRequest;
+
 const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
 const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
-
-#[derive(Debug, Deserialize)]
-pub struct DiagnoseRequest {
-    pub checks: Option<Vec<String>>,
-    pub system: Option<bool>,
-}
 
 #[derive(Debug, Serialize)]
 struct DiagnoseResponse {

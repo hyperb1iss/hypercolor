@@ -363,7 +363,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         let saved_copy = l.clone();
         let layouts_resource = ctx.layouts_resource;
         leptos::task::spawn_local(async move {
-            let req = api::UpdateLayoutApiRequest {
+            let req = api::UpdateLayoutRequest {
                 name: None,
                 description: None,
                 canvas_width: None,
@@ -521,7 +521,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         let layouts_resource = ctx.layouts_resource;
         set_renaming.set(false);
         leptos::task::spawn_local(async move {
-            let req = api::UpdateLayoutApiRequest {
+            let req = api::UpdateLayoutRequest {
                 name: Some(new_name.clone()),
                 description: None,
                 canvas_width: None,
@@ -572,7 +572,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
             match api::create_layout(&req).await {
                 Ok(summary) => {
                     // Update the new layout with zones from the original
-                    let update_req = api::UpdateLayoutApiRequest {
+                    let update_req = api::UpdateLayoutRequest {
                         name: None,
                         description: None,
                         canvas_width: None,

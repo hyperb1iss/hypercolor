@@ -18,7 +18,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 #[cfg(feature = "persistence-test-hooks")]
 use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
@@ -35,6 +35,10 @@ use crate::scene_transactions::{
     LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutTransactionRejection,
     LayoutUpdateError, LayoutUpdateGuard, PreparedLayoutUpdate,
     apply_prepared_layout_update_under_guard_with_persistence,
+};
+
+pub use hypercolor_types::api::layouts::{
+    CreateLayoutRequest, LayoutListQuery, UpdateLayoutRequest,
 };
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -166,30 +170,6 @@ impl LayoutMutationTestHooks {
                 .expect("layout mutation test barrier should remain open");
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateLayoutRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub canvas_width: Option<u32>,
-    pub canvas_height: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateLayoutRequest {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub canvas_width: Option<u32>,
-    pub canvas_height: Option<u32>,
-    pub zones: Option<Vec<Output>>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct LayoutListQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-    pub active: Option<bool>,
 }
 
 #[derive(Debug)]

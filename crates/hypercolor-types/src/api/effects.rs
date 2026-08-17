@@ -204,6 +204,13 @@ pub struct UpdateActiveControlsRequest {
     pub controls: Option<serde_json::Value>,
 }
 
+/// Request body for `PUT /api/v1/effects/{id}/layout`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEffectLayoutRequest {
+    /// The spatial layout to associate with the effect.
+    pub layout_id: String,
+}
+
 /// Optional body for `POST /api/v1/effects/active/reset` — scopes the
 /// reset to one zone (`zone_id`); omitted resets the primary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

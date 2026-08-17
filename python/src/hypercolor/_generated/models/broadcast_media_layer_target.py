@@ -22,12 +22,13 @@ T = TypeVar("T", bound="BroadcastMediaLayerTarget")
 
 @_attrs_define
 class BroadcastMediaLayerTarget:
-    """
+    """One zone targeted by a broadcast media layer create.
+
     Attributes:
         zone_id (str):
         adjust (BroadcastMediaLayerTargetAdjust | Unset):
-        expected_layers_version (int | None | Unset):
-        index (int | None | Unset):
+        expected_layers_version (int | None | Unset): Per-zone optimistic-concurrency precondition.
+        index (int | None | Unset): Stack position within this zone; omitted appends on top.
         transform (BroadcastMediaLayerTargetTransform | Unset):
     """
 

@@ -10,11 +10,11 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::warn;
 
 use crate::api::AppState;
@@ -24,6 +24,11 @@ use crate::api::envelope::ApiResponse;
 use crate::api::publish_render_group_changed;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::{DomainError, ResourceKind};
+
+pub use hypercolor_types::api::displays::{
+    DisplayFaceScope, DisplayFaceScopeQuery, SetDisplayFaceRequest,
+    UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplaySummary {
@@ -44,61 +49,6 @@ pub(crate) struct DisplaySurfaceInfo {
     pub width: u32,
     pub height: u32,
     pub circular: bool,
-}
-
-/// Which assignment layer a face operation targets (spec 69 §3.6).
-///
-/// `default` persists across scenes (the display's own face); `scene`
-/// writes into the active scene's display zone, which always wins while
-/// that scene is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayFaceScope {
-    #[default]
-    Default,
-    Scene,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SetDisplayFaceRequest {
-    pub effect_id: String,
-    #[serde(default)]
-    pub controls: std::collections::HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(default)]
-    pub opacity: Option<f32>,
-    #[serde(default)]
-    pub scope: DisplayFaceScope,
-}
-
-/// Query parameters for `DELETE /api/v1/displays/{id}/face`.
-#[derive(Debug, Default, Deserialize)]
-pub struct DisplayFaceScopeQuery {
-    #[serde(default)]
-    pub scope: DisplayFaceScope,
-}
-
-/// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
-///
-/// The payload carries only the overrides the caller wants to change;
-/// existing control values on the zone are preserved unless their
-/// key appears in this map. `controls` is typed as raw JSON (rather than
-/// `HashMap<String, ControlValue>`) so callers can send natural shapes
-/// like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-/// mirrors the effects controls patch endpoint.
-#[derive(Debug, Deserialize)]
-pub struct UpdateDisplayFaceControlsRequest {
-    #[serde(default)]
-    pub controls: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateDisplayFaceCompositionRequest {
-    #[serde(default)]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(default)]
-    pub opacity: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

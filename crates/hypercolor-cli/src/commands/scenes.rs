@@ -2,6 +2,8 @@
 
 use anyhow::Result;
 use clap::{ArgAction, Args, Subcommand, ValueEnum};
+use hypercolor_types::api::scenes::CreateSceneRequest;
+use hypercolor_types::scene::SceneMutationMode;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -39,10 +41,10 @@ pub enum SceneMutationModeArg {
 }
 
 impl SceneMutationModeArg {
-    const fn as_api_value(self) -> &'static str {
+    const fn as_scene_mutation_mode(self) -> SceneMutationMode {
         match self {
-            Self::Live => "live",
-            Self::Snapshot => "snapshot",
+            Self::Live => SceneMutationMode::Live,
+            Self::Snapshot => SceneMutationMode::Snapshot,
         }
     }
 }
@@ -167,12 +169,12 @@ async fn execute_create(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = serde_json::json!({
-        "name": args.name,
-        "description": args.description,
-        "enabled": args.enabled,
-        "mutation_mode": args.mutation_mode.as_api_value(),
-    });
+    let body = CreateSceneRequest {
+        name: args.name.clone(),
+        description: args.description.clone(),
+        enabled: Some(args.enabled),
+        mutation_mode: Some(args.mutation_mode.as_scene_mutation_mode()),
+    };
 
     let response = client.post("/scenes", &body).await?;
 
@@ -242,6 +244,8 @@ async fn execute_activate(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/scenes/{}/activate", urlencoded(&args.name));
+    // POST /scenes/{id}/activate takes no request body, so this payload has no
+    // typed home and the daemon discards it.
     let body = serde_json::json!({ "transition_ms": args.transition });
     let response = client.post(&path, &body).await?;
 

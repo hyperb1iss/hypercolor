@@ -99,7 +99,7 @@ async fn apply_effect_layer(
         .iter()
         .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
     {
-        let mut request = api::UpdateLayerRequest::from(layer);
+        let mut request = api::update_request_from_layer(layer);
         request.source = source.clone();
         api::update_layer(
             scene_id,

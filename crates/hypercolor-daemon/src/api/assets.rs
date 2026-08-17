@@ -13,11 +13,13 @@ use hypercolor_core::asset::{
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
+
+pub use hypercolor_types::api::assets::{AssetUpdateRequest, AssetUploadQuery};
 
 /// Multipart framing the upload route accepts on top of the asset bytes
 /// themselves.
@@ -34,20 +36,6 @@ pub struct AssetUploadResponse {
     #[serde(flatten)]
     pub record: MediaAssetRecord,
     pub duplicate: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AssetUploadQuery {
-    #[serde(default)]
-    pub rename_duplicate: bool,
-    #[serde(default)]
-    pub r#type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AssetUpdateRequest {
-    pub name: Option<String>,
-    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug)]

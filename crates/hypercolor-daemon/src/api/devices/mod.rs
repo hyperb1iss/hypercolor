@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
 use tracing::{debug, warn};
 
 use hypercolor_color::Rgb;
@@ -34,6 +33,8 @@ use crate::api::envelope::ApiResponse;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
+
+pub use hypercolor_types::api::devices::{IdentifyAttachmentRequest, ListDevicesQuery};
 
 pub use attachments::{
     ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
@@ -62,24 +63,6 @@ pub use hypercolor_types::api::devices::{
     IdentifyRequest, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
     UnresolvedBindingSummary, UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
 };
-
-#[derive(Debug, Deserialize)]
-pub struct IdentifyAttachmentRequest {
-    #[serde(flatten)]
-    pub base: IdentifyRequest,
-    pub binding_index: Option<usize>,
-    pub instance: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct ListDevicesQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-    pub status: Option<String>,
-    pub backend_id: Option<String>,
-    pub driver: Option<String>,
-    pub q: Option<String>,
-}
 
 const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];

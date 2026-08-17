@@ -22,6 +22,7 @@ tui = ["dep:hypercolor-tui"]
 [dependencies]
 hypercolor-color = { workspace = true }
 hypercolor-core = { workspace = true }
+hypercolor-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

@@ -84,7 +84,7 @@ pub fn DeviceDetail(
                 ) {
                     let _ = api::update_layout(
                         &layout_id,
-                        &api::UpdateLayoutApiRequest {
+                        &api::UpdateLayoutRequest {
                             name: None,
                             description: None,
                             canvas_width: None,
