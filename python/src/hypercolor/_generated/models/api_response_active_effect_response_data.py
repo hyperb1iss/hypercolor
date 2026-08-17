@@ -29,7 +29,7 @@ class ApiResponseActiveEffectResponseData:
             active_preset_modified (bool | Unset):
             control_values (ApiResponseActiveEffectResponseDataControlValues | Unset):
             controls (list[ControlDefinition] | Unset):
-            controls_version (int | None | Unset): Server-side version token for the group's controls. Clients
+            controls_version (int | None | Unset): Server-side version token for the zone's controls. Clients
                 that want to use optimistic concurrency on the effect-id PATCH
                 endpoint echo this value back via `If-Match`. Idle responses
                 omit it (there's nothing to version).

@@ -28,10 +28,10 @@ class ApplyEffectRequest:
             also provided, the explicit controls win (they're presumed to
             already carry the preset's values, possibly with user tweaks).
         transition (None | TransitionRequest | Unset):
-        zone_id (None | str | Unset): Optional target zone id. Omitted applies the effect
-            to the scene's Primary zone — the legacy behavior. A non-Primary
-            zone id renders the effect into that zone instead, leaving its
-            layout and device assignment untouched.
+        zone_id (None | str | Unset): Optional target zone id. Omitted applies the effect to the
+            scene's Primary zone. A non-Primary zone id renders the effect
+            into that zone instead, leaving its layout and device assignment
+            untouched.
     """
 
     controls: ApplyEffectRequestControls | Unset = UNSET
