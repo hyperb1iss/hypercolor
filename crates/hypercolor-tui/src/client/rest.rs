@@ -2,15 +2,14 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use futures_util::stream::{self, StreamExt};
 use hypercolor_types::api::controls::InvokeControlActionRequest;
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
 use hypercolor_types::api::effects::{
     ActiveEffectResponse as ApiActiveEffectResponse, ApplyEffectRequest,
-    EffectDetailResponse as ApiEffectDetailResponse, EffectListResponse as ApiEffectListResponse,
-    EffectSummary as ApiEffectSummary, ResetControlsRequest, UpdateActiveControlsRequest,
+    EffectListResponse as ApiEffectListResponse, EffectSummary as ApiEffectSummary,
+    ResetControlsRequest, UpdateActiveControlsRequest,
 };
 use hypercolor_types::api::envelope::ApiErrorBody;
 use hypercolor_types::api::layers::PatchLayerControlsRequest;
@@ -93,41 +92,16 @@ impl DaemonClient {
         })
     }
 
-    /// Fetch all available effects.
+    /// Fetch all available effects, controls and presets included.
+    ///
+    /// The catalog arrives fully hydrated in one response: the daemon
+    /// expands each summary on request, so browsing the library costs a
+    /// single round trip rather than one per effect.
     pub async fn get_effects(&self) -> Result<Vec<EffectSummary>> {
-        let response: ApiEffectListResponse = self.get_data("/effects").await?;
+        let response: ApiEffectListResponse =
+            self.get_data("/effects?include=controls,presets").await?;
 
-        let mut effects = stream::iter(response.items.into_iter().map(|summary| {
-            let client = self.clone();
-            async move {
-                let detail = client
-                    .get_effect_detail(&summary.id)
-                    .await
-                    .map_err(|error| {
-                        tracing::warn!(
-                            effect_id = %summary.id,
-                            %error,
-                            "Failed to fetch effect details; using summary only"
-                        );
-                        error
-                    });
-
-                map_effect_summary(summary, detail.ok())
-            }
-        }))
-        .buffer_unordered(8)
-        .collect::<Vec<_>>()
-        .await;
-
-        effects.sort_by(|left, right| {
-            let left_norm = left.name.to_ascii_lowercase();
-            let right_norm = right.name.to_ascii_lowercase();
-            left_norm
-                .cmp(&right_norm)
-                .then_with(|| left.name.cmp(&right.name))
-        });
-
-        Ok(effects)
+        Ok(response.items.into_iter().map(map_effect_summary).collect())
     }
 
     /// Fetch all connected devices.
@@ -501,10 +475,6 @@ impl DaemonClient {
         response_data(response).await
     }
 
-    async fn get_effect_detail(&self, effect_id: &str) -> Result<ApiEffectDetailResponse> {
-        self.get_data(&format!("/effects/{effect_id}")).await
-    }
-
     async fn get_active_effect(&self) -> Result<ApiActiveEffectResponse> {
         self.get_data("/effects/active").await
     }
@@ -542,25 +512,7 @@ struct SystemStatusResponse {
     active_scene_snapshot_locked: bool,
 }
 
-fn map_effect_summary(
-    summary: ApiEffectSummary,
-    detail: Option<ApiEffectDetailResponse>,
-) -> EffectSummary {
-    if let Some(detail) = detail {
-        return EffectSummary {
-            id: detail.id,
-            name: detail.name,
-            description: detail.description,
-            author: detail.author,
-            category: detail.category,
-            source: detail.source,
-            audio_reactive: detail.audio_reactive,
-            tags: detail.tags,
-            controls: detail.controls.iter().map(map_control_definition).collect(),
-            presets: detail.presets.iter().map(map_preset_template).collect(),
-        };
-    }
-
+fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
     EffectSummary {
         id: summary.id,
         name: summary.name,
@@ -570,8 +522,18 @@ fn map_effect_summary(
         source: summary.source,
         audio_reactive: summary.audio_reactive,
         tags: summary.tags,
-        controls: Vec::new(),
-        presets: Vec::new(),
+        controls: summary
+            .controls
+            .unwrap_or_default()
+            .iter()
+            .map(map_control_definition)
+            .collect(),
+        presets: summary
+            .presets
+            .unwrap_or_default()
+            .iter()
+            .map(map_preset_template)
+            .collect(),
     }
 }
 

@@ -127,8 +127,10 @@ itself refuses goes out enveloped.
 ## 2. Frozen list endpoints and the fabricated pagination block
 
 Six list endpoints share one deliberate lie. Each returns **every** row in
-`items` while reporting a `limit` of 50 and `has_more: false`, and none of them
-take a query extractor, so `?offset=` and `?limit=` are silently discarded.
+`items` while reporting a `limit` of 50 and `has_more: false`. Five take no
+query extractor at all, and the sixth (`/api/v1/effects`, see below) names no
+paging arguments, so `?offset=` and `?limit=` are silently discarded on every
+row.
 
 ```json
 {
@@ -142,7 +144,7 @@ take a query extractor, so `?offset=` and `?limit=` are silently discarded.
 
 | Method | Path | Items key | `offset` | `limit` | `total` | `has_more` | Query params |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| GET | `/api/v1/effects` | `items` | `0` | `50` | real count | `false` | ignored |
+| GET | `/api/v1/effects` | `items` | `0` | `50` | count **after** filtering | `false` | honored (below) |
 | GET | `/api/v1/scenes` | `items` | `0` | `50` | real count **after** ephemeral scenes are filtered out | `false` | ignored |
 | GET | `/api/v1/profiles` | `items` | `0` | `50` | real count | `false` | ignored |
 | GET | `/api/v1/library/favorites` | `items` | `0` | `50` | real count | `false` | ignored |
@@ -153,6 +155,16 @@ Consequence worth stating plainly: with more than fifty rows registered, a v1
 client sees `total > limit` alongside `has_more: false`, and every row is in the
 payload anyway. Spec 76 wave 3.3 fixes pagination on canonical routes only; the
 block above stays exactly as written on v1.
+
+`GET /api/v1/effects` is the one row that reads its query string (Spec 78
+wave 78.0a). It honors `category`, `audio_reactive`, `screen_reactive`,
+`input_reactive`, `source`, and `q`, all narrowing the catalog server-side, plus
+`include=controls,presets`, which adds those two optional keys to each summary.
+A filter naming a value the type system does not have (`category=gaming`,
+`source=wasm`, `include=everything`) answers `422 validation_error` rather than
+an empty list. Summaries carry **no** `controls` or `presets` key unless
+`include` asked for it, so the default shape is byte-identical to the pre-78.0
+payload. Pinned by `tests/effect_catalog_tests.rs`.
 
 The scene list has a second frozen quirk: the daemon's default scene is
 `Ephemeral`, and the filter runs before the count, so a freshly started daemon

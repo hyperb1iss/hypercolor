@@ -51,95 +51,109 @@ fn encoded_preview_bytes() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn get_effects_enriches_summaries_with_detail_controls() {
+async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
+    let detail_hits = Arc::new(Mutex::new(0_usize));
+    let seen_query = Arc::new(Mutex::new(None::<String>));
+
+    let controls = vec![ControlDefinition {
+        id: "speed".to_string(),
+        name: "Speed".to_string(),
+        kind: ControlKind::Number,
+        control_type: ControlType::Slider,
+        default_value: ControlValue::Float(0.25),
+        min: Some(0.0),
+        max: Some(1.0),
+        step: Some(0.05),
+        labels: Vec::new(),
+        group: None,
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: Some(ControlBinding {
+            sensor: "cpu_temp".to_string(),
+            sensor_min: 30.0,
+            sensor_max: 100.0,
+            target_min: 0.0,
+            target_max: 1.0,
+            deadband: 0.5,
+            smoothing: 0.2,
+        }),
+    }];
+    let presets = vec![PresetTemplate {
+        id: hypercolor_types::library::PresetId::stable("Soft"),
+        name: "Soft".to_string(),
+        description: Some("Low energy".to_string()),
+        controls: HashMap::from([("speed".to_string(), ControlValue::Float(0.4))]),
+    }];
+
     let router = Router::new()
         .route(
             "/api/v1/effects",
-            get(|| async {
-                Json(json!({
-                    "data": {
-                        "items": [{
-                            "id": "rainbow",
-                            "name": "Rainbow Wave",
-                            "description": "Soft motion",
-                            "author": "hyperb1iss",
-                            "category": "ambient",
-                            "source": "native",
-                            "runnable": true,
-                            "tags": ["wave"],
-                            "version": "1.0.0",
-                            "audio_reactive": false
-                        }],
-                        "pagination": {
-                            "offset": 0,
-                            "limit": 50,
-                            "total": 1,
-                            "has_more": false
-                        }
+            get({
+                let seen_query = Arc::clone(&seen_query);
+                move |uri: Uri| {
+                    let seen_query = Arc::clone(&seen_query);
+                    let controls = controls.clone();
+                    let presets = presets.clone();
+                    async move {
+                        *seen_query.lock().await = uri.query().map(str::to_owned);
+                        Json(json!({
+                            "data": {
+                                "items": [{
+                                    "id": "rainbow",
+                                    "name": "Rainbow Wave",
+                                    "description": "Soft motion",
+                                    "author": "hyperb1iss",
+                                    "category": "ambient",
+                                    "source": "native",
+                                    "runnable": true,
+                                    "tags": ["wave"],
+                                    "version": "1.0.0",
+                                    "audio_reactive": false,
+                                    "controls": controls,
+                                    "presets": presets
+                                }],
+                                "pagination": {
+                                    "offset": 0,
+                                    "limit": 50,
+                                    "total": 1,
+                                    "has_more": false
+                                }
+                            }
+                        }))
                     }
-                }))
+                }
             }),
         )
+        // The per-effect detail route stays mounted as a tripwire: a
+        // regression back to per-row hydration would light it up.
         .route(
             "/api/v1/effects/{id}",
-            get(|Path(id): Path<String>| async move {
-                assert_eq!(id, "rainbow");
-
-                let controls = vec![ControlDefinition {
-                    id: "speed".to_string(),
-                    name: "Speed".to_string(),
-                    kind: ControlKind::Number,
-                    control_type: ControlType::Slider,
-                    default_value: ControlValue::Float(0.25),
-                    min: Some(0.0),
-                    max: Some(1.0),
-                    step: Some(0.05),
-                    labels: Vec::new(),
-                    group: None,
-                    tooltip: None,
-                    aspect_lock: None,
-                    preview_source: None,
-                    binding: Some(ControlBinding {
-                        sensor: "cpu_temp".to_string(),
-                        sensor_min: 30.0,
-                        sensor_max: 100.0,
-                        target_min: 0.0,
-                        target_max: 1.0,
-                        deadband: 0.5,
-                        smoothing: 0.2,
-                    }),
-                }];
-                let presets = vec![PresetTemplate {
-                    id: hypercolor_types::library::PresetId::stable("Soft"),
-                    name: "Soft".to_string(),
-                    description: Some("Low energy".to_string()),
-                    controls: HashMap::from([("speed".to_string(), ControlValue::Float(0.4))]),
-                }];
-                let active_control_values =
-                    HashMap::from([("speed".to_string(), ControlValue::Float(0.75))]);
-
-                Json(json!({
-                    "data": {
-                        "id": "rainbow",
-                        "name": "Rainbow Wave",
-                        "description": "Soft motion",
-                        "author": "hyperb1iss",
-                        "category": "ambient",
-                        "source": "native",
-                        "runnable": true,
-                        "tags": ["wave"],
-                        "version": "1.0.0",
-                        "audio_reactive": false,
-                        "controls": controls,
-                        "presets": presets,
-                        "active_control_values": active_control_values
+            get({
+                let detail_hits = Arc::clone(&detail_hits);
+                move |Path(_id): Path<String>| {
+                    let detail_hits = Arc::clone(&detail_hits);
+                    async move {
+                        *detail_hits.lock().await += 1;
+                        Json(json!({ "data": {} }))
                     }
-                }))
+                }
             }),
         );
 
     let client = client_for(spawn_server(router).await);
     let effects = client.get_effects().await.expect("fetch effects");
+
+    assert_eq!(
+        seen_query.lock().await.as_deref(),
+        Some("include=controls,presets"),
+        "the catalog request asks the daemon to expand each summary"
+    );
+    assert_eq!(
+        *detail_hits.lock().await,
+        0,
+        "hydrating the catalog costs no per-effect round trips"
+    );
 
     assert_eq!(effects.len(), 1);
     assert_eq!(effects[0].id, "rainbow");
@@ -147,8 +161,7 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
     assert_eq!(effects[0].controls[0].id, "speed");
     assert_eq!(effects[0].controls[0].control_type, "slider");
     // True defaults are preserved — live values are per-zone and must NOT
-    // be merged over `default_value` (the daemon's active_control_values
-    // reflect only the primary zone).
+    // be merged over `default_value`.
     assert_eq!(effects[0].controls[0].default_value.as_f32(), Some(0.25));
     assert_eq!(effects[0].presets.len(), 1);
     assert_eq!(

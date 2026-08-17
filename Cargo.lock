@@ -5128,6 +5128,7 @@ dependencies = [
  "socket2 0.6.3",
  "spin_sleep",
  "stats_alloc",
+ "strum 0.28.0",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",

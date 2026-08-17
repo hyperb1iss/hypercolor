@@ -108,7 +108,7 @@ hypercolor status -j
 
 ### 2. Discover before you act
 
-Effect names are fuzzy-matched, but searching first means an agent applies a known effect instead of a guess. The catalog ships **11 native built-in effects** compiled into the engine plus roughly four dozen HTML effects from the SDK, so browse rather than hardcode names. Filter the list server-side with `--search`, `--category`, `--engine`, or `--audio`.
+Effect names are fuzzy-matched, but searching first means an agent applies a known effect instead of a guess. The catalog ships **11 native built-in effects** compiled into the engine plus roughly four dozen HTML effects from the SDK, so browse rather than hardcode names. Filter the list server-side with `--search`, `--category`, `--source`, or `--audio`.
 
 ```bash
 hypercolor effects list --search aurora -j

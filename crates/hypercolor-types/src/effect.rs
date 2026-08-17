@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString};
+use strum::{Display, EnumString, VariantNames};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -55,7 +55,18 @@ impl From<Uuid> for EffectId {
 /// An effect can belong to multiple categories. Used for discovery
 /// and filtering in the effect browser UI.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString, Display, Default,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    EnumString,
+    Display,
+    VariantNames,
+    Default,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]

@@ -9,7 +9,9 @@ use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metada
 use crate::api::AppState;
 use crate::api::effects::normalize_control_payload;
 use crate::domain::MutationContext;
-use crate::domain::effect::{ApplyEffect, RequestedTransition, apply_effect, stop_effect};
+use crate::domain::effect::{
+    ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog, stop_effect,
+};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -266,51 +268,16 @@ pub(super) async fn handle_list_effects_with_state(
 ) -> Result<Value, ToolError> {
     let limit_u64 = params.get("limit").and_then(Value::as_u64).unwrap_or(20);
     let offset_u64 = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
-    let category_filter = params.get("category").and_then(Value::as_str);
-    let query_filter = params.get("query").and_then(Value::as_str);
-    let audio_reactive_filter = params.get("audio_reactive").and_then(Value::as_bool);
 
-    let effect_catalog = {
-        let registry = state.effect_registry.read().await;
-        registry
-            .iter()
-            .map(|(_, entry)| entry.metadata.clone())
-            .collect::<Vec<_>>()
+    let query = EffectCatalogQuery {
+        audio_reactive: params.get("audio_reactive").and_then(Value::as_bool),
+        ..EffectCatalogQuery::parse(
+            params.get("category").and_then(Value::as_str),
+            None,
+            params.get("query").and_then(Value::as_str),
+        )?
     };
-
-    let mut filtered = effect_catalog
-        .into_iter()
-        .filter(|metadata| {
-            let category_ok = category_filter.is_none_or(|category| {
-                format!("{}", metadata.category).eq_ignore_ascii_case(category)
-            });
-            let query_ok = query_filter.is_none_or(|query| {
-                metadata.name.to_lowercase().contains(&query.to_lowercase())
-                    || metadata
-                        .description
-                        .to_lowercase()
-                        .contains(&query.to_lowercase())
-                    || metadata
-                        .tags
-                        .iter()
-                        .any(|tag| tag.to_lowercase().contains(&query.to_lowercase()))
-            });
-            let is_audio_reactive = metadata.audio_reactive
-                || metadata
-                    .tags
-                    .iter()
-                    .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
-                || matches!(
-                    metadata.category,
-                    hypercolor_types::effect::EffectCategory::Audio
-                );
-            let audio_ok =
-                audio_reactive_filter.is_none_or(|required| required == is_audio_reactive);
-            category_ok && query_ok && audio_ok
-        })
-        .collect::<Vec<_>>();
-
-    filtered.sort_by_cached_key(|metadata| metadata.name.to_lowercase());
+    let filtered = list_catalog(state, &query).await;
 
     let total = filtered.len();
     let limit = usize::try_from(limit_u64).unwrap_or(20);
@@ -321,21 +288,12 @@ pub(super) async fn handle_list_effects_with_state(
     let effects = filtered[start..end]
         .iter()
         .map(|metadata| {
-            let audio_reactive = metadata.audio_reactive
-                || metadata
-                    .tags
-                    .iter()
-                    .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
-                || matches!(
-                    metadata.category,
-                    hypercolor_types::effect::EffectCategory::Audio
-                );
             json!({
                 "id": metadata.id.to_string(),
                 "name": metadata.name,
                 "description": metadata.description,
                 "category": format!("{}", metadata.category),
-                "audio_reactive": audio_reactive,
+                "audio_reactive": metadata.audio_reactive,
                 "tags": metadata.tags,
                 "controls": metadata.controls.iter().map(|control| json!({
                     "id": control.control_id(),
