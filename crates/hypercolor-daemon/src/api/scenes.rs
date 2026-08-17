@@ -87,8 +87,8 @@ pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
         priority: scene.priority.0,
         kind: scene.kind,
         mutation_mode: scene.mutation_mode,
-        groups: scene.groups.clone(),
-        groups_revision: scene.groups_revision,
+        zones: scene.groups.clone(),
+        zones_revision: scene.groups_revision,
         unassigned_behavior: scene.unassigned_behavior.clone(),
     })
 }

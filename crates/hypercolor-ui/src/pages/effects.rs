@@ -75,7 +75,7 @@ fn ApplyTargetSelect(
             let Some(scene) = scene else {
                 return;
             };
-            for group in &scene.groups {
+            for group in &scene.zones {
                 match group.role {
                     ZoneRole::Display => {}
                     // The Primary role is the empty-value default; a renamed

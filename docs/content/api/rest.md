@@ -113,7 +113,7 @@ enabled. The auth and rate-limiting model is documented in full on the
 ## Concurrency: revisions and `If-Match`
 
 Scene-zone structural edits use optimistic concurrency. A `GET` on a scene's
-zones returns a `groups_revision` and an `ETag` header carrying the same
+zones returns a `zones_revision` and an `ETag` header carrying the same
 revision. Send that value back as `If-Match` on the mutating request. If the
 revision is stale, the daemon rejects the write with `412 Precondition Failed`
 rather than clobbering a concurrent edit. The Studio zone editor relies on this
@@ -792,12 +792,12 @@ is no top-level `/zones` collection.
 {{ img(path="img/ui/ui-studio-zones.webp", alt="Building zones in Studio") }}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
-List a scene's zones. The response includes `groups_revision` and an `ETag`
+List a scene's zones. The response includes `zones_revision` and an `ETag`
 header carrying the same revision for optimistic concurrency.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
-Create a zone in a scene. Send `If-Match` with the last seen `groups_revision`;
+Create a zone in a scene. Send `If-Match` with the last seen `zones_revision`;
 a stale revision returns `412 Precondition Failed`.
 
 **Request body:**

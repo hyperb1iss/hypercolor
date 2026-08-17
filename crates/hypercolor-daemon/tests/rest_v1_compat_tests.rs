@@ -227,7 +227,7 @@ enum DetailsPresence {
 /// a `details` object carrying both versions.
 ///
 /// One rendering serves all three version counters (`controls_version`,
-/// `groups_revision`, `layers_version`) — the counter's identity lives in the
+/// `zones_revision`, `layers_version`) — the counter's identity lives in the
 /// route, not in a bespoke body shape. A client rebases off
 /// `error.details.current` (or the `ETag`, which carries the same value).
 fn assert_precondition_body(body: &Value, expected: u64, current: u64) {

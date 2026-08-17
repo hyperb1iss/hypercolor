@@ -1007,7 +1007,7 @@ impl App {
                     return;
                 };
                 let scene_id = scene.id.clone();
-                let revision = scene.groups_revision;
+                let revision = scene.zones_revision;
                 let enabled = *enabled;
                 self.spawn_actions({
                     let client = self.client.clone();

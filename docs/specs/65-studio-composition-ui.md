@@ -832,7 +832,7 @@ A third item is optional, not a blocker:
 
 Items 1 and 2 were not spec 65's to build, and as of 2026-05-17 spec 64
 has **delivered both**: `PATCH /api/v1/scenes/:id/unassigned-behavior`
-with `groups_revision` concurrency and a scene-settings change event, and
+with `zones_revision` concurrency and a scene-settings change event, and
 a `capabilities` list on `GET /api/v1/status` advertising
 `multi-zone-sampling`, `zone-crud`, `zone-device-assignment`,
 `zone-preview-frames`, and `scene-unassigned-behavior-write`. Waves 9-10

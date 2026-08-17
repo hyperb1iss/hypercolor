@@ -167,7 +167,7 @@ The drag and resize hot path is deliberately non-reactive. A single requestAnima
 
 ## Optimistic concurrency
 
-Every Studio mutation is optimistic and guarded. Two preconditions cover the whole surface: zone and scene mutations carry the active scene's `groups_revision`, and layer mutations carry `layers_version`. Both ride as the `If-Match` header. A stale write is never silently lost. The daemon reports a `Stale` outcome, the client reloads, and the user retries.
+Every Studio mutation is optimistic and guarded. Two preconditions cover the whole surface: zone and scene mutations carry the active scene's `zones_revision`, and layer mutations carry `layers_version`. Both ride as the `If-Match` header. A stale write is never silently lost. The daemon reports a `Stale` outcome, the client reloads, and the user retries.
 
 ### Layer mutations
 
@@ -198,12 +198,12 @@ let version = if *target == group_id {
 
 ### Layout saves
 
-`ZoneLayoutProvider::save` carries `groups_revision` as its precondition and handles `ZoneOutcome::Stale` the same way: clear the preview, tell the user the scene changed, and refetch.
+`ZoneLayoutProvider::save` carries `zones_revision` as its precondition and handles `ZoneOutcome::Stale` the same way: clear the preview, tell the user the scene changed, and refetch.
 
 ```rust
 let Some((scene_id, revision)) = active_scene
     .get_untracked()
-    .map(|scene| (scene.id, scene.groups_revision))
+    .map(|scene| (scene.id, scene.zones_revision))
 else { return; };
 match api::zones::update_zone_layout(&scene_id, &zone_id, &current, Some(revision)).await {
     Ok(api::zones::ZoneOutcome::Applied(_)) => { /* mark clean, clear preview, refresh */ }

@@ -314,12 +314,12 @@ impl DaemonClient {
     }
 
     /// Update zone metadata (enabled, brightness). Guarded by the scene's
-    /// `groups_revision` via `If-Match`; the daemon answers 412 when stale.
+    /// `zones_revision` via `If-Match`; the daemon answers 412 when stale.
     pub async fn update_zone(
         &self,
         scene_id: &str,
         zone_id: &str,
-        groups_revision: u64,
+        zones_revision: u64,
         enabled: Option<bool>,
         brightness: Option<f32>,
     ) -> Result<()> {
@@ -336,7 +336,7 @@ impl DaemonClient {
         };
         let response = self
             .auth_request(self.http.patch(&url))
-            .header(reqwest::header::IF_MATCH, groups_revision.to_string())
+            .header(reqwest::header::IF_MATCH, zones_revision.to_string())
             .json(&body)
             .send()
             .await
@@ -656,8 +656,8 @@ fn map_active_scene(response: ApiActiveSceneResponse) -> ActiveScene {
         name: response.name,
         kind: response.kind,
         mutation_mode: response.mutation_mode,
-        groups_revision: response.groups_revision,
-        zones: response.groups.iter().map(map_zone_summary).collect(),
+        zones_revision: response.zones_revision,
+        zones: response.zones.iter().map(map_zone_summary).collect(),
     }
 }
 

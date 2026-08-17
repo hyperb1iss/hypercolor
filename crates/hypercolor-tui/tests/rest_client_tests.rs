@@ -335,7 +335,7 @@ async fn control_surface_list_encodes_device_query() {
                                 },
                                 "schema_version": 1,
                                 "revision": 4,
-                                "groups": [],
+                                "zones": [],
                                 "fields": [],
                                 "actions": [],
                                 "values": {},
@@ -402,7 +402,7 @@ async fn get_control_surface_encodes_full_surface_id() {
                             },
                             "schema_version": 1,
                             "revision": 7,
-                            "groups": [],
+                            "zones": [],
                             "fields": [],
                             "actions": [],
                             "values": {},
@@ -719,11 +719,11 @@ async fn get_active_scene_maps_zones_and_lock_state() {
                     "priority": 0,
                     "kind": "named",
                     "mutation_mode": "snapshot",
-                    "groups": [
+                    "zones": [
                         zone_json(ZONE_A, "Primary", "primary", Some(EFFECT_RAINBOW), true),
                         zone_json(ZONE_B, "Shelf", "custom", None, false),
                     ],
-                    "groups_revision": 42,
+                    "zones_revision": 42,
                     "unassigned_behavior": "off"
                 }
             }))
@@ -740,7 +740,7 @@ async fn get_active_scene_maps_zones_and_lock_state() {
     assert_eq!(scene.id, "scene-1");
     assert_eq!(scene.name, "Desk");
     assert!(scene.snapshot_locked);
-    assert_eq!(scene.groups_revision, 42);
+    assert_eq!(scene.zones_revision, 42);
     assert!(scene.multi_zone());
     assert_eq!(scene.zones.len(), 2);
 

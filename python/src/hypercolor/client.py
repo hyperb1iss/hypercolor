@@ -765,7 +765,7 @@ class HypercolorClient:
     # ── Zones (render groups) ────────────────────────────────────────────
     #
     # Every zone structure mutation is guarded by an
-    # ``If-Match: <groups_revision>`` precondition. A stale revision raises
+    # ``If-Match: <zones_revision>`` precondition. A stale revision raises
     # HypercolorPreconditionError carrying the authoritative revision —
     # refetch, rebase, retry.
 

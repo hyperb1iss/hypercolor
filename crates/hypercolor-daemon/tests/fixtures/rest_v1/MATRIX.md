@@ -255,7 +255,7 @@ use a strong, quoted, bare integer: `ETag: "7"`.
 | Version counter | GET routes emitting the ETag | Mutating routes reading `If-Match` |
 | --- | --- | --- |
 | `controls_version` | `GET /api/v1/effects/active` | `PATCH /api/v1/effects/{id}/controls` |
-| `groups_revision` | `GET /api/v1/scenes/{id}/zones`, `GET /api/v1/scenes/{id}/zones/{zone_id}` | The seven zone mutators (create/update/delete zone, assign/unassign devices, update zone layout, update unassigned behavior) |
+| `zones_revision` | `GET /api/v1/scenes/{id}/zones`, `GET /api/v1/scenes/{id}/zones/{zone_id}` | The seven zone mutators (create/update/delete zone, assign/unassign devices, update zone layout, update unassigned behavior) |
 | `layers_version` | `GET /api/v1/scenes/{id}/zones/{zone_id}/layers` | The five layer mutators (create, update, delete, reorder, patch controls) |
 
 Successful mutations echo the **advanced** version in both the ETag and the body.
@@ -302,7 +302,7 @@ property of the route, not of the body.
 | Route family | Counter the route guards |
 | --- | --- |
 | `PATCH /api/v1/effects/{id}/controls` | `controls_version` |
-| Zone mutators under `/api/v1/scenes/{id}/zones…` and `/api/v1/scenes/{id}/unassigned-behavior` | `groups_revision` |
+| Zone mutators under `/api/v1/scenes/{id}/zones…` and `/api/v1/scenes/{id}/unassigned-behavior` | `zones_revision` |
 | Layer mutators under `/api/v1/scenes/{id}/zones/{zone_id}/layers…` | `layers_version` |
 
 ### 5.3 The WebSocket origin rejection

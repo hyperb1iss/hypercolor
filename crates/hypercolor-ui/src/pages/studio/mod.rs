@@ -32,7 +32,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
 
-use crate::zones::surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use crate::zones::surface::{UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use composition_panel::CompositionPanel;
 use scene_selector::SceneSelector;
 use stage::Stage;
@@ -79,7 +79,7 @@ pub struct StudioContext {
     pub selected_surface_id: RwSignal<Option<String>>,
     pub active_scene: Signal<Option<api::ActiveSceneResponse>>,
     /// Re-fetch the active scene. Zone mutations call this so the tree and
-    /// Stage pick up the new group set and `groups_revision`.
+    /// Stage pick up the new group set and `zones_revision`.
     pub refresh_scene: Callback<()>,
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
@@ -130,19 +130,19 @@ pub fn StudioPage() -> impl IntoView {
         let current = selected_surface_id.get_untracked();
         // The synthetic Unassigned entry has no group; it is "present"
         // while the scene is genuinely multi-zone (§9.4).
-        let multi_zone = surface::led_zone_count(&scene.groups) > 1;
+        let multi_zone = surface::led_zone_count(&scene.zones) > 1;
         let still_present = current.as_ref().is_some_and(|id| {
             (id == UNASSIGNED_SURFACE_ID && multi_zone)
-                || scene.groups.iter().any(|group| group.id.to_string() == *id)
+                || scene.zones.iter().any(|group| group.id.to_string() == *id)
         });
         if still_present {
             return;
         }
         let next = scene
-            .groups
+            .zones
             .iter()
             .find(|group| group.role != ZoneRole::Display)
-            .or_else(|| scene.groups.first())
+            .or_else(|| scene.zones.first())
             .map(|group| group.id.to_string());
         selected_surface_id.set(next);
     });
@@ -158,7 +158,7 @@ pub fn StudioPage() -> impl IntoView {
         let selected_led_zone = selected_surface_id.get().filter(|id| {
             id != UNASSIGNED_SURFACE_ID
                 && scene
-                    .groups
+                    .zones
                     .iter()
                     .any(|group| group.id.to_string() == *id && group.role != ZoneRole::Display)
         });
@@ -169,7 +169,7 @@ pub fn StudioPage() -> impl IntoView {
             effects_ctx.apply_target.get_untracked(),
             ApplyTarget::Zone(ref target)
                 if !scene
-                    .groups
+                    .zones
                     .iter()
                     .any(|group| group.id.to_string() == target.as_str())
         ) {
@@ -206,7 +206,7 @@ pub fn StudioPage() -> impl IntoView {
     let surface_label = Signal::derive(move || {
         let id = selected_surface_id.get()?;
         let scene = active_scene.get()?;
-        surfaces_from_groups(&scene.groups)
+        surfaces_from_zones(&scene.zones)
             .into_iter()
             .find(|surface| surface.id == id)
             .map(|surface| surface.name)

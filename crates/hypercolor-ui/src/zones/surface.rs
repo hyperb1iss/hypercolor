@@ -72,7 +72,7 @@ pub fn led_zone_count(groups: &[Zone]) -> usize {
 /// order. LED-role groups become zone surfaces; display-role groups become
 /// Screens.
 #[must_use]
-pub fn surfaces_from_groups(groups: &[Zone]) -> Vec<Surface> {
+pub fn surfaces_from_zones(groups: &[Zone]) -> Vec<Surface> {
     groups
         .iter()
         .map(|group| {

@@ -9181,7 +9181,7 @@ async fn scene_crud_lifecycle() {
     assert_eq!(json["data"]["id"], scene_id);
     assert_eq!(json["data"]["kind"], "named");
     // A created scene is born with a Default zone (§5.2 output roster).
-    let groups = json["data"]["groups"]
+    let groups = json["data"]["zones"]
         .as_array()
         .expect("groups should serialize as an array");
     assert_eq!(groups.len(), 1);
@@ -9291,7 +9291,7 @@ async fn scene_deactivate_returns_to_default_scene() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Default");
     assert_eq!(json["data"]["kind"], "ephemeral");
-    let groups = json["data"]["groups"]
+    let groups = json["data"]["zones"]
         .as_array()
         .expect("groups should serialize as an array");
     assert_eq!(groups.len(), 1);
@@ -13785,7 +13785,7 @@ async fn active_scene_syncs_empty_screen_surface_for_display_device() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let groups = json["data"]["groups"]
+    let groups = json["data"]["zones"]
         .as_array()
         .expect("groups should be an array");
     let display_group = groups
@@ -13908,7 +13908,7 @@ async fn active_scene_does_not_sync_screen_surfaces_into_snapshot_scene() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["id"], scene_id.to_string());
-    assert_eq!(json["data"]["groups"].as_array().map(Vec::len), Some(0));
+    assert_eq!(json["data"]["zones"].as_array().map(Vec::len), Some(0));
 }
 
 #[tokio::test]
