@@ -1,6 +1,7 @@
 mod backoff;
 mod input_event;
 mod preview;
+pub mod registry;
 mod spectrum;
 pub mod topic;
 pub mod transport;
