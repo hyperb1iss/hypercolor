@@ -5129,6 +5129,7 @@ dependencies = [
  "spin_sleep",
  "stats_alloc",
  "strum 0.28.0",
+ "subtle",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
