@@ -28,16 +28,31 @@ use serde_json::json;
 /// Naming these shapes into shared types moved several clients from
 /// emitting `"field": null` to omitting the key. This is the fence that
 /// keeps the two spellings interchangeable at the daemon.
+///
+/// Fields are passed as identifiers, not strings, and the closure below
+/// binds each one. No type here declares `deny_unknown_fields`, so a
+/// stringly-typed field name that no longer matches the struct would let
+/// serde ignore the key and the assertion would hold vacuously; naming
+/// the field makes a rename or a typo a compile error instead. The JSON
+/// key comes from the same identifier, which is exact for these types
+/// because none of their fields carries a `serde(rename)`.
 macro_rules! assert_null_and_absent_agree {
-    ($ty:ty, $base:expr, $($field:literal),+ $(,)?) => {{
+    ($ty:ty, $base:expr, $($field:ident),+ $(,)?) => {{
+        let _bind_every_field = |value: &$ty| { $( let _ = &value.$field; )+ };
+
         let absent_payload: serde_json::Value = $base;
         let mut null_payload = absent_payload.clone();
         {
             let object = null_payload
                 .as_object_mut()
                 .expect("fixture payload must be a JSON object");
-            $( object.insert($field.to_owned(), serde_json::Value::Null); )+
+            $( object.insert(stringify!($field).to_owned(), serde_json::Value::Null); )+
         }
+        assert_ne!(
+            absent_payload,
+            null_payload,
+            concat!(stringify!($ty), ": fixture must not already carry the nulls"),
+        );
 
         let absent: $ty = serde_json::from_value(absent_payload)
             .expect(concat!(stringify!($ty), " must decode with the fields absent"));
@@ -54,44 +69,44 @@ macro_rules! assert_null_and_absent_agree {
 
 #[test]
 fn absent_and_explicit_null_optional_fields_decode_alike() {
-    assert_null_and_absent_agree!(AssetUpdateRequest, json!({}), "name", "tags");
+    assert_null_and_absent_agree!(AssetUpdateRequest, json!({}), name, tags);
     assert_null_and_absent_agree!(
         CreateProfileRequest,
         json!({ "name": "evening" }),
-        "description",
-        "brightness",
+        description,
+        brightness,
     );
     assert_null_and_absent_agree!(
         CreateSceneRequest,
         json!({ "name": "movie-night" }),
-        "description",
-        "enabled",
-        "mutation_mode",
+        description,
+        enabled,
+        mutation_mode,
     );
     assert_null_and_absent_agree!(
         SavePresetRequest,
         json!({ "name": "warm", "effect": "aurora" }),
-        "description",
-        "controls",
-        "tags",
+        description,
+        controls,
+        tags,
     );
     assert_null_and_absent_agree!(
         SavePlaylistRequest,
         json!({ "name": "rotation" }),
-        "description",
-        "loop_enabled",
-        "items",
+        description,
+        loop_enabled,
+        items,
     );
     assert_null_and_absent_agree!(
         PlaylistItemRequest,
         json!({ "target": { "type": "effect", "effect": "aurora" } }),
-        "duration_ms",
-        "transition_ms",
+        duration_ms,
+        transition_ms,
     );
     assert_null_and_absent_agree!(
         CreateLayerRequest,
         json!({ "source": { "type": "screen_region" } }),
-        "name",
+        name,
     );
     assert_null_and_absent_agree!(
         UpdateLayerRequest,
@@ -99,7 +114,7 @@ fn absent_and_explicit_null_optional_fields_decode_alike() {
             "id": "00000000-0000-0000-0000-000000000001",
             "source": { "type": "screen_region" },
         }),
-        "name",
+        name,
     );
 }
 
