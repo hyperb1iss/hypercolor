@@ -601,6 +601,20 @@ pub struct Scene {
     #[serde(default, skip_serializing_if = "is_default_unassigned_behavior")]
     pub unassigned_behavior: UnassignedBehavior,
 
+    /// Named spatial layout this scene references (Spec 78 §3.2).
+    /// Activation applies it; a dangling reference is kept and skipped
+    /// with a warning event, never silently dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_id: Option<crate::identity::LayoutId>,
+
+    /// Brightness applied to `/output` on activation, when present
+    /// (Spec 78 §3.2). Deliberately NOT captured by snapshot —
+    /// brightness is global output state; the field exists so migrated
+    /// profiles keep their restore-brightness behavior and so a user
+    /// can opt a scene in explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_brightness: Option<f32>,
+
     /// Whether this scene is daemon-managed or user-visible.
     pub kind: SceneKind,
 

@@ -1097,6 +1097,8 @@ pub async fn create_scene(
         enabled: command.enabled.unwrap_or(true),
         metadata: command.metadata,
         unassigned_behavior: UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: command.mutation_mode.unwrap_or(SceneMutationMode::Live),
     };

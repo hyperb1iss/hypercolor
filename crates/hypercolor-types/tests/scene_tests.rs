@@ -44,6 +44,8 @@ fn sample_scene() -> Scene {
         enabled: true,
         metadata: HashMap::from([("author".into(), "test".into())]),
         unassigned_behavior: UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
     }
@@ -172,6 +174,8 @@ fn scene_with_no_assignments() {
         enabled: false,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
     };

@@ -94,6 +94,8 @@ fn named_scene(name: &str) -> Scene {
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
     }
