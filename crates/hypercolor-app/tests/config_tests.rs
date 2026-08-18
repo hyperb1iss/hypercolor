@@ -358,6 +358,7 @@ fn macos_daemon_signing_contract_is_exact() {
             "com.apple.security.cs.allow-unsigned-executable-memory",
             true,
         ),
+        ("com.apple.security.cs.disable-library-validation", true),
         ("com.apple.security.device.audio-input", true),
         ("com.apple.security.device.usb", true),
         ("com.apple.security.network.client", true),
