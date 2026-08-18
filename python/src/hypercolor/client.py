@@ -47,13 +47,10 @@ from ._generated.api.scenes import (
     activate_scene as generated_activate_scene,
     list_scenes as generated_list_scenes,
 )
-from ._generated.api.settings import (
-    list_audio_devices as generated_list_audio_devices,
-    set_brightness as generated_set_brightness,
-)
 from ._generated.api.system import (
     get_status as generated_get_status,
     health_check as generated_health_check,
+    list_audio_devices as generated_list_audio_devices,
 )
 from ._generated.models.apply_control_changes_request import ApplyControlChangesRequest
 from ._generated.models.apply_effect_request import ApplyEffectRequest
@@ -61,7 +58,6 @@ from ._generated.models.apply_profile_request import ApplyProfileRequest
 from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
-from ._generated.models.set_brightness_request import SetBrightnessRequest
 from ._generated.models.update_active_controls_request import UpdateActiveControlsRequest
 from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.types import UNSET
@@ -80,7 +76,6 @@ from .exceptions import (
 )
 from .models.audio import AudioDevices, SpectrumSnapshot
 from .models.common import (
-    BrightnessUpdate,
     ConfigMutationResult,
     DiscoverResult,
     IdentifyResult,
@@ -110,7 +105,7 @@ from .models.library import (
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
 from .models.spatial import SpatialLayout
-from .models.system import HealthStatus, OutputPowerState, SystemState
+from .models.system import HealthStatus, OutputState, SystemState
 from .models.zone import (
     UnassignedBehaviorResult,
     ZoneDeleteResult,
@@ -215,42 +210,56 @@ class HypercolorClient:
 
         return await self.get_status()
 
-    async def get_brightness(self) -> BrightnessUpdate:
-        """Return the global daemon brightness."""
-        return await self._request_model("GET", "/settings/brightness", BrightnessUpdate)
+    async def get_output(self) -> OutputState:
+        """Return global output power and brightness."""
 
-    async def set_brightness(self, brightness: int) -> BrightnessUpdate:
-        """Set the global daemon brightness."""
-        return await self._generated_model(
-            generated_set_brightness._get_kwargs(
-                body=SetBrightnessRequest(brightness=brightness),
-            ),
-            BrightnessUpdate,
-        )
+        return await self._request_model("GET", "/output", OutputState)
 
-    async def get_output_power(self) -> OutputPowerState:
-        """Return the current global output power state."""
+    async def set_output(
+        self,
+        *,
+        power: str | None = None,
+        brightness: float | None = None,
+    ) -> OutputState:
+        """Patch global output power, brightness, or both.
 
-        return await self._request_model("GET", "/output/power", OutputPowerState)
+        The daemon refuses a patch that sets neither field, so at least
+        one argument is required. Brightness is the wire's `0.0` to
+        `1.0` float, not a percentage.
+        """
 
-    async def set_output_power(self, *, paused: bool) -> OutputPowerState:
-        """Set global output power without discarding active effect state."""
+        body: dict[str, Any] = {}
+        if power is not None:
+            body["power"] = power
+        if brightness is not None:
+            body["brightness"] = brightness
+        if not body:
+            message = "set_output requires power, brightness, or both"
+            raise ValueError(message)
+        return await self._request_model("PATCH", "/output", OutputState, body=body)
 
-        state = "paused" if paused else "running"
-        return await self._request_model(
-            "PUT",
-            "/output/power",
-            OutputPowerState,
-            body={"state": state},
-        )
+    async def get_brightness(self) -> float:
+        """Return the global daemon brightness as a `0.0` to `1.0` float."""
 
-    async def pause_rendering(self) -> OutputPowerState:
-        """Pause all output while preserving active effect state."""
+        return (await self.get_output()).brightness
+
+    async def set_brightness(self, brightness: float) -> OutputState:
+        """Set the global daemon brightness as a `0.0` to `1.0` float."""
+
+        return await self.set_output(brightness=brightness)
+
+    async def set_output_power(self, *, paused: bool) -> OutputState:
+        """Set global output power without discarding live scene state."""
+
+        return await self.set_output(power="paused" if paused else "running")
+
+    async def pause_rendering(self) -> OutputState:
+        """Pause all output while preserving live scene state."""
 
         return await self.set_output_power(paused=True)
 
-    async def resume_rendering(self) -> OutputPowerState:
-        """Resume output from the preserved active effect state."""
+    async def resume_rendering(self) -> OutputState:
+        """Resume output from the preserved live scene state."""
 
         return await self.set_output_power(paused=False)
 

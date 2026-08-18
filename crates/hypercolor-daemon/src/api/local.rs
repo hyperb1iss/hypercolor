@@ -254,17 +254,17 @@ mod tests {
         let response = api
             .execute(
                 Request::builder()
-                    .method("PUT")
-                    .uri("/api/v1/settings/brightness")
+                    .method("PATCH")
+                    .uri("/api/v1/output")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"brightness":37}"#))
+                    .body(Body::from(r#"{"brightness":0.37}"#))
                     .expect("trusted local request should build"),
             )
             .await
             .expect("trusted local API path should be accepted");
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response_json(response).await["data"]["brightness"], 37);
+        assert_eq!(response_json(response).await["data"]["brightness"], 0.37);
     }
 
     #[tokio::test]
@@ -302,9 +302,9 @@ mod tests {
                 serde_json::json!({
                     "type": "command",
                     "id": "set_brightness",
-                    "method": "PUT",
-                    "path": "/settings/brightness",
-                    "body": {"brightness": 41}
+                    "method": "PATCH",
+                    "path": "/output",
+                    "body": {"brightness": 0.41}
                 })
                 .to_string()
                 .into(),
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(response["type"], "response");
         assert_eq!(response["id"], "set_brightness");
         assert_eq!(response["status"], 200);
-        assert_eq!(response["data"]["brightness"], 41);
+        assert_eq!(response["data"]["brightness"], 0.41);
 
         socket.shutdown().await;
     }

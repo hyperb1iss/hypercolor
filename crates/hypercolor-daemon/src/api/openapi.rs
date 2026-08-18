@@ -11,7 +11,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::{
     config, controls, devices, drivers, effects, envelope, layers, output, profiles, scenes_zones,
-    settings, system,
+    system,
 };
 
 #[derive(OpenApi)]
@@ -30,10 +30,8 @@ use crate::api::{
         effects::list_effect_presets,
         effects::apply_effect,
         effects::apply_effect_preset,
-        effects::pause_effect,
-        effects::resume_effect,
-        output::get_output_power,
-        output::put_output_power,
+        output::get_output,
+        output::patch_output,
     ),
     components(
         schemas(
@@ -55,9 +53,7 @@ use crate::api::{
             envelope::ApiResponse<effects::ActiveEffectResponse>,
             envelope::ApiResponse<effects::EffectPresetListResponse>,
             envelope::ApiResponse<effects::ApplyEffectResponse>,
-            envelope::ApiResponse<effects::PauseEffectResponse>,
-            envelope::ApiResponse<effects::ResumeEffectResponse>,
-            envelope::ApiResponse<hypercolor_types::api::output::OutputPowerResponse>,
+            envelope::ApiResponse<hypercolor_types::api::output::OutputResource>,
             envelope::ApiResponse<devices::DeviceBindingsResponse>,
             envelope::ApiResponse<devices::RebindDeviceResponse>,
             devices::UpdateDeviceRequest,
@@ -65,10 +61,9 @@ use crate::api::{
             devices::DiscoverRequest,
             devices::RebindDeviceRequest,
             effects::UpdateActiveControlsRequest,
+            hypercolor_types::api::output::OutputPatchRequest,
             hypercolor_types::api::output::OutputPowerMode,
-            hypercolor_types::api::output::OutputPowerResponse,
-            hypercolor_types::api::output::OutputPowerStatus,
-            hypercolor_types::api::output::SetOutputPowerRequest,
+            hypercolor_types::api::output::OutputResource,
             layers::BroadcastMediaLayerRequest,
             layers::BroadcastMediaLayerTarget,
             layers::BroadcastMediaLayerZoneResponse,
@@ -87,7 +82,6 @@ use crate::api::{
             scenes_zones::ZoneResponse,
             scenes_zones::ZoneMutationResponse,
             scenes_zones::UnassignedBehaviorResponse,
-            settings::SetBrightnessRequest,
             config::ConfigMutationResponse,
             hypercolor_types::config_registry::ApplyPolicy,
             hypercolor_types::config_registry::ConfigKeySchemaEntry,
@@ -159,8 +153,6 @@ use crate::api::{
             effects::ApplyTransitionResponse,
             effects::EffectRefSummary,
             effects::ApplyEffectResponse,
-            effects::PauseEffectResponse,
-            effects::ResumeEffectResponse,
             hypercolor_driver_api::DeviceAuthState,
             hypercolor_driver_api::PairingFlowKind,
             hypercolor_driver_api::PairingFieldDescriptor,
@@ -211,12 +203,11 @@ use crate::api::{
         (name = "effects", description = "Effect catalog and runtime control"),
         (name = "displays", description = "Display devices, faces, and simulators"),
         (name = "attachments", description = "Physical attachment templates and bindings"),
-        (name = "output", description = "Global output power state"),
+        (name = "output", description = "Global output power and brightness"),
         (name = "scenes", description = "Scene CRUD and activation"),
         (name = "profiles", description = "Saved lighting profile snapshots"),
         (name = "layouts", description = "Spatial layout CRUD and preview"),
         (name = "library", description = "Favorites, presets, and playlists"),
-        (name = "settings", description = "Runtime settings and audio inputs"),
         (name = "config", description = "Daemon configuration inspection and mutation"),
         (name = "diagnostics", description = "Daemon diagnostics"),
         (name = "websocket", description = "Realtime WebSocket endpoint"),
@@ -645,18 +636,18 @@ pub const ROUTES: &[RouteSpec] = &[
         "List attachment vendors",
     ),
     RouteSpec::get(
-        "/api/v1/output/power",
-        "get_output_power",
+        "/api/v1/output",
+        "get_output",
         "output",
-        "Get global output power",
+        "Get global output power and brightness",
     ),
-    RouteSpec::put(
-        "/api/v1/output/power",
-        "put_output_power",
+    RouteSpec::patch(
+        "/api/v1/output",
+        "patch_output",
         "output",
-        "Set global output power",
+        "Set global output power, brightness, or both",
     )
-    .with_request_body("SetOutputPowerRequest", true),
+    .with_request_body("OutputPatchRequest", true),
     RouteSpec::get("/api/v1/effects", "list_effects", "effects", "List effects"),
     RouteSpec::get(
         "/api/v1/effects/active",
@@ -688,18 +679,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "reset_controls",
         "effects",
         "Reset active effect controls",
-    ),
-    RouteSpec::post(
-        "/api/v1/effects/pause",
-        "pause_effect",
-        "effects",
-        "Pause active effect output",
-    ),
-    RouteSpec::post(
-        "/api/v1/effects/resume",
-        "resume_effect",
-        "effects",
-        "Resume active effect output",
     ),
     RouteSpec::post(
         "/api/v1/effects/stop",
@@ -1083,24 +1062,11 @@ pub const ROUTES: &[RouteSpec] = &[
         "Activate playlist",
     ),
     RouteSpec::get(
-        "/api/v1/audio/devices",
+        "/api/v1/system/audio-devices",
         "list_audio_devices",
-        "settings",
+        "system",
         "List audio input devices",
     ),
-    RouteSpec::get(
-        "/api/v1/settings/brightness",
-        "get_brightness",
-        "settings",
-        "Get global brightness",
-    ),
-    RouteSpec::put(
-        "/api/v1/settings/brightness",
-        "set_brightness",
-        "settings",
-        "Set global brightness",
-    )
-    .with_request_body("SetBrightnessRequest", true),
     RouteSpec::get(
         "/api/v1/config",
         "show_config",
@@ -1205,7 +1171,6 @@ impl Modify for RouteCatalogAddon {
             "profiles",
             "layouts",
             "library",
-            "settings",
             "config",
             "diagnostics",
             "websocket",

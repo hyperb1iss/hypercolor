@@ -39,6 +39,7 @@ pub mod commit;
 pub mod display;
 pub mod effect;
 pub mod layer;
+pub mod output;
 pub mod scene;
 pub mod zone;
 
@@ -81,6 +82,8 @@ pub enum ResourceKind {
     Config,
     ConfigKey,
     Session,
+    /// An address on the API surface, for the unmatched-path fallback.
+    Route,
 }
 
 impl std::fmt::Display for ResourceKind {
@@ -111,6 +114,7 @@ impl std::fmt::Display for ResourceKind {
             Self::Config => "config",
             Self::ConfigKey => "config key",
             Self::Session => "session",
+            Self::Route => "route",
         };
         f.write_str(name)
     }
@@ -770,11 +774,12 @@ mod tests {
                 | ResourceKind::Diagnostic
                 | ResourceKind::Config
                 | ResourceKind::ConfigKey
-                | ResourceKind::Session => true,
+                | ResourceKind::Session
+                | ResourceKind::Route => true,
             }
         }
 
-        const ALL: [ResourceKind; 25] = [
+        const ALL: [ResourceKind; 26] = [
             ResourceKind::Scene,
             ResourceKind::Zone,
             ResourceKind::Layer,
@@ -800,6 +805,7 @@ mod tests {
             ResourceKind::Config,
             ResourceKind::ConfigKey,
             ResourceKind::Session,
+            ResourceKind::Route,
         ];
 
         let mut seen: Vec<String> = Vec::new();

@@ -744,10 +744,12 @@ async fn effects_active_binding_and_reset_paths_stay_routed() {
     assert_envelope(&body_json(reset).await);
 }
 
-/// The wave C1b renames deleted their old paths outright. A rename that
-/// left an alias or a redirect behind would still serve the old behavior
-/// here, so this asserts the absence rather than the new routes'
-/// presence.
+/// Route deletions leave nothing behind. A rename or a merge that left
+/// an alias or a redirect would still serve the old behavior here, so
+/// this asserts the absence rather than the new routes' presence.
+///
+/// Two waves feed this list: C1b's renames, and wave 78.2's merge of
+/// power, brightness, and pause/resume onto one `/output` resource.
 ///
 /// Most retired paths match no route at all and answer 404. The one
 /// exception is pinned deliberately: `/effects/current/controls` now
@@ -803,6 +805,34 @@ async fn renamed_routes_leave_nothing_behind() {
             ),
             StatusCode::NOT_FOUND,
         ),
+        // Spec 78 wave 78.2 merged these four onto `/output` and moved
+        // audio devices under `/system`. Same deletion discipline.
+        (get("/api/v1/output/power"), StatusCode::NOT_FOUND),
+        (
+            json_request("PUT", "/api/v1/output/power", &json!({ "state": "paused" })),
+            StatusCode::NOT_FOUND,
+        ),
+        (get("/api/v1/settings/brightness"), StatusCode::NOT_FOUND),
+        (
+            json_request(
+                "PUT",
+                "/api/v1/settings/brightness",
+                &json!({ "brightness": 42 }),
+            ),
+            StatusCode::NOT_FOUND,
+        ),
+        // Pause and resume fall through to the GET-only
+        // `/effects/{id}` sibling, so a POST answers 405. Still a
+        // deletion: no handler treats `pause` as an output verb.
+        (
+            empty_request("POST", "/api/v1/effects/pause"),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (
+            empty_request("POST", "/api/v1/effects/resume"),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (get("/api/v1/audio/devices"), StatusCode::NOT_FOUND),
     ];
 
     for (request, expected) in retired {
@@ -813,6 +843,18 @@ async fn renamed_routes_leave_nothing_behind() {
             expected,
             "{uri} must be gone, not aliased or redirected"
         );
+        // A status alone would pass against a bare framework 404 or an
+        // SPA page serving the app shell. The envelope is what proves
+        // the API itself answered.
+        if expected == StatusCode::NOT_FOUND {
+            let body = body_json(response).await;
+            assert_error_envelope(&body, "not_found", DetailsPresence::Absent);
+            assert_eq!(
+                body["error"]["message"],
+                format!("route not found: {uri}"),
+                "{uri} should name the address the caller asked for"
+            );
+        }
     }
 }
 

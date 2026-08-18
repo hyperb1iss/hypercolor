@@ -122,6 +122,23 @@ Axum's own rejections are the only errors that bypass the envelope, because
 they are answered by the framework before a handler runs. Everything the daemon
 itself refuses goes out enveloped.
 
+**An unmatched path is not one of them.** A fallback scoped to `/api/v1` and
+registered inside the nest renders `404 not_found` with the canonical envelope
+and the message `route not found: {path}`, echoing the caller's original path.
+It exists because the web UI installs an SPA fallback on the outer router: with
+a UI mounted, an unmatched API path would otherwise miss `ServeDir`, fall
+through to `index.html`, and answer `200 text/html`, which would make every
+route-deletion fence in the program pass while the deleted route still served a
+page in production. The API fallback resolves first, so the SPA never sees an
+API path, and `/api/v1/openapi.json` plus the Swagger mount keep their exact
+routes. Pinned by `api_tests.rs::the_spa_fallback_never_answers_for_a_deleted_api_route`
+and `::an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui`; the
+deletion fences in `rest_v1_compat_tests.rs::renamed_routes_leave_nothing_behind`
+assert the envelope rather than the status alone for the same reason.
+
+Paths outside `/api/v1` still belong to the SPA, which is what makes
+client-side routing work; `/health` has no sub-paths to protect.
+
 ---
 
 ## 2. Frozen list endpoints and the fabricated pagination block
@@ -205,13 +222,47 @@ hardcoded 50, which is a distinct shape from both groups above.
 
 ## 3. Paths whose bodies deviate from their siblings
 
-Every path here is canonical: wave C1b renamed `current` to `active` and
-`groups` to `zones` and deleted the old spellings outright, so nothing in this
-table has a second address. What earns a row is a body or header contract that
-diverges from the neighbouring routes, noted per row.
+Every path here is canonical. Wave C1b renamed `current` to `active` and
+`groups` to `zones`; wave 78.2 merged `/output/power`, `/settings/brightness`,
+`/effects/pause`, and `/effects/resume` onto one `/output` resource and moved
+`/audio/devices` to `/system/audio-devices`. Every one of those old spellings
+was deleted outright, so nothing in this table has a second address. What
+earns a row is a body or header contract that diverges from the neighbouring
+routes, noted per row.
+
+Retired paths answer 404, with one pinned exception: a POST to
+`/api/v1/effects/pause` or `/api/v1/effects/resume` falls through to the
+GET-only `/api/v1/effects/{id}` sibling and answers `405`. That is still a
+deletion, and the 405 is what would catch someone re-adding a handler.
+
+**Two spellings of "paused", on purpose.** `GET /api/v1/output` reports
+`power: "paused"` after a destructive stop, because the resource answers
+whether output is running and the read has to round-trip: a client that reads
+`running` and then patches `running` must not be silently clearing a stop. The
+status surfaces answer the other question. `OutputPowerState::reported_paused`
+(`src/session.rs:86`) means "the user latched a pause", a stop publishes no
+`Paused` event (`session.rs` test `destructive_stop_does_not_publish_a_pause_event`),
+and so the WS `hello` payload, MCP `get_status`, and `hypercolor://state` all
+report `paused: false` for a stopped output.
+
+Both readings are deliberately pinned, and the tests look contradictory unless
+you know which question each one answers:
+
+| Surface | Stopped reads as | Pinned by |
+| --- | --- | --- |
+| `GET /output` | `power: "paused"` | `api_tests.rs::a_stopped_output_reads_as_paused_and_patches_back_to_running`, `domain/output.rs::every_dark_state_observes_as_paused` |
+| WS `hello` | `paused: false` | `api/ws/session.rs::hello_does_not_report_destructive_stop_as_pause` |
+| MCP `get_status`, `hypercolor://state` | `paused: false` | `mcp_tests.rs::mcp_status_surfaces_report_effective_session_pause` |
+
+Collapsing the two onto one word means deciding whether a destructive stop
+publishes `Paused`, which moves the event vocabulary. Spec 78 §7.1 assigns the
+hello payload and the event vocabulary to wave 78.3; the reconciliation lands
+there rather than splitting across waves.
 
 | Method | Path | Request | Success body | Notes |
 | --- | --- | --- | --- | --- |
+| GET | `/api/v1/output` | Empty | `200`, enveloped `{power, brightness}` | `power` is `running` \| `paused`; a destructive stop and a session sleep both read as `paused`. `brightness` is a float on `0.0..=1.0`, not a percentage |
+| PATCH | `/api/v1/output` | `{power?, brightness?}` | `200`, enveloped whole resource | Partial: either field or both. A document setting **neither** is `422 validation_error`, not a no-op. Brightness outside `0.0..=1.0` is `422` with `details.field = "brightness"`, and it is validated **before** power moves. Unknown fields are refused by the decoder, so they arrive as an unenveloped axum rejection (§1.3) |
 | POST | `/api/v1/effects/{id}/apply` | Empty or apply options | `200`, enveloped | `{id}` accepts an effect id or name |
 | PATCH | `/api/v1/effects/active/controls` | `{controls: {…}}` | `200`, enveloped `{effect, applied, rejected}` | **No `controls_version`, no ETag, and `If-Match` is not read at all**, while the `{id}` sibling has all three |
 | PUT | `/api/v1/effects/active/controls/{name}/binding` | A bare `ControlBinding` object (`{sensor, sensor_min, sensor_max, target_min, target_max, deadband?, smoothing?}`), **not** wrapped in a `binding` key | `200`, enveloped | |

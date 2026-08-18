@@ -178,21 +178,22 @@ test.describe("REST API", () => {
       const effects = await readEnvelope(await api.get("/api/v1/effects"));
       const audioPulse = findRunnableEffect(effects.items, ["Audio Pulse", "Gradient", "Rainbow"]);
 
-      const brightnessBefore = await readEnvelope(await api.get("/api/v1/settings/brightness"));
-      const restoredBrightness = brightnessBefore.brightness;
+      const outputBefore = await readEnvelope(await api.get("/api/v1/output"));
+      const restoredBrightness = outputBefore.brightness;
 
-      const brightnessAfter = await readEnvelope(
-        await api.put("/api/v1/settings/brightness", {
+      const outputAfter = await readEnvelope(
+        await api.patch("/api/v1/output", {
           data: {
-            brightness: 37,
+            brightness: 0.37,
           },
         }),
       );
-      expect(brightnessAfter.brightness).toBe(37);
+      expect(outputAfter.brightness).toBeCloseTo(0.37, 5);
+      expect(outputAfter.power).toBe(outputBefore.power);
 
       expect((await api.get("/api/v1/config")).ok()).toBeTruthy();
       expect((await api.get("/api/v1/config/schema")).ok()).toBeTruthy();
-      expect((await api.get("/api/v1/audio/devices")).ok()).toBeTruthy();
+      expect((await api.get("/api/v1/system/audio-devices")).ok()).toBeTruthy();
 
       // The value is the body itself, and `live=false` keeps the write
       // off the running daemon.
@@ -300,7 +301,7 @@ test.describe("REST API", () => {
       expect((await api.post("/api/v1/library/playlists/stop")).ok()).toBeTruthy();
 
       await readEnvelope(
-        await api.put("/api/v1/settings/brightness", {
+        await api.patch("/api/v1/output", {
           data: {
             brightness: restoredBrightness,
           },

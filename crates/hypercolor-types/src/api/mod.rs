@@ -35,7 +35,6 @@ pub mod output;
 pub mod profiles;
 pub mod scene;
 pub mod scenes;
-pub mod settings;
 pub mod simulators;
 pub mod zones;
 

@@ -301,6 +301,48 @@ fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
 }
 
+/// Build a test router with a web UI mounted, which installs the SPA
+/// fallback. The returned tempdir must outlive the router.
+fn test_app_with_ui() -> (axum::Router, tempfile::TempDir) {
+    let ui_dir = tempfile::tempdir().expect("ui tempdir should build");
+    fs::write(
+        ui_dir.path().join("index.html"),
+        "<!doctype html><title>hypercolor</title>",
+    )
+    .expect("index.html should be written");
+    let state = Arc::new(isolated_state());
+    let app = api::build_router(state, Some(ui_dir.path()));
+    (app, ui_dir)
+}
+
+/// Assert a response is the canonical `DomainError` not-found envelope
+/// for `path`, rather than a bare status or an HTML page.
+async fn assert_canonical_route_404(response: axum::response::Response, path: &str) {
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "{path} should answer 404"
+    );
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        content_type.starts_with("application/json"),
+        "{path} should answer JSON, got content-type {content_type:?}"
+    );
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "not_found", "{path} error code");
+    assert_eq!(
+        json["error"]["message"],
+        format!("route not found: {path}"),
+        "{path} error message"
+    );
+    assert_eq!(json["meta"]["api_version"], "1.0", "{path} envelope meta");
+}
+
 fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, tempfile::TempDir) {
     let (mut state, dir) = isolated_state_with_tempdir();
     let manager = Arc::new(
@@ -967,6 +1009,16 @@ impl DeviceBackend for DisconnectRecordingBackend {
 async fn register_noop_backend(state: &Arc<AppState>, id: &str, name: &str) {
     let mut manager = state.backend_manager.lock().await;
     manager.register_backend(Box::new(NoopBackend::new(id, name)));
+}
+
+/// A `PATCH /api/v1/output` request carrying the given JSON document.
+fn output_patch_request(body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/output")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_owned()))
+        .expect("failed to build output patch request")
 }
 
 /// Extract the JSON body from a response.
@@ -1743,23 +1795,24 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("PUT")
-                .uri("/api/v1/settings/brightness")
+                .method("PATCH")
+                .uri("/api/v1/output")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"brightness":42}"#))
+                .body(Body::from(r#"{"brightness":0.42}"#))
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
     assert_eq!(update_response.status(), StatusCode::OK);
     let update_json = body_json(update_response).await;
-    assert_eq!(update_json["data"]["brightness"], 42);
+    assert_eq!(update_json["data"]["brightness"], 0.42);
+    assert_eq!(update_json["data"]["power"], "running");
 
     let get_response = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/settings/brightness")
+                .uri("/api/v1/output")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1767,7 +1820,7 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         .expect("failed to execute request");
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_json = body_json(get_response).await;
-    assert_eq!(get_json["data"]["brightness"], 42);
+    assert_eq!(get_json["data"]["brightness"], 0.42);
 
     let status_response = app
         .oneshot(
@@ -1808,7 +1861,7 @@ async fn audio_devices_returns_default_option_and_current_value() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/audio/devices")
+                .uri("/api/v1/system/audio-devices")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1849,7 +1902,7 @@ async fn audio_devices_preserve_custom_configured_id_without_rewrite() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/audio/devices")
+                .uri("/api/v1/system/audio-devices")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1873,35 +1926,33 @@ async fn audio_devices_preserve_custom_configured_id_without_rewrite() {
 #[test]
 fn audio_device_filter_hides_synthetic_outputs_from_named_input_list() {
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device("PipeWire Sound Server",)
+        !hypercolor_daemon::api::system::should_offer_named_audio_device("PipeWire Sound Server",)
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
-            "PulseAudio Sound Server",
-        )
+        !hypercolor_daemon::api::system::should_offer_named_audio_device("PulseAudio Sound Server",)
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Monitor of Built-in Audio Analog Stereo",
         )
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
         )
     );
     assert!(
-        hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Razer Seiren V3 Chroma, USB Audio",
         )
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Rate Converter Plugin Using Speex Resampler",
         )
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Discard all samples (playback) or generate zero samples (capture)",
         )
     );
@@ -6442,7 +6493,7 @@ async fn stop_effect_returns_not_found_when_none() {
 }
 
 #[tokio::test]
-async fn pause_effect_succeeds_without_an_active_primary_effect() {
+async fn pausing_output_darkens_display_groups_without_an_active_effect() {
     let state = Arc::new(isolated_state());
     let group_id = hypercolor_types::scene::ZoneId::new();
     state.event_bus.upsert_display_group_target(
@@ -6463,25 +6514,13 @@ async fn pause_effect_succeeds_without_an_active_primary_effect() {
 
     let response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/pause")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
         .await
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json = body_json(response).await;
-    assert_eq!(response_json["data"]["paused"], true);
-    assert!(response_json["data"].get("effect").is_none());
-    assert_eq!(response_json["data"]["off_output_behavior"], "static");
-    assert_eq!(
-        response_json["data"]["off_output_color"],
-        serde_json::json!([0, 0, 0])
-    );
+    assert_eq!(response_json["data"]["power"], "paused");
     assert!(state.power_state.borrow().manually_paused());
     assert_display_group_frame_black(&group_receiver.borrow());
     let snapshot = runtime_state::load(&state.runtime_state_path)
@@ -6490,19 +6529,11 @@ async fn pause_effect_succeeds_without_an_active_primary_effect() {
     assert!(snapshot.manual_paused);
 
     let resume_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/resume")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"power":"running"}"#))
         .await
         .expect("failed to execute request");
     assert_eq!(resume_response.status(), StatusCode::OK);
-    let resume_json = body_json(resume_response).await;
-    assert_eq!(resume_json["data"]["resumed"], true);
-    assert!(resume_json["data"].get("effect").is_none());
+    assert_eq!(body_json(resume_response).await["data"]["power"], "running");
 }
 
 #[tokio::test]
@@ -6540,13 +6571,7 @@ async fn pause_blacks_connected_device_outside_active_layout() {
     );
 
     let response = test_app_with_state(Arc::clone(&state))
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/pause")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
         .await
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
@@ -6573,7 +6598,7 @@ async fn pause_blacks_connected_device_outside_active_layout() {
 }
 
 #[tokio::test]
-async fn output_power_put_is_idempotent_and_publishes_effective_transitions_once() {
+async fn output_power_patch_is_idempotent_and_publishes_effective_transitions_once() {
     let state = Arc::new(isolated_state());
     state.render_loop.write().await.start();
     let mut events = state.event_bus.subscribe_all();
@@ -6582,18 +6607,13 @@ async fn output_power_put_is_idempotent_and_publishes_effective_transitions_once
     for requested in ["paused", "paused", "running", "running"] {
         let response = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/api/v1/output/power")
-                    .header("content-type", "application/json")
-                    .body(Body::from(format!(r#"{{"state":"{requested}"}}"#)))
-                    .expect("failed to build request"),
-            )
+            .oneshot(output_patch_request(&format!(
+                r#"{{"power":"{requested}"}}"#
+            )))
             .await
             .expect("failed to execute request");
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_json(response).await["data"]["state"], requested);
+        assert_eq!(body_json(response).await["data"]["power"], requested);
     }
 
     assert!(matches!(
@@ -6609,13 +6629,299 @@ async fn output_power_put_is_idempotent_and_publishes_effective_transitions_once
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/output/power")
+                .uri("/api/v1/output")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(body_json(response).await["data"]["state"], "running");
+    assert_eq!(body_json(response).await["data"]["power"], "running");
+}
+
+/// One PATCH moves both knobs, and the response is the whole resource.
+#[tokio::test]
+async fn output_patch_sets_power_and_brightness_in_one_call() {
+    let state = Arc::new(isolated_state());
+    state.render_loop.write().await.start();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .clone()
+        .oneshot(output_patch_request(
+            r#"{"power":"paused","brightness":0.25}"#,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["power"], "paused");
+    assert_eq!(json["data"]["brightness"], 0.25);
+    assert!(state.power_state.borrow().manually_paused());
+    assert_eq!(state.power_state.borrow().global_brightness, 0.25);
+
+    // A brightness-only patch leaves power exactly where it was.
+    let response = app
+        .oneshot(output_patch_request(r#"{"brightness":0.75}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["power"], "paused");
+    assert_eq!(json["data"]["brightness"], 0.75);
+}
+
+/// The service, not the decoder, refuses a patch that asks for nothing:
+/// an empty document is a client that dropped its payload, and a silent
+/// 200 there hides the defect. `GET /output` is how a caller reads.
+#[tokio::test]
+async fn output_patch_rejects_a_document_that_sets_nothing() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(output_patch_request("{}"))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(
+        json["error"]["message"],
+        "output patch must set power, brightness, or both"
+    );
+}
+
+/// Brightness range is a domain rule: the type layer takes any `f32`
+/// and the handler names the offending field on refusal.
+#[tokio::test]
+async fn output_patch_rejects_brightness_outside_the_unit_interval() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    // `1e40` overflows the f32 cast to infinity, which fails the range
+    // check the same way NaN would: every comparison against a non-finite
+    // value is false, so `contains` says no.
+    for rejected in ["1.5", "-0.1", "1e40", "-1e40"] {
+        let response = app
+            .clone()
+            .oneshot(output_patch_request(&format!(
+                r#"{{"brightness":{rejected}}}"#
+            )))
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "brightness {rejected} must be refused"
+        );
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "validation_error");
+        assert_eq!(json["error"]["details"]["field"], "brightness");
+    }
+
+    assert_eq!(state.power_state.borrow().global_brightness, 1.0);
+}
+
+/// A rejected brightness never reaches the power half of the patch.
+#[tokio::test]
+async fn output_patch_validates_brightness_before_moving_power() {
+    let state = Arc::new(isolated_state());
+    state.render_loop.write().await.start();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(output_patch_request(
+            r#"{"power":"paused","brightness":2.0}"#,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!state.power_state.borrow().manually_paused());
+}
+
+/// The routes this resource replaced are gone, not aliased.
+///
+/// Most retired paths match no route and answer 404. Pause and resume
+/// are the deliberate exception: `/effects/pause` now falls through to
+/// the GET-only `/effects/{id}` sibling, so a POST answers 405. That is
+/// still a deletion — no handler treats `pause` as an output verb any
+/// more — and pinning the specific status is what would catch someone
+/// re-adding one that does.
+#[tokio::test]
+async fn the_merged_output_routes_leave_nothing_behind() {
+    let app = test_app();
+
+    let retired = [
+        (
+            Request::builder()
+                .uri("/api/v1/output/power")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/output/power")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"state":"paused"}"#))
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .uri("/api/v1/settings/brightness")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/settings/brightness")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"brightness":42}"#))
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/pause")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/resume")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (
+            Request::builder()
+                .uri("/api/v1/audio/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/output")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"power":"paused"}"#))
+                .expect("failed to build request"),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+    ];
+
+    for (request, expected) in retired {
+        let uri = request.uri().to_string();
+        let method = request.method().clone();
+        let response = app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            expected,
+            "{method} {uri} must be gone, not aliased or redirected"
+        );
+        if expected == StatusCode::NOT_FOUND {
+            assert_canonical_route_404(response, &uri).await;
+        }
+    }
+}
+
+/// The SPA fallback must never answer for an API path. With a web UI
+/// mounted, an unmatched `/api/v1` route still renders the canonical
+/// envelope, while a real client-side route still serves the app shell.
+///
+/// Without this the deletion fences are theatre in exactly the
+/// configuration users run: `ServeDir` misses, falls through to
+/// `index.html`, and a retired endpoint answers `200 text/html`.
+#[tokio::test]
+async fn the_spa_fallback_never_answers_for_a_deleted_api_route() {
+    let (app, _ui_dir) = test_app_with_ui();
+
+    for path in [
+        "/api/v1/audio/devices",
+        "/api/v1/settings/brightness",
+        "/api/v1/output/power",
+        "/api/v1/there-is-no-such-route",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_canonical_route_404(response, path).await;
+    }
+
+    // The SPA still owns everything that is not an API path.
+    let spa = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/settings")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(spa.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(spa.into_body(), usize::MAX)
+        .await
+        .expect("spa body should read");
+    assert!(
+        String::from_utf8_lossy(&body).contains("<!doctype html>"),
+        "a client-side route should still serve the app shell"
+    );
+
+    // And the API surface that does exist is untouched by the fallback.
+    for path in ["/api/v1/output", "/api/v1/openapi.json"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{path} should still serve"
+        );
+    }
+}
+
+/// The same fence without a UI mounted: the bare Axum 404 is replaced by
+/// the canonical envelope, so clients get one error shape everywhere.
+#[tokio::test]
+async fn an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/there-is-no-such-route")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_canonical_route_404(response, "/api/v1/there-is-no-such-route").await;
 }
 
 #[tokio::test]
@@ -6656,6 +6962,76 @@ async fn stop_active_clears_primary_effect_id_but_keeps_scene() {
         .primary_group()
         .expect("primary group shell should remain after stop");
     assert!(primary.effect_id.is_none());
+}
+
+/// The wire-level receipt for the two-state projection: a destructive
+/// stop leaves outputs dark, so the resource reads `paused`, and
+/// patching `running` clears the stop rather than being a no-op.
+///
+/// The status surfaces answer differently on purpose. `reported_paused`
+/// (`session.rs:86`) means "the user latched a pause", and a stop
+/// publishes no `Paused` event, so the WS hello and the MCP status keep
+/// reporting `paused: false` here. Both readings are pinned; §3 of the
+/// REST matrix names the split.
+#[tokio::test]
+async fn a_stopped_output_reads_as_paused_and_patches_back_to_running() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    state.render_loop.write().await.start();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let applied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(applied.status(), StatusCode::OK);
+
+    let stopped = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stopped.status(), StatusCode::OK);
+    assert_eq!(
+        state.power_state.borrow().output_override,
+        OutputOverride::Stopped
+    );
+
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/output")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(body_json(read).await["data"]["power"], "paused");
+
+    let resumed = app
+        .oneshot(output_patch_request(r#"{"power":"running"}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resumed.status(), StatusCode::OK);
+    assert_eq!(body_json(resumed).await["data"]["power"], "running");
+    assert_eq!(
+        state.power_state.borrow().output_override,
+        OutputOverride::None
+    );
 }
 
 #[tokio::test]
@@ -6710,32 +7086,18 @@ async fn pause_resume_preserves_effect_state_and_holds_static_output() {
             .clone();
         (primary_id, preset_id, group)
     };
-    let effect_id = group_before_pause
-        .effect_id
-        .expect("primary group should retain its effect")
-        .to_string();
+    assert!(
+        group_before_pause.effect_id.is_some(),
+        "primary group should retain its effect across the pause"
+    );
 
     let pause_response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/pause")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
         .await
         .expect("failed to execute request");
     assert_eq!(pause_response.status(), StatusCode::OK);
-    let pause_json = body_json(pause_response).await;
-    assert_eq!(pause_json["data"]["paused"], true);
-    assert_eq!(pause_json["data"]["effect"]["id"], effect_id);
-    assert_eq!(pause_json["data"]["effect"]["name"], "solid_color");
-    assert_eq!(pause_json["data"]["off_output_behavior"], "static");
-    assert_eq!(
-        pause_json["data"]["off_output_color"],
-        serde_json::json!([0, 0, 0])
-    );
+    assert_eq!(body_json(pause_response).await["data"]["power"], "paused");
 
     assert_eq!(
         state.render_loop.read().await.state(),
@@ -6772,20 +7134,11 @@ async fn pause_resume_preserves_effect_state_and_holds_static_output() {
 
     let resume_response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/resume")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"power":"running"}"#))
         .await
         .expect("failed to execute request");
     assert_eq!(resume_response.status(), StatusCode::OK);
-    let resume_json = body_json(resume_response).await;
-    assert_eq!(resume_json["data"]["resumed"], true);
-    assert_eq!(resume_json["data"]["effect"]["id"], effect_id);
-    assert_eq!(resume_json["data"]["effect"]["name"], "solid_color");
+    assert_eq!(body_json(resume_response).await["data"]["power"], "running");
 
     assert_eq!(
         state.render_loop.read().await.state(),
@@ -6891,13 +7244,16 @@ async fn stop_active_quiesces_output_and_resume_wakes_pipeline() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/output/power")
+                .uri("/api/v1/output")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
-        .expect("failed to execute output power request");
-    assert_eq!(body_json(power_response).await["data"]["state"], "stopped");
+        .expect("failed to execute output request");
+    // A destructive stop leaves outputs dark, so the resource reports
+    // `paused`. The stop's extra consequences (released ownership,
+    // cleared effect) are observable on the effect surface, not here.
+    assert_eq!(body_json(power_response).await["data"]["power"], "paused");
     let canvas_receiver = state.event_bus.canvas_receiver();
     let canvas_frame = canvas_receiver.borrow().clone();
     assert_canvas_frame_black(&canvas_frame);
@@ -9653,7 +10009,7 @@ async fn profile_crud_lifecycle() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/settings/brightness")
+                .uri("/api/v1/output")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -9661,7 +10017,7 @@ async fn profile_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["brightness"], 50);
+    assert_eq!(json["data"]["brightness"], 0.5);
 
     // Delete profile
     let response = app
@@ -14992,14 +15348,7 @@ async fn pause_preempts_identify_and_holds_black_output() {
     );
 
     let pause_response = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/output/power")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"state":"paused"}"#))
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
         .await
         .expect("failed to execute pause request");
     assert_eq!(pause_response.status(), StatusCode::OK);
@@ -16277,14 +16626,7 @@ async fn settings_mutations_publish_local_change_hints() {
     assert_eq!(delete_response.status(), StatusCode::OK);
 
     let brightness_response = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/settings/brightness")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"brightness":42}"#))
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"brightness":0.42}"#))
         .await
         .expect("failed to execute request");
     assert_eq!(brightness_response.status(), StatusCode::OK);

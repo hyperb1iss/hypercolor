@@ -617,21 +617,23 @@ async def test_upload_effect_uses_install_endpoint(client: HypercolorClient) -> 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_set_brightness_uses_generated_route_with_body(
+async def test_set_brightness_patches_the_output_resource(
     client: HypercolorClient,
 ) -> None:
-    route = respx.put("http://hyperia.test:9420/api/v1/settings/brightness").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/output").mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"brightness": 42}),
+            content=_envelope({"power": "running", "brightness": 0.42}),
         )
     )
 
-    result = await client.set_brightness(42)
+    result = await client.set_brightness(0.42)
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {"brightness": 42}
-    assert result.brightness == 42
+    assert json.loads(route.calls[0].request.content) == {"brightness": 0.42}
+    assert result.brightness == 0.42
+    assert result.brightness_percent == 42
+    assert result.paused is False
 
 
 @respx.mock
@@ -698,22 +700,32 @@ async def test_stop_effect_uses_generated_route(client: HypercolorClient) -> Non
 @respx.mock
 @pytest.mark.asyncio
 async def test_pause_and_resume_preserve_effect_state(client: HypercolorClient) -> None:
-    route = respx.put("http://hyperia.test:9420/api/v1/output/power").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/output").mock(
         side_effect=[
-            httpx.Response(200, content=_envelope({"state": "paused"})),
-            httpx.Response(200, content=_envelope({"state": "running"})),
+            httpx.Response(200, content=_envelope({"power": "paused", "brightness": 1.0})),
+            httpx.Response(200, content=_envelope({"power": "running", "brightness": 1.0})),
         ]
     )
 
     paused = await client.pause_rendering()
 
     assert paused.paused is True
-    assert route.calls[0].request.content == b'{"state":"paused"}'
+    assert route.calls[0].request.content == b'{"power":"paused"}'
 
     running = await client.resume_rendering()
 
     assert running.paused is False
-    assert route.calls[1].request.content == b'{"state":"running"}'
+    assert route.calls[1].request.content == b'{"power":"running"}'
+
+
+@pytest.mark.asyncio
+async def test_set_output_refuses_a_patch_that_sets_nothing(
+    client: HypercolorClient,
+) -> None:
+    # The daemon answers 422 for an empty patch; the client refuses to
+    # spend the round trip.
+    with pytest.raises(ValueError, match="power, brightness, or both"):
+        await client.set_output()
 
 
 @respx.mock
@@ -1339,7 +1351,7 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_audio_devices(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/audio/devices").mock(
+    respx.get("http://hyperia.test:9420/api/v1/system/audio-devices").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(

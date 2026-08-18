@@ -74,17 +74,11 @@ from .api_response_effect_preset_list_response import (
 from .api_response_effect_preset_list_response_data import (
     ApiResponseEffectPresetListResponseData,
 )
-from .api_response_output_power_response import ApiResponseOutputPowerResponse
-from .api_response_output_power_response_data import ApiResponseOutputPowerResponseData
-from .api_response_pause_effect_response import ApiResponsePauseEffectResponse
-from .api_response_pause_effect_response_data import ApiResponsePauseEffectResponseData
+from .api_response_output_resource import ApiResponseOutputResource
+from .api_response_output_resource_data import ApiResponseOutputResourceData
 from .api_response_rebind_device_response import ApiResponseRebindDeviceResponse
 from .api_response_rebind_device_response_data import (
     ApiResponseRebindDeviceResponseData,
-)
-from .api_response_resume_effect_response import ApiResponseResumeEffectResponse
-from .api_response_resume_effect_response_data import (
-    ApiResponseResumeEffectResponseData,
 )
 from .api_response_server_info import ApiResponseServerInfo
 from .api_response_server_info_data import ApiResponseServerInfoData
@@ -284,16 +278,15 @@ from .normalized_rect import NormalizedRect
 from .orientation import Orientation
 from .output import Output
 from .output_component import OutputComponent
+from .output_patch_request import OutputPatchRequest
 from .output_power_mode import OutputPowerMode
-from .output_power_response import OutputPowerResponse
-from .output_power_status import OutputPowerStatus
+from .output_resource import OutputResource
 from .pagination import Pagination
 from .pairing_descriptor import PairingDescriptor
 from .pairing_field_descriptor import PairingFieldDescriptor
 from .pairing_flow_kind import PairingFlowKind
 from .patch_layer_controls_request import PatchLayerControlsRequest
 from .patch_layer_controls_request_controls import PatchLayerControlsRequestControls
-from .pause_effect_response import PauseEffectResponse
 from .preset_template import PresetTemplate
 from .preset_template_controls import PresetTemplateControls
 from .preview_demand_status import PreviewDemandStatus
@@ -308,7 +301,6 @@ from .render_acceleration_status import RenderAccelerationStatus
 from .render_loop_status import RenderLoopStatus
 from .render_surface_status import RenderSurfaceStatus
 from .response_meta import ResponseMeta
-from .resume_effect_response import ResumeEffectResponse
 from .ring_def import RingDef
 from .room_adjacency import RoomAdjacency
 from .room_dimensions import RoomDimensions
@@ -323,8 +315,6 @@ from .sampling_mode_type_3_type import SamplingModeType3Type
 from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
-from .set_brightness_request import SetBrightnessRequest
-from .set_output_power_request import SetOutputPowerRequest
 from .space_definition import SpaceDefinition
 from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
@@ -414,14 +404,10 @@ __all__ = (
     "ApiResponseEffectListResponseData",
     "ApiResponseEffectPresetListResponse",
     "ApiResponseEffectPresetListResponseData",
-    "ApiResponseOutputPowerResponse",
-    "ApiResponseOutputPowerResponseData",
-    "ApiResponsePauseEffectResponse",
-    "ApiResponsePauseEffectResponseData",
+    "ApiResponseOutputResource",
+    "ApiResponseOutputResourceData",
     "ApiResponseRebindDeviceResponse",
     "ApiResponseRebindDeviceResponseData",
-    "ApiResponseResumeEffectResponse",
-    "ApiResponseResumeEffectResponseData",
     "ApiResponseServerInfo",
     "ApiResponseServerInfoData",
     "ApiResponseSystemStatus",
@@ -604,16 +590,15 @@ __all__ = (
     "Orientation",
     "Output",
     "OutputComponent",
+    "OutputPatchRequest",
     "OutputPowerMode",
-    "OutputPowerResponse",
-    "OutputPowerStatus",
+    "OutputResource",
     "Pagination",
     "PairingDescriptor",
     "PairingFieldDescriptor",
     "PairingFlowKind",
     "PatchLayerControlsRequest",
     "PatchLayerControlsRequestControls",
-    "PauseEffectResponse",
     "PresetTemplate",
     "PresetTemplateControls",
     "PreviewDemandStatus",
@@ -628,7 +613,6 @@ __all__ = (
     "RenderLoopStatus",
     "RenderSurfaceStatus",
     "ResponseMeta",
-    "ResumeEffectResponse",
     "RingDef",
     "RoomAdjacency",
     "RoomDimensions",
@@ -643,8 +627,6 @@ __all__ = (
     "ScreenCaptureCapacityStatus",
     "ServerIdentity",
     "ServerInfo",
-    "SetBrightnessRequest",
-    "SetOutputPowerRequest",
     "SpaceDefinition",
     "SpatialLayout",
     "StripDirection",

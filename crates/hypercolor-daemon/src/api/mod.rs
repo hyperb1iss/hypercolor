@@ -27,7 +27,6 @@ pub mod profiles;
 pub mod scenes;
 pub mod scenes_zones;
 pub mod security;
-pub mod settings;
 pub mod simulators;
 pub mod system;
 pub mod ws;
@@ -1201,8 +1200,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Output ───────────────────────────────────────────────────
         .route(
-            "/output/power",
-            axum::routing::get(output::get_output_power).put(output::put_output_power),
+            "/output",
+            axum::routing::get(output::get_output).patch(output::patch_output),
         )
         // ── Effects ──────────────────────────────────────────────────
         .route("/effects", axum::routing::get(effects::list_effects))
@@ -1226,8 +1225,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/effects/active/reset",
             axum::routing::post(effects::reset_controls),
         )
-        .route("/effects/pause", axum::routing::post(effects::pause_effect))
-        .route("/effects/resume", axum::routing::post(effects::resume_effect))
         .route("/effects/stop", axum::routing::post(effects::stop_effect))
         .route(
             "/effects/rescan",
@@ -1425,10 +1422,9 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/system/sensors/{label}",
             axum::routing::get(system::get_sensor),
         )
-        .route("/audio/devices", axum::routing::get(settings::list_audio_devices))
         .route(
-            "/settings/brightness",
-            axum::routing::get(settings::get_brightness).put(settings::set_brightness),
+            "/system/audio-devices",
+            axum::routing::get(system::list_audio_devices),
         )
         // ── Screen Capture ───────────────────────────────────────────
         .route(
@@ -1478,6 +1474,13 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     for extension in &state.api_extensions {
         api = extension.mount_api_routes(api);
     }
+    // A deleted route has to answer as one. Without a fallback scoped to
+    // the API, an unmatched `/api/v1` path falls through to the SPA
+    // fallback below and a browser-facing daemon answers `200 text/html`
+    // for a route that no longer exists — every route-deletion fence in
+    // the program is only as strong as this. Nesting resolves the inner
+    // fallback first, so the SPA never sees an API path.
+    let api = api.fallback(api_route_not_found);
     let mut router = Router::new()
         .nest("/api/v1", api)
         .route("/health", axum::routing::get(system::health_check));
@@ -1532,6 +1535,20 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
 /// asset request by exclusion. `/api` and `/health` are seeded by the
 /// surface itself; what varies per daemon is the MCP mount, whose base
 /// path is configurable, so it is derived here next to the mount.
+/// Render an unmatched `/api/v1` path as the canonical `DomainError`
+/// envelope, so a retired route is indistinguishable from one that
+/// never existed and distinguishable from a working page.
+async fn api_route_not_found(
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    // `OriginalUri`, not `Uri`: nesting strips `/api/v1` from the
+    // request the fallback sees, and echoing the stripped path would
+    // name an address the caller never asked for.
+    crate::domain::DomainError::not_found(crate::domain::ResourceKind::Route, uri.path())
+        .into_response()
+}
+
 fn dynamic_route_prefixes(mcp_config: &McpConfig) -> Vec<String> {
     let mut prefixes = Vec::new();
     if mcp_config.enabled {

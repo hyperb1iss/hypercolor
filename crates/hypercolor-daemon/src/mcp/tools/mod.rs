@@ -192,23 +192,10 @@ pub(super) async fn find_effect_metadata(
         })
 }
 
-/// Convert a 0.0–1.0 brightness float to a 0–100 percentage.
-pub(crate) fn brightness_percent(brightness: f32) -> u8 {
-    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
-    if scaled <= 0.0 {
-        0
-    } else if scaled >= 100.0 {
-        100
-    } else {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::as_conversions
-        )]
-        let result = scaled as u8;
-        result
-    }
-}
+/// Convert a 0.0–1.0 brightness float to a 0–100 percentage. The
+/// output service owns the conversion; MCP re-exports it so the two
+/// surfaces cannot drift.
+pub(crate) use crate::domain::output::brightness_percent;
 
 /// Compute theoretical render capacity, capped at the target tier rate.
 ///
