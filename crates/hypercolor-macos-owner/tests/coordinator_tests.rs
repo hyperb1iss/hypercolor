@@ -11,9 +11,14 @@ use hypercolor_macos_owner::{
 };
 
 fn identity(label: &str, pid: u32) -> MacosOwnerIdentity {
+    let executable_path = std::env::current_dir()
+        .expect("fixture working directory should resolve")
+        .join("Applications")
+        .join(label)
+        .join("hypercolor-daemon");
     MacosOwnerIdentity::new(
         format!("audit-{label}"),
-        format!("/Applications/{label}/hypercolor-daemon"),
+        executable_path,
         format!("requirement-{label}"),
         pid,
     )
