@@ -259,7 +259,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::{LatestSampleWorker, SamplePublishOutcome};
+    use super::{LatestSampleInput, LatestSampleWorker, SamplePublishOutcome};
 
     #[test]
     fn callback_handoff_stays_bounded_while_decode_is_blocked() {
@@ -459,5 +459,50 @@ mod tests {
         worker.join().expect("idle worker should join");
         assert!(exited.load(Ordering::Acquire));
         assert_eq!(worker.input().publish(()), SamplePublishOutcome::Closed);
+    }
+
+    #[test]
+    fn publish_wakes_the_worker_past_a_parked_synchronizer() {
+        let input: LatestSampleInput<u32> = LatestSampleInput::new();
+
+        // Hold an in-flight invalidation open so a synchronize_if waiter
+        // genuinely parks on the shared condvar with its predicate unmet.
+        let pending =
+            super::PendingInvalidation::begin(&input.pending_invalidations, &input.inner.ready);
+        let sync_input = input.clone();
+        let synchronizer = thread::spawn(move || {
+            sync_input.synchronize_if(|| true);
+        });
+        // Give the synchronizer time to park before publishing.
+        thread::sleep(Duration::from_millis(50));
+
+        let consumer_input = input.clone();
+        let consumer = thread::spawn(move || {
+            let mut consumed = 0_u32;
+            while consumed < 50 {
+                if consumer_input.take_next().is_none() {
+                    break;
+                }
+                consumed += 1;
+            }
+            consumed
+        });
+
+        for sample in 0..400_u32 {
+            let _ = input.publish(sample);
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        // A swallowed wakeup leaves the consumer parked beside a full slot;
+        // close() unblocks it so a regression fails the count assertion
+        // instead of hanging the suite.
+        input.close();
+        let consumed = consumer.join().expect("consumer thread");
+        drop(pending);
+        let _ = synchronizer.join();
+        assert_eq!(
+            consumed, 50,
+            "worker must consume past a parked synchronizer"
+        );
     }
 }
