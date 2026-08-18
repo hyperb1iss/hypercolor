@@ -306,6 +306,12 @@ jobs:
           --features screen-capture --test screen_capture_bridge_tests
           -E 'test(intel_runner_qualification_requires_native_device_and_both_import_candidates)'
 
+      - name: Seed native app frontend fixture
+        run: |
+          mkdir -p crates/hypercolor-ui/dist
+          printf '<!doctype html><title>Hypercolor test fixture</title>' \
+            > crates/hypercolor-ui/dist/index.html
+
       - name: Check macOS workspace
         run: >-
           ./scripts/cargo-cache-build.sh
