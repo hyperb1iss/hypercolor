@@ -2,7 +2,7 @@
 # frozen_string_literal: true
 
 # Homebrew formula for Hypercolor
-# Auto-updated by CI — do not edit SHA256 sums manually.
+# Updated manually after release artifacts pass signed acceptance.
 
 class Hypercolor < Formula
   # Sequoia's symbolic version cannot distinguish 15.0 from the 15.2 floor.

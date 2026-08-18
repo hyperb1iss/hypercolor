@@ -112,13 +112,15 @@ later from Settings → Device Discovery → Hardware Support.
 
 ## macOS
 
-Download the DMG from the [download page](@/download.md). Open the DMG, drag
-Hypercolor to Applications, and launch it. The app registers a LaunchAgent for
-autostart and supervises the daemon; no terminal setup is required.
+When a release includes an accepted macOS build, download the signed DMG from
+the [download page](@/download.md). Open the DMG, drag Hypercolor to
+Applications, and launch it. The app registers a LaunchAgent for autostart and
+supervises the daemon; no terminal setup is required.
 
-{% callout(type="warning") %}
-Current builds are ad-hoc signed but not notarized, so Gatekeeper will block
-the app on first launch. Right-click the app and choose **Open** to confirm.
+{% callout(type="info") %}
+Public CI does not publish unsigned macOS packages. macOS artifacts are
+promoted manually only after Developer ID signing, notarization, and the signed
+physical acceptance checkpoint pass.
 {% end %}
 
 {% callout(type="info") %}
@@ -128,7 +130,8 @@ macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, 
 Homebrew users can install the desktop app as a cask
 (`brew install --cask hyperb1iss/tap/hypercolor-app`) or the daemon and CLI as
 a formula (`brew install hyperb1iss/tap/hypercolor`, with `brew services`
-support). Both update automatically on every tagged release.
+support). The tap is updated manually after the matching signed artifacts pass
+acceptance.
 
 ### macOS screen capture support
 

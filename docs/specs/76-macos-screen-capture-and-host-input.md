@@ -875,7 +875,12 @@ preserves phase boundaries.
 
 ## 9. ScreenCaptureKit acquisition
 
-### 9.1 Crate boundary
+### 9.1 Target crate boundary
+
+The GPU-only contract in this section is the target state. The current
+implementation retains one bounded production CPU fallback until H3.5 native
+GPU execution lands. Spec 77 records that temporary deviation under
+"Non-negotiable invariants"; no new code may depend on it.
 
 The new `hypercolor-macos-capture` crate owns:
 
@@ -1099,7 +1104,11 @@ The source follows these rules:
 Recovery is bounded by state transitions and native notifications. Repeated
 blind timer restart is forbidden.
 
-## 10. Fixture-only CPU correctness oracle
+## 10. Target fixture-only CPU correctness oracle
+
+The contract below becomes current state when H3.5 removes the temporary CPU
+fallback recorded in Spec 77. Until then it remains the acceptance target, not
+a description of every production path in this branch.
 
 The CPU implementation is a bring-up and parity oracle compiled only for tests
 with the macOS capture fixture feature. It is not an `InputSource`, publication

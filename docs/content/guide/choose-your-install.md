@@ -94,12 +94,15 @@ USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
 
 ### DMG
 
-Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg`
-(Intel) from the [download page](@/download.md), drag the app into
-`/Applications`, and launch. Minimum macOS 15.2 (Sequoia).
+When a release includes an accepted macOS build, download
+`Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
+the [download page](@/download.md), drag the app into `/Applications`, and
+launch. Minimum macOS 15.2 (Sequoia).
 
-{% callout(type="warning") %}
-Current builds are ad-hoc signed but not notarized, so Gatekeeper will block the app on first launch. Right-click the app and choose **Open** to confirm.
+{% callout(type="info") %}
+Public CI does not publish unsigned macOS packages. macOS artifacts are
+promoted manually only after Developer ID signing, notarization, and the signed
+physical acceptance checkpoint pass.
 {% end %}
 
 The native ScreenCaptureKit, host-input, HDR, and multi-owner implementations
@@ -117,7 +120,8 @@ macOS sources and treat the other topologies as experimental.
 
 ### Homebrew {#homebrew}
 
-The tap carries both a cask and a formula, and CI updates both automatically on each tagged release:
+The tap carries both a cask and a formula. Maintainers update both manually
+after the matching signed artifacts pass acceptance:
 
 ```bash
 # Desktop app (both Mac architectures)

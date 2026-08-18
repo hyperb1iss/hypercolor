@@ -268,10 +268,11 @@ Runs wherever you have a terminal.
 
 ## 🎯 Get Started
 
-Hypercolor ships installers for Linux, Windows, and macOS with every release. Grab the
-artifact for your platform from the
-[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases), or use one
-of the paths below.
+Public CI ships Linux and Windows installers with every tagged release. Signed
+macOS artifacts use a manual release lane because they require Developer ID
+signing, notarization, and physical acceptance. Grab an available artifact from
+the [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases), or
+use one of the paths below.
 
 ### Install on Linux
 
@@ -320,10 +321,11 @@ Duplication and is enabled by default.
 
 ### Install on macOS
 
-The macOS DMGs (`Hypercolor-<version>-arm64.dmg` for Apple Silicon, `-x86_64.dmg` for
-Intel) are on the
-[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag the app
-into `/Applications` and launch. Minimum macOS 15.2 (Sequoia).
+When a release includes an accepted macOS build, download
+`Hypercolor-<version>-arm64.dmg` for Apple Silicon or the `-x86_64.dmg` build for
+Intel from the
+[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag
+the app into `/Applications` and launch. Minimum macOS 15.2 (Sequoia).
 
 Or via Homebrew Cask:
 
@@ -331,8 +333,9 @@ Or via Homebrew Cask:
 brew install --cask hyperb1iss/tap/hypercolor-app
 ```
 
-> Current builds carry an ad-hoc signature rather than a notarized Developer ID one, so
-> Gatekeeper flags the first launch. Right-click the app and choose **Open** to confirm.
+> Public CI does not publish unsigned macOS packages. macOS artifacts and the
+> matching Homebrew updates are promoted manually only after signing,
+> notarization, and the signed physical acceptance checkpoint pass.
 
 Hue, WLED, Nanoleaf, Govee, and USB-HID lighting all work out of the box. Hypercolor asks
 for Microphone, Screen Recording, or Input Monitoring access only when you explicitly
@@ -505,18 +508,20 @@ blocks. Edition 2024. Rust 1.94+.
 
 ## 📡 Status
 
-Hypercolor is in active development. The core engine, effect SDK, web UI, TUI, and 12
-shipping driver families work today on Linux, Windows, and macOS, and every release ships
-installers for all three. Every screenshot in this README was captured from a live
-instance running on real hardware.
+Hypercolor is in active development. The core engine, effect SDK, web UI, TUI,
+and 12 shipping driver families work today on Linux, Windows, and macOS. Public
+release automation ships Linux and Windows installers; signed macOS artifacts
+use the manual acceptance lane described above. Every screenshot in this README
+was captured from a live instance running on real hardware.
 
 Worth knowing before you install:
 
 - SMBus (motherboard/DRAM RGB) is Linux and Windows only. The "What works where" table
   above has the full picture.
 - Session and power integration (idle dim, sleep/resume device rescan) is Linux-only today.
-- Windows and macOS binaries are not yet code-signed, so expect a SmartScreen or
-  Gatekeeper speed bump on first launch.
+- Windows binaries are not yet code-signed, so expect a SmartScreen warning on
+  first launch. Published macOS artifacts are signed and notarized after manual
+  acceptance.
 - The [`hypercolor`](https://www.npmjs.com/package/hypercolor) SDK and
   [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder are on
   npm; scaffold an effect workspace with `bun create hypercolor`. The Python client is on

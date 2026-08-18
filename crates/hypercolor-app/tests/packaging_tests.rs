@@ -668,7 +668,7 @@ fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
 }
 
 #[test]
-fn public_ci_builds_unsigned_macos_packaging_fixtures_only() {
+fn public_ci_builds_unsigned_macos_app_fixtures_only() {
     assert!(CI_WORKFLOW.contains("cask_arch: arm64"));
     assert!(CI_WORKFLOW.contains("cask_arch: x86_64"));
     assert!(CI_WORKFLOW.contains("artifact-kind: unsigned-app"));
