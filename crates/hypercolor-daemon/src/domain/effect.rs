@@ -474,6 +474,7 @@ pub async fn update_controls(
     record_control_changed_events(
         &mut mutation,
         &command.effect,
+        &zone,
         &previous,
         &crate::api::effects::resolved_control_values(&command.effect, &zone),
         changed_ids.iter().map(String::as_str),
@@ -527,6 +528,7 @@ pub async fn reset_controls(
     record_control_changed_events(
         &mut mutation,
         &command.effect,
+        &zone,
         &previous,
         &crate::api::effects::resolved_control_values(&command.effect, &zone),
         control_ids.iter().map(String::as_str),
@@ -823,11 +825,21 @@ fn controls_refusal(error: hypercolor_core::scene::ControlsVersionMismatch) -> C
 fn record_control_changed_events<'a>(
     mutation: &mut crate::domain::scene::SceneMutation,
     effect: &EffectMetadata,
+    zone: &Zone,
     previous_values: &HashMap<String, ControlValue>,
     next_values: &HashMap<String, ControlValue>,
     changed_control_ids: impl IntoIterator<Item = &'a str>,
     trigger: hypercolor_types::event::ChangeTrigger,
 ) {
+    // The layer identity a client would patch next: the effect layer
+    // these values actually live on.
+    let layer_id = zone.effective_layers().iter().find_map(|layer| {
+        matches!(
+            &layer.source,
+            hypercolor_types::layer::LayerSource::Effect { effect_id, .. } if *effect_id == effect.id
+        )
+        .then_some(layer.id)
+    });
     for control_id in changed_control_ids {
         let (Some(previous), Some(next)) =
             (previous_values.get(control_id), next_values.get(control_id))
@@ -848,6 +860,8 @@ fn record_control_changed_events<'a>(
             control_id: control_id.to_owned(),
             old_value,
             new_value,
+            zone_id: Some(zone.id),
+            layer_id,
             trigger: trigger.clone(),
         });
     }

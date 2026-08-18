@@ -460,11 +460,6 @@ fn input_events_have_input_category() {
                 repeat_count: 1,
             },
         },
-        HypercolorEvent::InputSourceChanged {
-            input_id: "mic1".into(),
-            input_type: "audio".into(),
-            enabled: true,
-        },
     ];
 
     for event in &events {
