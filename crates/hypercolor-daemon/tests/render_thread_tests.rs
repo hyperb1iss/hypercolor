@@ -469,11 +469,12 @@ struct SequencedScreenPreviewSource {
     running: bool,
     pending_frames: VecDeque<ScreenData>,
     last_frame: ScreenData,
+    advance_sequence: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "wgpu")]
 impl SequencedScreenPreviewSource {
-    fn new(frames: Vec<ScreenData>) -> Self {
+    fn new(frames: Vec<ScreenData>, advance_sequence: Arc<AtomicBool>) -> Self {
         let pending_frames: VecDeque<_> = frames.into();
         let last_frame = pending_frames
             .back()
@@ -483,6 +484,7 @@ impl SequencedScreenPreviewSource {
             running: false,
             pending_frames,
             last_frame,
+            advance_sequence,
         }
     }
 }
@@ -507,10 +509,16 @@ impl InputSource for SequencedScreenPreviewSource {
             return Ok(InputData::None);
         }
 
-        let frame = self
-            .pending_frames
-            .pop_front()
-            .unwrap_or_else(|| self.last_frame.clone());
+        let frame = if self.advance_sequence.load(Ordering::Acquire) {
+            self.pending_frames
+                .pop_front()
+                .unwrap_or_else(|| self.last_frame.clone())
+        } else {
+            self.pending_frames
+                .front()
+                .cloned()
+                .unwrap_or_else(|| self.last_frame.clone())
+        };
         Ok(InputData::Screen(frame))
     }
 
@@ -3714,14 +3722,14 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
     let initial_screen = preview_screen_data([255, 0, 0], [0, 255, 0], 1);
     let intermediate_screen = preview_screen_data([0, 0, 255], [255, 255, 0], 2);
     let latest_screen = preview_screen_data([0, 255, 255], [255, 0, 255], 3);
+    let advance_sequence = Arc::new(AtomicBool::new(false));
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(vec![
-            initial_screen,
-            intermediate_screen,
-            latest_screen,
-        ])));
+        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(
+            vec![initial_screen, intermediate_screen, latest_screen],
+            Arc::clone(&advance_sequence),
+        )));
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3745,6 +3753,7 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
     })
     .await;
+    advance_sequence.store(true, Ordering::Release);
     wait_for_render_loop_frame_number(&state, 3).await;
     let expected_left = [0, 255, 255];
     let expected_right = [255, 0, 255];
@@ -3868,10 +3877,14 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
         preview_screen_data([32, 224, 96], [224, 32, 160], 5),
         preview_screen_data([255, 255, 255], [16, 32, 48], 6),
     ];
+    let advance_sequence = Arc::new(AtomicBool::new(false));
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(screens)));
+        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(
+            screens,
+            Arc::clone(&advance_sequence),
+        )));
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3895,6 +3908,7 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
     })
     .await;
+    advance_sequence.store(true, Ordering::Release);
     wait_for_render_loop_frame_number(&state, 6).await;
     let expected_left = [255, 255, 255];
     let expected_right = [16, 32, 48];
