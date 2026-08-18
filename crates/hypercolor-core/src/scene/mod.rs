@@ -208,6 +208,8 @@ impl SceneManager {
             enabled: true,
             metadata: HashMap::new(),
             unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+            layout_id: None,
+            activation_brightness: None,
             kind: SceneKind::Ephemeral,
             mutation_mode: SceneMutationMode::Live,
         };
@@ -2224,6 +2226,8 @@ pub fn make_scene(name: &str) -> Scene {
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
     }
