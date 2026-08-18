@@ -54,7 +54,7 @@ PATCH  /scene/zones/{zone}/layers/{layer}/controls
 
 All mutations route through `SceneMutation`/`commit_scene` (Spec 76 §2.3) — `/scene` is the REST adapter for the live tree, nothing else.
 
-**Members, not device-zones.** Zone membership is addressed by the membership's own globally unique id (today's layout `Output.id`), returned in the zone document — never by a device-scoped segment name, which is not unique across devices (`spatial.rs:337-351`). The request body names a device and its segments; the resource identity is the membership id.
+**Members, not device-zones.** Zone membership is addressed by the membership's own id (today's layout `Output.id`), unique within its zone — which is all its zone-scoped route needs — and returned in the zone document; never by a device-scoped segment name, which is not unique across devices (`spatial.rs:337-351`). The request body names a device and its segments; the resource identity is the membership id.
 
 ### 1.3 The `/scene` document embeds layer identity — this kills the fake-layer hack
 
@@ -179,7 +179,7 @@ Receipts for the merge: `POST /effects/pause` is literally `set_output_power(Out
 2. **Frames are `/frame`; previews are tryouts; dry-runs are `validate_only`.** `GET /displays/{id}/preview.jpg` → `GET /displays/{id}/frame` (same JPEG body; simulators already use `/frame`). `POST /devices/{id}/attachments/preview` is deleted; `PUT /devices/{id}/attachments` accepts `validate_only: true` and returns the computed result without committing. `PUT /layouts/active/preview` keeps its name — a genuine live tryout.
 3. **`deactivate` clears an exclusive current; `clear` empties a stack.** `POST /library/playlists/stop` → `/library/playlists/deactivate`. `stop` disappears from the API vocabulary.
 4. **`PUT /capture/source`** replaces `POST /capture/source/pick` — it sets state, so it says so.
-5. **Sum types are tagged enums.** A response meaning one-of-N shapes is an internally-tagged serde enum in `types::api`. Nullable-field flattening with a string sentinel (the old `ActiveEffectResponse`) is review-rejected as a class.
+5. **Sum types are tagged enums.** A response meaning one-of-N shapes is an internally-tagged serde enum in `types::api`. Nullable-field flattening with a string sentinel (the old `ActiveEffectResponse`) is review-rejected as a class. Shared vocabulary enums that predate this spec (`UnassignedBehavior` and peers) keep their canonical serde form on every surface — one definition beats tag style, and a parallel API mirror is the drift disease this program exists to kill.
 6. **Closed vocabularies are enums.** `EffectCategory`, effect `source`, transition types, power state serialize as typed enums with `ToSchema`, not `String`. (Receipt for the cost of strings: MCP's hand-typed category list fabricated three categories and omitted four real ones, `mcp/tools/effects.rs:67` vs `types/effect.rs:57-84`.)
 7. **One control-patch shape.** `PatchControlsRequest { values: BTreeMap<String, ControlValue>, clear_bindings: Vec<String> }` in `types::api`, used verbatim at every scope: layer controls, display face controls, control-surface values. `clear_bindings` is meaningful only where bindings exist (layers); other scopes reject a non-empty list with a validation error. Today those are four hand-rolled shapes.
 8. **Concurrency per §1.6:** one scene `revision` token, structural writes optionally guarded, value writes unguarded with `control_bound` rejection. No other wire version tokens exist.
@@ -290,6 +290,8 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 8. **The effect-to-layout link is deleted** (rev 7, owner decision post-lock). An effect linking a spatial layout inverts ownership — content silently re-mapping the rig on apply — and it is the same concept `Scene.layout_id` (§3.2) now owns in the right home. The UI never adopted the link; its consumers were the CLI and the apply path itself. Deleting it also removes apply's only post-commit side-effect outcome besides power, simplifying §2.3. A client wanting effect-plus-layout in one gesture edits the scene.
 
 ## 10. Review history
+
+- **Rev 8 (2026-08-17, 78.1 execution reconciliation):** two wording fixes surfaced by wave 78.1's reviews. §1.2's membership id is unique within its zone (the zone-scoped route needs no more; `Output.id` is layout-scoped, so the rev-7 "globally unique" claim was unfulfillable). §5.5 gains the shared-vocabulary carve-out: pre-spec enums keep their canonical serde form on the new surface. Contract intent unchanged in both.
 
 - **Rev 7 (2026-08-17, owner amendment):** the effect-to-layout link is deleted (§9 decision 8, raised by the owner reviewing the promoted link types): the three `/effects/{id}/layout` routes, the `effect-layouts.json` store, apply's step-4 resolution and its `{ layout_id, applied }` outcome, and the playlist exemption that existed only because of it. Appendix A drops to 80 paths / 115 operations. `Scene.layout_id` is the sole effect-adjacent layout association.
 

@@ -24,7 +24,7 @@ use crate::layer::{
 };
 use crate::library::PresetId;
 use crate::scene::{DisplayFaceTarget, SceneId, SceneKind, UnassignedBehavior, ZoneId, ZoneRole};
-use crate::spatial::SpatialLayout;
+use crate::spatial::{LedTopology, NormalizedPosition, Orientation};
 use serde::{Deserialize, Serialize};
 
 /// The `GET /scene` document: the full live tree.
@@ -70,18 +70,65 @@ pub struct ZoneResource {
     /// Device segments assigned to this zone, addressed by membership
     /// id (Spec 78 §1.2) — never by device-scoped segment name.
     pub members: Vec<ZoneMember>,
+    /// The zone-scoped layout override, when one exists; `None` means
+    /// the scene or global layout applies. The read-back for
+    /// `PUT .../layout`.
+    #[serde(default)]
+    pub layout: Option<ZoneLayoutResource>,
     /// The authored bottom-to-top layer stack. Layers are the real,
     /// addressable unit: clients patch the layer id they read here.
     pub layers: Vec<SceneLayer>,
+}
+
+/// The zone-scoped layout on the wire — the same shape written by
+/// `PUT .../layout` and read back on the zone resource. Compact by
+/// design: member placements only, no computed LED data, and no
+/// device-internal vocabulary (Spec 78 §5.1). Vec order is z-order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ZoneLayoutResource {
+    pub placements: Vec<MemberPlacement>,
+}
+
+/// One member's spatial placement inside its zone's layout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemberPlacement {
+    pub member: ZoneMemberId,
+    /// Center on the canvas, normalized `[0.0, 1.0]`.
+    pub position: NormalizedPosition,
+    /// Dimensions, normalized relative to canvas size.
+    pub size: NormalizedPosition,
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "default_placement_scale")]
+    pub scale: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<Orientation>,
+    pub topology: LedTopology,
+}
+
+fn default_placement_scale() -> f32 {
+    1.0
+}
+
+/// A zone membership's identity — wire-transparent, unique within its
+/// zone, which is all its zone-scoped route needs.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ZoneMemberId(pub String);
+
+impl std::fmt::Display for ZoneMemberId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// One zone membership: a device segment's assignment, with its own
 /// identity (Spec 78 §1.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoneMember {
-    /// The membership's globally unique id — the resource identity for
-    /// `DELETE .../members/{member}`.
-    pub id: String,
+    /// The resource identity for `DELETE .../members/{member}`; unique
+    /// within the zone.
+    pub id: ZoneMemberId,
     /// Backend device identifier (`"<backend>:<device_id>"`).
     pub device_id: String,
     /// The device segment this membership assigns. `None` for
@@ -133,15 +180,37 @@ pub struct PatchZoneRequest {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
+    /// Tri-state: missing leaves the color, `null` clears it, a value
+    /// sets it.
+    #[serde(
+        default,
+        deserialize_with = "tri_state_color",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[allow(
+        clippy::option_option,
+        reason = "the double Option IS the tri-state wire pattern: missing = leave, null = clear, value = set"
+    )]
+    pub color: Option<Option<String>>,
 }
 
-/// `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override.
+#[allow(
+    clippy::option_option,
+    reason = "the double Option IS the tri-state wire pattern"
+)]
+fn tri_state_color<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+/// `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
+/// in the same compact shape the zone resource reads back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZoneLayoutRequest {
-    pub layout: SpatialLayout,
+    pub placements: Vec<MemberPlacement>,
 }
 
 /// `POST /scene/zones/{zone}/members` — assign device segments.
@@ -219,7 +288,7 @@ pub struct PatchControlsRequest {
 /// Grows when the engine does; the request field does not accept
 /// aspirational values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransitionType {
     /// Immediate switch — the only transition the engine performs.
     #[default]

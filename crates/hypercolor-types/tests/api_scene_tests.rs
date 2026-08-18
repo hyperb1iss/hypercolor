@@ -10,7 +10,7 @@ use hypercolor_types::api::scene::{
     ApplyEffectRequest, ApplyEffectResponse, AssignMembersRequest, ClearSceneRequest,
     CreateLayerRequest, CreateZoneRequest, PatchControlsRequest, PatchZoneRequest,
     ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, SideEffectOutcome,
-    TransitionType, ZoneMember,
+    TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
 use serde_json::json;
 
@@ -65,7 +65,7 @@ fn the_document_decodes_a_daemon_shaped_payload() {
 #[test]
 fn zone_members_use_segment_vocabulary_on_the_wire() {
     let member = ZoneMember {
-        id: "out-1".into(),
+        id: ZoneMemberId("out-1".into()),
         device_id: "usb:controller-1".into(),
         segment: None,
         name: "Strip".into(),
@@ -103,14 +103,19 @@ fn every_request_type_rejects_unknown_fields() {
 }
 
 #[test]
-fn the_transition_vocabulary_is_closed() {
+fn the_transition_vocabulary_is_closed_and_tagged() {
     assert_eq!(
         serde_json::to_value(TransitionType::Cut).expect("serializes"),
-        json!("cut")
+        json!({"type": "cut"}),
+        "transitions are internally tagged objects (Spec 78 §2.3)"
     );
     assert!(
-        serde_json::from_value::<TransitionType>(json!("fade")).is_err(),
-        "the request field does not accept aspirational values (Spec 78 §2.3)"
+        serde_json::from_value::<TransitionType>(json!({"type": "fade"})).is_err(),
+        "the request field does not accept aspirational values"
+    );
+    assert!(
+        serde_json::from_value::<TransitionType>(json!("cut")).is_err(),
+        "the bare-string spelling is not the wire form"
     );
 }
 
@@ -144,7 +149,7 @@ fn apply_takes_the_minimal_and_full_forms() {
         "zone": "0198c5b6-1111-7000-8000-000000000002",
         "controls": {"speed": {"float": 1.0}},
         "preset_id": "0198c5b6-1111-7000-8000-000000000005",
-        "transition": "cut"
+        "transition": {"type": "cut"}
     }))
     .expect("full form decodes");
     assert_eq!(full.transition, Some(TransitionType::Cut));
@@ -202,4 +207,40 @@ fn the_output_resource_patches_either_or_both_fields() {
     let brightness_only: OutputPatchRequest =
         serde_json::from_value(json!({"brightness": 0.25})).expect("brightness alone");
     assert!(brightness_only.power.is_none());
+}
+
+#[test]
+fn zone_color_patches_are_tri_state() {
+    let clear: PatchZoneRequest =
+        serde_json::from_value(json!({"color": null})).expect("null decodes");
+    assert_eq!(clear.color, Some(None), "explicit null clears");
+    let set: PatchZoneRequest =
+        serde_json::from_value(json!({"color": "#aa00ff"})).expect("value decodes");
+    assert_eq!(set.color, Some(Some("#aa00ff".to_owned())));
+    let leave: PatchZoneRequest = serde_json::from_value(json!({})).expect("absent decodes");
+    assert_eq!(leave.color, None, "missing leaves the color");
+}
+
+#[test]
+fn the_zone_layout_contract_speaks_placements_only() {
+    let request: ZoneLayoutRequest = serde_json::from_value(json!({
+        "placements": [{
+            "member": "out-desk-1",
+            "position": {"x": 0.5, "y": 0.5},
+            "size": {"x": 1.0, "y": 0.1},
+            "topology": {"type": "strip", "count": 60, "direction": "left_to_right"}
+        }]
+    }))
+    .expect("compact layout decodes");
+    assert!(
+        (request.placements[0].scale - 1.0).abs() < f32::EPSILON,
+        "scale defaults to 1.0"
+    );
+
+    let wire = serde_json::to_value(&request).expect("serializes");
+    let text = wire.to_string();
+    assert!(
+        !text.contains("zone_name") && !text.contains("device_id"),
+        "no device-internal vocabulary on the layout wire (Spec 78 §5.1)"
+    );
 }
