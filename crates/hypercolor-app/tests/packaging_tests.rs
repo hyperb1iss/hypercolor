@@ -630,10 +630,11 @@ fn macos_signing_actor_rejects_ad_hoc_and_unlisted_objects() {
 }
 
 #[test]
-fn macos_daemon_entitlements_preserve_the_six_key_profile() {
+fn macos_daemon_entitlements_preserve_the_seven_key_profile() {
     let keys = [
         "com.apple.security.cs.allow-jit",
         "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.cs.disable-library-validation",
         "com.apple.security.device.audio-input",
         "com.apple.security.device.usb",
         "com.apple.security.network.client",

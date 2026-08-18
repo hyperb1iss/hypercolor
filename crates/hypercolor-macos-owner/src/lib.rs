@@ -409,6 +409,7 @@ pub struct MacosDaemonSessionAttestation {
 }
 
 impl MacosDaemonSessionAttestation {
+    #[cfg(target_os = "macos")]
     fn generate(record: &MacosOwnerRecord) -> Result<Self, MacosOwnerStoreError> {
         let mut entropy =
             [0_u8; MACOS_SERVER_SESSION_ID_BYTES + MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES];

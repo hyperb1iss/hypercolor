@@ -46,6 +46,9 @@ printf '%s\n' "${certificate_password}" \
       -inkey "${TEST_TMP}/key.pem" \
       -in "${TEST_TMP}/certificate.pem" \
       -out "${TEST_TMP}/identity.p12" \
+      -keypbe PBE-SHA1-3DES \
+      -certpbe PBE-SHA1-3DES \
+      -macalg sha1 \
       -passout stdin >/dev/null 2>&1
 
 : > "${PROCESS_LOG}"

@@ -17,6 +17,7 @@ pub(crate) struct LatestSampleInput<T> {
 }
 
 pub(crate) struct SamplePublication {
+    #[cfg(target_os = "macos")]
     pending_invalidations: Arc<AtomicU64>,
 }
 
@@ -59,6 +60,7 @@ impl<T> Clone for LatestSampleInput<T> {
 }
 
 impl SamplePublication {
+    #[cfg(target_os = "macos")]
     pub(crate) fn is_current(&self) -> bool {
         self.pending_invalidations.load(Ordering::Acquire) == 0
     }
@@ -142,7 +144,7 @@ impl<T> LatestSampleInput<T> {
         invalidated
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn invalidate_if_observed(
         &self,
         requested: impl FnOnce(),
@@ -163,7 +165,7 @@ impl<T> LatestSampleInput<T> {
         !state.closed && synchronize()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn generation(&self) -> u64 {
         self.lock().generation
     }
@@ -185,6 +187,7 @@ impl<T> LatestSampleInput<T> {
         let state = self.lock();
         if !state.closed && state.generation == generation {
             publish(SamplePublication {
+                #[cfg(target_os = "macos")]
                 pending_invalidations: Arc::clone(&self.pending_invalidations),
             });
         }

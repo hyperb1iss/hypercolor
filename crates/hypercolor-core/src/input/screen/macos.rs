@@ -9,9 +9,8 @@ use hypercolor_macos_capture::{
     MacosCaptureCadence, MacosCaptureCallbackDiagnostics,
     MacosCaptureCapabilities as NativeCaptureCapabilities, MacosCaptureContentStyle,
     MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat, MacosCaptureSelection,
-    MacosColorPrimaries, MacosCpuSourceView, MacosDisplayClock, MacosFrameDropReason,
-    MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
-    MacosHostArchitecture as NativeHostArchitecture,
+    MacosColorPrimaries, MacosCpuSourceView, MacosFrameDropReason, MacosFrameEvent,
+    MacosFrameMailbox, MacosFrameStatus, MacosHostArchitecture as NativeHostArchitecture,
     MacosProtectedSourceState as NativeProtectedSourceState, MacosStreamRequest,
     MacosTahoeSelectionCapabilities as NativeTahoeSelectionCapabilities, MacosTransferFunction,
 };
@@ -21,7 +20,8 @@ use tokio::sync::oneshot;
 
 #[cfg(target_os = "macos")]
 use hypercolor_macos_capture::{
-    MacosCaptureSelector, MacosScreenCaptureSession, MacosScreenshotReferenceCapture,
+    MacosCaptureSelector, MacosDisplayClock, MacosScreenCaptureSession,
+    MacosScreenshotReferenceCapture,
 };
 
 use super::{
@@ -626,6 +626,7 @@ struct MacosExactPublicationShared {
 }
 
 impl MacosExactPublicationShared {
+    #[cfg(any(target_os = "macos", feature = "macos-capture-fixtures"))]
     fn with_compute_capacity_policy(policy: ScreenComputeCapacityPolicy) -> Self {
         Self {
             compute_capacity_policy: policy,
@@ -916,6 +917,7 @@ impl MacosScreenCaptureInput {
         ))
     }
 
+    #[cfg(any(target_os = "macos", feature = "macos-capture-fixtures"))]
     fn with_control_and_telemetry(
         config: CaptureConfig,
         admission: ScreenByteAdmissionCoordinator,

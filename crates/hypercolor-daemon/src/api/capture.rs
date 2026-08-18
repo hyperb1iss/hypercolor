@@ -34,6 +34,7 @@ fn domain_internal(message: impl Into<String>) -> Response {
     DomainError::Internal(anyhow::anyhow!(message.into())).into_response()
 }
 
+#[cfg(target_os = "macos")]
 fn domain_conflict(message: impl Into<String>) -> Response {
     DomainError::conflict(message).into_response()
 }

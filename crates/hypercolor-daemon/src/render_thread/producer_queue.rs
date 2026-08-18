@@ -576,21 +576,28 @@ impl ProducerFrameState {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "wgpu")]
     use std::sync::Arc;
+    #[cfg(feature = "wgpu")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 
-    use super::{ProducerFrame, ProducerFrameState, ProducerQueue, SubmissionRetirementQueue};
+    #[cfg(feature = "wgpu")]
+    use super::SubmissionRetirementQueue;
+    use super::{ProducerFrame, ProducerFrameState, ProducerQueue};
 
+    #[cfg(feature = "wgpu")]
     struct LeaseDropProbe(Arc<AtomicUsize>);
 
+    #[cfg(feature = "wgpu")]
     impl Drop for LeaseDropProbe {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
+    #[cfg(feature = "wgpu")]
     #[test]
     fn submission_retirement_queue_keeps_evicted_leases_until_completion() {
         let dropped = Arc::new(AtomicUsize::new(0));
@@ -608,6 +615,7 @@ mod tests {
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
     }
 
+    #[cfg(feature = "wgpu")]
     #[test]
     fn submission_retirement_queue_never_releases_past_an_incomplete_submission() {
         let dropped = Arc::new(AtomicUsize::new(0));
