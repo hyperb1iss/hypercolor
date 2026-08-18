@@ -13,6 +13,14 @@ use hypercolor_daemon::macos_owner::{
 };
 use serde_json::{Value, json};
 
+fn executable_path(label: &str) -> std::path::PathBuf {
+    std::env::current_dir()
+        .expect("fixture working directory should be absolute")
+        .join("Applications")
+        .join(label)
+        .join("hypercolor-daemon")
+}
+
 fn transaction_id(value: &str) -> MacosHandoverTransactionId {
     MacosHandoverTransactionId::new(value).expect("fixture transaction ID should be valid")
 }
@@ -20,7 +28,7 @@ fn transaction_id(value: &str) -> MacosHandoverTransactionId {
 fn identity(label: &str, pid: u32) -> MacosOwnerIdentity {
     MacosOwnerIdentity::new(
         format!("audit-token-{label}"),
-        format!("/Applications/{label}/hypercolor-daemon"),
+        executable_path(label),
         format!("sha256-{label}"),
         pid,
     )
@@ -244,7 +252,7 @@ fn identical_conflicts_coalesce_with_the_original_observation() {
             MacosDaemonOwner::DirectLaunchd,
             MacosOwnerIdentity::new(
                 "audit-token-after-restart",
-                "/Applications/launchd-contender/hypercolor-daemon",
+                executable_path("launchd-contender"),
                 "sha256-launchd-contender",
                 303,
             )
@@ -289,9 +297,9 @@ fn identical_conflicts_coalesce_with_the_original_observation() {
 
 #[test]
 fn owner_identity_rejects_empty_oversized_relative_and_zero_pid_fields() {
-    let valid_path = "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon";
+    let valid_path = executable_path("valid");
     assert!(matches!(
-        MacosOwnerIdentity::new("", valid_path, "sha256-valid", 1),
+        MacosOwnerIdentity::new("", &valid_path, "sha256-valid", 1),
         Err(MacosOwnerStoreError::InvalidOwnerIdentity {
             field: "audit_token_identity",
             ..
@@ -305,32 +313,32 @@ fn owner_identity_rejects_empty_oversized_relative_and_zero_pid_fields() {
         })
     ));
     assert!(matches!(
-        MacosOwnerIdentity::new("audit", valid_path, "", 1),
+        MacosOwnerIdentity::new("audit", &valid_path, "", 1),
         Err(MacosOwnerStoreError::InvalidOwnerIdentity {
             field: "designated_requirement_hash",
             ..
         })
     ));
     assert!(matches!(
-        MacosOwnerIdentity::new("audit", valid_path, "sha256-valid", 0),
+        MacosOwnerIdentity::new("audit", &valid_path, "sha256-valid", 0),
         Err(MacosOwnerStoreError::InvalidOwnerIdentity { field: "pid", .. })
     ));
     assert!(matches!(
-        MacosOwnerIdentity::new("a".repeat(257), valid_path, "sha256-valid", 1),
+        MacosOwnerIdentity::new("a".repeat(257), &valid_path, "sha256-valid", 1),
         Err(MacosOwnerStoreError::InvalidOwnerIdentity {
             field: "audit_token_identity",
             ..
         })
     ));
     assert!(matches!(
-        MacosOwnerIdentity::new("audit", format!("/{}", "p".repeat(4_096)), "hash", 1),
+        MacosOwnerIdentity::new("audit", executable_path(&"p".repeat(4_096)), "hash", 1),
         Err(MacosOwnerStoreError::InvalidOwnerIdentity {
             field: "executable_path",
             ..
         })
     ));
     assert!(matches!(
-        MacosOwnerIdentity::new("audit", valid_path, "h".repeat(257), 1),
+        MacosOwnerIdentity::new("audit", &valid_path, "h".repeat(257), 1),
         Err(MacosOwnerStoreError::InvalidOwnerIdentity {
             field: "designated_requirement_hash",
             ..
@@ -729,9 +737,10 @@ fn diagnostic_owner_path_is_bounded_while_the_journal_stays_path_free() {
         .expect("journal should begin");
 
     let owner_value = serde_json::to_value(owner).expect("owner record should serialize");
+    let expected_path = executable_path("launchd");
     assert_eq!(
-        owner_value["active_identity"]["executable_path"],
-        "/Applications/launchd/hypercolor-daemon"
+        owner_value["active_identity"]["executable_path"].as_str(),
+        Some(expected_path.to_string_lossy().as_ref())
     );
     assert_path_free(&serde_json::to_value(journal).expect("handover journal should serialize"));
 }

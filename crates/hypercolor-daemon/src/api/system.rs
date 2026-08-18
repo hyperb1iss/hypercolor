@@ -2646,7 +2646,7 @@ mod tests {
             owner_epoch: 7,
             owner_identity: MacosOwnerIdentity::new(
                 "audit-server",
-                "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                tempdir.path().join("hypercolor-daemon"),
                 "requirement-server",
                 4242,
             )
