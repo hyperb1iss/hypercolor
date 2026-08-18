@@ -843,6 +843,18 @@ async fn renamed_routes_leave_nothing_behind() {
             expected,
             "{uri} must be gone, not aliased or redirected"
         );
+        // A status alone would pass against a bare framework 404 or an
+        // SPA page serving the app shell. The envelope is what proves
+        // the API itself answered.
+        if expected == StatusCode::NOT_FOUND {
+            let body = body_json(response).await;
+            assert_error_envelope(&body, "not_found", DetailsPresence::Absent);
+            assert_eq!(
+                body["error"]["message"],
+                format!("route not found: {uri}"),
+                "{uri} should name the address the caller asked for"
+            );
+        }
     }
 }
 

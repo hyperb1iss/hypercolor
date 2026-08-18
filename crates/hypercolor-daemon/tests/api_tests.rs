@@ -301,6 +301,48 @@ fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
 }
 
+/// Build a test router with a web UI mounted, which installs the SPA
+/// fallback. The returned tempdir must outlive the router.
+fn test_app_with_ui() -> (axum::Router, tempfile::TempDir) {
+    let ui_dir = tempfile::tempdir().expect("ui tempdir should build");
+    fs::write(
+        ui_dir.path().join("index.html"),
+        "<!doctype html><title>hypercolor</title>",
+    )
+    .expect("index.html should be written");
+    let state = Arc::new(isolated_state());
+    let app = api::build_router(state, Some(ui_dir.path()));
+    (app, ui_dir)
+}
+
+/// Assert a response is the canonical `DomainError` not-found envelope
+/// for `path`, rather than a bare status or an HTML page.
+async fn assert_canonical_route_404(response: axum::response::Response, path: &str) {
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "{path} should answer 404"
+    );
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        content_type.starts_with("application/json"),
+        "{path} should answer JSON, got content-type {content_type:?}"
+    );
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "not_found", "{path} error code");
+    assert_eq!(
+        json["error"]["message"],
+        format!("route not found: {path}"),
+        "{path} error message"
+    );
+    assert_eq!(json["meta"]["api_version"], "1.0", "{path} envelope meta");
+}
+
 fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, tempfile::TempDir) {
     let (mut state, dir) = isolated_state_with_tempdir();
     let manager = Arc::new(
@@ -6788,7 +6830,98 @@ async fn the_merged_output_routes_leave_nothing_behind() {
             expected,
             "{method} {uri} must be gone, not aliased or redirected"
         );
+        if expected == StatusCode::NOT_FOUND {
+            assert_canonical_route_404(response, &uri).await;
+        }
     }
+}
+
+/// The SPA fallback must never answer for an API path. With a web UI
+/// mounted, an unmatched `/api/v1` route still renders the canonical
+/// envelope, while a real client-side route still serves the app shell.
+///
+/// Without this the deletion fences are theatre in exactly the
+/// configuration users run: `ServeDir` misses, falls through to
+/// `index.html`, and a retired endpoint answers `200 text/html`.
+#[tokio::test]
+async fn the_spa_fallback_never_answers_for_a_deleted_api_route() {
+    let (app, _ui_dir) = test_app_with_ui();
+
+    for path in [
+        "/api/v1/audio/devices",
+        "/api/v1/settings/brightness",
+        "/api/v1/output/power",
+        "/api/v1/there-is-no-such-route",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_canonical_route_404(response, path).await;
+    }
+
+    // The SPA still owns everything that is not an API path.
+    let spa = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/settings")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(spa.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(spa.into_body(), usize::MAX)
+        .await
+        .expect("spa body should read");
+    assert!(
+        String::from_utf8_lossy(&body).contains("<!doctype html>"),
+        "a client-side route should still serve the app shell"
+    );
+
+    // And the API surface that does exist is untouched by the fallback.
+    for path in ["/api/v1/output", "/api/v1/openapi.json"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{path} should still serve"
+        );
+    }
+}
+
+/// The same fence without a UI mounted: the bare Axum 404 is replaced by
+/// the canonical envelope, so clients get one error shape everywhere.
+#[tokio::test]
+async fn an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/there-is-no-such-route")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_canonical_route_404(response, "/api/v1/there-is-no-such-route").await;
 }
 
 #[tokio::test]

@@ -122,6 +122,23 @@ Axum's own rejections are the only errors that bypass the envelope, because
 they are answered by the framework before a handler runs. Everything the daemon
 itself refuses goes out enveloped.
 
+**An unmatched path is not one of them.** A fallback scoped to `/api/v1` and
+registered inside the nest renders `404 not_found` with the canonical envelope
+and the message `route not found: {path}`, echoing the caller's original path.
+It exists because the web UI installs an SPA fallback on the outer router: with
+a UI mounted, an unmatched API path would otherwise miss `ServeDir`, fall
+through to `index.html`, and answer `200 text/html`, which would make every
+route-deletion fence in the program pass while the deleted route still served a
+page in production. The API fallback resolves first, so the SPA never sees an
+API path, and `/api/v1/openapi.json` plus the Swagger mount keep their exact
+routes. Pinned by `api_tests.rs::the_spa_fallback_never_answers_for_a_deleted_api_route`
+and `::an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui`; the
+deletion fences in `rest_v1_compat_tests.rs::renamed_routes_leave_nothing_behind`
+assert the envelope rather than the status alone for the same reason.
+
+Paths outside `/api/v1` still belong to the SPA, which is what makes
+client-side routing work; `/health` has no sub-paths to protect.
+
 ---
 
 ## 2. Frozen list endpoints and the fabricated pagination block
