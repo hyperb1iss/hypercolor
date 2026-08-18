@@ -193,13 +193,23 @@ hardcoded 50, which is a distinct shape from both groups above.
 
 ## 3. Paths whose bodies deviate from their siblings
 
-Every path here is canonical: wave C1b renamed `current` to `active` and
-`groups` to `zones` and deleted the old spellings outright, so nothing in this
-table has a second address. What earns a row is a body or header contract that
-diverges from the neighbouring routes, noted per row.
+Every path here is canonical. Wave C1b renamed `current` to `active` and
+`groups` to `zones`; wave 78.2 merged `/output/power`, `/settings/brightness`,
+`/effects/pause`, and `/effects/resume` onto one `/output` resource and moved
+`/audio/devices` to `/system/audio-devices`. Every one of those old spellings
+was deleted outright, so nothing in this table has a second address. What
+earns a row is a body or header contract that diverges from the neighbouring
+routes, noted per row.
+
+Retired paths answer 404, with one pinned exception: a POST to
+`/api/v1/effects/pause` or `/api/v1/effects/resume` falls through to the
+GET-only `/api/v1/effects/{id}` sibling and answers `405`. That is still a
+deletion, and the 405 is what would catch someone re-adding a handler.
 
 | Method | Path | Request | Success body | Notes |
 | --- | --- | --- | --- | --- |
+| GET | `/api/v1/output` | Empty | `200`, enveloped `{power, brightness}` | `power` is `running` \| `paused`; a destructive stop and a session sleep both read as `paused`. `brightness` is a float on `0.0..=1.0`, not a percentage |
+| PATCH | `/api/v1/output` | `{power?, brightness?}` | `200`, enveloped whole resource | Partial: either field or both. A document setting **neither** is `422 validation_error`, not a no-op. Brightness outside `0.0..=1.0` is `422` with `details.field = "brightness"`, and it is validated **before** power moves. Unknown fields are refused by the decoder, so they arrive as an unenveloped axum rejection (§1.3) |
 | POST | `/api/v1/effects/{id}/apply` | Empty or apply options | `200`, enveloped | `{id}` accepts an effect id or name |
 | PATCH | `/api/v1/effects/active/controls` | `{controls: {…}}` | `200`, enveloped `{effect, applied, rejected}` | **No `controls_version`, no ETag, and `If-Match` is not read at all**, while the `{id}` sibling has all three |
 | PUT | `/api/v1/effects/active/controls/{name}/binding` | A bare `ControlBinding` object (`{sensor, sensor_min, sensor_max, target_min, target_max, deadband?, smoothing?}`), **not** wrapped in a `binding` key | `200`, enveloped | |

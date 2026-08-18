@@ -27,7 +27,7 @@ pub async fn execute(args: &AudioArgs, client: &DaemonClient, ctx: &OutputContex
 }
 
 async fn execute_devices(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/audio/devices").await?;
+    let response = client.get("/system/audio-devices").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

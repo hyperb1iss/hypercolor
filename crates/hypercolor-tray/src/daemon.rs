@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_core::config::paths;
 use hypercolor_core::device::discover_servers;
-use hypercolor_types::api::output::{OutputPowerResponse, OutputPowerStatus};
+use hypercolor_types::api::output::{OutputPowerMode, OutputResource};
 use hypercolor_types::server::ServerIdentity;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -160,7 +160,7 @@ impl DaemonClient {
             .ok_or_else(|| anyhow::anyhow!("Missing data in server response"))?;
 
         let status = self.fetch_status().await?;
-        let power = self.fetch_output_power().await?;
+        let power = self.fetch_output().await?;
 
         let effects_url = format!("{}/api/v1/effects", self.base_url);
         let effects_resp: ApiEnvelope<EffectListResponse> = self
@@ -230,7 +230,7 @@ impl DaemonClient {
         Ok(AppState {
             connected: true,
             running: status.running,
-            paused: power.state == OutputPowerStatus::Paused,
+            paused: power.power == OutputPowerMode::Paused,
             brightness: status.global_brightness,
             current_effect,
             active_scene_name: status.active_scene,
@@ -257,9 +257,9 @@ impl DaemonClient {
             .ok_or_else(|| anyhow::anyhow!("Missing data in status response"))
     }
 
-    async fn fetch_output_power(&self) -> anyhow::Result<OutputPowerResponse> {
-        let url = format!("{}/api/v1/output/power", self.base_url);
-        let response: ApiEnvelope<OutputPowerResponse> = self
+    async fn fetch_output(&self) -> anyhow::Result<OutputResource> {
+        let url = format!("{}/api/v1/output", self.base_url);
+        let response: ApiEnvelope<OutputResource> = self
             .auth_request(self.http.get(&url))
             .send()
             .await?
@@ -267,7 +267,7 @@ impl DaemonClient {
             .await?;
         response
             .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in output power response"))
+            .ok_or_else(|| anyhow::anyhow!("Missing data in output response"))
     }
 
     /// Parse a WebSocket text message and send a state update if relevant.
@@ -401,11 +401,11 @@ impl DaemonClient {
                 false
             }
             TrayCommand::SetBrightness(value) => {
-                let url = format!("{}/api/v1/settings/brightness", self.base_url);
-                let body = serde_json::json!({ "brightness": value });
+                let url = format!("{}/api/v1/output", self.base_url);
+                let body = serde_json::json!({ "brightness": f32::from(value) / 100.0 });
                 if let Err(error) = self
                     .send_command(
-                        self.auth_request(self.http.put(&url)).json(&body),
+                        self.auth_request(self.http.patch(&url)).json(&body),
                         "set brightness",
                     )
                     .await
@@ -415,12 +415,12 @@ impl DaemonClient {
                 false
             }
             TrayCommand::SetPaused(paused) => {
-                let url = format!("{}/api/v1/output/power", self.base_url);
+                let url = format!("{}/api/v1/output", self.base_url);
                 let state = if paused { "paused" } else { "running" };
-                let body = serde_json::json!({ "state": state });
+                let body = serde_json::json!({ "power": state });
                 if let Err(error) = self
                     .send_command(
-                        self.auth_request(self.http.put(&url)).json(&body),
+                        self.auth_request(self.http.patch(&url)).json(&body),
                         "set output power",
                     )
                     .await

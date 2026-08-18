@@ -21,7 +21,6 @@ pub use hypercolor_types::api::effects::{
     EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
     EffectPresetSummary, EffectSummary, InstalledEffectResponse, UpdateActiveControlsRequest,
 };
-pub use hypercolor_types::api::output::{OutputPowerMode, SetOutputPowerRequest};
 
 /// Active effect response from `GET /api/v1/effects/active`, narrowed to
 /// the running case.
@@ -152,30 +151,6 @@ pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<()
             .map_err(Into::into),
         None => client::post_empty(&path).await.map_err(Into::into),
     }
-}
-
-/// Pause output while preserving the currently active effect and controls.
-pub async fn pause_effect() -> Result<(), String> {
-    client::put_json_discard(
-        "/api/v1/output/power",
-        &SetOutputPowerRequest {
-            state: OutputPowerMode::Paused,
-        },
-    )
-    .await
-    .map_err(Into::into)
-}
-
-/// Resume output for the preserved active effect.
-pub async fn resume_effect() -> Result<(), String> {
-    client::put_json_discard(
-        "/api/v1/output/power",
-        &SetOutputPowerRequest {
-            state: OutputPowerMode::Running,
-        },
-    )
-    .await
-    .map_err(Into::into)
 }
 
 /// Stop the currently active effect.

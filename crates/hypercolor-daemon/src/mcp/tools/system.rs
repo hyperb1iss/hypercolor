@@ -7,11 +7,11 @@ use super::{
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
-use crate::api::output::set_output_power;
 use crate::api::system::{actionable_input_diagnostics, input_status_snapshot};
+use crate::domain::output;
 use crate::session::current_global_brightness;
 use hypercolor_core::input::InteractionDegradation;
-use hypercolor_types::api::output::OutputPowerMode;
+use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
 
@@ -178,8 +178,15 @@ pub(super) async fn handle_set_output_power_with_state(
     state: &AppState,
 ) -> Result<Value, ToolError> {
     let requested = parse_output_power_mode(params)?;
-    let response = set_output_power(state, requested).await;
-    Ok(json!({ "state": response.state }))
+    let outcome = output::patch_output(
+        state,
+        OutputPatchRequest {
+            power: Some(requested),
+            brightness: None,
+        },
+    )
+    .await?;
+    Ok(json!({ "state": outcome.power }))
 }
 
 fn parse_output_power_mode(params: &Value) -> Result<OutputPowerMode, ToolError> {

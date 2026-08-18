@@ -1,7 +1,5 @@
 //! Device-related API types and fetch functions.
 
-use serde::{Deserialize, Serialize};
-
 use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -15,18 +13,11 @@ pub use hypercolor_types::api::devices::{
     IdentifyAttachmentRequest, IdentifyRequest, PairDeviceResponse, UpdateAttachmentsRequest,
     UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
 };
-pub use hypercolor_types::api::settings::SetBrightnessRequest;
 pub use hypercolor_types::attachment::ComponentBinding;
 pub use hypercolor_types::pairing::{
     DeviceAuthState, DeviceAuthSummary, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
     PairingFieldDescriptor, PairingFlowKind,
 };
-
-/// Global brightness payload from `/api/v1/settings/brightness`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrightnessSettingsResponse {
-    pub brightness: u8,
-}
 
 // ── Attachment Types ────────────────────────────────────────────────────────
 
@@ -143,14 +134,6 @@ pub async fn update_device_attachments(
         .map_err(Into::into)
 }
 
-/// Update the global output brightness.
-pub async fn set_global_brightness(brightness: u8) -> Result<u8, String> {
-    let body = SetBrightnessRequest { brightness };
-    let resp: BrightnessSettingsResponse =
-        client::put_json("/api/v1/settings/brightness", &body).await?;
-    Ok(resp.brightness)
-}
-
 // ── Pairing Functions ───────────────────────────────────────────────────────
 
 /// Pair a device using the generic pairing surface.
@@ -173,11 +156,4 @@ pub async fn delete_simulated_display(id: &str) -> Result<(), String> {
     client::delete_empty(&format!("/api/v1/simulators/displays/{id}"))
         .await
         .map_err(Into::into)
-}
-
-/// Fetch the current global brightness.
-pub async fn fetch_global_brightness() -> Result<u8, String> {
-    let resp: BrightnessSettingsResponse =
-        client::fetch_json("/api/v1/settings/brightness").await?;
-    Ok(resp.brightness)
 }

@@ -9,7 +9,7 @@ use crate::control_surface_api::path_segment;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/// Audio device info from `GET /api/v1/audio/devices`.
+/// Audio device info from `GET /api/v1/system/audio-devices`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AudioDeviceInfo {
     pub id: String,
@@ -79,7 +79,7 @@ pub async fn fetch_capture_monitors() -> Result<Vec<CaptureMonitor>, String> {
 
 /// Enumerate available audio devices.
 pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
-    client::fetch_json("/api/v1/audio/devices")
+    client::fetch_json("/api/v1/system/audio-devices")
         .await
         .map_err(Into::into)
 }

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use hypercolor_types::api::settings::SetBrightnessRequest;
+use hypercolor_types::api::output::OutputPatchRequest;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat};
@@ -42,16 +42,16 @@ pub async fn execute(
 }
 
 async fn execute_get(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/settings/brightness").await?;
+    let response = client.get("/output").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
             let value = response
                 .get("brightness")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            println!("{value}");
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            println!("{}", brightness_percent(value));
         }
     }
 
@@ -63,10 +63,12 @@ async fn execute_set(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = SetBrightnessRequest {
-        brightness: u8::try_from(args.value.min(100)).unwrap_or(100),
+    let percent = args.value.min(100);
+    let body = OutputPatchRequest {
+        power: None,
+        brightness: Some(f32::from(u16::try_from(percent).unwrap_or(100)) / 100.0),
     };
-    let response = client.put("/settings/brightness", &body).await?;
+    let response = client.patch("/output", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -76,4 +78,16 @@ async fn execute_set(
     }
 
     Ok(())
+}
+
+/// Render the wire's `0.0..=1.0` brightness as the 0-100 percentage
+/// this command has always spoken.
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "brightness is clamped to the unit interval before scaling"
+)]
+fn brightness_percent(brightness: f64) -> u8 {
+    (brightness.clamp(0.0, 1.0) * 100.0).round() as u8
 }

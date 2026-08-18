@@ -39,6 +39,7 @@ pub mod commit;
 pub mod display;
 pub mod effect;
 pub mod layer;
+pub mod output;
 pub mod scene;
 pub mod zone;
 

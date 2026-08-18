@@ -4,8 +4,9 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, brightness_percent, default_output_schema};
 use crate::api::AppState;
-use crate::session::{current_global_brightness, set_global_brightness};
-use hypercolor_types::event::HypercolorEvent;
+use crate::domain::output;
+use crate::session::current_global_brightness;
+use hypercolor_types::api::output::OutputPatchRequest;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -159,30 +160,14 @@ pub(super) async fn handle_set_brightness_with_state(
     let brightness_u16 = u16::try_from(brightness).unwrap_or(100);
     let normalized = f32::from(brightness_u16) / 100.0;
 
-    set_global_brightness(&state.power_state, normalized);
-    let persisted = {
-        let mut settings = state.device_settings.write().await;
-        settings.set_global_brightness(normalized);
-        match settings.save() {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(%error, "Failed to persist global brightness");
-                false
-            }
-        }
-    };
-    // The hint promises persisted state changed; a failed save must not
-    // send sync consumers to re-read a store that did not move.
-    if persisted {
-        state
-            .event_bus
-            .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
-    }
-
-    state.event_bus.publish(HypercolorEvent::BrightnessChanged {
-        old: previous,
-        new_value: brightness_percent(normalized),
-    });
+    let outcome = output::patch_output(
+        state,
+        OutputPatchRequest {
+            power: None,
+            brightness: Some(normalized),
+        },
+    )
+    .await?;
 
     let device_id = params.get("device_id").and_then(Value::as_str);
     let scope = if device_id.is_some() {
@@ -192,7 +177,7 @@ pub(super) async fn handle_set_brightness_with_state(
     };
 
     Ok(json!({
-        "brightness": brightness,
+        "brightness": brightness_percent(outcome.brightness),
         "scope": scope,
         "device_id": device_id,
         "previous_brightness": previous

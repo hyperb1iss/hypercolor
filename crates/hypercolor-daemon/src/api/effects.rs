@@ -66,9 +66,8 @@ pub use hypercolor_types::api::effects::{
     ApplyTransitionResponse, DeleteEffectLayoutResponse, EffectCapabilitySet, EffectDetailResponse,
     EffectLayoutApplyResult, EffectLayoutResponse, EffectListResponse, EffectPresetListResponse,
     EffectPresetOrigin, EffectPresetSummary, EffectRefSummary, EffectSummary,
-    InstalledEffectResponse, LayoutLinkSummary, PauseEffectResponse, RescanResponse,
-    ResetControlsRequest, ResumeEffectResponse, SetEffectLayoutResponse, TransitionRequest,
-    UpdateActiveControlsRequest,
+    InstalledEffectResponse, LayoutLinkSummary, RescanResponse, ResetControlsRequest,
+    SetEffectLayoutResponse, TransitionRequest, UpdateActiveControlsRequest,
 };
 
 struct ResolvedEffectPreset {
@@ -88,7 +87,7 @@ pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
     if !output_sleeping && !render_paused {
         return;
     }
-    super::output::set_output_power(state, OutputPowerMode::Running).await;
+    crate::domain::output::set_power(state, OutputPowerMode::Running).await;
 }
 
 pub(crate) fn schedule_network_output_reconnect(state: &AppState) {
@@ -867,59 +866,6 @@ pub async fn get_effect_cover(
     };
 
     effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
-}
-
-/// `POST /api/v1/effects/pause` — Pause output without clearing active effect state.
-#[utoipa::path(
-    post,
-    path = "/api/v1/effects/pause",
-    responses(
-        (status = 200, description = "Paused global output", body = crate::api::envelope::ApiResponse<PauseEffectResponse>)
-    ),
-    tag = "effects"
-)]
-pub async fn pause_effect(State(state): State<Arc<AppState>>) -> Response {
-    super::output::set_output_power(state.as_ref(), OutputPowerMode::Paused).await;
-    let effect = active_primary_effect(state.as_ref())
-        .await
-        .map(|(_, metadata)| EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name,
-        });
-    let output_power = *state.power_state.borrow();
-    ApiResponse::ok(PauseEffectResponse {
-        paused: true,
-        effect,
-        off_output_behavior: match output_power.effective_off_output_behavior() {
-            OffOutputBehavior::Static => "static",
-            OffOutputBehavior::Release => "release",
-        }
-        .to_owned(),
-        off_output_color: output_power.effective_off_output_color(),
-    })
-}
-
-/// `POST /api/v1/effects/resume` — Resume output for the preserved active effect.
-#[utoipa::path(
-    post,
-    path = "/api/v1/effects/resume",
-    responses(
-        (status = 200, description = "Resumed global output", body = crate::api::envelope::ApiResponse<ResumeEffectResponse>)
-    ),
-    tag = "effects"
-)]
-pub async fn resume_effect(State(state): State<Arc<AppState>>) -> Response {
-    super::output::set_output_power(state.as_ref(), OutputPowerMode::Running).await;
-    let effect = active_primary_effect(state.as_ref())
-        .await
-        .map(|(_, metadata)| EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name,
-        });
-    ApiResponse::ok(ResumeEffectResponse {
-        resumed: true,
-        effect,
-    })
 }
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.

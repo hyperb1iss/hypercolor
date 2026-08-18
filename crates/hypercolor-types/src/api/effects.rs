@@ -275,24 +275,6 @@ pub struct EffectRefSummary {
     pub name: String,
 }
 
-/// Compatibility response for `POST /api/v1/effects/pause`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct PauseEffectResponse {
-    pub paused: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect: Option<EffectRefSummary>,
-    pub off_output_behavior: String,
-    pub off_output_color: [u8; 3],
-}
-
-/// Compatibility response for `POST /api/v1/effects/resume`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct ResumeEffectResponse {
-    pub resumed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect: Option<EffectRefSummary>,
-}
-
 /// Layout link summary in apply responses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LayoutLinkSummary {

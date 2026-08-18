@@ -1644,6 +1644,30 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
     assert!(!state.power_state.borrow().sleeping());
 }
 
+/// `set_brightness` is a projection of the output service, so the tool
+/// moves the same live state `GET /output` reports and persists the
+/// same store the REST route does.
+#[tokio::test]
+async fn set_brightness_tool_projects_the_output_service() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+
+    let response = execute_tool_with_state("set_brightness", &json!({ "brightness": 35 }), &state)
+        .await
+        .expect("brightness should be accepted");
+    assert_eq!(response["brightness"], 35);
+    assert_eq!(response["previous_brightness"], 100);
+    assert!((state.power_state.borrow().global_brightness - 0.35).abs() < 1e-6);
+    assert!(
+        (state.device_settings.read().await.global_brightness() - 0.35).abs() < 1e-6,
+        "the tool must persist through the same store the REST route writes"
+    );
+
+    let error = execute_tool_with_state("set_brightness", &json!({ "brightness": 150 }), &state)
+        .await
+        .expect_err("out-of-range brightness should be rejected");
+    assert!(matches!(error, ToolError::InvalidParam { .. }));
+}
+
 #[test]
 fn resource_definitions_are_readable() {
     let resources = build_resource_definitions();

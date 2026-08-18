@@ -410,7 +410,7 @@ impl EffectsContext {
         self.set_last_effect_error.set(None);
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::pause_effect().await.is_err() {
+            if api::pause_output().await.is_err() {
                 ctx.refresh_active_effect();
                 toasts::toast_error("Couldn't pause the effect");
             }
@@ -423,7 +423,7 @@ impl EffectsContext {
         self.set_last_effect_error.set(None);
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::resume_effect().await.is_ok() {
+            if api::resume_output().await.is_ok() {
                 ctx.refresh_active_effect();
             } else {
                 ctx.set_is_playing.set(false);

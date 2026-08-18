@@ -6,7 +6,7 @@ use hypercolor_types::api::effects::{
     ApplyEffectRequest, ResetControlsRequest, SetEffectLayoutRequest, TransitionRequest,
     UpdateActiveControlsRequest,
 };
-use hypercolor_types::api::output::{OutputPowerMode, SetOutputPowerRequest};
+use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use serde_json::Value;
 
 use crate::client::DaemonClient;
@@ -315,7 +315,13 @@ async fn execute_output_power(
     state: OutputPowerMode,
 ) -> Result<()> {
     let response = client
-        .put("/output/power", &SetOutputPowerRequest { state })
+        .patch(
+            "/output",
+            &OutputPatchRequest {
+                power: Some(state),
+                brightness: None,
+            },
+        )
         .await?;
 
     match ctx.format {

@@ -27,7 +27,6 @@ pub mod profiles;
 pub mod scenes;
 pub mod scenes_zones;
 pub mod security;
-pub mod settings;
 pub mod simulators;
 pub mod system;
 pub mod ws;
@@ -1201,8 +1200,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Output ───────────────────────────────────────────────────
         .route(
-            "/output/power",
-            axum::routing::get(output::get_output_power).put(output::put_output_power),
+            "/output",
+            axum::routing::get(output::get_output).patch(output::patch_output),
         )
         // ── Effects ──────────────────────────────────────────────────
         .route("/effects", axum::routing::get(effects::list_effects))
@@ -1226,8 +1225,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/effects/active/reset",
             axum::routing::post(effects::reset_controls),
         )
-        .route("/effects/pause", axum::routing::post(effects::pause_effect))
-        .route("/effects/resume", axum::routing::post(effects::resume_effect))
         .route("/effects/stop", axum::routing::post(effects::stop_effect))
         .route(
             "/effects/rescan",
@@ -1425,10 +1422,9 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/system/sensors/{label}",
             axum::routing::get(system::get_sensor),
         )
-        .route("/audio/devices", axum::routing::get(settings::list_audio_devices))
         .route(
-            "/settings/brightness",
-            axum::routing::get(settings::get_brightness).put(settings::set_brightness),
+            "/system/audio-devices",
+            axum::routing::get(system::list_audio_devices),
         )
         // ── Screen Capture ───────────────────────────────────────────
         .route(
