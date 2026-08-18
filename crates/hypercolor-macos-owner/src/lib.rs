@@ -3106,6 +3106,10 @@ fn sync_parent_directory(data_dir: &Path) -> Result<(), MacosOwnerStoreError> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches the fallible Unix implementation"
+)]
 fn sync_parent_directory(_data_dir: &Path) -> Result<(), MacosOwnerStoreError> {
     Ok(())
 }
