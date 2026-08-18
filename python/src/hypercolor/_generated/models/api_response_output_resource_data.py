@@ -6,30 +6,39 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.output_power_status import OutputPowerStatus
+from ..models.output_power_mode import OutputPowerMode
 
-T = TypeVar("T", bound="OutputPowerResponse")
+T = TypeVar("T", bound="ApiResponseOutputResourceData")
 
 
 @_attrs_define
-class OutputPowerResponse:
-    """Current global output power state.
+class ApiResponseOutputResourceData:
+    """The one output resource — `GET /api/v1/output`.
 
     Attributes:
-        state (OutputPowerStatus): Observed global output power state.
+        brightness (float): Global brightness, `0.0..=1.0`.
+        power (OutputPowerMode): Global output power state, both requested and observed.
+
+            A destructive stop and a session sleep both read as `Paused`: the
+            resource says whether output is running, and a stop's extra
+            consequences are observable on the effect surface.
     """
 
-    state: OutputPowerStatus
+    brightness: float
+    power: OutputPowerMode
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        state = self.state.value
+        brightness = self.brightness
+
+        power = self.power.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "state": state,
+                "brightness": brightness,
+                "power": power,
             }
         )
 
@@ -38,14 +47,17 @@ class OutputPowerResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        state = OutputPowerStatus(d.pop("state"))
+        brightness = d.pop("brightness")
 
-        output_power_response = cls(
-            state=state,
+        power = OutputPowerMode(d.pop("power"))
+
+        api_response_output_resource_data = cls(
+            brightness=brightness,
+            power=power,
         )
 
-        output_power_response.additional_properties = d
-        return output_power_response
+        api_response_output_resource_data.additional_properties = d
+        return api_response_output_resource_data
 
     @property
     def additional_keys(self) -> list[str]:

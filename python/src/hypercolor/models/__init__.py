@@ -11,7 +11,6 @@ from .audio import (
 )
 from .common import (
     ApiErrorBody,
-    BrightnessUpdate,
     ConfigMutationResult,
     DiscoverResult,
     IdentifyResult,
@@ -50,7 +49,7 @@ from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
 from .profile import ApplyProfileResult, Profile, ProfileSummary
 from .scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
-from .system import HealthStatus, OutputPowerState, RenderLoopStatus, ServerIdentity, SystemState
+from .system import HealthStatus, OutputState, RenderLoopStatus, ServerIdentity, SystemState
 from .zone import (
     DisplayTarget,
     SceneLayer,
@@ -73,7 +72,6 @@ __all__ = [
     "AudioDevices",
     "AudioInput",
     "AudioLevels",
-    "BrightnessUpdate",
     "ConfigMutationResult",
     "ControlActionResult",
     "ControlApplyResult",
@@ -111,7 +109,7 @@ __all__ = [
     "MutationResult",
     "NamedRef",
     "NormalizedPosition",
-    "OutputPowerState",
+    "OutputState",
     "Pagination",
     "Playlist",
     "PlaylistItem",

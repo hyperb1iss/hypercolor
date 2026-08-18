@@ -8,28 +8,37 @@ from attrs import field as _attrs_field
 
 from ..models.output_power_mode import OutputPowerMode
 
-T = TypeVar("T", bound="SetOutputPowerRequest")
+T = TypeVar("T", bound="OutputResource")
 
 
 @_attrs_define
-class SetOutputPowerRequest:
-    """Request for `PUT /api/v1/output/power`.
+class OutputResource:
+    """The one output resource — `GET /api/v1/output`.
 
     Attributes:
-        state (OutputPowerMode): Desired global output power state.
+        brightness (float): Global brightness, `0.0..=1.0`.
+        power (OutputPowerMode): Global output power state, both requested and observed.
+
+            A destructive stop and a session sleep both read as `Paused`: the
+            resource says whether output is running, and a stop's extra
+            consequences are observable on the effect surface.
     """
 
-    state: OutputPowerMode
+    brightness: float
+    power: OutputPowerMode
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        state = self.state.value
+        brightness = self.brightness
+
+        power = self.power.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "state": state,
+                "brightness": brightness,
+                "power": power,
             }
         )
 
@@ -38,14 +47,17 @@ class SetOutputPowerRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        state = OutputPowerMode(d.pop("state"))
+        brightness = d.pop("brightness")
 
-        set_output_power_request = cls(
-            state=state,
+        power = OutputPowerMode(d.pop("power"))
+
+        output_resource = cls(
+            brightness=brightness,
+            power=power,
         )
 
-        set_output_power_request.additional_properties = d
-        return set_output_power_request
+        output_resource.additional_properties = d
+        return output_resource
 
     @property
     def additional_keys(self) -> list[str]:

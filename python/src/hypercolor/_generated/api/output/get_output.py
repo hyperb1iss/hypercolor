@@ -5,35 +5,25 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.api_response_output_power_response import ApiResponseOutputPowerResponse
-from ...models.set_output_power_request import SetOutputPowerRequest
+from ...models.api_response_output_resource import ApiResponseOutputResource
 from ...types import Response
 
 
-def _get_kwargs(
-    *,
-    body: SetOutputPowerRequest,
-) -> dict[str, Any]:
-    headers: dict[str, Any] = {}
+def _get_kwargs() -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
-        "method": "put",
-        "url": "/api/v1/output/power",
+        "method": "get",
+        "url": "/api/v1/output",
     }
 
-    _kwargs["json"] = body.to_dict()
-
-    headers["Content-Type"] = "application/json"
-
-    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiResponseOutputPowerResponse | None:
+) -> ApiResponseOutputResource | None:
     if response.status_code == 200:
-        response_200 = ApiResponseOutputPowerResponse.from_dict(response.json())
+        response_200 = ApiResponseOutputResource.from_dict(response.json())
 
         return response_200
 
@@ -45,7 +35,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiResponseOutputPowerResponse]:
+) -> Response[ApiResponseOutputResource]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -57,24 +47,18 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SetOutputPowerRequest,
-) -> Response[ApiResponseOutputPowerResponse]:
-    """`PUT /api/v1/output/power` - Set desired global output power.
-
-    Args:
-        body (SetOutputPowerRequest): Request for `PUT /api/v1/output/power`.
+) -> Response[ApiResponseOutputResource]:
+    """`GET /api/v1/output` — Read global output power and brightness.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiResponseOutputPowerResponse]
+        Response[ApiResponseOutputResource]
     """
 
-    kwargs = _get_kwargs(
-        body=body,
-    )
+    kwargs = _get_kwargs()
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -86,48 +70,37 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: SetOutputPowerRequest,
-) -> ApiResponseOutputPowerResponse | None:
-    """`PUT /api/v1/output/power` - Set desired global output power.
-
-    Args:
-        body (SetOutputPowerRequest): Request for `PUT /api/v1/output/power`.
+) -> ApiResponseOutputResource | None:
+    """`GET /api/v1/output` — Read global output power and brightness.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiResponseOutputPowerResponse
+        ApiResponseOutputResource
     """
 
     return sync_detailed(
         client=client,
-        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SetOutputPowerRequest,
-) -> Response[ApiResponseOutputPowerResponse]:
-    """`PUT /api/v1/output/power` - Set desired global output power.
-
-    Args:
-        body (SetOutputPowerRequest): Request for `PUT /api/v1/output/power`.
+) -> Response[ApiResponseOutputResource]:
+    """`GET /api/v1/output` — Read global output power and brightness.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiResponseOutputPowerResponse]
+        Response[ApiResponseOutputResource]
     """
 
-    kwargs = _get_kwargs(
-        body=body,
-    )
+    kwargs = _get_kwargs()
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
@@ -137,24 +110,19 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: SetOutputPowerRequest,
-) -> ApiResponseOutputPowerResponse | None:
-    """`PUT /api/v1/output/power` - Set desired global output power.
-
-    Args:
-        body (SetOutputPowerRequest): Request for `PUT /api/v1/output/power`.
+) -> ApiResponseOutputResource | None:
+    """`GET /api/v1/output` — Read global output power and brightness.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiResponseOutputPowerResponse
+        ApiResponseOutputResource
     """
 
     return (
         await asyncio_detailed(
             client=client,
-            body=body,
         )
     ).parsed

@@ -82,12 +82,6 @@ class IdentifyResult(msgspec.Struct, kw_only=True):
     duration_ms: int
 
 
-class BrightnessUpdate(msgspec.Struct, kw_only=True):
-    """Response from a brightness mutation."""
-
-    brightness: int
-
-
 class ConfigMutationResult(msgspec.Struct, kw_only=True):
     """Response from a config write, key reset, or whole-config reset."""
 

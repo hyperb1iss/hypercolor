@@ -7,25 +7,23 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.api_response_output_power_response_data import (
-        ApiResponseOutputPowerResponseData,
-    )
+    from ..models.api_response_output_resource_data import ApiResponseOutputResourceData
     from ..models.meta import Meta
 
 
-T = TypeVar("T", bound="ApiResponseOutputPowerResponse")
+T = TypeVar("T", bound="ApiResponseOutputResource")
 
 
 @_attrs_define
-class ApiResponseOutputPowerResponse:
+class ApiResponseOutputResource:
     """Standard success response wrapper.
 
     Attributes:
-        data (ApiResponseOutputPowerResponseData): Current global output power state.
+        data (ApiResponseOutputResourceData): The one output resource — `GET /api/v1/output`.
         meta (Meta): Response metadata included in every envelope.
     """
 
-    data: ApiResponseOutputPowerResponseData
+    data: ApiResponseOutputResourceData
     meta: Meta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -47,23 +45,23 @@ class ApiResponseOutputPowerResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.api_response_output_power_response_data import (
-            ApiResponseOutputPowerResponseData,
+        from ..models.api_response_output_resource_data import (
+            ApiResponseOutputResourceData,
         )
         from ..models.meta import Meta
 
         d = dict(src_dict)
-        data = ApiResponseOutputPowerResponseData.from_dict(d.pop("data"))
+        data = ApiResponseOutputResourceData.from_dict(d.pop("data"))
 
         meta = Meta.from_dict(d.pop("meta"))
 
-        api_response_output_power_response = cls(
+        api_response_output_resource = cls(
             data=data,
             meta=meta,
         )
 
-        api_response_output_power_response.additional_properties = d
-        return api_response_output_power_response
+        api_response_output_resource.additional_properties = d
+        return api_response_output_resource
 
     @property
     def additional_keys(self) -> list[str]:

@@ -5,16 +5,23 @@ from __future__ import annotations
 import msgspec
 
 
-class OutputPowerState(msgspec.Struct, kw_only=True):
-    """Current global output power state."""
+class OutputState(msgspec.Struct, kw_only=True):
+    """Global output power and brightness — the `/output` resource."""
 
-    state: str
+    power: str
+    brightness: float
 
     @property
     def paused(self) -> bool:
         """Return whether output is paused."""
 
-        return self.state == "paused"
+        return self.power == "paused"
+
+    @property
+    def brightness_percent(self) -> int:
+        """Return brightness as a 0-100 percentage."""
+
+        return round(max(0.0, min(1.0, self.brightness)) * 100)
 
 
 class ServerIdentity(msgspec.Struct, kw_only=True):

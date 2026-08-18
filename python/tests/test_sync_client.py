@@ -37,14 +37,14 @@ def test_sync_client_delegates_health() -> None:
 
 def test_sync_client_delegates_output_power() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/output/power"
-        assert request.method == "PUT"
-        assert json.loads(request.content) == {"state": "paused"}
+        assert request.url.path == "/api/v1/output"
+        assert request.method == "PATCH"
+        assert json.loads(request.content) == {"power": "paused"}
         return httpx.Response(
             200,
             content=msgspec.json.encode(
                 {
-                    "data": {"state": "paused"},
+                    "data": {"power": "paused", "brightness": 0.8},
                     "meta": {
                         "api_version": "1.0",
                         "request_id": "req_123",
@@ -61,6 +61,7 @@ def test_sync_client_delegates_output_power() -> None:
         client.close()
 
     assert result.paused is True
+    assert result.brightness_percent == 80
 
 
 def test_sync_client_delegates_driver_inventory() -> None:
