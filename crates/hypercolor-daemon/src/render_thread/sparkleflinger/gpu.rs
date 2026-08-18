@@ -881,7 +881,7 @@ pub(crate) fn native_screen_copy_error_invalidates_frame(error: &anyhow::Error) 
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 pub(crate) const fn native_screen_copy_error_invalidates_frame(_error: &anyhow::Error) -> bool {
-    false
+    true
 }
 
 #[cfg(target_os = "windows")]

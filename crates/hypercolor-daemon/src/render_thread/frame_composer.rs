@@ -508,13 +508,11 @@ impl ComposeContext<'_> {
                         }
                         Ok(None) => false,
                         Err(error) => {
-                            if super::sparkleflinger::gpu::native_screen_copy_error_invalidates_frame(
-                                &error,
-                            ) {
-                                let _ = self.compose.screen_queue.clear_latest();
-                            }
-                            let retained = native_copy_failure_retains_last_frame(
+                            let retained = apply_native_copy_failure_policy(
                                 self.compose.screen_queue,
+                                super::sparkleflinger::gpu::native_screen_copy_error_invalidates_frame(
+                                    &error,
+                                ),
                             );
                             if super::sparkleflinger::gpu::is_retryable_native_screen_copy_error(
                                 &error,
@@ -764,6 +762,26 @@ fn synchronize_screen_invalidation_epoch(
 ))]
 fn native_copy_failure_retains_last_frame(screen_queue: &ProducerQueue) -> bool {
     screen_queue.has_latest()
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "wgpu",
+        any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        )
+    )
+))]
+fn apply_native_copy_failure_policy(
+    screen_queue: &mut ProducerQueue,
+    invalidates_frame: bool,
+) -> bool {
+    if invalidates_frame {
+        let _ = screen_queue.clear_latest();
+    }
+    native_copy_failure_retains_last_frame(screen_queue)
 }
 
 fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {

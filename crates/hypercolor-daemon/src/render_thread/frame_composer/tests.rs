@@ -1,9 +1,9 @@
 use super::{
     PreviewSurfaceDemandLane, PreviewSurfaceRequest, PreviewSurfaceRequestContext,
-    effective_render_group_layer_count, native_copy_failure_retains_last_frame,
-    preview_surface_request, producer_frame_requires_composition_for_preview,
-    render_group_requires_full_composition, requires_cpu_sampling_canvas,
-    requires_published_surface, synchronize_screen_plan_generation,
+    apply_native_copy_failure_policy, effective_render_group_layer_count,
+    native_copy_failure_retains_last_frame, preview_surface_request,
+    producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
+    requires_cpu_sampling_canvas, requires_published_surface, synchronize_screen_plan_generation,
 };
 use std::sync::Arc;
 
@@ -42,6 +42,15 @@ fn native_copy_failure_falls_back_until_a_last_good_frame_exists() {
 
     let _ = queue.clear_latest();
     assert!(!native_copy_failure_retains_last_frame(&queue));
+}
+
+#[test]
+fn invalidating_native_copy_failure_drops_the_last_good_frame() {
+    let mut queue = ProducerQueue::new();
+    queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+
+    assert!(!apply_native_copy_failure_policy(&mut queue, true));
+    assert!(!queue.has_latest());
 }
 
 #[test]

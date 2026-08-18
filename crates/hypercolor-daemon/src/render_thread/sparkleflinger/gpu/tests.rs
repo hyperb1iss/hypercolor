@@ -70,6 +70,7 @@ use super::{
     MacosNativeColorTransform, MacosNativeOutputTransfer, MacosNativeReductionDescriptor,
     MacosNativeReductionFilter, MacosNativeTargetFormat, PreparedMacosScreenTarget,
     UnsupportedMacosNativeTargetFormat, macos_native_target_format,
+    native_screen_copy_error_invalidates_frame,
 };
 #[cfg(target_os = "windows")]
 use super::{
@@ -1612,6 +1613,13 @@ fn native_screen_copy_failure_policy_separates_pressure_from_stale_structure() {
         },),
         NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare
     );
+}
+
+#[cfg(all(feature = "screen-capture", target_os = "macos"))]
+#[test]
+fn macos_native_screen_copy_errors_invalidate_retained_output() {
+    let error = anyhow::anyhow!("structural native screen copy failure");
+    assert!(native_screen_copy_error_invalidates_frame(&error));
 }
 
 #[cfg(target_os = "windows")]
