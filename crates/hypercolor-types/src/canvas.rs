@@ -1,14 +1,18 @@
-//! Canvas buffer, color types, blend modes, and perceptual color space conversions.
+//! Canvas buffer, surface pooling, authored blend modes, and the canvas
+//! spelling of the color kernel's pixel types.
 //!
-//! This module contains the core pixel surface (`Canvas`), integer and floating-point
-//! color representations (`Rgba`, `RgbaF32`, `Rgb`), blend mode compositing (`BlendMode`),
-//! and Oklab/Oklch perceptual color spaces for smooth interpolation.
+//! The pixel surface (`Canvas`), the surface pool, and the authored
+//! `BlendMode` live here. Color values and color math live in
+//! `hypercolor-color` and are re-exported below, so
+//! `hypercolor_types::canvas::{Rgb, Rgba, LinearRgba, Oklab, Oklch}`
+//! resolve to the kernel's types.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, OnceLock};
 
+use hypercolor_color::PixelBlendMode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -87,407 +91,23 @@ fn next_published_surface_storage_id() -> u64 {
     NEXT_PUBLISHED_SURFACE_STORAGE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-// ── Rgba ───────────────────────────────────────────────────────────────────
+// ── Color types (re-exported from the color kernel) ───────────────────────
 
-/// A single pixel value — 8-bit RGBA.
-///
-/// This is the canonical pixel type for canvas storage and device output.
-/// Values are in sRGB gamma space for storage; use [`RgbaF32`] for linear math.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Rgba {
-    /// Red channel (0–255).
-    pub r: u8,
-    /// Green channel (0–255).
-    pub g: u8,
-    /// Blue channel (0–255).
-    pub b: u8,
-    /// Alpha channel (0 = transparent, 255 = opaque).
-    pub a: u8,
-}
-
-impl Rgba {
-    /// Opaque black.
-    pub const BLACK: Self = Self {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 255,
-    };
-
-    /// Opaque white.
-    pub const WHITE: Self = Self {
-        r: 255,
-        g: 255,
-        b: 255,
-        a: 255,
-    };
-
-    /// Fully transparent black.
-    pub const TRANSPARENT: Self = Self {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-    };
-
-    /// Create an RGBA pixel from individual channel values.
-    #[must_use]
-    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
-    }
-
-    /// Convert to normalized floating-point representation without color decoding.
-    ///
-    /// Each channel is mapped from `[0, 255]` to `[0.0, 1.0]` as-is.
-    /// Use [`Self::to_linear_f32`] when the bytes represent sRGB storage and
-    /// the result will be used for interpolation or averaging.
-    #[must_use]
-    pub fn to_f32(self) -> RgbaF32 {
-        RgbaF32 {
-            r: f32::from(self.r) / 255.0,
-            g: f32::from(self.g) / 255.0,
-            b: f32::from(self.b) / 255.0,
-            a: f32::from(self.a) / 255.0,
-        }
-    }
-
-    /// Convert stored sRGB bytes into linear floating-point RGBA.
-    #[must_use]
-    pub fn to_linear_f32(self) -> RgbaF32 {
-        RgbaF32::from_srgb_u8(self.r, self.g, self.b, self.a)
-    }
-
-    /// Extract RGB only, discarding alpha.
-    #[must_use]
-    pub const fn to_rgb(self) -> Rgb {
-        Rgb {
-            r: self.r,
-            g: self.g,
-            b: self.b,
-        }
-    }
-}
-
-impl Default for Rgba {
-    fn default() -> Self {
-        Self::BLACK
-    }
-}
-
-// ── Rgb ────────────────────────────────────────────────────────────────────
-
-/// Device-facing RGB color (no alpha). This is what backends receive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct Rgb {
-    /// Red channel (0–255).
-    pub r: u8,
-    /// Green channel (0–255).
-    pub g: u8,
-    /// Blue channel (0–255).
-    pub b: u8,
-}
-
-impl Rgb {
-    /// Create an RGB color from individual channel values.
-    #[must_use]
-    pub const fn new(r: u8, g: u8, b: u8) -> Self {
-        Self { r, g, b }
-    }
-
-    /// Promote to RGBA with full opacity.
-    #[must_use]
-    pub const fn to_rgba(self) -> Rgba {
-        Rgba {
-            r: self.r,
-            g: self.g,
-            b: self.b,
-            a: 255,
-        }
-    }
-}
-
-// ── RgbaF32 (Color) ───────────────────────────────────────────────────────
-
-/// Floating-point RGBA color in linear sRGB space.
-///
-/// Values are `0.0..=1.0` per channel. Used for interpolation, blending,
-/// and color space conversions. Clamped on conversion back to [`Rgba`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct RgbaF32 {
-    /// Red channel (0.0–1.0, linear).
-    pub r: f32,
-    /// Green channel (0.0–1.0, linear).
-    pub g: f32,
-    /// Blue channel (0.0–1.0, linear).
-    pub b: f32,
-    /// Alpha channel (0.0 = transparent, 1.0 = opaque).
-    pub a: f32,
-}
-
-impl RgbaF32 {
-    /// Create a new floating-point color.
-    #[must_use]
-    pub const fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
-        Self { r, g, b, a }
-    }
-
-    /// Create from 8-bit sRGB values, converting to linear float.
-    ///
-    /// Applies the sRGB transfer function (gamma decoding) to each RGB channel.
-    /// Alpha is linearly mapped from `[0, 255]` to `[0.0, 1.0]`. Reads from
-    /// the precomputed 256-entry table so per-pixel conversions stay
-    /// constant-time in the gamma-correct sampling hot path.
-    #[must_use]
-    pub fn from_srgb_u8(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self {
-            r: srgb_u8_to_linear(r),
-            g: srgb_u8_to_linear(g),
-            b: srgb_u8_to_linear(b),
-            a: f32::from(a) / 255.0,
-        }
-    }
-
-    /// Convert back to 8-bit sRGB, applying gamma encoding.
-    ///
-    /// Uses the precomputed 4096-entry linear→sRGB table for the RGB
-    /// channels. Alpha keeps its direct `[0.0, 1.0]` → `[0, 255]`
-    /// mapping since alpha is not gamma-encoded.
-    #[must_use]
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::as_conversions
-    )]
-    pub fn to_srgb_u8(self) -> [u8; 4] {
-        [
-            linear_to_srgb_u8(self.r),
-            linear_to_srgb_u8(self.g),
-            linear_to_srgb_u8(self.b),
-            (self.a * 255.0).round().clamp(0.0, 255.0) as u8,
-        ]
-    }
-
-    /// Convert back to byte [`Rgba`], applying sRGB gamma encoding.
-    ///
-    /// This is the correct conversion for effect output headed to canvas
-    /// storage or any other sRGB byte buffer.
-    #[must_use]
-    pub fn to_srgba(self) -> Rgba {
-        let [r, g, b, a] = self.to_srgb_u8();
-        Rgba { r, g, b, a }
-    }
-
-    /// Convert back to byte [`Rgba`], clamping each channel to `[0, 255]`.
-    ///
-    /// This is a direct (non-gamma-corrected) conversion — each float channel
-    /// is simply scaled by 255.
-    ///
-    /// Use this for sinks that expect linear-light bytes, such as raw LED PWM
-    /// output after any final transfer-function correction has already been
-    /// applied.
-    #[must_use]
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::as_conversions
-    )]
-    pub fn to_rgba(self) -> Rgba {
-        Rgba {
-            r: (self.r * 255.0).clamp(0.0, 255.0) as u8,
-            g: (self.g * 255.0).clamp(0.0, 255.0) as u8,
-            b: (self.b * 255.0).clamp(0.0, 255.0) as u8,
-            a: (self.a * 255.0).clamp(0.0, 255.0) as u8,
-        }
-    }
-
-    /// Linear interpolation between two colors.
-    ///
-    /// `t = 0.0` returns `a`, `t = 1.0` returns `b`.
-    #[must_use]
-    pub fn lerp(a: &Self, b: &Self, t: f32) -> Self {
-        Self {
-            r: a.r + (b.r - a.r) * t,
-            g: a.g + (b.g - a.g) * t,
-            b: a.b + (b.b - a.b) * t,
-            a: a.a + (b.a - a.a) * t,
-        }
-    }
-
-    /// Blend this color (source) onto `dst` (destination) using the given blend mode.
-    ///
-    /// The blend is modulated by `opacity` (0.0 = invisible, 1.0 = full effect).
-    #[must_use]
-    pub fn blend(self, dst: Self, mode: BlendMode, opacity: f32) -> Self {
-        let src_arr = [self.r, self.g, self.b, self.a];
-        let dst_arr = [dst.r, dst.g, dst.b, dst.a];
-        let result = mode.blend(dst_arr, src_arr, opacity);
-        Self {
-            r: result[0],
-            g: result[1],
-            b: result[2],
-            a: result[3],
-        }
-    }
-
-    /// Convert to Oklab perceptual color space.
-    #[must_use]
-    pub fn to_oklab(self) -> Oklab {
-        linear_srgb_to_oklab(self.r, self.g, self.b, self.a)
-    }
-
-    /// Create from Oklab perceptual color space.
-    #[must_use]
-    pub fn from_oklab(lab: Oklab) -> Self {
-        oklab_to_linear_srgb(lab)
-    }
-
-    /// Convert to Oklch (perceptual lightness, chroma, hue).
-    #[must_use]
-    pub fn to_oklch(self) -> Oklch {
-        self.to_oklab().to_oklch()
-    }
-
-    /// Create from Oklch perceptual color space.
-    #[must_use]
-    pub fn from_oklch(lch: Oklch) -> Self {
-        Self::from_oklab(lch.to_oklab())
-    }
-}
-
-impl Default for RgbaF32 {
-    fn default() -> Self {
-        Self {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 1.0,
-        }
-    }
-}
+// Spec 76 §1: `hypercolor-color` is the single home for color math. These
+// paths stay importable from `hypercolor_types::canvas` so the absorption
+// is a type swap for every consumer.
+pub use hypercolor_color::lut::{linear_to_srgb_u8, srgb_u8_to_linear};
+pub use hypercolor_color::{
+    LinearRgba, Oklab, Oklch, Rgb, Rgba, linear_to_output_u8, linear_to_srgb, srgb_to_linear,
+};
 
 // ── Color (alias) ──────────────────────────────────────────────────────────
 
 /// High-level color type — linear sRGB with float precision.
 ///
-/// This is a convenience alias for [`RgbaF32`], used throughout the effect
-/// pipeline where "Color" is the natural vocabulary.
-pub type Color = RgbaF32;
-
-// ── sRGB Transfer Functions ────────────────────────────────────────────────
-
-/// Convert a single sRGB gamma-encoded channel to linear.
-///
-/// Implements the official sRGB EOTF (IEC 61966-2-1). For u8-indexed
-/// hot paths prefer [`srgb_u8_to_linear`] which reads from a precomputed
-/// table.
-#[must_use]
-pub fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// Convert a single linear channel to sRGB gamma-encoded.
-///
-/// Implements the inverse sRGB EOTF (IEC 61966-2-1). For byte-output
-/// hot paths prefer [`linear_to_srgb_u8`] which reads from a precomputed
-/// table.
-#[must_use]
-pub fn linear_to_srgb(c: f32) -> f32 {
-    if c <= 0.003_130_8 {
-        c * 12.92
-    } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
-    }
-}
-
-/// Number of entries in the linear→sRGB byte LUT. 4096 bins = 12-bit
-/// quantization; empirically the roundtrip `srgb_u8_to_linear` →
-/// `linear_to_srgb_u8` matches every u8 byte exactly at this size.
-const LINEAR_TO_SRGB_U8_LUT_SIZE: usize = 4096;
-
-/// Precomputed sRGB byte → linear float table. Populating 256 entries
-/// costs 256 `powf` calls at program start and then every subsequent
-/// conversion is a constant-time load. The spatial viewport sampler
-/// used to spend ~60% of render-thread CPU in `powf` before this table
-/// existed; the LUT makes gamma-correct bilinear essentially free.
-static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
-    let mut lut = [0.0_f32; 256];
-    for (index, entry) in lut.iter_mut().enumerate() {
-        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let srgb = index as f32 / 255.0;
-        *entry = srgb_to_linear(srgb);
-    }
-    lut
-});
-
-/// Precomputed linear float → sRGB byte table, indexed by a 12-bit
-/// quantization of the linear input. Values outside [0, 1] are clamped
-/// before indexing (matching the existing `(... * 255).clamp as u8`
-/// semantics of the scalar path).
-static LINEAR_TO_SRGB_U8_LUT: LazyLock<[u8; LINEAR_TO_SRGB_U8_LUT_SIZE]> = LazyLock::new(|| {
-    let mut lut = [0_u8; LINEAR_TO_SRGB_U8_LUT_SIZE];
-    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    let max_index_f = (LINEAR_TO_SRGB_U8_LUT_SIZE - 1) as f32;
-    for (index, entry) in lut.iter_mut().enumerate() {
-        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let linear = index as f32 / max_index_f;
-        let srgb = (linear_to_srgb(linear) * 255.0).round().clamp(0.0, 255.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::as_conversions
-        )]
-        {
-            *entry = srgb as u8;
-        }
-    }
-    lut
-});
-
-/// Convert one stored sRGB byte to linear-light float using the
-/// precomputed 256-entry LUT. Constant-time lookup in the hot path for
-/// every gamma-correct pixel read.
-#[inline]
-#[must_use]
-pub fn srgb_u8_to_linear(c: u8) -> f32 {
-    SRGB_TO_LINEAR_LUT[c as usize]
-}
-
-/// Convert one linear-light float to an 8-bit sRGB byte using the
-/// precomputed LUT. Clamps the input to [0, 1] and maps NaN to 0,
-/// matching the `.clamp(0, 255).round() as u8` semantics of the scalar
-/// path.
-#[inline]
-#[must_use]
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-pub fn linear_to_srgb_u8(c: f32) -> u8 {
-    let clamped = if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) };
-    let max_index_f = (LINEAR_TO_SRGB_U8_LUT_SIZE - 1) as f32;
-    let index = (clamped * max_index_f).round() as usize;
-    // `clamped` is guaranteed in [0, 1] so the scaled index cannot exceed
-    // the LUT bounds; the explicit `.min` guards against f32 rounding
-    // landing exactly at the length in debug builds.
-    LINEAR_TO_SRGB_U8_LUT[index.min(LINEAR_TO_SRGB_U8_LUT_SIZE - 1)]
-}
-
-/// Convert one linear-light float to a raw 8-bit linear output value.
-#[must_use]
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-pub fn linear_to_output_u8(c: f32) -> u8 {
-    (c * 255.0).round().clamp(0.0, 255.0) as u8
-}
+/// Canvas vocabulary for [`LinearRgba`], used throughout the effect
+/// pipeline where "Color" is the natural word.
+pub type Color = LinearRgba;
 
 // ── ColorFormat ────────────────────────────────────────────────────────────
 
@@ -909,18 +529,16 @@ impl Canvas {
         let frac_y = (fy.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32)
             / BILINEAR_ONE as f32;
 
-        let top = RgbaF32::lerp(
-            &self.get_pixel(x0, y0).to_linear_f32(),
-            &self.get_pixel(x1, y0).to_linear_f32(),
-            frac_x,
-        );
-        let bottom = RgbaF32::lerp(
-            &self.get_pixel(x0, y1).to_linear_f32(),
-            &self.get_pixel(x1, y1).to_linear_f32(),
-            frac_x,
-        );
+        let top = self
+            .get_pixel(x0, y0)
+            .to_linear()
+            .lerp(self.get_pixel(x1, y0).to_linear(), frac_x);
+        let bottom = self
+            .get_pixel(x0, y1)
+            .to_linear()
+            .lerp(self.get_pixel(x1, y1).to_linear(), frac_x);
 
-        RgbaF32::lerp(&top, &bottom, frac_y).to_srgba()
+        top.lerp(bottom, frac_y).to_encoded()
     }
 
     /// Sample with area averaging.
@@ -952,7 +570,7 @@ impl Canvas {
             for dx in -r..=r {
                 let px = (cx as i32 + dx).clamp(0, self.width as i32 - 1) as u32;
                 let py = (cy as i32 + dy).clamp(0, self.height as i32 - 1) as u32;
-                let p = self.get_pixel(px, py).to_linear_f32();
+                let p = self.get_pixel(px, py).to_linear();
                 sum_r += p.r;
                 sum_g += p.g;
                 sum_b += p.b;
@@ -961,7 +579,7 @@ impl Canvas {
             }
         }
 
-        RgbaF32::new(sum_r / count, sum_g / count, sum_b / count, sum_a / count).to_srgba()
+        LinearRgba::new(sum_r / count, sum_g / count, sum_b / count, sum_a / count).to_encoded()
     }
 }
 
@@ -1967,280 +1585,41 @@ pub enum BlendMode {
 }
 
 impl BlendMode {
+    /// The pixel-kernel mode this authored mode composites with.
+    ///
+    /// The two variant sets are identical today, so the mapping is
+    /// total. Authored modes with no pixel-kernel equivalent (`Replace`,
+    /// `Tint`, `LumaReveal`) live on the compositor's own enum and never
+    /// reach this table.
+    #[must_use]
+    pub const fn pixel_mode(self) -> PixelBlendMode {
+        match self {
+            Self::Normal => PixelBlendMode::Normal,
+            Self::Add => PixelBlendMode::Add,
+            Self::Screen => PixelBlendMode::Screen,
+            Self::Multiply => PixelBlendMode::Multiply,
+            Self::Overlay => PixelBlendMode::Overlay,
+            Self::SoftLight => PixelBlendMode::SoftLight,
+            Self::ColorDodge => PixelBlendMode::ColorDodge,
+            Self::Difference => PixelBlendMode::Difference,
+        }
+    }
+
     /// Blend a source pixel onto a destination pixel.
     ///
     /// Both `dst` and `src` are RGBA arrays in `[0.0, 1.0]` range.
     /// `opacity` modulates the source alpha (0.0 = invisible, 1.0 = full).
     #[must_use]
     pub fn blend(self, dst: [f32; 4], src: [f32; 4], opacity: f32) -> [f32; 4] {
-        let a = src[3] * opacity;
-        let blend_channel = |d: f32, s: f32| -> f32 {
-            let blended = match self {
-                Self::Normal => s,
-                Self::Add => (d + s).min(1.0),
-                Self::Screen => 1.0 - (1.0 - d) * (1.0 - s),
-                Self::Multiply => d * s,
-                Self::Overlay => {
-                    if d < 0.5 {
-                        2.0 * d * s
-                    } else {
-                        1.0 - 2.0 * (1.0 - d) * (1.0 - s)
-                    }
-                }
-                Self::SoftLight => {
-                    if s < 0.5 {
-                        d - (1.0 - 2.0 * s) * d * (1.0 - d)
-                    } else {
-                        d + (2.0 * s - 1.0) * (d.sqrt() - d)
-                    }
-                }
-                Self::ColorDodge => {
-                    if s >= 1.0 {
-                        1.0
-                    } else {
-                        (d / (1.0 - s)).min(1.0)
-                    }
-                }
-                Self::Difference => (d - s).abs(),
-            };
-            d.mul_add(1.0 - a, blended * a)
-        };
-
-        [
-            blend_channel(dst[0], src[0]),
-            blend_channel(dst[1], src[1]),
-            blend_channel(dst[2], src[2]),
-            (dst[3] + a - dst[3] * a).min(1.0),
-        ]
-    }
-}
-
-// ── Oklab ──────────────────────────────────────────────────────────────────
-
-/// Oklab perceptual color space.
-///
-/// Oklab is a perceptually uniform color space designed by Björn Ottosson.
-/// It provides linear interpolation that matches human perception of color
-/// differences, making it ideal for smooth gradients and color transitions.
-///
-/// - `l`: Perceived lightness (0.0 = black, 1.0 = white)
-/// - `a`: Green-red axis (negative = green, positive = red)
-/// - `b`: Blue-yellow axis (negative = blue, positive = yellow)
-/// - `alpha`: Opacity (0.0–1.0)
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Oklab {
-    /// Perceived lightness (0.0–1.0).
-    pub l: f32,
-    /// Green-red opponent channel.
-    pub a: f32,
-    /// Blue-yellow opponent channel.
-    pub b: f32,
-    /// Alpha/opacity (0.0–1.0).
-    pub alpha: f32,
-}
-
-impl Oklab {
-    /// Create a new Oklab color.
-    #[must_use]
-    pub const fn new(l: f32, a: f32, b: f32, alpha: f32) -> Self {
-        Self { l, a, b, alpha }
-    }
-
-    /// Linear interpolation in Oklab space (perceptually smooth).
-    ///
-    /// `t = 0.0` returns `self`, `t = 1.0` returns `other`.
-    #[must_use]
-    pub fn lerp(self, other: Self, t: f32) -> Self {
-        Self {
-            l: self.l + (other.l - self.l) * t,
-            a: self.a + (other.a - self.a) * t,
-            b: self.b + (other.b - self.b) * t,
-            alpha: self.alpha + (other.alpha - self.alpha) * t,
-        }
-    }
-
-    /// Convert to Oklch (lightness, chroma, hue) representation.
-    #[must_use]
-    pub fn to_oklch(self) -> Oklch {
-        let c = (self.a * self.a + self.b * self.b).sqrt();
-        let h = self.b.atan2(self.a).to_degrees();
-        // Normalize hue to [0, 360)
-        let h = if h < 0.0 { h + 360.0 } else { h };
-        Oklch {
-            l: self.l,
-            c,
-            h,
-            alpha: self.alpha,
-        }
-    }
-
-    /// Convert back to linear sRGB.
-    #[must_use]
-    pub fn to_linear_srgb(self) -> RgbaF32 {
-        oklab_to_linear_srgb(self)
-    }
-}
-
-impl Default for Oklab {
-    fn default() -> Self {
-        Self {
-            l: 0.0,
-            a: 0.0,
-            b: 0.0,
-            alpha: 1.0,
-        }
-    }
-}
-
-// ── Oklch ──────────────────────────────────────────────────────────────────
-
-/// Oklch perceptual color space (polar form of Oklab).
-///
-/// Oklch is the cylindrical representation of Oklab, providing intuitive
-/// control over lightness, saturation (chroma), and hue. Ideal for
-/// palette generation and hue-based operations.
-///
-/// - `l`: Perceived lightness (0.0 = black, 1.0 = white)
-/// - `c`: Chroma / saturation (0.0 = gray, higher = more vivid)
-/// - `h`: Hue angle in degrees (0–360)
-/// - `alpha`: Opacity (0.0–1.0)
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Oklch {
-    /// Perceived lightness (0.0–1.0).
-    pub l: f32,
-    /// Chroma / saturation (0.0+).
-    pub c: f32,
-    /// Hue angle in degrees (0–360).
-    pub h: f32,
-    /// Alpha/opacity (0.0–1.0).
-    pub alpha: f32,
-}
-
-impl Oklch {
-    /// Create a new Oklch color.
-    #[must_use]
-    pub const fn new(l: f32, c: f32, h: f32, alpha: f32) -> Self {
-        Self { l, c, h, alpha }
-    }
-
-    /// Convert to Oklab cartesian representation.
-    #[must_use]
-    pub fn to_oklab(self) -> Oklab {
-        let h_rad = self.h.to_radians();
-        Oklab {
-            l: self.l,
-            a: self.c * h_rad.cos(),
-            b: self.c * h_rad.sin(),
-            alpha: self.alpha,
-        }
-    }
-
-    /// Convert to linear sRGB.
-    #[must_use]
-    pub fn to_linear_srgb(self) -> RgbaF32 {
-        self.to_oklab().to_linear_srgb()
-    }
-
-    /// Interpolate in Oklch space with shortest-path hue interpolation.
-    ///
-    /// `t = 0.0` returns `self`, `t = 1.0` returns `other`.
-    /// Hue interpolation takes the shortest arc around the color wheel.
-    #[must_use]
-    pub fn lerp(self, other: Self, t: f32) -> Self {
-        // Shortest-path hue interpolation
-        let mut dh = other.h - self.h;
-        if dh > 180.0 {
-            dh -= 360.0;
-        } else if dh < -180.0 {
-            dh += 360.0;
-        }
-        let h = self.h + dh * t;
-        // Normalize to [0, 360)
-        let h = ((h % 360.0) + 360.0) % 360.0;
-
-        Self {
-            l: self.l + (other.l - self.l) * t,
-            c: self.c + (other.c - self.c) * t,
-            h,
-            alpha: self.alpha + (other.alpha - self.alpha) * t,
-        }
-    }
-}
-
-impl Default for Oklch {
-    fn default() -> Self {
-        Self {
-            l: 0.0,
-            c: 0.0,
-            h: 0.0,
-            alpha: 1.0,
-        }
-    }
-}
-
-// ── Oklab Conversion Functions ─────────────────────────────────────────────
-
-/// Convert linear sRGB to Oklab.
-///
-/// Uses the Oklab forward transform (Björn Ottosson, 2020).
-/// Input RGB values should be in linear light (not gamma-encoded).
-#[must_use]
-#[allow(clippy::many_single_char_names)]
-pub fn linear_srgb_to_oklab(r: f32, g: f32, b: f32, alpha: f32) -> Oklab {
-    // Linear sRGB -> LMS (using Oklab's M1 matrix)
-    let lms_l = 0.412_221_46_f32.mul_add(r, 0.536_332_55_f32.mul_add(g, 0.051_445_99 * b));
-    let lms_m = 0.211_903_5_f32.mul_add(r, 0.680_699_5_f32.mul_add(g, 0.107_396_96 * b));
-    let lms_s = 0.088_302_46_f32.mul_add(r, 0.281_718_84_f32.mul_add(g, 0.629_978_7 * b));
-
-    // Cube root (perceptual compression)
-    let l_ = lms_l.cbrt();
-    let m_ = lms_m.cbrt();
-    let s_ = lms_s.cbrt();
-
-    // LMS -> Lab (using Oklab's M2 matrix)
-    Oklab {
-        l: 0.210_454_26_f32.mul_add(l_, 0.793_617_8_f32.mul_add(m_, -0.004_072_047 * s_)),
-        a: 1.977_998_5_f32.mul_add(l_, (-2.428_592_2_f32).mul_add(m_, 0.450_593_7 * s_)),
-        b: 0.025_904_037_f32.mul_add(l_, 0.782_771_8_f32.mul_add(m_, -0.808_675_77 * s_)),
-        alpha,
-    }
-}
-
-/// Convert Oklab to linear sRGB.
-///
-/// Uses the Oklab inverse transform. Output RGB values are in linear light.
-/// Values may fall outside `[0, 1]` for out-of-gamut colors — clamp if needed.
-#[must_use]
-pub fn oklab_to_linear_srgb(lab: Oklab) -> RgbaF32 {
-    // Lab -> LMS (inverse of M2)
-    let lms_l = lab
-        .l
-        .mul_add(1.0, 0.396_337_78_f32.mul_add(lab.a, 0.215_803_76 * lab.b));
-    let lms_m = lab.l.mul_add(
-        1.0,
-        (-0.105_561_346_f32).mul_add(lab.a, -0.063_854_17 * lab.b),
-    );
-    let lms_s = lab.l.mul_add(
-        1.0,
-        (-0.089_484_18_f32).mul_add(lab.a, -1.291_485_5 * lab.b),
-    );
-
-    // Undo cube root
-    let lin_l = lms_l * lms_l * lms_l;
-    let lin_m = lms_m * lms_m * lms_m;
-    let lin_s = lms_s * lms_s * lms_s;
-
-    // LMS -> linear sRGB (inverse of M1)
-    RgbaF32 {
-        r: 4.076_741_7_f32.mul_add(
-            lin_l,
-            (-3.307_711_6_f32).mul_add(lin_m, 0.230_969_94 * lin_s),
-        ),
-        g: (-1.268_438_f32).mul_add(lin_l, 2.609_757_4_f32.mul_add(lin_m, -0.341_319_38 * lin_s)),
-        b: (-0.004_196_086_3_f32).mul_add(
-            lin_l,
-            (-0.703_418_6_f32).mul_add(lin_m, 1.707_614_7 * lin_s),
-        ),
-        a: lab.alpha,
+        // `blend_over`'s receiver is the SOURCE and its argument is the
+        // destination — the opposite parameter order to this function's
+        // signature. Swapping these silently recolors every composited
+        // frame, so the orientation is pinned by a test.
+        let blended = LinearRgba::new(src[0], src[1], src[2], src[3]).blend_over(
+            LinearRgba::new(dst[0], dst[1], dst[2], dst[3]),
+            self.pixel_mode(),
+            opacity,
+        );
+        [blended.r, blended.g, blended.b, blended.a]
     }
 }

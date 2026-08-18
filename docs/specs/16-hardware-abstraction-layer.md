@@ -1291,6 +1291,7 @@ For each supported device family, maintain a set of captured USB packets (from v
 - Spec 19: Lian Li Uni Hub Driver — `LianLiProtocol`, `LianLiHidTransport`, `LianLiCtrlTransport`
 - `crates/hypercolor-types/src/device.rs` — `DeviceFamily`, `DeviceIdentifier`, `DeviceInfo`
 - `crates/hypercolor-core/src/device/traits.rs` — `DeviceBackend`, `DevicePlugin`, `BackendInfo`
+  (`DevicePlugin` is deleted; see Spec 76 §7.4)
 - `crates/hypercolor-core/src/device/discovery.rs` — `TransportScanner`, `DiscoveryOrchestrator`
 - `crates/hypercolor-core/src/device/lifecycle.rs` — `DeviceLifecycleManager`, `LifecycleAction`
 - `crates/hypercolor-core/src/device/manager.rs` — `BackendManager`, `OutputQueue`

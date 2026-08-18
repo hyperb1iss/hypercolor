@@ -19,10 +19,18 @@ use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResp
 pub use hypercolor_types::api::effects::{
     ApplyEffectPresetRequest, ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet,
     EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
-    EffectPresetSummary, EffectSummary, InstalledEffectResponse,
+    EffectPresetSummary, EffectSummary, InstalledEffectResponse, UpdateActiveControlsRequest,
 };
 
-/// Active effect response from `GET /api/v1/effects/active`.
+/// Active effect response from `GET /api/v1/effects/active`, narrowed to
+/// the running case.
+///
+/// Not a mirror of the shared wire type but a projection of it: the wire
+/// shape types `id` and `name` as `Option` because the idle body carries
+/// nulls, and every UI consumer here has already branched on `state` and
+/// wants them unwrapped. `fetch_active_effect` decodes the shared
+/// `hypercolor_types::api::effects::ActiveEffectResponse` and maps idle to
+/// `None`, so this type is only ever built from a decoded wire response.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ActiveEffectResponse {
     pub id: String,
@@ -37,7 +45,7 @@ pub struct ActiveEffectResponse {
     #[serde(default)]
     pub active_preset_modified: bool,
     #[serde(default)]
-    pub render_group_id: Option<String>,
+    pub zone_id: Option<String>,
     #[serde(default)]
     pub cover_image_url: Option<String>,
     /// Server-side controls version (matches the `ETag` header).
@@ -54,23 +62,6 @@ pub struct ActiveEffectResponse {
 pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
     let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
     Ok(list.items.into_iter().map(route_effect_summary).collect())
-}
-
-/// Fetch effects filtered to a single category.
-///
-/// The daemon's `/api/v1/effects` endpoint doesn't currently honor a
-/// `category` query parameter, so we filter client-side after fetching
-/// the full catalog. Kept as a separate function so callers have a
-/// single clear entry point and we can move filtering server-side later
-/// without touching call sites.
-pub async fn fetch_effects_by_category(category: &str) -> Result<Vec<EffectSummary>, String> {
-    let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
-    Ok(list
-        .items
-        .into_iter()
-        .filter(|effect| effect.category.eq_ignore_ascii_case(category))
-        .map(route_effect_summary)
-        .collect())
 }
 
 /// Fetch the currently active effect, if any.
@@ -90,7 +81,7 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
             control_values: effect.control_values,
             active_preset_id: effect.active_preset_id,
             active_preset_modified: effect.active_preset_modified,
-            render_group_id: effect.render_group_id,
+            zone_id: effect.zone_id,
             controls_version: effect.controls_version,
             cover_image_url: route_cover_image_url(effect.cover_image_url),
         })
@@ -127,19 +118,19 @@ pub async fn fetch_effect_presets(id: &str) -> Result<Vec<EffectPresetSummary>, 
 pub async fn apply_effect_preset(
     effect_id: &str,
     preset_id: &str,
-    render_group: Option<&str>,
+    zone_id: Option<&str>,
 ) -> Result<(), String> {
     let path = format!(
         "/api/v1/effects/{}/presets/{}/apply",
         path_segment(effect_id),
         path_segment(preset_id)
     );
-    match render_group {
-        Some(render_group) => {
+    match zone_id {
+        Some(zone_id) => {
             client::post_json_discard(
                 &path,
                 &ApplyEffectPresetRequest {
-                    render_group: Some(render_group.to_owned()),
+                    zone_id: Some(zone_id.to_owned()),
                 },
             )
             .await
@@ -161,26 +152,6 @@ pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<()
     }
 }
 
-/// Pause output while preserving the currently active effect and controls.
-pub async fn pause_effect() -> Result<(), String> {
-    client::put_json_discard(
-        "/api/v1/output/power",
-        &serde_json::json!({ "state": "paused" }),
-    )
-    .await
-    .map_err(Into::into)
-}
-
-/// Resume output for the preserved active effect.
-pub async fn resume_effect() -> Result<(), String> {
-    client::put_json_discard(
-        "/api/v1/output/power",
-        &serde_json::json!({ "state": "running" }),
-    )
-    .await
-    .map_err(Into::into)
-}
-
 /// Stop the currently active effect.
 pub async fn stop_effect() -> Result<(), String> {
     client::post_empty("/api/v1/effects/stop")
@@ -190,8 +161,10 @@ pub async fn stop_effect() -> Result<(), String> {
 
 /// Update effect control parameters.
 pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
-    let body = serde_json::json!({ "controls": controls });
-    client::patch_json_discard("/api/v1/effects/current/controls", &body)
+    let body = UpdateActiveControlsRequest {
+        controls: Some(controls.clone()),
+    };
+    client::patch_json_discard("/api/v1/effects/active/controls", &body)
         .await
         .map_err(Into::into)
 }
@@ -215,6 +188,11 @@ pub enum UpdateControlsOutcome {
 /// Successful control-PATCH payload — the envelope data carries the new
 /// `controls_version` (also present in the `ETag` header; the body is
 /// simpler to extract with `gloo_net`).
+///
+/// Stays UI-local rather than moving to hypercolor-types with the rest of
+/// the effects contracts: the daemon still builds that body with a
+/// `serde_json::json!` literal, because naming the shape would reprint its
+/// f32 control values at f32 precision and change the wire.
 #[derive(Debug, Deserialize)]
 struct ControlsVersionResponse {
     controls_version: u64,
@@ -233,7 +211,9 @@ pub async fn update_effect_controls(
     use gloo_net::http::Method;
 
     let url = format!("/api/v1/effects/{}/controls", path_segment(effect_id));
-    let body = serde_json::json!({ "controls": controls });
+    let body = UpdateActiveControlsRequest {
+        controls: Some(controls.clone()),
+    };
     let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
         Method::PATCH,
         &url,
@@ -251,7 +231,7 @@ pub async fn update_effect_controls(
 
 /// Reset all controls on the active effect to their defaults.
 pub async fn reset_controls() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/current/reset")
+    client::post_empty("/api/v1/effects/active/reset")
         .await
         .map_err(Into::into)
 }

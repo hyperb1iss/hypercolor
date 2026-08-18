@@ -5,8 +5,8 @@ use hypercolor_ui::components::canvas_preview::{
 };
 use hypercolor_ui::ws::interactive_preview::{
     InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker,
-    InteractivePreviewServerUpdate, close_message, input_inject_message, open_message,
-    server_update,
+    InteractivePreviewServerUpdate, close_message, closed_previews, input_inject_message,
+    open_message, server_updates,
 };
 use hypercolor_ui::ws::messages::interactive_preview_supported;
 use hypercolor_ui::ws::{
@@ -32,6 +32,8 @@ fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary
             ..EffectCapabilitySet::default()
         },
         cover_image_url: None,
+        controls: None,
+        presets: None,
     }
 }
 
@@ -91,21 +93,67 @@ fn interactive_preview_control_messages_are_addressed() {
     assert_eq!(
         open_message(&request),
         serde_json::json!({
-            "type": "interactive_preview_open",
-            "preview_id": "main",
-            "target": "active_scene",
-            "fps": 30,
-            "width": 640,
-            "height": 480,
-            "format": "jpeg",
+            "type": "subscribe",
+            "topics": [{
+                "topic": "interactive_preview",
+                "key": "main",
+                "config": {
+                    "target": "active_scene",
+                    "fps": 30,
+                    "width": 640,
+                    "height": 480,
+                    "format": "jpeg",
+                }
+            }]
         })
     );
     assert_eq!(
         close_message("main"),
         serde_json::json!({
-            "type": "interactive_preview_close",
-            "preview_id": "main",
+            "type": "unsubscribe",
+            "topics": [{ "topic": "interactive_preview", "key": "main" }]
         })
+    );
+}
+
+#[test]
+fn an_acknowledgment_reports_open_and_closed_previews_together() {
+    let ack = serde_json::json!({
+        "type": "subscribed",
+        "topics": [
+            { "topic": "events" },
+            {
+                "topic": "interactive_preview",
+                "key": "main",
+                "config": { "fps": 30 },
+                "publication_id": 11
+            }
+        ]
+    });
+
+    assert_eq!(
+        server_updates(&ack),
+        vec![InteractivePreviewServerUpdate::Opened {
+            preview_id: "main".to_owned(),
+            publication_id: 11,
+        }]
+    );
+    // "inspector" is absent from the live set, so it has closed.
+    assert_eq!(
+        closed_previews(&ack, &["main".to_owned(), "inspector".to_owned()]),
+        vec![InteractivePreviewServerUpdate::Closed {
+            preview_id: "inspector".to_owned(),
+        }]
+    );
+    assert!(closed_previews(&ack, &["main".to_owned()]).is_empty());
+
+    // A publication id of zero is not an open preview.
+    assert!(
+        server_updates(&serde_json::json!({
+            "type": "subscribed",
+            "topics": [{ "topic": "interactive_preview", "key": "main", "publication_id": 0 }]
+        }))
+        .is_empty()
     );
 }
 
@@ -162,25 +210,25 @@ fn interactive_preview_lifecycle_fences_rapid_reopen_until_latest_ack() {
 
 #[test]
 fn interactive_preview_rejection_is_addressed_and_terminal() {
-    let update = server_update(&serde_json::json!({
+    let updates = server_updates(&serde_json::json!({
         "type": "error",
         "code": "unavailable",
         "details": { "preview_id": "main" },
-    }))
-    .expect("addressed error should parse");
+    }));
+    assert_eq!(updates.len(), 1, "an addressed error should parse");
     let mut tracker = InteractivePreviewLifecycleTracker::default();
     tracker.request_open("main");
-    tracker.apply(update);
+    tracker.apply(updates.into_iter().next().expect("one update"));
     assert_eq!(
         tracker.lifecycles().get("main"),
         Some(&InteractivePreviewLifecycle::Rejected)
     );
     assert!(
-        server_update(&serde_json::json!({
+        server_updates(&serde_json::json!({
             "type": "error",
             "details": { "preview_id": "" },
         }))
-        .is_none()
+        .is_empty()
     );
 }
 

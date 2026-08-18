@@ -19,9 +19,7 @@ use hypercolor_daemon::mcp::prompts::{
 use hypercolor_daemon::mcp::resources::{
     build_resource_definitions, is_valid_resource_uri, read_resource, read_resource_with_state,
 };
-use hypercolor_daemon::mcp::tools::{
-    ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
-};
+use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool_with_state};
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store::SceneStore;
@@ -45,6 +43,7 @@ use hypercolor_types::spatial::{
 };
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
+use strum::VariantNames;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -980,11 +979,11 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(assign_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(assign_result["group"]["layout"]["canvas_width"], 320);
-    assert_eq!(assign_result["group"]["controls"]["title"]["text"], "CPU");
+    assert_eq!(assign_result["zone"]["layout"]["canvas_width"], 320);
+    assert_eq!(assign_result["zone"]["controls"]["title"]["text"], "CPU");
 
     let assign_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -997,7 +996,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
 
     let mut saw_assign_event = false;
     while let Ok(timestamped) = assign_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -1027,12 +1026,12 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(clear_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(clear_result["cleared"], true);
     assert_eq!(
-        clear_result["group"]["display_target"]["device_id"],
+        clear_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert!(clear_result["group"]["effect_id"].is_null());
+    assert!(clear_result["zone"]["effect_id"].is_null());
     assert_eq!(
-        clear_result["group"]["layers"].as_array().map(Vec::len),
+        clear_result["zone"]["layers"].as_array().map(Vec::len),
         Some(0)
     );
 
@@ -1050,7 +1049,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
 
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -1083,6 +1082,150 @@ async fn stateful_set_effect_rejects_display_faces() {
     .expect_err("display faces should not be applied as LED effects");
 
     assert!(format!("{error}").contains("display face"));
+}
+
+/// `set_effect` takes no transition argument at all.
+///
+/// The parameter's only accepted value was its no-op, which fails the
+/// same rule that deletes an ignored parameter (Spec 78 §6.1). The
+/// shared transition vocabulary arrives with the 78.1 contract; until
+/// then the tool advertises a closed shape with no transition in it.
+#[test]
+fn set_effect_advertises_no_transition_argument() {
+    let tools = build_tool_definitions();
+    let set_effect = tools
+        .iter()
+        .find(|tool| tool.name == "set_effect")
+        .expect("set_effect should be registered");
+
+    let properties = set_effect.input_schema["properties"]
+        .as_object()
+        .expect("set_effect should declare properties");
+    let mut declared = properties.keys().cloned().collect::<Vec<_>>();
+    declared.sort();
+    assert_eq!(declared, vec!["controls".to_owned(), "query".to_owned()]);
+    assert_eq!(
+        set_effect.input_schema["additionalProperties"],
+        json!(false),
+        "the closed shape is what stops a client sending a deleted parameter"
+    );
+}
+
+/// A deleted parameter is refused, not quietly dropped.
+///
+/// `additionalProperties: false` is enforced in the dispatch path
+/// because nothing under `rmcp` validates a call against the schema.
+/// Without that, a caller who kept sending `transition_ms` would get a
+/// cut and no indication the request had been ignored, which is the
+/// same silence the phantom-parameter deletion exists to end.
+#[tokio::test]
+async fn deleted_parameters_are_refused_rather_than_dropped() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    for (tool, params, phantom) in [
+        (
+            "set_effect",
+            json!({ "query": "aurora", "transition_ms": 500 }),
+            "transition_ms",
+        ),
+        (
+            "set_effect",
+            json!({ "query": "aurora", "devices": ["strip-1"] }),
+            "devices",
+        ),
+        (
+            "set_brightness",
+            json!({ "brightness": 42, "device_id": "strip-1" }),
+            "device_id",
+        ),
+        (
+            "stop_effect",
+            json!({ "transition_ms": 300 }),
+            "transition_ms",
+        ),
+        ("diagnose", json!({ "checks": ["connectivity"] }), "checks"),
+    ] {
+        let result = execute_tool_with_state(tool, &params, state.as_ref()).await;
+        let error = result.expect_err(&format!(
+            "{tool} must refuse the deleted parameter '{phantom}' rather than drop it"
+        ));
+        assert!(
+            format!("{error}").contains(phantom),
+            "{tool}'s refusal should name '{phantom}': {error}"
+        );
+    }
+}
+
+/// A refused call changes nothing.
+#[tokio::test]
+async fn a_refused_deleted_parameter_leaves_the_scene_untouched() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let error = execute_tool_with_state(
+        "set_effect",
+        &json!({ "query": "aurora", "transition_ms": 500 }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("set_effect no longer accepts a transition argument");
+    assert!(
+        format!("{error}").contains("transition_ms"),
+        "the refusal names the parameter: {error}"
+    );
+
+    let manager = state.scene_manager.read().await;
+    assert!(
+        manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .and_then(|zone| zone.effect_id)
+            .is_none(),
+        "a refused call must not load the effect"
+    );
+}
+
+#[tokio::test]
+async fn stateful_set_effect_echoes_the_transition_it_actually_applied() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let result =
+        execute_tool_with_state("set_effect", &json!({ "query": "aurora" }), state.as_ref())
+            .await
+            .expect("an apply with no transition should succeed");
+
+    assert_eq!(result["applied"], true);
+    assert_eq!(
+        result["transition_ms"], 0,
+        "the echoed duration is the one the daemon applied, not a default it ignored"
+    );
+}
+
+#[tokio::test]
+async fn stateful_set_color_refuses_a_transition_it_cannot_apply() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Solid Color").await;
+
+    let error = execute_tool_with_state(
+        "set_color",
+        &json!({
+            "color": "#ff6ac1",
+            "transition_ms": 400
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("effect transitions are not implemented");
+    assert!(
+        format!("{error}").contains("not implemented yet"),
+        "unexpected error: {error}"
+    );
 }
 
 #[tokio::test]
@@ -1224,7 +1367,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(trigger, ChangeTrigger::Mcp);
                 saw_started_event = true;
             }
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 scene_id: event_scene_id,
                 kind,
                 role,
@@ -1279,7 +1422,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(reason, EffectStopReason::Stopped);
                 saw_stopped_event = true;
             }
-            HypercolorEvent::RenderGroupChanged { kind, role, .. } => {
+            HypercolorEvent::ZoneChanged { kind, role, .. } => {
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
                 assert_eq!(kind, ZoneChangeKind::Updated);
                 saw_updated_group = true;
@@ -1498,24 +1641,206 @@ fn tool_definitions_have_valid_schemas() {
     );
 }
 
+/// Every tool's top-level argument set is closed.
+///
+/// The dispatch gate only refuses undeclared arguments for tools whose
+/// schema says `additionalProperties: false`, so a tool without the
+/// marker silently drops whatever it is handed. That is the same
+/// decoration-instead-of-enforcement failure the phantom deletions
+/// exist to end, one layer up, and it is why this sweeps all of them
+/// rather than naming the ones that were fixed: tool eighteen cannot
+/// ship open.
+///
+/// Nested objects are deliberately exempt. `set_effect.controls` and
+/// the display-face payload carry per-effect keys the schema cannot
+/// enumerate, so they stay open on purpose.
 #[test]
-fn set_color_tool_executes_and_validates() {
-    let result = execute_tool("set_color", &json!({ "color": "#ff6ac1" }))
-        .expect("set_color should succeed");
-    assert_eq!(result["resolved_color"]["hex"], "#ff6ac1");
+fn every_tool_closes_its_top_level_argument_set() {
+    for tool in build_tool_definitions() {
+        assert_eq!(
+            tool.input_schema["additionalProperties"],
+            json!(false),
+            "{} must declare additionalProperties: false, or the dispatch \
+             gate will silently drop arguments it does not declare",
+            tool.name
+        );
+    }
+}
 
-    let error =
-        execute_tool("set_color", &json!({})).expect_err("missing color should return an error");
+/// The gate refuses an undeclared argument on every tool.
+///
+/// Closing the schemas and enforcing them are two different things, so
+/// this drives the real dispatch path rather than reading the schema.
+#[tokio::test]
+async fn undeclared_arguments_are_refused_on_every_tool() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+
+    for tool in build_tool_definitions() {
+        let mut params = json!({ "hypercolor_not_a_real_argument": 1 });
+        // Satisfy required arguments so the refusal is provably about
+        // the undeclared key rather than a missing one.
+        if let Some(required) = tool.input_schema["required"].as_array() {
+            let object = params.as_object_mut().expect("params is an object");
+            for name in required.iter().filter_map(Value::as_str) {
+                object.insert(name.to_owned(), json!("placeholder"));
+            }
+        }
+
+        let error = execute_tool_with_state(&tool.name, &params, state.as_ref())
+            .await
+            .expect_err(&format!(
+                "{} should refuse an undeclared argument",
+                tool.name
+            ));
+        assert!(
+            format!("{error}").contains("hypercolor_not_a_real_argument"),
+            "{}'s refusal should name the undeclared argument: {error}",
+            tool.name
+        );
+    }
+}
+
+/// A parameter exists only when its behavior does (Spec 78 §6.1).
+///
+/// Each entry below was advertised in a tool's schema while the handler
+/// either never read it or read it only to echo it back. They are named
+/// here rather than described so that reintroducing one fails loudly.
+#[test]
+fn deleted_phantom_parameters_stay_deleted() {
+    let phantoms: &[(&str, &str)] = &[
+        ("set_effect", "devices"),
+        ("set_effect", "transition_ms"),
+        ("set_color", "devices"),
+        ("set_brightness", "device_id"),
+        ("set_brightness", "transition_ms"),
+        ("diagnose", "device_id"),
+        ("diagnose", "checks"),
+        ("stop_effect", "transition_ms"),
+        ("create_scene", "transition_ms"),
+        ("set_profile", "transition_ms"),
+        // Nested, so the closed-schema sweep cannot see it: the
+        // handler reads trigger.type and nothing else.
+        ("create_scene", "trigger.cron"),
+    ];
+
+    let tools = build_tool_definitions();
+    for (tool_name, param) in phantoms {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == *tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} should be registered"));
+        let mut node = &tool.input_schema["properties"];
+        for (depth, segment) in param.split('.').enumerate() {
+            if depth > 0 {
+                node = &node["properties"];
+            }
+            let Some(next) = node.get(segment) else {
+                node = &Value::Null;
+                break;
+            };
+            node = next;
+        }
+        assert!(
+            node.is_null(),
+            "{tool_name} must not advertise the phantom parameter {param}"
+        );
+    }
+}
+
+/// The category filter's advertised vocabulary comes from the type.
+#[test]
+fn list_effects_advertises_the_real_effect_categories() {
+    let tools = build_tool_definitions();
+    let list_effects = tools
+        .iter()
+        .find(|tool| tool.name == "list_effects")
+        .expect("list_effects should be registered");
+
+    let advertised = list_effects.input_schema["properties"]["category"]["enum"]
+        .as_array()
+        .expect("the category filter should advertise an enum")
+        .iter()
+        .map(|value| value.as_str().expect("categories are strings").to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(advertised, EffectCategory::VARIANTS);
+    for fabricated in ["reactive", "gaming", "productivity"] {
+        assert!(
+            !advertised.iter().any(|value| value == fabricated),
+            "'{fabricated}' is not an EffectCategory and must not be advertised"
+        );
+    }
+}
+
+/// `destructive` is a per-tool fact, not a hardcoded false.
+#[test]
+fn tool_annotations_report_what_each_tool_actually_does() {
+    let tools = build_tool_definitions();
+    let annotation = |name: &str| {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} should be registered"));
+        (tool.read_only, tool.destructive)
+    };
+
+    // Tools that discard state the caller cannot recover.
+    for name in [
+        "stop_effect",
+        "set_effect",
+        "set_color",
+        "activate_scene",
+        "set_profile",
+        "set_display_face",
+    ] {
+        assert_eq!(annotation(name), (false, true), "{name}");
+    }
+
+    // Reversible value writes and pure creations.
+    for name in ["set_brightness", "set_output_power", "create_scene"] {
+        assert_eq!(annotation(name), (false, false), "{name}");
+    }
+
+    // Read-only tools never claim to destroy anything.
+    for tool in tools.iter().filter(|tool| tool.read_only) {
+        assert!(!tool.destructive, "{} is read-only", tool.name);
+    }
+}
+
+#[tokio::test]
+async fn set_color_tool_rejects_missing_color() {
+    let state = fresh_app_state();
+
+    let error = execute_tool_with_state("set_color", &json!({}), &state)
+        .await
+        .expect_err("missing color should return an error");
     assert!(matches!(error, ToolError::MissingParam(_)));
 }
 
 #[test]
-fn set_output_power_tool_validates_desired_state() {
-    let result = execute_tool("set_output_power", &json!({ "state": "paused" }))
-        .expect("paused output state should be accepted");
-    assert_eq!(result["state"], "paused");
+fn fuzzy_color_shorthand_hex_requires_an_explicit_hash() {
+    let word = mcp::fuzzy::resolve_color("bed").expect("a hex-digit word reaches the name matcher");
+    assert_ne!(
+        word.hex, "#bbeedd",
+        "hashless shorthand must not shadow named colors"
+    );
 
-    let error = execute_tool("set_output_power", &json!({ "state": "off" }))
+    let shorthand = mcp::fuzzy::resolve_color("#bed").expect("hash-prefixed shorthand is hex");
+    assert_eq!(shorthand.hex, "#bbeedd");
+    assert_eq!((shorthand.r, shorthand.g, shorthand.b), (0xbb, 0xee, 0xdd));
+
+    let hashless = mcp::fuzzy::resolve_color("ff8800").expect("hashless six-digit hex is hex");
+    assert_eq!(hashless.hex, "#ff8800");
+    assert_eq!((hashless.r, hashless.g, hashless.b), (0xff, 0x88, 0x00));
+}
+
+#[tokio::test]
+async fn set_output_power_tool_validates_desired_state() {
+    let state = fresh_app_state();
+
+    let error = execute_tool_with_state("set_output_power", &json!({ "state": "off" }), &state)
+        .await
         .expect_err("unknown output state should be rejected");
     assert!(matches!(error, ToolError::InvalidParam { .. }));
 }
@@ -1552,6 +1877,30 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
     .expect("resume should succeed");
     assert_eq!(running["state"], "running");
     assert!(!state.power_state.borrow().sleeping());
+}
+
+/// `set_brightness` is a projection of the output service, so the tool
+/// moves the same live state `GET /output` reports and persists the
+/// same store the REST route does.
+#[tokio::test]
+async fn set_brightness_tool_projects_the_output_service() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+
+    let response = execute_tool_with_state("set_brightness", &json!({ "brightness": 35 }), &state)
+        .await
+        .expect("brightness should be accepted");
+    assert_eq!(response["brightness"], 35);
+    assert_eq!(response["previous_brightness"], 100);
+    assert!((state.power_state.borrow().global_brightness - 0.35).abs() < 1e-6);
+    assert!(
+        (state.device_settings.read().await.global_brightness() - 0.35).abs() < 1e-6,
+        "the tool must persist through the same store the REST route writes"
+    );
+
+    let error = execute_tool_with_state("set_brightness", &json!({ "brightness": 150 }), &state)
+        .await
+        .expect_err("out-of-range brightness should be rejected");
+    assert!(matches!(error, ToolError::InvalidParam { .. }));
 }
 
 #[test]
@@ -1644,7 +1993,7 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert_eq!(assign_result["live_scope"], "default");
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
 

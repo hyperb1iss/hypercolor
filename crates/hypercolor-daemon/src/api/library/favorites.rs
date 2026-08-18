@@ -5,35 +5,22 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
-use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 
 use super::unix_epoch_ms;
 
-// ── Request / Response Types ────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct FavoriteSummary {
-    pub effect_id: String,
-    pub effect_name: String,
-    pub added_at_ms: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct FavoriteListResponse {
-    pub items: Vec<FavoriteSummary>,
-    pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddFavoriteRequest {
-    pub effect: String,
-}
+// Wire contracts live in hypercolor-types::api::library — shared with
+// the web UI and the TUI.
+pub use hypercolor_types::api::library::{
+    AddFavoriteRequest, AddFavoriteResponse, DeleteFavoriteResponse, FavoriteListResponse,
+    FavoriteSummary,
+};
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -80,7 +67,7 @@ pub async fn add_favorite(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return ApiError::not_found(format!("Effect not found: {}", body.effect));
+            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
         };
         effect
     };
@@ -107,14 +94,14 @@ pub async fn add_favorite(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "favorite": FavoriteSummary {
+    ApiResponse::ok(AddFavoriteResponse {
+        favorite: FavoriteSummary {
             effect_id: favorite.effect_id.to_string(),
             effect_name: effect.name,
             added_at_ms: favorite.added_at_ms,
         },
-        "created": !existing,
-    }))
+        created: !existing,
+    })
 }
 
 /// `DELETE /api/v1/library/favorites/:effect` — remove a favorite by effect id/name.
@@ -125,7 +112,7 @@ pub async fn remove_favorite(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(effect) = resolve_effect_metadata(&registry, &effect) else {
-            return ApiError::not_found("Favorite effect not found");
+            return DomainError::not_found(ResourceKind::Favorite, &effect).into_response();
         };
         effect
     };
@@ -135,7 +122,7 @@ pub async fn remove_favorite(
         Err(error) => return super::store_error_to_response(&error),
     };
     if !removed {
-        return ApiError::not_found("Favorite effect not found");
+        return DomainError::not_found(ResourceKind::Favorite, effect.id).into_response();
     }
     state
         .event_bus
@@ -145,8 +132,8 @@ pub async fn remove_favorite(
             kind: LibraryChangeKind::Removed,
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "effect_id": effect.id.to_string(),
-        "deleted": true,
-    }))
+    ApiResponse::ok(DeleteFavoriteResponse {
+        effect_id: effect.id.to_string(),
+        deleted: true,
+    })
 }

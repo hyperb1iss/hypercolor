@@ -2,6 +2,12 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use hypercolor_types::api::effects::{
+    ApplyEffectRequest, ResetControlsRequest, SetEffectLayoutRequest, TransitionRequest,
+    UpdateActiveControlsRequest,
+};
+use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
+use serde_json::Value;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -41,9 +47,9 @@ pub enum EffectCommand {
 /// Arguments for `effects list`.
 #[derive(Debug, Args)]
 pub struct EffectListArgs {
-    /// Filter by engine type (native, web, wasm).
+    /// Filter by rendering source (native, html, shader).
     #[arg(long)]
-    pub engine: Option<String>,
+    pub source: Option<String>,
 
     /// Filter to audio-reactive effects only.
     #[arg(long)]
@@ -162,8 +168,8 @@ pub async fn execute(args: &EffectsArgs, client: &DaemonClient, ctx: &OutputCont
             execute_activate(activate_args, client, ctx).await
         }
         EffectCommand::Stop => execute_stop(client, ctx).await,
-        EffectCommand::Pause => execute_output_power(client, ctx, "paused").await,
-        EffectCommand::Resume => execute_output_power(client, ctx, "running").await,
+        EffectCommand::Pause => execute_output_power(client, ctx, OutputPowerMode::Paused).await,
+        EffectCommand::Resume => execute_output_power(client, ctx, OutputPowerMode::Running).await,
         EffectCommand::Info(info_args) => execute_info(info_args, client, ctx).await,
         EffectCommand::Patch(patch_args) => execute_patch(patch_args, client, ctx).await,
         EffectCommand::Reset => execute_reset(client, ctx).await,
@@ -180,14 +186,14 @@ async fn execute_list(
     let mut path = "/effects".to_string();
     let mut query_parts = Vec::new();
 
-    if let Some(engine) = &args.engine {
-        query_parts.push(format!("engine={}", urlencoded(engine)));
+    if let Some(source) = &args.source {
+        query_parts.push(format!("source={}", urlencoded(source)));
     }
     if args.audio {
-        query_parts.push("audio=true".to_string());
+        query_parts.push("audio_reactive=true".to_string());
     }
     if let Some(search) = &args.search {
-        query_parts.push(format!("search={}", urlencoded(search)));
+        query_parts.push(format!("q={}", urlencoded(search)));
     }
     if let Some(category) = &args.category {
         query_parts.push(format!("category={}", urlencoded(category)));
@@ -253,13 +259,22 @@ async fn execute_activate(
         controls.insert("intensity".to_string(), serde_json::Value::from(intensity));
     }
 
-    let body = serde_json::json!({
-        "controls": controls,
-        "transition": {
-            "type": if args.transition == 0 { "cut" } else { "crossfade" },
-            "duration_ms": args.transition,
-        },
-    });
+    let body = ApplyEffectRequest {
+        controls: Some(Value::Object(controls)),
+        transition: Some(TransitionRequest {
+            transition_type: Some(
+                if args.transition == 0 {
+                    "cut"
+                } else {
+                    "crossfade"
+                }
+                .to_owned(),
+            ),
+            duration_ms: Some(u64::from(args.transition)),
+        }),
+        preset_id: None,
+        zone_id: None,
+    };
 
     // The daemon's apply endpoint uses effect IDs in the path.
     // URL-encode the effect name/slug for path-based lookup.
@@ -297,19 +312,24 @@ async fn execute_stop(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
 async fn execute_output_power(
     client: &DaemonClient,
     ctx: &OutputContext,
-    state: &str,
+    state: OutputPowerMode,
 ) -> Result<()> {
     let response = client
-        .put("/output/power", &serde_json::json!({ "state": state }))
+        .patch(
+            "/output",
+            &OutputPatchRequest {
+                power: Some(state),
+                brightness: None,
+            },
+        )
         .await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            ctx.success(if state == "paused" {
-                "Output paused"
-            } else {
-                "Output resumed"
+            ctx.success(match state {
+                OutputPowerMode::Paused => "Output paused",
+                OutputPowerMode::Running => "Output resumed",
             });
         }
     }
@@ -365,8 +385,10 @@ async fn execute_patch(
         controls.insert(key.clone(), parse_control_value(value));
     }
 
-    let body = serde_json::json!({ "controls": controls });
-    let response = client.patch("/effects/current/controls", &body).await?;
+    let body = UpdateActiveControlsRequest {
+        controls: Some(Value::Object(controls)),
+    };
+    let response = client.patch("/effects/active/controls", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -381,7 +403,7 @@ async fn execute_patch(
 
 async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     let response = client
-        .post("/effects/current/reset", &serde_json::json!({}))
+        .post("/effects/active/reset", &ResetControlsRequest::default())
         .await?;
 
     match ctx.format {
@@ -433,7 +455,9 @@ async fn execute_layout(
         }
         EffectLayoutCommand::Set(set_args) => {
             let path = format!("/effects/{}/layout", urlencoded(&set_args.effect));
-            let body = serde_json::json!({ "layout_id": set_args.layout });
+            let body = SetEffectLayoutRequest {
+                layout_id: set_args.layout.clone(),
+            };
             let response = client.put(&path, &body).await?;
 
             match ctx.format {

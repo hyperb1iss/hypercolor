@@ -1,13 +1,13 @@
 //! Zone (render group) API contracts — `/api/v1/scenes/{id}/zones/*`.
 //!
-//! Every mutation is guarded by an `If-Match: <groups_revision>`
+//! Every mutation is guarded by an `If-Match: <zones_revision>`
 //! precondition; the daemon replies 412 with the authoritative revision
 //! when it fails.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::scene::{UnassignedBehavior, Zone};
+use crate::scene::{UnassignedBehavior, Zone, ZoneId};
 use crate::spatial::Output;
 
 /// Response for `GET /api/v1/scenes/{id}/zones`.
@@ -15,7 +15,7 @@ use crate::spatial::Output;
 pub struct ZoneListResponse {
     #[schema(value_type = Vec<Object>)]
     pub items: Vec<Zone>,
-    pub groups_revision: u64,
+    pub zones_revision: u64,
 }
 
 /// Response carrying one zone after a create/get/update.
@@ -23,7 +23,7 @@ pub struct ZoneListResponse {
 pub struct ZoneResponse {
     #[schema(value_type = Object)]
     pub zone: Zone,
-    pub groups_revision: u64,
+    pub zones_revision: u64,
 }
 
 /// Response carrying the full zone set after a bulk mutation.
@@ -31,7 +31,18 @@ pub struct ZoneResponse {
 pub struct ZoneMutationResponse {
     #[schema(value_type = Vec<Object>)]
     pub items: Vec<Zone>,
-    pub groups_revision: u64,
+    pub zones_revision: u64,
+}
+
+/// Response for `DELETE /api/v1/scenes/{id}/zones/{zone_id}`.
+///
+/// The revision is also carried in the response headers; it is repeated
+/// in the body so a client that only reads JSON stays in step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteZoneResponse {
+    pub zone_id: ZoneId,
+    pub deleted: bool,
+    pub zones_revision: u64,
 }
 
 /// Response for the unassigned-behavior PATCH.
@@ -39,7 +50,7 @@ pub struct ZoneMutationResponse {
 pub struct UnassignedBehaviorResponse {
     #[schema(value_type = String)]
     pub unassigned_behavior: UnassignedBehavior,
-    pub groups_revision: u64,
+    pub zones_revision: u64,
 }
 
 /// Request body for `POST /api/v1/scenes/{id}/zones`.

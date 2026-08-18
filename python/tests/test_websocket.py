@@ -17,8 +17,10 @@ import pytest
 
 from hypercolor import websocket as websocket_module, ws_protocol
 from hypercolor.websocket import (
+    ActiveSubscription,
     BinaryMessage,
     CanvasData,
+    DisplayPreviewData,
     EventMessage,
     FrameData,
     HelloMessage,
@@ -51,13 +53,13 @@ def test_ws_protocol_constants_match_manifest() -> None:
     manifest = msgspec.json.decode(PROTOCOL_MANIFEST.read_bytes())
     assert isinstance(manifest, dict)
 
-    channels = _expect_list(manifest["channels"])
+    topics = _expect_list(manifest["topics"])
     binary_messages = _expect_list(manifest["binary_messages"])
     preview_formats = _expect_dict(_expect_dict(manifest["preview_frame"])["formats"])
 
     assert manifest["version"] == ws_protocol.WS_PROTOCOL_VERSION
     assert manifest["subprotocol"] == ws_protocol.WS_SUBPROTOCOL
-    assert list(ws_protocol.WS_CHANNELS) == [str(channel["name"]) for channel in channels]
+    assert list(ws_protocol.WS_TOPICS) == [str(topic["name"]) for topic in topics]
     assert list(ws_protocol.WS_CAPABILITIES) == _expect_list(manifest["capabilities"])
     assert _thaw_json(ws_protocol.JSON_PAYLOAD_CONTRACTS) == _expect_dict(
         manifest["json_payloads"]
@@ -65,8 +67,8 @@ def test_ws_protocol_constants_match_manifest() -> None:
     assert dict(ws_protocol.BINARY_MESSAGE_TAGS) == {
         str(message["name"]): int(message["tag"]) for message in binary_messages
     }
-    assert dict(ws_protocol.PREVIEW_CHANNEL_TAGS) == {
-        int(message["tag"]): str(message["channel"])
+    assert dict(ws_protocol.PREVIEW_TOPIC_TAGS) == {
+        int(message["tag"]): str(message["topic"])
         for message in binary_messages
         if message["layout"] == "preview_frame"
     }
@@ -107,12 +109,19 @@ def test_ws_protocol_generator_round_trips_non_bmp_strings() -> None:
 
 def test_decode_hello_message() -> None:
     message = HypercolorEventStream._decode_json(
-        '{"type":"hello","version":"1.0","state":{"running":true},"capabilities":["events"],"subscriptions":["events"]}'
+        '{"type":"hello","version":"1.0","state":{"running":true},'
+        '"capabilities":["events"],'
+        '"subscriptions":[{"topic":"events"},'
+        '{"topic":"display_preview","key":"device-abc","config":{"fps":15}}]}'
     )
 
     assert isinstance(message, HelloMessage)
     assert message.version == "1.0"
     assert message.capabilities == ["events"]
+    assert message.subscriptions == [
+        ActiveSubscription(topic="events"),
+        ActiveSubscription(topic="display_preview", key="device-abc", config={"fps": 15}),
+    ]
 
 
 def test_parse_led_frame() -> None:
@@ -170,22 +179,64 @@ def test_parse_canvas() -> None:
     assert message.pixels == pixels
 
 
-def test_parse_display_preview_jpeg() -> None:
+def test_parse_keyed_display_preview_jpeg() -> None:
     jpeg = b"\xff\xd8\xff\xe0preview"
-    payload = bytearray()
-    payload.extend(b"\x07")
+    device_id = b"device-abc"
+    payload = bytearray((0x07, len(device_id)))
     payload.extend(struct.pack("<II", 8, 1001))
     payload.extend(struct.pack("<HH", 64, 32))
     payload.extend(b"\x02")
+    payload.extend(device_id)
     payload.extend(jpeg)
 
-    message = HypercolorEventStream._parse_canvas(bytes(payload))
+    message = HypercolorEventStream._decode_binary(bytes(payload))
 
-    assert isinstance(message, CanvasData)
-    assert message.channel == "display_preview"
+    assert isinstance(message, DisplayPreviewData)
+    assert message.device_id == "device-abc"
+    assert message.frame_number == 8
     assert message.format == "jpeg"
     assert message.width == 64
+    assert message.height == 32
     assert message.pixels == jpeg
+
+
+def test_parse_wide_display_preview() -> None:
+    pixels = bytes(range(12))
+    device_id = b"device-abc"
+    payload = bytearray((0x12, len(device_id)))
+    payload.extend(struct.pack("<II", 3, 4))
+    payload.extend(struct.pack("<II", 4, 1))
+    payload.extend(b"\x00")
+    payload.extend(device_id)
+    payload.extend(pixels)
+
+    message = HypercolorEventStream._decode_binary(bytes(payload))
+
+    assert isinstance(message, DisplayPreviewData)
+    assert message.device_id == "device-abc"
+    assert message.width == 4
+    assert message.height == 1
+    assert message.format == "rgb"
+    assert message.pixels == pixels
+
+
+def test_parse_wide_interactive_preview() -> None:
+    pixels = bytes(range(12))
+    preview_id = b"main"
+    payload = bytearray((0x0D, len(preview_id)))
+    payload.extend(struct.pack("<II", 5, 6))
+    payload.extend(struct.pack("<II", 4, 1))
+    payload.extend(b"\x00")
+    payload.extend(preview_id)
+    payload.extend(pixels)
+
+    message = HypercolorEventStream._decode_binary(bytes(payload))
+
+    assert isinstance(message, InteractivePreviewData)
+    assert message.preview_id == "main"
+    assert message.width == 4
+    assert message.height == 1
+    assert message.pixels == pixels
 
 
 def test_parse_addressed_interactive_preview() -> None:
@@ -242,7 +293,9 @@ def test_interactive_preview_rejects_truncated_raw_payloads(
 
 
 def test_unknown_json_message_falls_back_to_event() -> None:
-    message = HypercolorEventStream._decode_json('{"type":"subscribed","channels":["events"]}')
+    message = HypercolorEventStream._decode_json(
+        '{"type":"subscribed","topics":[{"topic":"events"}]}'
+    )
 
     assert isinstance(message, EventMessage)
     assert message.event == "subscribed"
@@ -930,6 +983,6 @@ def test_unknown_binary_tag_is_tolerated() -> None:
 
 
 def test_client_messages_are_text_frames() -> None:
-    encoded = _encode_text({"type": "subscribe", "channels": ["frames"]})
+    encoded = _encode_text({"type": "subscribe", "topics": [{"topic": "frames"}]})
 
     assert isinstance(encoded, str)

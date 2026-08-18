@@ -126,7 +126,7 @@ json_response       = false   # Use JSON responses instead of SSE framing
 sse_keep_alive_secs = 15      # SSE heartbeat interval
 ```
 
-Once enabled, the MCP server exposes 16 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
+Once enabled, the MCP server exposes 17 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
 
 ---
 
@@ -207,12 +207,12 @@ beat_sensitivity = 0.6      # Beat detection threshold (0.0 = never, 1.0 = alway
 **`device`** special values: `"default"` captures from the system monitor (what you hear); `"microphone"` uses the default input device; any other string is matched against PulseAudio/PipeWire device names. List available devices:
 
 ```bash
-curl http://localhost:9420/api/v1/audio/devices | jq
+curl http://localhost:9420/api/v1/system/audio-devices | jq
 ```
 
 **`fft_size`** must be a power of two. Smaller values give faster response, larger values give better low-frequency resolution. 1024 is a good default for most music.
 
-Audio config changes applied via `config set --live` or the REST API take effect immediately, and the daemon reconfigures the input pipeline without restarting.
+Audio config changes take effect immediately through `config set` or the REST API, and the daemon reconfigures the input pipeline without restarting. Pass `--no-live` (or `?live=false`) to persist the value without disturbing the running pipeline.
 
 ---
 
@@ -496,11 +496,11 @@ hypercolor config show
 # Read a dotted key
 hypercolor config get daemon.target_fps
 
-# Write a key (persisted to file)
+# Write a key (persisted, and applied live when the key allows it)
 hypercolor config set daemon.target_fps 60
 
-# Write and apply to the running daemon immediately
-hypercolor config set audio.device "alsa_output.usb-Focusrite-monitor" --live
+# Persist a key without touching the running daemon
+hypercolor config set audio.device "alsa_output.usb-Focusrite-monitor" --no-live
 
 # Reset one key to its default
 hypercolor config reset audio.smoothing
@@ -531,26 +531,27 @@ hypercolor config profile list
 curl http://localhost:9420/api/v1/config | jq
 
 # Read a single key
-curl "http://localhost:9420/api/v1/config/get?key=audio.device" | jq
+curl http://localhost:9420/api/v1/config/keys/audio.device | jq
 
-# Set a key (persisted; add "live": true to also apply immediately)
-curl -X POST http://localhost:9420/api/v1/config/set \
+# Set a key (the body is the value; add ?live=false to persist only)
+curl -X PUT http://localhost:9420/api/v1/config/keys/daemon.target_fps \
   -H "Content-Type: application/json" \
-  -d '{"key": "daemon.target_fps", "value": "60", "live": true}'
+  -d '60'
 
 # Reset a key to its default
-curl -X POST http://localhost:9420/api/v1/config/reset \
-  -H "Content-Type: application/json" \
-  -d '{"key": "audio.smoothing"}'
+curl -X DELETE http://localhost:9420/api/v1/config/keys/audio.smoothing
 
 # Full config reset
-curl -X POST http://localhost:9420/api/v1/config/reset \
-  -H "Content-Type: application/json" \
-  -d '{}'
+curl -X POST http://localhost:9420/api/v1/config/reset
+
+# Ask how every key applies, renders, and validates
+curl http://localhost:9420/api/v1/config/schema | jq
 ```
 
-Keys are addressed with dotted paths matching the TOML structure (`daemon.target_fps`, `audio.device`, `drivers.govee.known_ips`, etc.). The set endpoint returns the key's canonicalized effective value plus a `"live"` boolean indicating whether the change was applied to the running daemon.
+Keys are addressed with dotted paths matching the TOML structure (`daemon.target_fps`, `audio.device`, `drivers.govee.known_ips`, etc.), each a single path segment. A write returns the key's canonicalized effective value, a `"live"` boolean saying whether the running daemon re-applied it, a `"requires_restart"` boolean from the key registry, and `"pending_restart"`, the sections whose persisted values now differ from the ones the daemon booted with.
+
+Reads mask what the key registry classifies as secret. Every `drivers` entry renders as `{"redacted": true}` on `/api/v1/config` and on a key read; driver settings are read and edited through `/api/v1/drivers/{id}/config` instead.
 
 {% callout(type="tip") %}
-`daemon.target_fps`, `daemon.canvas_width`, and `daemon.canvas_height` support live reload, and so do the `audio.*` and `capture.*` keys. Audio keys require `"live": true` in the request body (or `--live` on the CLI) to apply without a restart. Render and capture keys apply automatically whenever the dotted key matches (`daemon.target_fps`, `daemon.canvas_width`, `daemon.canvas_height`, or anything starting with `capture.`), regardless of the `live` flag.
+Which keys reload live is the key registry's answer, not a list to memorize: `GET /api/v1/config/schema` reports `live` (with the subsystem the daemon re-applies), `live_on_read`, `next_scan`, `restart`, or `inert` for every key. Today the live sections are audio, screen capture, host input, and the render loop (`daemon.target_fps`, `daemon.canvas_width`, `daemon.canvas_height`). Every live section honors the same `?live=` flag, which defaults to applying; the CLI's `--live` maps onto it.
 {% end %}

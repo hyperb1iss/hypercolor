@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
+use hypercolor_types::canvas::{LinearRgba, linear_to_srgb};
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 /// Convert a raw control-panel JSON value into a typed [`ControlValue`],
@@ -127,28 +127,15 @@ pub fn parse_f32(value: f64) -> Option<f32> {
     Some(value as f32)
 }
 
-/// Parse `#rrggbb` or `#rrggbbaa` into linear RGB plus normalized alpha.
+/// Parse a hex color into linear RGB plus normalized alpha.
+///
+/// The kernel's grammar accepts the CSS shorthand forms as well, so
+/// `#f80` and `#f80c` now parse where they used to be rejected. Callers
+/// keep deciding what a failed parse means; this returns `None`.
 #[must_use]
 pub fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
-    let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() != 6 && hex.len() != 8 {
-        return None;
-    }
-    let parse_byte = |slice: &str| u8::from_str_radix(slice, 16).ok();
-    let r = parse_byte(&hex[0..2])?;
-    let g = parse_byte(&hex[2..4])?;
-    let b = parse_byte(&hex[4..6])?;
-    let a = if hex.len() == 8 {
-        parse_byte(&hex[6..8])?
-    } else {
-        255
-    };
-    Some([
-        srgb_to_linear(f32::from(r) / 255.0),
-        srgb_to_linear(f32::from(g) / 255.0),
-        srgb_to_linear(f32::from(b) / 255.0),
-        f32::from(a) / 255.0,
-    ])
+    let color = LinearRgba::from_hex_srgb(hex).ok()?;
+    Some([color.r, color.g, color.b, color.a])
 }
 
 /// Convert a hex color string into a linear-RGB RGBA JSON array payload.

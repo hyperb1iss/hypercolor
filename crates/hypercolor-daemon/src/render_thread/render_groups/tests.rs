@@ -13,12 +13,14 @@ use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Rgba, RgbaF32};
+use hypercolor_types::canvas::{LinearRgba, Rgba};
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::layer::MediaPlayback;
 use hypercolor_types::scene::{SceneId, ZoneRole};
-use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition, Output, StripDirection};
+#[cfg(feature = "wgpu")]
+use hypercolor_types::spatial::Corner;
+use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use uuid::Uuid;
 
 use super::projection::{build_group_projection, compose_authoritative_scene_canvas};

@@ -94,14 +94,14 @@ fn effect_events_have_effect_category() {
             trigger: ChangeTrigger::User,
             previous: None,
             transition: None,
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
         },
         HypercolorEvent::EffectStopped {
             effect: effect_ref,
             reason: EffectStopReason::Replaced,
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
         },
         HypercolorEvent::EffectControlChanged {
             effect_id: "rainbow".into(),
@@ -132,8 +132,8 @@ fn effect_events_have_effect_category() {
         },
         HypercolorEvent::EffectDegraded {
             effect_id: "broken".into(),
-            group_id: Some(ZoneId::new()),
-            group_name: Some("Display Face".into()),
+            zone_id: Some(ZoneId::new()),
+            zone_name: Some("Display Face".into()),
             state: EffectDegradationState::Failed,
             reason: Some("shader compile failed".into()),
         },
@@ -171,21 +171,21 @@ fn scene_events_have_scene_category() {
             scene_id: "s1".into(),
             enabled: true,
         },
-        HypercolorEvent::RenderGroupChanged {
+        HypercolorEvent::ZoneChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             role: ZoneRole::Primary,
             kind: ZoneChangeKind::Updated,
         },
         HypercolorEvent::LayerStackChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             layers_version: 2,
             kind: LayerStackChangeKind::Updated,
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::Active,
         },
@@ -619,14 +619,14 @@ fn high_priority_events() {
         },
         HypercolorEvent::EffectDegraded {
             effect_id: "broken".into(),
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
             state: EffectDegradationState::Failed,
             reason: Some("boom".into()),
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::Failed {
                 reason: "decoder_timeout".into(),
@@ -634,7 +634,7 @@ fn high_priority_events() {
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::AssetMissing,
         },
@@ -710,8 +710,8 @@ fn normal_priority_is_default() {
             trigger: ChangeTrigger::User,
             previous: None,
             transition: None,
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
         },
         HypercolorEvent::SceneActivated {
             scene_id: "s1".into(),
@@ -728,8 +728,8 @@ fn normal_priority_is_default() {
         },
         HypercolorEvent::EffectDegraded {
             effect_id: "recovered".into(),
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
             state: EffectDegradationState::Recovered,
             reason: None,
         },
@@ -856,8 +856,8 @@ fn serialize_effect_started_with_transition() {
             transition_type: "crossfade".into(),
             duration_ms: 1000,
         }),
-        group_id: Some(zone_id),
-        group_name: Some("Desk".into()),
+        zone_id: Some(zone_id),
+        zone_name: Some("Desk".into()),
     };
 
     let json = serde_json::to_string(&event).expect("serialize");
@@ -868,8 +868,8 @@ fn serialize_effect_started_with_transition() {
         trigger,
         previous,
         transition,
-        group_id,
-        group_name,
+        zone_id: deserialized_zone_id,
+        zone_name,
     } = deserialized
     {
         assert_eq!(effect.id, "rainbow_wave");
@@ -879,8 +879,8 @@ fn serialize_effect_started_with_transition() {
         let t = transition.expect("transition present");
         assert_eq!(t.transition_type, "crossfade");
         assert_eq!(t.duration_ms, 1000);
-        assert_eq!(group_id, Some(zone_id));
-        assert_eq!(group_name.as_deref(), Some("Desk"));
+        assert_eq!(deserialized_zone_id, Some(zone_id));
+        assert_eq!(zone_name.as_deref(), Some("Desk"));
     } else {
         panic!("Expected EffectStarted variant");
     }
@@ -888,7 +888,7 @@ fn serialize_effect_started_with_transition() {
 
 #[test]
 fn effect_started_without_zone_fields_still_parses() {
-    // Pre-multi-zone payloads omit group_id/group_name entirely; the
+    // Pre-multi-zone payloads omit zone_id/zone_name entirely; the
     // serde(default) keeps old recorded events and clients parseable.
     let json = r#"{
         "type": "EffectStarted",
@@ -901,13 +901,11 @@ fn effect_started_without_zone_fields_still_parses() {
     }"#;
     let deserialized: HypercolorEvent = serde_json::from_str(json).expect("deserialize");
     if let HypercolorEvent::EffectStarted {
-        group_id,
-        group_name,
-        ..
+        zone_id, zone_name, ..
     } = deserialized
     {
-        assert_eq!(group_id, None);
-        assert_eq!(group_name, None);
+        assert_eq!(zone_id, None);
+        assert_eq!(zone_name, None);
     } else {
         panic!("Expected EffectStarted variant");
     }
@@ -915,11 +913,11 @@ fn effect_started_without_zone_fields_still_parses() {
 
 #[test]
 fn serialize_effect_degraded_roundtrip() {
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let event = HypercolorEvent::EffectDegraded {
         effect_id: "effect-1".into(),
-        group_id: Some(group_id),
-        group_name: Some("Display Face".into()),
+        zone_id: Some(zone_id),
+        zone_name: Some("Display Face".into()),
         state: EffectDegradationState::Failed,
         reason: Some("boom".into()),
     };
@@ -929,15 +927,15 @@ fn serialize_effect_degraded_roundtrip() {
 
     if let HypercolorEvent::EffectDegraded {
         effect_id,
-        group_id: deserialized_group_id,
-        group_name,
+        zone_id: deserialized_zone_id,
+        zone_name,
         state,
         reason,
     } = deserialized
     {
         assert_eq!(effect_id, "effect-1");
-        assert_eq!(deserialized_group_id, Some(group_id));
-        assert_eq!(group_name, Some("Display Face".into()));
+        assert_eq!(deserialized_zone_id, Some(zone_id));
+        assert_eq!(zone_name, Some("Display Face".into()));
         assert_eq!(state, EffectDegradationState::Failed);
         assert_eq!(reason, Some("boom".into()));
     } else {

@@ -857,7 +857,7 @@ uniform plus the adjust uniform block.
 All `LayerAdjust` operations are performed on linear-sRGB values. This
 matters most for hue shift, saturation, and contrast, which look badly
 wrong in non-linear space at the brightness levels common in RGB
-hardware. The CPU path uses the existing `RgbaF32` linearization helpers
+hardware. The CPU path uses the existing `LinearRgba` linearization helpers
 in `hypercolor-types/src/canvas.rs`. The GPU path uses
 `textureLoad` + manual gamma conversion (Servo already imports textures
 as non-premultiplied sRGB; we encode that as the texture format).
@@ -1143,7 +1143,7 @@ A one-shot `hypercolor migrate` CLI subcommand walks
 ### 10.4 Concurrency: `layers_version` and Precedence
 
 `RenderGroup` already carries `controls_version: u64` for optimistic
-concurrency on `PATCH /api/v1/effects/current/controls`
+concurrency on `PATCH /api/v1/effects/active/controls`
 (`hypercolor-types/src/scene.rs:131`, `api/effects.rs:1022`). The
 existing wire contract uses an `If-Match` request header against the
 version, returns the current version as the `ETag` response header on
@@ -1167,7 +1167,8 @@ pub struct RenderGroup {
 
 Reads of any layer-stack resource set `ETag: "<layers_version>"`.
 Mutations require `If-Match: "<layers_version>"`. Mismatch returns
-HTTP 412 with a body containing the current `layers_version` so the
+HTTP 412 with `code: "precondition_failed"`, `details` carrying
+`expected` and `current`, and the `ETag` repeating `current`, so the
 caller can refresh and retry. The version bumps once per request, not
 per layer touched, so callers can batch.
 
@@ -1200,7 +1201,7 @@ warning and keeps `layers`. A future spec removes legacy fields
 entirely; this version of the contract is a one-release transition.
 
 **Live PATCH at top-level.** The existing
-`PATCH /api/v1/effects/current/controls` continues to work for groups
+`PATCH /api/v1/effects/active/controls` continues to work for groups
 with exactly one effect layer (the common case) and continues to use
 `controls_version` for its precondition. For multi-layer groups, the
 daemon returns HTTP 422 with a body pointing the caller at the
@@ -1299,12 +1300,12 @@ Status codes:
 ### 11.2 Layer Endpoints (New)
 
 ```
-GET    /api/v1/scenes/{id}/groups/{group_id}/layers
-POST   /api/v1/scenes/{id}/groups/{group_id}/layers
+GET    /api/v1/scenes/{id}/zones/{zone_id}/layers
+POST   /api/v1/scenes/{id}/zones/{zone_id}/layers
 POST   /api/v1/scenes/{id}/layers/broadcast-media
-PUT    /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}
-DELETE /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}
-PATCH  /api/v1/scenes/{id}/groups/{group_id}/layers/order
+PUT    /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}
+DELETE /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}
+PATCH  /api/v1/scenes/{id}/zones/{zone_id}/layers/order
 ```
 
 The PATCH `order` endpoint accepts `{ "layer_ids": [...] }` and reorders
@@ -1352,13 +1353,13 @@ endpoint posture.
 
 ### 11.3 Live Control Patching
 
-The existing `PATCH /api/v1/effects/current/controls` continues to work
+The existing `PATCH /api/v1/effects/active/controls` continues to work
 for the *active* layer's effect controls when there is exactly one effect
 layer in the active group. For multi-layer scenes, callers must use the
 layer-scoped endpoint:
 
 ```
-PATCH /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls
+PATCH /api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls
 ```
 
 The request body is:

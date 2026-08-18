@@ -101,9 +101,9 @@ impl From<ApiError> for String {
 /// The daemon honors `If-Match: "<version>"` on its optimistic-concurrency
 /// routes (zone, layer, and effect-control mutations): it applies the
 /// mutation only when the version still matches, otherwise replies `412`
-/// with the authoritative `current` version. Modeled as a real type — not
-/// an HTTP string match — so callers can drive a clean rebase/refetch path
-/// off `Stale`.
+/// carrying the authoritative version in `error.details.current`. Modeled
+/// as a real type — not an HTTP string match — so callers can drive a clean
+/// rebase/refetch path off `Stale`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutationOutcome<T> {
     /// The mutation applied; carries whatever the route returned.
@@ -145,7 +145,6 @@ async fn http_error(resp: Response) -> ApiError {
 fn extract_error_message(body: &serde_json::Value) -> Option<String> {
     body.pointer("/error/message")
         .and_then(serde_json::Value::as_str)
-        .or_else(|| body.get("message").and_then(serde_json::Value::as_str))
         .map(str::trim)
         .filter(|message| !message.is_empty())
         .map(ToOwned::to_owned)
@@ -349,7 +348,7 @@ where
 ///
 /// On success the envelope's inner data is returned as
 /// [`MutationOutcome::Applied`]. On `412` the daemon's authoritative
-/// `current` version is parsed from the response body. Pass `None` for
+/// `current` version is read from the error envelope's details. Pass `None` for
 /// `if_match` to apply unconditionally (the daemon then skips the
 /// precondition check); a `412` is still classified if one arrives.
 pub async fn send_json_versioned<Req, Res>(
@@ -371,7 +370,9 @@ where
                 .await
                 .map_err(|e| ApiError::Parse(e.to_string()))?;
             let current = stale_current_version(&body).ok_or_else(|| {
-                ApiError::Parse("412 response missing `current` version token".to_owned())
+                ApiError::Parse(
+                    "412 response missing error.details.current version token".to_owned(),
+                )
             })?;
             Ok(MutationOutcome::Stale { current })
         }
@@ -380,8 +381,13 @@ where
 }
 
 /// Extract the authoritative version token from a `412` response body.
+///
+/// The daemon serves the canonical error envelope, so the version the
+/// caller must rebase onto rides `error.details.current` beside the
+/// `expected` version the request carried.
 fn stale_current_version(body: &serde_json::Value) -> Option<u64> {
-    body.get("current").and_then(serde_json::Value::as_u64)
+    body.pointer("/error/details/current")
+        .and_then(serde_json::Value::as_u64)
 }
 
 // ── GET helpers ─────────────────────────────────────────────────────────────
@@ -555,7 +561,14 @@ mod tests {
 
     #[test]
     fn stale_current_version_parses_daemon_412_body() {
-        let body = serde_json::json!({ "current": 17 });
+        let body = serde_json::json!({
+            "error": {
+                "code": "precondition_failed",
+                "message": "version mismatch: expected 16, current 17",
+                "details": { "expected": 16, "current": 17 }
+            },
+            "meta": { "api_version": "1.0", "request_id": "req_x", "timestamp": "t" }
+        });
         assert_eq!(stale_current_version(&body), Some(17));
     }
 
@@ -563,7 +576,19 @@ mod tests {
     fn stale_current_version_rejects_missing_or_nonnumeric_token() {
         assert_eq!(stale_current_version(&serde_json::json!({})), None);
         assert_eq!(
-            stale_current_version(&serde_json::json!({ "current": "7" })),
+            stale_current_version(&serde_json::json!({ "error": { "details": {} } })),
+            None
+        );
+        assert_eq!(
+            stale_current_version(
+                &serde_json::json!({ "error": { "details": { "current": "7" } } })
+            ),
+            None
+        );
+        // The pre-canonical shape carried `current` at the top level; it
+        // is no longer a version token the daemon can send.
+        assert_eq!(
+            stale_current_version(&serde_json::json!({ "current": 17 })),
             None
         );
     }

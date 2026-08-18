@@ -9,17 +9,17 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::HypercolorEvent;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::warn;
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::{effects, persist_runtime_session};
 use crate::discovery;
+use crate::domain::{DomainError, ResourceKind};
 use crate::profile_store::{Profile, ProfileDisplay, ProfilePrimary, ResolveProfileError};
 use crate::scene_transactions::apply_layout_update;
 use crate::session::{current_global_brightness, set_global_brightness};
@@ -30,28 +30,11 @@ use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{Zone, ZoneRole};
 use hypercolor_types::spatial::SpatialLayout;
 
+pub use hypercolor_types::api::profiles::{
+    ApplyProfileRequest, CreateProfileRequest, UpdateProfileRequest,
+};
+
 // ── Request / Response Types ─────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct CreateProfileRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub brightness: Option<u8>,
-    #[serde(default)]
-    pub force: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateProfileRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub brightness: Option<u8>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ApplyProfileRequest {
-    pub transition_ms: Option<u32>,
-}
 
 #[derive(Debug, Serialize)]
 pub struct ProfileListResponse {
@@ -118,9 +101,10 @@ pub async fn get_profile(State(state): State<Arc<AppState>>, Path(id): Path<Stri
     let profiles = state.profiles.read().await;
     let key = match resolve_profile_key(&profiles, &id) {
         Ok(Some(key)) => key,
-        Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+        Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     };
 
@@ -143,7 +127,7 @@ pub async fn create_profile(
     .await
     {
         Ok(profile) => profile,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
 
     let mut profiles = state.profiles.write().await;
@@ -152,15 +136,18 @@ pub async fn create_profile(
             profile.id = existing_id;
         }
         Ok(Some(_)) => {
-            return ApiError::conflict(format!("Profile already exists: {}", profile.name));
+            return DomainError::conflict(format!("Profile already exists: {}", profile.name))
+                .into_response();
         }
         Ok(None) => {}
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     }
     if let Err(error) = profiles.insert(profile.clone()) {
-        return ApiError::internal(format!("Failed to persist profile store: {error}"));
+        return DomainError::Internal(anyhow::anyhow!("Failed to persist profile store: {error}"))
+            .into_response();
     }
 
     if body.force {
@@ -180,9 +167,10 @@ pub async fn update_profile(
         let profiles = state.profiles.read().await;
         match resolve_profile_key(&profiles, &id) {
             Ok(Some(key)) => key,
-            Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+            Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
             Err(ResolveProfileError::AmbiguousName(name)) => {
-                return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+                return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                    .into_response();
             }
         }
     };
@@ -197,21 +185,24 @@ pub async fn update_profile(
     .await
     {
         Ok(profile) => profile,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
 
     let mut profiles = state.profiles.write().await;
     match profiles.find_existing_name_key(&profile.name, Some(&profile_id)) {
         Ok(Some(_)) => {
-            return ApiError::conflict(format!("Profile already exists: {}", profile.name));
+            return DomainError::conflict(format!("Profile already exists: {}", profile.name))
+                .into_response();
         }
         Ok(None) => {}
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     }
     if let Err(error) = profiles.insert(profile.clone()) {
-        return ApiError::internal(format!("Failed to persist profile store: {error}"));
+        return DomainError::Internal(anyhow::anyhow!("Failed to persist profile store: {error}"))
+            .into_response();
     }
 
     ApiResponse::ok(profile)
@@ -225,16 +216,20 @@ pub async fn delete_profile(
     let mut profiles = state.profiles.write().await;
     let key = match resolve_profile_key(&profiles, &id) {
         Ok(Some(key)) => key,
-        Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+        Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
         Err(ResolveProfileError::AmbiguousName(name)) => {
-            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                .into_response();
         }
     };
 
     let removed = match profiles.remove(&key) {
         Ok(removed) => removed.is_some(),
         Err(error) => {
-            return ApiError::internal(format!("Failed to persist profile store: {error}"));
+            return DomainError::Internal(anyhow::anyhow!(
+                "Failed to persist profile store: {error}"
+            ))
+            .into_response();
         }
     };
     debug_assert!(removed, "resolved profile key must exist");
@@ -252,16 +247,17 @@ pub async fn apply_profile(
     body: Option<Json<ApplyProfileRequest>>,
 ) -> Response {
     if let Err(error) = validate_apply_request(body.as_ref()) {
-        return ApiError::bad_request(error);
+        return DomainError::validation(error).into_response();
     }
 
     let profile = {
         let profiles = state.profiles.read().await;
         let key = match resolve_profile_key(&profiles, &id) {
             Ok(Some(key)) => key,
-            Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+            Ok(None) => return DomainError::not_found(ResourceKind::Profile, &id).into_response(),
             Err(ResolveProfileError::AmbiguousName(name)) => {
-                return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+                return DomainError::conflict(format!("Profile name is ambiguous: {name}"))
+                    .into_response();
             }
         };
         profiles
@@ -272,8 +268,12 @@ pub async fn apply_profile(
 
     let warnings = match apply_profile_snapshot(&state, &profile).await {
         Ok(warnings) => warnings,
-        Err(ProfileApplyError::Conflict(error)) => return ApiError::conflict(error),
-        Err(ProfileApplyError::Internal(error)) => return ApiError::internal(error),
+        Err(ProfileApplyError::Conflict(error)) => {
+            return DomainError::conflict(error).into_response();
+        }
+        Err(ProfileApplyError::Internal(error)) => {
+            return DomainError::Internal(anyhow::anyhow!(error)).into_response();
+        }
     };
 
     state
@@ -298,8 +298,11 @@ pub(crate) async fn apply_profile_snapshot(
 ) -> Result<Vec<String>, ProfileApplyError> {
     {
         let scene_manager = state.scene_manager.read().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ProfileApplyError::Conflict(error.message("applying a profile")))?;
+        crate::domain::scene::active_scene_for_runtime_mutation(
+            &scene_manager,
+            "applying a profile",
+        )
+        .map_err(|error| ProfileApplyError::Conflict(error.to_string()))?;
     }
     let brightness = profile.brightness.map(|value| f32::from(value) / 100.0);
     let layout = if let Some(layout_id) = profile.layout_id.as_deref() {
@@ -318,11 +321,11 @@ pub(crate) async fn apply_profile_snapshot(
         .map_err(ProfileApplyError::Internal)?;
     let current_layout = crate::api::effects::resolve_full_scope_layout(state).await;
 
-    let has_scene_mutation = prepared_primary.is_some() || !prepared_displays.is_empty();
-    let pending = if has_scene_mutation {
-        let coordinator = crate::api::scene_store_coordinator(state).await;
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
+    // A profile restores the primary effect and every display face in one
+    // transaction: a partial restore would leave the rig in a state the
+    // profile never described.
+    if prepared_primary.is_some() || !prepared_displays.is_empty() {
+        let mut mutation = state.begin_scene_mutation().await;
 
         if let Some(prepared_primary) = prepared_primary {
             let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
@@ -330,8 +333,8 @@ pub(crate) async fn apply_profile_snapshot(
                 &prepared_primary.controls,
             );
             let active_layout = layout.clone().unwrap_or_else(|| current_layout.clone());
-            scene_manager
-                .upsert_primary_group(
+            mutation
+                .upsert_primary_zone(
                     &prepared_primary.metadata,
                     controls,
                     prepared_primary.active_preset_id,
@@ -358,8 +361,8 @@ pub(crate) async fn apply_profile_snapshot(
                 &prepared_display.metadata,
                 &prepared_display.controls,
             );
-            let group_id = scene_manager
-                .upsert_display_group(
+            let zone_id = mutation
+                .upsert_display_zone(
                     prepared_display.device_id,
                     prepared_display.device_name.as_str(),
                     &prepared_display.metadata,
@@ -375,8 +378,8 @@ pub(crate) async fn apply_profile_snapshot(
                 .id;
             // upsert seeds the target as Replace; blend the restored face over
             // the live effect so profile apply doesn't black the effect out.
-            scene_manager.patch_display_group_target(
-                group_id,
+            mutation.patch_display_target(
+                zone_id,
                 Some(hypercolor_types::scene::DisplayFaceBlendMode::Alpha),
                 Some(1.0),
             );
@@ -391,17 +394,17 @@ pub(crate) async fn apply_profile_snapshot(
             }
         }
 
-        let pending =
-            crate::api::admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-                .map_err(|error| ProfileApplyError::Internal(error.to_string()))?;
-        Some(pending)
-    } else {
-        None
-    };
-    if let Some(pending) = pending {
-        crate::api::save_admitted_scene_store_snapshot(state, pending)
+        crate::domain::scene::commit_scene(state, mutation)
             .await
-            .map_err(|error| ProfileApplyError::Internal(error.to_string()))?;
+            .map_err(|error| match error {
+                // A concurrent scene write is something the caller can
+                // retry, not a daemon fault.
+                crate::domain::DomainError::Conflict { .. } => ProfileApplyError::Conflict(
+                    "scene state changed while applying this profile; retry against current state"
+                        .to_owned(),
+                ),
+                other => ProfileApplyError::Internal(other.to_string()),
+            })?;
     }
 
     if let Some(layout) = layout {

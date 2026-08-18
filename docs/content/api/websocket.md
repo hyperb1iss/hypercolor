@@ -1,12 +1,12 @@
 +++
 title = "WebSocket protocol"
-description = "The /api/v1/ws protocol: subprotocol token, JSON client/server messages, all 14 subscription channels, and the binary frame wire format."
+description = "The /api/v1/ws protocol: subprotocol token, JSON client/server messages, all 15 subscription topics, and the binary frame wire format."
 weight = 30
 template = "page.html"
 +++
 
 One WebSocket carries the daemon's entire live surface. Open `/api/v1/ws`, read
-the `hello` snapshot, subscribe to the channels you want, and the daemon streams
+the `hello` snapshot, subscribe to the topics you want, and the daemon streams
 exactly those: JSON for control, events, metrics, and sensors; binary frames for
 LED color, audio spectrum, and canvas previews. The web UI, the TUI, and any
 custom client all speak this one protocol, so you never poll and never juggle a
@@ -72,7 +72,7 @@ interleaved streams:
   field.
 - **Binary frames** for high-rate data: LED color frames, audio spectrum, and
   the various canvas/zone preview surfaces. Each binary frame starts with a tag
-  byte that identifies its channel.
+  byte that identifies its topic.
 
 JSON and binary messages may arrive in any order. Branch on the message kind
 before parsing:
@@ -88,8 +88,8 @@ ws.onmessage = (event) => {
 };
 ```
 
-The daemon never pushes data for a channel you have not subscribed to, with one
-exception: the `events` channel is active on every connection from the moment it
+The daemon never pushes data for a subscription you do not hold, with one
+exception: the `events` topic is active on every connection from the moment it
 opens.
 
 {% mermaid() %}
@@ -98,23 +98,23 @@ sequenceDiagram
   participant D as Daemon
   C->>D: GET /api/v1/ws (Upgrade, hypercolor-v1)
   D-->>C: hello (state snapshot + capabilities)
-  Note over C,D: events channel already live
-  C->>D: subscribe { channels, preview_transport }
-  D-->>C: subscribed (config + effective transport)
+  Note over C,D: events topic already live
+  C->>D: subscribe { topics, preview_transport }
+  D-->>C: subscribed (live subscriptions + effective transport)
   loop while subscribed
     D-->>C: binary frame 0x01 (LED colors)
     D-->>C: binary frame 0x02 (spectrum)
     D-->>C: event (effect_started, ...)
   end
-  C->>D: unsubscribe { channels: [frames] }
-  D-->>C: unsubscribed (remaining channels)
+  C->>D: unsubscribe { topics: [frames] }
+  D-->>C: unsubscribed (remaining subscriptions)
 {% end %}
 
 ## The hello handshake
 
 On connect the daemon sends exactly one `hello`, carrying a current-state
-snapshot, its identity, the full capability list, and the channels already
-subscribed.
+snapshot, its identity, the full capability list, and the subscriptions already
+live.
 
 ```json
 {
@@ -140,20 +140,23 @@ subscribed.
   "capabilities": [
     "frames", "spectrum", "events", "frame_events", "canvas",
     "screen_canvas", "screen_zones", "web_viewport_canvas", "zone_preview",
-    "metrics", "device_metrics", "sensors", "display_preview", "input_events",
+    "metrics", "device_metrics", "sensors", "display_preview",
+    "interactive_preview", "input_events",
     "commands", "canvas_format_jpeg", "interactive_previews",
     "wide_preview_frames", "preview_chunking",
     "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
     "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096"
   ],
-  "subscriptions": ["events"]
+  "subscriptions": [{ "topic": "events" }]
 }
 ```
 
 `version` is the protocol version (`"1.0"`), distinct from the
-`server.version` daemon build string. `capabilities` lists all 14 channel names
+`server.version` daemon build string. `capabilities` lists all 15 topic names
 plus feature flags such as `commands`, `canvas_format_jpeg`,
 `interactive_previews`, `wide_preview_frames`, and `preview_chunking`.
+`subscriptions` uses the same entry shape the acknowledgments do, so a client
+reads its live set the same way everywhere.
 
 The daemon advertises two preview transport capabilities, `preview_transport_v2`
 first and `preview_transport_v1` behind it. Both describe the receiver's memory
@@ -166,7 +169,7 @@ ceiling from the encoded budget instead of pinning it. Both versions carry
 
 A client sends its own capability string in the optional `preview_transport`
 field of its first `subscribe`; the daemon applies the field-by-field minimum
-before activating preview channels and returns the effective capability in
+before activating preview topics and returns the effective capability in
 `subscribed`. Version selection is part of that minimum: the negotiated
 transport is V2 only when both peers advertise V2, and a single V1 peer
 downgrades the whole session. A client that omits the field uses the daemon's
@@ -193,35 +196,42 @@ The `effect`, `scene`, `profile`, and `layout` fields are nullable: each is
 `null` when nothing is active. The `scene` reference additionally carries
 `snapshot_locked`, which is true while a scene blocks runtime mutation.
 
-## Channels
+## Topics
 
-Fourteen subscription channels carry the daemon's live surface. Subscribe by
-name; the daemon relays each channel's frames until you unsubscribe or the
-socket closes.
+Fifteen subscription topics carry the daemon's live surface. Subscribe by name;
+the daemon relays each subscription's frames until you unsubscribe or the socket
+closes.
 
-| Channel | Wire | Description |
-| --- | --- | --- |
-| `events` | JSON | Discrete bus events. Active by default. |
-| `frame_events` | JSON | High-rate per-frame render-timing events (the `frame_rendered` stream the `events` channel suppresses). |
-| `frames` | Binary | Per-zone LED color frames. |
-| `spectrum` | Binary | Audio spectrum, levels, and beat data. |
-| `canvas` | Binary | The composed RGBA render canvas. |
-| `screen_canvas` | Binary | Screen-capture canvas. Control-tier only. |
-| `screen_zones` | Binary | Smoothed per-sector ambilight grid from screen capture. Control-tier only. |
-| `web_viewport_canvas` | Binary | Servo web-viewport canvas (HTML effect output). |
-| `zone_preview` | Binary | Per-zone preview frames, addressed by scene and zone. |
-| `metrics` | JSON | Periodic render-performance snapshot. |
-| `device_metrics` | JSON | Periodic per-device output telemetry. |
-| `sensors` | JSON | Periodic host sensor snapshot (system telemetry). |
-| `display_preview` | Binary | Per-display JPEG preview for LCD/display devices. |
-| `input_events` | JSON | Timed keyboard and pointer events from the input pipeline. Control-tier only. |
+Two topics are **keyed**: a subscription to one of them names both the topic and
+the key it follows, and one connection holds as many subscriptions to that topic
+as it names distinct keys. Every other topic is unkeyed and holds at most one
+subscription per connection.
+
+| Topic | Key | Wire | Description |
+| --- | --- | --- | --- |
+| `events` | — | JSON | Discrete bus events. Active by default. |
+| `frame_events` | — | JSON | High-rate per-frame render-timing events (the `frame_rendered` stream the `events` topic suppresses). |
+| `frames` | — | Binary | Per-zone LED color frames. |
+| `spectrum` | — | Binary | Audio spectrum, levels, and beat data. |
+| `canvas` | — | Binary | The composed RGBA render canvas. |
+| `screen_canvas` | — | Binary | Screen-capture canvas. Control-tier only. |
+| `screen_zones` | — | Binary | Smoothed per-sector ambilight grid from screen capture. Control-tier only. |
+| `web_viewport_canvas` | — | Binary | Servo web-viewport canvas (HTML effect output). |
+| `zone_preview` | — | Binary | Per-zone preview frames, addressed by scene and zone. |
+| `metrics` | — | JSON | Periodic render-performance snapshot. |
+| `device_metrics` | — | JSON | Periodic per-device output telemetry. |
+| `sensors` | — | JSON | Periodic host sensor snapshot (system telemetry). |
+| `display_preview` | device id | Binary | One display device's JPEG output preview. |
+| `interactive_preview` | preview id | Binary | An interactive scene preview lane the subscription itself opens. Control-tier only. |
+| `input_events` | — | JSON | Timed keyboard and pointer events from the input pipeline. Control-tier only. |
 
 {% callout(type="warning") %}
-`screen_canvas`, `screen_zones`, and `input_events` expose live screen-capture
-pixels and input activity, so they require a control-tier subscription. On a
-secured daemon, subscribing without a control key returns an `error` with code
-`forbidden` and `required_tier: "control"`. On the default unsecured loopback
-daemon there is no key to provide and the subscription succeeds.
+`screen_canvas`, `screen_zones`, `interactive_preview`, and `input_events`
+expose live screen-capture pixels, host input activity, or a render lane of
+their own, so they require a control-tier subscription. On a secured daemon,
+subscribing without a control key returns an `error` with code `forbidden` and
+`required_tier: "control"`. On the default unsecured loopback daemon there is no
+key to provide and the subscription succeeds.
 {% end %}
 
 ## Client messages
@@ -232,54 +242,78 @@ canonical inventory lives in `protocol/websocket-v1.json`.
 
 ### subscribe
 
-Subscribe to one or more channels. An optional `config` patch tunes per-channel
-parameters in the same message; only the channels you name are touched, and the
-rest keep their current settings. Preview-capable clients should also send a
-`preview_transport` capability string on the first subscription so both peers
-enforce the same physical budgets. Send `preview_transport_v2` unless you only
-implement the V1 count-based limits.
+`topics` is an array of subscriptions. Each entry names a `topic`, a `key` when
+that topic is keyed, and an optional `config` patch for that one subscription.
+Config travels with its selector, so a patch can only ever reach a subscription
+the same message establishes. Only the subscriptions you name are touched; the
+rest keep their current settings.
+
+Preview-capable clients should also send a `preview_transport` capability string
+on the first subscription so both peers enforce the same physical budgets. Send
+`preview_transport_v2` unless you only implement the V1 count-based limits.
 
 ```json
 {
   "type": "subscribe",
-  "channels": ["frames", "metrics"],
   "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
-  "config": {
-    "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
-    "metrics": { "interval_ms": 1000 }
-  }
+  "topics": [
+    { "topic": "frames", "config": { "fps": 30, "format": "binary", "zones": ["all"] } },
+    { "topic": "metrics", "config": { "interval_ms": 1000 } },
+    { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
+  ]
 }
 ```
 
-The daemon acknowledges with `subscribed`, echoing the resolved config for every
-currently subscribed channel that exposes one:
+The whole request is one transaction. Any rejection returns an `error` and
+leaves every subscription exactly as it was, so a message that names four
+subscriptions and mis-configures the fourth changes nothing.
+
+The daemon acknowledges with `subscribed`, reporting **every** live subscription
+on the connection rather than only the ones this message named. A topic that
+takes no config reports none:
 
 ```json
 {
   "type": "subscribed",
-  "channels": ["frames", "metrics"],
   "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
-  "config": {
-    "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
-    "metrics": { "interval_ms": 1000 }
-  }
+  "topics": [
+    { "topic": "frames", "config": { "fps": 30, "format": "binary", "zones": ["all"] } },
+    { "topic": "events" },
+    { "topic": "metrics", "config": { "interval_ms": 1000 } },
+    { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
+  ]
 }
 ```
 
+An `interactive_preview` entry also carries a `publication_id`: the identity of
+the render lane the subscription opened. Fence that preview's binary frames
+against it so a previous incarnation's stragglers are discarded.
+
 ### unsubscribe
 
+Each entry is a selector: a topic, plus its key when the topic is keyed.
+Retiring one key of a keyed topic leaves its other keys live.
+
 ```json
-{ "type": "unsubscribe", "channels": ["frames"] }
+{
+  "type": "unsubscribe",
+  "topics": [
+    { "topic": "frames" },
+    { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301" }
+  ]
+}
 ```
 
-The daemon replies with `unsubscribed`, listing the channels it dropped and the
-channels still active:
+The daemon replies with `unsubscribed`, carrying the same whole-connection
+snapshot of what remains:
 
 ```json
 {
   "type": "unsubscribed",
-  "channels": ["frames"],
-  "remaining": ["events", "metrics"]
+  "topics": [
+    { "topic": "events" },
+    { "topic": "metrics", "config": { "interval_ms": 1000 } }
+  ]
 }
 ```
 
@@ -363,24 +397,34 @@ control-tier.
 
 ### Interactive previews
 
-Check for the `interactive_previews` capability before using this flow. Open an
-addressed preview before sending input:
+Check for the `interactive_previews` capability before using this flow. An
+interactive preview is a keyed subscription: subscribing opens its render lane
+and unsubscribing closes it, with the preview id as the key.
 
 ```json
 {
-  "type": "interactive_preview_open",
-  "preview_id": "main",
-  "target": "active_scene",
-  "fps": 30,
-  "width": 640,
-  "height": 480,
-  "format": "jpeg"
+  "type": "subscribe",
+  "topics": [{
+    "topic": "interactive_preview",
+    "key": "main",
+    "config": {
+      "target": "active_scene",
+      "fps": 30,
+      "width": 640,
+      "height": 480,
+      "format": "jpeg"
+    }
+  }]
 }
 ```
 
-The daemon replies with `interactive_preview_opened`, then streams binary
-`0x0A` frames carrying the same `preview_id`. Reopening the same id updates its
-configuration in place. Pointer and key batches must name that active preview:
+The acknowledgment carries that subscription's `publication_id`, and the daemon
+then streams binary `0x0A` frames naming the same key. Subscribing again with a
+different config resizes or retargets the lane in place, keeping its
+publication. Unlike the passive preview canvases, an interactive lane has no
+server-picked size: zero `width` or `height` is refused rather than resolved.
+
+Pointer and key batches name the live preview:
 
 ```json
 {
@@ -393,29 +437,26 @@ configuration in place. Pointer and key batches must name that active preview:
 }
 ```
 
-Close it with `interactive_preview_close`. The daemon also accepts
-`interactive_preview_claim_authoritative` and
-`interactive_preview_release_authoritative` for explicitly routing that
-browser source to authoritative device output. All five messages require a
-control-tier connection. Closing the socket releases previews, injected held
-state, and authoritative claims.
+The daemon also accepts `interactive_preview_claim_authoritative` and
+`interactive_preview_release_authoritative` for explicitly routing that browser
+source to authoritative device output. Those messages and the subscription
+itself require a control-tier connection. Closing the socket releases previews,
+injected held state, and authoritative claims.
 
-Source-less `input_inject` messages are no longer accepted. Clients migrating
-from the earlier experimental shape must add `preview_id` and own the matching
-open and close lifecycle.
+Source-less `input_inject` messages are not accepted: every batch names the
+preview it drives.
 
 ## Server messages
 
 Beyond the `hello`, `subscribed`, `unsubscribed`, and `response` messages
-already shown, interactive preview commands receive
-`interactive_preview_opened`, `interactive_preview_closed`, `input_injected`,
+already shown, addressed preview commands receive `input_injected`,
 `interactive_preview_authoritative_claimed`, or
 `interactive_preview_authoritative_released`. The daemon also emits the
-following JSON messages on subscribed channels.
+following JSON messages on subscribed topics.
 
 ### event
 
-Relayed from the internal event bus on the `events` channel. Event names are
+Relayed from the internal event bus on the `events` topic. Event names are
 snake_case derivations of the internal enum variants. High-rate
 `frame_rendered` events are excluded here; subscribe to `frame_events` when you
 want raw per-frame timing.
@@ -430,12 +471,17 @@ want raw per-frame timing.
 ```
 
 Common event names include `effect_started`, `effect_stopped`,
-`effect_control_changed`, `device_connected`, `device_disconnected`,
-`active_scene_changed`, `beat_detected`, and `profile_applied`.
+`effect_control_changed`, `zone_changed`, `device_connected`,
+`device_disconnected`, `active_scene_changed`, `beat_detected`, and
+`profile_applied`.
+
+Events that name a scene zone spell it `zone_id`, `zone_name`, and
+`zones_revision`. Saved scenes on disk still store the concept as `groups`; the
+wire has not used that spelling since spec 76's naming flip.
 
 ### metrics
 
-Periodic render-performance snapshot on the `metrics` channel, sent at the
+Periodic render-performance snapshot on the `metrics` topic, sent at the
 configured `interval_ms` (default 1000 ms). The `data` object is large: it
 includes FPS, frame-time percentiles, per-stage timing, pacing jitter, effect
 and Servo health counters, render-surface pool gauges, preview demand, memory,
@@ -462,12 +508,12 @@ hard-asserts on the full key set will break on upgrade.
 
 ### device_metrics
 
-Periodic per-device output telemetry on the `device_metrics` channel, also
+Periodic per-device output telemetry on the `device_metrics` topic, also
 governed by `interval_ms`.
 
 ### sensors
 
-Latest host sensor snapshot on the `sensors` channel: the system telemetry the
+Latest host sensor snapshot on the `sensors` topic: the system telemetry the
 TUI and dashboard surface. The `data` object is a `SystemSnapshot`.
 
 ```json
@@ -486,11 +532,13 @@ publication per stream under a connection byte budget. A newer publication
 replaces queued work for the same stream; under cross-stream pressure, the oldest
 queued preview is evicted. Neither path grows daemon memory without a bound.
 
+The notice names the topic it dropped, and a keyed topic also names the key.
+
 ```json
 {
   "type": "backpressure",
   "dropped_frames": 12,
-  "channel": "frames",
+  "topic": "frames",
   "recommendation": "Reduce fps or zone count to keep up with the stream",
   "suggested_fps": 15
 }
@@ -502,28 +550,38 @@ sent-publication, and sent-chunk counters for diagnosing the actual bottleneck.
 
 ### error
 
-A protocol-level error: malformed JSON, an unknown channel, an invalid config
-value, or a forbidden control-tier subscription.
+A protocol-level error: malformed JSON, an unknown topic, a missing or invalid
+key, an invalid config value, or a forbidden control-tier subscription.
 
 ```json
 {
   "type": "error",
-  "code": "unsupported_channel",
-  "message": "Channel 'bogus' is not supported by this server",
-  "details": { "channel": "bogus" }
+  "code": "invalid_config",
+  "message": "Invalid configuration for config.frames.fps: expected 1..=60",
+  "details": { "field": "config.frames.fps", "reason": "expected 1..=60" }
 }
 ```
 
-Error codes you may see: `invalid_request` (bad JSON or empty channel list),
-`invalid_config` (out-of-range or invalid config value, with `details.field`
-and `details.reason`), `unsupported_channel`, and `forbidden` (a control-tier
-subscription or mutation attempted without a control key).
+Error codes you may see: `invalid_request` (bad JSON, an empty `topics` array,
+an unknown topic name, a keyed topic named without a key or an unkeyed one named
+with one, or the same subscription named twice in one message), `invalid_config`
+(an invalid config patch, with `details.field` and `details.reason`), and
+`forbidden` (a control-tier subscription or mutation attempted without a control
+key).
 
-## Channel configuration
+## Topic configuration
 
-Each configurable channel carries parameters that control throughput and format.
-Send them in the `config` field of a `subscribe` message. Out-of-range values
-are rejected with an `invalid_config` error and the channel is left unchanged.
+Each configurable topic carries parameters that control throughput and format.
+Send them in the `config` field of that subscription's entry in a `subscribe`
+message. A rejected patch fails the whole request with an `invalid_config`
+error, and every subscription named in it is left exactly as it was.
+
+Each patch is validated by the topic that owns it, so four shapes are refused
+rather than ignored: a value outside the documented range, a field the topic
+does not define, a patch sent for a topic that takes no config (`events`,
+`frame_events`, `screen_zones`, `sensors`, `input_events`), and the same
+subscription named twice in one `topics` array. A `null` config on a
+configurable topic means "leave this subscription alone".
 
 ### frames config
 
@@ -542,7 +600,7 @@ are rejected with an `invalid_config` error and the channel is left unchanged.
 
 ### canvas / screen_canvas / web_viewport_canvas / zone_preview config
 
-These four preview channels share the same config shape:
+These four preview topics share the same config shape:
 
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
@@ -572,14 +630,28 @@ The maximum accepted preview surface is currently 512 MiB at four bytes per pixe
 
 ### display_preview config
 
-| Field | Type | Default | Notes |
+Keyed by device id, so the display a subscription follows is its key rather than
+a config field.
+
+| Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
-| `device_id` | string or null | none | Target display device ID. Send `null` to clear the target and stop the relay. |
 | `fps` | integer | `15` | 1..=30 |
 
-`display_preview` uses a tri-state for `device_id`: omit the key to leave the
-current target untouched, send a string to follow that display, or send `null`
-to detach. Frames on this channel are always JPEG.
+Frames on this topic are always JPEG, and each one names the device it came
+from, so a connection following several displays routes them without guessing.
+
+### interactive_preview config
+
+Keyed by the client's own preview id. Subscribing opens a render lane at exactly
+the requested shape, so zero dimensions are refused rather than resolved.
+
+| Field | Type | Default | Range / values |
+| --- | --- | --- | --- |
+| `target` | string | `"active_scene"` | `"active_scene"` |
+| `fps` | integer | `30` | 1..=60 |
+| `width` | integer | `640` | unsigned 32-bit, non-zero |
+| `height` | integer | `480` | unsigned 32-bit, non-zero |
+| `format` | string | `"jpeg"` | `"rgb"`, `"rgba"`, or `"jpeg"` |
 
 `screen_zones` has no client-tunable config; it relays the daemon's
 screen-capture grid as produced.
@@ -587,18 +659,18 @@ screen-capture grid as produced.
 ## Binary frame formats
 
 Every binary frame opens with a tag byte at offset 0. Direct preview, spectrum,
-frames, and zone messages continue with their type-specific header. Preview
-chunks (`0x0F`) and optional CinderRPC frames (`0x80`/`0x81`) add a schema byte
-at offset 1. All integers are little-endian.
+frames, and zone messages continue with their type-specific header. The preview
+transport control frames (`0x0F` and `0x10`) add a schema byte at offset 1. All
+integers are little-endian.
 
-| Tag | Channel | Header length |
+| Tag | Topic | Header length |
 | --- | --- | --- |
 | `0x01` | `frames` | 10 bytes |
 | `0x02` | `spectrum` | 27 bytes |
 | `0x03` | `canvas` | 14 bytes |
 | `0x05` | `screen_canvas` | 14 bytes |
 | `0x06` | `web_viewport_canvas` | 14 bytes |
-| `0x07` | `display_preview` | 14 bytes |
+| `0x07` | `display_preview` | 15 bytes + device id |
 | `0x08` | `zone_preview` | 46 bytes |
 | `0x09` | `screen_zones` | 19 bytes |
 | `0x0A` | addressed interactive preview | 15 bytes + preview id |
@@ -609,13 +681,14 @@ at offset 1. All integers are little-endian.
 | `0x0F` | chunked preview envelope | 55 bytes + stream identity |
 | `0x10` | preview publication cancellation | 14 bytes + stream identity |
 | `0x11` | extended screen zones | 41 bytes |
-| `0x80` | RPC request | 2-byte prefix |
-| `0x81` | RPC response | 2-byte prefix |
+| `0x12` | wide display preview | 19 bytes + device id |
 
 {% callout(type="info") %}
-`0x04` is intentionally unused in the current channel set. The preview-family
-tags (`0x03`/`0x05`/`0x06`/`0x07`) share one header layout, distinguished only by
-the leading tag.
+`0x04` is intentionally unused in the current topic set. The passive
+preview-canvas tags (`0x03`/`0x05`/`0x06`) share one header layout,
+distinguished only by the leading tag. Display preview left that family when it
+became keyed: its frames carry the device id, so they use the same
+identity-prefixed layout as interactive previews.
 {% end %}
 
 ### frames (0x01)
@@ -643,7 +716,7 @@ instead. Binary is strongly preferred for throughput.
 
 Audio spectrum, summary levels, and beat detection. Header is 27 bytes, then the
 per-bin magnitudes. BPM is not in this frame; read it from the `metrics`
-channel.
+topic.
 
 ```
 Byte(s)  Field
@@ -659,17 +732,16 @@ Byte(s)  Field
 27..     bins (bin_count × f32 LE)
 ```
 
-### canvas / screen_canvas / web_viewport_canvas / display_preview (0x03 / 0x05 / 0x06 / 0x07)
+### canvas / screen_canvas / web_viewport_canvas (0x03 / 0x05 / 0x06)
 
-The legacy preview family shares one 14-byte header and remains byte-exact for
-dimensions that fit `u16`. `display_preview` (`0x07`) is always JPEG; the others
-honor the `format` you subscribed with. Raw dimensions above 65,535 use the
-additive wide layout documented below; JPEG's intrinsic 16-bit axis limit is
-validated before encoding.
+The passive preview canvases share one 14-byte header and remain byte-exact for
+dimensions that fit `u16`. Each honors the `format` you subscribed with. Raw
+dimensions above 65,535 use the additive wide layout documented below; JPEG's
+intrinsic 16-bit axis limit is validated before encoding.
 
 ```
 Byte(s)  Field
-0        tag (0x03 / 0x05 / 0x06 / 0x07)
+0        tag (0x03 / 0x05 / 0x06)
 1-4      frame_number (u32 LE)
 5-8      timestamp_ms (u32 LE)
 9-10     width (u16 LE)
@@ -680,6 +752,27 @@ Byte(s)  Field
 
 For raw formats the payload is `width × height × bytes_per_pixel` (3 for RGB, 4
 for RGBA). JPEG payloads have no fixed size and run to the end of the frame.
+
+### display_preview (0x07)
+
+One display device's output frame, always JPEG. The device id is in the header
+because the topic is keyed by device: a connection following three displays
+receives three interleaved streams and routes them by name rather than by
+guessing from resolution. The fixed prefix is 15 bytes, followed by the UTF-8
+device id and the image payload.
+
+```
+Byte(s)  Field
+0        tag = 0x07
+1        device_id length (u8)
+2-5      frame_number (u32 LE)
+6-9      timestamp_ms (u32 LE)
+10-11    width (u16 LE)
+12-13    height (u16 LE)
+14       format: 2 = JPEG
+15..N    device_id UTF-8 bytes
+N..      payload bytes
+```
 
 ### zone_preview (0x08)
 
@@ -720,9 +813,9 @@ Byte(s)  Field
 
 ### Addressed interactive preview (0x0A)
 
-This frame is pushed by an open interactive preview rather than a channel
-subscription. The fixed prefix is 15 bytes, followed by the UTF-8 preview id
-and image payload.
+This frame is pushed by a live `interactive_preview` subscription. The fixed
+prefix is 15 bytes, followed by the UTF-8 preview id and image payload; the
+layout matches `display_preview`'s, with a preview id in place of a device id.
 
 ```
 Byte(s)  Field
@@ -741,14 +834,14 @@ Route frames by `preview_id`, not arrival order. A connection may own more
 than one preview, and closing then reopening an id creates a new publication
 lifetime.
 
-### Wide preview dimensions (0x0B / 0x0C / 0x0D / 0x0E)
+### Wide preview dimensions (0x0B / 0x0C / 0x0D / 0x0E / 0x12)
 
 Wide tags replace each `u16` dimension with `u32` while preserving the remaining
 field order. `0x0B` adds the original passive channel tag at byte 1, followed by
-`frame_number`, `timestamp_ms`, `width`, `height`, `format`, and payload. The wide
-zone, interactive, and screen-zone layouts otherwise mirror their legacy forms.
-Clients should decode both layouts; servers keep sending legacy bytes whenever
-both axes fit `u16`.
+`frame_number`, `timestamp_ms`, `width`, `height`, `format`, and payload. The
+wide zone, interactive, display, and screen-zone layouts otherwise mirror their
+narrow forms. Clients should decode both layouts; servers keep sending narrow
+bytes whenever both axes fit `u16`.
 
 ### Chunked preview publication (0x0F)
 
@@ -781,16 +874,6 @@ stream high-water mark. A cancellation never removes a newer publication for
 the same stream. Recent high-water tombstones reject delayed stale chunks;
 older tombstones are reclaimed within the advertised bound.
 
-### RPC frames (0x80 / 0x81)
-
-The CinderRPC request/response frames are the one binary type that uses the
-two-byte `BinaryFrameSchema` prefix (byte 0 is the tag, byte 1 is the schema
-version, currently `1`) before the body. They are part of the shared
-`hypercolor-leptos-ext::ws` wire vocabulary and are not part of the standard
-subscription channel set; most clients never need them. Request bodies carry a
-`u64` id, a length-prefixed method string, and an opaque payload; responses
-carry the matching `u64` id, a `u16` status code, and a payload.
-
 ## Worked example
 
 A minimal browser client that connects, subscribes to LED frames after the
@@ -804,9 +887,10 @@ ws.onmessage = (event) => {
   if (event.data instanceof ArrayBuffer) {
     const view = new DataView(event.data);
     const tag = view.getUint8(0);
-    // 0x01 frames, 0x02 spectrum, 0x03/0x05/0x06/0x07 previews,
-    // 0x08 zone, 0x09 screen zones, 0x0A interactive, 0x0B-0x0E wide,
-    // 0x0F preview chunks, 0x10 publication cancellation
+    // 0x01 frames, 0x02 spectrum, 0x03/0x05/0x06 preview canvases,
+    // 0x07 display, 0x08 zone, 0x09 screen zones, 0x0A interactive,
+    // 0x0B-0x0E and 0x12 wide, 0x0F preview chunks,
+    // 0x10 publication cancellation
     if (tag === 0x01) parseFramePayload(view);
     return;
   }
@@ -815,8 +899,9 @@ ws.onmessage = (event) => {
   if (msg.type === "hello") {
     ws.send(JSON.stringify({
       type: "subscribe",
-      channels: ["frames"],
-      config: { frames: { fps: 30, format: "binary", zones: ["all"] } },
+      topics: [
+        { topic: "frames", config: { fps: 30, format: "binary", zones: ["all"] } },
+      ],
     }));
   }
 };
@@ -825,7 +910,7 @@ ws.onmessage = (event) => {
 ## Connection lifecycle and reconnect
 
 - The daemon sends `hello` immediately on connect. No polling is needed.
-- The `events` channel is live from the start; everything else requires an
+- The `events` topic is live from the start; everything else requires an
   explicit `subscribe`.
 - The daemon keeps the socket alive with a ping every 30 seconds and closes a
   client that fails to pong within 10 seconds. Respond to pings (browsers and

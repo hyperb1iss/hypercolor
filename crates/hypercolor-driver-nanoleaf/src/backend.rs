@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use hypercolor_color::Rgb;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
@@ -194,15 +195,12 @@ impl NanoleafBackend {
             return Ok(());
         }
 
-        let brightness = device.brightness;
+        let brightness = f32::from(device.brightness) / f32::from(u8::MAX);
         device.scaled_colors.clear();
         device.scaled_colors.reserve(colors.len());
         for [r, g, b] in colors.iter().copied() {
-            device.scaled_colors.push([
-                scale_channel(r, brightness),
-                scale_channel(g, brightness),
-                scale_channel(b, brightness),
-            ]);
+            let scaled = Rgb::new(r, g, b).scale(brightness);
+            device.scaled_colors.push([scaled.r, scaled.g, scaled.b]);
         }
 
         let scaled_colors = std::mem::take(&mut device.scaled_colors);
@@ -467,9 +465,4 @@ impl DeviceBackend for NanoleafBackend {
             }) as Arc<dyn DeviceFrameSink>
         })
     }
-}
-
-fn scale_channel(channel: u8, brightness: u8) -> u8 {
-    let scaled = u16::from(channel) * u16::from(brightness);
-    u8::try_from(scaled / 255).unwrap_or(u8::MAX)
 }

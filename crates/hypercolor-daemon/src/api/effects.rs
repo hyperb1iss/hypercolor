@@ -5,12 +5,11 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{info, warn};
 
@@ -20,7 +19,6 @@ use hypercolor_core::effect::{
     parse_html_effect_metadata,
 };
 use hypercolor_core::engine::RenderLoopState;
-use hypercolor_core::scene::ControlsVersionMismatch;
 use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
@@ -29,8 +27,7 @@ use hypercolor_types::effect::{
     EffectSource,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
-    ZoneChangeKind, ZoneColors,
+    EffectRef, EventControlValue, FrameData, HypercolorEvent, ZoneColors,
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{Zone, ZoneId};
@@ -39,15 +36,20 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
-use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{
-    ActiveSceneMutationError, active_scene_id_for_runtime_mutation, admit_scene_store_snapshot,
-    publish_render_group_changed, save_admitted_scene_store_snapshot, scene_store_coordinator,
-};
+use crate::api::envelope::ApiResponse;
 use crate::discovery;
+use crate::domain;
+// One definition of the source spelling, shared with the `source`
+// catalog filter: a second one here would let a listing narrow on values
+// the payload never reports.
+use crate::domain::effect::RequestedTransition;
+use crate::domain::effect::effect_source_kind as source_kind;
+use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
 use crate::session::set_output_stopped;
+
+pub use hypercolor_types::api::effects::SetEffectLayoutRequest;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -56,35 +58,25 @@ const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 
 pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
-    let mut scene_manager = state.scene_manager.write().await;
-    scene_manager.invalidate_active_render_groups();
+    if let Err(error) = domain::effect::invalidate_active_zones(state).await {
+        warn!(%error, "Failed to refresh active zones after an effect registry update");
+    }
 }
 
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
     ActiveEffectResponse, ApplyEffectPresetRequest, ApplyEffectRequest, ApplyEffectResponse,
-    ApplyTransitionResponse, EffectCapabilitySet, EffectDetailResponse, EffectLayoutApplyResult,
-    EffectListResponse, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
-    EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
-    PauseEffectResponse, ResetControlsRequest, ResumeEffectResponse, TransitionRequest,
-    UpdateCurrentControlsRequest,
+    ApplyTransitionResponse, DeleteEffectLayoutResponse, EffectCapabilitySet, EffectDetailResponse,
+    EffectLayoutApplyResult, EffectLayoutResponse, EffectListResponse, EffectPresetListResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectRefSummary, EffectSummary,
+    InstalledEffectResponse, LayoutLinkSummary, RescanResponse, ResetControlsRequest,
+    SetEffectLayoutResponse, TransitionRequest, UpdateActiveControlsRequest,
 };
-
-#[derive(Debug, Clone, Copy)]
-struct AppliedTransition {
-    transition_type: &'static str,
-    duration_ms: u64,
-}
 
 struct ResolvedEffectPreset {
     id: PresetId,
     controls: HashMap<String, ControlValue>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SetEffectLayoutRequest {
-    pub layout_id: String,
 }
 
 #[derive(Debug)]
@@ -93,78 +85,13 @@ enum ResolveLayoutLinkError {
     AmbiguousName(String),
 }
 
-#[derive(Debug)]
-pub(crate) struct StopActiveEffectResult {
-    pub effect: EffectRef,
-    pub released_network_devices: usize,
-}
-
-#[derive(Debug)]
-pub(crate) enum StopActiveEffectError {
-    NoActiveEffect,
-    ActiveScene(ActiveSceneMutationError),
-    ActiveGroupMissing,
-    Persistence(String),
-}
-
-impl From<ActiveSceneMutationError> for StopActiveEffectError {
-    fn from(value: ActiveSceneMutationError) -> Self {
-        Self::ActiveScene(value)
-    }
-}
-
 pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
     let output_sleeping = state.power_state.borrow().sleeping();
     let render_paused = state.render_loop.read().await.state() == RenderLoopState::Paused;
     if !output_sleeping && !render_paused {
         return;
     }
-    super::output::set_output_power(state, OutputPowerMode::Running).await;
-}
-
-pub(crate) async fn stop_active_effect_and_quiesce_output(
-    state: &AppState,
-) -> Result<StopActiveEffectResult, StopActiveEffectError> {
-    let Some((group, previous_effect)) = active_primary_effect(state).await else {
-        return Err(StopActiveEffectError::NoActiveEffect);
-    };
-
-    let coordinator = scene_store_coordinator(state).await;
-    let (scene_id, cleared_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
-        let rollback = scene_manager.clone();
-        let Some(cleared_group) = scene_manager.clear_group_effect(group.id).cloned() else {
-            return Err(StopActiveEffectError::ActiveGroupMissing);
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return Err(StopActiveEffectError::Persistence(error.to_string()));
-            }
-        };
-        (scene_id, cleared_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state, pending).await {
-        warn!(%error, "Failed to persist stopped effect; retry remains active");
-    }
-
-    let effect = effect_ref(&previous_effect);
-    state.event_bus.publish(HypercolorEvent::EffectStopped {
-        effect: effect.clone(),
-        reason: EffectStopReason::Stopped,
-        group_id: Some(cleared_group.id),
-        group_name: Some(cleared_group.name.clone()),
-    });
-    publish_render_group_changed(state, scene_id, &cleared_group, ZoneChangeKind::Updated);
-
-    let released_network_devices = quiesce_output_after_effect_stop(state).await;
-    super::save_runtime_session_snapshot(state).await;
-
-    Ok(StopActiveEffectResult {
-        effect,
-        released_network_devices,
-    })
+    crate::domain::output::set_power(state, OutputPowerMode::Running).await;
 }
 
 pub(crate) fn schedule_network_output_reconnect(state: &AppState) {
@@ -224,7 +151,7 @@ fn schedule_output_reconnect(state: &AppState, network_only: bool) {
     );
 }
 
-async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
+pub(crate) async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
     let _transition_guard = state.output_power_transition.lock().await;
     {
         let mut render_loop = state.render_loop.write().await;
@@ -339,53 +266,113 @@ fn elapsed_ms_u32(state: &AppState) -> u32 {
 
 // ── Handlers ─────────────────────────────────────────────────────────────
 
-/// `GET /api/v1/effects` — List all registered effects.
+/// Query string for `GET /api/v1/effects`.
+///
+/// Every field narrows the catalog; omitted fields do not. `include` is
+/// a comma-separated list of expansions (`controls`, `presets`) that add
+/// optional fields to each summary.
+///
+/// Parameters this type does not name stay ignored, which keeps the v1
+/// contract for the paging arguments the fabricated pagination block
+/// has always discarded.
+#[derive(Debug, Clone, Default, serde::Deserialize, utoipa::IntoParams)]
+pub struct EffectListQuery {
+    /// Exact effect category.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Declared audio reactivity.
+    #[serde(default)]
+    pub audio_reactive: Option<bool>,
+    /// Declared screen reactivity.
+    #[serde(default)]
+    pub screen_reactive: Option<bool>,
+    /// Declared input reactivity.
+    #[serde(default)]
+    pub input_reactive: Option<bool>,
+    /// Rendering source: `native`, `html`, or `shader`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Case-insensitive substring over name, description, author, tags.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Comma-separated expansions: `controls`, `presets`.
+    #[serde(default)]
+    pub include: Option<String>,
+}
+
+/// Which summary expansions a listing asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct EffectListIncludes {
+    controls: bool,
+    presets: bool,
+}
+
+impl EffectListIncludes {
+    fn parse(raw: Option<&str>) -> Result<Self, DomainError> {
+        let mut includes = Self::default();
+        for token in raw.unwrap_or_default().split(',') {
+            match token.trim() {
+                "" => {}
+                "controls" => includes.controls = true,
+                "presets" => includes.presets = true,
+                other => {
+                    return Err(DomainError::validation_field(
+                        "include",
+                        format!("unknown expansion '{other}'; expected controls or presets"),
+                    ));
+                }
+            }
+        }
+        Ok(includes)
+    }
+}
+
+/// `GET /api/v1/effects` — the effect catalog, narrowed server-side.
 #[utoipa::path(
     get,
     path = "/api/v1/effects",
+    params(EffectListQuery),
     responses(
         (
             status = 200,
             description = "Effect catalog",
             body = crate::api::envelope::ApiResponse<EffectListResponse>
+        ),
+        (
+            status = 422,
+            description = "A filter or expansion named a value that does not exist",
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
 )]
-pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
-    let registry = state.effect_registry.read().await;
-    let mut items: Vec<EffectSummary> = registry
-        .iter()
-        .map(|(_, entry)| {
-            let meta = &entry.metadata;
-            EffectSummary {
-                id: meta.id.to_string(),
-                name: meta.name.clone(),
-                description: meta.description.clone(),
-                author: meta.author.clone(),
-                category: format!("{}", meta.category),
-                source: source_kind(&meta.source).to_owned(),
-                runnable: is_runnable_source(&meta.source),
-                tags: meta.tags.clone(),
-                version: meta.version.clone(),
-                audio_reactive: meta.audio_reactive,
-                input_reactive: meta.input_reactive,
-                capabilities: EffectCapabilitySet {
-                    audio_reactive: meta.audio_reactive,
-                    screen_reactive: meta.screen_reactive,
-                    input_reactive: meta.input_reactive,
-                },
-                cover_image_url: effect_cover_image_url(meta),
-            }
-        })
+pub async fn list_effects(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<EffectListQuery>,
+) -> Response {
+    let includes = match EffectListIncludes::parse(query.include.as_deref()) {
+        Ok(includes) => includes,
+        Err(error) => return error.into_response(),
+    };
+    let catalog_query = match domain::effect::EffectCatalogQuery::parse(
+        query.category.as_deref(),
+        query.source.as_deref(),
+        query.q.as_deref(),
+    ) {
+        Ok(parsed) => domain::effect::EffectCatalogQuery {
+            audio_reactive: query.audio_reactive,
+            screen_reactive: query.screen_reactive,
+            input_reactive: query.input_reactive,
+            ..parsed
+        },
+        Err(error) => return error.into_response(),
+    };
+
+    let items: Vec<EffectSummary> = domain::effect::list_catalog(state.as_ref(), &catalog_query)
+        .await
+        .into_iter()
+        .map(|meta| effect_summary(&meta, includes))
         .collect();
-    items.sort_by(|left, right| {
-        let left_norm = left.name.to_ascii_lowercase();
-        let right_norm = right.name.to_ascii_lowercase();
-        left_norm
-            .cmp(&right_norm)
-            .then_with(|| left.name.cmp(&right.name))
-    });
 
     let total = items.len();
     ApiResponse::ok(EffectListResponse {
@@ -397,6 +384,30 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
             has_more: false,
         },
     })
+}
+
+fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> EffectSummary {
+    EffectSummary {
+        id: meta.id.to_string(),
+        name: meta.name.clone(),
+        description: meta.description.clone(),
+        author: meta.author.clone(),
+        category: format!("{}", meta.category),
+        source: source_kind(&meta.source).to_owned(),
+        runnable: is_runnable_source(&meta.source),
+        tags: meta.tags.clone(),
+        version: meta.version.clone(),
+        audio_reactive: meta.audio_reactive,
+        input_reactive: meta.input_reactive,
+        capabilities: EffectCapabilitySet {
+            audio_reactive: meta.audio_reactive,
+            screen_reactive: meta.screen_reactive,
+            input_reactive: meta.input_reactive,
+        },
+        cover_image_url: effect_cover_image_url(meta),
+        controls: includes.controls.then(|| meta.controls.clone()),
+        presets: includes.presets.then(|| meta.presets.clone()),
+    }
 }
 
 /// `GET /api/v1/effects/:id` — Get a single effect's metadata.
@@ -413,7 +424,7 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
         (
             status = 404,
             description = "Effect was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -422,7 +433,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     let registry = state.effect_registry.read().await;
 
     let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-        return ApiError::not_found(format!("Effect not found: {id}"));
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
     drop(registry);
 
@@ -473,7 +484,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         (
             status = 404,
             description = "Effect was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -485,7 +496,7 @@ pub async fn list_effect_presets(
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(metadata) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         metadata
     };
@@ -521,12 +532,12 @@ pub async fn list_effect_presets(
         (
             status = 404,
             description = "Effect or preset was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 422,
             description = "Preset belongs to another effect",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -541,7 +552,7 @@ pub async fn apply_effect_preset(
         Path(id),
         Some(Json(ApplyEffectRequest {
             preset_id: Some(preset_id),
-            render_group: body.and_then(|Json(body)| body.render_group),
+            zone_id: body.and_then(|Json(body)| body.zone_id),
             ..ApplyEffectRequest::default()
         })),
     )
@@ -556,7 +567,7 @@ pub async fn get_effect_layout(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
@@ -566,7 +577,7 @@ pub async fn get_effect_layout(
         let links = state.effect_layout_links.read().await;
         links.get(&effect_id).cloned()
     }) else {
-        return ApiError::not_found(format!("No layout associated with effect: {id}"));
+        return DomainError::not_found(ResourceKind::Layout, &id).into_response();
     };
 
     let layout = {
@@ -575,15 +586,15 @@ pub async fn get_effect_layout(
     };
 
     let summary = layout.as_ref().map(layout_link_summary);
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(EffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout_id": layout_id,
-        "resolved": summary.is_some(),
-        "layout": summary,
-    }))
+        layout_id,
+        resolved: summary.is_some(),
+        layout: summary,
+    })
 }
 
 /// `PUT /api/v1/effects/:id/layout` — Associate an effect with a layout.
@@ -595,14 +606,14 @@ pub async fn set_effect_layout(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
 
     let requested_layout = body.layout_id.trim();
     if requested_layout.is_empty() {
-        return ApiError::validation("layout_id must not be empty");
+        return DomainError::validation("layout_id must not be empty").into_response();
     }
 
     let layout = {
@@ -610,10 +621,11 @@ pub async fn set_effect_layout(
         match resolve_layout_for_link(&layouts, requested_layout) {
             Ok(layout) => layout,
             Err(ResolveLayoutLinkError::NotFound(layout_id)) => {
-                return ApiError::not_found(format!("Layout not found: {layout_id}"));
+                return DomainError::not_found(ResourceKind::Layout, &layout_id).into_response();
             }
             Err(ResolveLayoutLinkError::AmbiguousName(name)) => {
-                return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+                return DomainError::conflict(format!("Layout name is ambiguous: {name}"))
+                    .into_response();
             }
         }
     };
@@ -621,7 +633,9 @@ pub async fn set_effect_layout(
     let effect_id = effect.id.to_string();
     let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
         Ok(writer) => writer,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
     let pending = {
         let mut links = state.effect_layout_links.write().await;
@@ -637,20 +651,22 @@ pub async fn set_effect_layout(
     };
     let pending = match pending {
         Ok(pending) => pending,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
     if let Err(error) = save_effect_layout_links(&state, pending) {
-        return ApiError::internal(error);
+        return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(SetEffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout": layout_link_summary(&layout),
-        "linked": true,
-    }))
+        layout: layout_link_summary(&layout),
+        linked: true,
+    })
 }
 
 /// `DELETE /api/v1/effects/:id/layout` — Remove an effect -> layout association.
@@ -661,14 +677,16 @@ pub async fn delete_effect_layout(
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
     let effect_id = effect.id.to_string();
     let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
         Ok(writer) => writer,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
 
     let (removed_layout_id, pending) = {
@@ -684,20 +702,22 @@ pub async fn delete_effect_layout(
 
     let pending = match pending {
         Ok(pending) => pending,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => {
+            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
+        }
     };
     if let Err(error) = save_effect_layout_links(&state, pending) {
-        return ApiError::internal(error);
+        return DomainError::Internal(anyhow::anyhow!(error)).into_response();
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect.name,
+    ApiResponse::ok(DeleteEffectLayoutResponse {
+        effect: EffectRefSummary {
+            id: effect_id,
+            name: effect.name,
         },
-        "layout_id": removed_layout_id,
-        "deleted": removed_layout_id.is_some(),
-    }))
+        deleted: removed_layout_id.is_some(),
+        layout_id: removed_layout_id,
+    })
 }
 
 /// `POST /api/v1/effects/:id/apply` — Start rendering an effect.
@@ -715,22 +735,22 @@ pub async fn delete_effect_layout(
         (
             status = 400,
             description = "Request was malformed",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 404,
             description = "Effect or preset was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 422,
             description = "Request validation failed",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         ),
         (
             status = 500,
             description = "The effect could not be applied",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
@@ -743,7 +763,7 @@ pub async fn apply_effect(
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
@@ -756,17 +776,17 @@ pub async fn apply_effect(
         "Applying effect via API"
     );
     if metadata.category == EffectCategory::Display {
-        return ApiError::validation(format!(
+        return DomainError::validation(format!(
             "Effect '{}' is a display face and must be assigned to a display device, not applied to the LED pipeline",
             metadata.name
-        ));
+        ))
+        .into_response();
     }
-    wake_output_for_effect_start(state.as_ref()).await;
 
-    let applied_transition = match validate_transition_request(body.as_ref()) {
-        Ok(transition) => transition,
-        Err(error) => return ApiError::bad_request(error),
-    };
+    // The transition rule lives in the domain so MCP cannot diverge from it.
+    if let Err(error) = transition_request(body.as_ref()).resolve() {
+        return error.into_response();
+    }
 
     // Resolve the optional preset before changing the scene. Both bundled
     // and saved presets use the same effect-scoped reference here.
@@ -786,12 +806,13 @@ pub async fn apply_effect(
                                 || saved.name.eq_ignore_ascii_case(preset_ref)
                         })
                 {
-                    return ApiError::validation(format!(
+                    return DomainError::validation(format!(
                         "Preset '{}' targets effect '{}', not '{}'",
                         saved.name, saved.effect_id, metadata.id
-                    ));
+                    ))
+                    .into_response();
                 }
-                return ApiError::not_found(format!("Preset not found: {preset_ref}"));
+                return DomainError::not_found(ResourceKind::Preset, preset_ref).into_response();
             };
             Some(preset)
         }
@@ -808,146 +829,57 @@ pub async fn apply_effect(
         (raw_controls, normalized, dropped)
     };
 
-    let layout = resolve_full_scope_layout(state.as_ref()).await;
-
     // Resolve the optional target zone; a parsed id is matched against
-    // the active scene below.
+    // the active scene inside the service.
     let target_group =
-        match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
+        match parse_zone_id_field(body.as_ref().and_then(|body| body.zone_id.as_deref())) {
             Ok(target) => target,
-            Err(response) => return *response,
+            Err(error) => return error.into_response(),
         };
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, change_kind, named_target, previous_effect_id, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("applying an effect"),
-        };
-
-        // A render_group naming the Primary zone — or no render_group at
-        // all — takes the legacy upsert path; a named non-Primary zone is
-        // effect-set in place, keeping its own layout.
-        let primary_id = scene_manager
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .map(|group| group.id);
-        let named_target = target_group.filter(|id| Some(*id) != primary_id);
-
-        // "Previous" is whatever ran in the *target* zone before this
-        // apply — events that claimed the primary's effect was replaced
-        // when zone 2 changed hands were lying to subscribers.
-        let previous_effect_id = scene_manager.active_scene().and_then(|scene| {
-            let target = named_target.or(primary_id)?;
-            scene
-                .groups
-                .iter()
-                .find(|group| group.id == target)
-                .and_then(|group| group.effect_id)
-        });
-
-        let rollback = scene_manager.clone();
-        let result = if let Some(group_id) = named_target {
-            let group = match scene_manager.apply_effect_to_group(
-                group_id,
-                &metadata,
-                normalized_controls,
-                resolved_preset.as_ref().map(|preset| preset.id),
-            ) {
-                Ok(group) => group.clone(),
-                Err(error) => {
-                    return ApiError::validation(format!(
-                        "Failed to apply effect to zone: {error}"
-                    ));
-                }
-            };
-            (
-                scene_id,
-                group,
-                ZoneChangeKind::Updated,
-                named_target,
-                previous_effect_id,
-            )
-        } else {
-            let change_kind = if primary_id.is_some() {
-                ZoneChangeKind::Updated
-            } else {
-                ZoneChangeKind::Created
-            };
-            let group = match scene_manager.upsert_primary_group(
-                &metadata,
-                normalized_controls,
-                resolved_preset.as_ref().map(|preset| preset.id),
-                layout,
-            ) {
-                Ok(group) => group.clone(),
-                Err(error) => {
-                    return ApiError::internal(format!(
-                        "Failed to update active scene primary group: {error}"
-                    ));
-                }
-            };
-            (
-                scene_id,
-                group,
-                change_kind,
-                named_target,
-                previous_effect_id,
-            )
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (result.0, result.1, result.2, result.3, result.4, pending)
+    let applied = match domain::effect::apply_effect(
+        state.as_ref(),
+        domain::effect::ApplyEffect {
+            effect: metadata.clone(),
+            controls: normalized_controls,
+            preset_id: resolved_preset.as_ref().map(|preset| preset.id),
+            target_zone: target_group,
+            transition: transition_request(body.as_ref()),
+        },
+        MutationContext::api(),
+    )
+    .await
+    {
+        Ok(applied) => applied,
+        Err(error) => return error.into_response(),
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
+
+    if let Some(error) = applied.commit.retry_error() {
+        // Admitted and converging, not failed: the retry supervisor
+        // owns the bytes. The caller gets its success.
+        warn!(%error, "Scene write has not proven durable yet; retry remains active");
     }
-    let previous_effect = match previous_effect_id {
-        Some(effect_id) => {
-            let registry = state.effect_registry.read().await;
-            registry
-                .get(&effect_id)
-                .map(|entry| effect_ref(&entry.metadata))
-        }
-        None => None,
-    };
+
     log_effect_apply_completion(
-        previous_effect.as_ref().map(|effect| effect.name.as_str()),
-        &metadata.name,
+        applied
+            .previous_effect
+            .as_ref()
+            .map(|effect| effect.name.as_str()),
+        &applied.effect.name,
         controls.len(),
         &dropped_controls,
     );
-    state.event_bus.publish(HypercolorEvent::EffectStarted {
-        effect: effect_ref(&metadata),
-        trigger: ChangeTrigger::Api,
-        previous: previous_effect,
-        transition: None,
-        group_id: Some(group.id),
-        group_name: Some(group.name.clone()),
-    });
-    publish_render_group_changed(state.as_ref(), scene_id, &group, change_kind);
-    // A named zone keeps its own layout; only a Primary apply adopts the
-    // effect's associated layout.
-    let applied_layout = if named_target.is_some() {
-        None
-    } else {
-        apply_associated_layout(state.as_ref(), &metadata.id.to_string()).await
-    };
-    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(ApplyEffectResponse {
         effect: EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name,
+            id: applied.effect.id.clone(),
+            name: applied.effect.name.clone(),
         },
         applied_controls: serde_json::Value::Object(controls),
-        layout: applied_layout,
+        layout: applied.applied_layout,
         transition: ApplyTransitionResponse {
-            transition_type: applied_transition.transition_type.to_owned(),
-            duration_ms: applied_transition.duration_ms,
+            transition_type: applied.transition.style.to_owned(),
+            duration_ms: applied.transition.duration_ms,
         },
         warnings: Vec::new(),
     })
@@ -991,7 +923,7 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         control_values: resolved_control_values(&meta, &group),
         active_preset_id: group.preset_id.map(|preset| preset.to_string()),
         active_preset_modified,
-        render_group_id: Some(group.id.to_string()),
+        zone_id: Some(group.id.to_string()),
         controls_version: Some(controls_version),
         cover_image_url: effect_cover_image_url(&meta),
     };
@@ -1002,7 +934,7 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/effects/active/cover` — Get the active effect cover image.
 pub async fn get_active_effect_cover(State(state): State<Arc<AppState>>) -> Response {
     let Some((_, meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
 
     effect_cover_image_response(&meta, EffectCoverCache::Active).await
@@ -1016,7 +948,7 @@ pub async fn get_effect_cover(
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return ApiError::not_found(format!("Effect not found: {id}"));
+            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
         };
         meta
     };
@@ -1024,83 +956,25 @@ pub async fn get_effect_cover(
     effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
 }
 
-/// `POST /api/v1/effects/pause` — Pause output without clearing active effect state.
-#[utoipa::path(
-    post,
-    path = "/api/v1/effects/pause",
-    responses(
-        (status = 200, description = "Paused global output", body = crate::api::envelope::ApiResponse<PauseEffectResponse>)
-    ),
-    tag = "effects"
-)]
-pub async fn pause_effect(State(state): State<Arc<AppState>>) -> Response {
-    super::output::set_output_power(state.as_ref(), OutputPowerMode::Paused).await;
-    let effect = active_primary_effect(state.as_ref())
-        .await
-        .map(|(_, metadata)| EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name,
-        });
-    let output_power = *state.power_state.borrow();
-    ApiResponse::ok(PauseEffectResponse {
-        paused: true,
-        effect,
-        off_output_behavior: match output_power.effective_off_output_behavior() {
-            OffOutputBehavior::Static => "static",
-            OffOutputBehavior::Release => "release",
-        }
-        .to_owned(),
-        off_output_color: output_power.effective_off_output_color(),
-    })
-}
-
-/// `POST /api/v1/effects/resume` — Resume output for the preserved active effect.
-#[utoipa::path(
-    post,
-    path = "/api/v1/effects/resume",
-    responses(
-        (status = 200, description = "Resumed global output", body = crate::api::envelope::ApiResponse<ResumeEffectResponse>)
-    ),
-    tag = "effects"
-)]
-pub async fn resume_effect(State(state): State<Arc<AppState>>) -> Response {
-    super::output::set_output_power(state.as_ref(), OutputPowerMode::Running).await;
-    let effect = active_primary_effect(state.as_ref())
-        .await
-        .map(|(_, metadata)| EffectRefSummary {
-            id: metadata.id.to_string(),
-            name: metadata.name,
-        });
-    ApiResponse::ok(ResumeEffectResponse {
-        resumed: true,
-        effect,
-    })
-}
-
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.
 pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
-    let stop_result = match stop_active_effect_and_quiesce_output(state.as_ref()).await {
-        Ok(result) => result,
-        Err(StopActiveEffectError::NoActiveEffect | StopActiveEffectError::ActiveGroupMissing) => {
-            return ApiError::not_found("No effect is currently active");
-        }
-        Err(StopActiveEffectError::ActiveScene(error)) => {
-            return error.api_response("stopping the active effect");
-        }
-        Err(StopActiveEffectError::Persistence(error)) => return ApiError::internal(error),
+    let stopped = match domain::effect::stop_effect(state.as_ref(), MutationContext::api()).await {
+        Ok(Some(stopped)) => stopped,
+        Ok(None) => return DomainError::not_found(ResourceKind::Effect, "active").into_response(),
+        Err(error) => return error.into_response(),
     };
 
     ApiResponse::ok(serde_json::json!({
         "stopped": true,
-        "released_network_devices": stop_result.released_network_devices,
+        "released_network_devices": stopped.released_network_devices,
     }))
 }
 
-/// `PATCH /api/v1/effects/current/controls` — Update controls on active effect
+/// `PATCH /api/v1/effects/active/controls` — Update controls on active effect
 /// without reloading/reinitializing the effect renderer.
-pub async fn update_current_controls(
+pub async fn update_active_controls(
     State(state): State<Arc<AppState>>,
-    body: Option<Json<UpdateCurrentControlsRequest>>,
+    body: Option<Json<UpdateActiveControlsRequest>>,
 ) -> Response {
     let controls = body
         .as_ref()
@@ -1109,54 +983,48 @@ pub async fn update_current_controls(
         .cloned()
         .unwrap_or_default();
     if controls.is_empty() {
-        return ApiError::bad_request("controls payload must include at least one key");
+        return DomainError::validation_field(
+            "controls",
+            "controls payload must include at least one key",
+        )
+        .into_response();
     }
 
-    let mut rejected: Vec<String> = Vec::new();
-    let mut applied: HashMap<String, ControlValue> = HashMap::new();
     let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
     let effect_name = active_meta.name.clone();
-    let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
-    rejected.extend(invalid);
-    applied.extend(normalized.clone());
-    let previous_values = resolved_control_values(&active_meta, &group);
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("updating active effect controls"),
-        };
-        let rollback = scene_manager.clone();
-        let updated_group = match scene_manager.patch_effect_controls_with_precondition(
-            group.id,
-            Some(active_meta.id),
-            normalized,
-            None,
-        ) {
-            Ok((updated, _version)) => updated.clone(),
-            Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
-                return ApiError::not_found("No effect is currently active");
-            }
-            Err(ControlsVersionMismatch::Stale { .. }) => {
-                return ApiError::conflict("active effect controls changed concurrently");
-            }
-            Err(ControlsVersionMismatch::AmbiguousLayerStack) => {
-                return ApiError::validation(
-                    "active group has multiple effect layers; use the layer controls endpoint",
-                );
-            }
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, updated_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
+
+    let outcome = domain::effect::update_controls(
+        state.as_ref(),
+        domain::effect::UpdateControls {
+            zone_id: group.id,
+            expected_effect_id: Some(active_meta.id),
+            effect: active_meta,
+            controls: applied.clone(),
+            expected_version: None,
+        },
+        MutationContext::api(),
+    )
+    .await;
+
+    match outcome {
+        Ok(Ok(_)) => {}
+        Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
+        }
+        Ok(Err(domain::effect::ControlsRefusal::Stale { .. })) => {
+            return DomainError::conflict("active effect controls changed concurrently")
+                .into_response();
+        }
+        Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
+            return DomainError::validation(
+                "active group has multiple effect layers; use the layer controls endpoint",
+            )
+            .into_response();
+        }
+        Err(error) => return error.into_response(),
     }
 
     if !rejected.is_empty() {
@@ -1166,22 +1034,11 @@ pub async fn update_current_controls(
             "Rejected one or more control updates"
         );
     }
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::ControlsPatched,
-    );
-    publish_primary_control_changed_events(
-        state.as_ref(),
-        &active_meta,
-        &previous_values,
-        &resolved_control_values(&active_meta, &updated_group),
-        applied.keys().map(String::as_str),
-        ChangeTrigger::Api,
-    );
-    super::persist_runtime_session(&state).await;
 
+    // Held back from the wave 3.1c type promotion deliberately: `applied`
+    // carries f32 control values, and `json!` widens them to f64 while a
+    // derived struct does not, so naming this shape would reprint every
+    // non-representable float (0.1 -> 0.10000000149011612 today).
     ApiResponse::ok(serde_json::json!({
         "effect": effect_name,
         "applied": applied,
@@ -1202,23 +1059,23 @@ pub async fn update_current_controls(
 /// the current server version so the client can rebase.
 ///
 /// Callers that don't care about concurrency control omit the header;
-/// the endpoint then behaves like `update_current_controls`.
+/// the endpoint then behaves like `update_active_controls`.
 ///
 /// Implemented per Spec 46 § 9.1.
 pub async fn update_effect_controls(
     State(state): State<Arc<AppState>>,
     Path(effect_id_raw): Path<String>,
     headers: HeaderMap,
-    body: Option<Json<UpdateCurrentControlsRequest>>,
+    body: Option<Json<UpdateActiveControlsRequest>>,
 ) -> Response {
     let Ok(effect_uuid) = effect_id_raw.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request("effect_id must be a valid UUID");
+        return DomainError::malformed("effect_id must be a valid UUID").into_response();
     };
     let effect_id = EffectId::from(effect_uuid);
 
     let expected_version = match parse_if_match_version(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
 
     let controls = body
@@ -1228,61 +1085,59 @@ pub async fn update_effect_controls(
         .cloned()
         .unwrap_or_default();
     if controls.is_empty() {
-        return ApiError::bad_request("controls payload must include at least one key");
+        return DomainError::validation_field(
+            "controls",
+            "controls payload must include at least one key",
+        )
+        .into_response();
     }
 
     let Some((group, active_meta)) = primary_effect_by_id(state.as_ref(), effect_id).await else {
-        return ApiError::not_found("No zone loads that effect");
+        return DomainError::not_found(ResourceKind::Zone, effect_id).into_response();
     };
     let effect_name = active_meta.name.clone();
-    let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
-    let mut rejected: Vec<String> = Vec::new();
-    rejected.extend(invalid);
-    let applied = normalized.clone();
-    let previous_values = resolved_control_values(&active_meta, &group);
+    let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
 
-    // Resolve -> verify -> patch is one write-lock section so the
-    // TOCTOU window between "I looked up this effect" and "I'm
-    // patching the group that used to load it" is closed. Passing
-    // `expected_effect_id` to the scene manager turns a concurrent
-    // effect-swap into a `GroupMissing` error instead of a silent
-    // overwrite. See `SceneManager::patch_effect_controls_with_precondition`.
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, new_version, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("updating effect controls"),
-        };
-        let rollback = scene_manager.clone();
-        let result = match scene_manager.patch_effect_controls_with_precondition(
-            group.id,
-            Some(effect_id),
-            normalized,
+    // Passing `expected_effect_id` through to the candidate turns a
+    // concurrent effect swap into a not-found instead of a patch landing
+    // on whatever moved into the zone, closing the window between "I
+    // looked up this effect" and "I am patching the zone that loaded it".
+    let outcome = domain::effect::update_controls(
+        state.as_ref(),
+        domain::effect::UpdateControls {
+            zone_id: group.id,
+            expected_effect_id: Some(effect_id),
+            effect: active_meta,
+            controls: applied.clone(),
             expected_version,
-        ) {
-            Ok((updated, version)) => (scene_id, updated.clone(), version),
-            Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
-                return ApiError::not_found("zone no longer loads that effect");
+        },
+        MutationContext::api(),
+    )
+    .await;
+
+    let new_version = match outcome {
+        Ok(Ok(written)) => written.controls_version,
+        Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
+            return DomainError::not_found(ResourceKind::Zone, effect_id).into_response();
+        }
+        Ok(Err(domain::effect::ControlsRefusal::Stale { current })) => {
+            return DomainError::PreconditionFailed {
+                resource: ResourceKind::Effect,
+                // Staleness is only checked when the caller sent a
+                // precondition, so the header value is always present here.
+                expected: expected_version.unwrap_or(current),
+                current,
             }
-            Err(ControlsVersionMismatch::Stale { current }) => {
-                return controls_version_mismatch_response(current);
-            }
-            Err(ControlsVersionMismatch::AmbiguousLayerStack) => {
-                return ApiError::validation(
-                    "zone has multiple matching effect layers; use the layer controls endpoint",
-                );
-            }
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (result.0, result.1, result.2, pending)
+            .into_response();
+        }
+        Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
+            return DomainError::validation(
+                "zone has multiple matching effect layers; use the layer controls endpoint",
+            )
+            .into_response();
+        }
+        Err(error) => return error.into_response(),
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
-    }
 
     if !rejected.is_empty() {
         warn!(
@@ -1291,22 +1146,8 @@ pub async fn update_effect_controls(
             "Rejected one or more control updates"
         );
     }
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::ControlsPatched,
-    );
-    publish_primary_control_changed_events(
-        state.as_ref(),
-        &active_meta,
-        &previous_values,
-        &resolved_control_values(&active_meta, &updated_group),
-        applied.keys().map(String::as_str),
-        ChangeTrigger::Api,
-    );
-    super::persist_runtime_session(&state).await;
 
+    // Held back for the same f32 reprint reason as its `active` sibling.
     let body = ApiResponse::ok(serde_json::json!({
         "effect": effect_name,
         "applied": applied,
@@ -1348,22 +1189,6 @@ fn parse_if_match_version(headers: &HeaderMap) -> Result<Option<u64>, &'static s
         .map_err(|_| "If-Match must be a non-negative integer controls_version")
 }
 
-fn controls_version_mismatch_response(current: u64) -> Response {
-    let body = serde_json::json!({
-        "error": "controls_version mismatch",
-        "current": current,
-    });
-    let mut response = (
-        axum::http::StatusCode::PRECONDITION_FAILED,
-        axum::Json(body),
-    )
-        .into_response();
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\"")) {
-        response.headers_mut().insert(header::ETAG, etag);
-    }
-    response
-}
-
 fn attach_controls_version_headers(mut response: Response, version: u64) -> Response {
     if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
         response.headers_mut().insert(header::ETAG, etag);
@@ -1394,60 +1219,47 @@ async fn primary_effect_by_id(
     Some((group, metadata))
 }
 
-/// `PUT /api/v1/effects/current/controls/{name}/binding` — Attach a live sensor
+/// `PUT /api/v1/effects/active/controls/{name}/binding` — Attach a live sensor
 /// binding to a control on the active effect.
-pub async fn set_current_control_binding(
+pub async fn set_active_control_binding(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     Json(binding): Json<ControlBinding>,
 ) -> Response {
     let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
     let effect_id = active_meta.id.to_string();
     let effect_name = active_meta.name.clone();
     let Some(control) = active_meta.control_by_id(&name) else {
-        return ApiError::not_found(format!("Control not found on active effect: {name}"));
+        return DomainError::not_found(ResourceKind::Control, &name).into_response();
     };
     let control_id = control.control_id().to_owned();
     let normalized = match validate_control_binding_request(&active_meta, &name, binding) {
         Ok(normalized) => normalized,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => {
-                return error.api_response("updating an active effect control binding");
-            }
-        };
-        let rollback = scene_manager.clone();
-        let Some(updated_group) = scene_manager
-            .set_group_control_binding(group.id, control_id.clone(), normalized.clone())
-            .cloned()
-        else {
-            return ApiError::not_found("No effect is currently active");
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, updated_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    let outcome = domain::effect::set_control_binding(
+        state.as_ref(),
+        domain::effect::SetControlBinding {
+            zone_id: group.id,
+            control_id: control_id.clone(),
+            binding: normalized.clone(),
+        },
+        MutationContext::api(),
+    )
+    .await;
+    match outcome {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => {
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
+        }
+        Err(error) => return error.into_response(),
     }
 
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::Updated,
-    );
-    super::persist_runtime_session(&state).await;
-
+    // Held back: `ControlBinding` is six f32 fields, which a named struct
+    // would reprint at f32 precision instead of the widened f64 form the
+    // literal has always emitted.
     ApiResponse::ok(serde_json::json!({
         "effect": {
             "id": effect_id,
@@ -1458,77 +1270,52 @@ pub async fn set_current_control_binding(
     }))
 }
 
-/// `POST /api/v1/effects/current/reset` — Reset all controls on the active
+/// `POST /api/v1/effects/active/reset` — Reset all controls on the active
 /// effect back to their metadata-defined defaults. Accepts an optional
-/// `render_group` body field to reset a specific zone's effect instead of
+/// `zone_id` body field to reset a specific zone's effect instead of
 /// the primary.
 pub async fn reset_controls(
     State(state): State<Arc<AppState>>,
     body: Option<Json<ResetControlsRequest>>,
 ) -> Response {
     let target_group =
-        match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
+        match parse_zone_id_field(body.as_ref().and_then(|body| body.zone_id.as_deref())) {
             Ok(target) => target,
-            Err(response) => return *response,
+            Err(error) => return error.into_response(),
         };
     let resolved = match target_group {
         Some(group_id) => active_group_effect(state.as_ref(), group_id).await,
         None => active_primary_effect(state.as_ref()).await,
     };
     let Some((group, meta)) = resolved else {
-        return ApiError::not_found("No effect is active in the target zone");
+        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
     };
-    let previous_values = resolved_control_values(&meta, &group);
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("resetting active effect controls"),
-        };
-        let rollback = scene_manager.clone();
-        let Some(updated_group) = scene_manager
-            .reset_group_controls(group.id, default_control_values(&meta))
-            .cloned()
-        else {
-            return ApiError::not_found("No effect is currently active");
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, updated_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
-    }
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::ControlsPatched,
-    );
-    let control_ids = meta
-        .controls
-        .iter()
-        .map(|control| control.control_id().to_owned())
-        .collect::<Vec<_>>();
-    publish_primary_control_changed_events(
-        state.as_ref(),
-        &meta,
-        &previous_values,
-        &resolved_control_values(&meta, &updated_group),
-        control_ids.iter().map(String::as_str),
-        ChangeTrigger::Api,
-    );
-    super::persist_runtime_session(&state).await;
+    let effect_id = meta.id;
+    let effect_name = meta.name.clone();
 
-    info!(effect = %meta.name, "Controls reset to defaults");
+    let outcome = domain::effect::reset_controls(
+        state.as_ref(),
+        domain::effect::ResetControls {
+            zone_id: group.id,
+            effect: meta,
+        },
+        MutationContext::api(),
+    )
+    .await;
+    match outcome {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => {
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
+        }
+        Err(error) => return error.into_response(),
+    }
+
+    info!(effect = %effect_name, "Controls reset to defaults");
 
     ApiResponse::ok(serde_json::json!({
         "effect": {
-            "id": meta.id.to_string(),
-            "name": meta.name,
+            "id": effect_id.to_string(),
+            "name": effect_name,
         },
         "reset": true,
     }))
@@ -1574,36 +1361,38 @@ pub async fn install_effect(
 ) -> Response {
     let (file_name, file_bytes) = match next_uploaded_html_field(&mut multipart).await {
         Ok(upload) => upload,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     if file_bytes.len() > MAX_EFFECT_UPLOAD_BYTES {
-        return ApiError::payload_too_large(format!(
-            "Uploaded effect exceeds the 1 MB limit ({} bytes).",
-            file_bytes.len()
-        ));
+        return DomainError::PayloadTooLarge {
+            limit_bytes: MAX_EFFECT_UPLOAD_BYTES as u64,
+        }
+        .into_response();
     }
 
     let Ok(html) = String::from_utf8(file_bytes) else {
-        return ApiError::bad_request("Uploaded effect must be valid UTF-8 HTML.");
+        return DomainError::malformed("Uploaded effect must be valid UTF-8 HTML.").into_response();
     };
 
     let validated = match validate_uploaded_html(&html) {
         Ok(validated) => validated,
         Err(errors) => {
-            return ApiError::bad_request_with_details(
+            return DomainError::validation_details(
                 "Uploaded effect failed validation.",
                 serde_json::json!({ "errors": errors }),
-            );
+            )
+            .into_response();
         }
     };
 
     let install_dir = user_effects_install_dir(state.as_ref());
     if let Err(error) = fs::create_dir_all(&install_dir).await {
-        return ApiError::internal(format!(
+        return DomainError::Internal(anyhow::anyhow!(
             "Failed to create user effects directory '{}': {error}",
             install_dir.display()
-        ));
+        ))
+        .into_response();
     }
 
     let preferred_stem = file_name
@@ -1620,25 +1409,30 @@ pub async fn install_effect(
     let replacing = installed_path.exists();
 
     if let Err(error) = fs::write(&installed_path, html.as_bytes()).await {
-        return ApiError::internal(format!(
+        return DomainError::Internal(anyhow::anyhow!(
             "Failed to write uploaded effect to '{}': {error}",
             installed_path.display()
-        ));
+        ))
+        .into_response();
     }
 
     let entry = match load_html_effect_file(&installed_path) {
         Ok(Some(entry)) => entry,
         Ok(None) => {
             let _ = fs::remove_file(&installed_path).await;
-            return ApiError::bad_request("Uploaded effect is not supported by this daemon build.");
+            return DomainError::validation(
+                "Uploaded effect is not supported by this daemon build.",
+            )
+            .into_response();
         }
         Err(error) => {
             let _ = fs::remove_file(&installed_path).await;
-            return ApiError::internal(format!(
+            return DomainError::Internal(anyhow::anyhow!(
                 "Failed to register uploaded effect '{}': {}",
                 error.path.display(),
                 error.message
-            ));
+            ))
+            .into_response();
         }
     };
 
@@ -1673,13 +1467,6 @@ pub async fn install_effect(
         controls: entry.metadata.controls.len(),
         presets: entry.metadata.presets.len(),
     })
-}
-
-#[derive(Debug, Serialize)]
-pub struct RescanResponse {
-    pub added: usize,
-    pub removed: usize,
-    pub updated: usize,
 }
 
 pub(crate) fn resolve_effect_metadata(
@@ -1803,42 +1590,7 @@ async fn active_preset_modified(state: &AppState, metadata: &EffectMetadata, gro
     preset_baseline != resolved_control_values(metadata, group)
 }
 
-fn publish_primary_control_changed_events<'a>(
-    state: &AppState,
-    metadata: &EffectMetadata,
-    previous_values: &HashMap<String, ControlValue>,
-    next_values: &HashMap<String, ControlValue>,
-    changed_control_ids: impl IntoIterator<Item = &'a str>,
-    trigger: ChangeTrigger,
-) {
-    for control_id in changed_control_ids {
-        let Some(previous) = previous_values.get(control_id) else {
-            continue;
-        };
-        let Some(next) = next_values.get(control_id) else {
-            continue;
-        };
-        if previous == next {
-            continue;
-        }
-        let (Some(old_value), Some(new_value)) =
-            (event_control_value(previous), event_control_value(next))
-        else {
-            continue;
-        };
-        state
-            .event_bus
-            .publish(HypercolorEvent::EffectControlChanged {
-                effect_id: metadata.id.to_string(),
-                control_id: control_id.to_owned(),
-                old_value,
-                new_value,
-                trigger: trigger.clone(),
-            });
-    }
-}
-
-fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
+pub(crate) fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
     match value {
         ControlValue::Float(_) | ControlValue::Integer(_) => {
             value.as_f32().map(EventControlValue::Number)
@@ -1894,21 +1646,16 @@ pub(crate) async fn active_group_effect(
     Some((group, metadata))
 }
 
-/// Parse an optional `render_group` request field into a [`ZoneId`].
-/// An unparseable id is a client error, surfaced as the boxed `Err`
-/// response (boxed so the happy path isn't penalized by axum's large
-/// `Response` type).
-pub(crate) fn parse_render_group(raw: Option<&str>) -> Result<Option<ZoneId>, Box<Response>> {
+/// Parse an optional `zone_id` request field into a [`ZoneId`].
+/// An id that is not a UUID is malformed syntax, not a value the
+/// domain weighs.
+pub(crate) fn parse_zone_id_field(raw: Option<&str>) -> Result<Option<ZoneId>, DomainError> {
     match raw {
         None => Ok(None),
         Some(raw) => raw
             .parse::<uuid::Uuid>()
             .map(|uuid| Some(ZoneId(uuid)))
-            .map_err(|_| {
-                Box::new(ApiError::bad_request(format!(
-                    "Invalid render_group id: {raw}"
-                )))
-            }),
+            .map_err(|_| DomainError::malformed(format!("Invalid zone_id: {raw}"))),
     }
 }
 
@@ -2064,41 +1811,15 @@ pub(crate) async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout
     spatial.layout().as_ref().clone()
 }
 
-fn validate_transition_request(
-    body: Option<&Json<ApplyEffectRequest>>,
-) -> Result<AppliedTransition, String> {
+/// Project the REST transition object onto the domain's request type.
+fn transition_request(body: Option<&Json<ApplyEffectRequest>>) -> RequestedTransition {
     let Some(transition) = body.and_then(|payload| payload.transition.as_ref()) else {
-        return Ok(AppliedTransition {
-            transition_type: "cut",
-            duration_ms: 0,
-        });
+        return RequestedTransition::cut();
     };
-
-    let transition_type = transition
-        .transition_type
-        .as_deref()
-        .unwrap_or("cut")
-        .trim()
-        .to_ascii_lowercase();
-    let duration_ms = transition.duration_ms.unwrap_or(0);
-
-    if (transition_type.is_empty() || transition_type == "cut") && duration_ms == 0 {
-        return Ok(AppliedTransition {
-            transition_type: "cut",
-            duration_ms: 0,
-        });
+    RequestedTransition {
+        style: transition.transition_type.clone(),
+        duration_ms: transition.duration_ms.unwrap_or(0),
     }
-
-    if transition_type.is_empty() || transition_type == "cut" {
-        return Err(
-            "Effect transitions are not implemented yet; only immediate cut applies today."
-                .to_owned(),
-        );
-    }
-
-    Err(format!(
-        "Effect transition '{transition_type}' is not implemented yet; only immediate cut applies today."
-    ))
 }
 
 fn log_effect_apply_completion(
@@ -2146,10 +1867,7 @@ async fn effect_cover_image_response(
     cache: EffectCoverCache,
 ) -> Response {
     let Some(cover) = effect_cover_image_bytes(metadata).await else {
-        return ApiError::not_found(format!(
-            "Cover image not found for effect: {}",
-            metadata.name
-        ));
+        return DomainError::not_found(ResourceKind::Asset, &metadata.name).into_response();
     };
 
     let mut headers = HeaderMap::new();
@@ -2279,14 +1997,6 @@ fn cover_slug(value: &str) -> String {
     slug
 }
 
-fn source_kind(source: &EffectSource) -> &'static str {
-    match source {
-        EffectSource::Native { .. } => "native",
-        EffectSource::Html { .. } => "html",
-        EffectSource::Shader { .. } => "shader",
-    }
-}
-
 fn is_runnable_source(source: &EffectSource) -> bool {
     match source {
         EffectSource::Native { .. } => true,
@@ -2402,9 +2112,9 @@ struct ValidatedUploadedHtml {
 
 async fn next_uploaded_html_field(
     multipart: &mut Multipart,
-) -> Result<(Option<String>, Vec<u8>), Response> {
+) -> Result<(Option<String>, Vec<u8>), DomainError> {
     while let Some(field) = multipart.next_field().await.map_err(|error| {
-        ApiError::bad_request(format!("Failed to read multipart upload: {error}"))
+        DomainError::malformed(format!("Failed to read multipart upload: {error}"))
     })? {
         let file_name = field.file_name().map(ToOwned::to_owned);
         let field_name = field.name().map(ToOwned::to_owned);
@@ -2413,12 +2123,12 @@ async fn next_uploaded_html_field(
         }
 
         let bytes = field.bytes().await.map_err(|error| {
-            ApiError::bad_request(format!("Failed to read uploaded file: {error}"))
+            DomainError::malformed(format!("Failed to read uploaded file: {error}"))
         })?;
         return Ok((file_name, bytes.to_vec()));
     }
 
-    Err(ApiError::bad_request(
+    Err(DomainError::malformed(
         "Missing multipart file field named \"file\".",
     ))
 }

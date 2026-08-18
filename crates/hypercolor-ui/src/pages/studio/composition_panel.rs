@@ -50,7 +50,7 @@ pub fn CompositionPanel(
         let selected = selected_group_id.get()?;
         let scene = active_scene.get()?;
         scene
-            .groups
+            .zones
             .iter()
             .find(|group| group.id.to_string() == selected && group.role == ZoneRole::Display)
             .and_then(|group| group.display_target.as_ref())

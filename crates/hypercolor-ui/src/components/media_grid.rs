@@ -11,6 +11,7 @@
 //! gradient on the top edge, and a kind dot + label. Selection is purple
 //! chrome (§4) — the per-kind color is identity, never the active state.
 
+use hypercolor_types::asset::AssetId;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -25,8 +26,8 @@ use crate::components::media_kind::{
 #[component]
 pub fn MediaGrid(
     #[prop(into)] assets: Signal<Vec<api::MediaAssetRecord>>,
-    #[prop(into)] selected_id: Signal<Option<String>>,
-    on_select: Callback<String>,
+    #[prop(into)] selected_id: Signal<Option<AssetId>>,
+    on_select: Callback<AssetId>,
 ) -> impl IntoView {
     view! {
         <div class="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-3.5">
@@ -35,9 +36,9 @@ pub fn MediaGrid(
                     .get()
                     .into_iter()
                     .map(|asset| {
-                        let asset_id = asset.id.clone();
+                        let asset_id = asset.id;
                         let is_selected = Signal::derive(move || {
-                            selected_id.get().as_deref() == Some(asset_id.as_str())
+                            selected_id.get() == Some(asset_id)
                         });
                         view! {
                             <AssetCard asset=asset is_selected=is_selected on_select=on_select />
@@ -53,9 +54,9 @@ pub fn MediaGrid(
 fn AssetCard(
     asset: api::MediaAssetRecord,
     #[prop(into)] is_selected: Signal<bool>,
-    on_select: Callback<String>,
+    on_select: Callback<AssetId>,
 ) -> impl IntoView {
-    let asset_id = asset.id.clone();
+    let asset_id = asset.id;
     let kind = asset_kind(&asset);
     let accent = kind_accent(kind);
     let icon = kind_icon(kind);
@@ -85,7 +86,7 @@ fn AssetCard(
                 format!("{base} {state}")
             }
             style:--glow-rgb=accent
-            on:click=move |_| on_select.run(asset_id.clone())
+            on:click=move |_| on_select.run(asset_id)
         >
             {if has_thumb {
                 view! {

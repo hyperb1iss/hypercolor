@@ -25,12 +25,10 @@ pub mod local;
 mod macos_screen_parity;
 pub mod openapi;
 pub mod output;
-pub mod preview;
 pub mod profiles;
 pub mod scenes;
 pub mod scenes_zones;
 pub mod security;
-pub mod settings;
 pub mod simulators;
 pub mod system;
 pub mod ws;
@@ -58,7 +56,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
 use crate::interaction_routing::InteractionRoutingControl;
-use hypercolor_core::asset::{AssetLibrary, AssetLibraryLimits};
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -78,15 +76,12 @@ use hypercolor_types::config::{
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::event::{
-    EffectRef, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
-};
-use hypercolor_types::scene::{Scene, SceneId, Zone};
+use hypercolor_types::event::{EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 use uuid::Uuid;
 
-use crate::api::envelope::ApiError;
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
@@ -139,6 +134,10 @@ pub struct AppState {
 
     /// Persisted named-scene store.
     pub scene_store: Arc<RwLock<SceneStore>>,
+
+    /// Ordered publication chain and revision counter for scene commits
+    /// (Spec 76 §2.3).
+    pub scene_commits: Arc<crate::domain::commit::SceneCommitSequencer>,
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
@@ -543,11 +542,8 @@ impl AppState {
         let effect_layout_links_path = data_dir.join("effect-layouts.json");
         let runtime_state_path = data_dir.join("runtime-state.json");
         let driver_inventory = Arc::new(
-            DriverInventoryStore::open(
-                data_dir.join(DRIVER_INVENTORY_FILENAME),
-                &runtime_state_path,
-            )
-            .expect("default app state should open driver inventory"),
+            DriverInventoryStore::open(data_dir.join(DRIVER_INVENTORY_FILENAME))
+                .expect("default app state should open driver inventory"),
         );
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(
@@ -595,6 +591,7 @@ impl AppState {
             effect_registry,
             scene_manager,
             scene_store,
+            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus,
             macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
             asset_library: Arc::new(RwLock::new(asset_library)),
@@ -687,6 +684,7 @@ impl AppState {
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: Arc::clone(&daemon.scene_manager),
             scene_store: Arc::clone(&daemon.scene_store),
+            scene_commits: Arc::clone(&daemon.scene_commits),
             event_bus: Arc::clone(&daemon.event_bus),
             macos_daemon_ownership: Arc::clone(&daemon.macos_daemon_ownership),
             asset_library: Arc::clone(&daemon.asset_library),
@@ -794,6 +792,18 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     }
 }
 
+/// Write the live scene set to the scene store.
+///
+/// SNAPSHOT WRITER (Spec 76 §2.3). This reads the manager rather than
+/// mutating it, so the scene state it captures is whatever a commit last
+/// installed — but the store write itself happens outside
+/// [`commit_scene`](crate::domain::scene::commit_scene) and outside the
+/// sequencer's ordering, so a snapshot racing a commit can write the
+/// older payload. The persistence layer converges regardless: both go
+/// through the same reserve-and-save admission, where the newer
+/// generation wins the destination and the loser reports `Superseded`.
+/// It predates the domain layer and moves inside the commit when §6.4
+/// gives the session snapshot a scene context to read from.
 pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Result<()> {
     let pending = {
         let manager = state.scene_manager.read().await;
@@ -805,92 +815,18 @@ pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Resul
     store.save_reserved(pending).map(|_| ())
 }
 
-pub(crate) async fn scene_store_coordinator(state: &AppState) -> SceneStore {
-    state.scene_store.read().await.clone()
-}
-
-pub(crate) fn admit_scene_store_snapshot(
-    coordinator: &SceneStore,
-    manager: &mut SceneManager,
-    rollback: SceneManager,
-) -> anyhow::Result<crate::scene_store::SceneStoreSave> {
-    match coordinator.reserve_save(manager.list().into_iter().cloned()) {
-        Ok(pending) => Ok(pending),
-        Err(error) => {
-            *manager = rollback;
-            Err(error.into())
-        }
-    }
-}
-
-pub(crate) async fn save_admitted_scene_store_snapshot(
-    state: &AppState,
-    pending: crate::scene_store::SceneStoreSave,
-) -> anyhow::Result<()> {
-    state
-        .scene_store
-        .write()
-        .await
-        .save_reserved(pending)
-        .map(|_| ())
-}
-
 pub(crate) fn publish_render_group_changed(
     state: &AppState,
     scene_id: SceneId,
     group: &Zone,
     kind: ZoneChangeKind,
 ) {
-    state
-        .event_bus
-        .publish(HypercolorEvent::RenderGroupChanged {
-            scene_id,
-            group_id: group.id,
-            role: group.role,
-            kind,
-        });
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ActiveSceneMutationError {
-    NoActiveScene,
-    SnapshotLocked { scene_name: String },
-    Persistence { message: String },
-}
-
-impl ActiveSceneMutationError {
-    #[must_use]
-    pub(crate) fn message(&self, action: &str) -> String {
-        match self {
-            Self::NoActiveScene => "No active scene available".to_owned(),
-            Self::SnapshotLocked { scene_name } => format!(
-                "Active scene '{scene_name}' is in snapshot mode; return to Default or deactivate it before {action}"
-            ),
-            Self::Persistence { message } => message.clone(),
-        }
-    }
-
-    pub(crate) fn api_response(&self, action: &str) -> axum::response::Response {
-        match self {
-            Self::NoActiveScene => ApiError::internal(self.message(action)),
-            Self::SnapshotLocked { .. } => ApiError::conflict(self.message(action)),
-            Self::Persistence { .. } => ApiError::internal(self.message(action)),
-        }
-    }
-}
-
-pub(crate) fn active_scene_id_for_runtime_mutation(
-    scene_manager: &SceneManager,
-) -> Result<SceneId, ActiveSceneMutationError> {
-    let active_scene = scene_manager
-        .active_scene()
-        .ok_or(ActiveSceneMutationError::NoActiveScene)?;
-    if active_scene.blocks_runtime_mutation() {
-        return Err(ActiveSceneMutationError::SnapshotLocked {
-            scene_name: active_scene.name.clone(),
-        });
-    }
-    Ok(active_scene.id)
+    state.event_bus.publish(HypercolorEvent::ZoneChanged {
+        scene_id,
+        zone_id: group.id,
+        role: group.role,
+        kind,
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -899,11 +835,16 @@ pub(crate) struct EffectErrorFallbackApplied {
     pub cleared_group_count: usize,
 }
 
+/// Unload an effect from every zone of the active scene that runs it,
+/// as the configured error-fallback policy demands.
+///
+/// `Ok(None)` means the policy did nothing: either it is `None`, or no
+/// zone was running the failed effect.
 pub(crate) async fn apply_effect_error_fallback(
     state: &Arc<AppState>,
     effect_id: &str,
     policy: EffectErrorFallbackPolicy,
-) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     match policy {
         EffectErrorFallbackPolicy::None => Ok(None),
         EffectErrorFallbackPolicy::ClearGroups => {
@@ -915,68 +856,62 @@ pub(crate) async fn apply_effect_error_fallback(
 async fn clear_active_scene_effect_groups(
     state: &Arc<AppState>,
     effect_id: &str,
-) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, cleared_groups, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
-        let group_ids = scene_manager
-            .active_scene()
-            .map(|scene| {
-                scene
-                    .groups
-                    .iter()
-                    .filter(|group| {
-                        group
-                            .effect_id
-                            .as_ref()
-                            .is_some_and(|candidate| candidate.to_string() == effect_id)
-                    })
-                    .map(|group| group.id)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if group_ids.is_empty() {
-            return Ok(None);
-        }
-
-        let rollback = scene_manager.clone();
-        let mut cleared_groups = Vec::with_capacity(group_ids.len());
-        for group_id in group_ids {
-            if let Some(group) = scene_manager.clear_group_effect(group_id).cloned() {
-                cleared_groups.push(group);
-            }
-        }
-        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ActiveSceneMutationError::Persistence {
-                message: error.to_string(),
-            })?;
-        (scene_id, cleared_groups, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        warn!(%error, "Failed to persist effect fallback; retry remains active");
-    }
-
-    if cleared_groups.is_empty() {
+    let mut mutation = state.begin_scene_mutation().await;
+    let scene_id =
+        mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
+    let zone_ids = mutation
+        .scenes()
+        .active_scene()
+        .map(|scene| {
+            scene
+                .groups
+                .iter()
+                .filter(|zone| {
+                    zone.effect_id
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.to_string() == effect_id)
+                })
+                .map(|zone| zone.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if zone_ids.is_empty() {
         return Ok(None);
     }
 
-    for group in &cleared_groups {
-        state.event_bus.publish(HypercolorEvent::EffectStopped {
+    let cleared_zones = zone_ids
+        .into_iter()
+        .filter_map(|zone_id| mutation.clear_zone_effect(zone_id))
+        .collect::<Vec<_>>();
+    if cleared_zones.is_empty() {
+        return Ok(None);
+    }
+
+    for zone in &cleared_zones {
+        mutation.record(HypercolorEvent::EffectStopped {
             effect: effect.clone(),
             reason: EffectStopReason::Error,
-            group_id: Some(group.id),
-            group_name: Some(group.name.clone()),
+            zone_id: Some(zone.id),
+            zone_name: Some(zone.name.clone()),
         });
-        publish_render_group_changed(state.as_ref(), scene_id, group, ZoneChangeKind::Updated);
+        mutation.record(crate::domain::scene::zone_changed_event(
+            scene_id,
+            zone,
+            ZoneChangeKind::Updated,
+        ));
     }
+
+    crate::domain::scene::commit_scene(state.as_ref(), mutation)
+        .await?
+        .log_if_retrying("Failed to persist effect fallback");
     persist_runtime_session(state).await;
 
     Ok(Some(EffectErrorFallbackApplied {
         effect,
-        cleared_group_count: cleared_groups.len(),
+        cleared_group_count: cleared_zones.len(),
     }))
 }
 
@@ -1006,32 +941,10 @@ pub(crate) async fn prune_scene_display_groups_for_device(
     state: &Arc<AppState>,
     device_id: DeviceId,
 ) {
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (removed_groups, pending, removed_default, active_scene_id) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
-        let removed = scene_manager.remove_display_groups_for_device(device_id);
-        let (removed, pending) = if removed.is_empty() {
-            (Vec::new(), None)
-        } else {
-            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-                Ok(pending) => (removed, Some(pending)),
-                Err(error) => {
-                    // The manager rolled back, so the scene groups are
-                    // still live and must not be reported as removed.
-                    warn!(%error, %device_id, "Failed to prepare display-group pruning persistence");
-                    (Vec::new(), None)
-                }
-            }
-        };
-        let removed_default = scene_manager.default_display_group_for(device_id).cloned();
-        if removed_default.is_some() {
-            scene_manager.remove_default_display_group(device_id);
-        }
-        let active_scene_id = scene_manager.active_scene().map(|scene| scene.id);
-        (removed, pending, removed_default, active_scene_id)
-    };
-
+    // The preference goes first and unconditionally. A deleted device
+    // must never keep a stored default face, and it can no longer be
+    // addressed through the displays API to clear one, so this must not
+    // ride on whether the scene commit lands.
     let removed_preference = {
         let mut store = state.display_preferences.write().await;
         match store.remove(device_id) {
@@ -1043,51 +956,25 @@ pub(crate) async fn prune_scene_display_groups_for_device(
         }
     };
 
-    if removed_groups.is_empty() && removed_default.is_none() && !removed_preference {
+    let pruned =
+        match crate::domain::display::prune_display_zones_for_device(state.as_ref(), device_id)
+            .await
+        {
+            Ok(pruned) => pruned,
+            Err(error) => {
+                warn!(%error, %device_id, "Failed to prune display zones for deleted device");
+                crate::domain::display::PrunedDisplayZones::empty()
+            }
+        };
+
+    if pruned.removed_zones.is_empty() && pruned.removed_default.is_none() && !removed_preference {
         return;
-    }
-
-    if let Some(pending) = pending
-        && let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await
-    {
-        warn!(%error, %device_id, "Failed to persist display-group pruning; retry remains active");
-    }
-
-    for (scene_id, group) in &removed_groups {
-        publish_render_group_changed(state.as_ref(), *scene_id, group, ZoneChangeKind::Removed);
-    }
-    if let Some(group) = &removed_default {
-        publish_render_group_changed(
-            state.as_ref(),
-            active_scene_id.unwrap_or(SceneId::DEFAULT),
-            group,
-            ZoneChangeKind::Removed,
-        );
     }
     persist_runtime_session(state).await;
 }
 
-pub(crate) fn publish_active_scene_changed(
-    state: &AppState,
-    previous: Option<SceneId>,
-    current_scene: &Scene,
-    reason: SceneChangeReason,
-) {
-    state
-        .event_bus
-        .publish(HypercolorEvent::ActiveSceneChanged {
-            previous,
-            current: current_scene.id,
-            current_name: current_scene.name.clone(),
-            current_kind: current_scene.kind,
-            current_mutation_mode: current_scene.mutation_mode,
-            current_snapshot_locked: current_scene.blocks_runtime_mutation(),
-            reason,
-        });
-}
-
 /// Persist discovery auto-sync exclusions to disk.
-pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
+pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
     let exclusions = state.layout_auto_exclusions.read().await;
     if let Err(error) =
         crate::layout_auto_exclusions::save(&state.layout_auto_exclusions_path, &exclusions)
@@ -1194,11 +1081,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             },
         );
     let cors_origin = cors_origins(&web_config, security_state.security_enabled());
-    // The request body includes multipart framing in addition to the asset bytes.
+    // Sourced from the route's own ceiling so a 413 can never name a limit
+    // this layer does not enforce.
     let asset_upload_body_limit =
-        usize::try_from(AssetLibraryLimits::default().hard_file_cap_bytes)
-            .unwrap_or(usize::MAX)
-            .saturating_add(1024 * 1024);
+        usize::try_from(assets::asset_upload_body_limit_bytes()).unwrap_or(usize::MAX);
 
     let api = Router::new()
         // ── Assets ───────────────────────────────────────────────────
@@ -1365,8 +1251,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Output ───────────────────────────────────────────────────
         .route(
-            "/output/power",
-            axum::routing::get(output::get_output_power).put(output::put_output_power),
+            "/output",
+            axum::routing::get(output::get_output).patch(output::patch_output),
         )
         // ── Effects ──────────────────────────────────────────────────
         .route("/effects", axum::routing::get(effects::list_effects))
@@ -1379,19 +1265,17 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(effects::get_active_effect_cover),
         )
         .route(
-            "/effects/current/controls",
-            axum::routing::patch(effects::update_current_controls),
+            "/effects/active/controls",
+            axum::routing::patch(effects::update_active_controls),
         )
         .route(
-            "/effects/current/controls/{name}/binding",
-            axum::routing::put(effects::set_current_control_binding),
+            "/effects/active/controls/{name}/binding",
+            axum::routing::put(effects::set_active_control_binding),
         )
         .route(
-            "/effects/current/reset",
+            "/effects/active/reset",
             axum::routing::post(effects::reset_controls),
         )
-        .route("/effects/pause", axum::routing::post(effects::pause_effect))
-        .route("/effects/resume", axum::routing::post(effects::resume_effect))
         .route("/effects/stop", axum::routing::post(effects::stop_effect))
         .route(
             "/effects/rescan",
@@ -1483,19 +1367,19 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(layers::broadcast_media_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers",
+            "/scenes/{id}/zones/{zone_id}/layers",
             axum::routing::get(layers::list_layers).post(layers::create_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/order",
+            "/scenes/{id}/zones/{zone_id}/layers/order",
             axum::routing::patch(layers::reorder_layers),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
             axum::routing::put(layers::update_layer).delete(layers::delete_layer),
         )
         .route(
-            "/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
             axum::routing::patch(layers::patch_layer_controls),
         )
         // ── Profiles ─────────────────────────────────────────────────
@@ -1589,10 +1473,9 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/system/sensors/{label}",
             axum::routing::get(system::get_sensor),
         )
-        .route("/audio/devices", axum::routing::get(settings::list_audio_devices))
         .route(
-            "/settings/brightness",
-            axum::routing::get(settings::get_brightness).put(settings::set_brightness),
+            "/system/audio-devices",
+            axum::routing::get(system::list_audio_devices),
         )
         // ── Screen Capture ───────────────────────────────────────────
         .route(
@@ -1613,12 +1496,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Config ───────────────────────────────────────────────────
         .route("/config", axum::routing::get(config::show_config))
-        .route("/config/get", axum::routing::get(config::get_config_value))
-        .route("/config/set", axum::routing::post(config::set_config_value))
+        .route("/config/schema", axum::routing::get(config::get_config_schema))
         .route(
-            "/config/reset",
-            axum::routing::post(config::reset_config_value),
+            "/config/keys/{key}",
+            axum::routing::get(config::get_config_key)
+                .put(config::put_config_key)
+                .delete(config::delete_config_key),
         )
+        .route("/config/reset", axum::routing::post(config::reset_config))
         // ── Control Surfaces ────────────────────────────────────────
         .route(
             "/control-surfaces",
@@ -1648,9 +1533,15 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     for extension in &state.api_extensions {
         api = extension.mount_api_routes(api);
     }
+    // A deleted route has to answer as one. Without a fallback scoped to
+    // the API, an unmatched `/api/v1` path falls through to the SPA
+    // fallback below and a browser-facing daemon answers `200 text/html`
+    // for a route that no longer exists — every route-deletion fence in
+    // the program is only as strong as this. Nesting resolves the inner
+    // fallback first, so the SPA never sees an API path.
+    let api = api.fallback(api_route_not_found);
     let mut router = Router::new()
         .nest("/api/v1", api)
-        .route("/preview", axum::routing::get(preview::preview_page))
         .route("/health", axum::routing::get(system::health_check));
 
     if mcp_config.enabled {
@@ -1660,14 +1551,21 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     router = router.merge(openapi::router());
 
     // Serve the web UI with SPA fallback when a UI directory is configured.
+    //
+    // Every dynamic mount above is named here so the middleware can tell
+    // an asset request from an API one. The UI is the fallback, so its
+    // surface is whatever those prefixes do not claim, and a browser
+    // fetching a script or stylesheet attaches no bearer header.
+    let mut static_assets = security::StaticAssetSurface::default();
     if let Some(ui_path) = ui_dir {
         let index = ui_path.join("index.html");
         router = router.fallback_service(ServeDir::new(ui_path).fallback(ServeFile::new(index)));
+        static_assets = security::StaticAssetSurface::mounted(dynamic_route_prefixes(&mcp_config));
     }
 
     router
         .layer(axum::middleware::from_fn_with_state(
-            security_state,
+            security_state.with_static_assets(static_assets),
             security::enforce_security,
         ))
         .layer(
@@ -1686,6 +1584,36 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         .layer(axum::middleware::from_fn(access_log::log_access))
         .with_state(state)
+}
+
+/// The prefixes this router answers from a handler that
+/// [`StaticAssetSurface`](security::StaticAssetSurface) does not already
+/// protect.
+///
+/// The web UI mounts as the fallback, so the security layer identifies an
+/// asset request by exclusion. `/api` and `/health` are seeded by the
+/// surface itself; what varies per daemon is the MCP mount, whose base
+/// path is configurable, so it is derived here next to the mount.
+/// Render an unmatched `/api/v1` path as the canonical `DomainError`
+/// envelope, so a retired route is indistinguishable from one that
+/// never existed and distinguishable from a working page.
+async fn api_route_not_found(
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    // `OriginalUri`, not `Uri`: nesting strips `/api/v1` from the
+    // request the fallback sees, and echoing the stripped path would
+    // name an address the caller never asked for.
+    crate::domain::DomainError::not_found(crate::domain::ResourceKind::Route, uri.path())
+        .into_response()
+}
+
+fn dynamic_route_prefixes(mcp_config: &McpConfig) -> Vec<String> {
+    let mut prefixes = Vec::new();
+    if mcp_config.enabled {
+        prefixes.push(crate::mcp::normalize_base_path(&mcp_config.base_path));
+    }
+    prefixes
 }
 
 fn cors_origins(web_config: &WebConfig, api_auth_required: bool) -> AllowOrigin {
@@ -1831,5 +1759,46 @@ mod cors_tests {
         let configured = configured_cors_origins(&config, true);
 
         assert_eq!(configured, vec![origin("https://studio.example")]);
+    }
+}
+
+#[cfg(test)]
+mod static_asset_surface_tests {
+    use hypercolor_types::config::McpConfig;
+
+    use super::dynamic_route_prefixes;
+
+    #[test]
+    fn the_mcp_mount_is_named() {
+        let prefixes = dynamic_route_prefixes(&McpConfig {
+            enabled: true,
+            base_path: "/mcp".to_owned(),
+            ..McpConfig::default()
+        });
+
+        assert_eq!(prefixes, vec!["/mcp"]);
+    }
+
+    #[test]
+    fn a_relocated_mcp_mount_follows_its_configured_path() {
+        // The exemption would hand an unauthenticated caller the MCP
+        // surface if this tracked the default instead of the config.
+        let prefixes = dynamic_route_prefixes(&McpConfig {
+            enabled: true,
+            base_path: "agents/".to_owned(),
+            ..McpConfig::default()
+        });
+
+        assert_eq!(prefixes, vec!["/agents"]);
+    }
+
+    #[test]
+    fn a_disabled_mcp_server_contributes_no_prefix() {
+        let prefixes = dynamic_route_prefixes(&McpConfig {
+            enabled: false,
+            ..McpConfig::default()
+        });
+
+        assert!(prefixes.is_empty());
     }
 }

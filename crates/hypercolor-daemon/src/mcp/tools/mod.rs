@@ -1,10 +1,11 @@
 //! MCP tool definitions — the daemon tools exposed to AI assistants.
 //!
 //! Each tool is a `ToolDefinition` with a JSON Schema input spec. Tool execution
-//! is handled by `execute_tool`, which dispatches to the appropriate handler in
-//! a per-cluster submodule.
+//! is handled by `execute_tool_with_state`, which dispatches to the appropriate
+//! handler in a per-cluster submodule.
 
 use serde_json::{Value, json};
+use std::sync::LazyLock;
 
 use crate::api::AppState;
 
@@ -30,6 +31,16 @@ pub struct ToolDefinition {
     pub output_schema: Value,
     /// Whether this tool only reads state (never modifies).
     pub read_only: bool,
+    /// Whether this tool may overwrite state a caller cannot recover.
+    ///
+    /// A tool is destructive when running it discards something the
+    /// client did not supply and cannot get back: the running effect's
+    /// live control values, a scene's whole layer tree, a display's
+    /// assigned face. A reversible value write (brightness, output
+    /// power) or a pure creation (a new scene) is additive, not
+    /// destructive. Meaningful only when [`Self::read_only`] is false;
+    /// read-only tools declare `false`.
+    pub destructive: bool,
     /// Whether repeated calls with the same input produce the same result.
     pub idempotent: bool,
 }
@@ -57,35 +68,47 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// Refuse arguments a tool's schema does not declare.
+///
+/// `additionalProperties: false` is a promise to the caller, and nothing
+/// downstream of `rmcp` enforces it, so a deleted parameter would keep
+/// being accepted and silently dropped. Silently dropping an argument is
+/// the exact failure the phantom-parameter rule exists to prevent: a
+/// caller who asks for a transition and gets a cut must learn that,
+/// whether the parameter was never real or has since been removed.
+///
+/// Tools whose schema does not close stay permissive, so this adds no
+/// refusal a tool did not ask for.
+fn reject_undeclared_params(name: &str, params: &Value) -> Result<(), ToolError> {
+    let Some(arguments) = params.as_object() else {
+        return Ok(());
+    };
+    static DEFINITIONS: LazyLock<Vec<ToolDefinition>> = LazyLock::new(build_tool_definitions);
+
+    let Some(tool) = DEFINITIONS.iter().find(|tool| tool.name == name) else {
+        return Ok(());
+    };
+    if tool.input_schema["additionalProperties"] != Value::Bool(false) {
+        return Ok(());
+    }
+
+    let declared = tool.input_schema["properties"].as_object();
+    for key in arguments.keys() {
+        if !declared.is_some_and(|declared| declared.contains_key(key)) {
+            return Err(ToolError::InvalidParam {
+                param: key.clone(),
+                reason: format!("{name} does not accept a '{key}' argument"),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn default_output_schema() -> Value {
     json!({
         "type": "object",
         "description": "Structured JSON result returned by this tool. Field-level schemas are intentionally broad for now and should be tightened as the MCP surface stabilizes."
     })
-}
-
-/// Execute a tool by name with the given arguments. Returns the result as JSON.
-pub fn execute_tool(name: &str, params: &Value) -> Result<Value, ToolError> {
-    match name {
-        "set_effect" => effects::handle_set_effect(params),
-        "list_effects" => effects::handle_list_effects(params),
-        "set_output_power" => system::handle_set_output_power(params),
-        "stop_effect" => effects::handle_stop_effect(params),
-        "set_color" => effects::handle_set_color(params),
-        "get_devices" => devices::handle_get_devices(params),
-        "set_brightness" => devices::handle_set_brightness(params),
-        "get_status" => system::handle_get_status(params),
-        "activate_scene" => scenes::handle_activate_scene(params),
-        "list_scenes" => scenes::handle_list_scenes(params),
-        "create_scene" => scenes::handle_create_scene(params),
-        "get_audio_state" => system::handle_get_audio_state(params),
-        "get_sensor_data" => system::handle_get_sensor_data(params),
-        "set_display_face" => displays::handle_set_display_face(params),
-        "set_profile" => library::handle_set_profile(params),
-        "get_layout" => system::handle_get_layout(params),
-        "diagnose" => system::handle_diagnose(params),
-        _ => Err(ToolError::NotFound(name.to_owned())),
-    }
 }
 
 /// Execute a tool with live daemon state access.
@@ -94,6 +117,7 @@ pub async fn execute_tool_with_state(
     params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
+    reject_undeclared_params(name, params)?;
     match name {
         "set_effect" => effects::handle_set_effect_with_state(params, state).await,
         "list_effects" => effects::handle_list_effects_with_state(params, state).await,
@@ -168,23 +192,10 @@ pub(super) async fn find_effect_metadata(
         })
 }
 
-/// Convert a 0.0–1.0 brightness float to a 0–100 percentage.
-pub(crate) fn brightness_percent(brightness: f32) -> u8 {
-    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
-    if scaled <= 0.0 {
-        0
-    } else if scaled >= 100.0 {
-        100
-    } else {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::as_conversions
-        )]
-        let result = scaled as u8;
-        result
-    }
-}
+/// Convert a 0.0–1.0 brightness float to a 0–100 percentage. The
+/// output service owns the conversion; MCP re-exports it so the two
+/// surfaces cannot drift.
+pub(crate) use crate::domain::output::brightness_percent;
 
 /// Compute theoretical render capacity, capped at the target tier rate.
 ///

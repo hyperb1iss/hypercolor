@@ -7,6 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
+use hypercolor_color::{Hsl, Rgb};
 use hypercolor_types::effect::EffectMetadata;
 
 // ── Effect Matching ────────────────────────────────────────────────────────
@@ -445,19 +446,26 @@ pub fn resolve_color(input: &str) -> Option<ColorMatch> {
     match_color_name(trimmed)
 }
 
-/// Parse a hex color code like `#ff6ac1` or `ff6ac1`.
+/// Parse a hex color code like `#ff6ac1`, `ff6ac1`, or `#f6c`.
+///
+/// Shorthand is honored only behind a `#`. Without one, a three-letter
+/// word of hex digits is a name query — `bed` asks the name matcher for a
+/// color called "bed", not for `#bbeedd`.
 fn parse_hex(input: &str) -> Option<ColorMatch> {
-    let hex = input.strip_prefix('#').unwrap_or(input);
-    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+    let explicit = input.starts_with('#');
+    if !explicit && input.len() != 6 {
         return None;
     }
-    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    let Rgb {
+        r: red,
+        g: green,
+        b: blue,
+    } = Rgb::from_hex(input).ok()?;
     let closest_name = find_closest_color_name(red, green, blue);
     Some(ColorMatch {
         name: closest_name,
-        hex: format!("#{hex}"),
+        hex: format!("#{red:02x}{green:02x}{blue:02x}"),
         r: red,
         g: green,
         b: blue,
@@ -499,7 +507,11 @@ fn parse_hsl_function(input: &str) -> Option<ColorMatch> {
     let sat: f32 = parts[1].strip_suffix('%')?.parse::<f32>().ok()? / 100.0;
     let light: f32 = parts[2].strip_suffix('%')?.parse::<f32>().ok()? / 100.0;
 
-    let (red, green, blue) = hsl_to_rgb(hue, sat, light);
+    let Rgb {
+        r: red,
+        g: green,
+        b: blue,
+    } = Hsl::new(hue, sat, light).to_rgb();
     let closest_name = find_closest_color_name(red, green, blue);
     Some(ColorMatch {
         name: closest_name,
@@ -509,37 +521,6 @@ fn parse_hsl_function(input: &str) -> Option<ColorMatch> {
         b: blue,
         confidence: 1.0,
     })
-}
-
-/// Convert HSL to sRGB.
-///
-/// `hue` is in degrees (0–360), `sat` and `light` are 0.0–1.0.
-fn hsl_to_rgb(hue: f32, sat: f32, light: f32) -> (u8, u8, u8) {
-    let chroma = (1.0 - (2.0 * light - 1.0).abs()) * sat;
-    let hue_sector = hue / 60.0;
-    let secondary = chroma * (1.0 - (hue_sector % 2.0 - 1.0).abs());
-    let match_value = light - chroma / 2.0;
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::as_conversions
-    )]
-    let to_u8 = |v: f32| -> u8 { ((v + match_value) * 255.0).round().clamp(0.0, 255.0) as u8 };
-
-    if hue_sector < 1.0 {
-        (to_u8(chroma), to_u8(secondary), to_u8(0.0))
-    } else if hue_sector < 2.0 {
-        (to_u8(secondary), to_u8(chroma), to_u8(0.0))
-    } else if hue_sector < 3.0 {
-        (to_u8(0.0), to_u8(chroma), to_u8(secondary))
-    } else if hue_sector < 4.0 {
-        (to_u8(0.0), to_u8(secondary), to_u8(chroma))
-    } else if hue_sector < 5.0 {
-        (to_u8(secondary), to_u8(0.0), to_u8(chroma))
-    } else {
-        (to_u8(chroma), to_u8(0.0), to_u8(secondary))
-    }
 }
 
 /// Match a natural language color name against the built-in palette.

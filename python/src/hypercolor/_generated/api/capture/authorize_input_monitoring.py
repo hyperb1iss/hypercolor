@@ -5,7 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.api_error_response import ApiErrorResponse
+from ...models.api_error_body import ApiErrorBody
 from ...models.api_response_capture_authorization_response import (
     ApiResponseCaptureAuthorizationResponse,
 )
@@ -24,7 +24,7 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorResponse | ApiResponseCaptureAuthorizationResponse | None:
+) -> ApiErrorBody | ApiResponseCaptureAuthorizationResponse | None:
     if response.status_code == 200:
         response_200 = ApiResponseCaptureAuthorizationResponse.from_dict(
             response.json()
@@ -33,7 +33,7 @@ def _parse_response(
         return response_200
 
     if response.status_code == 403:
-        response_403 = ApiErrorResponse.from_dict(response.json())
+        response_403 = ApiErrorBody.from_dict(response.json())
 
         return response_403
 
@@ -45,7 +45,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorResponse | ApiResponseCaptureAuthorizationResponse]:
+) -> Response[ApiErrorBody | ApiResponseCaptureAuthorizationResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -57,7 +57,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorResponse | ApiResponseCaptureAuthorizationResponse]:
+) -> Response[ApiErrorBody | ApiResponseCaptureAuthorizationResponse]:
     """`POST /api/v1/input/authorize` — Request macOS Input Monitoring.
 
     Raises:
@@ -65,7 +65,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseCaptureAuthorizationResponse]
+        Response[ApiErrorBody | ApiResponseCaptureAuthorizationResponse]
     """
 
     kwargs = _get_kwargs()
@@ -80,7 +80,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorResponse | ApiResponseCaptureAuthorizationResponse | None:
+) -> ApiErrorBody | ApiResponseCaptureAuthorizationResponse | None:
     """`POST /api/v1/input/authorize` — Request macOS Input Monitoring.
 
     Raises:
@@ -88,7 +88,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseCaptureAuthorizationResponse
+        ApiErrorBody | ApiResponseCaptureAuthorizationResponse
     """
 
     return sync_detailed(
@@ -99,7 +99,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorResponse | ApiResponseCaptureAuthorizationResponse]:
+) -> Response[ApiErrorBody | ApiResponseCaptureAuthorizationResponse]:
     """`POST /api/v1/input/authorize` — Request macOS Input Monitoring.
 
     Raises:
@@ -107,7 +107,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseCaptureAuthorizationResponse]
+        Response[ApiErrorBody | ApiResponseCaptureAuthorizationResponse]
     """
 
     kwargs = _get_kwargs()
@@ -120,7 +120,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorResponse | ApiResponseCaptureAuthorizationResponse | None:
+) -> ApiErrorBody | ApiResponseCaptureAuthorizationResponse | None:
     """`POST /api/v1/input/authorize` — Request macOS Input Monitoring.
 
     Raises:
@@ -128,7 +128,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseCaptureAuthorizationResponse
+        ApiErrorBody | ApiResponseCaptureAuthorizationResponse
     """
 
     return (

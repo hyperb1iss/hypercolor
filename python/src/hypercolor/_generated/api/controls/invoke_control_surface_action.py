@@ -87,7 +87,8 @@ def sync_detailed(
     Args:
         surface_id (str):
         action_id (str):
-        body (InvokeControlActionRequest):
+        body (InvokeControlActionRequest): Request body for
+            `POST /api/v1/control-surfaces/{surface_id}/actions/{action_id}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -122,7 +123,8 @@ async def asyncio_detailed(
     Args:
         surface_id (str):
         action_id (str):
-        body (InvokeControlActionRequest):
+        body (InvokeControlActionRequest): Request body for
+            `POST /api/v1/control-surfaces/{surface_id}/actions/{action_id}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

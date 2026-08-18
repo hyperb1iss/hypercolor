@@ -60,13 +60,13 @@ pub async fn connect(
     };
     let subscribe = serde_json::json!({
         "type": "subscribe",
-        "channels": ["canvas", "spectrum", "events", "metrics"],
         "preview_transport": preview_transport.encode(),
-        "config": {
-            "canvas": { "fps": TUI_CANVAS_FPS, "format": "rgb" },
-            "spectrum": { "fps": 15, "bins": 64 },
-            "metrics": { "interval_ms": 2000 }
-        }
+        "topics": [
+            { "topic": "canvas", "config": { "fps": TUI_CANVAS_FPS, "format": "rgb" } },
+            { "topic": "spectrum", "config": { "fps": 15, "bins": 64 } },
+            { "topic": "events" },
+            { "topic": "metrics", "config": { "interval_ms": 2000 } }
+        ]
     });
     write
         .send(Message::Text(subscribe.to_string().into()))

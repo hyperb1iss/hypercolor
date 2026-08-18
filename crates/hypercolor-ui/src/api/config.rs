@@ -3,12 +3,14 @@
 use serde::Deserialize;
 
 pub use hypercolor_types::api::capture::CaptureMonitor;
+use hypercolor_types::config_registry::ConfigKeySchemaEntry;
 
 use super::client;
+use crate::control_surface_api::path_segment;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/// Audio device info from `GET /api/v1/audio/devices`.
+/// Audio device info from `GET /api/v1/system/audio-devices`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AudioDeviceInfo {
     pub id: String,
@@ -30,25 +32,28 @@ pub async fn fetch_config_typed()
     client::fetch_json("/api/v1/config").await
 }
 
-/// Set a single config key. Value is JSON-stringified per daemon contract.
+fn config_key_url(key: &str) -> String {
+    format!("/api/v1/config/keys/{}", path_segment(key))
+}
+
+/// Write one config key. The body is the value itself, and the daemon
+/// decides from its key registry which subsystem to re-apply.
 pub async fn set_config_value(key: &str, value: &serde_json::Value) -> Result<(), String> {
-    let body = serde_json::json!({
-        "key": key,
-        "value": serde_json::to_string(value).unwrap_or_default(),
-        "live": applies_live(key),
-    });
-    client::post_json_discard("/api/v1/config/set", &body)
+    client::put_json_discard(&config_key_url(key), value)
         .await
         .map_err(Into::into)
 }
 
-/// Reset a config key or section to defaults.
+/// Restore a config key or section to its default.
 pub async fn reset_config_key(key: &str) -> Result<(), String> {
-    let body = serde_json::json!({
-        "key": key,
-        "live": applies_live(key),
-    });
-    client::post_json_discard("/api/v1/config/reset", &body)
+    client::delete_empty(&config_key_url(key))
+        .await
+        .map_err(Into::into)
+}
+
+/// The daemon's config key registry: how every key applies and renders.
+pub async fn fetch_config_schema() -> Result<Vec<ConfigKeySchemaEntry>, String> {
+    client::fetch_json("/api/v1/config/schema")
         .await
         .map_err(Into::into)
 }
@@ -63,7 +68,7 @@ pub async fn fetch_capture_monitors() -> Result<Vec<CaptureMonitor>, String> {
 
 /// Enumerate available audio devices.
 pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
-    client::fetch_json("/api/v1/audio/devices")
+    client::fetch_json("/api/v1/system/audio-devices")
         .await
         .map_err(Into::into)
 }
@@ -89,46 +94,19 @@ pub async fn authorize_screen_recording() -> Result<(), String> {
         .map_err(Into::into)
 }
 
-fn applies_live(key: &str) -> bool {
-    key == "audio"
-        || key.starts_with("audio.")
-        || key == "capture"
-        || key.starts_with("capture.")
-        || key == "input"
-        || key.starts_with("input.")
-        || matches!(
-            key,
-            "daemon.target_fps" | "daemon.canvas_width" | "daemon.canvas_height"
-        )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::applies_live;
+    use super::config_key_url;
 
     #[test]
-    fn render_timing_keys_apply_live() {
-        assert!(applies_live("daemon.target_fps"));
-        assert!(applies_live("daemon.canvas_width"));
-        assert!(applies_live("daemon.canvas_height"));
-    }
-
-    #[test]
-    fn restart_only_render_keys_do_not_apply_live() {
-        assert!(!applies_live("effect_engine.render_acceleration_mode"));
-    }
-
-    #[test]
-    fn capture_keys_apply_live() {
-        assert!(applies_live("capture"));
-        assert!(applies_live("capture.enabled"));
-        assert!(applies_live("capture.saturation"));
-        assert!(applies_live("capture.capture_fps"));
-    }
-
-    #[test]
-    fn input_keys_apply_live() {
-        assert!(applies_live("input"));
-        assert!(applies_live("input.enabled"));
+    fn config_keys_address_one_path_segment() {
+        assert_eq!(
+            config_key_url("daemon.target_fps"),
+            "/api/v1/config/keys/daemon.target_fps"
+        );
+        assert_eq!(
+            config_key_url("drivers.wled/../hue"),
+            "/api/v1/config/keys/drivers.wled%2F..%2Fhue"
+        );
     }
 }

@@ -601,6 +601,20 @@ pub struct Scene {
     #[serde(default, skip_serializing_if = "is_default_unassigned_behavior")]
     pub unassigned_behavior: UnassignedBehavior,
 
+    /// Named spatial layout this scene references (Spec 78 §3.2).
+    /// Activation applies it; a dangling reference is kept and skipped
+    /// with a warning event, never silently dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_id: Option<crate::identity::LayoutId>,
+
+    /// Brightness applied to `/output` on activation, when present
+    /// (Spec 78 §3.2). Deliberately NOT captured by snapshot —
+    /// brightness is global output state; the field exists so migrated
+    /// profiles keep their restore-brightness behavior and so a user
+    /// can opt a scene in explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_brightness: Option<f32>,
+
     /// Whether this scene is daemon-managed or user-visible.
     pub kind: SceneKind,
 
@@ -736,6 +750,22 @@ impl Scene {
 
         if let Err(mut conflicts) = self.validate_group_exclusivity() {
             errors.append(&mut conflicts);
+        }
+
+        if let Some(brightness) = self.activation_brightness
+            && !(brightness.is_finite() && (0.0..=1.0).contains(&brightness))
+        {
+            errors.push(format!(
+                "activation_brightness must be within 0.0..=1.0, got {brightness}"
+            ));
+        }
+
+        // Derived Deserialize on identity types skips their validator;
+        // re-run it here so a malformed persisted reference is loud.
+        if let Some(layout_id) = &self.layout_id
+            && let Err(error) = crate::identity::LayoutId::new(layout_id.as_str())
+        {
+            errors.push(format!("layout_id is not a valid layout id: {error}"));
         }
 
         let primary_count = self

@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use axum::extract::State;
 use axum::{Router, body::to_bytes, routing::get};
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::{BootConfig, ConfigManager};
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
@@ -27,13 +27,14 @@ use hypercolor_daemon::discovery;
 use hypercolor_daemon::session::current_global_brightness;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
-    default_config, install_signal_handlers, load_config, parse_config_toml,
+    config_sources, default_config, install_signal_handlers, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputCadence};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
-    CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, NetworkAccessMode, RenderAccelerationMode,
+    CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, HypercolorConfig, InteractionRoutePolicy,
+    NetworkAccessMode, RenderAccelerationMode,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -52,7 +53,7 @@ use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 
 /// Minimal TOML content that `ConfigManager` can parse.
-const MINIMAL_TOML: &str = "schema_version = 3\n";
+const MINIMAL_TOML: &str = "schema_version = 4\n";
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -221,6 +222,25 @@ impl Drop for TestConfigDirGuard {
 }
 
 /// Create a temp file pre-populated with valid minimal TOML config.
+/// A boot config for a test that synthesized its own settings.
+///
+/// Initialization consumes the boot config, so each call mints one.
+fn boot_config(config: &HypercolorConfig) -> BootConfig {
+    BootConfig::from_config_unchecked(config.clone())
+}
+
+/// A config manager whose live snapshot is exactly the config under test.
+///
+/// The daemon's own manager comes from the load pipeline; tests that
+/// synthesize a config in memory materialize one over the same path the
+/// daemon would persist to.
+fn config_manager_for(config: &HypercolorConfig, path: &Path) -> Arc<ConfigManager> {
+    Arc::new(ConfigManager::from_config_unchecked(
+        path.to_path_buf(),
+        config.clone(),
+    ))
+}
+
 fn temp_config_file() -> NamedTempFile {
     let mut f = NamedTempFile::new().expect("failed to create temp file");
     f.write_all(MINIMAL_TOML.as_bytes())
@@ -271,8 +291,10 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
     let _guard = TestConfigDirGuard::new().await;
 
     // When no explicit path is provided and no file exists at the default
-    // location, load_config should succeed with defaults.
-    let (config, _path) = load_config(None).await.expect("default config should load");
+    // location, the pipeline succeeds with defaults.
+    let config = ConfigManager::load_with_sources(config_sources(None, None, None))
+        .expect("default config should load")
+        .boot;
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
@@ -281,7 +303,7 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
 #[tokio::test]
 async fn load_config_reads_toml_file() {
     let toml_content = r#"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 target_fps = 30
@@ -293,14 +315,17 @@ listen_address = "0.0.0.0"
     temp.write_all(toml_content.as_bytes())
         .expect("failed to write temp config");
 
-    let (config, path) = load_config(Some(temp.path()))
-        .await
-        .expect("config should load from file");
+    let loaded = ConfigManager::load_with_sources(config_sources(
+        Some(temp.path().to_path_buf()),
+        None,
+        None,
+    ))
+    .expect("config should load from file");
 
-    assert_eq!(config.daemon.target_fps, 30);
-    assert_eq!(config.daemon.port, 8080);
-    assert_eq!(config.daemon.listen_address, "0.0.0.0");
-    assert_eq!(path, temp.path());
+    assert_eq!(loaded.boot.daemon.target_fps, 30);
+    assert_eq!(loaded.boot.daemon.port, 8080);
+    assert_eq!(loaded.boot.daemon.listen_address, "0.0.0.0");
+    assert_eq!(loaded.manager.path(), temp.path());
 }
 
 #[cfg(not(feature = "wgpu"))]
@@ -311,7 +336,10 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    let Err(error) = DaemonState::initialize(&config, temp.path().to_path_buf()) else {
+    let Err(error) = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    ) else {
         panic!("gpu render acceleration should fail explicitly without wgpu support");
     };
 
@@ -326,8 +354,11 @@ async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_featu
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Auto;
 
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("auto render acceleration should initialize with CPU fallback");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("auto render acceleration should initialize with CPU fallback");
     state
         .start()
         .await
@@ -363,7 +394,10 @@ async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enable
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    match DaemonState::initialize(&config, temp.path().to_path_buf()) {
+    match DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    ) {
         Ok(daemon) => drop(daemon),
         Err(error) => {
             assert!(format!("{error:#}").contains("gpu compositor acceleration is unavailable"));
@@ -371,10 +405,10 @@ async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enable
     }
 }
 
-#[tokio::test]
-async fn load_config_errors_on_explicit_missing_path() {
+#[test]
+fn load_config_errors_on_explicit_missing_path() {
     let missing = PathBuf::from("/tmp/hypercolor_does_not_exist_xyz.toml");
-    let result = load_config(Some(&missing)).await;
+    let result = ConfigManager::load_with_sources(config_sources(Some(missing), None, None));
     assert!(
         result.is_err(),
         "should error when explicit path is missing"
@@ -386,7 +420,9 @@ async fn load_config_errors_on_explicit_missing_path() {
 #[test]
 fn parse_config_toml_minimal() {
     let config = parse_config_toml(MINIMAL_TOML).expect("minimal config should parse");
-    assert_eq!(config.schema_version, 3);
+    // Parsing a string runs the same migrate and normalize a file load
+    // runs, so an old schema comes back migrated forward.
+    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     // All sections should have serde defaults.
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.audio.enabled);
@@ -395,7 +431,7 @@ fn parse_config_toml_minimal() {
 #[test]
 fn parse_config_toml_with_overrides() {
     let toml_str = r#"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 target_fps = 45
@@ -434,6 +470,66 @@ wasm_plugins = true
     assert_eq!(config.drivers["wled"].settings["dedup_threshold"], 0);
     assert!(config.drivers["nollie"].enabled);
     assert!(config.features.wasm_plugins);
+}
+
+#[test]
+fn parse_config_toml_runs_the_shared_normalize_and_seed() {
+    let config = parse_config_toml("schema_version = 4\n[audio]\ndevice = \"Auto\"\n")
+        .expect("current-schema config should parse");
+
+    // Normalization: audio device aliases canonicalize.
+    assert_eq!(config.audio.device, "default");
+    // Seeding: the builtin driver entries are installed.
+    assert!(config.drivers.contains_key("wled"));
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn parse_config_toml_refuses_an_outdated_schema() {
+    let error = parse_config_toml("schema_version = 3\n")
+        .expect_err("an outdated schema must be refused, not migrated");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 3"), "{rendered}");
+    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+    assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
+    assert!(
+        rendered.contains(r#"preview_route = "browser""#),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn parse_config_toml_refuses_a_newer_schema() {
+    let error = parse_config_toml("schema_version = 5\n")
+        .expect_err("a future schema must be refused, not read");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 5"), "{rendered}");
+    assert!(rendered.contains("newer hypercolor"), "{rendered}");
+}
+
+#[test]
+fn loaded_config_and_manager_agree_after_one_load() {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("hypercolor.toml");
+    std::fs::write(
+        &path,
+        "schema_version = 4\n[audio]\ndevice = \"Microphone\"\n[daemon]\nport = 9421\n",
+    )
+    .expect("config file should write");
+
+    let loaded = ConfigManager::load_with_sources(config_sources(Some(path), None, None))
+        .expect("config should load");
+    let live = loaded.manager.live();
+
+    // One materialization: the boot config and the retained manager are
+    // the same normalized, seeded document.
+    assert_eq!(loaded.boot.audio.device, "microphone");
+    assert_eq!(live.audio.device, "microphone");
+    assert_eq!(live.daemon.port, 9421);
+    assert!(live.drivers.contains_key("wled"));
+    assert_eq!(loaded.boot.drivers, live.drivers);
 }
 
 #[test]
@@ -860,7 +956,10 @@ async fn daemon_state_initializes_with_default_config() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf());
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    );
     assert!(state.is_ok(), "initialization should succeed with defaults");
 }
 
@@ -869,8 +968,11 @@ async fn daemon_state_start_and_shutdown() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     // Start all subsystems.
     state.start().await.expect("start should succeed");
@@ -902,8 +1004,11 @@ async fn daemon_shutdown_disconnects_renderable_devices() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let device_id = DeviceId::new();
     let disconnects = Arc::new(AtomicUsize::new(0));
@@ -957,8 +1062,11 @@ async fn daemon_state_device_registry_starts_empty() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     assert!(
         state.device_registry.is_empty().await,
@@ -971,8 +1079,11 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let scenes = state.scene_manager.read().await;
     assert!(
@@ -990,8 +1101,11 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let scenes = state.scene_manager.read().await;
     assert_eq!(
@@ -1016,8 +1130,11 @@ async fn named_scenes_persist_across_restart() {
 
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let scenes = state.scene_manager.read().await;
     assert_eq!(scenes.scene_count(), 2);
@@ -1034,14 +1151,18 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
     let mut config = default_config();
     config.daemon.target_fps = 45;
     let temp = temp_config_file();
-    // Write specific config content so ConfigManager can load it.
+    // The manager is built over the same config the daemon boots with;
+    // the file only has to agree with it for the accessor to be honest.
     std::fs::write(
         temp.path(),
-        "schema_version = 3\n[daemon]\ntarget_fps = 45\n",
+        "schema_version = 4\n[daemon]\ntarget_fps = 45\n",
     )
     .expect("failed to write config");
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let snapshot = state.config();
     assert_eq!(snapshot.daemon.target_fps, 45);
@@ -1062,8 +1183,11 @@ async fn shutdown_is_idempotent() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     state.start().await.expect("start should succeed");
 
@@ -1076,6 +1200,53 @@ async fn shutdown_is_idempotent() {
         .shutdown()
         .await
         .expect("second shutdown should succeed");
+}
+
+#[tokio::test]
+async fn a_stale_runtime_snapshot_never_blocks_startup() {
+    let guard = TestDataDirGuard::new().await;
+    // A snapshot written before `driver_runtime_cache` was retired. The
+    // snapshot denies unknown fields, so this one no longer parses; the
+    // daemon must log it and start fresh rather than refuse to boot.
+    std::fs::create_dir_all(
+        guard
+            .runtime_state_path()
+            .parent()
+            .expect("runtime state path has a parent"),
+    )
+    .expect("data directory should be created");
+    std::fs::write(
+        guard.runtime_state_path(),
+        serde_json::json!({
+            "active_scene_id": null,
+            "default_scene_groups": [],
+            "active_layout_id": "layout_gone",
+            "global_brightness": 0.25,
+            "manual_paused": true,
+            "driver_runtime_cache": {},
+        })
+        .to_string(),
+    )
+    .expect("stale snapshot should be written");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("a stale snapshot must not block initialization");
+
+    state
+        .start()
+        .await
+        .expect("a stale snapshot must not block startup");
+
+    // Nothing from the unreadable snapshot was restored.
+    assert!((current_global_brightness(&state.power_state) - 1.0).abs() < f32::EPSILON);
+
+    state.shutdown().await.expect("shutdown should succeed");
 }
 
 #[tokio::test]
@@ -1105,7 +1276,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -1113,8 +1283,11 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     let mut config = default_config();
     config.daemon.start_profile = "last".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     assert_eq!(state.layouts_path, guard.layouts_path());
     assert_eq!(state.runtime_state_path, guard.runtime_state_path());
@@ -1148,8 +1321,11 @@ async fn daemon_start_restores_manual_pause_before_rendering() {
     let mut config = default_config();
     config.daemon.start_profile = "default".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     state.start().await.expect("start should succeed");
 
@@ -1185,8 +1361,11 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
 
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let persisted = layout_store::load(&guard.layouts_path()).expect("layout store should load");
     assert!(persisted.contains_key("default"));
@@ -1207,8 +1386,11 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
     let guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     assert_eq!(state.runtime_state_path, guard.runtime_state_path());
     state.start().await.expect("start should succeed");
@@ -1279,7 +1461,6 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
         Some(metadata.id)
     );
     assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
-    assert!(snapshot.driver_runtime_cache.is_empty());
     let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
         .expect("probe IP inventory should deserialize");
@@ -1335,7 +1516,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             active_layout_id: None,
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -1343,8 +1523,11 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
     let mut config = default_config();
     config.daemon.start_profile = "last".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     state.start().await.expect("start should succeed");
 
@@ -1365,8 +1548,11 @@ async fn default_scene_contents_restore_on_restart() {
     let mut config = default_config();
     config.daemon.start_profile = "last".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
     let effect_id = {
         let registry = state.effect_registry.read().await;
         registry
@@ -1417,7 +1603,6 @@ async fn default_scene_contents_restore_on_restart() {
             active_layout_id: None,
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -1460,8 +1645,11 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
     config.daemon.start_profile = "last".into();
     config.discovery.background_enabled = false;
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
     state.start().await.expect("start should succeed");
 
     let device_id = DeviceId::new();
@@ -1567,8 +1755,11 @@ async fn event_bus_receives_startup_event() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     // Subscribe before starting so we catch the DaemonStarted event.
     let mut rx = state.event_bus.subscribe_all();
@@ -2603,8 +2794,11 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
         toml::to_string(&config).expect("serialize test config"),
     )
     .expect("write test config");
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("daemon state should initialize");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon state should initialize");
     state.start().await.expect("start should succeed");
 
     let metadata = {
@@ -2657,8 +2851,8 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
                 {
                     saw_fallback_event = true;
                 }
-                HypercolorEvent::RenderGroupChanged {
-                    group_id: changed, ..
+                HypercolorEvent::ZoneChanged {
+                    zone_id: changed, ..
                 } if changed == group_id => {
                     saw_group_update = true;
                 }

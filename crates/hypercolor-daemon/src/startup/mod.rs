@@ -73,7 +73,8 @@ pub(crate) use acceleration::{
     CompositorAccelerationResolution, cpu_compositor_acceleration_resolution,
     resolve_compositor_acceleration_mode,
 };
-pub use config::{default_config, load_config, parse_config_toml};
+pub(crate) use config::normalize_daemon_driver_configs;
+pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
@@ -111,6 +112,12 @@ pub struct DaemonState {
 
     /// Persisted named-scene store.
     pub scene_store: Arc<RwLock<SceneStore>>,
+
+    /// Ordered publication chain and revision counter for scene commits
+    /// (Spec 76 §2.3). Shared with every `AppState` built from this
+    /// state: the compare-and-swap and the publication order are only
+    /// meaningful when one sequencer sees every commit.
+    pub scene_commits: Arc<crate::domain::commit::SceneCommitSequencer>,
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,

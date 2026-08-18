@@ -16,24 +16,24 @@ class ApplyEffectPresetRequest:
     """Optional body for `POST /api/v1/effects/{id}/presets/{preset_id}/apply`.
 
     Attributes:
-        render_group (None | str | Unset):
+        zone_id (None | str | Unset):
     """
 
-    render_group: None | str | Unset = UNSET
+    zone_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        render_group: None | str | Unset
-        if isinstance(self.render_group, Unset):
-            render_group = UNSET
+        zone_id: None | str | Unset
+        if isinstance(self.zone_id, Unset):
+            zone_id = UNSET
         else:
-            render_group = self.render_group
+            zone_id = self.zone_id
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if render_group is not UNSET:
-            field_dict["render_group"] = render_group
+        if zone_id is not UNSET:
+            field_dict["zone_id"] = zone_id
 
         return field_dict
 
@@ -41,17 +41,17 @@ class ApplyEffectPresetRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
 
-        def _parse_render_group(data: object) -> None | str | Unset:
+        def _parse_zone_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        render_group = _parse_render_group(d.pop("render_group", UNSET))
+        zone_id = _parse_zone_id(d.pop("zone_id", UNSET))
 
         apply_effect_preset_request = cls(
-            render_group=render_group,
+            zone_id=zone_id,
         )
 
         apply_effect_preset_request.additional_properties = d

@@ -167,10 +167,15 @@ hypercolor effects list --search aurora
 
 | Flag | Purpose |
 | --- | --- |
-| `--engine <TYPE>` | Filter by engine: `native`, `web`, `wasm`. |
+| `--source <KIND>` | Filter by rendering source: `native`, `html`, `shader`. |
 | `--audio` | Audio-reactive effects only. |
-| `--search <TEXT>` | Match name or description. |
+| `--search <TEXT>` | Match name, description, author, or tags. |
 | `--category <NAME>` | Filter by category. |
+
+The daemon narrows the catalog, so every flag above is one query parameter on
+`GET /api/v1/effects` and the payload carries only the matching rows. A flag
+naming a category or source that does not exist answers with a validation
+error rather than an empty list.
 
 Activate an effect by name or slug (fuzzy-matched). Tune it with repeatable
 `--param key=value` pairs, or the `--speed` / `--intensity` shorthands.
@@ -208,7 +213,7 @@ hypercolor effects rescan                 # Re-scan the library for new effects
 ```
 
 `effects patch` updates the live effect without re-applying it; it targets
-`PATCH /api/v1/effects/current/controls` and requires at least one `--param`.
+`PATCH /api/v1/effects/active/controls` and requires at least one `--param`.
 Run `hypercolor effects rescan` after dropping a freshly built HTML effect into
 the effects directory so the daemon picks it up.
 
@@ -481,15 +486,17 @@ are dotted paths into the config tree (for example `daemon.fps`, `audio.gain`,
 hypercolor config show
 hypercolor config get daemon.canvas_width
 hypercolor config set audio.gain 1.5
-hypercolor config set daemon.fps 60 --live    # Hot-reload into the running daemon
+hypercolor config set daemon.fps 60 --no-live  # Persist without touching the daemon
 hypercolor config reset audio.gain
 hypercolor config reset --yes                  # Full reset
 hypercolor config path                         # Print the config file location
 ```
 
-`config set --live` applies the change to the running daemon immediately rather
-than only on next restart. The full configuration schema is documented in the
-[Guide](@/guide/_index.md).
+A write applies to the running daemon immediately whenever the key registry
+says the daemon can re-apply it; `--no-live` persists the value and leaves the
+running daemon alone, and `--live` states the default request explicitly. Ask
+`GET /api/v1/config/schema` how any key behaves. The full configuration schema
+is documented in the [Guide](@/guide/_index.md).
 
 Connection profiles for the CLI itself live under `config profile`:
 

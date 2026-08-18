@@ -13,9 +13,23 @@ mod preview_scale;
 mod protocol;
 mod relays;
 mod session;
+mod topics;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use protocol::MAX_WS_MESSAGE_BYTES;
 pub(crate) use session::{spawn_trusted_local_socket, ws_handler};
+
+/// Daemon-owned binary encoders whose byte layouts are frozen by the golden
+/// fixtures in `tests/ws_golden_tests.rs`.
+///
+/// The preview family (`0x03`–`0x11`) already encodes through public
+/// `hypercolor-leptos-ext` codecs; the `frames` (`0x01`)
+/// and `spectrum` (`0x02`) tags are written here instead, so they are exported
+/// for the fixture suite to assert against the production encoder rather than a
+/// copy of it.
+pub mod wire {
+    pub use super::cache::{encode_frame_binary_selected, encode_spectrum_binary};
+    pub use super::protocol::FrameZoneSelection;
+}

@@ -1,4 +1,4 @@
-//! Layer-stack endpoints for `/api/v1/scenes/{id}/groups/{group_id}/layers/*`.
+//! Layer-stack endpoints for `/api/v1/scenes/{id}/zones/{zone_id}/layers/*`.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -6,130 +6,31 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use utoipa::ToSchema;
 
 use hypercolor_core::scene::{LayerMutationError, SceneGroupLayerInsert, SceneManager};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, ZoneChangeKind};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback,
-    SceneLayer, SceneLayerId,
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
+    SceneLayerId,
 };
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::normalize_control_payload;
-use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{
-    AppState, admit_scene_store_snapshot, persist_runtime_session, publish_render_group_changed,
-    save_admitted_scene_store_snapshot, scene_store_coordinator, scenes,
+use crate::api::envelope::ApiResponse;
+use crate::api::{AppState, scenes};
+use crate::domain::layer;
+use crate::domain::{DomainError, MutationContext, ResourceKind};
+
+pub use hypercolor_types::api::layers::{
+    BroadcastMediaLayerRequest, BroadcastMediaLayerTarget, CreateLayerQuery, CreateLayerRequest,
+    LayerOrderRequest, PatchLayerControlsRequest, UpdateLayerRequest,
 };
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateLayerRequest {
-    pub name: Option<String>,
-    #[schema(value_type = Object)]
-    pub source: LayerSource,
-    #[serde(default)]
-    #[schema(value_type = String)]
-    pub blend: LayerBlendMode,
-    #[serde(default = "default_layer_opacity")]
-    pub opacity: f32,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub transform: LayerTransform,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub adjust: LayerAdjust,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub bindings: Vec<LayerBinding>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateLayerRequest {
-    #[schema(value_type = String)]
-    pub id: SceneLayerId,
-    pub name: Option<String>,
-    #[schema(value_type = Object)]
-    pub source: LayerSource,
-    #[serde(default)]
-    #[schema(value_type = String)]
-    pub blend: LayerBlendMode,
-    #[serde(default = "default_layer_opacity")]
-    pub opacity: f32,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub transform: LayerTransform,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub adjust: LayerAdjust,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub bindings: Vec<LayerBinding>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct LayerOrderRequest {
-    #[schema(value_type = Vec<String>)]
-    pub layer_ids: Vec<SceneLayerId>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct PatchLayerControlsRequest {
-    #[schema(value_type = Object)]
-    pub controls: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateLayerQuery {
-    pub index: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct BroadcastMediaLayerTarget {
-    #[schema(value_type = String)]
-    pub group_id: ZoneId,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub transform: LayerTransform,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub adjust: LayerAdjust,
-    pub index: Option<usize>,
-    pub expected_layers_version: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct BroadcastMediaLayerRequest {
-    pub name: Option<String>,
-    #[schema(value_type = String)]
-    pub asset_id: AssetId,
-    #[serde(default)]
-    #[schema(value_type = Object)]
-    pub playback: MediaPlayback,
-    #[serde(default)]
-    #[schema(value_type = String)]
-    pub blend: LayerBlendMode,
-    #[serde(default = "default_layer_opacity")]
-    pub opacity: f32,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub bindings: Vec<LayerBinding>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
-    pub targets: Vec<BroadcastMediaLayerTarget>,
-}
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LayerStackResponse {
@@ -139,9 +40,9 @@ pub struct LayerStackResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct BroadcastMediaLayerGroupResponse {
+pub struct BroadcastMediaLayerZoneResponse {
     #[schema(value_type = String)]
-    pub group_id: ZoneId,
+    pub zone_id: ZoneId,
     #[schema(value_type = Vec<Object>)]
     pub items: Vec<SceneLayer>,
     pub layers_version: u64,
@@ -149,83 +50,71 @@ pub struct BroadcastMediaLayerGroupResponse {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BroadcastMediaLayerResponse {
-    pub groups: Vec<BroadcastMediaLayerGroupResponse>,
+    pub zones: Vec<BroadcastMediaLayerZoneResponse>,
 }
 
 pub async fn list_layers(
     State(state): State<Arc<AppState>>,
-    Path((scene_id_raw, group_id_raw)): Path<(String, String)>,
+    Path((scene_id_raw, zone_id_raw)): Path<(String, String)>,
 ) -> Response {
-    let Ok(group_id) = parse_group_id(&group_id_raw) else {
-        return ApiError::bad_request("group_id must be a valid UUID");
+    let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let manager = state.scene_manager.read().await;
     let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
-    let Some(group) = find_group(&manager, scene_id, group_id) else {
-        return ApiError::not_found(format!("Zone not found: {group_id}"));
+    let Some(zone) = find_zone(&manager, scene_id, zone_id) else {
+        return DomainError::not_found(ResourceKind::Zone, zone_id).into_response();
     };
-    layer_stack_response(group, StatusKind::Ok)
+    layer_stack_response(zone, StatusKind::Ok)
 }
 
 pub async fn create_layer(
     State(state): State<Arc<AppState>>,
-    Path((scene_id_raw, group_id_raw)): Path<(String, String)>,
+    Path((scene_id_raw, zone_id_raw)): Path<(String, String)>,
     Query(query): Query<CreateLayerQuery>,
     headers: HeaderMap,
     Json(body): Json<CreateLayerRequest>,
 ) -> Response {
-    let Ok(group_id) = parse_group_id(&group_id_raw) else {
-        return ApiError::bad_request("group_id must be a valid UUID");
+    let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let expected_version = match parse_if_match_layers_version(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let layer = body.into_layer(SceneLayerId::new());
-    if let Err(response) =
+    if let Err(error) =
         validate_livestream_layer_insert(&state, &scene_id_raw, layer.source.media_asset_id()).await
     {
-        return response;
+        return error.into_response();
     }
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, pending) = {
-        let mut manager = state.scene_manager.write().await;
-        let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
-        };
-        let rollback = manager.clone();
-        let result = match manager.insert_scene_group_layer(
-            scene_id,
-            group_id,
-            layer,
-            query.index,
-            expected_version,
-        ) {
-            Ok((group, _version)) => group.clone(),
-            Err(error) => return layer_mutation_error(error),
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
-            }
-        };
-        (scene_id, result, pending)
+    let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
-    if let Err(response) = finalize_layer_mutation(
-        &state,
-        pending,
+
+    match layer::insert_layer(
+        state.as_ref(),
         scene_id,
-        &group,
-        LayerStackChangeKind::Created,
+        zone_id,
+        layer,
+        query.index,
+        expected_version,
+        MutationContext::api(),
     )
     .await
     {
-        return response;
+        Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Created),
+        Ok(Err(refusal)) => layer_mutation_error(
+            refusal,
+            LayerTarget {
+                scene: &scene_id_raw,
+                zone: Some(zone_id),
+            },
+        ),
+        Err(error) => error.into_response(),
     }
-    layer_stack_response(&group, StatusKind::Created)
 }
 
 pub async fn broadcast_media_layer(
@@ -234,245 +123,197 @@ pub async fn broadcast_media_layer(
     Json(body): Json<BroadcastMediaLayerRequest>,
 ) -> Response {
     if body.targets.is_empty() {
-        return ApiError::bad_request("targets must include at least one zone");
+        return DomainError::validation_field("targets", "targets must include at least one zone")
+            .into_response();
     }
     {
         let library = state.asset_library.read().await;
         if !library.contains(body.asset_id) {
-            return ApiError::not_found(format!("Asset not found: {}", body.asset_id));
+            return DomainError::not_found(ResourceKind::Asset, body.asset_id).into_response();
         }
     }
-    if let Err(response) =
+    if let Err(error) =
         validate_livestream_layer_insert(&state, &scene_id_raw, Some(body.asset_id)).await
     {
-        return response;
+        return error.into_response();
     }
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, groups, pending) = {
-        let mut manager = state.scene_manager.write().await;
+    let inserts = {
+        let manager = state.scene_manager.read().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+            return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
         };
-        if let Some(group_id) = body.targets.iter().find_map(|target| {
-            find_group(&manager, scene_id, target.group_id)
+        if let Some(zone_id) = body.targets.iter().find_map(|target| {
+            find_zone(&manager, scene_id, target.zone_id)
                 .is_none()
-                .then_some(target.group_id)
+                .then_some(target.zone_id)
         }) {
-            return ApiError::not_found(format!("Zone not found: {group_id}"));
+            return DomainError::not_found(ResourceKind::Zone, zone_id).into_response();
         }
-        let inserts = body.into_layer_inserts();
-        let rollback = manager.clone();
-        let groups = match manager.insert_scene_group_layers_batch(scene_id, inserts) {
-            Ok(groups) => groups,
-            Err(error) => return layer_mutation_error(error),
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
-            }
-        };
-        (scene_id, groups, pending)
+        (scene_id, broadcast_layer_inserts(body))
     };
-    if let Err(response) = finalize_layer_mutations(
-        &state,
-        pending,
-        scene_id,
-        &groups,
-        LayerStackChangeKind::Created,
-    )
-    .await
-    {
-        return response;
+
+    match layer::insert_layers(state.as_ref(), inserts.0, inserts.1, MutationContext::api()).await {
+        Ok(Ok(written)) => broadcast_media_layer_response(&written.zones),
+        Ok(Err(refusal)) => layer_mutation_error(
+            refusal,
+            LayerTarget {
+                scene: &scene_id_raw,
+                zone: None,
+            },
+        ),
+        Err(error) => error.into_response(),
     }
-    broadcast_media_layer_response(&groups)
 }
 
 pub async fn update_layer(
     State(state): State<Arc<AppState>>,
-    Path((scene_id_raw, group_id_raw, layer_id_raw)): Path<(String, String, String)>,
+    Path((scene_id_raw, zone_id_raw, layer_id_raw)): Path<(String, String, String)>,
     headers: HeaderMap,
     Json(body): Json<UpdateLayerRequest>,
 ) -> Response {
-    let Ok(group_id) = parse_group_id(&group_id_raw) else {
-        return ApiError::bad_request("group_id must be a valid UUID");
+    let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let Ok(layer_id) = SceneLayerId::from_str(&layer_id_raw) else {
-        return ApiError::bad_request("layer_id must be a valid UUID");
+        return DomainError::malformed("layer_id must be a valid UUID").into_response();
     };
     let expected_version = match parse_if_match_layers_version(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
-    if let Err(response) = validate_livestream_layer_update(
+    if let Err(error) = validate_livestream_layer_update(
         &state,
         &scene_id_raw,
-        group_id,
+        zone_id,
         layer_id,
         body.source.media_asset_id(),
     )
     .await
     {
-        return response;
+        return error.into_response();
     }
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, pending) = {
-        let mut manager = state.scene_manager.write().await;
-        let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
-        };
-        let rollback = manager.clone();
-        let group = match manager.update_scene_group_layer(
-            scene_id,
-            group_id,
-            layer_id,
-            body.into_layer(),
-            expected_version,
-        ) {
-            Ok((group, _version)) => group.clone(),
-            Err(error) => return layer_mutation_error(error),
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
-            }
-        };
-        (scene_id, group, pending)
+    let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
-    if let Err(response) = finalize_layer_mutation(
-        &state,
-        pending,
+
+    match layer::update_layer(
+        state.as_ref(),
         scene_id,
-        &group,
-        LayerStackChangeKind::Updated,
+        zone_id,
+        layer_id,
+        body.into_layer(),
+        expected_version,
+        MutationContext::api(),
     )
     .await
     {
-        return response;
+        Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
+        Ok(Err(refusal)) => layer_mutation_error(
+            refusal,
+            LayerTarget {
+                scene: &scene_id_raw,
+                zone: Some(zone_id),
+            },
+        ),
+        Err(error) => error.into_response(),
     }
-    layer_stack_response(&group, StatusKind::Ok)
 }
 
 pub async fn delete_layer(
     State(state): State<Arc<AppState>>,
-    Path((scene_id_raw, group_id_raw, layer_id_raw)): Path<(String, String, String)>,
+    Path((scene_id_raw, zone_id_raw, layer_id_raw)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let Ok(group_id) = parse_group_id(&group_id_raw) else {
-        return ApiError::bad_request("group_id must be a valid UUID");
+    let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let Ok(layer_id) = SceneLayerId::from_str(&layer_id_raw) else {
-        return ApiError::bad_request("layer_id must be a valid UUID");
+        return DomainError::malformed("layer_id must be a valid UUID").into_response();
     };
     let expected_version = match parse_if_match_layers_version(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, pending) = {
-        let mut manager = state.scene_manager.write().await;
-        let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
-        };
-        let rollback = manager.clone();
-        let group = match manager.remove_scene_group_layer(
-            scene_id,
-            group_id,
-            layer_id,
-            expected_version,
-        ) {
-            Ok((group, _version)) => group.clone(),
-            Err(error) => return layer_mutation_error(error),
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
-            }
-        };
-        (scene_id, group, pending)
+    let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
-    if let Err(response) = finalize_layer_mutation(
-        &state,
-        pending,
+
+    match layer::remove_layer(
+        state.as_ref(),
         scene_id,
-        &group,
-        LayerStackChangeKind::Removed,
+        zone_id,
+        layer_id,
+        expected_version,
+        MutationContext::api(),
     )
     .await
     {
-        return response;
+        Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
+        Ok(Err(refusal)) => layer_mutation_error(
+            refusal,
+            LayerTarget {
+                scene: &scene_id_raw,
+                zone: Some(zone_id),
+            },
+        ),
+        Err(error) => error.into_response(),
     }
-    layer_stack_response(&group, StatusKind::Ok)
 }
 
 pub async fn reorder_layers(
     State(state): State<Arc<AppState>>,
-    Path((scene_id_raw, group_id_raw)): Path<(String, String)>,
+    Path((scene_id_raw, zone_id_raw)): Path<(String, String)>,
     headers: HeaderMap,
     Json(body): Json<LayerOrderRequest>,
 ) -> Response {
-    let Ok(group_id) = parse_group_id(&group_id_raw) else {
-        return ApiError::bad_request("group_id must be a valid UUID");
+    let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let expected_version = match parse_if_match_layers_version(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, pending) = {
-        let mut manager = state.scene_manager.write().await;
-        let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
-        };
-        let rollback = manager.clone();
-        let group = match manager.reorder_scene_group_layers(
-            scene_id,
-            group_id,
-            body.layer_ids,
-            expected_version,
-        ) {
-            Ok((group, _version)) => group.clone(),
-            Err(error) => return layer_mutation_error(error),
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
-            }
-        };
-        (scene_id, group, pending)
+    let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
+        return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
     };
-    if let Err(response) = finalize_layer_mutation(
-        &state,
-        pending,
+
+    match layer::reorder_layers(
+        state.as_ref(),
         scene_id,
-        &group,
-        LayerStackChangeKind::Reordered,
+        zone_id,
+        body.layer_ids,
+        expected_version,
+        MutationContext::api(),
     )
     .await
     {
-        return response;
+        Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
+        Ok(Err(refusal)) => layer_mutation_error(
+            refusal,
+            LayerTarget {
+                scene: &scene_id_raw,
+                zone: Some(zone_id),
+            },
+        ),
+        Err(error) => error.into_response(),
     }
-    layer_stack_response(&group, StatusKind::Ok)
 }
 
 pub async fn patch_layer_controls(
     State(state): State<Arc<AppState>>,
-    Path((scene_id_raw, group_id_raw, layer_id_raw)): Path<(String, String, String)>,
+    Path((scene_id_raw, zone_id_raw, layer_id_raw)): Path<(String, String, String)>,
     headers: HeaderMap,
     Json(body): Json<PatchLayerControlsRequest>,
 ) -> Response {
-    let Ok(group_id) = parse_group_id(&group_id_raw) else {
-        return ApiError::bad_request("group_id must be a valid UUID");
+    let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
+        return DomainError::malformed("zone_id must be a valid UUID").into_response();
     };
     let Ok(layer_id) = SceneLayerId::from_str(&layer_id_raw) else {
-        return ApiError::bad_request("layer_id must be a valid UUID");
+        return DomainError::malformed("layer_id must be a valid UUID").into_response();
     };
     let expected_version = match parse_if_match_layers_version(&headers) {
         Ok(version) => version,
-        Err(message) => return ApiError::bad_request(message),
+        Err(message) => return DomainError::malformed(message).into_response(),
     };
     let controls = body
         .controls
@@ -481,26 +322,30 @@ pub async fn patch_layer_controls(
         .cloned()
         .unwrap_or_default();
     if controls.is_empty() {
-        return ApiError::bad_request("controls payload must include at least one key");
+        return DomainError::validation_field(
+            "controls",
+            "controls payload must include at least one key",
+        )
+        .into_response();
     }
 
     let (scene_id, effect_id) = {
         let manager = state.scene_manager.read().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+            return DomainError::not_found(ResourceKind::Scene, &scene_id_raw).into_response();
         };
-        let Some(group) = find_group(&manager, scene_id, group_id) else {
-            return ApiError::not_found(format!("Zone not found: {group_id}"));
+        let Some(zone) = find_zone(&manager, scene_id, zone_id) else {
+            return DomainError::not_found(ResourceKind::Zone, zone_id).into_response();
         };
-        let Some(layer) = group
+        let Some(layer) = zone
             .effective_layers()
             .into_iter()
             .find(|layer| layer.id == layer_id)
         else {
-            return ApiError::not_found(format!("Layer not found: {layer_id}"));
+            return DomainError::not_found(ResourceKind::Layer, layer_id).into_response();
         };
         let LayerSource::Effect { effect_id, .. } = layer.source else {
-            return ApiError::validation("layer source has no controls");
+            return DomainError::validation("layer source has no controls").into_response();
         };
         (scene_id, effect_id)
     };
@@ -508,106 +353,62 @@ pub async fn patch_layer_controls(
     let (normalized, invalid) =
         normalize_layer_controls(state.as_ref(), effect_id, &controls).await;
     if normalized.is_empty() && !invalid.is_empty() {
-        return ApiError::validation_with_details(
+        return DomainError::validation_details(
             "no valid controls to apply",
             serde_json::json!({ "rejected": invalid }),
-        );
+        )
+        .into_response();
     }
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (group, pending) = {
-        let mut manager = state.scene_manager.write().await;
-        let rollback = manager.clone();
-        let group = match manager.patch_scene_layer_effect_controls(
-            scene_id,
-            group_id,
-            layer_id,
-            normalized,
-            expected_version,
-        ) {
-            Ok((group, _version)) => group.clone(),
-            Err(error) => return layer_mutation_error(error),
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
-            }
-        };
-        (group, pending)
-    };
-    if let Err(response) = finalize_layer_mutation(
-        &state,
-        pending,
+    match layer::patch_layer_controls(
+        state.as_ref(),
         scene_id,
-        &group,
-        LayerStackChangeKind::ControlsPatched,
+        zone_id,
+        layer_id,
+        normalized,
+        expected_version,
+        MutationContext::api(),
     )
     .await
     {
-        return response;
-    }
-    layer_stack_response(&group, StatusKind::Ok)
-}
-
-impl CreateLayerRequest {
-    fn into_layer(self, id: SceneLayerId) -> SceneLayer {
-        SceneLayer {
-            id,
-            name: self.name,
-            source: self.source,
-            blend: self.blend,
-            opacity: self.opacity,
-            transform: self.transform,
-            adjust: self.adjust,
-            bindings: self.bindings,
-            enabled: self.enabled,
-        }
+        Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
+        Ok(Err(refusal)) => layer_mutation_error(
+            refusal,
+            LayerTarget {
+                scene: &scene_id_raw,
+                zone: Some(zone_id),
+            },
+        ),
+        Err(error) => error.into_response(),
     }
 }
 
-impl UpdateLayerRequest {
-    fn into_layer(self) -> SceneLayer {
-        SceneLayer {
-            id: self.id,
-            name: self.name,
-            source: self.source,
-            blend: self.blend,
-            opacity: self.opacity,
-            transform: self.transform,
-            adjust: self.adjust,
-            bindings: self.bindings,
-            enabled: self.enabled,
-        }
-    }
-}
-
-impl BroadcastMediaLayerRequest {
-    fn into_layer_inserts(self) -> Vec<SceneGroupLayerInsert> {
-        let source = LayerSource::Media {
-            asset_id: self.asset_id,
-            playback: self.playback,
-        };
-        self.targets
-            .into_iter()
-            .map(|target| SceneGroupLayerInsert {
-                group_id: target.group_id,
-                layer: SceneLayer {
-                    id: SceneLayerId::new(),
-                    name: self.name.clone(),
-                    source: source.clone(),
-                    blend: self.blend,
-                    opacity: self.opacity,
-                    transform: target.transform,
-                    adjust: target.adjust,
-                    bindings: self.bindings.clone(),
-                    enabled: self.enabled,
-                },
-                index: target.index,
-                expected_version: target.expected_layers_version,
-            })
-            .collect()
-    }
+/// Expand one broadcast request into a per-zone layer insert list.
+fn broadcast_layer_inserts(request: BroadcastMediaLayerRequest) -> Vec<SceneGroupLayerInsert> {
+    let source = LayerSource::Media {
+        asset_id: request.asset_id,
+        playback: request.playback,
+    };
+    request
+        .targets
+        .into_iter()
+        .map(|target| SceneGroupLayerInsert {
+            group_id: target.zone_id,
+            layer: SceneLayer {
+                id: SceneLayerId::new(),
+                name: request.name.clone(),
+                source: source.clone(),
+                blend: request.blend,
+                opacity: request.opacity,
+                transform: target.transform,
+                adjust: target.adjust,
+                bindings: request.bindings.clone(),
+                enabled: request.enabled,
+            },
+            index: target.index,
+            expected_version: target.expected_layers_version,
+        })
+        .collect()
 }
 
 enum StatusKind {
@@ -615,105 +416,42 @@ enum StatusKind {
     Created,
 }
 
-fn layer_stack_response(group: &Zone, status: StatusKind) -> Response {
+fn layer_stack_response(zone: &Zone, status: StatusKind) -> Response {
     let body = LayerStackResponse {
-        items: group.effective_layers(),
-        layers_version: group.layers_version,
+        items: zone.effective_layers(),
+        layers_version: zone.layers_version,
     };
     let response = match status {
         StatusKind::Ok => ApiResponse::ok(body),
         StatusKind::Created => ApiResponse::created(body),
     };
-    attach_layers_version_headers(response, group.layers_version)
+    attach_layers_version_headers(response, zone.layers_version)
 }
 
-fn broadcast_media_layer_response(groups: &[Zone]) -> Response {
+fn broadcast_media_layer_response(zones: &[Zone]) -> Response {
     ApiResponse::created(BroadcastMediaLayerResponse {
-        groups: groups
+        zones: zones
             .iter()
-            .map(|group| BroadcastMediaLayerGroupResponse {
-                group_id: group.id,
-                items: group.effective_layers(),
-                layers_version: group.layers_version,
+            .map(|zone| BroadcastMediaLayerZoneResponse {
+                zone_id: zone.id,
+                items: zone.effective_layers(),
+                layers_version: zone.layers_version,
             })
             .collect(),
     })
 }
 
-fn find_group(manager: &SceneManager, scene_id: SceneId, group_id: ZoneId) -> Option<&Zone> {
+async fn resolve_scene(state: &AppState, scene_id_raw: &str) -> Option<SceneId> {
+    let manager = state.scene_manager.read().await;
+    scenes::resolve_scene_id(&manager, scene_id_raw)
+}
+
+fn find_zone(manager: &SceneManager, scene_id: SceneId, zone_id: ZoneId) -> Option<&Zone> {
     manager
         .get(&scene_id)?
         .groups
         .iter()
-        .find(|group| group.id == group_id)
-}
-
-async fn finalize_layer_mutation(
-    state: &Arc<AppState>,
-    pending: crate::scene_store::SceneStoreSave,
-    scene_id: SceneId,
-    group: &Zone,
-    kind: LayerStackChangeKind,
-) -> Result<(), Response> {
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return Err(ApiError::internal(format!(
-            "Failed to persist layer stack: {error}"
-        )));
-    }
-    persist_runtime_session(state).await;
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        group,
-        render_group_change_kind_for_layer_stack(kind),
-    );
-    state.event_bus.publish(HypercolorEvent::LayerStackChanged {
-        scene_id,
-        group_id: group.id,
-        layers_version: group.layers_version,
-        kind,
-    });
-    Ok(())
-}
-
-async fn finalize_layer_mutations(
-    state: &Arc<AppState>,
-    pending: crate::scene_store::SceneStoreSave,
-    scene_id: SceneId,
-    groups: &[Zone],
-    kind: LayerStackChangeKind,
-) -> Result<(), Response> {
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return Err(ApiError::internal(format!(
-            "Failed to persist layer stack: {error}"
-        )));
-    }
-    persist_runtime_session(state).await;
-    for group in groups {
-        publish_render_group_changed(
-            state.as_ref(),
-            scene_id,
-            group,
-            render_group_change_kind_for_layer_stack(kind),
-        );
-        state.event_bus.publish(HypercolorEvent::LayerStackChanged {
-            scene_id,
-            group_id: group.id,
-            layers_version: group.layers_version,
-            kind,
-        });
-    }
-    Ok(())
-}
-
-fn render_group_change_kind_for_layer_stack(kind: LayerStackChangeKind) -> ZoneChangeKind {
-    match kind {
-        LayerStackChangeKind::ControlsPatched => ZoneChangeKind::ControlsPatched,
-        LayerStackChangeKind::Created
-        | LayerStackChangeKind::Updated
-        | LayerStackChangeKind::Removed
-        | LayerStackChangeKind::Reordered => ZoneChangeKind::Updated,
-    }
+        .find(|zone| zone.id == zone_id)
 }
 
 async fn normalize_layer_controls(
@@ -738,7 +476,7 @@ async fn normalize_layer_controls(
     (normalized, rejected)
 }
 
-fn parse_group_id(raw: &str) -> Result<ZoneId, uuid::Error> {
+fn parse_zone_id(raw: &str) -> Result<ZoneId, uuid::Error> {
     raw.parse::<uuid::Uuid>().map(ZoneId)
 }
 
@@ -759,28 +497,52 @@ fn parse_if_match_layers_version(headers: &HeaderMap) -> Result<Option<u64>, &'s
         .map_err(|_| "If-Match must be a non-negative integer layers_version")
 }
 
-fn layer_mutation_error(error: LayerMutationError) -> Response {
+/// What a layer mutation addressed, so a miss names the resource the
+/// caller asked for instead of a placeholder.
+struct LayerTarget<'a> {
+    scene: &'a str,
+    zone: Option<ZoneId>,
+}
+
+/// Project a layer-stack refusal onto the canonical error envelope.
+fn layer_mutation_error(error: LayerMutationError, target: LayerTarget<'_>) -> Response {
     match error {
-        LayerMutationError::NoActiveScene | LayerMutationError::SceneMissing => {
-            ApiError::not_found("Scene not found")
+        LayerMutationError::NoActiveScene => {
+            DomainError::not_found(ResourceKind::Scene, "active").into_response()
         }
-        LayerMutationError::GroupMissing => ApiError::not_found("Zone not found"),
+        LayerMutationError::SceneMissing => {
+            DomainError::not_found(ResourceKind::Scene, target.scene).into_response()
+        }
+        LayerMutationError::GroupMissing => match target.zone {
+            Some(zone) => DomainError::not_found(ResourceKind::Zone, zone).into_response(),
+            // The broadcast route validates every target zone before it
+            // commits, so reaching here means one was removed mid-flight.
+            None => DomainError::not_found(ResourceKind::Zone, "requested").into_response(),
+        },
         LayerMutationError::LayerMissing { layer_id } => {
-            ApiError::not_found(format!("Layer not found: {layer_id}"))
+            DomainError::not_found(ResourceKind::Layer, layer_id).into_response()
         }
         LayerMutationError::DuplicateLayer { layer_id } => {
-            ApiError::validation(format!("Layer already exists: {layer_id}"))
+            DomainError::validation(format!("Layer already exists: {layer_id}")).into_response()
         }
-        LayerMutationError::Stale { current } => layers_version_mismatch_response(current),
-        LayerMutationError::InvalidLayer { errors } => ApiError::validation_with_details(
+        LayerMutationError::Stale { expected, current } => DomainError::PreconditionFailed {
+            resource: ResourceKind::Layer,
+            expected,
+            current,
+        }
+        .into_response(),
+        LayerMutationError::InvalidLayer { errors } => DomainError::validation_details(
             "Layer payload is invalid",
             serde_json::json!({ "errors": errors }),
-        ),
-        LayerMutationError::InvalidIndex { index, len } => ApiError::validation(format!(
+        )
+        .into_response(),
+        LayerMutationError::InvalidIndex { index, len } => DomainError::validation(format!(
             "Layer insertion index {index} is out of range for stack length {len}"
-        )),
+        ))
+        .into_response(),
         LayerMutationError::InvalidOrder => {
-            ApiError::validation("layer_ids must be an exact permutation of current layer IDs")
+            DomainError::validation("layer_ids must be an exact permutation of current layer IDs")
+                .into_response()
         }
     }
 }
@@ -789,7 +551,7 @@ async fn validate_livestream_layer_insert(
     state: &Arc<AppState>,
     scene_id_raw: &str,
     asset_id: Option<AssetId>,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     let Some(asset_id) = asset_id else {
         return Ok(());
     };
@@ -799,14 +561,14 @@ async fn validate_livestream_layer_insert(
 async fn validate_livestream_layer_update(
     state: &Arc<AppState>,
     scene_id_raw: &str,
-    group_id: ZoneId,
+    zone_id: ZoneId,
     layer_id: SceneLayerId,
     next_asset_id: Option<AssetId>,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     validate_livestream_admission(
         state,
         scene_id_raw,
-        next_asset_id.map(|id| (Some((group_id, layer_id)), id)),
+        next_asset_id.map(|id| (Some((zone_id, layer_id)), id)),
     )
     .await
 }
@@ -815,7 +577,7 @@ async fn validate_livestream_admission(
     state: &Arc<AppState>,
     scene_id_raw: &str,
     pending_asset: Option<(Option<(ZoneId, SceneLayerId)>, AssetId)>,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     let asset_mime_types = scenes::asset_mime_types(state.as_ref()).await;
     let media_config = scenes::current_media_config(state.as_ref());
     let manager = state.scene_manager.read().await;
@@ -830,25 +592,25 @@ async fn validate_livestream_admission(
     }
     let mut candidate = scene.clone();
     if let Some((replacement, asset_id)) = pending_asset {
-        if let Some((group_id, layer_id)) = replacement {
+        if let Some((zone_id, layer_id)) = replacement {
             if let Some(layer) = candidate
                 .groups
                 .iter_mut()
-                .find(|group| group.id == group_id)
-                .and_then(|group| group.layers.iter_mut().find(|layer| layer.id == layer_id))
+                .find(|zone| zone.id == zone_id)
+                .and_then(|zone| zone.layers.iter_mut().find(|layer| layer.id == layer_id))
             {
                 layer.source = LayerSource::Media {
                     asset_id,
                     playback: MediaPlayback::default(),
                 };
             }
-        } else if let Some(group) = candidate.groups.first_mut() {
-            group.layers.push(media_layer_for_validation(asset_id));
+        } else if let Some(zone) = candidate.groups.first_mut() {
+            zone.layers.push(media_layer_for_validation(asset_id));
         }
     }
     let counts = scenes::scene_media_admission_counts(&candidate, &asset_mime_types);
-    if let Some(response) = scenes::validate_scene_media_admission(&counts, &media_config) {
-        return Err(response);
+    if let Some(error) = scenes::validate_scene_media_admission(&counts, &media_config) {
+        return Err(error);
     }
     Ok(())
 }
@@ -870,27 +632,11 @@ fn media_layer_for_validation(asset_id: AssetId) -> SceneLayer {
     }
 }
 
-fn layers_version_mismatch_response(current: u64) -> Response {
-    let body = serde_json::json!({
-        "error": "layers_version mismatch",
-        "current": current,
-    });
-    let mut response = (StatusCode::PRECONDITION_FAILED, Json(body)).into_response();
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\"")) {
-        response.headers_mut().insert(header::ETAG, etag);
-    }
-    response
-}
-
 fn attach_layers_version_headers(mut response: Response, version: u64) -> Response {
     if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
         response.headers_mut().insert(header::ETAG, etag);
     }
     response
-}
-
-fn default_layer_opacity() -> f32 {
-    1.0
 }
 
 trait LayerSourceExt {
@@ -904,8 +650,4 @@ impl LayerSourceExt for LayerSource {
             _ => None,
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }

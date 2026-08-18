@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use hypercolor_daemon::driver_inventory::DriverInventoryStore;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
-use hypercolor_daemon::runtime_state::{self, RuntimeSessionSnapshot};
 use hypercolor_driver_api::{
     DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
     DriverRuntimeActions, DriverRuntimeCacheProvider, DriverTrackedDevice,
@@ -207,9 +206,7 @@ impl DriverHost for TestHost {
 async fn driver_inventory_round_trips_opaque_driver_payloads() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
-    let store =
-        DriverInventoryStore::open(inventory_path.clone(), &runtime_path).expect("open inventory");
+    let store = DriverInventoryStore::open(inventory_path.clone()).expect("open inventory");
 
     store
         .replace_driver(
@@ -219,43 +216,10 @@ async fn driver_inventory_round_trips_opaque_driver_payloads() {
         .await
         .expect("persist WLED inventory");
 
-    let reopened =
-        DriverInventoryStore::open(inventory_path, &runtime_path).expect("reopen inventory");
+    let reopened = DriverInventoryStore::open(inventory_path).expect("reopen inventory");
     assert_eq!(
         reopened.load_cached_json("wled", "probe_ips"),
         Some(json!(["10.4.22.69"]))
-    );
-}
-
-#[test]
-fn driver_inventory_migrates_legacy_runtime_cache_once() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
-    let snapshot = RuntimeSessionSnapshot {
-        driver_runtime_cache: BTreeMap::from([(
-            "wled".to_owned(),
-            BTreeMap::from([("probe_ips".to_owned(), json!(["10.4.22.169"]))]),
-        )]),
-        ..RuntimeSessionSnapshot::default()
-    };
-    runtime_state::save(&runtime_path, &snapshot).expect("save legacy runtime cache");
-
-    let store = DriverInventoryStore::open(inventory_path.clone(), &runtime_path)
-        .expect("migrate inventory");
-    assert_eq!(
-        store.load_cached_json("wled", "probe_ips"),
-        Some(json!(["10.4.22.169"]))
-    );
-    assert!(inventory_path.exists());
-
-    runtime_state::save(&runtime_path, &RuntimeSessionSnapshot::default())
-        .expect("clear legacy runtime cache");
-    let reopened =
-        DriverInventoryStore::open(inventory_path, &runtime_path).expect("reopen inventory");
-    assert_eq!(
-        reopened.load_cached_json("wled", "probe_ips"),
-        Some(json!(["10.4.22.169"]))
     );
 }
 
@@ -263,11 +227,10 @@ fn driver_inventory_migrates_legacy_runtime_cache_once() {
 async fn corrupt_inventory_is_quarantined_before_replacement() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
     std::fs::write(&inventory_path, b"not json").expect("write corrupt inventory");
 
-    let store = DriverInventoryStore::open(inventory_path.clone(), &runtime_path)
-        .expect("open quarantined inventory");
+    let store =
+        DriverInventoryStore::open(inventory_path.clone()).expect("open quarantined inventory");
     store
         .replace_driver(
             "wled",
@@ -293,7 +256,6 @@ async fn corrupt_inventory_is_quarantined_before_replacement() {
 async fn updating_one_driver_preserves_opaque_sibling_payloads() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
     std::fs::write(
         &inventory_path,
         serde_json::to_vec_pretty(&json!({
@@ -308,8 +270,7 @@ async fn updating_one_driver_preserves_opaque_sibling_payloads() {
     )
     .expect("write fixture");
 
-    let store =
-        DriverInventoryStore::open(inventory_path.clone(), &runtime_path).expect("open inventory");
+    let store = DriverInventoryStore::open(inventory_path.clone()).expect("open inventory");
     store
         .replace_driver(
             "wled",
@@ -332,8 +293,7 @@ async fn updating_one_driver_preserves_opaque_sibling_payloads() {
 async fn empty_and_failed_refreshes_preserve_prior_inventory() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
-    let store = DriverInventoryStore::open(inventory_path, &runtime_path).expect("open inventory");
+    let store = DriverInventoryStore::open(inventory_path).expect("open inventory");
     let prior = BTreeMap::from([("target".to_owned(), json!("10.4.22.69"))]);
     store
         .replace_driver(EMPTY_DRIVER.id, prior.clone())
@@ -361,8 +321,7 @@ async fn empty_and_failed_refreshes_preserve_prior_inventory() {
 async fn refresh_preserves_unknown_driver_fields() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
-    let store = DriverInventoryStore::open(inventory_path, &runtime_path).expect("open inventory");
+    let store = DriverInventoryStore::open(inventory_path).expect("open inventory");
     store
         .replace_driver(
             REFRESHING_DRIVER.id,
@@ -389,10 +348,7 @@ async fn refresh_preserves_unknown_driver_fields() {
 async fn refresh_and_driver_update_are_serialized_without_resurrection() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
-    let store = Arc::new(
-        DriverInventoryStore::open(inventory_path, &runtime_path).expect("open inventory"),
-    );
+    let store = Arc::new(DriverInventoryStore::open(inventory_path).expect("open inventory"));
     store
         .replace_driver(
             BLOCKING_DRIVER.id,
@@ -450,10 +406,7 @@ async fn refresh_and_driver_update_are_serialized_without_resurrection() {
 async fn concurrent_driver_updates_compose_from_latest_inventory() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
-    let store = Arc::new(
-        DriverInventoryStore::open(inventory_path, &runtime_path).expect("open inventory"),
-    );
+    let store = Arc::new(DriverInventoryStore::open(inventory_path).expect("open inventory"));
     store
         .replace_driver(
             "concurrent",
@@ -496,9 +449,7 @@ async fn concurrent_driver_updates_compose_from_latest_inventory() {
 async fn admitted_replacement_failure_keeps_live_inventory_authoritative() {
     let tempdir = TempDir::new().expect("tempdir");
     let inventory_path = tempdir.path().join("driver-inventory.json");
-    let runtime_path = tempdir.path().join("runtime-state.json");
-    let store =
-        DriverInventoryStore::open(inventory_path.clone(), &runtime_path).expect("open inventory");
+    let store = DriverInventoryStore::open(inventory_path.clone()).expect("open inventory");
     let writer = AtomicFileWriter::new(&inventory_path).expect("inventory writer");
     writer.set_injected_replace_failures(usize::MAX);
 
@@ -519,8 +470,7 @@ async fn admitted_replacement_failure_keeps_live_inventory_authoritative() {
     writer
         .flush(Duration::from_secs(5))
         .expect("inventory retry should converge");
-    let reopened =
-        DriverInventoryStore::open(inventory_path, &runtime_path).expect("reopen inventory");
+    let reopened = DriverInventoryStore::open(inventory_path).expect("reopen inventory");
     assert_eq!(
         reopened.load_cached_json("wled", "probe_ips"),
         Some(json!(["10.4.22.69"]))

@@ -7,6 +7,78 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.3.2] - 2026-08-15
 
+Global output power becomes a first-class daemon concept, bundled and saved presets merge into a single effect-scoped stack, and a trusted in-process API bridge lands for local callers. Persistence now reports durability explicitly, and the build system gains a cache-aware wrapper plus a pressure-triggered target GC.
+
+### Added
+
+- ✨ Add global output power endpoints `GET /api/v1/output/power` and `PUT /api/v1/output/power`, backed by `OutputPowerMode` (`running`, `paused`) and `OutputPowerStatus` (`running`, `paused`, `stopped`); pausing holds outputs at their off frame while **preserving live effect state** (978096e)
+- ✨ Add a unified per-effect preset stack: `GET /api/v1/effects/{id}/presets` returns bundled and saved presets as `EffectPresetSummary` with `EffectPresetOrigin` and an `editable` flag, and `POST /api/v1/effects/{id}/presets/{preset_id}/apply` applies one with an optional `render_group` (3c52120, ac2a201)
+- ✨ Add `TrustedLocalApi` and `TrustedLocalWebSocket` in `crates/hypercolor-daemon/src/api/local.rs`, letting in-process callers run daemon requests at `AccessTier::Control` without a network hop or API key; paths are validated against `/api/v1/*` and absolute URLs, authority headers, and traversal are rejected (e057ce3)
+- ✨ Add stable identifiers for bundled presets via `PresetId::stable(name)`, plus `active_preset_modified` on `ActiveEffectResponse` and an optional `active_preset_id` in the WebSocket `hello` payload (ea42c20)
+- ✨ Add Python client methods `get_output_power()`, `set_output_power(paused)`, `get_effect_presets(effect_id)`, and `apply_effect_preset(...)` on async and sync clients, with a new `OutputPowerState` model and regenerated `_generated` bindings (ac2a201, d642543, f471fa1)
+- 👷 Add `scripts/cargo-target-gc.sh` with the `hypercolor-cargo-target-gc` systemd user service and timer for pressure-triggered target reclamation, dry-run by default and always preserving dirty worktrees (4b3c4ee)
+- 👷 Add `scripts/cargo-cache-lock.rs` build-lock supervisor with signal forwarding and TTY handoff, plus `just` recipes `debug-build`, `build-wrapper-test`, `cargo-gc-test`, and the `gc*` family (64e14a6, 9d7bdb1)
+- ✅ Add `crates/hypercolor-daemon/tests/trusted_local_api_tests.rs`, `crates/hypercolor-types/tests/output_tests.rs`, and shell test suites under `scripts/tests/` for the cache wrapper and target GC (e057ce3, aeeefc0)
+
+### Changed
+
+- 🔄 Guard session power transitions with a `transition_generation` counter so in-flight fades and reconnect scans abandon themselves when superseded, making replayed or late updates idempotent (978096e)
+- 🔄 Make preset identity server-authoritative: the UI consumes the unified stack and `resolve_legacy_preset_id()` migrates older `bundled:*` ids (7e2d927, 9a57d8d)
+- 🔄 Return `AtomicWriteCommitResult` from `persistence.rs` with `FailedBeforeReplacement`, `ReplacementVisibleButNotDurable`, `DurableWritten`, and `Superseded`, so a parent-directory fsync failure after a successful rename no longer collapses into success (05f98f6, 78b7df7)
+- ♻️ Rework Cargo debug profiles: dev and preview dependencies drop to `debug = false`, workspace crates move to `line-tables-only`, and a new `debugging` profile (`inherits = "dev"`, `debug = "full"`) is the only way to get full dependency symbols; per-package `debug = 0` overrides were removed so the wildcard wins (36e8e30, 0ea4e63)
+- ⚡️ Route Trunk and Cargo through a shim that injects `build.target-dir` instead of exporting `CARGO_TARGET_DIR`, keeping sccache hits stable across isolated targets, and normalize checkout paths with `SCCACHE_BASEDIRS` (64e14a6, 9d7bdb1, c8689c3)
+- 🔧 Skip the `compat`, `sdk`, and `ui-test` matrices on docs-only merges and share one absolute target dir between the main build and the Tauri bundle step (3921d75, d1559f8)
+- 📝 Rebuild the docs site on the app's brand assets and motion tokens, with class-based code themes (`github-light`, `one-dark-pro`), a margin-marker heading anchor template, and styled leads, pagination, cards, and task lists (455c3ed, 5a02ca5, 9ff82d1, 77bd8a7)
+- 🔄 Bump SDK and E2E dependencies: `typescript` `^6.0.3` → `^7.0.2`, `@clack/prompts` `^1.6.0` → `^1.7.0`, `@biomejs/biome` `2.5.2` → `2.5.6`, `@playwright/test` `1.61.1` → `1.62.0`, `ws` `8.21.0` → `8.21.1` (5befbcc, 5566ac9)
+
+### Fixed
+
+- 🐛 Keep RAF-driven Servo capture clocks moving on quiet pages by setting `emit_frame_timing` and dispatching `LightScriptFrameUpdate::TimingScript` in `frame_queue.rs` (238f53f)
+- 🐛 Wait for CPU reducer worker threads to initialize before probing screen-capture fanout allocation (df2b1da)
+- 🐛 Accept media uploads above Axum's default multipart body limit and return a proper `413` via `multipart_error_response()`, sizing the route limit from the library's 2 GiB cap plus bounded framing overhead (1d66f43)
+- 🐛 Acknowledge favorite and config sync updates only after persistence commits, return the exact installed snapshot, and keep deleted tombstones across favorite revisions (e75e33a, 69dd8d7)
+- 🐛 Report an `OutputCadence` derived from target FPS with `with_max_frame_silence(KEEPALIVE_INTERVAL)` in the WLED backend (978096e)
+- 🐛 Retry Windows delete-pending file locks in WLED tests (a9f8c94)
+- 🐛 Fall back to a styled monogram in `vendors.rs` when a device vendor mark fails to load instead of rendering a broken image (43f23f9)
+- 🐛 Reject duplicate bundled preset identities at load and normalize preset control whitespace without regex escape hazards in `normalizePresetKey()` (d26cbe8, d96e1fe, 25067d6)
+- 🐛 Enforce a reclaim grace period before artifact sweeps and avoid oversized Cargo GC fallback deletions (54e07bd, 4317a44, 2b71a61)
+- 🐛 Make docs search work: load the Elasticlunr library and index separately, recover from transient index failures, derive section labels from the URL path, and restore focus on close (f253b40, 2079da7)
+- 🐛 Give mobile a working navigation surface via the `nav-hamburger` toggle and stop wide tables and the nav from overflowing (cf77e7d, 241d2f1)
+- 🐛 Isolate portable lock helper compilation and place the nextest target directory after its subcommand (74ef48b, cc7b9e0)
+
+### Removed
+
+- 🔥 Remove client-side preset matching (`crates/hypercolor-ui/src/components/preset_matching.rs` and its tests); preset identity now comes from the daemon (7e2d927)
+
+### Breaking Changes
+
+- **Pause is no longer a stop.** `POST /api/v1/effects/pause` preserves live state and holds outputs at the off frame. Clients relying on pause tearing down the active effect must call the stop path explicitly or read `OutputPowerStatus::Stopped`
+- **Pause/resume response shapes changed** to explicit `PauseEffectResponse` and `ResumeEffectResponse`; pause adds `off_output_behavior` and `off_output_color`. `/api/v1/effects/pause` and `/api/v1/effects/resume` remain as compatibility endpoints, with `/api/v1/output/power` as the canonical surface
+- **Python `pause_rendering()` and `resume_rendering()` return `OutputPowerState`** instead of `MutationResult`
+- **Tray menu ids split**: `PAUSE_RESUME` became `PAUSE_OUTPUT` and `RESUME_OUTPUT`, and the command changed from `TogglePause` to `SetPaused(bool)`
+- **`PresetTemplate` gains a required `id` field.** Rust consumers must supply an id (`hypercolor_types::library::PresetId::stable(name)`); the generated Python `preset_template` model changed shape
+- **Duplicate bundled preset identities are rejected.** `crates/hypercolor-core/src/effect/loader.rs` raises `duplicate bundled preset id: ...` and `install_effect()` wraps it in `ApiError::internal(...)`, so `POST /api/v1/effects/install` returns `500`
+
+Upgrade notes:
+
+- Point pause/resume integrations at `PUT /api/v1/output/power` with `{"state": "paused"}` or `{"state": "running"}` and read status from `GET /api/v1/output/power`
+- Regenerate OpenAPI-derived clients: the schema adds the `output` tag, effect preset models, and `active_preset_modified`
+- Migrate stored `bundled:*` preset references to the stable identifiers returned by `GET /api/v1/effects/{id}/presets`
+- Give each HTML effect `preset` a `preset-id` and verify ids stay unique after whitespace normalization; `validate` flags collisions before upload
+- Handle `ReplacementVisibleButNotDurable` separately from `DurableWritten` when inspecting atomic write results
+- On Linux, run `just gc-install` for the daily target GC timer (dry-run by default; `just gc-apply` to reclaim)
+- Build with `cargo build --profile debugging` when full dependency debug symbols are needed; dev and preview builds no longer carry them
+
+### Metrics
+
+- Total Commits: 77
+- Files Changed: 257
+- Insertions: +13,490
+- Deletions: -1,935
+<!-- -------------------------------------------------------------- -->
+
+## [0.3.2] - 2026-08-15
+
 This release unifies bundled and saved presets into a single effect-scoped stack, adds a non-destructive global output power contract that preserves live effect state across pause, and introduces a trusted in-process API bridge for daemon extensions. Build caching and the documentation site both got substantial repair work.
 
 ### Added

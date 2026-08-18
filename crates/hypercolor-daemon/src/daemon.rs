@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use axum::Router;
+use hypercolor_core::config::{BootConfig, ConfigManager, LoadedConfig};
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
 };
@@ -20,7 +21,7 @@ use tracing_subscriber::EnvFilter;
 use crate::api::{self, AppState};
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
-use crate::startup::{DaemonState, load_config};
+use crate::startup::{DaemonState, config_sources};
 
 const MAIN_RUNTIME_WORKERS: usize = 4;
 const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
@@ -72,8 +73,8 @@ pub struct ApiListenerLease {
 #[doc(hidden)]
 pub struct PreparedDaemon {
     options: DaemonRunOptions,
-    config: HypercolorConfig,
-    config_path: PathBuf,
+    config: BootConfig,
+    config_manager: Arc<ConfigManager>,
     listen_addr: String,
     listeners: Vec<TcpListener>,
     listener_lease: Option<ApiListenerLease>,
@@ -123,9 +124,12 @@ impl PreparedDaemon {
         let macos_daemon_session_attestation =
             self.options.macos_daemon_session_attestation.clone();
         let listeners = std::mem::take(&mut self.listeners);
+        // Boot values are frozen into the subsystems that need them by this
+        // call, which consumes the config; anything read past this point
+        // reads live (Spec 76 §3.2).
         let mut daemon_state = DaemonState::initialize_with_macos_owner(
-            &self.config,
-            self.config_path.clone(),
+            self.config,
+            self.config_manager,
             self.options.macos_owner_snapshot,
         )?;
         for installer in extension_installers {
@@ -148,10 +152,11 @@ impl PreparedDaemon {
         }
         let router = api::build_router(app_state, ui_dir.as_deref());
 
+        let mdns_publish = daemon_state.config_manager.live().network.mdns_publish;
         let mdns_publisher = MdnsPublisher::new(
             &daemon_state.server_identity,
             self.advertised_bind,
-            self.config.network.mdns_publish,
+            mdns_publish,
             api::security::api_auth_required_from_env(),
         )?;
 
@@ -244,13 +249,17 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
 
     // Load configuration before tracing so we can honor config-driven log
     // levels when the CLI flag is omitted.
-    let (mut config, config_path) = load_config(options.config.as_deref()).await?;
-    if let Some(mode) = options.compositor_acceleration_mode {
-        config.effect_engine.compositor_acceleration_mode = mode;
-    }
-    if let Some(mode) = options.servo_gpu_import_mode {
-        config.rendering.servo_gpu_import.mode = mode;
-    }
+    let LoadedConfig {
+        boot: config,
+        manager,
+        ..
+    } = ConfigManager::load_with_sources(config_sources(
+        options.config.clone(),
+        options.compositor_acceleration_mode,
+        options.servo_gpu_import_mode,
+    ))?;
+    let config_manager = Arc::new(manager);
+    info!(path = %config_manager.path().display(), "Resolved config path");
     let log_level = resolve_log_level(options.log_level.as_deref(), &config);
 
     // Initialize tracing with the requested log level + SilkCircuit theme.
@@ -313,7 +322,7 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     Ok(PreparedDaemon {
         options,
         config,
-        config_path,
+        config_manager,
         listen_addr,
         listeners,
         listener_lease: Some(listener_lease),
@@ -854,7 +863,7 @@ fn unbracket_host(host: &str) -> &str {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use hypercolor_core::config::ConfigManager;
+    use hypercolor_core::config::{BootConfig, ConfigManager};
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     use super::{
@@ -991,8 +1000,13 @@ mod tests {
         let _data_dir = DataDirOverride::install(directory.path().join("data"));
         let mut config = default_config();
         config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
-        let mut daemon = DaemonState::initialize(&config, directory.path().join("hypercolor.toml"))
-            .expect("daemon test state should initialize");
+        let config_manager = Arc::new(ConfigManager::from_config_unchecked(
+            directory.path().join("hypercolor.toml"),
+            config.clone(),
+        ));
+        let mut daemon =
+            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
+                .expect("daemon test state should initialize");
         let state = Arc::new(AppState::new_with_data_dir(directory.path().join("api")));
         let calls = Arc::new(Mutex::new(Vec::new()));
         for name in ["first", "second"] {

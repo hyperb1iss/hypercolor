@@ -35,7 +35,6 @@ on it directly.
 | `server` | `ApiMeta`, `ControlUpdate` — REST envelope and patch types |
 | `session` | `SessionState` — logind/screensaver awareness |
 | `viewport` | `ViewportConfig`, `ScreenRegion` |
-| `palette` | `Palette`, `ColorStop` |
 | `library` | `FavoriteEntry` |
 | `attachment` | `ComponentTemplate`, `ComponentSlot`, `ComponentBinding`, `DeviceComponentProfile` |
 | `controls` | `ControlSurface`, `ControlSurfaceInput` |

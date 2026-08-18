@@ -176,9 +176,7 @@ pub fn expand_bindings_to_drafts(
             // Check if this is a user-created strip/matrix template
             let tmpl = templates.iter().find(|t| t.id == binding.template_id);
             let is_user = tmpl
-                .and_then(|t| t.origin.as_ref())
-                .map(|o| *o == hypercolor_types::attachment::ComponentOrigin::User)
-                .unwrap_or(false);
+                .is_some_and(|t| t.origin == hypercolor_types::attachment::ComponentOrigin::User);
 
             if is_user {
                 // Reconstruct as inline strip/matrix based on category

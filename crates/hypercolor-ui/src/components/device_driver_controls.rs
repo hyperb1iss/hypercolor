@@ -768,6 +768,14 @@ fn parse_color_rgba(raw: &str) -> [u8; 4] {
     [bytes[0], bytes[1], bytes[2], bytes[3]]
 }
 
+/// Parse whatever the user has typed so far into color bytes.
+///
+/// This stays off the kernel's hex parser deliberately. The field is a
+/// live text editor, so it sees every prefix of a color on the way to a
+/// complete one, and filling channels as their digits arrive is what
+/// makes the swatch track typing. The kernel's grammar is all-or-
+/// nothing, and its shorthand expansion would read a half-typed "abc"
+/// as a complete three-digit color.
 fn parse_color_bytes(raw: &str) -> [u8; 4] {
     let hex = raw.trim().trim_start_matches('#');
     let mut out = [0_u8, 0_u8, 0_u8, 255_u8];

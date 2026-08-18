@@ -41,7 +41,7 @@ pub struct EffectPresetListResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEffectPresetRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group: Option<String>,
+    pub zone_id: Option<String>,
 }
 
 /// Response for `GET /api/v1/effects`.
@@ -52,6 +52,11 @@ pub struct EffectListResponse {
 }
 
 /// One effect in the list response.
+///
+/// `controls` and `presets` are expansions: they are absent unless the
+/// request asked for them via `include=controls,presets`, so the default
+/// list shape is unchanged and a client that ignores the parameter sees
+/// exactly the payload it saw before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct EffectSummary {
     pub id: String,
@@ -71,6 +76,10 @@ pub struct EffectSummary {
     pub capabilities: EffectCapabilitySet,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_image_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controls: Option<Vec<ControlDefinition>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presets: Option<Vec<PresetTemplate>>,
 }
 
 /// Typed source requirements declared by an effect.
@@ -100,8 +109,8 @@ pub struct ActiveEffectResponse {
     #[serde(default)]
     pub active_preset_modified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group_id: Option<String>,
-    /// Server-side version token for the group's controls. Clients
+    pub zone_id: Option<String>,
+    /// Server-side version token for the zone's controls. Clients
     /// that want to use optimistic concurrency on the effect-id PATCH
     /// endpoint echo this value back via `If-Match`. Idle responses
     /// omit it (there's nothing to version).
@@ -123,7 +132,7 @@ impl ActiveEffectResponse {
             control_values: HashMap::new(),
             active_preset_id: None,
             active_preset_modified: false,
-            render_group_id: None,
+            zone_id: None,
             controls_version: None,
             cover_image_url: None,
         }
@@ -164,6 +173,17 @@ pub struct InstalledEffectResponse {
     pub presets: usize,
 }
 
+/// Response for `POST /api/v1/effects/rescan`.
+///
+/// Counts describe what the rescan changed in the registry, so an
+/// all-zero response means the effect directories were already current.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RescanResponse {
+    pub added: usize,
+    pub removed: usize,
+    pub updated: usize,
+}
+
 /// Request body for `POST /api/v1/effects/{id}/apply`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEffectRequest {
@@ -179,12 +199,12 @@ pub struct ApplyEffectRequest {
     /// already carry the preset's values, possibly with user tweaks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset_id: Option<String>,
-    /// Optional target zone (render-group id). Omitted applies the effect
-    /// to the scene's Primary zone — the legacy behavior. A non-Primary
-    /// zone id renders the effect into that zone instead, leaving its
-    /// layout and device assignment untouched.
+    /// Optional target zone id. Omitted applies the effect to the
+    /// scene's Primary zone. A non-Primary zone id renders the effect
+    /// into that zone instead, leaving its layout and device assignment
+    /// untouched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group: Option<String>,
+    pub zone_id: Option<String>,
 }
 
 /// Transition override on apply.
@@ -196,20 +216,65 @@ pub struct TransitionRequest {
     pub duration_ms: Option<u64>,
 }
 
-/// Request body for `PATCH /api/v1/effects/current/controls`.
+/// Request body for `PATCH /api/v1/effects/active/controls`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateCurrentControlsRequest {
+pub struct UpdateActiveControlsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
     pub controls: Option<serde_json::Value>,
 }
 
-/// Optional body for `POST /api/v1/effects/current/reset` — scopes the
-/// reset to one zone (`render_group`); omitted resets the primary.
+// The two control PATCH responses and the control-binding response are
+// deliberately NOT defined here. Their payloads carry f32 control values,
+// and the daemon builds them with `serde_json::json!`, which widens f32 to
+// f64 and prints the widened digits. A derived struct writes f32 directly,
+// so naming those shapes would change the bytes on the wire.
+
+/// Request body for `PUT /api/v1/effects/{id}/layout`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEffectLayoutRequest {
+    /// The spatial layout to associate with the effect.
+    pub layout_id: String,
+}
+
+/// Response for `GET /api/v1/effects/{id}/layout`.
+///
+/// `resolved` reports whether the linked layout still exists; a stale
+/// link answers `resolved: false` with a `null` `layout` rather than a
+/// 404, because the association itself is real.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout_id: String,
+    pub resolved: bool,
+    pub layout: Option<LayoutLinkSummary>,
+}
+
+/// Response for `PUT /api/v1/effects/{id}/layout`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout: LayoutLinkSummary,
+    pub linked: bool,
+}
+
+/// Response for `DELETE /api/v1/effects/{id}/layout`.
+///
+/// `layout_id` is the association that was removed, and `null` with
+/// `deleted: false` when the effect had no layout linked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteEffectLayoutResponse {
+    pub effect: EffectRefSummary,
+    pub layout_id: Option<String>,
+    pub deleted: bool,
+}
+
+/// Optional body for `POST /api/v1/effects/active/reset` — scopes the
+/// reset to one zone (`zone_id`); omitted resets the primary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ResetControlsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_group: Option<String>,
+    pub zone_id: Option<String>,
 }
 
 /// `{ id, name }` reference to an effect.
@@ -217,24 +282,6 @@ pub struct ResetControlsRequest {
 pub struct EffectRefSummary {
     pub id: String,
     pub name: String,
-}
-
-/// Compatibility response for `POST /api/v1/effects/pause`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct PauseEffectResponse {
-    pub paused: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect: Option<EffectRefSummary>,
-    pub off_output_behavior: String,
-    pub off_output_color: [u8; 3],
-}
-
-/// Compatibility response for `POST /api/v1/effects/resume`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct ResumeEffectResponse {
-    pub resumed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect: Option<EffectRefSummary>,
 }
 
 /// Layout link summary in apply responses.

@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::response::Response;
-use serde::{Deserialize, Serialize};
+use axum::response::{IntoResponse, Response};
+use serde::Serialize;
 use tokio::sync::RwLockWriteGuard;
 
 use hypercolor_core::attachment::{ComponentRegistry, TemplateFilter};
@@ -19,62 +19,18 @@ use hypercolor_types::attachment::{
 
 use crate::api::AppState;
 use crate::api::devices::Pagination;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 
-#[derive(Debug, Deserialize, Default)]
-pub struct ListTemplatesQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-    pub category: Option<String>,
-    pub vendor: Option<String>,
-    pub origin: Option<String>,
-    pub q: Option<String>,
-    pub controller_id: Option<String>,
-    pub model: Option<String>,
-    pub slot_id: Option<String>,
-    pub led_min: Option<u32>,
-    pub led_max: Option<u32>,
-}
+// Wire contracts live in hypercolor-types::api::attachments — shared
+// with the web UI and the TUI.
+pub use hypercolor_types::api::attachments::{
+    ListTemplatesQuery, TemplateDetail, TemplateListResponse, TemplateSummary,
+};
 
-#[derive(Debug, Serialize)]
-pub struct TemplateListResponse {
-    pub items: Vec<TemplateSummary>,
-    pub pagination: Pagination,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TemplateSummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: ComponentCategory,
-    pub origin: ComponentOrigin,
-    pub led_count: u32,
-    pub description: String,
-    pub image_url: Option<String>,
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TemplateDetail {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: ComponentCategory,
-    pub origin: ComponentOrigin,
-    pub led_count: u32,
-    pub description: String,
-    pub default_size: hypercolor_types::attachment::ComponentCanvasSize,
-    pub topology: hypercolor_types::spatial::LedTopology,
-    pub led_positions: Vec<hypercolor_types::spatial::NormalizedPosition>,
-    pub compatible_slots: Vec<hypercolor_types::attachment::ComponentCompatibility>,
-    pub tags: Vec<String>,
-    pub led_names: Option<Vec<String>>,
-    pub led_mapping: Option<Vec<u32>>,
-    pub image_url: Option<String>,
-    pub physical_size_mm: Option<(f32, f32)>,
-}
-
+// The category and vendor facets and the per-template item routes are not
+// in spec 78's Appendix A, so their shapes stay daemon-local rather than
+// entering the shared contract on the way to deletion.
 #[derive(Debug, Serialize)]
 pub struct CategoryListResponse {
     pub items: Vec<CategorySummary>,
@@ -105,13 +61,13 @@ pub async fn list_templates(
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
-        return ApiError::validation("limit must be between 1 and 200");
+        return DomainError::validation("limit must be between 1 and 200").into_response();
     }
     let offset = query.offset.unwrap_or(0);
 
     let filter = match build_filter(&query) {
         Ok(filter) => filter,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let registry = state.attachment_registry.read().await;
@@ -143,7 +99,7 @@ pub async fn get_template(
 ) -> Response {
     let registry = state.attachment_registry.read().await;
     let Some(template) = registry.get(&id) else {
-        return ApiError::not_found(format!("Attachment template not found: {id}"));
+        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
     };
 
     ApiResponse::ok(template_detail(template))
@@ -158,14 +114,15 @@ pub async fn create_template(
 
     let mut registry = state.attachment_registry.write().await;
     if registry.get(&template.id).is_some() {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Attachment template already exists: {}",
             template.id
-        ));
+        ))
+        .into_response();
     }
 
-    if let Err(response) = register_and_persist_template(&mut registry, &template) {
-        return response;
+    if let Err(error) = register_and_persist_template(&mut registry, &template) {
+        return error.into_response();
     }
 
     ApiResponse::created(template_detail(&template))
@@ -178,20 +135,22 @@ pub async fn update_template(
     Json(mut template): Json<ComponentTemplate>,
 ) -> Response {
     if template.id != id {
-        return ApiError::validation("template ID in path must match request body");
+        return DomainError::validation("template ID in path must match request body")
+            .into_response();
     }
     template.origin = ComponentOrigin::User;
 
     let mut registry = state.attachment_registry.write().await;
     let Some(existing) = registry.get(&id) else {
-        return ApiError::not_found(format!("Attachment template not found: {id}"));
+        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
     };
     if existing.origin == ComponentOrigin::BuiltIn {
-        return ApiError::forbidden(format!("Built-in template cannot be updated: {id}"));
+        return DomainError::forbidden(format!("Built-in template cannot be updated: {id}"))
+            .into_response();
     }
 
-    if let Err(response) = register_and_persist_template(&mut registry, &template) {
-        return response;
+    if let Err(error) = register_and_persist_template(&mut registry, &template) {
+        return error.into_response();
     }
 
     ApiResponse::ok(template_detail(&template))
@@ -205,26 +164,28 @@ pub async fn delete_template(
     {
         let profiles = state.attachment_profiles.read().await;
         if profiles.uses_template(&id) {
-            return ApiError::conflict(format!(
+            return DomainError::conflict(format!(
                 "Attachment template is still bound in a device profile: {id}"
-            ));
+            ))
+            .into_response();
         }
     }
 
     let mut registry = state.attachment_registry.write().await;
     let Some(existing) = registry.get(&id) else {
-        return ApiError::not_found(format!("Attachment template not found: {id}"));
+        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
     };
     if existing.origin == ComponentOrigin::BuiltIn {
-        return ApiError::forbidden(format!("Built-in template cannot be deleted: {id}"));
+        return DomainError::forbidden(format!("Built-in template cannot be deleted: {id}"))
+            .into_response();
     }
 
     let removed = match registry.remove(&id) {
         Ok(template) => template,
-        Err(error) => return ApiError::internal(error.to_string()),
+        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
     };
     if let Err(error) = delete_user_template_file(&id) {
-        return ApiError::internal(error);
+        return DomainError::Internal(anyhow::anyhow!("{error}")).into_response();
     }
 
     ApiResponse::ok(serde_json::json!({
@@ -261,19 +222,16 @@ pub async fn list_vendors(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(VendorListResponse { items })
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on validation failure"
-)]
-fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, Response> {
+fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, DomainError> {
     let category = query.category.as_deref().map(ComponentCategory::from_raw);
     let origin = match query.origin.as_deref() {
         Some("built_in") => Some(ComponentOrigin::BuiltIn),
         Some("user") => Some(ComponentOrigin::User),
         Some(other) => {
-            return Err(ApiError::validation(format!(
-                "invalid origin filter: {other}"
-            )));
+            return Err(DomainError::validation_field(
+                "origin",
+                format!("invalid origin filter: {other}"),
+            ));
         }
         None => None,
     };
@@ -326,34 +284,31 @@ fn template_detail(template: &ComponentTemplate) -> TemplateDetail {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on persistence failure"
-)]
 fn register_and_persist_template(
     registry: &mut RwLockWriteGuard<'_, ComponentRegistry>,
     template: &ComponentTemplate,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     if let Err(error) = registry.register(template.clone()) {
-        return Err(ApiError::validation(error.to_string()));
+        return Err(DomainError::validation(error.to_string()));
     }
 
     let manifest = ComponentTemplateManifest {
         schema_version: 1,
         template: template.clone(),
     };
-    let payload = toml::to_string_pretty(&manifest)
-        .map_err(|error| ApiError::internal(format!("failed to serialize template: {error}")))?;
+    let payload = toml::to_string_pretty(&manifest).map_err(|error| {
+        DomainError::Internal(anyhow::anyhow!("failed to serialize template: {error}"))
+    })?;
     let output_path = user_template_path(&template.id);
     if let Some(parent) = output_path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
-        return Err(ApiError::internal(format!(
+        return Err(DomainError::Internal(anyhow::anyhow!(
             "failed to create user attachment directory: {error}"
         )));
     }
     if let Err(error) = std::fs::write(&output_path, payload) {
-        return Err(ApiError::internal(format!(
+        return Err(DomainError::Internal(anyhow::anyhow!(
             "failed to persist user template {}: {error}",
             output_path.display()
         )));

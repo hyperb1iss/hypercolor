@@ -719,8 +719,8 @@ impl ComposeContext<'_> {
             .event_bus
             .publish(HypercolorEvent::EffectDegraded {
                 effect_id: effect_error.effect_id.clone(),
-                group_id: Some(effect_error.group_id),
-                group_name: Some(effect_error.group_name.clone()),
+                zone_id: Some(effect_error.group_id),
+                zone_name: Some(effect_error.group_name.clone()),
                 state,
                 reason: reason.map(ToString::to_string),
             });

@@ -11,8 +11,6 @@ use hypercolor_types::effect::{
 };
 use uuid::Uuid;
 
-use hypercolor_types::api::effects::{EffectRefSummary, PauseEffectResponse, ResumeEffectResponse};
-
 // ── EffectId ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -846,31 +844,4 @@ fn input_reactive_defaults_to_false_when_absent_from_json() {
     let restored: EffectMetadata =
         serde_json::from_value(trimmed).expect("deserialize without input_reactive");
     assert!(!restored.input_reactive);
-}
-
-#[test]
-fn effect_power_compatibility_responses_preserve_legacy_shapes() {
-    let pause = PauseEffectResponse {
-        paused: true,
-        effect: None,
-        off_output_behavior: "static".to_owned(),
-        off_output_color: [0, 0, 0],
-    };
-    let pause_json = serde_json::to_value(pause).expect("pause response should serialize");
-    assert_eq!(pause_json["paused"], true);
-    assert!(pause_json.get("effect").is_none());
-    assert_eq!(pause_json["off_output_behavior"], "static");
-    assert_eq!(pause_json["off_output_color"], serde_json::json!([0, 0, 0]));
-
-    let resume = ResumeEffectResponse {
-        resumed: true,
-        effect: Some(EffectRefSummary {
-            id: "solid_color".to_owned(),
-            name: "Solid Color".to_owned(),
-        }),
-    };
-    let resume_json = serde_json::to_value(resume).expect("resume response should serialize");
-    assert_eq!(resume_json["resumed"], true);
-    assert_eq!(resume_json["effect"]["id"], "solid_color");
-    assert_eq!(resume_json["effect"]["name"], "Solid Color");
 }

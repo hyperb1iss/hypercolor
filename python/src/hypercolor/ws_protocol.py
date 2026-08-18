@@ -9,7 +9,7 @@ WS_PROTOCOL_VERSION: Final = "1.0"
 WS_SUBPROTOCOL: Final = "hypercolor-v1"
 DEFAULT_WS_SUBSCRIPTIONS: Final = ("events",)
 
-WS_CHANNELS: Final = (
+WS_TOPICS: Final = (
     "frames",
     "spectrum",
     "events",
@@ -23,6 +23,7 @@ WS_CHANNELS: Final = (
     "device_metrics",
     "sensors",
     "display_preview",
+    "interactive_preview",
     "input_events",
 )
 WS_CAPABILITIES: Final = (
@@ -39,6 +40,7 @@ WS_CAPABILITIES: Final = (
     "device_metrics",
     "sensors",
     "display_preview",
+    "interactive_preview",
     "input_events",
     "commands",
     "canvas_format_jpeg",
@@ -54,7 +56,6 @@ JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
         "timed_input_event_v1": MappingProxyType(
             {
                 "schema_version": 1,
-                "channel": "input_events",
                 "event": "input_event_received",
                 "required_fields": ("event",),
                 "optional_fields": MappingProxyType(
@@ -66,12 +67,12 @@ JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
                     }
                 ),
                 "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+                "topic": "input_events",
             }
         ),
         "input_source_status_changed_v1": MappingProxyType(
             {
                 "schema_version": 1,
-                "channel": "events",
                 "event": "input_source_status_changed",
                 "required_fields": (
                     "source_id",
@@ -96,12 +97,13 @@ JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
                     }
                 ),
                 "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents.",
+                "topic": "events",
             }
         ),
         "macos_daemon_ownership_changed_v1": MappingProxyType(
             {
                 "schema_version": 1,
-                "channel": "events",
+                "topic": "events",
                 "event": "macos_daemon_ownership_changed",
                 "required_fields": (
                     "active_owner",
@@ -137,14 +139,14 @@ BINARY_MESSAGE_TAGS: Final = MappingProxyType(
         "preview_chunk": 0x0F,
         "preview_cancel": 0x10,
         "extended_screen_zones": 0x11,
+        "wide_display_preview": 0x12,
     }
 )
-PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(
+PREVIEW_TOPIC_TAGS: Final = MappingProxyType(
     {
         0x03: "canvas",
         0x05: "screen_canvas",
         0x06: "web_viewport_canvas",
-        0x07: "display_preview",
     }
 )
 CANVAS_FORMAT_TAGS: Final = MappingProxyType(

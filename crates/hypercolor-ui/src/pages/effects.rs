@@ -50,11 +50,13 @@ const MAX_CONTROLS_WIDTH: f64 = 800.0;
 const CATEGORY_CHIPS: &[(&str, &str)] = &[
     ("all", "225, 53, 255"),
     ("ambient", "128, 255, 234"),
-    ("gaming", "225, 53, 255"),
-    ("reactive", "241, 250, 140"),
+    ("audio", "255, 106, 193"),
     ("generative", "80, 250, 123"),
+    ("particle", "225, 53, 255"),
+    ("scenic", "255, 153, 255"),
     ("interactive", "130, 170, 255"),
-    ("productivity", "255, 153, 255"),
+    ("fun", "189, 0, 221"),
+    ("source", "241, 250, 140"),
     ("utility", "139, 133, 160"),
 ];
 
@@ -75,7 +77,7 @@ fn ApplyTargetSelect(
             let Some(scene) = scene else {
                 return;
             };
-            for group in &scene.groups {
+            for group in &scene.zones {
                 match group.role {
                     ZoneRole::Display => {}
                     // The Primary role is the empty-value default; a renamed
@@ -1050,5 +1052,44 @@ pub fn EffectsPage() -> impl IntoView {
             }}
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod category_chip_tests {
+    use hypercolor_types::effect::EffectCategory;
+    use strum::VariantNames;
+
+    use super::CATEGORY_CHIPS;
+
+    /// The chip row is the user's whole view of the taxonomy.
+    ///
+    /// It carried three categories no effect could ever match
+    /// (`gaming`, `reactive`, `productivity`) and omitted five real
+    /// ones, so a filter could only ever return an empty gallery. The
+    /// list is hand-ordered for visual grouping, which is why this
+    /// compares as a set rather than a sequence.
+    #[test]
+    fn the_chips_are_exactly_the_real_categories_minus_display() {
+        let mut chips: Vec<&str> = CATEGORY_CHIPS
+            .iter()
+            .map(|&(label, _)| label)
+            .filter(|label| *label != "all")
+            .collect();
+        chips.sort_unstable();
+
+        let mut expected: Vec<&str> = EffectCategory::VARIANTS
+            .iter()
+            .copied()
+            .filter(|variant| *variant != "display")
+            .collect();
+        expected.sort_unstable();
+
+        assert_eq!(chips, expected);
+    }
+
+    #[test]
+    fn the_all_chip_leads_the_row() {
+        assert_eq!(CATEGORY_CHIPS.first().map(|&(label, _)| label), Some("all"));
     }
 }

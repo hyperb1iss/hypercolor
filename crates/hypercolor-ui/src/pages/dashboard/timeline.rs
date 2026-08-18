@@ -252,7 +252,7 @@ pub(super) fn BackpressureBanner(notice: BackpressureNotice) -> impl IntoView {
     let text = format!(
         "{} dropped on {}. {} → {} fps",
         notice.dropped_frames,
-        notice.channel,
+        notice.topic,
         notice.recommendation.replace('_', " "),
         notice.suggested_fps,
     );

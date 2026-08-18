@@ -16,6 +16,8 @@ fn effect(name: &str) -> EffectSummary {
         input_reactive: false,
         capabilities: EffectCapabilitySet::default(),
         cover_image_url: None,
+        controls: None,
+        presets: None,
     }
 }
 

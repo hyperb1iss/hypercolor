@@ -14,25 +14,25 @@ class UnassignedBehaviorResponse:
     """Response for the unassigned-behavior PATCH.
 
     Attributes:
-        groups_revision (int):
         unassigned_behavior (str):
+        zones_revision (int):
     """
 
-    groups_revision: int
     unassigned_behavior: str
+    zones_revision: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        groups_revision = self.groups_revision
-
         unassigned_behavior = self.unassigned_behavior
+
+        zones_revision = self.zones_revision
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "groups_revision": groups_revision,
                 "unassigned_behavior": unassigned_behavior,
+                "zones_revision": zones_revision,
             }
         )
 
@@ -41,13 +41,13 @@ class UnassignedBehaviorResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        groups_revision = d.pop("groups_revision")
-
         unassigned_behavior = d.pop("unassigned_behavior")
 
+        zones_revision = d.pop("zones_revision")
+
         unassigned_behavior_response = cls(
-            groups_revision=groups_revision,
             unassigned_behavior=unassigned_behavior,
+            zones_revision=zones_revision,
         )
 
         unassigned_behavior_response.additional_properties = d

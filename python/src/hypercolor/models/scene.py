@@ -30,7 +30,7 @@ class Scene(msgspec.Struct, kw_only=True):
 class ActiveScene(msgspec.Struct, kw_only=True):
     """The active scene with its full render-group (zone) set.
 
-    ``groups_revision`` is the monotonic structure counter carried as the
+    ``zones_revision`` is the monotonic structure counter carried as the
     ``If-Match`` precondition for every zone mutation.
     """
 
@@ -41,20 +41,20 @@ class ActiveScene(msgspec.Struct, kw_only=True):
     priority: int = 0
     kind: str = "named"
     mutation_mode: str = "live"
-    groups: list[Zone] = msgspec.field(default_factory=list)
-    groups_revision: int = 0
+    zones: list[Zone] = msgspec.field(default_factory=list)
+    zones_revision: int = 0
     unassigned_behavior: str | dict[str, Any] = "off"
 
     @property
     def primary_zone(self) -> Zone | None:
         """The zone with the primary role, if one exists."""
 
-        return next((zone for zone in self.groups if zone.is_primary), None)
+        return next((zone for zone in self.zones if zone.is_primary), None)
 
     def zone(self, zone_id: str) -> Zone | None:
         """Look up a zone by id."""
 
-        return next((zone for zone in self.groups if zone.id == zone_id), None)
+        return next((zone for zone in self.zones if zone.id == zone_id), None)
 
 
 class ActivateSceneResult(msgspec.Struct, kw_only=True):

@@ -9,7 +9,7 @@ use hypercolor_core::scene::automation::AutomationEngine;
 use hypercolor_core::scene::priority::PriorityStack;
 use hypercolor_core::scene::transition::TransitionState;
 use hypercolor_core::scene::{LayerMutationError, SceneManager, make_scene};
-use hypercolor_types::canvas::RgbaF32;
+use hypercolor_types::canvas::LinearRgba;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
@@ -590,7 +590,13 @@ fn scene_manager_reorder_layers_requires_exact_permutation() {
     let stale = mgr
         .reorder_group_layers(group_id, vec![base_id, top_id], Some(0))
         .expect_err("stale reorder should fail");
-    assert_eq!(stale, LayerMutationError::Stale { current: 1 });
+    assert_eq!(
+        stale,
+        LayerMutationError::Stale {
+            expected: 0,
+            current: 1
+        }
+    );
 }
 
 #[test]
@@ -644,7 +650,13 @@ fn scene_manager_patch_layer_effect_controls_uses_layers_version() {
             Some(0),
         )
         .expect_err("stale control patch should fail");
-    assert_eq!(stale, LayerMutationError::Stale { current: 1 });
+    assert_eq!(
+        stale,
+        LayerMutationError::Stale {
+            expected: 0,
+            current: 1
+        }
+    );
 }
 
 #[test]
@@ -854,8 +866,8 @@ fn transition_blends_brightness() {
 #[test]
 fn transition_color_interpolation_oklab() {
     // Verify the helper produces a valid intermediate color.
-    let red = RgbaF32::new(1.0, 0.0, 0.0, 1.0);
-    let blue = RgbaF32::new(0.0, 0.0, 1.0, 1.0);
+    let red = LinearRgba::new(1.0, 0.0, 0.0, 1.0);
+    let blue = LinearRgba::new(0.0, 0.0, 1.0, 1.0);
 
     let mid = hypercolor_core::scene::interpolate_oklab(&red, &blue, 0.5);
 

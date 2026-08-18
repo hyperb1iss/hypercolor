@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
-use serde::Serialize;
+use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
 use hypercolor_driver_api::{
@@ -17,29 +16,16 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 
-use super::{DeviceSummary, refreshed_device_summary, resolve_device_id_or_response};
+use super::{refreshed_device_summary, resolve_device_id_or_error};
 
 pub type GenericPairDeviceRequest = hypercolor_driver_api::PairDeviceRequest;
 
-#[derive(Debug, Serialize)]
-pub struct GenericPairDeviceResponse {
-    pub status: GenericPairDeviceStatus,
-    pub message: String,
-    pub activated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device: Option<DeviceSummary>,
-}
-
-#[derive(Debug, Serialize)]
-struct DeletePairingResponse {
-    status: String,
-    message: String,
-    disconnected: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    device: Option<DeviceSummary>,
-}
+pub use hypercolor_types::api::devices::{
+    DeletePairingResponse, PairDeviceResponse as GenericPairDeviceResponse,
+};
 
 /// `POST /api/v1/devices/:id/pair` — pair a discovered driver-backed device.
 pub async fn pair_device(
@@ -47,14 +33,14 @@ pub async fn pair_device(
     Path(id): Path<String>,
     Json(payload): Json<GenericPairDeviceRequest>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     match pair_device_for_ui(&state, device_id, payload).await {
-        Ok(response) => ApiResponse::ok(response),
-        Err(response) => response,
+        Ok(paired) => ApiResponse::ok(paired),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -63,14 +49,14 @@ pub async fn delete_pairing(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     match delete_device_pairing(&state, device_id).await {
-        Ok(response) => ApiResponse::ok(response),
-        Err(response) => response,
+        Ok(deleted) => ApiResponse::ok(deleted),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -132,21 +118,19 @@ async fn pair_device_for_ui(
     state: &Arc<AppState>,
     device_id: DeviceId,
     request: GenericPairDeviceRequest,
-) -> Result<GenericPairDeviceResponse, Response> {
+) -> Result<GenericPairDeviceResponse, DomainError> {
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return Err(ApiError::not_found(format!(
-            "Device not found: {device_id}"
-        )));
+        return Err(DomainError::not_found(ResourceKind::Device, device_id));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     let driver_id = tracked.info.driver_id();
     let Some(driver) = state.driver_registry.get(driver_id) else {
-        return Err(ApiError::validation(format!(
+        return Err(DomainError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"
         )));
     };
     let Some(pairing) = driver.pairing() else {
-        return Err(ApiError::validation(format!(
+        return Err(DomainError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"
         )));
     };
@@ -166,14 +150,14 @@ async fn pair_device_for_ui(
                 driver_id = %driver_id,
                 "device pairing request failed"
             );
-            ApiError::internal(format!(
+            DomainError::Internal(anyhow::anyhow!(
                 "Failed to pair with {}",
                 driver.descriptor().display_name
             ))
         })?;
 
     if matches!(outcome.status, GenericPairDeviceStatus::InvalidInput) {
-        return Err(ApiError::validation(outcome.message));
+        return Err(DomainError::validation(outcome.message));
     }
 
     publish_pairing_state_changed(
@@ -187,28 +171,26 @@ async fn pair_device_for_ui(
         status: outcome.status,
         message: outcome.message,
         activated: outcome.activated,
-        device: refreshed_device_summary(state.as_ref(), device_id).await?,
+        device: refreshed_device_summary(state.as_ref(), device_id).await,
     })
 }
 
 async fn delete_device_pairing(
     state: &Arc<AppState>,
     device_id: DeviceId,
-) -> Result<DeletePairingResponse, Response> {
+) -> Result<DeletePairingResponse, DomainError> {
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return Err(ApiError::not_found(format!(
-            "Device not found: {device_id}"
-        )));
+        return Err(DomainError::not_found(ResourceKind::Device, device_id));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     let driver_id = tracked.info.driver_id();
     let Some(driver) = state.driver_registry.get(driver_id) else {
-        return Err(ApiError::validation(format!(
+        return Err(DomainError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"
         )));
     };
     let Some(pairing) = driver.pairing() else {
-        return Err(ApiError::validation(format!(
+        return Err(DomainError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"
         )));
     };
@@ -228,7 +210,7 @@ async fn delete_device_pairing(
                 driver_id = %driver_id,
                 "failed to clear pairing credentials"
             );
-            ApiError::internal(format!(
+            DomainError::Internal(anyhow::anyhow!(
                 "Failed to clear {} credentials",
                 driver.descriptor().display_name
             ))
@@ -240,6 +222,6 @@ async fn delete_device_pairing(
         status: "unpaired".to_owned(),
         message: outcome.message,
         disconnected: outcome.disconnected,
-        device: refreshed_device_summary(state.as_ref(), device_id).await?,
+        device: refreshed_device_summary(state.as_ref(), device_id).await,
     })
 }

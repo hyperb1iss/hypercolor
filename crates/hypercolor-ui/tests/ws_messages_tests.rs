@@ -43,27 +43,27 @@ fn extract_scene_event_hint_parses_active_scene_payload() {
     assert_eq!(hint.scene_kind, Some(SceneKind::Named));
     assert_eq!(hint.scene_mutation_mode, Some(SceneMutationMode::Snapshot));
     assert_eq!(hint.scene_snapshot_locked, Some(true));
-    assert_eq!(hint.render_group_role, None);
-    assert_eq!(hint.render_group_change_kind, None);
+    assert_eq!(hint.zone_role, None);
+    assert_eq!(hint.zone_change_kind, None);
     assert!(scene_event_affects_active_effect(&hint));
 }
 
 #[test]
 fn extract_scene_event_hint_parses_render_group_zone_identity() {
     let hint = extract_scene_event_hint(
-        "render_group_changed",
+        "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "group_id": "zone-2",
+            "zone_id": "zone-2",
             "role": "custom",
             "kind": "updated",
         }),
     );
 
     assert_eq!(hint.scene_id.as_deref(), Some("scene-1"));
-    assert_eq!(hint.group_id.as_deref(), Some("zone-2"));
-    assert_eq!(hint.render_group_role, Some(ZoneRole::Custom));
-    assert_eq!(hint.render_group_change_kind, Some(ZoneChangeKind::Updated));
+    assert_eq!(hint.zone_id.as_deref(), Some("zone-2"));
+    assert_eq!(hint.zone_role, Some(ZoneRole::Custom));
+    assert_eq!(hint.zone_change_kind, Some(ZoneChangeKind::Updated));
     // The overloaded `kind` field must not leak into the scene-kind slot.
     assert_eq!(hint.scene_kind, None);
     assert!(scene_event_affects_active_effect(&hint));
@@ -302,31 +302,28 @@ fn performance_metrics_falls_back_for_legacy_payload_without_delivered_fps() {
 #[test]
 fn extract_scene_event_hint_parses_display_render_group_metadata() {
     let hint = extract_scene_event_hint(
-        "render_group_changed",
+        "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "group_id": "group-1",
+            "zone_id": "group-1",
             "role": "display",
             "kind": "controls_patched",
         }),
     );
 
-    assert_eq!(hint.event_type, "render_group_changed");
+    assert_eq!(hint.event_type, "zone_changed");
     assert_eq!(hint.scene_id.as_deref(), Some("scene-1"));
-    assert_eq!(hint.render_group_role, Some(ZoneRole::Display));
-    assert_eq!(
-        hint.render_group_change_kind,
-        Some(ZoneChangeKind::ControlsPatched)
-    );
+    assert_eq!(hint.zone_role, Some(ZoneRole::Display));
+    assert_eq!(hint.zone_change_kind, Some(ZoneChangeKind::ControlsPatched));
 }
 
 #[test]
 fn scene_event_affects_active_effect_ignores_display_render_group_changes() {
     let hint = extract_scene_event_hint(
-        "render_group_changed",
+        "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "group_id": "group-1",
+            "zone_id": "group-1",
             "role": "display",
             "kind": "updated",
         }),
@@ -338,17 +335,17 @@ fn scene_event_affects_active_effect_ignores_display_render_group_changes() {
 #[test]
 fn scene_event_affects_active_effect_keeps_primary_render_group_changes() {
     let hint = extract_scene_event_hint(
-        "render_group_changed",
+        "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "group_id": "group-1",
+            "zone_id": "group-1",
             "role": "primary",
             "kind": "updated",
         }),
     );
 
-    assert_eq!(hint.render_group_role, Some(ZoneRole::Primary));
-    assert_eq!(hint.render_group_change_kind, Some(ZoneChangeKind::Updated));
+    assert_eq!(hint.zone_role, Some(ZoneRole::Primary));
+    assert_eq!(hint.zone_change_kind, Some(ZoneChangeKind::Updated));
     assert!(scene_event_affects_active_effect(&hint));
 }
 
@@ -374,7 +371,7 @@ fn extract_effect_error_hint_parses_fallback_payload() {
 fn extract_layer_health_keys_by_scene_group_and_layer() {
     let (key, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
-        "group_id": "group-1",
+        "zone_id": "group-1",
         "layer_id": "layer-7",
         "health": "stalled",
     }))
@@ -388,7 +385,7 @@ fn extract_layer_health_keys_by_scene_group_and_layer() {
 fn extract_layer_health_parses_a_failure_reason() {
     let (_, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
-        "group_id": "group-1",
+        "zone_id": "group-1",
         "layer_id": "layer-7",
         "health": { "failed": { "reason": "decode error" } },
     }))
@@ -409,7 +406,7 @@ fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
     assert!(extract_layer_health(&serde_json::json!({ "health": "active" })).is_none());
     assert!(
         extract_layer_health(&serde_json::json!({
-            "group_id": "group-1",
+            "zone_id": "group-1",
             "layer_id": "layer-7",
             "health": "active",
         }))

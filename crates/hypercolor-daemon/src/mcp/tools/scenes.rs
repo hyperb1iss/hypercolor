@@ -1,18 +1,16 @@
 //! Scene-related MCP tools: `activate_scene`, `list_scenes`, `create_scene`.
 
+use std::collections::HashMap;
+
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::scenes::{
-    asset_mime_types, current_media_config, scene_media_admission_counts,
-    scene_media_admission_violation_details,
+use crate::api::AppState;
+use crate::api::scenes::{asset_mime_types, current_media_config};
+use crate::domain::MutationContext;
+use crate::domain::scene::{
+    ActivateScene, CreateScene, activate_scene, create_scene, evaluate_scene_media_admission,
 };
-use crate::api::{
-    AppState, admit_scene_store_snapshot, publish_active_scene_changed,
-    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
-};
-use hypercolor_core::scene::make_scene;
-use hypercolor_types::event::SceneChangeReason;
 use hypercolor_types::scene::TransitionSpec;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
@@ -38,10 +36,12 @@ pub(super) fn build_activate_scene() -> ToolDefinition {
                     "maximum": 10000
                 }
             },
-            "required": ["name"]
+            "required": ["name"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -59,10 +59,12 @@ pub(super) fn build_list_scenes() -> ToolDefinition {
                     "description": "Only show enabled scenes",
                     "default": false
                 }
-            }
+            },
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -97,20 +99,9 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                             "type": "string",
                             "enum": ["schedule", "sunset", "sunrise", "device_connect", "device_disconnect", "audio_beat", "webhook"],
                             "description": "Trigger type"
-                        },
-                        "cron": {
-                            "type": "string",
-                            "description": "Cron expression for schedule triggers"
                         }
                     },
                     "required": ["type"]
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade duration when activated",
-                    "default": 1000,
-                    "minimum": 0,
-                    "maximum": 30000
                 },
                 "enabled": {
                     "type": "boolean",
@@ -124,91 +115,17 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                     "default": "live"
                 }
             },
-            "required": ["name", "profile_id", "trigger"]
+            "required": ["name", "profile_id", "trigger"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: false,
         idempotent: false,
     }
 }
 
-// ── Stateless Handlers ────────────────────────────────────────────────────
-
-pub(super) fn handle_activate_scene(params: &Value) -> Result<Value, ToolError> {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("name".into()))?;
-
-    let _transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(1000);
-
-    // Would query scene manager with fuzzy matching
-    Ok(json!({
-        "activated": false,
-        "message": format!("No scene matching '{name}' found. Use list_scenes to browse available scenes.")
-    }))
-}
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to scene manager"
-)]
-pub(super) fn handle_list_scenes(params: &Value) -> Result<Value, ToolError> {
-    let _enabled_only = params
-        .get("enabled_only")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    // Would query scene manager
-    Ok(json!({
-        "scenes": [],
-        "total": 0
-    }))
-}
-
-pub(super) fn handle_create_scene(params: &Value) -> Result<Value, ToolError> {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("name".into()))?;
-
-    let _profile_id = params
-        .get("profile_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("profile_id".into()))?;
-
-    let trigger = params
-        .get("trigger")
-        .ok_or_else(|| ToolError::MissingParam("trigger".into()))?;
-
-    let _trigger_type = trigger
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("trigger.type".into()))?;
-
-    let enabled = params
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let mutation_mode = params
-        .get("mutation_mode")
-        .and_then(Value::as_str)
-        .unwrap_or("live");
-
-    let scene_id = uuid::Uuid::now_v7().to_string();
-
-    Ok(json!({
-        "scene_id": scene_id,
-        "name": name,
-        "enabled": enabled,
-        "mutation_mode": mutation_mode
-    }))
-}
-
-// ── Stateful Handlers ─────────────────────────────────────────────────────
+// ── Handlers ──────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_activate_scene_with_state(
     params: &Value,
@@ -226,16 +143,19 @@ pub(super) async fn handle_activate_scene_with_state(
     let asset_mime_types = asset_mime_types(state).await;
     let media_config = current_media_config(state);
 
-    let mut scene_manager = state.scene_manager.write().await;
-    let previous_active_scene = scene_manager.active_scene_id().copied();
-    let matched_scene = scene_manager
-        .list()
-        .into_iter()
-        .find(|scene| {
-            scene.name.eq_ignore_ascii_case(name)
-                || scene.name.to_lowercase().contains(&name.to_lowercase())
-        })
-        .cloned();
+    // Fuzzy name matching is an adapter concern, and a miss stays a
+    // structured success payload rather than a JSON-RPC error.
+    let matched_scene = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .list()
+            .into_iter()
+            .find(|scene| {
+                scene.name.eq_ignore_ascii_case(name)
+                    || scene.name.to_lowercase().contains(&name.to_lowercase())
+            })
+            .cloned()
+    };
 
     let Some(scene) = matched_scene else {
         return Ok(json!({
@@ -243,9 +163,9 @@ pub(super) async fn handle_activate_scene_with_state(
             "message": format!("No scene matching '{name}' found. Use list_scenes to browse available scenes.")
         }));
     };
-    let media_admission = scene_media_admission_counts(&scene, &asset_mime_types);
-    if let Some(details) = scene_media_admission_violation_details(&media_admission, &media_config)
-    {
+
+    let admission = evaluate_scene_media_admission(&scene, &asset_mime_types, &media_config);
+    if let Some(details) = admission.violation.as_ref() {
         return Ok(json!({
             "activated": false,
             "message": details.message,
@@ -257,38 +177,24 @@ pub(super) async fn handle_activate_scene_with_state(
         }));
     }
 
-    let transition_override = Some(TransitionSpec {
-        duration_ms: transition_ms,
-        ..scene.transition.clone()
-    });
-    scene_manager
-        .activate(&scene.id, transition_override)
-        .map_err(|error| ToolError::Internal(format!("failed to activate scene: {error}")))?;
-    let current_active_scene = scene_manager.active_scene().cloned();
-    drop(scene_manager);
-    save_runtime_session_snapshot(state).await;
-    if previous_active_scene
-        != current_active_scene
-            .as_ref()
-            .map(|active_scene| active_scene.id)
-        && let Some(current_active_scene) = current_active_scene.as_ref()
-    {
-        publish_active_scene_changed(
-            state,
-            previous_active_scene,
-            current_active_scene,
-            SceneChangeReason::UserActivate,
-        );
-    }
-
-    // Which scene is active decides which devices are worth connecting.
-    crate::api::sync_connectivity(state).await;
+    let activated = activate_scene(
+        state,
+        ActivateScene {
+            scene_id: scene.id,
+            transition: Some(TransitionSpec {
+                duration_ms: transition_ms,
+                ..scene.transition.clone()
+            }),
+        },
+        MutationContext::mcp(),
+    )
+    .await?;
 
     Ok(json!({
         "activated": true,
         "scene": {
-            "id": scene.id.to_string(),
-            "name": scene.name
+            "id": activated.scene_id.to_string(),
+            "name": activated.scene_name
         },
         "transition_ms": transition_ms
     }))
@@ -374,39 +280,31 @@ pub(super) async fn handle_create_scene_with_state(
         }
     };
 
-    let mut scene = make_scene(name);
-    scene.description = params
-        .get("description")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    scene.enabled = enabled;
-    scene.mutation_mode = mutation_mode;
-    scene
-        .metadata
-        .insert("profile_id".to_owned(), profile_id.to_owned());
-    scene
-        .metadata
-        .insert("trigger_type".to_owned(), trigger_type.to_owned());
+    let metadata = HashMap::from([
+        ("profile_id".to_owned(), profile_id.to_owned()),
+        ("trigger_type".to_owned(), trigger_type.to_owned()),
+    ]);
 
-    let scene_id = scene.id.to_string();
-    let coordinator = scene_store_coordinator(state).await;
-    let pending = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
-        scene_manager
-            .create(scene)
-            .map_err(|error| ToolError::Internal(format!("failed to create scene: {error}")))?;
-        admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?
-    };
-    save_admitted_scene_store_snapshot(state, pending)
-        .await
-        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
+    let created = create_scene(
+        state,
+        CreateScene {
+            name: name.to_owned(),
+            description: params
+                .get("description")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            enabled: Some(enabled),
+            mutation_mode: Some(mutation_mode),
+            metadata,
+        },
+        MutationContext::mcp(),
+    )
+    .await?;
 
     Ok(json!({
-        "scene_id": scene_id,
-        "name": name,
-        "enabled": enabled,
-        "mutation_mode": mutation_mode
+        "scene_id": created.scene.id.to_string(),
+        "name": created.scene.name,
+        "enabled": created.scene.enabled,
+        "mutation_mode": created.scene.mutation_mode
     }))
 }

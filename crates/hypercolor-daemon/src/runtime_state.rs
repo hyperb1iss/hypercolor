@@ -2,13 +2,11 @@
 //!
 //! Stores the active scene snapshot so daemon startup can restore the previous user session.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{SceneId, Zone};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
@@ -34,9 +32,6 @@ pub struct RuntimeSessionSnapshot {
 
     /// Explicit user pause state. Transient OS sleep is never persisted.
     pub manual_paused: bool,
-
-    /// Legacy driver cache retained only as a one-time inventory migration source.
-    pub driver_runtime_cache: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
 /// A runtime snapshot write ordered at the owning mutation boundary.
@@ -85,7 +80,6 @@ pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnap
         active_layout_id: None,
         global_brightness: 1.0,
         manual_paused: false,
-        driver_runtime_cache: BTreeMap::new(),
     }
 }
 
@@ -147,12 +141,11 @@ pub fn save_reserved(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::{Arc, Barrier};
 
     use tempfile::TempDir;
 
-    use super::{RuntimeSessionSnapshot, load, save};
+    use super::{RuntimeSessionError, RuntimeSessionSnapshot, load, save};
     use hypercolor_types::scene::SceneId;
 
     #[test]
@@ -166,13 +159,6 @@ mod tests {
             active_layout_id: Some("layout_abc123".to_owned()),
             global_brightness: 0.42,
             manual_paused: true,
-            driver_runtime_cache: BTreeMap::from([(
-                "cache-driver".to_owned(),
-                BTreeMap::from([(
-                    "probe_ips".to_owned(),
-                    serde_json::json!(["10.0.0.8", "10.0.0.9"]),
-                )]),
-            )]),
         };
 
         save(&path, &expected).expect("save snapshot");
@@ -183,7 +169,35 @@ mod tests {
         assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
         assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
         assert_eq!(loaded.manual_paused, expected.manual_paused);
-        assert_eq!(loaded.driver_runtime_cache, expected.driver_runtime_cache);
+    }
+
+    #[test]
+    fn a_snapshot_carrying_the_retired_driver_cache_is_refused_not_read() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "active_scene_id": null,
+                "default_scene_groups": [],
+                "active_layout_id": null,
+                "global_brightness": 1.0,
+                "manual_paused": false,
+                "driver_runtime_cache": {},
+            }))
+            .expect("snapshot should serialize"),
+        )
+        .expect("snapshot should be written");
+
+        // The driver inventory owns this data now. A snapshot written
+        // before the field was retired is refused rather than half-read;
+        // the daemon logs it and starts fresh, which costs one session
+        // restore and never a startup.
+        let error = load(&path).expect_err("a retired field must be refused");
+        assert!(
+            matches!(error, RuntimeSessionError::Parse { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -194,8 +208,14 @@ mod tests {
         assert!(loaded.is_none());
     }
 
+    /// Fields added to the snapshot default when absent.
+    ///
+    /// This is forward evolution, not legacy-shape support: a new field
+    /// lands with a default so the running daemon keeps reading the file
+    /// it wrote last boot. Removing a field is the other direction and is
+    /// a refusal, covered above.
     #[test]
-    fn older_snapshot_defaults_manual_pause_to_false() {
+    fn an_absent_field_defaults_rather_than_failing_the_snapshot() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("runtime-state.json");
         std::fs::write(
@@ -205,7 +225,6 @@ mod tests {
                 "default_scene_groups": [],
                 "active_layout_id": null,
                 "global_brightness": 1.0,
-                "driver_runtime_cache": {},
             }))
             .expect("snapshot should serialize"),
         )
@@ -228,7 +247,6 @@ mod tests {
             active_layout_id: None,
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: BTreeMap::new(),
         });
 
         let worker_count = 8;

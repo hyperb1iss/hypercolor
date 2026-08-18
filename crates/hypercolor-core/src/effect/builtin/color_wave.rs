@@ -5,11 +5,8 @@
 
 use std::array;
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use hypercolor_types::canvas::{
-    BYTES_PER_PIXEL, Canvas, Oklch, Rgba, RgbaF32, linear_to_srgb_u8, srgb_u8_to_linear,
-};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -17,6 +14,7 @@ use hypercolor_types::effect::{
 use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
 };
+use crate::blend_math::{decode_srgb_channel, encode_srgb_channel};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,20 +82,6 @@ pub struct ColorWaveRenderer {
     last_size: (u32, u32),
     framebuffer: Option<Canvas>,
 }
-
-const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
-
-static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
-    array::from_fn(|index| {
-        let channel = u8::try_from(index).expect("LUT index must fit in u8");
-        srgb_u8_to_linear(channel)
-    })
-});
-static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    (0_u16..=u16::MAX)
-        .map(|index| linear_to_srgb_u8(f32::from(index) / LINEAR_ENCODE_LUT_SCALE))
-        .collect()
-});
 
 impl ColorWaveRenderer {
     /// Create a color wave renderer with reference defaults.
@@ -237,8 +221,8 @@ impl ColorWaveRenderer {
         });
     }
 
-    fn scaled_color(&self, rgba: [f32; 4]) -> RgbaF32 {
-        RgbaF32::new(
+    fn scaled_color(&self, rgba: [f32; 4]) -> LinearRgba {
+        LinearRgba::new(
             rgba[0] * self.brightness,
             rgba[1] * self.brightness,
             rgba[2] * self.brightness,
@@ -247,7 +231,7 @@ impl ColorWaveRenderer {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f64) -> RgbaF32 {
+    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f64) -> LinearRgba {
         let shifted = match self.color_mode {
             WaveColorMode::Custom => self.wave_color,
             WaveColorMode::Random => hue_shift(self.wave_color, wave.hue_offset),
@@ -260,7 +244,7 @@ impl ColorWaveRenderer {
     }
 
     fn background_fill(&self) -> Rgba {
-        self.scaled_color(self.background_color).to_srgba()
+        self.scaled_color(self.background_color).to_encoded()
     }
 
     fn fade_canvas(&self, canvas: &mut Canvas) {
@@ -290,7 +274,7 @@ impl ColorWaveRenderer {
         let wave_width = self.wave_width_px().round() as i32;
 
         for wave in &self.waves {
-            let color = self.current_wave_color(wave, time_secs).to_srgba();
+            let color = self.current_wave_color(wave, time_secs).to_encoded();
             match self.direction {
                 WaveDirection::Right | WaveDirection::Left | WaveDirection::HorizontalPass => {
                     #[allow(
@@ -497,29 +481,14 @@ fn normalize_choice(value: &str) -> String {
 }
 
 fn hue_shift(color: [f32; 4], degrees: f32) -> [f32; 4] {
-    let rgba = RgbaF32::new(color[0], color[1], color[2], color[3]);
+    let rgba = LinearRgba::new(color[0], color[1], color[2], color[3]);
     let mut lch = rgba.to_oklch();
     if lch.c <= 0.0001 {
         return color;
     }
     lch = Oklch::new(lch.l, lch.c, (lch.h + degrees).rem_euclid(360.0), lch.alpha);
-    let shifted = RgbaF32::from_oklch(lch);
+    let shifted = lch.to_linear();
     [shifted.r, shifted.g, shifted.b, shifted.a]
-}
-
-fn decode_srgb_channel(channel: u8) -> f32 {
-    SRGB_TO_LINEAR_LUT[usize::from(channel)]
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions,
-    reason = "channel is clamped to the 16-bit LUT domain before rounding to an index"
-)]
-fn encode_srgb_channel(channel: f32) -> u8 {
-    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as u16;
-    LINEAR_TO_SRGB_LUT[usize::from(index)]
 }
 
 fn fade_lut(background_channel: f32, opacity: f32) -> [u8; 256] {

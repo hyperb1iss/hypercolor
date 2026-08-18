@@ -11,7 +11,6 @@ import httpx
 from .client import _UNSET_SENTINEL, HypercolorClient, _Unset
 from .models.audio import AudioDevices, SpectrumSnapshot
 from .models.common import (
-    BrightnessUpdate,
     ConfigMutationResult,
     DiscoverResult,
     IdentifyResult,
@@ -34,7 +33,7 @@ from .models.layout import Layout, LayoutSummary
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
 from .models.spatial import SpatialLayout
-from .models.system import HealthStatus, OutputPowerState, SystemState
+from .models.system import HealthStatus, OutputState, SystemState
 from .models.zone import (
     UnassignedBehaviorResult,
     ZoneDeleteResult,
@@ -91,19 +90,27 @@ class SyncHypercolorClient:
     def get_state(self) -> SystemState:
         return self._run(self._client.get_state())
 
-    def set_brightness(self, brightness: int) -> BrightnessUpdate:
+    def get_output(self) -> OutputState:
+        return self._run(self._client.get_output())
+
+    def set_output(
+        self,
+        *,
+        power: str | None = None,
+        brightness: float | None = None,
+    ) -> OutputState:
+        return self._run(self._client.set_output(power=power, brightness=brightness))
+
+    def set_brightness(self, brightness: float) -> OutputState:
         return self._run(self._client.set_brightness(brightness))
 
-    def get_output_power(self) -> OutputPowerState:
-        return self._run(self._client.get_output_power())
-
-    def set_output_power(self, *, paused: bool) -> OutputPowerState:
+    def set_output_power(self, *, paused: bool) -> OutputState:
         return self._run(self._client.set_output_power(paused=paused))
 
-    def pause_rendering(self) -> OutputPowerState:
+    def pause_rendering(self) -> OutputState:
         return self._run(self._client.pause_rendering())
 
-    def resume_rendering(self) -> OutputPowerState:
+    def resume_rendering(self) -> OutputState:
         return self._run(self._client.resume_rendering())
 
     def get_devices(self, **filters: Any) -> list[Device]:
@@ -167,7 +174,7 @@ class SyncHypercolorClient:
         controls: Mapping[str, Any] | None = None,
         transition: TransitionSpec | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         return self._run(
             self._client.apply_effect(
@@ -175,7 +182,7 @@ class SyncHypercolorClient:
                 controls=controls,
                 transition=transition,
                 preset_id=preset_id,
-                render_group=render_group,
+                zone_id=zone_id,
             )
         )
 
@@ -184,13 +191,13 @@ class SyncHypercolorClient:
         effect_id: str,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         return self._run(
             self._client.apply_effect_preset(
                 effect_id,
                 preset_id,
-                render_group=render_group,
+                zone_id=zone_id,
             )
         )
 
@@ -205,8 +212,8 @@ class SyncHypercolorClient:
             self._client.update_effect_controls(effect_id, controls, if_match=if_match)
         )
 
-    def reset_controls(self, *, render_group: str | None = None) -> MutationResult:
-        return self._run(self._client.reset_controls(render_group=render_group))
+    def reset_controls(self, *, zone_id: str | None = None) -> MutationResult:
+        return self._run(self._client.reset_controls(zone_id=zone_id))
 
     def update_controls(
         self,
@@ -436,7 +443,7 @@ class SyncHypercolorClient:
             self._client.set_unassigned_behavior(scene_id, behavior, if_match=if_match)
         )
 
-    def get_brightness(self) -> BrightnessUpdate:
+    def get_brightness(self) -> float:
         return self._run(self._client.get_brightness())
 
     def get_audio_spectrum(self) -> SpectrumSnapshot:

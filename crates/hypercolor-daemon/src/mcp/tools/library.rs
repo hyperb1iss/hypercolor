@@ -19,45 +19,19 @@ pub(super) fn build_set_profile() -> ToolDefinition {
                 "query": {
                     "type": "string",
                     "description": "Profile name or description to search for"
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade transition duration in milliseconds",
-                    "default": 1000,
-                    "minimum": 0,
-                    "maximum": 10000
                 }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
 
-// ── Stateless Handlers ────────────────────────────────────────────────────
-
-pub(super) fn handle_set_profile(params: &Value) -> Result<Value, ToolError> {
-    let query = params
-        .get("query")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("query".into()))?;
-
-    let _transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(1000);
-
-    // Would query profile manager with fuzzy matching
-    Ok(json!({
-        "profile": null,
-        "applied": false,
-        "message": format!("No profile matching '{query}' found.")
-    }))
-}
-
-// ── Stateful Handlers ─────────────────────────────────────────────────────
+// ── Handlers ──────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_set_profile_with_state(
     params: &Value,

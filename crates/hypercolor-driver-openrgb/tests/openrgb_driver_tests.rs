@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     DeviceDeliveryId, DeviceDeliveryStatus, DiscoveryConnectBehavior, DiscoveryRequest,
     DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverRuntimeActions, DriverTrackedDevice, HealthStatus,
+    DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -269,83 +269,6 @@ async fn connect_fails_when_re_resolved_controller_disappears() {
         .expect_err("backend should reject disappeared remap");
     assert!(error.to_string().contains("disappeared"));
     server.await.expect("server task should join");
-}
-
-#[tokio::test]
-async fn backend_reports_openrgb_health_states() {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("fake OpenRGB server should bind");
-    let endpoint = listener
-        .local_addr()
-        .expect("fake OpenRGB server should expose local addr");
-    let server = tokio::spawn(run_drain_server(listener));
-    let config = OpenRgbConfig {
-        endpoints: vec![endpoint],
-        ownership: OpenRgbOwnership {
-            mode: OpenRgbOwnershipMode::OpenRgbOwned,
-            ..OpenRgbOwnership::default()
-        },
-        ..OpenRgbConfig::default()
-    };
-    let entry = config_entry(&config);
-    let view = DriverConfigView {
-        driver_id: DESCRIPTOR.id,
-        entry: &entry,
-    };
-    let host = NullHost;
-    let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let unknown_id = DeviceId::new();
-
-    assert_eq!(
-        backend
-            .health_check(&unknown_id)
-            .await
-            .expect("unknown health should resolve"),
-        HealthStatus::Unreachable
-    );
-
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
-    assert_eq!(
-        backend
-            .health_check(&device_id)
-            .await
-            .expect("discovered health should resolve"),
-        HealthStatus::Degraded
-    );
-
-    backend
-        .connect(&device_id)
-        .await
-        .expect("backend should connect selected controller");
-    assert_eq!(
-        backend
-            .health_check(&device_id)
-            .await
-            .expect("connected health should resolve"),
-        HealthStatus::Healthy
-    );
-
-    backend
-        .disconnect(&device_id)
-        .await
-        .expect("backend should disconnect selected controller");
-    assert_eq!(
-        backend
-            .health_check(&device_id)
-            .await
-            .expect("disconnected discovered health should resolve"),
-        HealthStatus::Degraded
-    );
-    server.abort();
 }
 
 #[tokio::test]

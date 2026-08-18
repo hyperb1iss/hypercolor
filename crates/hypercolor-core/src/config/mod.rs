@@ -6,22 +6,51 @@
 //! `hypercolor-types`.
 
 pub mod paths;
+pub mod sources;
+
+pub use sources::{
+    BootConfig, CliOverrides, ConfigProvenance, ConfigSources, EnvOverrides, LoadedConfig,
+    SourceLayer,
+};
 
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use arc_swap::{ArcSwap, Guard};
 use tracing::{debug, info};
 
 use crate::types::config::{
-    CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, InteractionRoutePolicy,
-    default_driver_configs,
+    CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, default_driver_configs,
 };
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
+
+/// A borrowed live-config snapshot: cheap to take, plain to hold.
+///
+/// Dereferences to [`HypercolorConfig`]. Holding one across an await
+/// pins the snapshot, not a lock — writers are never blocked. Storing
+/// a clone of the inner config in a long-lived struct is the
+/// anti-pattern this type exists to discourage (Spec 76 §3.2).
+pub struct LiveConfigSnapshot(Guard<Arc<HypercolorConfig>>);
+
+impl LiveConfigSnapshot {
+    /// An owned copy of the snapshot's config, for mutation staging.
+    #[must_use]
+    pub fn clone_inner(&self) -> HypercolorConfig {
+        (**self.0).clone()
+    }
+}
+
+impl std::ops::Deref for LiveConfigSnapshot {
+    type Target = HypercolorConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Manages the live Hypercolor configuration with lock-free reads and reload.
 ///
@@ -37,6 +66,10 @@ pub struct ConfigManager {
     /// writers (config API, capture restore-token sink) cannot lose updates
     /// or interleave partial file contents.
     write_lock: std::sync::Mutex<ConfigWriterState>,
+    /// Boot-time fingerprint and sticky overlays for restart
+    /// reporting. Set exactly once by `load_with_sources`; managers
+    /// built without a boot baseline report nothing pending.
+    boot_state: std::sync::OnceLock<sources::BootState>,
     #[cfg(test)]
     persistence_fault: std::sync::Mutex<Option<ConfigPersistenceStage>>,
 }
@@ -118,9 +151,40 @@ impl ConfigManager {
             config: Arc::new(ArcSwap::from_pointee(config)),
             config_path,
             write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
+            boot_state: std::sync::OnceLock::new(),
             #[cfg(test)]
             persistence_fault: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Build a manager over a config the caller already materialized,
+    /// running the same normalize every load runs.
+    ///
+    /// Everything else the pipeline in
+    /// [`load_with_sources`](Self::load_with_sources) does is skipped:
+    /// the daemon's driver-seeding hook never runs, capture config is
+    /// never validated, no env or CLI overlay is applied, and no
+    /// provenance or boot fingerprint is recorded — so a manager built
+    /// this way reports no pending restarts. It exists for callers that
+    /// already own a fully materialized config, which in practice means
+    /// tests driving daemon initialization directly.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_config_unchecked(config_path: PathBuf, config: HypercolorConfig) -> Self {
+        Self::with_config(config_path, normalize_config(config))
+    }
+
+    /// Build a manager over an already-normalized config (the
+    /// `load_with_sources` pipeline owns parse/overlay/validate).
+    pub(super) fn with_config(config_path: PathBuf, config: HypercolorConfig) -> Self {
+        Self {
+            config: Arc::new(ArcSwap::from_pointee(config)),
+            config_path,
+            write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
+            boot_state: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            persistence_fault: std::sync::Mutex::new(None),
+        }
     }
 
     /// Parses a TOML file at `path` into a [`HypercolorConfig`].
@@ -133,6 +197,7 @@ impl ConfigManager {
             .with_context(|| format!("failed to read config from {}", path.display()))?;
 
         Self::parse_toml(&contents)
+            .with_context(|| format!("failed to load config from {}", path.display()))
     }
 
     /// Returns a snapshot of the current configuration.
@@ -141,6 +206,13 @@ impl ConfigManager {
     /// dereferences to `Arc<HypercolorConfig>` and is cheap to hold.
     pub fn get(&self) -> Guard<Arc<HypercolorConfig>> {
         self.config.load()
+    }
+
+    /// A live snapshot behind a plain `Deref` — the public read
+    /// surface (Spec 76 §3.2). The swap machinery never appears in
+    /// the signature, so callers cannot depend on it.
+    pub fn live(&self) -> LiveConfigSnapshot {
+        LiveConfigSnapshot(self.config.load())
     }
 
     /// Whether `snapshot` is still the manager's current immutable value.
@@ -626,26 +698,37 @@ impl ConfigManager {
         paths::cache_dir()
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────────
-
     /// Parses a TOML string into a [`HypercolorConfig`].
-    fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
-        let document = toml::from_str::<toml::Value>(toml_str)
+    ///
+    /// This is THE config parser: file loads, tooling, and tests all run
+    /// the same parse and normalize, so no caller can materialize a
+    /// config that skips them. Only [`CURRENT_SCHEMA_VERSION`] is read:
+    /// older files are refused rather than migrated (migration is
+    /// one-time-forward, so old shapes are hand-migrated per the release
+    /// notes, never read by a legacy path here), and newer files are
+    /// refused rather than guessed at.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TOML is malformed, does not deserialize
+    /// into [`HypercolorConfig`], or declares any schema version other
+    /// than the current one.
+    pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
+        let config = toml::from_str::<HypercolorConfig>(toml_str)
             .context("failed to parse configuration TOML")?;
-        let daemon_route_missing = input_field_missing(&document, "daemon_route");
-        let preview_route_missing = input_field_missing(&document, "preview_route");
-        let config = document
-            .try_into::<HypercolorConfig>()
-            .context("failed to parse configuration TOML")?;
-        Ok(normalize_config(migrate_config(
-            config,
-            daemon_route_missing,
-            preview_route_missing,
-        )))
+        if config.schema_version != CURRENT_SCHEMA_VERSION {
+            bail!(schema_mismatch_message(config.schema_version));
+        }
+        Ok(normalize_config(config))
     }
 
     /// Returns a default config suitable for first-run.
-    fn default_config() -> HypercolorConfig {
+    ///
+    /// Normalized like every other materialized config, so a daemon that
+    /// never found a file behaves exactly like one that loaded a file of
+    /// pure defaults.
+    #[must_use]
+    pub fn default_config() -> HypercolorConfig {
         normalize_config(HypercolorConfig::default())
     }
 }
@@ -679,28 +762,31 @@ fn parent_directory(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-fn input_field_missing(document: &toml::Value, field: &str) -> bool {
-    document
-        .get("input")
-        .and_then(toml::Value::as_table)
-        .is_none_or(|input| !input.contains_key(field))
-}
-
-fn migrate_config(
-    mut config: HypercolorConfig,
-    daemon_route_missing: bool,
-    preview_route_missing: bool,
-) -> HypercolorConfig {
-    if config.schema_version <= 3 {
-        if daemon_route_missing {
-            config.input.daemon_route = InteractionRoutePolicy::Merge;
-        }
-        if preview_route_missing {
-            config.input.preview_route = InteractionRoutePolicy::Browser;
-        }
-        config.schema_version = CURRENT_SCHEMA_VERSION;
+/// The refusal text for a config file this build cannot read.
+///
+/// Old files get the exact hand-migration; new files get told to upgrade.
+/// Both name the version they declared, and the caller adds the path.
+fn schema_mismatch_message(found: u32) -> String {
+    if found > CURRENT_SCHEMA_VERSION {
+        return format!(
+            "config declares schema_version {found} but this build reads \
+             schema {CURRENT_SCHEMA_VERSION}: the file was written by a \
+             newer hypercolor. Upgrade hypercolor, or move the file aside \
+             to start from defaults. This build will not guess at a shape \
+             it does not know."
+        );
     }
-    config
+    format!(
+        "config declares schema_version {found} but this build reads \
+         schema {CURRENT_SCHEMA_VERSION}; hypercolor no longer migrates \
+         older config files. Edit the file by hand, setting\n\n    \
+         schema_version = {CURRENT_SCHEMA_VERSION}\n\nand, when the file \
+         predates the interaction-route split, adding both routes under \
+         [input]:\n\n    daemon_route = \"merge\"\n    preview_route = \
+         \"browser\"\n\nWithout those two lines the version bump \
+         silently adopts the new \"host\" default for daemon_route. \
+         Moving the file aside starts from defaults instead."
+    )
 }
 
 fn normalize_config(mut config: HypercolorConfig) -> HypercolorConfig {

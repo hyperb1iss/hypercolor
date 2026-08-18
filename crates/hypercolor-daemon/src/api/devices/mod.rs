@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
-use serde::Deserialize;
+use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
+use hypercolor_color::Rgb;
 use hypercolor_core::device::{BackendIo, DeviceLifecycleManager, DirectControlGuard};
 use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
@@ -29,24 +29,30 @@ use hypercolor_types::device::{
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
+use crate::domain::{DomainError, ResourceKind};
+
+pub use hypercolor_types::api::devices::{IdentifyAttachmentRequest, ListDevicesQuery};
 
 pub use attachments::{
     ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
-    DeviceComponentsResponse, DeviceComponentsUpdateResponse, UpdateAttachmentsRequest,
-    delete_attachments, get_attachments, preview_attachments, update_attachments,
+    DeleteAttachmentsResponse, DeviceComponentsResponse, DeviceComponentsUpdateResponse,
+    UpdateAttachmentsRequest, delete_attachments, get_attachments, preview_attachments,
+    update_attachments,
 };
 pub use bindings::{get_device_bindings, rebind_device};
 pub use discovery::{DiscoverRequest, discover_devices};
 pub use logical::{
-    CreateLogicalDeviceRequest, ListLogicalDevicesQuery, LogicalDeviceListResponse,
-    LogicalDeviceSummary, UpdateLogicalDeviceRequest, create_logical_device, delete_logical_device,
-    get_logical_device, list_device_logical_devices, list_logical_devices, update_logical_device,
+    CreateLogicalDeviceRequest, DeleteLogicalDeviceResponse, ListLogicalDevicesQuery,
+    LogicalDeviceListResponse, LogicalDeviceSummary, UpdateLogicalDeviceRequest,
+    create_logical_device, delete_logical_device, get_logical_device, list_device_logical_devices,
+    list_logical_devices, update_logical_device,
 };
 pub use pairing::{
-    GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing, pair_device,
+    DeletePairingResponse, GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing,
+    pair_device,
 };
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -56,28 +62,11 @@ pub use pairing::{
 // re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
 pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
-    DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
-    IdentifyRequest, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
+    DeleteDeviceResponse, DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse,
+    DeviceSummary, IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest,
+    IdentifyZoneResponse, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
     UnresolvedBindingSummary, UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
 };
-
-#[derive(Debug, Deserialize)]
-pub struct IdentifyAttachmentRequest {
-    #[serde(flatten)]
-    pub base: IdentifyRequest,
-    pub binding_index: Option<usize>,
-    pub instance: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct ListDevicesQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-    pub status: Option<String>,
-    pub backend_id: Option<String>,
-    pub driver: Option<String>,
-    pub q: Option<String>,
-}
 
 const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];
@@ -110,7 +99,7 @@ enum ResolveDeviceError {
         (
             status = 422,
             description = "Query validation failed",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "devices"
@@ -121,14 +110,14 @@ pub async fn list_devices(
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
-        return ApiError::validation("limit must be between 1 and 200");
+        return DomainError::validation("limit must be between 1 and 200").into_response();
     }
     let offset = query.offset.unwrap_or(0);
 
     let devices = state.device_registry.list().await;
     let status_filter = match parse_status_filter(query.status.as_deref()) {
         Ok(filter) => filter,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
     let backend_filter = query
         .backend_id
@@ -244,19 +233,19 @@ pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Respons
         (
             status = 404,
             description = "Device was not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "devices"
 )]
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
@@ -284,22 +273,23 @@ pub async fn update_device(
     Path(id): Path<String>,
     Json(body): Json<UpdateDeviceRequest>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     if body.name.is_none() && body.enabled.is_none() && body.brightness.is_none() {
-        return ApiError::validation(
+        return DomainError::validation(
             "At least one field must be provided: name, enabled, or brightness",
-        );
+        )
+        .into_response();
     }
 
     let normalized_name = match body.name {
         Some(name) => {
             let trimmed = name.trim();
             if trimmed.is_empty() {
-                return ApiError::validation("Device name must not be empty");
+                return DomainError::validation("Device name must not be empty").into_response();
             }
             Some(trimmed.to_owned())
         }
@@ -307,7 +297,10 @@ pub async fn update_device(
     };
     let normalized_brightness = match body.brightness {
         Some(brightness) if brightness <= 100 => Some(percent_to_brightness(brightness)),
-        Some(_) => return ApiError::validation("Device brightness must be between 0 and 100"),
+        Some(_) => {
+            return DomainError::validation("Device brightness must be between 0 and 100")
+                .into_response();
+        }
         None => None,
     };
 
@@ -317,9 +310,10 @@ pub async fn update_device(
             Ok(core_discovery::UserEnabledStateResult::Applied) => true,
             Ok(core_discovery::UserEnabledStateResult::MissingLifecycle) => false,
             Err(error) => {
-                return ApiError::internal(format!(
+                return DomainError::Internal(anyhow::anyhow!(
                     "Failed to update device state for {id}: {error}"
-                ));
+                ))
+                .into_response();
             }
         }
     } else {
@@ -336,7 +330,7 @@ pub async fn update_device(
         )
         .await
     else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     if !enabled_handled_by_lifecycle && let Some(enabled) = body.enabled {
@@ -356,7 +350,10 @@ pub async fn update_device(
 
     if let Err(error) = persist_device_settings_for(&state, device_id, &updated.user_settings).await
     {
-        return ApiError::internal(format!("Failed to persist device settings: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist device settings: {error}"
+        ))
+        .into_response();
     }
     sync_device_output_brightness(&state, device_id, &updated.user_settings).await;
     publish_device_settings_changed(&state, device_id, &updated.user_settings);
@@ -388,13 +385,13 @@ pub async fn update_device(
 
 /// `DELETE /api/v1/devices/:id` — Remove a device from tracking.
 pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let driver_id = tracked.info.driver_id().to_owned();
     let removed = if let Some(driver) = state.driver_registry.get(&driver_id)
@@ -415,9 +412,10 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
         if let Err(error) = inventory.update_driver_guarded(&guard, &driver_id, |current| {
             provider.forget_device(current, &device)
         }) {
-            return ApiError::internal(format!(
+            return DomainError::Internal(anyhow::anyhow!(
                 "Failed to forget {driver_id} discovery inventory: {error}"
-            ));
+            ))
+            .into_response();
         }
         let removed = state.device_registry.remove(&device_id).await;
         drop(guard);
@@ -427,60 +425,58 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     };
 
     if removed.is_none() {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     }
     crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
 
-    ApiResponse::ok(serde_json::json!({
-        "id": device_id.to_string(),
-        "removed": true,
-    }))
+    ApiResponse::ok(DeleteDeviceResponse {
+        id: device_id.to_string(),
+        removed: true,
+    })
 }
 
 /// `POST /api/v1/devices/:id/identify` — Flash identification pattern.
-#[expect(
-    clippy::too_many_lines,
-    reason = "identify setup validates request state, acquires direct backend access, and launches the flash task in one API entrypoint"
-)]
 pub async fn identify_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     body: Option<Json<IdentifyRequest>>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let duration_ms = body.as_ref().and_then(|b| b.duration_ms).unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
-        return ApiError::validation("duration_ms must be between 1 and 120000");
+        return DomainError::validation("duration_ms must be between 1 and 120000").into_response();
     }
-    let color = match body.as_ref().and_then(|b| b.color.as_deref()) {
-        Some(color) => match parse_hex_color(color) {
-            Some(normalized) => Some(normalized),
-            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+    let requested_color = match body.as_ref().and_then(|b| b.color.as_deref()) {
+        Some(color) => match Rgb::from_hex(color.trim()) {
+            Ok(color) => Some(color),
+            Err(_) => {
+                return DomainError::validation("color must be a hex value (RRGGBB or RGB)")
+                    .into_response();
+            }
         },
         None => None,
     };
-    let identify_rgb = color
-        .as_deref()
-        .and_then(parse_hex_rgb)
-        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let color = requested_color.map(identify_color_echo);
+    let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
     let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
     let led_count = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if led_count == 0 {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Device has no LEDs to identify: {}",
             tracked.info.name
-        ));
+        ))
+        .into_response();
     }
 
     let backend_id = resolved_backend_id(&tracked.info);
@@ -493,7 +489,7 @@ pub async fn identify_device(
             .await
         {
             Ok(prepared) => prepared,
-            Err(response) => return response,
+            Err(error) => return error.into_response(),
         };
     debug!(
         backend_id = %backend_id,
@@ -507,7 +503,7 @@ pub async fn identify_device(
         "identify enabling direct control and issuing initial on-frame"
     );
 
-    if let Err(response) = start_identify_output(
+    if let Err(error) = start_identify_output(
         &state,
         &direct_backend,
         device_id,
@@ -520,7 +516,7 @@ pub async fn identify_device(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return response;
+        return error.into_response();
     }
 
     tracing::info!(
@@ -546,12 +542,12 @@ pub async fn identify_device(
         direct_control,
     ));
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "identifying": true,
-        "duration_ms": duration_ms,
-        "color": color,
-    }))
+    ApiResponse::ok(IdentifyDeviceResponse {
+        device_id: device_id.to_string(),
+        identifying: true,
+        duration_ms,
+        color,
+    })
 }
 
 /// `POST /api/v1/devices/:id/zones/:zone_id/identify` — Flash a single zone.
@@ -564,43 +560,45 @@ pub async fn identify_zone(
     Path((id, zone_id)): Path<(String, String)>,
     body: Option<Json<IdentifyRequest>>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let zone_index = match resolve_zone_index(&tracked.info, &zone_id) {
         Ok(index) => index,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let total_leds = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if total_leds == 0 {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Device has no LEDs to identify: {}",
             tracked.info.name
-        ));
+        ))
+        .into_response();
     }
 
     let duration_ms = body.as_ref().and_then(|b| b.duration_ms).unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
-        return ApiError::validation("duration_ms must be between 1 and 120000");
+        return DomainError::validation("duration_ms must be between 1 and 120000").into_response();
     }
-    let color = match body.as_ref().and_then(|b| b.color.as_deref()) {
-        Some(color) => match parse_hex_color(color) {
-            Some(normalized) => Some(normalized),
-            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+    let requested_color = match body.as_ref().and_then(|b| b.color.as_deref()) {
+        Some(color) => match Rgb::from_hex(color.trim()) {
+            Ok(color) => Some(color),
+            Err(_) => {
+                return DomainError::validation("color must be a hex value (RRGGBB or RGB)")
+                    .into_response();
+            }
         },
         None => None,
     };
-    let identify_rgb = color
-        .as_deref()
-        .and_then(parse_hex_rgb)
-        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let color = requested_color.map(identify_color_echo);
+    let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
     let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
@@ -615,10 +613,10 @@ pub async fn identify_zone(
             .await
         {
             Ok(prepared) => prepared,
-            Err(response) => return response,
+            Err(error) => return error.into_response(),
         };
 
-    if let Err(response) = start_identify_output(
+    if let Err(error) = start_identify_output(
         &state,
         &direct_backend,
         device_id,
@@ -631,7 +629,7 @@ pub async fn identify_zone(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return response;
+        return error.into_response();
     }
 
     let zone_name = tracked.info.zones[zone_index].name.clone();
@@ -656,14 +654,14 @@ pub async fn identify_zone(
         direct_control,
     ));
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "zone_id": zone_id,
-        "zone_name": zone_name,
-        "identifying": true,
-        "duration_ms": duration_ms,
-        "color": color,
-    }))
+    ApiResponse::ok(IdentifyZoneResponse {
+        device_id: device_id.to_string(),
+        zone_id,
+        zone_name,
+        identifying: true,
+        duration_ms,
+        color,
+    })
 }
 
 /// `POST /api/v1/devices/:id/attachments/:slot_id/identify` — Flash a single
@@ -677,21 +675,22 @@ pub async fn identify_attachment(
     Path((id, slot_id)): Path<(String, String)>,
     body: Option<Json<IdentifyAttachmentRequest>>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let total_leds = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if total_leds == 0 {
-        return ApiError::conflict(format!(
+        return DomainError::conflict(format!(
             "Device has no LEDs to identify: {}",
             tracked.info.name
-        ));
+        ))
+        .into_response();
     }
 
     let duration_ms = body
@@ -699,19 +698,20 @@ pub async fn identify_attachment(
         .and_then(|b| b.base.duration_ms)
         .unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
-        return ApiError::validation("duration_ms must be between 1 and 120000");
+        return DomainError::validation("duration_ms must be between 1 and 120000").into_response();
     }
-    let color = match body.as_ref().and_then(|b| b.base.color.as_deref()) {
-        Some(color) => match parse_hex_color(color) {
-            Some(normalized) => Some(normalized),
-            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+    let requested_color = match body.as_ref().and_then(|b| b.base.color.as_deref()) {
+        Some(color) => match Rgb::from_hex(color.trim()) {
+            Ok(color) => Some(color),
+            Err(_) => {
+                return DomainError::validation("color must be a hex value (RRGGBB or RGB)")
+                    .into_response();
+            }
         },
         None => None,
     };
-    let identify_rgb = color
-        .as_deref()
-        .and_then(parse_hex_rgb)
-        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let color = requested_color.map(identify_color_echo);
+    let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
     let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
@@ -736,7 +736,7 @@ pub async fn identify_attachment(
             identify_color,
         ) {
             Ok(frame) => frame,
-            Err(msg) => return ApiError::not_found(msg),
+            Err(error) => return error.into_response(),
         }
     };
 
@@ -747,10 +747,10 @@ pub async fn identify_attachment(
             .await
         {
             Ok(prepared) => prepared,
-            Err(response) => return response,
+            Err(error) => return error.into_response(),
         };
 
-    if let Err(response) = start_identify_output(
+    if let Err(error) = start_identify_output(
         &state,
         &direct_backend,
         device_id,
@@ -763,7 +763,7 @@ pub async fn identify_attachment(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return response;
+        return error.into_response();
     }
 
     tracing::info!(
@@ -788,15 +788,15 @@ pub async fn identify_attachment(
         direct_control,
     ));
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "slot_id": slot_id,
-        "binding_index": binding_index,
-        "instance": instance,
-        "identifying": true,
-        "duration_ms": duration_ms,
-        "color": color,
-    }))
+    ApiResponse::ok(IdentifyAttachmentResponse {
+        device_id: device_id.to_string(),
+        slot_id,
+        binding_index,
+        instance,
+        identifying: true,
+        duration_ms,
+        color,
+    })
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────
@@ -887,14 +887,12 @@ pub(super) async fn summarize_device_for_response(
 pub(super) async fn refreshed_device_summary(
     state: &AppState,
     device_id: DeviceId,
-) -> Result<Option<DeviceSummary>, Response> {
-    let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return Ok(None);
-    };
+) -> Option<DeviceSummary> {
+    let tracked = state.device_registry.get(&device_id).await?;
     let layout_device_id = ensure_default_logical_entry(state, &tracked.info).await;
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
 
-    Ok(Some(
+    Some(
         summarize_device_for_response(
             state,
             &tracked.info,
@@ -904,7 +902,7 @@ pub(super) async fn refreshed_device_summary(
             metadata.as_ref(),
         )
         .await,
-    ))
+    )
 }
 
 fn device_connection_summary(
@@ -972,30 +970,8 @@ fn brightness_percent(brightness: f32) -> u8 {
 }
 
 fn scale_rgb(color: [u8; 3], brightness: f32) -> [u8; 3] {
-    let factor = brightness_factor(brightness);
-    [
-        scale_channel(color[0], factor),
-        scale_channel(color[1], factor),
-        scale_channel(color[2], factor),
-    ]
-}
-
-fn brightness_factor(brightness: f32) -> u16 {
-    let target = f64::from(brightness.clamp(0.0, 1.0)) * f64::from(u8::MAX);
-    (0_u16..=u16::from(u8::MAX))
-        .min_by(|left, right| {
-            let left_delta = (f64::from(*left) - target).abs();
-            let right_delta = (f64::from(*right) - target).abs();
-            left_delta
-                .partial_cmp(&right_delta)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .expect("brightness factor search range should be non-empty")
-}
-
-fn scale_channel(value: u8, factor: u16) -> u8 {
-    let scaled = (u16::from(value) * factor) / u16::from(u8::MAX);
-    u8::try_from(scaled).unwrap_or(u8::MAX)
+    let scaled = Rgb::new(color[0], color[1], color[2]).scale(brightness);
+    [scaled.r, scaled.g, scaled.b]
 }
 
 async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -> String {
@@ -1152,16 +1128,14 @@ async fn resolve_device_id(
     Ok(matches.first().copied())
 }
 
-pub(super) async fn resolve_device_id_or_response(
+pub(super) async fn resolve_device_id_or_error(
     state: &AppState,
     id_or_name: &str,
-) -> Result<DeviceId, Response> {
+) -> Result<DeviceId, DomainError> {
     match resolve_device_id(state, id_or_name).await {
         Ok(Some(id)) => Ok(id),
-        Ok(None) => Err(ApiError::not_found(format!(
-            "Device not found: {id_or_name}"
-        ))),
-        Err(ResolveDeviceError::AmbiguousName(name)) => Err(ApiError::conflict(format!(
+        Ok(None) => Err(DomainError::not_found(ResourceKind::Device, id_or_name)),
+        Err(ResolveDeviceError::AmbiguousName(name)) => Err(DomainError::conflict(format!(
             "Device name is ambiguous: {name}"
         ))),
     }
@@ -1333,10 +1307,10 @@ async fn start_identify_output(
     device_id: DeviceId,
     colors: &[[u8; 3]],
     device_name: &str,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     match write_identify_output_if_running(state, direct_backend, device_id, colors).await {
         Ok(true) => Ok(()),
-        Ok(false) => Err(ApiError::conflict(format!(
+        Ok(false) => Err(DomainError::conflict(format!(
             "Cannot identify {device_name} while global output is paused"
         ))),
         Err(error) => {
@@ -1345,7 +1319,7 @@ async fn start_identify_output(
                 error = %error,
                 "identify initial write failed"
             );
-            Err(ApiError::internal(format!(
+            Err(DomainError::Internal(anyhow::anyhow!(
                 "Failed to start identify flash for {device_name}: {error}"
             )))
         }
@@ -1372,18 +1346,18 @@ async fn prepare_identify_backend(
     info: &DeviceInfo,
     device_state: DeviceState,
     backend_id: &str,
-) -> Result<(BackendIo, bool, DirectControlGuard), Response> {
+) -> Result<(BackendIo, bool, DirectControlGuard), DomainError> {
     let manager = Arc::clone(&state.backend_manager);
     let direct_backend = {
         let manager = manager.lock().await;
         let Some(direct_backend) = manager.backend_io(backend_id) else {
             if !device_state.is_renderable() {
-                return Err(ApiError::conflict(format!(
+                return Err(DomainError::conflict(format!(
                     "Device is not connected: {} (state={device_state})",
                     info.name
                 )));
             }
-            return Err(ApiError::internal(format!(
+            return Err(DomainError::Internal(anyhow::anyhow!(
                 "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
                 info.name
             )));
@@ -1402,7 +1376,7 @@ async fn prepare_identify_backend(
             led_count = info.total_led_count(),
             "identify requested for non-renderable device but backend cannot temporarily connect it"
         );
-        return Err(ApiError::conflict(format!(
+        return Err(DomainError::conflict(format!(
             "Device is not connected: {} (state={device_state})",
             info.name
         )));
@@ -1426,7 +1400,7 @@ async fn prepare_identify_backend(
                 error = %error,
                 "temporary identify connect failed"
             );
-            return Err(ApiError::conflict(format!(
+            return Err(DomainError::conflict(format!(
                 "Device is not connected and temporary identify failed for {}: {error}",
                 info.name
             )));
@@ -1445,7 +1419,7 @@ async fn prepare_identify_backend(
         );
         true
     } else {
-        return Err(ApiError::conflict(format!(
+        return Err(DomainError::conflict(format!(
             "Device is not connected: {} (state={device_state})",
             info.name
         )));
@@ -1459,35 +1433,20 @@ async fn prepare_identify_backend(
     Ok((direct_backend, disconnect_after_identify, direct_control))
 }
 
-fn parse_hex_color(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    let color = trimmed.strip_prefix('#').unwrap_or(trimmed);
-    if color.len() != 6 || !color.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(format!("#{}", color.to_ascii_uppercase()))
+/// The identify responses echo the requested color back as uppercase
+/// `#RRGGBB`, whatever casing or shorthand the request used.
+fn identify_color_echo(color: Rgb) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b)
 }
 
-fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
-    let color = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
-    if color.len() != 6 {
-        return None;
-    }
-
-    let red = u8::from_str_radix(&color[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&color[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&color[4..6], 16).ok()?;
-    Some([red, green, blue])
+fn identify_color_channels(color: Rgb) -> [u8; 3] {
+    [color.r, color.g, color.b]
 }
 
 // ── Identify helpers ─────────────────────────────────────────────────────
 
 /// Resolve a zone specifier (`"zone_0"`, `"0"`, or zone name) to an index.
-#[allow(
-    clippy::result_large_err,
-    reason = "API helpers return ready-made HTTP responses for ergonomic handler control flow"
-)]
-fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, Response> {
+fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, DomainError> {
     // Try "zone_N" format
     if let Some(stripped) = zone_id.strip_prefix("zone_")
         && let Ok(index) = stripped.parse::<usize>()
@@ -1511,16 +1470,7 @@ fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, Respons
         }
     }
 
-    Err(ApiError::not_found(format!(
-        "Zone not found: {zone_id} (device has {} zone(s): {})",
-        info.zones.len(),
-        info.zones
-            .iter()
-            .enumerate()
-            .map(|(i, z)| format!("zone_{i}={}", z.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )))
+    Err(DomainError::not_found(ResourceKind::Zone, zone_id))
 }
 
 /// Build a full-device LED frame with only one zone lit.
@@ -1557,7 +1507,7 @@ fn build_attachment_identify_frame(
     target: ComponentIdentifyTarget<'_>,
     total_leds: usize,
     color: [u8; 3],
-) -> Result<Vec<[u8; 3]>, String> {
+) -> Result<Vec<[u8; 3]>, DomainError> {
     let ComponentIdentifyTarget {
         device_id,
         slot_id,
@@ -1567,23 +1517,13 @@ fn build_attachment_identify_frame(
     let device_key = device_id.to_string();
     let profile = profiles
         .get(&device_key)
-        .ok_or_else(|| format!("No attachment profile for device {device_id}"))?;
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Profile, device_id))?;
 
     let slot = profile
         .slots
         .iter()
         .find(|s| s.id == slot_id)
-        .ok_or_else(|| {
-            format!(
-                "Slot '{slot_id}' not found (available: {})",
-                profile
-                    .slots
-                    .iter()
-                    .map(|s| s.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
+        .ok_or_else(|| DomainError::not_found(ResourceKind::AttachmentSlot, slot_id))?;
 
     let slot_bindings: Vec<(usize, &ComponentBinding)> = profile
         .bindings
@@ -1593,7 +1533,10 @@ fn build_attachment_identify_frame(
         .collect();
 
     if slot_bindings.is_empty() {
-        return Err(format!("No enabled bindings in slot '{slot_id}'"));
+        return Err(DomainError::validation_field(
+            "slot_id",
+            format!("No enabled bindings in slot '{slot_id}'"),
+        ));
     }
     let (start, led_count) = if let Some(instance_index) = instance {
         resolve_attachment_instance_range(
@@ -1622,7 +1565,7 @@ fn resolve_attachment_instance_range(
     slot: &ComponentSlot,
     binding_index: usize,
     instance_index: u32,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize), DomainError> {
     let available = slot_bindings
         .iter()
         .map(|(index, _)| index.to_string())
@@ -1632,20 +1575,26 @@ fn resolve_attachment_instance_range(
         .iter()
         .find(|(index, _)| *index == binding_index)
         .ok_or_else(|| {
-            format!(
-                "Binding index {binding_index} not found in slot '{slot_id}' (available: {available})",
-                slot_id = slot.id
+            DomainError::validation_field(
+                "binding_index",
+                format!(
+                    "Binding index {binding_index} not found in slot '{slot_id}' (available: {available})",
+                    slot_id = slot.id
+                ),
             )
         })?;
 
-    let template = registry
-        .get(&binding.template_id)
-        .ok_or_else(|| format!("Attachment template '{}' not found", binding.template_id))?;
+    let template = registry.get(&binding.template_id).ok_or_else(|| {
+        DomainError::not_found(ResourceKind::AttachmentTemplate, &binding.template_id)
+    })?;
     let total_instances = binding.instances.max(1);
     if instance_index >= total_instances {
-        return Err(format!(
-            "Instance {instance_index} out of range for binding {binding_index} in slot '{slot_id}' (instances: {total_instances})",
-            slot_id = slot.id
+        return Err(DomainError::validation_field(
+            "instance",
+            format!(
+                "Instance {instance_index} out of range for binding {binding_index} in slot '{slot_id}' (instances: {total_instances})",
+                slot_id = slot.id
+            ),
         ));
     }
 
@@ -1665,16 +1614,16 @@ fn resolve_attachment_component_range(
     slot_bindings: &[(usize, &ComponentBinding)],
     slot: &ComponentSlot,
     component_index: usize,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize), DomainError> {
     let mut sorted = slot_bindings
         .iter()
         .map(|(binding_index, binding)| {
             let template = registry.get(&binding.template_id).ok_or_else(|| {
-                format!("Attachment template '{}' not found", binding.template_id)
+                DomainError::not_found(ResourceKind::AttachmentTemplate, &binding.template_id)
             })?;
             Ok((*binding_index, *binding, template))
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, DomainError>>()?;
     sorted.sort_by(|left, right| {
         left.1
             .led_offset
@@ -1703,8 +1652,11 @@ fn resolve_attachment_component_range(
         .iter()
         .map(|(_, binding)| usize::try_from(binding.instances.max(1)).unwrap_or(usize::MAX))
         .fold(0_usize, usize::saturating_add);
-    Err(format!(
-        "Component index {component_index} out of range for slot '{slot_id}' (available components: {available})",
-        slot_id = slot.id
+    Err(DomainError::validation_field(
+        "binding_index",
+        format!(
+            "Component index {component_index} out of range for slot '{slot_id}' (available components: {available})",
+            slot_id = slot.id
+        ),
     ))
 }

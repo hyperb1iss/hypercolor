@@ -44,7 +44,7 @@ per-pixel work runs. `compose` consumes the layer directly via `Vec::pop`,
 so there is no clone on the happy path.
 
 Blend math runs in premultiplied linear-light sRGB. Every non-bypass pixel
-goes `Rgba::to_linear_f32 → BlendMode::blend → RgbaF32::to_srgba`, which
+goes `Rgba::to_linear → BlendMode::blend → LinearRgba::to_encoded`, which
 preserves the storage contract while getting correct gamma on the math side.
 `Replace` with full opacity inside a multi-layer plan uses a direct
 `copy_from_slice` rather than the per-pixel blend loop.

@@ -2168,6 +2168,13 @@ impl IpcListener {
 
 ## 9. WebSocket Bridge
 
+> **Superseded on the message shapes.** Spec 76 wave 3.2c replaced the
+> `channels` + `config` subscribe with an array of `{topic, key?, config?}`
+> selectors, keyed `display_preview` and `interactive_preview`, and renamed the
+> `group`-spelled event fields to `zone`. The JSON shapes below record what this
+> spec's own wave shipped; `docs/content/api/websocket.md` and
+> `protocol/websocket-v1.json` are the live contract.
+
 The WebSocket at `ws://127.0.0.1:9420/api/v1/ws` is the primary real-time channel for the Leptos web frontend. It carries JSON messages for commands and events, plus binary messages for frame and spectrum data.
 
 ### 9.1 Connection & Handshake
@@ -2727,6 +2734,10 @@ let shared_bus: Arc<HypercolorBus> = Arc::new(bus);
 // Pass to trait objects
 let plugin: Box<dyn DevicePlugin> = Box::new(WledPlugin::new(shared_bus.clone()));
 ```
+
+> **Removed (Spec 76, Phase 0):** `DevicePlugin` is deleted. The `Arc<HypercolorBus>`
+> sharing pattern above still applies to any trait object; only the plugin type in
+> the example is gone. See `docs/specs/76-internal-api-unification.md` §7.4.
 
 ### 12.3 No Blocking in Event Handlers
 

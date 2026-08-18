@@ -162,7 +162,9 @@ pub struct EffectPreset {
     pub controls: HashMap<String, ControlValue>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
     pub created_at_ms: u64,
+    #[serde(default)]
     pub updated_at_ms: u64,
 }
 

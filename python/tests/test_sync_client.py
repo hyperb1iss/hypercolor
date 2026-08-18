@@ -37,14 +37,14 @@ def test_sync_client_delegates_health() -> None:
 
 def test_sync_client_delegates_output_power() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/output/power"
-        assert request.method == "PUT"
-        assert json.loads(request.content) == {"state": "paused"}
+        assert request.url.path == "/api/v1/output"
+        assert request.method == "PATCH"
+        assert json.loads(request.content) == {"power": "paused"}
         return httpx.Response(
             200,
             content=msgspec.json.encode(
                 {
-                    "data": {"state": "paused"},
+                    "data": {"power": "paused", "brightness": 0.8},
                     "meta": {
                         "api_version": "1.0",
                         "request_id": "req_123",
@@ -61,6 +61,7 @@ def test_sync_client_delegates_output_power() -> None:
         client.close()
 
     assert result.paused is True
+    assert result.brightness_percent == 80
 
 
 def test_sync_client_delegates_driver_inventory() -> None:
@@ -189,7 +190,7 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
             expected_prefix = b"/api/v1/effects/aurora%2Fmain/presets/"
             assert request.url.raw_path.startswith(expected_prefix)
             if request.url.raw_path.endswith(b"/saved-bright/apply"):
-                assert json.loads(request.content) == {"render_group": "zone-left"}
+                assert json.loads(request.content) == {"zone_id": "zone-left"}
             else:
                 assert request.url.raw_path.endswith(b"/bundled-calm/apply")
                 assert request.content == b""
@@ -218,7 +219,7 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
         result = client.apply_effect_preset(
             "aurora/main",
             "saved-bright",
-            render_group="zone-left",
+            zone_id="zone-left",
         )
         ungrouped_result = client.apply_effect_preset("aurora/main", "bundled-calm")
     finally:

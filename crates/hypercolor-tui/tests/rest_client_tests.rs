@@ -51,95 +51,109 @@ fn encoded_preview_bytes() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn get_effects_enriches_summaries_with_detail_controls() {
+async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
+    let detail_hits = Arc::new(Mutex::new(0_usize));
+    let seen_query = Arc::new(Mutex::new(None::<String>));
+
+    let controls = vec![ControlDefinition {
+        id: "speed".to_string(),
+        name: "Speed".to_string(),
+        kind: ControlKind::Number,
+        control_type: ControlType::Slider,
+        default_value: ControlValue::Float(0.25),
+        min: Some(0.0),
+        max: Some(1.0),
+        step: Some(0.05),
+        labels: Vec::new(),
+        group: None,
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: Some(ControlBinding {
+            sensor: "cpu_temp".to_string(),
+            sensor_min: 30.0,
+            sensor_max: 100.0,
+            target_min: 0.0,
+            target_max: 1.0,
+            deadband: 0.5,
+            smoothing: 0.2,
+        }),
+    }];
+    let presets = vec![PresetTemplate {
+        id: hypercolor_types::library::PresetId::stable("Soft"),
+        name: "Soft".to_string(),
+        description: Some("Low energy".to_string()),
+        controls: HashMap::from([("speed".to_string(), ControlValue::Float(0.4))]),
+    }];
+
     let router = Router::new()
         .route(
             "/api/v1/effects",
-            get(|| async {
-                Json(json!({
-                    "data": {
-                        "items": [{
-                            "id": "rainbow",
-                            "name": "Rainbow Wave",
-                            "description": "Soft motion",
-                            "author": "hyperb1iss",
-                            "category": "ambient",
-                            "source": "native",
-                            "runnable": true,
-                            "tags": ["wave"],
-                            "version": "1.0.0",
-                            "audio_reactive": false
-                        }],
-                        "pagination": {
-                            "offset": 0,
-                            "limit": 50,
-                            "total": 1,
-                            "has_more": false
-                        }
+            get({
+                let seen_query = Arc::clone(&seen_query);
+                move |uri: Uri| {
+                    let seen_query = Arc::clone(&seen_query);
+                    let controls = controls.clone();
+                    let presets = presets.clone();
+                    async move {
+                        *seen_query.lock().await = uri.query().map(str::to_owned);
+                        Json(json!({
+                            "data": {
+                                "items": [{
+                                    "id": "rainbow",
+                                    "name": "Rainbow Wave",
+                                    "description": "Soft motion",
+                                    "author": "hyperb1iss",
+                                    "category": "ambient",
+                                    "source": "native",
+                                    "runnable": true,
+                                    "tags": ["wave"],
+                                    "version": "1.0.0",
+                                    "audio_reactive": false,
+                                    "controls": controls,
+                                    "presets": presets
+                                }],
+                                "pagination": {
+                                    "offset": 0,
+                                    "limit": 50,
+                                    "total": 1,
+                                    "has_more": false
+                                }
+                            }
+                        }))
                     }
-                }))
+                }
             }),
         )
+        // The per-effect detail route stays mounted as a tripwire: a
+        // regression back to per-row hydration would light it up.
         .route(
             "/api/v1/effects/{id}",
-            get(|Path(id): Path<String>| async move {
-                assert_eq!(id, "rainbow");
-
-                let controls = vec![ControlDefinition {
-                    id: "speed".to_string(),
-                    name: "Speed".to_string(),
-                    kind: ControlKind::Number,
-                    control_type: ControlType::Slider,
-                    default_value: ControlValue::Float(0.25),
-                    min: Some(0.0),
-                    max: Some(1.0),
-                    step: Some(0.05),
-                    labels: Vec::new(),
-                    group: None,
-                    tooltip: None,
-                    aspect_lock: None,
-                    preview_source: None,
-                    binding: Some(ControlBinding {
-                        sensor: "cpu_temp".to_string(),
-                        sensor_min: 30.0,
-                        sensor_max: 100.0,
-                        target_min: 0.0,
-                        target_max: 1.0,
-                        deadband: 0.5,
-                        smoothing: 0.2,
-                    }),
-                }];
-                let presets = vec![PresetTemplate {
-                    id: hypercolor_types::library::PresetId::stable("Soft"),
-                    name: "Soft".to_string(),
-                    description: Some("Low energy".to_string()),
-                    controls: HashMap::from([("speed".to_string(), ControlValue::Float(0.4))]),
-                }];
-                let active_control_values =
-                    HashMap::from([("speed".to_string(), ControlValue::Float(0.75))]);
-
-                Json(json!({
-                    "data": {
-                        "id": "rainbow",
-                        "name": "Rainbow Wave",
-                        "description": "Soft motion",
-                        "author": "hyperb1iss",
-                        "category": "ambient",
-                        "source": "native",
-                        "runnable": true,
-                        "tags": ["wave"],
-                        "version": "1.0.0",
-                        "audio_reactive": false,
-                        "controls": controls,
-                        "presets": presets,
-                        "active_control_values": active_control_values
+            get({
+                let detail_hits = Arc::clone(&detail_hits);
+                move |Path(_id): Path<String>| {
+                    let detail_hits = Arc::clone(&detail_hits);
+                    async move {
+                        *detail_hits.lock().await += 1;
+                        Json(json!({ "data": {} }))
                     }
-                }))
+                }
             }),
         );
 
     let client = client_for(spawn_server(router).await);
     let effects = client.get_effects().await.expect("fetch effects");
+
+    assert_eq!(
+        seen_query.lock().await.as_deref(),
+        Some("include=controls,presets"),
+        "the catalog request asks the daemon to expand each summary"
+    );
+    assert_eq!(
+        *detail_hits.lock().await,
+        0,
+        "hydrating the catalog costs no per-effect round trips"
+    );
 
     assert_eq!(effects.len(), 1);
     assert_eq!(effects[0].id, "rainbow");
@@ -147,8 +161,7 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
     assert_eq!(effects[0].controls[0].id, "speed");
     assert_eq!(effects[0].controls[0].control_type, "slider");
     // True defaults are preserved — live values are per-zone and must NOT
-    // be merged over `default_value` (the daemon's active_control_values
-    // reflect only the primary zone).
+    // be merged over `default_value`.
     assert_eq!(effects[0].controls[0].default_value.as_f32(), Some(0.25));
     assert_eq!(effects[0].presets.len(), 1);
     assert_eq!(
@@ -170,7 +183,18 @@ async fn get_status_maps_system_and_active_effect_responses() {
                         "device_count": 3,
                         "active_effect": "Rainbow Wave",
                         "active_scene": "Focus",
-                        "active_scene_snapshot_locked": true
+                        "active_scene_snapshot_locked": true,
+                        "render_loop": {
+                            "state": "running",
+                            "fps_tier": "sixty",
+                            "target_fps": 60,
+                            "ceiling_fps": 60,
+                            "capacity_fps": 59.8,
+                            "delivered_fps": 59.4,
+                            "actual_fps": 59.8,
+                            "consecutive_misses": 0,
+                            "total_frames": 12_000
+                        }
                     }
                 }))
             }),
@@ -201,6 +225,81 @@ async fn get_status_maps_system_and_active_effect_responses() {
     assert_eq!(status.scene_name.as_deref(), Some("Focus"));
     assert!(status.scene_snapshot_locked);
     assert_eq!(status.device_count, 3);
+    // FPS lives under render_loop. A flat field here would read zero and
+    // the status view would render a stalled render loop forever.
+    assert_eq!(status.fps_target, 60.0);
+    assert_eq!(status.fps_actual, 59.8);
+}
+
+/// A status refresh must not erase FPS.
+///
+/// Every daemon event triggers a REST status refresh, and the refreshed
+/// state replaces the whole `DaemonState` a metrics tick just filled in.
+/// While this mapping hardcoded zeros, FPS survived at most one metrics
+/// interval before the next event blanked it, so the dashboard gauge and
+/// title bar effectively never showed a number.
+#[tokio::test]
+async fn get_status_reads_fps_from_the_render_loop_block() {
+    let router = Router::new()
+        .route(
+            "/api/v1/status",
+            get(|| async {
+                Json(json!({
+                    "data": {
+                        "running": true,
+                        "global_brightness": 80,
+                        "device_count": 0,
+                        "active_effect": null,
+                        "active_scene": null,
+                        "render_loop": {
+                            "state": "running",
+                            "target_fps": 45,
+                            "actual_fps": 44.2
+                        }
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/effects/active",
+            get(|| async { Json(json!({ "data": null })) }),
+        );
+
+    let client = client_for(spawn_server(router).await);
+    let status = client.get_status().await.expect("fetch status");
+
+    assert_eq!(status.fps_target, 45.0);
+    assert_eq!(status.fps_actual, 44.2);
+}
+
+/// An absent render_loop block is tolerated rather than fatal.
+#[tokio::test]
+async fn get_status_survives_a_status_payload_without_a_render_loop() {
+    let router = Router::new()
+        .route(
+            "/api/v1/status",
+            get(|| async {
+                Json(json!({
+                    "data": {
+                        "running": false,
+                        "global_brightness": 10,
+                        "device_count": 0,
+                        "active_effect": null,
+                        "active_scene": null
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/effects/active",
+            get(|| async { Json(json!({ "data": null })) }),
+        );
+
+    let client = client_for(spawn_server(router).await);
+    let status = client.get_status().await.expect("fetch status");
+
+    assert_eq!(status.fps_target, 0.0);
+    assert_eq!(status.fps_actual, 0.0);
 }
 
 #[tokio::test]
@@ -595,7 +694,7 @@ async fn update_control_wraps_payload_under_controls() {
     let router =
         Router::new()
             .route(
-                "/api/v1/effects/current/controls",
+                "/api/v1/effects/active/controls",
                 patch(
                     |State(captured): State<Arc<Mutex<Option<Value>>>>,
                      Json(payload): Json<Value>| async move {
@@ -651,7 +750,17 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
         post(|| async {
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "invalid favorite payload" })),
+                Json(json!({
+                    "error": {
+                        "code": "validation_error",
+                        "message": "invalid favorite payload"
+                    },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_test",
+                        "timestamp": "2026-08-16T00:00:00.000Z"
+                    }
+                })),
             )
         }),
     );
@@ -709,11 +818,11 @@ async fn get_active_scene_maps_zones_and_lock_state() {
                     "priority": 0,
                     "kind": "named",
                     "mutation_mode": "snapshot",
-                    "groups": [
+                    "zones": [
                         zone_json(ZONE_A, "Primary", "primary", Some(EFFECT_RAINBOW), true),
                         zone_json(ZONE_B, "Shelf", "custom", None, false),
                     ],
-                    "groups_revision": 42,
+                    "zones_revision": 42,
                     "unassigned_behavior": "off"
                 }
             }))
@@ -730,7 +839,7 @@ async fn get_active_scene_maps_zones_and_lock_state() {
     assert_eq!(scene.id, "scene-1");
     assert_eq!(scene.name, "Desk");
     assert!(scene.snapshot_locked);
-    assert_eq!(scene.groups_revision, 42);
+    assert_eq!(scene.zones_revision, 42);
     assert!(scene.multi_zone());
     assert_eq!(scene.zones.len(), 2);
 
@@ -763,7 +872,14 @@ async fn get_active_scene_returns_none_without_active_scene() {
         get(|| async {
             (
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": "No active scene" })),
+                Json(json!({
+                    "error": { "code": "not_found", "message": "scene not found: active" },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_test",
+                        "timestamp": "2026-08-16T00:00:00.000Z"
+                    }
+                })),
             )
         }),
     );
@@ -817,7 +933,7 @@ async fn get_scenes_maps_summaries() {
 }
 
 #[tokio::test]
-async fn apply_effect_sends_render_group_and_controls() {
+async fn apply_effect_sends_zone_id_and_controls() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -841,12 +957,12 @@ async fn apply_effect_sends_render_group_and_controls() {
         .expect("apply effect");
 
     let body = captured.lock().await.clone().expect("captured apply body");
-    assert_eq!(body["render_group"], json!(ZONE_B));
+    assert_eq!(body["zone_id"], json!(ZONE_B));
     assert_eq!(body["controls"], json!({ "speed": 0.5 }));
 }
 
 #[tokio::test]
-async fn apply_effect_omits_render_group_for_primary() {
+async fn apply_effect_omits_zone_id_for_primary() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -901,14 +1017,14 @@ async fn update_zone_sends_if_match_revision() {
 #[tokio::test]
 async fn patch_zone_controls_targets_legacy_layer_without_if_match() {
     let router = Router::new().route(
-        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
         patch(
-            |Path((scene_id, group_id, layer_id)): Path<(String, String, String)>,
+            |Path((scene_id, zone_id, layer_id)): Path<(String, String, String)>,
              headers: HeaderMap,
              Json(body): Json<Value>| async move {
                 assert_eq!(scene_id, "scene-1");
                 // Legacy layer id == zone id
-                assert_eq!(group_id, ZONE_B);
+                assert_eq!(zone_id, ZONE_B);
                 assert_eq!(layer_id, ZONE_B);
                 assert!(headers.get(header::IF_MATCH).is_none());
                 assert_eq!(body, json!({ "controls": { "speed": 0.9 } }));
@@ -945,11 +1061,11 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
 }
 
 #[tokio::test]
-async fn reset_controls_scopes_to_render_group() {
+async fn reset_controls_scopes_to_zone() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/effects/current/reset",
+            "/api/v1/effects/active/reset",
             post(
                 |State(captured): State<Arc<Mutex<Option<Value>>>>,
                  Json(body): Json<Value>| async move {
@@ -968,7 +1084,7 @@ async fn reset_controls_scopes_to_render_group() {
         .expect("zone-scoped reset");
     assert_eq!(
         captured.lock().await.clone().expect("captured body"),
-        json!({ "render_group": ZONE_B })
+        json!({ "zone_id": ZONE_B })
     );
 
     client.reset_controls(None).await.expect("primary reset");

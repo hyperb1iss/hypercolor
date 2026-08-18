@@ -10,7 +10,6 @@ from urllib.parse import quote
 import httpx
 import msgspec
 
-from ._generated.api.config import set_config_value as generated_set_config_value
 from ._generated.api.controls import (
     apply_control_surface_values as generated_apply_control_surface_values,
     get_device_control_surface as generated_get_device_control_surface,
@@ -32,7 +31,7 @@ from ._generated.api.effects import (
     get_effect as generated_get_effect,
     list_effects as generated_list_effects,
     stop_effect as generated_stop_effect,
-    update_current_controls as generated_update_current_controls,
+    update_active_controls as generated_update_active_controls,
 )
 from ._generated.api.layouts import (
     apply_layout as generated_apply_layout,
@@ -48,13 +47,10 @@ from ._generated.api.scenes import (
     activate_scene as generated_activate_scene,
     list_scenes as generated_list_scenes,
 )
-from ._generated.api.settings import (
-    list_audio_devices as generated_list_audio_devices,
-    set_brightness as generated_set_brightness,
-)
 from ._generated.api.system import (
     get_status as generated_get_status,
     health_check as generated_health_check,
+    list_audio_devices as generated_list_audio_devices,
 )
 from ._generated.models.apply_control_changes_request import ApplyControlChangesRequest
 from ._generated.models.apply_effect_request import ApplyEffectRequest
@@ -62,9 +58,7 @@ from ._generated.models.apply_profile_request import ApplyProfileRequest
 from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
-from ._generated.models.set_brightness_request import SetBrightnessRequest
-from ._generated.models.set_config_request import SetConfigRequest
-from ._generated.models.update_current_controls_request import UpdateCurrentControlsRequest
+from ._generated.models.update_active_controls_request import UpdateActiveControlsRequest
 from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.types import UNSET
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
@@ -82,7 +76,6 @@ from .exceptions import (
 )
 from .models.audio import AudioDevices, SpectrumSnapshot
 from .models.common import (
-    BrightnessUpdate,
     ConfigMutationResult,
     DiscoverResult,
     IdentifyResult,
@@ -112,7 +105,7 @@ from .models.library import (
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
 from .models.spatial import SpatialLayout
-from .models.system import HealthStatus, OutputPowerState, SystemState
+from .models.system import HealthStatus, OutputState, SystemState
 from .models.zone import (
     UnassignedBehaviorResult,
     ZoneDeleteResult,
@@ -217,42 +210,56 @@ class HypercolorClient:
 
         return await self.get_status()
 
-    async def get_brightness(self) -> BrightnessUpdate:
-        """Return the global daemon brightness."""
-        return await self._request_model("GET", "/settings/brightness", BrightnessUpdate)
+    async def get_output(self) -> OutputState:
+        """Return global output power and brightness."""
 
-    async def set_brightness(self, brightness: int) -> BrightnessUpdate:
-        """Set the global daemon brightness."""
-        return await self._generated_model(
-            generated_set_brightness._get_kwargs(
-                body=SetBrightnessRequest(brightness=brightness),
-            ),
-            BrightnessUpdate,
-        )
+        return await self._request_model("GET", "/output", OutputState)
 
-    async def get_output_power(self) -> OutputPowerState:
-        """Return the current global output power state."""
+    async def set_output(
+        self,
+        *,
+        power: str | None = None,
+        brightness: float | None = None,
+    ) -> OutputState:
+        """Patch global output power, brightness, or both.
 
-        return await self._request_model("GET", "/output/power", OutputPowerState)
+        The daemon refuses a patch that sets neither field, so at least
+        one argument is required. Brightness is the wire's `0.0` to
+        `1.0` float, not a percentage.
+        """
 
-    async def set_output_power(self, *, paused: bool) -> OutputPowerState:
-        """Set global output power without discarding active effect state."""
+        body: dict[str, Any] = {}
+        if power is not None:
+            body["power"] = power
+        if brightness is not None:
+            body["brightness"] = brightness
+        if not body:
+            message = "set_output requires power, brightness, or both"
+            raise ValueError(message)
+        return await self._request_model("PATCH", "/output", OutputState, body=body)
 
-        state = "paused" if paused else "running"
-        return await self._request_model(
-            "PUT",
-            "/output/power",
-            OutputPowerState,
-            body={"state": state},
-        )
+    async def get_brightness(self) -> float:
+        """Return the global daemon brightness as a `0.0` to `1.0` float."""
 
-    async def pause_rendering(self) -> OutputPowerState:
-        """Pause all output while preserving active effect state."""
+        return (await self.get_output()).brightness
+
+    async def set_brightness(self, brightness: float) -> OutputState:
+        """Set the global daemon brightness as a `0.0` to `1.0` float."""
+
+        return await self.set_output(brightness=brightness)
+
+    async def set_output_power(self, *, paused: bool) -> OutputState:
+        """Set global output power without discarding live scene state."""
+
+        return await self.set_output(power="paused" if paused else "running")
+
+    async def pause_rendering(self) -> OutputState:
+        """Pause all output while preserving live scene state."""
 
         return await self.set_output_power(paused=True)
 
-    async def resume_rendering(self) -> OutputPowerState:
-        """Resume output from the preserved active effect state."""
+    async def resume_rendering(self) -> OutputState:
+        """Resume output from the preserved live scene state."""
 
         return await self.set_output_power(paused=False)
 
@@ -401,11 +408,11 @@ class HypercolorClient:
         controls: Mapping[str, Any] | None = None,
         transition: TransitionSpec | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         """Apply an effect with optional control overrides.
 
-        ``render_group`` targets a specific zone by id; omitted applies to
+        ``zone_id`` targets a specific zone by id; omitted applies to
         the scene's primary zone.
         """
         body = _drop_none(
@@ -413,7 +420,7 @@ class HypercolorClient:
                 "controls": dict(controls) if controls is not None else None,
                 "transition": _to_json_mapping(transition),
                 "preset_id": preset_id,
-                "render_group": render_group,
+                "zone_id": zone_id,
             }
         )
         kwargs = (
@@ -434,10 +441,10 @@ class HypercolorClient:
         effect_id: str,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> ApplyEffectResult:
         """Apply a bundled or saved preset to an effect and optional zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
             "POST",
             f"/effects/{_quote_path(effect_id)}/presets/{_quote_path(preset_id)}/apply",
@@ -479,8 +486,8 @@ class HypercolorClient:
     ) -> ControlUpdateResult:
         """Update controls on the active effect."""
         return await self._generated_model(
-            generated_update_current_controls._get_kwargs(
-                body=UpdateCurrentControlsRequest.from_dict({"controls": dict(controls)}),
+            generated_update_active_controls._get_kwargs(
+                body=UpdateActiveControlsRequest.from_dict({"controls": dict(controls)}),
             ),
             ControlUpdateResult,
         )
@@ -505,11 +512,11 @@ class HypercolorClient:
             headers=_if_match_headers(if_match),
         )
 
-    async def reset_controls(self, *, render_group: str | None = None) -> MutationResult:
+    async def reset_controls(self, *, zone_id: str | None = None) -> MutationResult:
         """Reset effect controls to defaults, optionally scoped to one zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
-            "POST", "/effects/current/reset", MutationResult, body=body or None
+            "POST", "/effects/active/reset", MutationResult, body=body or None
         )
 
     async def get_control_surfaces(
@@ -767,7 +774,7 @@ class HypercolorClient:
     # ── Zones (render groups) ────────────────────────────────────────────
     #
     # Every zone structure mutation is guarded by an
-    # ``If-Match: <groups_revision>`` precondition. A stale revision raises
+    # ``If-Match: <zones_revision>`` precondition. A stale revision raises
     # HypercolorPreconditionError carrying the authoritative revision —
     # refetch, rebase, retry.
 
@@ -997,10 +1004,10 @@ class HypercolorClient:
         self,
         preset_id: str,
         *,
-        render_group: str | None = None,
+        zone_id: str | None = None,
     ) -> PresetApplyResult:
         """Apply a saved preset, optionally scoped to one zone."""
-        body = _drop_none({"render_group": render_group})
+        body = _drop_none({"zone_id": zone_id})
         return await self._request_model(
             "POST",
             f"/library/presets/{_quote_path(preset_id)}/apply",
@@ -1152,17 +1159,19 @@ class HypercolorClient:
         *,
         live: bool = True,
     ) -> ConfigMutationResult:
-        """Persist the selected audio input device."""
+        """Persist the selected audio input device.
 
-        return await self._generated_model(
-            generated_set_config_value._get_kwargs(
-                body=SetConfigRequest(
-                    key="audio.device",
-                    value=json.dumps(device_id),
-                    live=live,
-                ),
-            ),
+        The config key resource takes the value as the request body, and
+        ``live`` decides whether the daemon re-applies it to the running
+        audio pipeline.
+        """
+
+        return await self._request_model(
+            "PUT",
+            "/config/keys/audio.device",
             ConfigMutationResult,
+            body=device_id,
+            params={"live": live},
         )
 
     async def _request_items(
@@ -1201,7 +1210,7 @@ class HypercolorClient:
         path: str,
         model_type: type[ModelT],
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> ModelT:
@@ -1215,7 +1224,7 @@ class HypercolorClient:
         method: str,
         path: str,
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Any:
@@ -1227,7 +1236,7 @@ class HypercolorClient:
         method: str,
         path: str,
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Any:
@@ -1245,7 +1254,7 @@ class HypercolorClient:
         method: str,
         path: str,
         *,
-        body: Mapping[str, Any] | None = None,
+        body: Any = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
@@ -1356,11 +1365,6 @@ def _decode_error_details(content: bytes) -> ApiErrorDetails | None:
     if not isinstance(payload, dict):
         return None
     error = payload.get("error")
-    # Some replies (notably 412 revision mismatches) carry a bare string
-    # reason plus context at the top level, not the usual error object.
-    if isinstance(error, str):
-        details = {key: value for key, value in payload.items() if key not in {"error", "meta"}}
-        return ApiErrorDetails(code="error", message=error, details=details or None)
     if not isinstance(error, dict):
         return None
     code = error.get("code")

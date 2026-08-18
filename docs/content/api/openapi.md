@@ -150,5 +150,5 @@ it into a client generator.
 
 - [API overview](@/api/_index.md): the four daemon surfaces and the response envelope.
 - [REST reference](@/api/rest.md): every `/api/v1` endpoint, grouped by domain.
-- [Envelope & errors](@/api/rest-envelope-and-errors.md): the `{ data, meta }` and `{ error, meta }` shapes and the `ErrorCode`-to-HTTP-status table.
+- [Envelope & errors](@/api/rest-envelope-and-errors.md): the `{ data, meta }` and `{ error, meta }` shapes and the error-code-to-HTTP-status table.
 - [Auth & security](@/api/auth-and-security.md): the dual-key Bearer model (`HYPERCOLOR_API_KEY` for control, `HYPERCOLOR_READ_API_KEY` for read) and the loopback exemption.

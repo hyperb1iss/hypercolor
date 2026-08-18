@@ -115,7 +115,6 @@ graph TD
 
     subgraph UITooling["UI Tooling"]
         LEXT[hypercolor-leptos-ext]
-        LMAC[hypercolor-leptos-ext-macros]
     end
 
     subgraph Binaries
@@ -138,7 +137,6 @@ graph TD
     ORS & DAPI --> ORD
     DAPI & CORE --> DBI
     DAPI --> NET
-    LMAC --> LEXT
     CORE & HAL & DAPI & NET & PFS --> D
     LEXT --> D
     LEXT --> TUI
@@ -158,8 +156,7 @@ Key rules:
 - Network and hardware drivers depend on `hypercolor-driver-api`.
 - `hypercolor-driver-builtin` aggregates the optional driver crates behind
   feature flags.
-- `hypercolor-leptos-ext-macros` is a proc-macro crate with no hypercolor deps;
-  `hypercolor-leptos-ext` depends on it and on no other internal crate.
+- `hypercolor-leptos-ext` depends on no other internal crate.
 - The Platform subgraph crates isolate unsafe platform calls; `hypercolor-core`
   and the daemon consume them behind target and feature gates, so those edges
   stay off the graph. `hypercolor-platform-fs` is an unconditional daemon

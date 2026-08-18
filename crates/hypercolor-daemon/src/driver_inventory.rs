@@ -8,13 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use hypercolor_driver_api::DriverHost;
 use hypercolor_network::DriverModuleRegistry;
 
 use crate::persistence::{AtomicFileWriter, PersistenceError, serialize_json_pretty};
-use crate::runtime_state;
 
 const INVENTORY_SCHEMA_VERSION: u32 = 1;
 
@@ -96,42 +95,29 @@ pub struct DriverInventoryStore {
 }
 
 impl DriverInventoryStore {
-    /// Open durable inventory and migrate the legacy runtime cache once when needed.
+    /// Open durable inventory at its canonical path.
     ///
     /// # Errors
     ///
-    /// Returns an error when storage cannot be initialized, read, quarantined, or persisted.
-    pub fn open(
-        path: PathBuf,
-        legacy_runtime_state_path: &Path,
-    ) -> Result<Self, DriverInventoryError> {
+    /// Returns an error when storage cannot be initialized, read, or quarantined.
+    pub fn open(path: PathBuf) -> Result<Self, DriverInventoryError> {
         let writer =
             AtomicFileWriter::new(&path).map_err(|source| DriverInventoryError::Persist {
                 path: path.clone(),
                 source,
             })?;
-        let (document, migrated) = if path.exists() {
-            (load_document_or_quarantine(&path)?, false)
+        let document = if path.exists() {
+            load_document_or_quarantine(&path)?
         } else {
-            load_legacy_document(legacy_runtime_state_path)
+            DriverInventoryDocument::default()
         };
-        let store = Self {
+
+        Ok(Self {
             path,
             writer,
             operation_gate: AsyncMutex::new(()),
             document: StdMutex::new(document),
-        };
-
-        if migrated {
-            store.persist_current()?;
-            info!(
-                path = %store.path.display(),
-                legacy_path = %legacy_runtime_state_path.display(),
-                "Migrated driver inventory from runtime session state"
-            );
-        }
-
-        Ok(store)
+        })
     }
 
     /// Return the backing inventory path.
@@ -281,23 +267,6 @@ impl DriverInventoryStore {
         );
     }
 
-    fn persist_current(&self) -> Result<(), DriverInventoryError> {
-        let document = self
-            .document
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let bytes = serialize_json_pretty(&*document).map_err(DriverInventoryError::Serialize)?;
-        let pending = self.writer.reserve().admit(bytes);
-        if let Err(error) = pending.commit() {
-            warn!(
-                path = %self.path.display(),
-                %error,
-                "Failed to persist driver inventory; retry remains active"
-            );
-        }
-        Ok(())
-    }
-
     fn replace_driver_guarded(
         &self,
         _guard: &MutexGuard<'_, ()>,
@@ -369,39 +338,6 @@ fn load_document_or_quarantine(
             Ok(DriverInventoryDocument::default())
         }
     }
-}
-
-fn load_legacy_document(path: &Path) -> (DriverInventoryDocument, bool) {
-    let snapshot = match runtime_state::load(path) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            warn!(
-                path = %path.display(),
-                %error,
-                "Legacy runtime cache could not seed driver inventory"
-            );
-            None
-        }
-    };
-    let Some(snapshot) = snapshot else {
-        return (DriverInventoryDocument::default(), false);
-    };
-    if snapshot.driver_runtime_cache.is_empty() {
-        return (DriverInventoryDocument::default(), false);
-    }
-
-    let drivers = snapshot
-        .driver_runtime_cache
-        .into_iter()
-        .map(|(driver_id, cache)| (driver_id, Value::Object(cache.into_iter().collect())))
-        .collect();
-    (
-        DriverInventoryDocument {
-            drivers,
-            ..DriverInventoryDocument::default()
-        },
-        true,
-    )
 }
 
 fn quarantine_path(path: &Path) -> PathBuf {

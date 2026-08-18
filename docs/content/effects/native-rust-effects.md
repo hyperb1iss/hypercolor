@@ -110,14 +110,14 @@ The canvas dimensions come from `canvas_width` and `canvas_height`, which flow f
 `Canvas` (in `crates/hypercolor-types/src/canvas.rs`) is an `Rgba` u8 buffer in sRGB gamma space. Before you write, call `prepare_target_canvas` so the target matches the requested frame size:
 
 ```rust
-use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::canvas::{Canvas, LinearRgba};
 use crate::effect::traits::{FrameInput, prepare_target_canvas};
 
 fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
     -> anyhow::Result<()> {
     prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
 
-    let pixel = RgbaF32::new(0.8, 0.2, 1.0, 1.0).to_srgba();
+    let pixel = LinearRgba::new(0.8, 0.2, 1.0, 1.0).to_encoded();
     canvas.fill(pixel);
     Ok(())
 }
@@ -126,7 +126,7 @@ fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
 Core methods: `Canvas::new`, `fill`, `set_pixel`, `get_pixel` (out-of-bounds reads return `Rgba::BLACK`), `pixels()`, `clear()`, `width()` / `height()`, and `sample` / `sample_nearest` / `sample_bilinear` for normalized `[0,1]` lookups.
 
 {% callout(type="warning") %}
-Color controls arrive as `ControlValue::Color([f32; 4])` in **linear** RGBA (0.0-1.0), not sRGB. The UI picker is sRGB; the API converts to linear before it reaches your renderer. Do your math in linear space with `RgbaF32`, then call `to_srgba()` to land sRGB u8 for the canvas. Blending or scaling in sRGB produces muddy, perceptually wrong color. There is no `scale_rgb` helper; multiply the `RgbaF32` fields directly.
+Color controls arrive as `ControlValue::Color([f32; 4])` in **linear** RGBA (0.0-1.0), not sRGB. The UI picker is sRGB; the API converts to linear before it reaches your renderer. Do your math in linear space with `LinearRgba`, then call `to_encoded()` to land sRGB u8 for the canvas. Blending or scaling in sRGB produces muddy, perceptually wrong color. There is no `scale_rgb` helper; multiply the `LinearRgba` fields directly.
 {% end %}
 
 ### Color types
@@ -136,7 +136,7 @@ The canvas vocabulary covers the spaces an effect needs:
 | Type | Space | Use for |
 |---|---|---|
 | `Rgba` / `Rgb` | sRGB u8 | canvas output, final pixels |
-| `RgbaF32` | linear f32 | per-pixel math, blending, scaling |
+| `LinearRgba` | linear f32 | per-pixel math, blending, scaling |
 | `Oklab` | perceptual | uniform two-color gradients |
 | `Oklch` | perceptual | palette generation, hue rotation |
 
@@ -172,13 +172,13 @@ fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
     let energy = (input.audio.rms_level * self.sensitivity).clamp(0.0, 1.0);
     let glow = self.beat + input.audio.beat_pulse;
 
-    let pixel = RgbaF32::new(
+    let pixel = LinearRgba::new(
         self.color[0] * energy,
         self.color[1] * energy,
         self.color[2] * glow.min(1.0),
         1.0,
     )
-    .to_srgba();
+    .to_encoded();
     canvas.fill(pixel);
     Ok(())
 }

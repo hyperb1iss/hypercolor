@@ -887,7 +887,7 @@ UI WsContext.web_viewport_canvas_frame signal
   ↓
 ViewportPicker → CanvasPreview (live page)
   ↓ rect overlay drawn on top
-User drags rect → on_change → PATCH /api/v1/effects/current/controls
+User drags rect → on_change → PATCH /api/v1/effects/active/controls
   ↓
 WebViewportRenderer::set_control("viewport", rect)
   ↓ sample_viewport uses the new rect next frame

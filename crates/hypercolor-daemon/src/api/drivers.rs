@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -14,7 +14,8 @@ use hypercolor_types::device::{
 };
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 use crate::network;
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -120,7 +121,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         (
             status = 404,
             description = "Driver module not found",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "drivers"
@@ -130,7 +131,7 @@ pub async fn get_driver_config(
     Path(driver_id): Path<String>,
 ) -> Response {
     let Some(driver) = state.driver_registry.get(&driver_id) else {
-        return ApiError::not_found(format!("Driver not found: {driver_id}"));
+        return DomainError::not_found(ResourceKind::Driver, &driver_id).into_response();
     };
 
     let config = state.config_manager.as_ref().map_or_else(

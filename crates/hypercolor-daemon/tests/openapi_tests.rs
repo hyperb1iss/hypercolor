@@ -61,24 +61,41 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["paths"]["/api/v1/status"].is_object());
     assert!(body["paths"]["/api/v1/devices"].is_object());
     assert!(body["paths"]["/api/v1/effects"].is_object());
-    assert!(body["paths"]["/api/v1/output/power"]["get"].is_object());
-    assert!(body["paths"]["/api/v1/output/power"]["put"].is_object());
+    assert!(body["paths"]["/api/v1/output"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/output"]["patch"].is_object());
     assert_eq!(
-        body["paths"]["/api/v1/output/power"]["put"]["requestBody"]["content"]["application/json"]
-            ["schema"]["$ref"],
-        "#/components/schemas/SetOutputPowerRequest"
+        body["paths"]["/api/v1/output"]["patch"]["requestBody"]["content"]["application/json"]["schema"]
+            ["$ref"],
+        "#/components/schemas/OutputPatchRequest"
     );
-    assert!(body["components"]["schemas"]["OutputPowerResponse"].is_object());
-    assert_eq!(
-        body["paths"]["/api/v1/effects/pause"]["post"]["responses"]["200"]["content"]["application/json"]
-            ["schema"]["$ref"],
-        "#/components/schemas/ApiResponse_PauseEffectResponse"
-    );
-    assert_eq!(
-        body["paths"]["/api/v1/effects/resume"]["post"]["responses"]["200"]["content"]["application/json"]
-            ["schema"]["$ref"],
-        "#/components/schemas/ApiResponse_ResumeEffectResponse"
-    );
+    assert!(body["components"]["schemas"]["OutputResource"].is_object());
+    assert!(body["paths"]["/api/v1/system/audio-devices"]["get"].is_object());
+    // The merged routes carry no catalog entry either.
+    for retired in [
+        "/api/v1/output/power",
+        "/api/v1/settings/brightness",
+        "/api/v1/audio/devices",
+        "/api/v1/effects/pause",
+        "/api/v1/effects/resume",
+    ] {
+        assert!(
+            body["paths"][retired].is_null(),
+            "{retired} must be absent from the catalog"
+        );
+    }
+    for retired in [
+        "SetOutputPowerRequest",
+        "OutputPowerResponse",
+        "OutputPowerStatus",
+        "SetBrightnessRequest",
+        "PauseEffectResponse",
+        "ResumeEffectResponse",
+    ] {
+        assert!(
+            body["components"]["schemas"][retired].is_null(),
+            "{retired} must be absent from the schema catalog"
+        );
+    }
     assert!(body["paths"]["/api/v1/effects/{id}/apply"].is_object());
     assert_ne!(
         body["paths"]["/api/v1/effects/{id}/apply"]["post"]["requestBody"]["required"],
@@ -146,7 +163,7 @@ async fn openapi_json_is_served_with_expected_paths() {
         assert_eq!(
             body["paths"][path][method]["responses"]["403"]["content"]["application/json"]["schema"]
                 ["$ref"],
-            "#/components/schemas/ApiErrorResponse"
+            "#/components/schemas/ApiErrorBody"
         );
     }
     assert!(body["components"]["schemas"]["CaptureAuthorizationResponse"].is_object());

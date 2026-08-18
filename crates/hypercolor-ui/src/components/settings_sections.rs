@@ -44,14 +44,6 @@ where
     config.with(|cfg| cfg.as_ref().map(selector).unwrap_or_default())
 }
 
-fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
-    config
-        .drivers
-        .get(driver_id)
-        .map(|driver| driver.enabled)
-        .unwrap_or(true)
-}
-
 fn listen_scope_value(address: &str, remote_access: bool) -> String {
     if remote_access && is_loopback_listen_address(address) {
         return "all".to_owned();
@@ -863,7 +855,6 @@ pub fn NetworkSection(
                 value=access_mode
                 options=access_mode_options
                 on_change=apply_access_mode
-                restart_required=true
             />
             <Show when=move || matches!(access_mode.get().as_str(), "lan_trusted" | "lan_protected")>
                 <SettingSegmented
@@ -873,7 +864,6 @@ pub fn NetworkSection(
                     value=client_scope
                     options=client_scope_options
                     on_change=on_change
-                    restart_required=true
                 />
             </Show>
             <AdvancedDisclosure>
@@ -882,10 +872,10 @@ pub fn NetworkSection(
                 label="Listen Scope"
                 description="Who can reach the daemon API"
                 key="daemon.listen_scope"
+                policy_key="daemon.listen_address"
                 value=listen_scope
                 options=scope_options
                 on_change=apply_listen_scope
-                restart_required=true
             />
             </Show>
             <Show when=move || listen_scope.get() == "custom">
@@ -895,7 +885,6 @@ pub fn NetworkSection(
                     key="daemon.listen_address"
                     value=listen_addr
                     on_change=custom_address_change
-                    restart_required=true
                     placeholder="192.168.1.42"
                 />
             </Show>
@@ -906,7 +895,6 @@ pub fn NetworkSection(
                 value=port
                 on_change=on_change
                 min=1024.0 max=65535.0 step=1.0
-                restart_required=true
             />
             <Show when=move || access_mode.get() == "custom">
             <SettingToggle
@@ -915,7 +903,6 @@ pub fn NetworkSection(
                 key="network.allow_unauthenticated_remote_access"
                 value=allow_unauthenticated_remote_access
                 on_change=on_change
-                restart_required=true
             />
             </Show>
             <Show when=move || {
@@ -927,7 +914,6 @@ pub fn NetworkSection(
                 key="network.allowed_clients"
                 value=allowed_clients
                 on_change=allowed_clients_change
-                restart_required=true
                 placeholder="192.168.1.0/24"
             />
             </Show>
@@ -944,7 +930,6 @@ pub fn NetworkSection(
                 key="mcp.enabled"
                 value=mcp_enabled
                 on_change=on_change
-                restart_required=true
             />
             </AdvancedDisclosure>
             <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
@@ -1069,6 +1054,7 @@ pub fn RenderingSection(
                 label="Canvas Resolution"
                 description="Internal render surface size. Higher values improve gradient smoothness on large layouts at the cost of CPU"
                 key="daemon.canvas_preset"
+                policy_key="daemon.canvas_width"
                 value=canvas_preset
                 options=Signal::stored(preset_options)
                 on_change=apply_preset
@@ -1098,7 +1084,6 @@ pub fn RenderingSection(
                 value=render_acceleration
                 options=Signal::stored(accel_options)
                 on_change=on_change
-                restart_required=true
             />
             <SettingDropdown
                 label="Effect Error Fallback"

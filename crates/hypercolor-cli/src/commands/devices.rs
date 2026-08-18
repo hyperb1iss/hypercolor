@@ -1,8 +1,14 @@
 //! `hyper devices` -- device discovery, inspection, and management.
 
+use std::collections::HashMap;
+
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
-use serde_json::{Value, json};
+use hypercolor_types::api::controls::InvokeControlActionRequest;
+use hypercolor_types::api::devices::{DiscoverRequest, IdentifyRequest};
+use hypercolor_types::controls::ApplyControlChangesRequest;
+use hypercolor_types::pairing::PairDeviceRequest;
+use serde_json::Value;
 
 use crate::client::DaemonClient;
 use crate::commands::controls;
@@ -265,7 +271,10 @@ async fn execute_pair(
     let response = client
         .post(
             &path,
-            &serde_json::json!({ "activate_after_pair": !args.no_activate }),
+            &PairDeviceRequest {
+                values: HashMap::new(),
+                activate_after_pair: !args.no_activate,
+            },
         )
         .await?;
     render_pair_response(&args.device, &response, ctx)?;
@@ -277,10 +286,11 @@ async fn execute_discover(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = serde_json::json!({
-        "targets": args.target,
-        "timeout_ms": args.timeout.saturating_mul(1000),
-    });
+    let body = DiscoverRequest {
+        targets: Some(args.target.clone()),
+        timeout_ms: Some(u64::from(args.timeout).saturating_mul(1000)),
+        wait: None,
+    };
 
     ctx.info("Discovering devices...");
     let response = client.post("/devices/discover", &body).await?;
@@ -387,14 +397,12 @@ async fn execute_set_control(
     let surface_id = device_control_surface_id_for_field(client, &args.device, &args.field).await?;
     let assignment = format!("{}={}", args.field, args.value);
     let changes = controls::assignments_to_changes(&[assignment])?;
-    let mut body = json!({
-        "surface_id": surface_id,
-        "changes": changes,
-        "dry_run": args.dry_run,
-    });
-    if let Some(revision) = args.expected_revision {
-        body["expected_revision"] = json!(revision);
-    }
+    let body = ApplyControlChangesRequest {
+        expected_revision: args.expected_revision,
+        changes,
+        dry_run: args.dry_run,
+        surface_id: surface_id.clone(),
+    };
 
     let response = client
         .patch(
@@ -421,7 +429,7 @@ async fn execute_action(
                 urlencoded(&surface_id),
                 urlencoded(&args.action)
             ),
-            &json!({ "input": input }),
+            &InvokeControlActionRequest { input },
         )
         .await?;
     controls::render_action_response(&response, ctx)
@@ -433,7 +441,10 @@ async fn execute_identify(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/devices/{}/identify", urlencoded(&args.device));
-    let body = serde_json::json!({ "duration_ms": args.duration.saturating_mul(1000) });
+    let body = IdentifyRequest {
+        duration_ms: Some(u64::from(args.duration).saturating_mul(1000)),
+        color: None,
+    };
     let response = client.post(&path, &body).await?;
 
     match ctx.format {
@@ -455,6 +466,9 @@ async fn execute_set_color(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/devices/{}", urlencoded(&args.device));
+    // PUT /devices/{id} deserializes UpdateDeviceRequest, which carries name,
+    // enabled, and brightness but no color, so this body has no typed home and
+    // the route answers 422.
     let body = serde_json::json!({ "color": args.color });
     let response = client.put(&path, &body).await?;
 

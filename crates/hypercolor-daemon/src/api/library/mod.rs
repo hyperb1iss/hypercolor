@@ -11,10 +11,12 @@ pub use presets::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::response::{IntoResponse, Response};
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
 
 use crate::api::AppState;
+use crate::domain::{DomainError, ResourceKind};
 use crate::library::LibraryStoreError;
 
 // ── Shared Types ────────────────────────────────────────────────────────
@@ -76,21 +78,30 @@ pub(crate) async fn activate_effect_with_controls(
         spatial.layout().as_ref().clone()
     };
 
-    let coordinator = crate::api::scene_store_coordinator(state.as_ref()).await;
-    let pending = {
-        let mut scene_manager = state.scene_manager.write().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ActivateEffectError::Conflict(error.message("applying an effect")))?;
-        let rollback = scene_manager.clone();
-        scene_manager
-            .upsert_primary_group(metadata, controls.clone(), None, layout)
-            .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
-        crate::api::admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ActivateEffectError::Activation(error.to_string()))?
-    };
-    crate::api::save_admitted_scene_store_snapshot(state.as_ref(), pending)
-        .await
+    // Library activation loads the effect without announcing an effect
+    // switch — the caller publishes its own preset/playlist events — so
+    // it commits its own mutation rather than routing through
+    // `domain::effect::apply_effect`.
+    let mut mutation = state.begin_scene_mutation().await;
+    mutation
+        .active_scene_for_runtime_mutation("applying an effect")
+        .map_err(|error| ActivateEffectError::Conflict(error.to_string()))?;
+    mutation
+        .upsert_primary_zone(metadata, controls.clone(), None, layout)
         .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
+    let commit = crate::domain::scene::commit_scene(state.as_ref(), mutation)
+        .await
+        .map_err(|error| match error {
+            // A competing scene commit is a state conflict, not an
+            // activation failure, and this path already has a shape for
+            // one.
+            DomainError::Conflict { .. } => ActivateEffectError::Conflict(error.to_string()),
+            other => ActivateEffectError::Activation(other.to_string()),
+        })?;
+    if let Some(error) = commit.retry_error() {
+        // Admitted and converging, not failed.
+        tracing::warn!(%error, "Scene write has not proven durable yet; retry remains active");
+    }
     crate::api::persist_runtime_session(state).await;
 
     Ok(ActivationResult {
@@ -100,23 +111,23 @@ pub(crate) async fn activate_effect_with_controls(
     })
 }
 
-pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> axum::response::Response {
-    use crate::api::envelope::ApiError;
-
+pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> Response {
     match error {
         LibraryStoreError::PresetNotFound(id) => {
-            ApiError::not_found(format!("Preset not found: {id}"))
+            DomainError::not_found(ResourceKind::Preset, id).into_response()
         }
         LibraryStoreError::PresetConflict(id) => {
-            ApiError::conflict(format!("Preset already exists: {id}"))
+            DomainError::conflict(format!("Preset already exists: {id}")).into_response()
         }
         LibraryStoreError::PlaylistNotFound(id) => {
-            ApiError::not_found(format!("Playlist not found: {id}"))
+            DomainError::not_found(ResourceKind::Playlist, id).into_response()
         }
         LibraryStoreError::PlaylistConflict(id) => {
-            ApiError::conflict(format!("Playlist already exists: {id}"))
+            DomainError::conflict(format!("Playlist already exists: {id}")).into_response()
         }
-        LibraryStoreError::Persistence(message) => ApiError::internal(message.clone()),
+        LibraryStoreError::Persistence(message) => {
+            DomainError::Internal(anyhow::anyhow!(message.clone())).into_response()
+        }
     }
 }
 

@@ -39,7 +39,7 @@ The daemon serves on `:9420`:
 
 - `GET /api/v1/effects` — list all effects
 - `POST /api/v1/effects/{id}/apply` — apply effect to devices
-- `PATCH /api/v1/effects/current/controls` — update live controls
+- `PATCH /api/v1/effects/active/controls` — update live controls
 - `GET /api/v1/devices` — connected devices
 - `GET|POST|DELETE /api/v1/library/favorites` — favorites CRUD
 - `GET|POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate` — scene management
@@ -47,7 +47,7 @@ The daemon serves on `:9420`:
 - `GET|POST /api/v1/profiles` — profile save/load
 - `WebSocket /api/v1/ws` — real-time events, canvas frames, metrics, spectrum
 - `GET /swagger-ui` — interactive API docs
-- MCP server — 16 tools, 5 resources for AI integration
+- MCP server — 17 tools, 5 resources for AI integration
 
 ## Usage
 

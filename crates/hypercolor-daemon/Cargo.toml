@@ -53,6 +53,7 @@ default = [
 servo = ["hypercolor-core/servo"]
 
 [dependencies]
+hypercolor-color = { workspace = true }
 hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-platform-fs = { workspace = true }
@@ -63,11 +64,12 @@ hypercolor-network = { workspace = true }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core", "axum"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+strum = { workspace = true }
+subtle = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
-subtle = { workspace = true }
 single-instance = "0.3.3"
 socket2 = "0.6.3"
 tokio = { workspace = true }

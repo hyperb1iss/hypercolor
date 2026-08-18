@@ -16,13 +16,14 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderName, HeaderValue, Method, Request, header};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use if_addrs::IfAddr;
 use serde_json::json;
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::api::envelope::ApiError;
+use crate::domain::DomainError;
 use crate::macos_owner::{MacosDaemonSessionAttestation, MacosProtectedControlCredential};
 use hypercolor_types::config::{
     HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
@@ -59,6 +60,56 @@ pub struct SecurityState {
     macos_session_credential: Option<MacosProtectedControlCredential>,
     network: NetworkAccessPolicy,
     rate_limiter: Arc<Mutex<RateLimiter>>,
+    static_assets: StaticAssetSurface,
+}
+
+/// The paths the bundled web UI is served from.
+///
+/// The UI mounts as the router's fallback, so its surface is defined by
+/// subtraction: every path no dynamic mount claims. Naming the dynamic
+/// prefixes rather than the asset paths is what keeps this exemption
+/// from ever widening onto an API, MCP, or health route, whatever files
+/// the UI build happens to emit.
+#[derive(Clone, Debug, Default)]
+pub struct StaticAssetSurface {
+    mounted: bool,
+    dynamic_prefixes: Arc<[String]>,
+}
+
+/// The prefixes no static-asset surface may ever swallow.
+///
+/// Every dynamic route the daemon mounts lives under one of these or
+/// under the MCP base path, which callers add. Seeding the list here
+/// rather than trusting the caller means an incomplete argument narrows
+/// the exemption, never widens it: the failure mode is an asset that
+/// needs a key, not an API route that does not.
+const ALWAYS_DYNAMIC_PREFIXES: [&str; 2] = ["/api", "/health"];
+
+impl StaticAssetSurface {
+    /// Declare a mounted UI directory sitting behind the given dynamic
+    /// route prefixes.
+    ///
+    /// [`ALWAYS_DYNAMIC_PREFIXES`] is always included, so passing an
+    /// empty list exempts static assets only, never the API.
+    #[must_use]
+    pub fn mounted(dynamic_prefixes: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            mounted: true,
+            dynamic_prefixes: ALWAYS_DYNAMIC_PREFIXES
+                .iter()
+                .map(|prefix| (*prefix).to_owned())
+                .chain(dynamic_prefixes)
+                .collect(),
+        }
+    }
+
+    fn serves(&self, path: &str) -> bool {
+        self.mounted
+            && !self
+                .dynamic_prefixes
+                .iter()
+                .any(|prefix| path_within(path, prefix))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +210,7 @@ impl SecurityState {
                 macos_session_credential: None,
                 network: NetworkAccessPolicy::default(),
                 rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+                static_assets: StaticAssetSurface::default(),
             };
         }
 
@@ -172,6 +224,7 @@ impl SecurityState {
             macos_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
     }
 
@@ -180,6 +233,16 @@ impl SecurityState {
         let mut state = Self::from_env();
         state.network = NetworkAccessPolicy::from_config(&config.network);
         state
+    }
+
+    /// Declare the static-asset surface this router serves.
+    ///
+    /// Called once at router assembly, where the mounted UI directory
+    /// and every dynamic prefix are both known.
+    #[must_use]
+    pub fn with_static_assets(mut self, static_assets: StaticAssetSurface) -> Self {
+        self.static_assets = static_assets;
+        self
     }
 
     pub(crate) fn security_enabled(&self) -> bool {
@@ -196,7 +259,7 @@ impl SecurityState {
     fn is_macos_session_credential(&self, token: &str) -> bool {
         self.macos_session_credential
             .as_ref()
-            .is_some_and(|credential| constant_time_str_eq(credential.expose_secret(), token))
+            .is_some_and(|credential| secret_matches(Some(credential.expose_secret()), token))
     }
 
     fn resolve_loopback_token(&self, token: &str) -> Option<RequestAuthContext> {
@@ -241,6 +304,7 @@ impl SecurityState {
             macos_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
     }
 
@@ -250,6 +314,7 @@ impl SecurityState {
             macos_session_credential: None,
             network: NetworkAccessPolicy::from_config(&network),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
     }
 
@@ -265,6 +330,7 @@ impl SecurityState {
             macos_session_credential: None,
             network,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
     }
 }
@@ -337,9 +403,10 @@ impl NetworkAccessPolicy {
         }
 
         let Some(client_ip) = client_ip(request) else {
-            return Some(ApiError::forbidden(
-                "Client IP is required by network.allowed_clients",
-            ));
+            return Some(
+                DomainError::forbidden("Client IP is required by network.allowed_clients")
+                    .into_response(),
+            );
         };
 
         if client_ip.is_loopback() {
@@ -347,17 +414,23 @@ impl NetworkAccessPolicy {
         }
 
         if !self.invalid_rules.is_empty() {
-            return Some(ApiError::forbidden_with_details(
-                "Invalid network.allowed_clients entries; remote clients are blocked",
-                json!({ "invalid_rules": &self.invalid_rules }),
-            ));
+            return Some(
+                DomainError::forbidden_details(
+                    "Invalid network.allowed_clients entries; remote clients are blocked",
+                    json!({ "invalid_rules": &self.invalid_rules }),
+                )
+                .into_response(),
+            );
         }
 
         if !self.scope_errors.is_empty() {
-            return Some(ApiError::forbidden_with_details(
-                "Network client scope is unavailable; remote clients are blocked",
-                json!({ "scope_errors": &self.scope_errors }),
-            ));
+            return Some(
+                DomainError::forbidden_details(
+                    "Network client scope is unavailable; remote clients are blocked",
+                    json!({ "scope_errors": &self.scope_errors }),
+                )
+                .into_response(),
+            );
         }
 
         if self
@@ -368,10 +441,13 @@ impl NetworkAccessPolicy {
             return None;
         }
 
-        Some(ApiError::forbidden_with_details(
-            "Client IP is not allowed by network.allowed_clients",
-            json!({ "client_ip": client_ip.to_string() }),
-        ))
+        Some(
+            DomainError::forbidden_details(
+                "Client IP is not allowed by network.allowed_clients",
+                json!({ "client_ip": client_ip.to_string() }),
+            )
+            .into_response(),
+        )
     }
 }
 
@@ -615,10 +691,10 @@ pub async fn enforce_security(
     if !request_is_loopback(&request)
         && extract_token(&request).is_some_and(|token| state.is_macos_session_credential(&token))
     {
-        return ApiError::unauthorized("Invalid API key");
+        return DomainError::unauthorized("Invalid API key").into_response();
     }
 
-    if is_exempt_path(request.uri().path()) {
+    if is_bearer_exempt(request.uri().path(), &state.static_assets) {
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
@@ -630,9 +706,10 @@ pub async fn enforce_security(
             && is_cross_site_request(&request)
             && !has_trusted_tauri_session(&state, &request)
         {
-            return ApiError::forbidden(
+            return DomainError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
-            );
+            )
+            .into_response();
         }
 
         let auth_context = extract_token(&request)
@@ -666,26 +743,28 @@ pub async fn enforce_security(
             granted_tier
         } else {
             let Some(token) = extract_token(&request) else {
-                return ApiError::unauthorized(
+                return DomainError::unauthorized(
                     "Missing API key. Use Authorization: Bearer <token>.",
-                );
+                )
+                .into_response();
             };
 
             let Some(granted_tier) = resolve_token_tier(&token, &state.auth) else {
-                return ApiError::unauthorized("Invalid API key");
+                return DomainError::unauthorized("Invalid API key").into_response();
             };
             granted_tier
         };
         granted_tier = Some(granted);
 
         if !tier_satisfies(granted, required_tier) {
-            return ApiError::forbidden_with_details(
+            return DomainError::forbidden_details(
                 "Read-only API key cannot perform write operations",
                 json!({
                     "required_tier": "control",
                     "current_tier": "read"
                 }),
-            );
+            )
+            .into_response();
         }
     }
 
@@ -703,15 +782,13 @@ pub async fn enforce_security(
     };
 
     if !decision.allowed {
-        let message = rate_limit_message(operation, decision.retry_after_secs);
-        let mut response = ApiError::rate_limited_with_details(
-            message,
-            json!({
-                "limit": decision.limit,
-                "window_seconds": RATE_WINDOW.as_secs(),
-                "retry_after": decision.retry_after_secs
-            }),
-        );
+        let mut response = DomainError::RateLimited {
+            message: rate_limit_message(operation, decision.retry_after_secs),
+            limit: decision.limit,
+            window_seconds: RATE_WINDOW.as_secs(),
+            retry_after_secs: decision.retry_after_secs,
+        }
+        .into_response();
         apply_rate_headers(&mut response, &decision);
         return response;
     }
@@ -729,8 +806,36 @@ pub(crate) const fn trusted_local_control_context() -> RequestAuthContext {
     RequestAuthContext::authenticated(AccessTier::Control)
 }
 
-fn is_exempt_path(path: &str) -> bool {
+/// Swagger UI's mount and the document it fetches.
+///
+/// The page loads its own bundle and then its OpenAPI document from a
+/// second request, and a browser attaches no `Authorization` header to
+/// either. Without this, a keyed daemon serves an API-docs page that
+/// cannot fetch the API docs.
+const SWAGGER_UI_PREFIX: &str = "/api/v1/docs";
+const OPENAPI_DOCUMENT_PATH: &str = "/api/v1/openapi.json";
+
+/// Whether bearer auth applies to a request path.
+///
+/// Exempt paths still pass through the network access policy above
+/// this check; the exemption is from presenting a key, not from being
+/// allowed to reach the daemon at all.
+fn is_bearer_exempt(path: &str, static_assets: &StaticAssetSurface) -> bool {
     matches!(path, "/health" | "/api/v1/server")
+        || path == OPENAPI_DOCUMENT_PATH
+        || path_within(path, SWAGGER_UI_PREFIX)
+        || static_assets.serves(path)
+}
+
+/// `true` when `path` is `prefix` itself or sits beneath it.
+///
+/// Segment-aware on purpose: `/api/v1/docsearch` is not inside
+/// `/api/v1/docs`, and a plain `starts_with` would say it is.
+fn path_within(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn required_tier_for_method(method: &Method) -> AccessTier {
@@ -757,6 +862,23 @@ fn is_cross_site_request(request: &Request<Body>) -> bool {
         .is_some_and(|site| site == "cross-site")
 }
 
+/// Compare a presented token against a configured key without leaking
+/// how far the two agreed.
+///
+/// `str`'s `PartialEq` stops at the first differing byte, which lets a
+/// caller with a timer recover a key one byte at a time. Byte length is
+/// still observable (constant-time comparison of different-length inputs
+/// is not a thing), and that is the accepted residual.
+fn secret_matches(configured: Option<&str>, presented: &str) -> bool {
+    configured.is_some_and(|configured| {
+        configured
+            .as_bytes()
+            .ct_eq(presented.as_bytes())
+            .unwrap_u8()
+            == 1
+    })
+}
+
 fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> bool {
     request
         .headers()
@@ -766,34 +888,23 @@ fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> 
 }
 
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
-    if auth
-        .control_key
-        .as_deref()
-        .is_some_and(|key| constant_time_str_eq(key, token))
-    {
+    // Both comparisons run before either result is read, so the time a
+    // rejection takes does not report which key the caller came closest
+    // to matching.
+    let control_matches = secret_matches(auth.control_key.as_deref(), token);
+    let read_matches = secret_matches(auth.read_key.as_deref(), token);
+
+    if control_matches {
         if token.starts_with("hc_ak_r_") {
             Some(AccessTier::Read)
         } else {
             Some(AccessTier::Control)
         }
-    } else if auth
-        .read_key
-        .as_deref()
-        .is_some_and(|key| constant_time_str_eq(key, token))
-    {
+    } else if read_matches {
         Some(AccessTier::Read)
     } else {
         None
     }
-}
-
-/// Compare a presented token against a stored credential without leaking
-/// match position through timing. Length still leaks, which is standard:
-/// credential lengths are fixed and public.
-fn constant_time_str_eq(left: &str, right: &str) -> bool {
-    use subtle::ConstantTimeEq;
-
-    left.as_bytes().ct_eq(right.as_bytes()).into()
 }
 
 fn tier_satisfies(granted: AccessTier, required: AccessTier) -> bool {
@@ -1025,8 +1136,9 @@ mod tests {
     use hypercolor_types::config::{NetworkAccessMode, NetworkClientScope, NetworkConfig};
 
     use super::{
-        ClientAddressRule, NetworkAccessPolicy, RequestAuthContext, SecurityState,
-        enforce_security, normalize_api_key,
+        AccessTier, AuthConfig, ClientAddressRule, NetworkAccessPolicy, RequestAuthContext,
+        SecurityState, StaticAssetSurface, enforce_security, normalize_api_key, path_within,
+        resolve_token_tier,
     };
     use crate::macos_owner::MacosProtectedControlCredential;
 
@@ -1175,6 +1287,155 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().get("x-ratelimit-limit").is_none());
+    }
+
+    /// The UI shell, its assets, and Swagger UI are reachable without a
+    /// key; every API route behind the same middleware still is not.
+    fn ui_serving_test_router() -> Router {
+        let state = SecurityState::with_keys(Some(CONTROL_KEY), Some(READ_KEY)).with_static_assets(
+            StaticAssetSurface::mounted([
+                "/api".to_owned(),
+                "/health".to_owned(),
+                "/mcp".to_owned(),
+            ]),
+        );
+        Router::new()
+            .route("/api/v1/status", get(|| async { StatusCode::OK }))
+            .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
+            .route("/api/v1/docs", get(|| async { StatusCode::OK }))
+            .route("/api/v1/docs/{*rest}", get(|| async { StatusCode::OK }))
+            .route("/api/v1/openapi.json", get(|| async { StatusCode::OK }))
+            .route("/mcp", post(|| async { StatusCode::OK }))
+            .fallback(|| async { StatusCode::OK })
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                enforce_security,
+            ))
+    }
+
+    async fn status_for(app: &Router, method: &str, uri: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn static_assets_and_swagger_ui_do_not_need_an_api_key() {
+        let app = ui_serving_test_router();
+
+        // A browser attaches no Authorization header to the document it
+        // was told to load, nor to any subresource that document pulls.
+        for path in [
+            "/",
+            "/index.html",
+            "/assets/index-a1b2c3.js",
+            "/assets/index-a1b2c3.css",
+            "/studio/zones",
+            "/api/v1/docs",
+            "/api/v1/docs/swagger-ui.css",
+            "/api/v1/openapi.json",
+        ] {
+            assert_eq!(
+                status_for(&app, "GET", path).await,
+                StatusCode::OK,
+                "{path} should be served without a key"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_asset_exemption_does_not_widen_onto_dynamic_routes() {
+        let app = ui_serving_test_router();
+
+        for (method, path) in [
+            ("GET", "/api/v1/status"),
+            ("POST", "/api/v1/scenes"),
+            ("POST", "/mcp"),
+            // Segment-aware matching: a path that merely starts with the
+            // Swagger prefix is not inside it.
+            ("GET", "/api/v1/docsearch"),
+        ] {
+            assert_eq!(
+                status_for(&app, method, path).await,
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} must still require a key"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn assets_stay_keyed_when_no_ui_directory_is_mounted() {
+        // A headless daemon serves no shell, so nothing falls outside the
+        // API surface and the blanket exemption never applies.
+        let app = secured_test_router();
+
+        assert_eq!(
+            status_for(&app, "GET", "/index.html").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn an_empty_prefix_list_still_protects_the_api() {
+        // The exemption is security-critical, so the type refuses to
+        // build a surface that swallows the API even when the caller
+        // supplies nothing.
+        let surface = StaticAssetSurface::mounted([]);
+
+        assert!(!surface.serves("/api/v1/status"));
+        assert!(!surface.serves("/health"));
+        assert!(surface.serves("/index.html"));
+    }
+
+    #[test]
+    fn path_within_is_segment_aware() {
+        assert!(path_within("/api/v1/docs", "/api/v1/docs"));
+        assert!(path_within("/api/v1/docs/", "/api/v1/docs"));
+        assert!(path_within("/api/v1/docs/index.html", "/api/v1/docs"));
+        assert!(!path_within("/api/v1/docsearch", "/api/v1/docs"));
+        assert!(!path_within("/api/v1/doc", "/api/v1/docs"));
+    }
+
+    #[test]
+    fn token_comparison_still_resolves_the_right_tier() {
+        let auth = AuthConfig {
+            control_key: Some(CONTROL_KEY.to_owned()),
+            read_key: Some(READ_KEY.to_owned()),
+        };
+
+        assert_eq!(
+            resolve_token_tier(CONTROL_KEY, &auth),
+            Some(AccessTier::Control)
+        );
+        assert_eq!(resolve_token_tier(READ_KEY, &auth), Some(AccessTier::Read));
+        assert_eq!(resolve_token_tier("hc_ak_control_tes", &auth), None);
+        assert_eq!(resolve_token_tier("hc_ak_control_testx", &auth), None);
+        assert_eq!(resolve_token_tier("", &auth), None);
+        assert_eq!(
+            resolve_token_tier(CONTROL_KEY, &AuthConfig::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_read_prefixed_control_key_still_grants_only_read() {
+        let auth = AuthConfig {
+            control_key: Some("hc_ak_r_dual_purpose".to_owned()),
+            read_key: None,
+        };
+
+        assert_eq!(
+            resolve_token_tier("hc_ak_r_dual_purpose", &auth),
+            Some(AccessTier::Read)
+        );
     }
 
     #[tokio::test]

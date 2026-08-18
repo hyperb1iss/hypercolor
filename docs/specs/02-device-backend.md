@@ -242,6 +242,11 @@ exclusive ownership of each backend.
 
 ## 3. DevicePlugin Trait
 
+> **Removed (Spec 76, Phase 0):** `DevicePlugin` shipped with zero production
+> implementations and is deleted. Backend registration goes through the
+> driver-module path instead. See `docs/specs/76-internal-api-unification.md`
+> §7.4.
+
 Bevy-inspired lifecycle trait for registering backends (and other extension
 points) with the engine. Every backend ships as a plugin that registers itself
 during daemon startup.

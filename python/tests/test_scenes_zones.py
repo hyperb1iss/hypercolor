@@ -139,8 +139,8 @@ async def test_get_active_scene_decodes_zones(client: HypercolorClient) -> None:
                     "priority": 50,
                     "kind": "named",
                     "mutation_mode": "live",
-                    "groups": [ZONE_PAYLOAD],
-                    "groups_revision": 12,
+                    "zones": [ZONE_PAYLOAD],
+                    "zones_revision": 12,
                     "unassigned_behavior": "off",
                 }
             ),
@@ -151,9 +151,9 @@ async def test_get_active_scene_decodes_zones(client: HypercolorClient) -> None:
 
     assert scene is not None
 
-    assert scene.groups_revision == 12
-    assert len(scene.groups) == 1
-    zone = scene.groups[0]
+    assert scene.zones_revision == 12
+    assert len(scene.zones) == 1
+    zone = scene.zones[0]
     assert zone.is_primary
     assert zone.effect_id == "aurora"
     assert zone.brightness == 0.8
@@ -172,8 +172,8 @@ async def test_get_active_scene_decodes_fallback_behavior(client: HypercolorClie
                 {
                     "id": SCENE_ID,
                     "name": "Battlestation",
-                    "groups": [],
-                    "groups_revision": 0,
+                    "zones": [],
+                    "zones_revision": 0,
                     "unassigned_behavior": {"fallback": ZONE_ID},
                 }
             ),
@@ -250,13 +250,13 @@ async def test_get_zones(client: HypercolorClient) -> None:
     respx.get(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones").mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"items": [ZONE_PAYLOAD], "groups_revision": 12}),
+            content=_envelope({"items": [ZONE_PAYLOAD], "zones_revision": 12}),
         )
     )
 
     result = await client.get_zones(SCENE_ID)
 
-    assert result.groups_revision == 12
+    assert result.zones_revision == 12
     assert result.items[0].name == "Desk"
     assert result.items[0].layers[0].source["effect_id"] == "aurora"
 
@@ -267,7 +267,7 @@ async def test_create_zone_sends_if_match(client: HypercolorClient) -> None:
     route = respx.post(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones").mock(
         return_value=httpx.Response(
             201,
-            content=_envelope({"zone": ZONE_PAYLOAD, "groups_revision": 13}),
+            content=_envelope({"zone": ZONE_PAYLOAD, "zones_revision": 13}),
         )
     )
 
@@ -276,7 +276,7 @@ async def test_create_zone_sends_if_match(client: HypercolorClient) -> None:
     request = route.calls[0].request
     assert request.headers["if-match"] == '"12"'
     assert json.loads(request.content) == {"name": "Desk", "color": "#e135ff"}
-    assert result.groups_revision == 13
+    assert result.zones_revision == 13
 
 
 @respx.mock
@@ -290,8 +290,8 @@ async def test_stale_revision_raises_precondition_error(client: HypercolorClient
                 {
                     "error": {
                         "code": "precondition_failed",
-                        "message": "groups_revision mismatch",
-                        "details": {},
+                        "message": "version mismatch: expected 13, current 14",
+                        "details": {"expected": 13, "current": 14},
                     },
                     "meta": {
                         "api_version": "1.0",
@@ -316,7 +316,7 @@ async def test_update_zone_distinguishes_clear_from_unset(client: HypercolorClie
     route = respx.patch(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones/{ZONE_ID}").mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"zone": ZONE_PAYLOAD, "groups_revision": 13}),
+            content=_envelope({"zone": ZONE_PAYLOAD, "zones_revision": 13}),
         )
     )
 
@@ -333,14 +333,14 @@ async def test_delete_zone(client: HypercolorClient) -> None:
     respx.delete(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones/{ZONE_ID}").mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"zone_id": ZONE_ID, "deleted": True, "groups_revision": 14}),
+            content=_envelope({"zone_id": ZONE_ID, "deleted": True, "zones_revision": 14}),
         )
     )
 
     result = await client.delete_zone(SCENE_ID, ZONE_ID, if_match=13)
 
     assert result.deleted is True
-    assert result.groups_revision == 14
+    assert result.zones_revision == 14
 
 
 @respx.mock
@@ -351,7 +351,7 @@ async def test_assign_devices_normalizes_ids(client: HypercolorClient) -> None:
     ).mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"items": [ZONE_PAYLOAD], "groups_revision": 15}),
+            content=_envelope({"items": [ZONE_PAYLOAD], "zones_revision": 15}),
         )
     )
 
@@ -363,7 +363,7 @@ async def test_assign_devices_normalizes_ids(client: HypercolorClient) -> None:
     body = json.loads(route.calls[0].request.content)
     assert body["device_zones"][0] == {"id": "out-existing"}
     assert body["device_zones"][1]["device_id"] == "usb:controller-1"
-    assert result.groups_revision == 15
+    assert result.zones_revision == 15
 
 
 @respx.mock
@@ -375,7 +375,7 @@ async def test_set_unassigned_behavior_accepts_fallback(client: HypercolorClient
         return_value=httpx.Response(
             200,
             content=_envelope(
-                {"unassigned_behavior": {"fallback": ZONE_ID}, "groups_revision": 16}
+                {"unassigned_behavior": {"fallback": ZONE_ID}, "zones_revision": 16}
             ),
         )
     )
@@ -385,7 +385,7 @@ async def test_set_unassigned_behavior_accepts_fallback(client: HypercolorClient
     assert json.loads(route.calls[0].request.content) == {
         "unassigned_behavior": {"fallback": ZONE_ID}
     }
-    assert result.groups_revision == 16
+    assert result.zones_revision == 16
 
 
 @respx.mock

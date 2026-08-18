@@ -82,19 +82,14 @@ class IdentifyResult(msgspec.Struct, kw_only=True):
     duration_ms: int
 
 
-class BrightnessUpdate(msgspec.Struct, kw_only=True):
-    """Response from a brightness mutation."""
-
-    brightness: int
-
-
 class ConfigMutationResult(msgspec.Struct, kw_only=True):
-    """Generic response from config mutation endpoints."""
+    """Response from a config write, key reset, or whole-config reset."""
 
     key: str | None = None
     value: Any = None
     live: bool | None = None
-    reset: bool | None = None
+    requires_restart: bool | None = None
+    pending_restart: list[str] | None = None
     path: str | None = None
 
 

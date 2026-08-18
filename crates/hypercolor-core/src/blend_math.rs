@@ -1,7 +1,8 @@
-use std::array;
 use std::sync::LazyLock;
 
-use crate::types::canvas::{BlendMode, linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_color::lut::{linear_to_srgb_u8, srgb_u8_to_linear};
+
+use crate::types::canvas::BlendMode;
 use crate::types::layer::LayerAdjust;
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
@@ -34,12 +35,10 @@ impl From<BlendMode> for RgbaBlendMode {
     }
 }
 
-static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
-    array::from_fn(|index| {
-        let channel = u8::try_from(index).expect("LUT index must fit in u8");
-        srgb_u8_to_linear(channel)
-    })
-});
+/// The compositor encodes through a 16-bit quantization rather than the
+/// kernel's 12-bit one: two chained 8-bit channel LUTs index this table,
+/// and the finer grid is what keeps their products landing on the right
+/// byte. The entries themselves come from the kernel.
 static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
     (0_u16..=u16::MAX)
         .map(|index| linear_to_srgb_u8(f32::from(index) / LINEAR_ENCODE_LUT_SCALE))
@@ -462,7 +461,7 @@ pub fn blend_rgba_pixel(dst: [u8; 4], src: [u8; 4], mode: RgbaBlendMode, opacity
 
 #[must_use]
 pub fn decode_srgb_channel(channel: u8) -> f32 {
-    SRGB_TO_LINEAR_LUT[usize::from(channel)]
+    srgb_u8_to_linear(channel)
 }
 
 #[must_use]
@@ -512,6 +511,11 @@ fn apply_contrast(channel: f32, factor: f32) -> f32 {
     (channel - 0.5).mul_add(factor, 0.5)
 }
 
+// These two stay off `hypercolor_color::Hsl`, which converts to and from
+// byte RGB in degrees. The layer adjust runs on linear-light floats with
+// hue as a 0..1 fraction, so routing it through the kernel would quantize
+// to 8 bits in the middle of the pipeline and lose precision the hue
+// shift depends on. A float-domain HSL kernel would let this migrate.
 fn rgb_to_hsl(red: f32, green: f32, blue: f32) -> (f32, f32, f32) {
     let max = red.max(green).max(blue);
     let min = red.min(green).min(blue);

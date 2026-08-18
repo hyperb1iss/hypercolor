@@ -29,7 +29,7 @@ use web_sys::MessageEvent;
 use super::input::InputInjectEdge;
 use super::interactive_preview::{
     InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker, InteractivePreviewRequest,
-    server_update,
+    closed_previews, server_updates,
 };
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
@@ -114,7 +114,7 @@ pub struct WsManager {
     /// channel. `None` until the UI selects a display and the first
     /// frame arrives; reset to `None` when the target changes or the
     /// connection drops.
-    pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    pub display_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
@@ -189,7 +189,8 @@ impl WsManager {
         let (screen_canvas_frame, set_screen_canvas_frame) = signal(None::<CanvasFrame>);
         let (web_viewport_canvas_frame, set_web_viewport_canvas_frame) =
             signal(None::<CanvasFrame>);
-        let (display_preview_frame, set_display_preview_frame) = signal(None::<CanvasFrame>);
+        let (display_preview_frames, set_display_preview_frames) =
+            signal(HashMap::<String, CanvasFrame>::new());
         let (interactive_preview_frames, set_interactive_preview_frames) =
             signal(HashMap::<String, CanvasFrame>::new());
         let (interactive_preview_lifecycles, set_interactive_preview_lifecycles) =
@@ -322,11 +323,12 @@ impl WsManager {
 
                 let subscribe_msg = serde_json::json!({
                     "type": "subscribe",
-                    "channels": ["events", "metrics", "sensors"],
                     "preview_transport": PreviewTransportCapability::default().encode(),
-                    "config": {
-                        "metrics": { "interval_ms": 500 }
-                    }
+                    "topics": [
+                        { "topic": "events" },
+                        { "topic": "metrics", "config": { "interval_ms": 500 } },
+                        { "topic": "sensors" }
+                    ]
                 });
                 let _ = send_websocket_json(&ws_clone, &subscribe_msg);
             };
@@ -354,7 +356,7 @@ impl WsManager {
                 );
                 screen_zones_requested.set_value(false);
                 set_screen_zones_frame.set(None);
-                set_display_preview_frame.set(None);
+                set_display_preview_frames.update(HashMap::clear);
                 set_interactive_preview_available.set(false);
                 set_interactive_preview_frames.set(HashMap::new());
                 interactive_preview_tracker.update_value(InteractivePreviewLifecycleTracker::clear);
@@ -400,6 +402,11 @@ impl WsManager {
                                         frames.insert(preview_id, frame);
                                     });
                                 }
+                            }
+                            PreviewBinaryMessage::Display(device_id, frame) => {
+                                set_display_preview_frames.update(|frames| {
+                                    frames.insert(device_id, frame);
+                                });
                             }
                             PreviewBinaryMessage::ScreenZones(zones) => {
                                 set_screen_zones_frame.set(Some(zones));
@@ -456,9 +463,6 @@ impl WsManager {
                                 PreviewFrameChannel::WebViewportCanvas => {
                                     set_web_viewport_canvas_frame.set(Some(frame));
                                 }
-                                PreviewFrameChannel::DisplayPreview => {
-                                    set_display_preview_frame.set(Some(frame));
-                                }
                             },
                         }
                     }
@@ -483,16 +487,27 @@ impl WsManager {
                         );
                         set_interactive_preview_available.set(interactive_preview_supported(&msg));
                     }
-                    if let Some(update) = server_update(&msg) {
-                        let preview_id = update.preview_id().to_owned();
-                        interactive_preview_tracker.update_value(|tracker| tracker.apply(update));
+                    // A subscription acknowledgment reports the whole live
+                    // set, so a preview missing from it has closed. Both
+                    // halves are read before either is applied, because the
+                    // second reads the tracker's own view of what is open.
+                    let known = interactive_preview_tracker
+                        .with_value(InteractivePreviewLifecycleTracker::known_preview_ids);
+                    let mut updates = closed_previews(&msg, &known);
+                    updates.extend(server_updates(&msg));
+                    if !updates.is_empty() {
+                        for update in updates {
+                            let preview_id = update.preview_id().to_owned();
+                            interactive_preview_tracker
+                                .update_value(|tracker| tracker.apply(update));
+                            set_interactive_preview_frames.update(|frames| {
+                                frames.remove(&preview_id);
+                            });
+                        }
                         set_interactive_preview_lifecycles.set(
                             interactive_preview_tracker
                                 .with_value(InteractivePreviewLifecycleTracker::lifecycles),
                         );
-                        set_interactive_preview_frames.update(|frames| {
-                            frames.remove(&preview_id);
-                        });
                     }
                     handle_json_message(
                         &msg,
@@ -667,17 +682,17 @@ impl WsManager {
             if want && !have {
                 let msg = serde_json::json!({
                     "type": "subscribe",
-                    "channels": ["device_metrics"],
-                    "config": {
-                        "device_metrics": { "interval_ms": 500 }
-                    }
+                    "topics": [{
+                        "topic": "device_metrics",
+                        "config": { "interval_ms": 500 }
+                    }]
                 });
                 let _ = send_websocket_json(&ws, &msg);
                 device_metrics_requested.set_value(true);
             } else if !want && have {
                 let msg = serde_json::json!({
                     "type": "unsubscribe",
-                    "channels": ["device_metrics"]
+                    "topics": [{ "topic": "device_metrics" }]
                 });
                 let _ = send_websocket_json(&ws, &msg);
                 device_metrics_requested.set_value(false);
@@ -706,32 +721,53 @@ impl WsManager {
 
         // Display-preview subscription effect.
         //
-        // Watches `display_preview_device` — whenever the UI changes the
-        // selected display, re-subscribe the `display_preview` channel
-        // with the new device_id; setting `None` unsubscribes and clears
-        // the cached frame so the UI doesn't flash a stale image for the
-        // old device.
+        // The device is the subscription key, so switching displays is an
+        // unsubscribe of the old key and a subscribe of the new one. The
+        // followed key is remembered because only it can be unsubscribed,
+        // and its cached frame is dropped with it so the UI never flashes
+        // a stale image for a display it no longer follows.
+        let followed_display = StoredValue::new(None::<String>);
         Effect::new(move |_| {
             let state = connection_state.get();
             let device = display_preview_device.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
+
+            // A dropped socket takes its subscriptions with it, so the
+            // followed key is forgotten here, above the handle guard. The
+            // handle is nulled on close without notifying anything, so a
+            // reset below the guard would never run, and the effect would
+            // come back from a reconnect believing it still followed the
+            // right device and skip the re-subscribe.
             if state != ConnectionState::Connected {
-                set_display_preview_frame.set(None);
+                if followed_display.get_value().is_some() {
+                    followed_display.set_value(None);
+                    set_display_preview_frames.update(HashMap::clear);
+                }
+                return;
+            }
+
+            let wanted = (window_visible && is_visible)
+                .then_some(device)
+                .flatten()
+                .filter(|device_id| !device_id.is_empty());
+            if followed_display.get_value() == wanted {
                 return;
             }
             let Some(ws) = ws_handle.get_value() else {
                 return;
             };
-            match (window_visible && is_visible, device) {
-                (true, Some(device_id)) if !device_id.is_empty() => {
-                    super::preview::send_display_preview_subscribe(&ws, &device_id, 15);
-                }
-                _ => {
-                    super::preview::send_display_preview_unsubscribe(&ws);
-                    set_display_preview_frame.set(None);
-                }
+
+            if let Some(previous) = followed_display.get_value() {
+                super::preview::send_display_preview_unsubscribe(&ws, &previous);
+                set_display_preview_frames.update(|frames| {
+                    frames.remove(&previous);
+                });
             }
+            if let Some(device_id) = wanted.as_deref() {
+                super::preview::send_display_preview_subscribe(&ws, device_id, 15);
+            }
+            followed_display.set_value(wanted);
         });
 
         // Visibility change listener
@@ -843,7 +879,7 @@ impl WsManager {
             canvas_frame,
             screen_canvas_frame,
             web_viewport_canvas_frame,
-            display_preview_frame,
+            display_preview_frames,
             interactive_preview_frames,
             interactive_preview_lifecycles,
             interactive_preview_available,

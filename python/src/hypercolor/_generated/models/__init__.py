@@ -4,7 +4,8 @@ from .action_confirmation import ActionConfirmation
 from .action_confirmation_level import ActionConfirmationLevel
 from .active_effect_response import ActiveEffectResponse
 from .active_effect_response_control_values import ActiveEffectResponseControlValues
-from .api_error_response import ApiErrorResponse
+from .api_error_body import ApiErrorBody
+from .api_error_detail import ApiErrorDetail
 from .api_response_active_effect_response import ApiResponseActiveEffectResponse
 from .api_response_active_effect_response_data import (
     ApiResponseActiveEffectResponseData,
@@ -83,17 +84,11 @@ from .api_response_effect_preset_list_response import (
 from .api_response_effect_preset_list_response_data import (
     ApiResponseEffectPresetListResponseData,
 )
-from .api_response_output_power_response import ApiResponseOutputPowerResponse
-from .api_response_output_power_response_data import ApiResponseOutputPowerResponseData
-from .api_response_pause_effect_response import ApiResponsePauseEffectResponse
-from .api_response_pause_effect_response_data import ApiResponsePauseEffectResponseData
+from .api_response_output_resource import ApiResponseOutputResource
+from .api_response_output_resource_data import ApiResponseOutputResourceData
 from .api_response_rebind_device_response import ApiResponseRebindDeviceResponse
 from .api_response_rebind_device_response_data import (
     ApiResponseRebindDeviceResponseData,
-)
-from .api_response_resume_effect_response import ApiResponseResumeEffectResponse
-from .api_response_resume_effect_response_data import (
-    ApiResponseResumeEffectResponseData,
 )
 from .api_response_server_info import ApiResponseServerInfo
 from .api_response_server_info_data import ApiResponseServerInfoData
@@ -121,6 +116,16 @@ from .apply_impact_type_4 import ApplyImpactType4
 from .apply_impact_type_5 import ApplyImpactType5
 from .apply_impact_type_6 import ApplyImpactType6
 from .apply_impact_type_7 import ApplyImpactType7
+from .apply_policy_type_0 import ApplyPolicyType0
+from .apply_policy_type_0_kind import ApplyPolicyType0Kind
+from .apply_policy_type_1 import ApplyPolicyType1
+from .apply_policy_type_1_kind import ApplyPolicyType1Kind
+from .apply_policy_type_2 import ApplyPolicyType2
+from .apply_policy_type_2_kind import ApplyPolicyType2Kind
+from .apply_policy_type_3 import ApplyPolicyType3
+from .apply_policy_type_3_kind import ApplyPolicyType3Kind
+from .apply_policy_type_4 import ApplyPolicyType4
+from .apply_policy_type_4_kind import ApplyPolicyType4Kind
 from .apply_profile_request import ApplyProfileRequest
 from .apply_transition_response import ApplyTransitionResponse
 from .assign_devices_request import AssignDevicesRequest
@@ -129,10 +134,6 @@ from .assign_devices_request_device_zones_item import (
 )
 from .b_tree_map import BTreeMap
 from .b_tree_map_additional_property import BTreeMapAdditionalProperty
-from .broadcast_media_layer_group_response import BroadcastMediaLayerGroupResponse
-from .broadcast_media_layer_group_response_items_item import (
-    BroadcastMediaLayerGroupResponseItemsItem,
-)
 from .broadcast_media_layer_request import BroadcastMediaLayerRequest
 from .broadcast_media_layer_request_bindings_item import (
     BroadcastMediaLayerRequestBindingsItem,
@@ -145,9 +146,15 @@ from .broadcast_media_layer_response import BroadcastMediaLayerResponse
 from .broadcast_media_layer_target import BroadcastMediaLayerTarget
 from .broadcast_media_layer_target_adjust import BroadcastMediaLayerTargetAdjust
 from .broadcast_media_layer_target_transform import BroadcastMediaLayerTargetTransform
+from .broadcast_media_layer_zone_response import BroadcastMediaLayerZoneResponse
+from .broadcast_media_layer_zone_response_items_item import (
+    BroadcastMediaLayerZoneResponseItemsItem,
+)
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
 from .capture_picker_response import CapturePickerResponse
+from .config_key_schema_entry import ConfigKeySchemaEntry
+from .config_mutation_response import ConfigMutationResponse
 from .control_access import ControlAccess
 from .control_action_descriptor import ControlActionDescriptor
 from .control_action_descriptor_availability import ControlActionDescriptorAvailability
@@ -253,8 +260,6 @@ from .effect_preset_summary import EffectPresetSummary
 from .effect_preset_summary_controls import EffectPresetSummaryControls
 from .effect_ref_summary import EffectRefSummary
 from .effect_summary import EffectSummary
-from .error_body import ErrorBody
-from .error_code import ErrorCode
 from .full_frame_copy_session_status import FullFrameCopySessionStatus
 from .gpu_compositor_probe_status import GpuCompositorProbeStatus
 from .gradient_stop import GradientStop
@@ -291,6 +296,7 @@ from .led_topology_type_5 import LedTopologyType5
 from .led_topology_type_5_type import LedTopologyType5Type
 from .led_topology_type_6 import LedTopologyType6
 from .led_topology_type_6_type import LedTopologyType6Type
+from .live_section import LiveSection
 from .macos_architecture_api import MacosArchitectureApi
 from .macos_authorization_state_api import MacosAuthorizationStateApi
 from .macos_capability_owner_api import MacosCapabilityOwnerApi
@@ -322,16 +328,15 @@ from .normalized_rect import NormalizedRect
 from .orientation import Orientation
 from .output import Output
 from .output_component import OutputComponent
+from .output_patch_request import OutputPatchRequest
 from .output_power_mode import OutputPowerMode
-from .output_power_response import OutputPowerResponse
-from .output_power_status import OutputPowerStatus
+from .output_resource import OutputResource
 from .pagination import Pagination
 from .pairing_descriptor import PairingDescriptor
 from .pairing_field_descriptor import PairingFieldDescriptor
 from .pairing_flow_kind import PairingFlowKind
 from .patch_layer_controls_request import PatchLayerControlsRequest
 from .patch_layer_controls_request_controls import PatchLayerControlsRequestControls
-from .pause_effect_response import PauseEffectResponse
 from .preset_template import PresetTemplate
 from .preset_template_controls import PresetTemplateControls
 from .preview_demand_status import PreviewDemandStatus
@@ -340,12 +345,13 @@ from .preview_source import PreviewSource
 from .protected_source_grant_owner import ProtectedSourceGrantOwner
 from .rebind_candidate_summary import RebindCandidateSummary
 from .rebind_device_request import RebindDeviceRequest
+from .redaction import Redaction
 from .rejected_control_change import RejectedControlChange
 from .rejected_control_change_attempted_value import RejectedControlChangeAttemptedValue
 from .render_acceleration_status import RenderAccelerationStatus
 from .render_loop_status import RenderLoopStatus
 from .render_surface_status import RenderSurfaceStatus
-from .resume_effect_response import ResumeEffectResponse
+from .response_meta import ResponseMeta
 from .ring_def import RingDef
 from .room_adjacency import RoomAdjacency
 from .room_dimensions import RoomDimensions
@@ -361,9 +367,6 @@ from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
 from .session_performance_status import SessionPerformanceStatus
-from .set_brightness_request import SetBrightnessRequest
-from .set_config_request import SetConfigRequest
-from .set_output_power_request import SetOutputPowerRequest
 from .space_definition import SpaceDefinition
 from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
@@ -371,10 +374,8 @@ from .system_status import SystemStatus
 from .transition_request import TransitionRequest
 from .unassigned_behavior_response import UnassignedBehaviorResponse
 from .unresolved_binding_summary import UnresolvedBindingSummary
-from .update_current_controls_request import UpdateCurrentControlsRequest
-from .update_current_controls_request_controls import (
-    UpdateCurrentControlsRequestControls,
-)
+from .update_active_controls_request import UpdateActiveControlsRequest
+from .update_active_controls_request_controls import UpdateActiveControlsRequestControls
 from .update_device_request import UpdateDeviceRequest
 from .update_layer_request import UpdateLayerRequest
 from .update_layer_request_adjust import UpdateLayerRequestAdjust
@@ -419,7 +420,8 @@ __all__ = (
     "ActionConfirmationLevel",
     "ActiveEffectResponse",
     "ActiveEffectResponseControlValues",
-    "ApiErrorResponse",
+    "ApiErrorBody",
+    "ApiErrorDetail",
     "ApiResponseActiveEffectResponse",
     "ApiResponseActiveEffectResponseData",
     "ApiResponseActiveEffectResponseDataControlValues",
@@ -458,14 +460,10 @@ __all__ = (
     "ApiResponseEffectListResponseData",
     "ApiResponseEffectPresetListResponse",
     "ApiResponseEffectPresetListResponseData",
-    "ApiResponseOutputPowerResponse",
-    "ApiResponseOutputPowerResponseData",
-    "ApiResponsePauseEffectResponse",
-    "ApiResponsePauseEffectResponseData",
+    "ApiResponseOutputResource",
+    "ApiResponseOutputResourceData",
     "ApiResponseRebindDeviceResponse",
     "ApiResponseRebindDeviceResponseData",
-    "ApiResponseResumeEffectResponse",
-    "ApiResponseResumeEffectResponseData",
     "ApiResponseServerInfo",
     "ApiResponseServerInfoData",
     "ApiResponseSystemStatus",
@@ -490,12 +488,20 @@ __all__ = (
     "ApplyImpactType5",
     "ApplyImpactType6",
     "ApplyImpactType7",
+    "ApplyPolicyType0",
+    "ApplyPolicyType0Kind",
+    "ApplyPolicyType1",
+    "ApplyPolicyType1Kind",
+    "ApplyPolicyType2",
+    "ApplyPolicyType2Kind",
+    "ApplyPolicyType3",
+    "ApplyPolicyType3Kind",
+    "ApplyPolicyType4",
+    "ApplyPolicyType4Kind",
     "ApplyProfileRequest",
     "ApplyTransitionResponse",
     "AssignDevicesRequest",
     "AssignDevicesRequestDeviceZonesItem",
-    "BroadcastMediaLayerGroupResponse",
-    "BroadcastMediaLayerGroupResponseItemsItem",
     "BroadcastMediaLayerRequest",
     "BroadcastMediaLayerRequestBindingsItem",
     "BroadcastMediaLayerRequestPlayback",
@@ -504,11 +510,15 @@ __all__ = (
     "BroadcastMediaLayerTarget",
     "BroadcastMediaLayerTargetAdjust",
     "BroadcastMediaLayerTargetTransform",
+    "BroadcastMediaLayerZoneResponse",
+    "BroadcastMediaLayerZoneResponseItemsItem",
     "BTreeMap",
     "BTreeMapAdditionalProperty",
     "CaptureAuthorizationResponse",
     "CaptureMonitor",
     "CapturePickerResponse",
+    "ConfigKeySchemaEntry",
+    "ConfigMutationResponse",
     "ControlAccess",
     "ControlActionDescriptor",
     "ControlActionDescriptorAvailability",
@@ -606,8 +616,6 @@ __all__ = (
     "EffectPresetSummaryControls",
     "EffectRefSummary",
     "EffectSummary",
-    "ErrorBody",
-    "ErrorCode",
     "FullFrameCopySessionStatus",
     "GpuCompositorProbeStatus",
     "GradientStop",
@@ -644,6 +652,7 @@ __all__ = (
     "LedTopologyType5Type",
     "LedTopologyType6",
     "LedTopologyType6Type",
+    "LiveSection",
     "MacosArchitectureApi",
     "MacosAuthorizationStateApi",
     "MacosCapabilityOwnerApi",
@@ -671,16 +680,15 @@ __all__ = (
     "Orientation",
     "Output",
     "OutputComponent",
+    "OutputPatchRequest",
     "OutputPowerMode",
-    "OutputPowerResponse",
-    "OutputPowerStatus",
+    "OutputResource",
     "Pagination",
     "PairingDescriptor",
     "PairingFieldDescriptor",
     "PairingFlowKind",
     "PatchLayerControlsRequest",
     "PatchLayerControlsRequestControls",
-    "PauseEffectResponse",
     "PresetTemplate",
     "PresetTemplateControls",
     "PreviewDemandStatus",
@@ -689,12 +697,13 @@ __all__ = (
     "ProtectedSourceGrantOwner",
     "RebindCandidateSummary",
     "RebindDeviceRequest",
+    "Redaction",
     "RejectedControlChange",
     "RejectedControlChangeAttemptedValue",
     "RenderAccelerationStatus",
     "RenderLoopStatus",
     "RenderSurfaceStatus",
-    "ResumeEffectResponse",
+    "ResponseMeta",
     "RingDef",
     "RoomAdjacency",
     "RoomDimensions",
@@ -710,9 +719,6 @@ __all__ = (
     "ServerIdentity",
     "ServerInfo",
     "SessionPerformanceStatus",
-    "SetBrightnessRequest",
-    "SetConfigRequest",
-    "SetOutputPowerRequest",
     "SpaceDefinition",
     "SpatialLayout",
     "StripDirection",
@@ -720,8 +726,8 @@ __all__ = (
     "TransitionRequest",
     "UnassignedBehaviorResponse",
     "UnresolvedBindingSummary",
-    "UpdateCurrentControlsRequest",
-    "UpdateCurrentControlsRequestControls",
+    "UpdateActiveControlsRequest",
+    "UpdateActiveControlsRequestControls",
     "UpdateDeviceRequest",
     "UpdateLayerRequest",
     "UpdateLayerRequestAdjust",

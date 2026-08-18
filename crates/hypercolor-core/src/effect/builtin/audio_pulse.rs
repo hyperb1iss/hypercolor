@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -137,13 +137,13 @@ impl EffectRenderer for AudioPulseRenderer {
         let cy = (height as f32) * 0.5;
         let half_diag = (cx * cx + cy * cy).sqrt().max(1.0);
 
-        let base = RgbaF32::new(
+        let base = LinearRgba::new(
             self.base_color[0],
             self.base_color[1],
             self.base_color[2],
             self.base_color[3],
         );
-        let peak = RgbaF32::new(
+        let peak = LinearRgba::new(
             self.peak_color[0],
             self.peak_color[1],
             self.peak_color[2],
@@ -151,7 +151,7 @@ impl EffectRenderer for AudioPulseRenderer {
         );
         // Rings wash toward a boosted peak so they read as a highlight rather
         // than a plain tint of the ambient color.
-        let accent = RgbaF32::new(
+        let accent = LinearRgba::new(
             (self.peak_color[0] * 1.25 + 0.1).clamp(0.0, 1.0),
             (self.peak_color[1] * 1.25 + 0.1).clamp(0.0, 1.0),
             (self.peak_color[2] * 1.25 + 0.1).clamp(0.0, 1.0),
@@ -159,7 +159,7 @@ impl EffectRenderer for AudioPulseRenderer {
         );
 
         let rms_t = (input.audio.rms_level * self.sensitivity).clamp(0.0, 1.0);
-        let ambient = RgbaF32::lerp(&base, &peak, rms_t);
+        let ambient = base.lerp(peak, rms_t);
 
         // Rings momentarily widen with beat energy so each hit reads as a
         // stronger pulse without any canvas-wide brightness add.
@@ -197,7 +197,7 @@ impl EffectRenderer for AudioPulseRenderer {
                 g = (g * self.brightness).clamp(0.0, 1.0);
                 b = (b * self.brightness).clamp(0.0, 1.0);
 
-                let rgba = RgbaF32::new(r, g, b, 1.0).to_srgba();
+                let rgba = LinearRgba::new(r, g, b, 1.0).to_encoded();
                 let pixel_offset = row_offset + (x as usize) * BYTES_PER_PIXEL;
                 bytes[pixel_offset] = rgba.r;
                 bytes[pixel_offset + 1] = rgba.g;

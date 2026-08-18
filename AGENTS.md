@@ -45,6 +45,7 @@ sccache/ccache, clang+lld linking on Linux, and Servo build state.
 
 ```
 crates/
+  hypercolor-color/                # Color kernel: pixel types, conversions, hex, blending, device encoding; bottom of the graph
   hypercolor-types/                # Zero-dependency shared data vocabulary; every crate depends on it
   hypercolor-core/                 # Engine: render loop, device backends, Servo effect renderer, event bus, spatial sampler, input pipeline, scene/session management
   hypercolor-hal/                  # Hardware abstraction: USB/HID/SMBus protocol encoding and transport for the local driver families
@@ -74,7 +75,6 @@ crates/
   hypercolor-tray/                 # System tray applet binary
   hypercolor-app/                  # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
   hypercolor-leptos-ext/           # Leptos 0.8 extension helpers for the web UI
-  hypercolor-leptos-ext-macros/    # Proc macros powering hypercolor-leptos-ext
   hypercolor-ui/                   # Leptos 0.8 CSR web UI (WASM, Trunk), EXCLUDED from workspace
 sdk/                       # TypeScript SDK for HTML effects (Bun monorepo)
 data/drivers/vendors/      # Canonical device database (32 vendor TOMLs, consumed by `just compat`)
@@ -280,14 +280,14 @@ The daemon exposes REST + WebSocket on `:9420` (Axum):
 
 - `GET /api/v1/effects`: List all effects
 - `POST /api/v1/effects/{id}/apply`: Apply effect to devices
-- `PATCH /api/v1/effects/current/controls`: Update live controls
+- `PATCH /api/v1/effects/active/controls`: Update live controls
 - `GET /api/v1/devices`: Connected devices
 - `GET/POST/DELETE /api/v1/library/favorites`: Favorites CRUD
 - `GET/POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate`: Scene management
 - `GET/POST /api/v1/layouts`: Spatial layout CRUD
 - `GET/POST /api/v1/profiles`: Profile save/load
 - `WebSocket /api/v1/ws`: Real-time state (events, canvas frames, metrics, spectrum)
-- **MCP server**: 16 tools, 5 resources, and 3 prompt templates for AI integration
+- **MCP server**: 17 tools, 5 resources, and 3 prompt templates for AI integration
 
 Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
 

@@ -92,8 +92,7 @@ All error responses use:
 {
   "error": {
     "code": "not_found",
-    "message": "Effect 'nonexistent' does not exist",
-    "details": {}
+    "message": "effect not found: nonexistent"
   },
   "meta": {
     "api_version": "1.0",
@@ -103,27 +102,47 @@ All error responses use:
 }
 ```
 
+Not-found messages are derived as `"{kind} not found: {id}"` with a lowercase
+kind, so every route reports a miss the same way.
+
 **`error` object schema:**
 
-| Field     | Type     | Description                                                   |
-| --------- | -------- | ------------------------------------------------------------- |
-| `code`    | `string` | Machine-readable error code (see table below)                 |
-| `message` | `string` | Human-readable description                                    |
-| `details` | `object` | Additional context (validation errors, conflicting IDs, etc.) |
+| Field     | Type     | Description                                                          |
+| --------- | -------- | -------------------------------------------------------------------- |
+| `code`    | `string` | Machine-readable error code (see table below)                        |
+| `message` | `string` | Human-readable description                                           |
+| `details` | `object` | Optional structured context, omitted entirely when there is none     |
+
+`details` carries whatever the failure can hand a caller: the offending
+validation field, conflicting IDs, the versions behind a precondition failure,
+retry timing on a throttle.
+
+One structured `conflict` is contract: losing the scene-commit
+compare-and-swap answers 409 with
+`details: { kind: "scene_commit_superseded", expected_revision, current_revision }`,
+so a client can branch on the kind and re-read rather than parse prose.
 
 ### 2.6 Standard Error Codes
 
-| HTTP Status | Code               | Meaning                                                       |
-| ----------- | ------------------ | ------------------------------------------------------------- |
-| 400         | `bad_request`      | Malformed request body or invalid parameters                  |
-| 401         | `unauthorized`     | Missing or invalid API key (network access only)              |
-| 403         | `forbidden`        | Insufficient permissions for this operation                   |
-| 404         | `not_found`        | Resource does not exist                                       |
-| 409         | `conflict`         | State conflict (e.g., device already connected, duplicate ID) |
-| 422         | `validation_error` | Request body fails schema validation                          |
-| 429         | `rate_limited`     | Too many requests (network access only)                       |
-| 500         | `internal_error`   | Unexpected daemon error                                       |
-| 503         | `unavailable`      | Daemon is starting up or shutting down                        |
+| HTTP Status | Code                     | Meaning                                                       |
+| ----------- | ------------------------ | ------------------------------------------------------------- |
+| 400         | `malformed_request`      | Request could not be parsed at all                            |
+| 401         | `unauthorized`           | Missing or invalid API key (network access only)              |
+| 403         | `forbidden`              | Insufficient permissions for this operation                   |
+| 404         | `not_found`              | Resource does not exist                                       |
+| 409         | `conflict`               | State conflict (e.g., device already connected, duplicate ID) |
+| 412         | `precondition_failed`    | An `If-Match` version precondition failed                     |
+| 413         | `payload_too_large`      | Request body exceeds the route's size limit                   |
+| 415         | `unsupported_media_type` | The `Content-Type` is not decodable by this route             |
+| 422         | `validation_error`       | Request is well-formed but semantically invalid               |
+| 429         | `rate_limited`           | Too many requests (network access only)                       |
+| 500         | `internal_error`         | Unexpected daemon error                                       |
+| 503         | `device_unavailable`     | The device exists but cannot serve the request                |
+
+A `precondition_failed` carries `expected` and `current` in `details` and repeats
+`current` in the response `ETag`, so a client rebases off `error.details.current`
+without a second read. An `internal_error` always renders the message
+`"internal error"` on the wire; the full chain goes to `tracing`.
 
 **Validation error details example:**
 
@@ -455,9 +474,9 @@ GET /api/v1/devices
 
 **Error responses:**
 
-| Status | Code          | Condition             |
-| ------ | ------------- | --------------------- |
-| 503    | `unavailable` | Daemon is starting up |
+| Status | Code                 | Condition                    |
+| ------ | -------------------- | ---------------------------- |
+| 503    | `device_unavailable` | Device output is unavailable |
 
 ---
 
@@ -1034,10 +1053,10 @@ Starts rendering the specified effect. If another effect is active, transitions 
 
 ---
 
-### 7.4 Get Current Effect
+### 7.4 Get Active Effect
 
 ```
-GET /api/v1/effects/current
+GET /api/v1/effects/active
 ```
 
 Returns the currently active effect with its live control values.
@@ -1076,10 +1095,10 @@ Returns `404` with code `not_found` if no effect is currently active (daemon is 
 
 ---
 
-### 7.5 Update Current Effect Controls
+### 7.5 Update Active Effect Controls
 
 ```
-PATCH /api/v1/effects/current/controls
+PATCH /api/v1/effects/active/controls
 ```
 
 Updates control values on the currently active effect. Only supplied controls are modified.
@@ -3187,15 +3206,22 @@ When `atomic: true` and any operation fails, all operations are rolled back:
 
 **Error responses:**
 
-| Status | Code               | Condition                                  |
-| ------ | ------------------ | ------------------------------------------ |
-| 400    | `bad_request`      | Empty operations array or exceeds max (20) |
-| 422    | `validation_error` | Invalid operation method or path format    |
-| 429    | `rate_limited`     | Bulk rate limit exceeded (10/min)          |
+| Status | Code                | Condition                                  |
+| ------ | ------------------- | ------------------------------------------ |
+| 400    | `malformed_request` | Empty operations array or exceeds max (20) |
+| 422    | `validation_error`  | Invalid operation method or path format    |
+| 429    | `rate_limited`      | Bulk rate limit exceeded (10/min)          |
 
 ---
 
 ## 14. WebSocket API
+
+> **Superseded on the message shapes.** Spec 76 wave 3.2c replaced the
+> `channels` + `config` subscribe with an array of `{topic, key?, config?}`
+> selectors, keyed `display_preview` and `interactive_preview`, and renamed the
+> `group`-spelled event fields to `zone`. The JSON shapes below record what this
+> spec's own wave shipped; `docs/content/api/websocket.md` and
+> `protocol/websocket-v1.json` are the live contract.
 
 ### 14.1 Connection
 
@@ -3621,8 +3647,7 @@ Clients can send REST-equivalent commands over the WebSocket connection, avoidin
   "status": 404,
   "error": {
     "code": "not_found",
-    "message": "Effect 'nonexistent' does not exist",
-    "details": {}
+    "message": "effect not found: nonexistent"
   }
 }
 ```
@@ -3761,7 +3786,7 @@ pub struct DeviceSummary {
     params(("id" = String, Path, description = "Device identifier")),
     responses(
         (status = 200, description = "Device details", body = ApiResponse<DeviceSummary>),
-        (status = 404, description = "Device not found", body = ApiError),
+        (status = 404, description = "Device not found", body = ApiErrorBody),
     ),
     tag = "devices"
 )]
@@ -3776,7 +3801,7 @@ async fn get_device(
 The OpenAPI spec uses:
 
 - **Tags** for grouping: `devices`, `effects`, `profiles`, `layouts`, `scenes`, `inputs`, `state`, `bulk`
-- **Components/schemas** for all shared types (`Device`, `Effect`, `Profile`, `Layout`, `Scene`, `InputSource`, `Transition`, `ControlValue`, `ApiResponse`, `ApiError`, `PaginationMeta`)
+- **Components/schemas** for all shared types (`Device`, `Effect`, `Profile`, `Layout`, `Scene`, `InputSource`, `Transition`, `ControlValue`, `ApiResponse`, `ApiErrorBody`, `PaginationMeta`)
 - **Security schemes**: `bearerAuth` (API key in `Authorization` header)
 - **Servers**: `http://127.0.0.1:9420/api/v1` (local), configurable for remote
 
@@ -3812,12 +3837,12 @@ ApiResponse:
     meta:
       $ref: "#/components/schemas/ResponseMeta"
 
-ApiError:
+ApiErrorBody:
   type: object
   required: [error, meta]
   properties:
     error:
-      $ref: "#/components/schemas/ErrorDetail"
+      $ref: "#/components/schemas/ApiErrorDetail"
     meta:
       $ref: "#/components/schemas/ResponseMeta"
 
@@ -3835,7 +3860,7 @@ ResponseMeta:
       type: string
       format: date-time
 
-ErrorDetail:
+ApiErrorDetail:
   type: object
   required: [code, message]
   properties:
@@ -3843,15 +3868,18 @@ ErrorDetail:
       type: string
       enum:
         [
-          bad_request,
+          malformed_request,
           unauthorized,
           forbidden,
           not_found,
           conflict,
+          precondition_failed,
+          payload_too_large,
+          unsupported_media_type,
           validation_error,
           rate_limited,
           internal_error,
-          unavailable,
+          device_unavailable,
         ]
     message:
       type: string
@@ -3903,8 +3931,8 @@ PaginationMeta:
 | `GET`            | `/effects`                           | List effects                    |
 | `GET`            | `/effects/{id}`                      | Get effect details + controls   |
 | `POST`           | `/effects/{id}/apply`                | Apply effect                    |
-| `GET`            | `/effects/current`                   | Get current effect              |
-| `PATCH`          | `/effects/current/controls`          | Update active controls          |
+| `GET`            | `/effects/active`                    | Get active effect               |
+| `PATCH`          | `/effects/active/controls`           | Update active controls          |
 | `GET`            | `/effects/{id}/presets`              | List presets                    |
 | `POST`           | `/effects/{id}/presets`              | Create preset                   |
 | `PATCH`          | `/effects/{id}/presets/{name}`       | Update preset                   |

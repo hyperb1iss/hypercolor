@@ -5,7 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.api_error_response import ApiErrorResponse
+from ...models.api_error_body import ApiErrorBody
 from ...models.api_response_vec_capture_monitor import ApiResponseVecCaptureMonitor
 from ...types import Response
 
@@ -22,14 +22,14 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorResponse | ApiResponseVecCaptureMonitor | None:
+) -> ApiErrorBody | ApiResponseVecCaptureMonitor | None:
     if response.status_code == 200:
         response_200 = ApiResponseVecCaptureMonitor.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 403:
-        response_403 = ApiErrorResponse.from_dict(response.json())
+        response_403 = ApiErrorBody.from_dict(response.json())
 
         return response_403
 
@@ -41,7 +41,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorResponse | ApiResponseVecCaptureMonitor]:
+) -> Response[ApiErrorBody | ApiResponseVecCaptureMonitor]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -53,7 +53,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorResponse | ApiResponseVecCaptureMonitor]:
+) -> Response[ApiErrorBody | ApiResponseVecCaptureMonitor]:
     """`GET /api/v1/capture/monitors` — Display outputs capture can address.
 
      Empty on platforms where the backend picks its own source (the XDG
@@ -65,7 +65,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseVecCaptureMonitor]
+        Response[ApiErrorBody | ApiResponseVecCaptureMonitor]
     """
 
     kwargs = _get_kwargs()
@@ -80,7 +80,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorResponse | ApiResponseVecCaptureMonitor | None:
+) -> ApiErrorBody | ApiResponseVecCaptureMonitor | None:
     """`GET /api/v1/capture/monitors` — Display outputs capture can address.
 
      Empty on platforms where the backend picks its own source (the XDG
@@ -92,7 +92,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseVecCaptureMonitor
+        ApiErrorBody | ApiResponseVecCaptureMonitor
     """
 
     return sync_detailed(
@@ -103,7 +103,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorResponse | ApiResponseVecCaptureMonitor]:
+) -> Response[ApiErrorBody | ApiResponseVecCaptureMonitor]:
     """`GET /api/v1/capture/monitors` — Display outputs capture can address.
 
      Empty on platforms where the backend picks its own source (the XDG
@@ -115,7 +115,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseVecCaptureMonitor]
+        Response[ApiErrorBody | ApiResponseVecCaptureMonitor]
     """
 
     kwargs = _get_kwargs()
@@ -128,7 +128,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorResponse | ApiResponseVecCaptureMonitor | None:
+) -> ApiErrorBody | ApiResponseVecCaptureMonitor | None:
     """`GET /api/v1/capture/monitors` — Display outputs capture can address.
 
      Empty on platforms where the backend picks its own source (the XDG
@@ -140,7 +140,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseVecCaptureMonitor
+        ApiErrorBody | ApiResponseVecCaptureMonitor
     """
 
     return (

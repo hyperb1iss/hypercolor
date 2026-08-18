@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
+use hypercolor_core::types::api::envelope::ApiErrorBody;
 use serde::Serialize;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -223,7 +224,7 @@ impl DaemonEventSubscription {
             .send(Message::Text(
                 serde_json::json!({
                     "type": "subscribe",
-                    "channels": ["events"]
+                    "topics": [{"topic": "events"}]
                 })
                 .to_string()
                 .into(),
@@ -257,9 +258,13 @@ impl DaemonEventSubscription {
             }
             if value.get("type").and_then(serde_json::Value::as_str) == Some("subscribed")
                 && value
-                    .get("channels")
+                    .get("topics")
                     .and_then(serde_json::Value::as_array)
-                    .is_some_and(|channels| channels.iter().any(|channel| channel == "events"))
+                    .is_some_and(|topics| {
+                        topics
+                            .iter()
+                            .any(|entry| entry.get("topic").is_some_and(|topic| topic == "events"))
+                    })
             {
                 return Ok(());
             }
@@ -343,7 +348,7 @@ async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::V
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Daemon returned {status}: {body}");
+        anyhow::bail!("{}", describe_error_body(status, &body));
     }
 
     let json: serde_json::Value = response
@@ -352,6 +357,30 @@ async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::V
         .context("Failed to parse daemon response as JSON")?;
 
     Ok(json.get("data").cloned().unwrap_or(json))
+}
+
+/// Render a failed response as one line a human can act on.
+///
+/// The daemon answers every error with the canonical envelope
+/// `{ error: { code, message, details }, meta }`, so the code and message
+/// are what a user needs; the raw JSON is the fallback for the surfaces
+/// that bypass it (Axum's own rejections, binary routes).
+fn describe_error_body(status: reqwest::StatusCode, body: &str) -> String {
+    let Ok(envelope) = serde_json::from_str::<ApiErrorBody>(body) else {
+        let trimmed = body.trim();
+        return if trimmed.is_empty() {
+            format!("Daemon returned {status}")
+        } else {
+            format!("Daemon returned {status}: {trimmed}")
+        };
+    };
+
+    let code = envelope.error.code;
+    let message = envelope.error.message;
+    match envelope.error.details {
+        Some(details) => format!("Daemon returned {status} ({code}): {message} [{details}]"),
+        None => format!("Daemon returned {status} ({code}): {message}"),
+    }
 }
 
 #[cfg(test)]
@@ -409,13 +438,13 @@ mod tests {
             let request: serde_json::Value =
                 serde_json::from_str(&text).expect("subscription should be JSON");
             assert_eq!(request["type"], "subscribe");
-            assert_eq!(request["channels"], serde_json::json!(["events"]));
+            assert_eq!(request["topics"], serde_json::json!([{"topic": "events"}]));
 
             stream
                 .send(Message::Text(
                     serde_json::json!({
                         "type": "subscribed",
-                        "channels": ["events"],
+                        "topics": [{"topic": "events"}],
                         "config": {},
                         "preview_transport": "none"
                     })

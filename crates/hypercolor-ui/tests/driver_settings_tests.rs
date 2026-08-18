@@ -89,6 +89,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.leaf.enabled".to_string(),
                 transport_labels: vec!["Network".to_string()],
                 supports_pairing: true,
+                enabled: true,
             },
             DiscoveryDriverSetting {
                 id: "bridge".to_string(),
@@ -96,6 +97,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.bridge.enabled".to_string(),
                 transport_labels: vec!["Bridge".to_string()],
                 supports_pairing: false,
+                enabled: true,
             },
             DiscoveryDriverSetting {
                 id: "external".to_string(),
@@ -103,6 +105,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.external.enabled".to_string(),
                 transport_labels: vec!["Open Link Hub".to_string()],
                 supports_pairing: false,
+                enabled: true,
             }
         ]
     );
@@ -227,4 +230,23 @@ fn driver_config_response_handles_non_configurable_entries() {
     assert!(!response.current.enabled);
     assert!(response.current.settings.is_empty());
     assert!(response.default.is_none());
+}
+
+/// The generic config surface masks the whole `drivers` namespace, so
+/// the discovery toggles read their state from the driver inventory.
+#[test]
+fn discovery_settings_carry_the_inventory_enabled_flag() {
+    let mut disabled = driver(
+        "leaf",
+        "Leaf Driver",
+        true,
+        false,
+        vec![DriverTransportKind::Network],
+    );
+    disabled.enabled = false;
+
+    let settings = discovery_driver_settings(&[disabled]);
+
+    assert_eq!(settings.len(), 1);
+    assert!(!settings[0].enabled);
 }

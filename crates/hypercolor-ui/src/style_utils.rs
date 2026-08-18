@@ -3,27 +3,27 @@
 
 use leptos::prelude::*;
 
+use hypercolor_color::Hsl;
 use hypercolor_leptos_ext::prelude::random_unit;
 
 /// Category -> (badge Tailwind classes, accent RGB triplet for inline styles).
 pub fn category_style(category: &str) -> (&'static str, &'static str) {
+    // One arm per EffectCategory variant. The daemon serializes the enum
+    // in snake_case, so these are the only strings that ever arrive.
     match category {
         "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
         "audio" => ("bg-coral/10 text-coral", "255, 106, 193"),
-        "display" => ("bg-coral/10 text-coral", "255, 106, 193"),
-        "gaming" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
-        "reactive" => (
-            "bg-electric-yellow/10 text-electric-yellow",
-            "241, 250, 140",
-        ),
+        "generative" => ("bg-success-green/10 text-success-green", "80, 250, 123"),
+        "particle" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
+        "scenic" => ("bg-pink-soft/10 text-pink-soft", "255, 153, 255"),
+        "interactive" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
+        "fun" => ("bg-purple-light/10 text-purple-light", "189, 0, 221"),
         "source" => (
             "bg-electric-yellow/10 text-electric-yellow",
             "241, 250, 140",
         ),
-        "generative" => ("bg-success-green/10 text-success-green", "80, 250, 123"),
-        "interactive" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
-        "productivity" => ("bg-pink-soft/10 text-pink-soft", "255, 153, 255"),
         "utility" => ("bg-fg-tertiary/10 text-fg-tertiary", "139, 133, 160"),
+        "display" => ("bg-coral/10 text-coral", "255, 106, 193"),
         _ => ("bg-surface-overlay/50 text-fg-tertiary", "139, 133, 160"),
     }
 }
@@ -69,27 +69,14 @@ pub fn device_accent_colors(device_id: &str) -> (String, String) {
 }
 
 /// Convert HSL (h: 0–360, s: 0–100, l: 0–100) to an "r, g, b" string.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+///
+/// Percentages are this call site's units, so they are divided out here
+/// and the conversion itself is the kernel's. The kernel wraps hue,
+/// which fixes a latent bug: the old sector chain sent every hue at or
+/// above 360 into the magenta arm.
 fn hsl_to_rgb_string(h: f32, s: f32, l: f32) -> String {
-    let s = s / 100.0;
-    let l = l / 100.0;
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = l - c / 2.0;
-
-    let (r1, g1, b1) = match h as u32 {
-        0..60 => (c, x, 0.0),
-        60..120 => (x, c, 0.0),
-        120..180 => (0.0, c, x),
-        180..240 => (0.0, x, c),
-        240..300 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-
-    let r = ((r1 + m) * 255.0).round() as u8;
-    let g = ((g1 + m) * 255.0).round() as u8;
-    let b = ((b1 + m) * 255.0).round() as u8;
-    format!("{r}, {g}, {b}")
+    let rgb = Hsl::new(h, s / 100.0, l / 100.0).to_rgb();
+    format!("{}, {}, {}", rgb.r, rgb.g, rgb.b)
 }
 
 // ── Shared UI primitives ────────────────────────────────────────────────────
@@ -122,4 +109,26 @@ pub fn filter_chips(
             }
         })
         .collect_view()
+}
+
+#[cfg(test)]
+mod category_style_tests {
+    use hypercolor_types::effect::EffectCategory;
+    use strum::VariantNames;
+
+    use super::category_style;
+
+    /// Every real category gets its own identity, not the fallback.
+    #[test]
+    fn every_effect_category_has_a_styled_arm() {
+        let fallback = category_style("definitely-not-a-category");
+
+        for variant in EffectCategory::VARIANTS {
+            assert_ne!(
+                category_style(variant),
+                fallback,
+                "{variant} falls through to the unknown-category style"
+            );
+        }
+    }
 }

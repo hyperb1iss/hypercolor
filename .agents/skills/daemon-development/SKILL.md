@@ -51,15 +51,17 @@ pub struct Meta {
 }
 ```
 
-Errors use a separate `ApiErrorResponse` with `error: ErrorBody` containing `code: ErrorCode`, `message`, and optional `details`. `ApiError` is a unit struct with static builder methods (`not_found()`, `bad_request()`, `internal()`, `conflict()`, `validation()`, `unauthorized()`, `forbidden()`, `rate_limited()`).
+Errors have exactly one rendering: the `IntoResponse` impl on `DomainError` in `src/domain/mod.rs`. A handler builds the variant that describes the failure and calls `.into_response()`; a helper returns `Result<T, DomainError>` so the route can `?` it or match on it. Constructors read like the failure: `DomainError::not_found(ResourceKind::Scene, id)`, `validation(msg)`, `validation_field(field, msg)`, `malformed(msg)`, `conflict(msg)`, `unauthorized(msg)`, `forbidden(msg)`, `unsupported_media_type(msg)`. Never hand-build an error body and never hand a `Response` back through a `Result`; `tests/api_error_surface_tests.rs` scans every file under `src/` for both and fails the build.
+
+The error envelope is `{ error: { code, message, details }, meta }`, where `details` is omitted entirely when the variant carries no structured context. See `references/api-patterns.md` for the full variant, code, and status table.
 
 Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 
 | Prefix                          | Purpose                                                  |
 | ------------------------------- | -------------------------------------------------------- |
 | `/effects`                      | List, detail, apply, stop, rescan                        |
-| `/effects/active`               | Current effect state                                     |
-| `/effects/current/controls`     | Live control PATCH + reset                               |
+| `/effects/active`               | Active effect state                                      |
+| `/effects/active/controls`      | Live control PATCH + reset                               |
 | `/effects/{id}/apply`           | Apply an effect by ID                                    |
 | `/devices`                      | Connected devices, discover, identify, pair, attachments |
 | `/devices/{id}/logical-devices` | Per-device logical segmentation                          |
@@ -72,16 +74,16 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 | `/layouts`                      | Spatial layout CRUD + active + preview + `{id}/apply`    |
 | `/profiles`                     | Profile save/load + `{id}/apply`                         |
 | `/config`                       | Show/get/set/reset system config values                  |
-| `/settings/brightness`          | Global brightness get/set                                |
+| `/output`                       | Global output power and brightness get/patch             |
 | `/status`                       | Daemon status (aliased as `/state`)                      |
 | `/server`                       | Server identity                                          |
 | `/diagnose`                     | System diagnostics                                       |
 
 ## WebSocket Protocol
 
-Single endpoint at `/api/v1/ws`. Five channel types:
+Single endpoint at `/api/v1/ws`. Five of the fifteen topics:
 
-| Channel    | Data                                                 | Format                 |
+| Topic      | Data                                                 | Format                 |
 | ---------- | ---------------------------------------------------- | ---------------------- |
 | `events`   | State changes (effect applied, device connected)     | JSON                   |
 | `frames`   | LED color output per device                          | Binary                 |
@@ -92,10 +94,12 @@ Single endpoint at `/api/v1/ws`. Five channel types:
 **Subscribe on connect:**
 
 ```json
-{ "type": "subscribe", "channels": ["events", "metrics"] }
+{ "type": "subscribe", "topics": [{ "topic": "events" }, { "topic": "metrics" }] }
 ```
 
-**Backpressure**: Slow consumers get dropped frames, not memory growth. The WS handler sends a `Backpressure` server message (JSON) with `dropped_frames`, `channel`, `recommendation: "reduce_fps"`, and `suggested_fps` so the UI can auto-throttle.
+**Backpressure**: Slow consumers get dropped frames, not memory growth. The WS handler sends a `Backpressure` server message (JSON) with `dropped_frames`, `topic`, `recommendation: "reduce_fps"`, and `suggested_fps` so the UI can auto-throttle.
+
+**Keyed topics**: `display_preview` (keyed by device) and `interactive_preview` (keyed by the client's preview id) hold one subscription per key, so a selector names both the topic and its key. Subscribing to `interactive_preview` is what opens its render lane.
 
 ## Event Bus (HypercolorBus)
 
@@ -185,24 +189,30 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 
 ## MCP Server Integration
 
-14 tools exposed via Model Context Protocol for AI control:
+17 tools exposed via Model Context Protocol for AI control:
 
-| Tool              | Purpose                                                                        |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `set_effect`      | Apply effect by name/query (fuzzy match) with optional controls and transition |
-| `list_effects`    | Browse effect catalog with category/audio_reactive filters                     |
-| `stop_effect`     | Stop the active effect                                                         |
-| `set_color`       | Apply a solid color effect                                                     |
-| `get_devices`     | List connected devices                                                         |
-| `set_brightness`  | Set global brightness (0-255)                                                  |
-| `get_status`      | Current daemon state snapshot                                                  |
-| `activate_scene`  | Activate a scene by name/ID                                                    |
-| `list_scenes`     | List all scenes                                                                |
-| `create_scene`    | Create a new scene                                                             |
-| `get_audio_state` | Audio analysis snapshot                                                        |
-| `set_profile`     | Apply a lighting profile                                                       |
-| `get_layout`      | Get the active spatial layout                                                  |
-| `diagnose`        | System diagnostics                                                             |
+| Tool                | Purpose                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| `set_effect`        | Apply effect by name/query (fuzzy match) with optional controls  |
+| `list_effects`      | Browse effect catalog with category/audio_reactive filters       |
+| `stop_effect`       | Stop the active effect and clear its controls (destructive)      |
+| `set_color`         | Apply a solid color effect                                       |
+| `set_output_power`  | Pause or resume output without discarding effect state           |
+| `get_devices`       | List connected devices                                           |
+| `set_brightness`    | Set global brightness (0-100 percent)                            |
+| `get_status`        | Current daemon state snapshot                                    |
+| `activate_scene`    | Activate a scene by name/ID                                      |
+| `list_scenes`       | List all scenes                                                  |
+| `create_scene`      | Create a new scene                                               |
+| `get_audio_state`   | Audio analysis snapshot                                          |
+| `get_sensor_data`   | System telemetry snapshot or one named sensor reading            |
+| `set_display_face`  | Assign an HTML display face to a display device                  |
+| `set_profile`       | Apply a lighting profile                                         |
+| `get_layout`        | Get the active spatial layout                                    |
+| `diagnose`          | Full-system diagnostics                                          |
+
+Every tool declares its own `read_only` and `destructive` annotations; a tool
+is destructive when it discards state the caller cannot recover.
 
 5 resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://profiles`, `hypercolor://audio`. The MCP server uses fuzzy matching for effect/profile names.
 

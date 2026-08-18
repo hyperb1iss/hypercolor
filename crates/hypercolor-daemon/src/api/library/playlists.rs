@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
-use serde::{Deserialize, Serialize};
+use axum::response::{IntoResponse, Response};
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -18,7 +17,8 @@ use hypercolor_types::library::{
 
 use crate::api::AppState;
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 use crate::playlist_runtime::ActivePlaylistRuntime;
 
 use super::{
@@ -26,46 +26,15 @@ use super::{
     store_error_to_response, unix_epoch_ms,
 };
 
+// Wire contracts live in hypercolor-types::api::library — shared with
+// the web UI and the TUI.
+pub use hypercolor_types::api::library::{
+    ActivatePlaylistResponse, ActivePlaylistResponse, ActivePlaylistStateResponse,
+    DeletePlaylistResponse, PlaylistItemRequest, PlaylistListResponse, PlaylistTargetRequest,
+    SavePlaylistRequest, StopPlaylistResponse,
+};
+
 const DEFAULT_PLAYLIST_ITEM_DURATION_MS: u64 = 30_000;
-
-// ── Request / Response Types ────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct PlaylistListResponse {
-    pub items: Vec<EffectPlaylist>,
-    pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ActivePlaylistResponse {
-    pub id: String,
-    pub name: String,
-    pub loop_enabled: bool,
-    pub item_count: usize,
-    pub started_at_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PlaylistTargetRequest {
-    Effect { effect: String },
-    Preset { preset_id: String },
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PlaylistItemRequest {
-    pub target: PlaylistTargetRequest,
-    pub duration_ms: Option<u64>,
-    pub transition_ms: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SavePlaylistRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub loop_enabled: Option<bool>,
-    pub items: Option<Vec<PlaylistItemRequest>>,
-}
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -88,11 +57,11 @@ pub async fn list_playlists(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/library/playlists/:id` — fetch one playlist.
 pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
     let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
     ApiResponse::ok(playlist)
@@ -104,12 +73,12 @@ pub async fn create_playlist(
     Json(body): Json<SavePlaylistRequest>,
 ) -> Response {
     if body.name.trim().is_empty() {
-        return ApiError::validation("Playlist name must not be empty");
+        return DomainError::validation("Playlist name must not be empty").into_response();
     }
 
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
     let now = unix_epoch_ms();
     let playlist = EffectPlaylist {
@@ -143,18 +112,18 @@ pub async fn update_playlist(
     Json(body): Json<SavePlaylistRequest>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     if body.name.trim().is_empty() {
-        return ApiError::validation("Playlist name must not be empty");
+        return DomainError::validation("Playlist name must not be empty").into_response();
     }
 
     let Some(existing) = state.library_store.get_playlist(playlist_id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
 
     let playlist = EffectPlaylist {
@@ -201,7 +170,7 @@ pub async fn delete_playlist(
     Path(id): Path<String>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
     let removed = match state.library_store.remove_playlist(playlist_id).await {
@@ -209,7 +178,7 @@ pub async fn delete_playlist(
         Err(error) => return store_error_to_response(&error),
     };
     if !removed {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     }
     state
         .event_bus
@@ -233,10 +202,10 @@ pub async fn delete_playlist(
     };
     stop_runtime(active);
 
-    ApiResponse::ok(serde_json::json!({
-        "id": playlist_id.to_string(),
-        "deleted": true,
-    }))
+    ApiResponse::ok(DeletePlaylistResponse {
+        id: playlist_id.to_string(),
+        deleted: true,
+    })
 }
 
 /// `POST /api/v1/library/playlists/:id/activate` — start playlist playback.
@@ -245,13 +214,13 @@ pub async fn activate_playlist(
     Path(id): Path<String>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     if playlist.items.is_empty() {
-        return ApiError::validation("Playlist must contain at least one item");
+        return DomainError::validation("Playlist must contain at least one item").into_response();
     }
 
     let previous = {
@@ -263,10 +232,11 @@ pub async fn activate_playlist(
     if let Some(first_item) = playlist.items.first()
         && let Err(error) = activate_playlist_item(&state, first_item).await
     {
-        return ApiError::internal(format!(
+        return DomainError::Internal(anyhow::anyhow!(
             "Failed to activate first playlist item for '{}': {error}",
             playlist.name
-        ));
+        ))
+        .into_response();
     }
 
     let generation;
@@ -300,23 +270,23 @@ pub async fn activate_playlist(
         runtime.active = Some(active);
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": response_payload,
-        "active": true,
-    }))
+    ApiResponse::ok(ActivatePlaylistResponse {
+        playlist: response_payload,
+        active: true,
+    })
 }
 
 /// `GET /api/v1/library/playlists/active` — inspect the active playlist runtime.
 pub async fn get_active_playlist(State(state): State<Arc<AppState>>) -> Response {
     let runtime = state.playlist_runtime.lock().await;
     let Some(active) = runtime.active.as_ref() else {
-        return ApiError::not_found("No playlist is currently active");
+        return DomainError::not_found(ResourceKind::Playlist, "active").into_response();
     };
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": active_playlist_payload(active),
-        "state": "running",
-    }))
+    ApiResponse::ok(ActivePlaylistStateResponse {
+        playlist: active_playlist_payload(active),
+        state: "running".to_owned(),
+    })
 }
 
 /// `POST /api/v1/library/playlists/stop` — stop playlist playback if active.
@@ -326,16 +296,16 @@ pub async fn stop_playlist(State(state): State<Arc<AppState>>) -> Response {
         runtime.active.take()
     };
     let Some(active) = active else {
-        return ApiError::not_found("No playlist is currently active");
+        return DomainError::not_found(ResourceKind::Playlist, "active").into_response();
     };
 
     let payload = active_playlist_payload(&active);
     stop_runtime(Some(active));
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": payload,
-        "stopped": true,
-    }))
+    ApiResponse::ok(StopPlaylistResponse {
+        playlist: payload,
+        stopped: true,
+    })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

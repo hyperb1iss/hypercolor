@@ -953,3 +953,107 @@ async fn attachment_identify_indexes_multi_instance_rows_individually() {
     assert_ne!(lit_color, [0, 0, 0]);
     assert!(frame[6..12].iter().all(|color| *color == lit_color));
 }
+
+/// The identify route separates an addressed resource that is absent from
+/// a supplied value the profile cannot satisfy.
+///
+/// An unknown slot is a missing sub-resource and answers `404`. A slot
+/// that exists but holds no enabled bindings, and a binding index past
+/// the end of the ones it does hold, are values the caller chose against
+/// a profile that resolved, so both answer `422` and name the field.
+#[tokio::test]
+async fn attachment_identify_separates_missing_slots_from_unusable_selections() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let writes = Arc::new(StdMutex::new(Vec::new()));
+    register_recording_backend(&state, Arc::clone(&writes)).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+
+    create_template(&app, "identify-bounds-fan", "Identify Bounds Fan", 6).await;
+    let update_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "identify-bounds-fan",
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
+
+    let missing_slot = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/no-such-slot/identify"),
+        json!({ "binding_index": 0 }),
+    )
+    .await;
+    assert_eq!(missing_slot.status(), StatusCode::NOT_FOUND);
+    let missing_slot_json = body_json(missing_slot).await;
+    assert_eq!(missing_slot_json["error"]["code"], "not_found");
+    assert_eq!(
+        missing_slot_json["error"]["message"],
+        "attachment slot not found: no-such-slot"
+    );
+
+    let out_of_range = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/main/identify"),
+        json!({ "binding_index": 42 }),
+    )
+    .await;
+    assert_eq!(out_of_range.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let out_of_range_json = body_json(out_of_range).await;
+    assert_eq!(out_of_range_json["error"]["code"], "validation_error");
+    assert_eq!(
+        out_of_range_json["error"]["details"]["field"],
+        "binding_index"
+    );
+
+    // A slot that exists but holds only disabled bindings: the slot
+    // lookup resolves, so this is the caller's selection failing, not a
+    // missing resource.
+    let disable_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "identify-bounds-fan",
+                "instances": 1,
+                "led_offset": 0,
+                "enabled": false
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(disable_response.status(), StatusCode::OK);
+
+    let no_enabled = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/main/identify"),
+        json!({ "binding_index": 0 }),
+    )
+    .await;
+    assert_eq!(no_enabled.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let no_enabled_json = body_json(no_enabled).await;
+    assert_eq!(no_enabled_json["error"]["code"], "validation_error");
+    assert_eq!(no_enabled_json["error"]["details"]["field"], "slot_id");
+    assert_eq!(
+        no_enabled_json["error"]["message"],
+        "No enabled bindings in slot 'main'"
+    );
+}

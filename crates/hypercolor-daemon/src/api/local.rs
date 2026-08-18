@@ -254,17 +254,17 @@ mod tests {
         let response = api
             .execute(
                 Request::builder()
-                    .method("PUT")
-                    .uri("/api/v1/settings/brightness")
+                    .method("PATCH")
+                    .uri("/api/v1/output")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"brightness":37}"#))
+                    .body(Body::from(r#"{"brightness":0.37}"#))
                     .expect("trusted local request should build"),
             )
             .await
             .expect("trusted local API path should be accepted");
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response_json(response).await["data"]["brightness"], 37);
+        assert_eq!(response_json(response).await["data"]["brightness"], 0.37);
     }
 
     #[tokio::test]
@@ -302,9 +302,9 @@ mod tests {
                 serde_json::json!({
                     "type": "command",
                     "id": "set_brightness",
-                    "method": "PUT",
-                    "path": "/settings/brightness",
-                    "body": {"brightness": 41}
+                    "method": "PATCH",
+                    "path": "/output",
+                    "body": {"brightness": 0.41}
                 })
                 .to_string()
                 .into(),
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(response["type"], "response");
         assert_eq!(response["id"], "set_brightness");
         assert_eq!(response["status"], 200);
-        assert_eq!(response["data"]["brightness"], 41);
+        assert_eq!(response["data"]["brightness"], 0.41);
 
         socket.shutdown().await;
     }
@@ -419,25 +419,41 @@ mod tests {
         socket
             .send(Message::Text(
                 serde_json::json!({
-                    "type": "interactive_preview_open",
-                    "preview_id": "remote",
-                    "fps": 30,
-                    "width": 64,
-                    "height": 64,
-                    "format": "rgba"
+                    "type": "subscribe",
+                    "topics": [{
+                        "topic": "interactive_preview",
+                        "key": "remote",
+                        "config": {
+                            "fps": 30,
+                            "width": 64,
+                            "height": 64,
+                            "format": "rgba"
+                        }
+                    }]
                 })
                 .to_string()
                 .into(),
             ))
             .await
-            .expect("trusted local websocket should accept a preview command");
+            .expect("trusted local websocket should accept a preview subscription");
         let opened = message_json(
             socket
                 .recv()
                 .await
                 .expect("trusted local websocket should acknowledge the preview barrier"),
         );
-        assert_eq!(opened["type"], "interactive_preview_opened", "{opened}");
+        assert_eq!(opened["type"], "subscribed", "{opened}");
+        let preview = opened["topics"]
+            .as_array()
+            .expect("the acknowledgment lists live subscriptions")
+            .iter()
+            .find(|entry| entry["topic"] == "interactive_preview")
+            .expect("the interactive preview subscription is live");
+        assert_eq!(preview["key"], "remote", "{opened}");
+        assert!(
+            preview["publication_id"].as_u64().is_some_and(|id| id > 0),
+            "the acknowledgment carries the lane's publication: {opened}"
+        );
         assert_eq!(executor.lane_count(), 1);
 
         socket.shutdown().await;

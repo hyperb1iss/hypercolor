@@ -33,6 +33,7 @@ class InputSourcePlatformStatusType0:
         keyboard_tcc (MacosAuthorizationStateApi):
         pointer (MacosProtectedSourceStateApi):
         pointer_owner (MacosCapabilityOwnerApi):
+        secure_input_active (bool):
         telemetry (MacosInputTelemetryApiStatus):
         type_ (InputSourcePlatformStatusType0Type):
         owner_conflict (MacosDaemonOwnerConflictApiStatus | None | Unset):
@@ -43,6 +44,7 @@ class InputSourcePlatformStatusType0:
     keyboard_tcc: MacosAuthorizationStateApi
     pointer: MacosProtectedSourceStateApi
     pointer_owner: MacosCapabilityOwnerApi
+    secure_input_active: bool
     telemetry: MacosInputTelemetryApiStatus
     type_: InputSourcePlatformStatusType0Type
     owner_conflict: MacosDaemonOwnerConflictApiStatus | None | Unset = UNSET
@@ -62,6 +64,8 @@ class InputSourcePlatformStatusType0:
         pointer = self.pointer.value
 
         pointer_owner = self.pointer_owner.value
+
+        secure_input_active = self.secure_input_active
 
         telemetry = self.telemetry.to_dict()
 
@@ -84,6 +88,7 @@ class InputSourcePlatformStatusType0:
                 "keyboard_tcc": keyboard_tcc,
                 "pointer": pointer,
                 "pointer_owner": pointer_owner,
+                "secure_input_active": secure_input_active,
                 "telemetry": telemetry,
                 "type": type_,
             }
@@ -112,6 +117,8 @@ class InputSourcePlatformStatusType0:
         pointer = MacosProtectedSourceStateApi(d.pop("pointer"))
 
         pointer_owner = MacosCapabilityOwnerApi(d.pop("pointer_owner"))
+
+        secure_input_active = d.pop("secure_input_active")
 
         telemetry = MacosInputTelemetryApiStatus.from_dict(d.pop("telemetry"))
 
@@ -144,6 +151,7 @@ class InputSourcePlatformStatusType0:
             keyboard_tcc=keyboard_tcc,
             pointer=pointer,
             pointer_owner=pointer_owner,
+            secure_input_active=secure_input_active,
             telemetry=telemetry,
             type_=type_,
             owner_conflict=owner_conflict,

@@ -178,9 +178,9 @@ Both operations are queued and applied at safe frame boundaries.
 Pixel data flows through two color spaces across the pipeline:
 
 1. **Canvas storage**: `Rgba` (`u8`, sRGB gamma-encoded). Effects write sRGB byte values using `Canvas::set_pixel`, `Canvas::fill`, or direct buffer access.
-2. **Spatial sampling**: samples decode to linear-light `RgbaF32` via the precomputed LUT, blend in linear space, then re-encode to `Rgb` (`u8`) for device output via `linear_to_srgb_u8`.
+2. **Spatial sampling**: samples decode to linear-light `LinearRgba` via the precomputed LUT, blend in linear space, then re-encode to `Rgb` (`u8`) for device output via `linear_to_srgb_u8`.
 
-The canvas pixel type is `Rgba` (sRGB u8); the float intermediate is `RgbaF32` (linear sRGB, `[0.0, 1.0]` per channel). The engine also exposes `Oklab` and `Oklch` types for perceptually uniform interpolation in native effects. See [@/effects/color-science.md](@/effects/color-science.md) for the color science reference.
+The canvas pixel type is `Rgba` (sRGB u8); the float intermediate is `LinearRgba` (linear sRGB, `[0.0, 1.0]` per channel). The engine also exposes `Oklab` and `Oklch` types for perceptually uniform interpolation in native effects. See [@/effects/color-science.md](@/effects/color-science.md) for the color science reference.
 
 ## Related pages
 

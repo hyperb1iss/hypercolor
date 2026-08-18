@@ -721,24 +721,24 @@ pub enum HypercolorEvent {
         previous: Option<EffectRef>,
         /// Transition type applied (if any).
         transition: Option<TransitionRef>,
-        /// Zone (render group) the effect started in. `None` only for
-        /// publishers without zone context (e.g. session restore).
+        /// Zone the effect started in. `None` only for publishers
+        /// without zone context (e.g. session restore).
         #[serde(default)]
-        group_id: Option<ZoneId>,
+        zone_id: Option<ZoneId>,
         #[serde(default)]
-        group_name: Option<String>,
+        zone_name: Option<String>,
     },
 
     /// An effect was stopped in one zone.
     EffectStopped {
         effect: EffectRef,
         reason: EffectStopReason,
-        /// Zone (render group) the effect was cleared from. `None` only
-        /// for publishers without zone context.
+        /// Zone the effect was cleared from. `None` only for publishers
+        /// without zone context.
         #[serde(default)]
-        group_id: Option<ZoneId>,
+        zone_id: Option<ZoneId>,
         #[serde(default)]
-        group_name: Option<String>,
+        zone_name: Option<String>,
     },
 
     /// A control value on the active effect was updated.
@@ -784,8 +784,8 @@ pub enum HypercolorEvent {
     /// An effect entered or exited degraded mode.
     EffectDegraded {
         effect_id: String,
-        group_id: Option<ZoneId>,
-        group_name: Option<String>,
+        zone_id: Option<ZoneId>,
+        zone_name: Option<String>,
         state: EffectDegradationState,
         reason: Option<String>,
     },
@@ -818,9 +818,9 @@ pub enum HypercolorEvent {
     SceneEnabled { scene_id: String, enabled: bool },
 
     /// A zone in a scene changed.
-    RenderGroupChanged {
+    ZoneChanged {
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         role: ZoneRole,
         kind: ZoneChangeKind,
     },
@@ -828,7 +828,7 @@ pub enum HypercolorEvent {
     /// An authored layer stack in a zone changed.
     LayerStackChanged {
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layers_version: u64,
         kind: LayerStackChangeKind,
     },
@@ -836,7 +836,7 @@ pub enum HypercolorEvent {
     /// Runtime health for one authored layer producer changed.
     LayerHealthChanged {
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layer_id: SceneLayerId,
         health: LayerHealth,
     },
@@ -844,7 +844,7 @@ pub enum HypercolorEvent {
     /// Scene-level settings changed without activating a different scene.
     SceneSettingsChanged {
         scene_id: SceneId,
-        groups_revision: u64,
+        zones_revision: u64,
         kind: SceneSettingsChangeKind,
     },
 
@@ -1171,7 +1171,7 @@ impl HypercolorEvent {
             | Self::SceneTransitionStarted { .. }
             | Self::SceneTransitionComplete { .. }
             | Self::SceneEnabled { .. }
-            | Self::RenderGroupChanged { .. }
+            | Self::ZoneChanged { .. }
             | Self::LayerStackChanged { .. }
             | Self::LayerHealthChanged { .. }
             | Self::SceneSettingsChanged { .. }

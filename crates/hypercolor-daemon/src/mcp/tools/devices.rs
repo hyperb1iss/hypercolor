@@ -4,8 +4,9 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, brightness_percent, default_output_schema};
 use crate::api::AppState;
-use crate::session::{current_global_brightness, set_global_brightness};
-use hypercolor_types::event::HypercolorEvent;
+use crate::domain::output;
+use crate::session::current_global_brightness;
+use hypercolor_types::api::output::OutputPatchRequest;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -31,10 +32,12 @@ pub(super) fn build_get_devices() -> ToolDefinition {
                     "type": "string",
                     "description": "Optional output backend id filter. Use ids reported by device origin metadata."
                 }
-            }
+            },
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -43,7 +46,7 @@ pub(super) fn build_set_brightness() -> ToolDefinition {
     ToolDefinition {
         name: "set_brightness".into(),
         title: "Set Brightness".into(),
-        description: "Set the brightness level globally or for specific devices. Brightness is a percentage from 0 (off/dark) to 100 (maximum).".into(),
+        description: "Set the global brightness level. Brightness is a percentage from 0 (off/dark) to 100 (maximum), and the change is immediate.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -52,79 +55,19 @@ pub(super) fn build_set_brightness() -> ToolDefinition {
                     "minimum": 0,
                     "maximum": 100,
                     "description": "Brightness percentage (0 = off, 100 = full brightness)"
-                },
-                "device_id": {
-                    "type": "string",
-                    "description": "Optional device ID for per-device brightness"
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Fade transition duration in milliseconds",
-                    "default": 300,
-                    "minimum": 0,
-                    "maximum": 5000
                 }
             },
-            "required": ["brightness"]
+            "required": ["brightness"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: false,
         idempotent: true,
     }
 }
 
-// ── Stateless Handlers ────────────────────────────────────────────────────
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to device manager"
-)]
-pub(super) fn handle_get_devices(params: &Value) -> Result<Value, ToolError> {
-    let _status = params
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("all");
-
-    // Would query device manager
-    Ok(json!({
-        "devices": [],
-        "summary": {
-            "total": 0,
-            "connected": 0,
-            "total_leds": 0
-        }
-    }))
-}
-
-pub(super) fn handle_set_brightness(params: &Value) -> Result<Value, ToolError> {
-    let brightness = params
-        .get("brightness")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| ToolError::MissingParam("brightness".into()))?;
-
-    if brightness > 100 {
-        return Err(ToolError::InvalidParam {
-            param: "brightness".into(),
-            reason: "must be between 0 and 100".into(),
-        });
-    }
-
-    let device_id = params.get("device_id").and_then(Value::as_str);
-    let scope = if device_id.is_some() {
-        "device"
-    } else {
-        "global"
-    };
-
-    Ok(json!({
-        "brightness": brightness,
-        "scope": scope,
-        "device_id": device_id,
-        "previous_brightness": 100
-    }))
-}
-
-// ── Stateful Handlers ─────────────────────────────────────────────────────
+// ── Handlers ──────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_get_devices_with_state(
     params: &Value,
@@ -210,42 +153,18 @@ pub(super) async fn handle_set_brightness_with_state(
     let brightness_u16 = u16::try_from(brightness).unwrap_or(100);
     let normalized = f32::from(brightness_u16) / 100.0;
 
-    set_global_brightness(&state.power_state, normalized);
-    let persisted = {
-        let mut settings = state.device_settings.write().await;
-        settings.set_global_brightness(normalized);
-        match settings.save() {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(%error, "Failed to persist global brightness");
-                false
-            }
-        }
-    };
-    // The hint promises persisted state changed; a failed save must not
-    // send sync consumers to re-read a store that did not move.
-    if persisted {
-        state
-            .event_bus
-            .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
-    }
-
-    state.event_bus.publish(HypercolorEvent::BrightnessChanged {
-        old: previous,
-        new_value: brightness_percent(normalized),
-    });
-
-    let device_id = params.get("device_id").and_then(Value::as_str);
-    let scope = if device_id.is_some() {
-        "device"
-    } else {
-        "global"
-    };
+    let outcome = output::patch_output(
+        state,
+        OutputPatchRequest {
+            power: None,
+            brightness: Some(normalized),
+        },
+    )
+    .await?;
 
     Ok(json!({
-        "brightness": brightness,
-        "scope": scope,
-        "device_id": device_id,
+        "brightness": brightness_percent(outcome.brightness),
+        "scope": "global",
         "previous_brightness": previous
     }))
 }

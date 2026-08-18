@@ -13,6 +13,7 @@ autobins = false
 workspace = true
 
 [dependencies]
+hypercolor-color = { workspace = true }
 hypercolor-types = { workspace = true }
 # Shared daemon WebSocket wire codec (same decoder the web UI uses) —
 # ws-core is pure (bytes + thiserror), no leptos/wasm.

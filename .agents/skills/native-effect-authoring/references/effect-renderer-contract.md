@@ -33,27 +33,27 @@ fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
         self.beat_flash *= self.beat_decay;
     }
 
-    let base = RgbaF32::new(self.base_color[0], self.base_color[1],
-                             self.base_color[2], self.base_color[3]);
-    let peak = RgbaF32::new(self.peak_color[0], self.peak_color[1],
-                             self.peak_color[2], self.peak_color[3]);
-    let white = RgbaF32::new(1.0, 1.0, 1.0, 1.0);
+    let base = LinearRgba::new(self.base_color[0], self.base_color[1],
+                                self.base_color[2], self.base_color[3]);
+    let peak = LinearRgba::new(self.peak_color[0], self.peak_color[1],
+                                self.peak_color[2], self.peak_color[3]);
+    let white = LinearRgba::new(1.0, 1.0, 1.0, 1.0);
 
     // Compose: RMS for color blend, beat for white accent
-    let rms_color = RgbaF32::lerp(&base, &peak, rms_t);
-    let mut final_color = RgbaF32::lerp(&rms_color, &white, self.beat_flash * 0.6);
+    let rms_color = base.lerp(peak, rms_t);
+    let mut final_color = rms_color.lerp(white, self.beat_flash * 0.6);
 
     // Apply brightness by scaling RGB channels directly
     final_color.r *= self.brightness;
     final_color.g *= self.brightness;
     final_color.b *= self.brightness;
 
-    canvas.fill(final_color.to_srgba());
+    canvas.fill(final_color.to_encoded());
     Ok(canvas)
 }
 ```
 
-**Key insight**: `beat_decay` of 0.85 means the flash halves in ~4 frames at 30 FPS (~133ms). Adjust for desired tail length. Lower values = snappier, higher = smoother trails. Brightness is applied by direct field multiplication on `RgbaF32` -- there is no `scale_rgb` method on the type.
+**Key insight**: `beat_decay` of 0.85 means the flash halves in ~4 frames at 30 FPS (~133ms). Adjust for desired tail length. Lower values = snappier, higher = smoother trails. Brightness is applied by direct field multiplication on `LinearRgba` -- there is no `scale_rgb` method on the type.
 
 ### Color Control Value Handling
 
@@ -75,8 +75,8 @@ fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
         let phase = t * self.frequency + input.time_secs * self.speed;
         let wave = (phase.sin() + 1.0) * 0.5; // normalize to 0.0-1.0
 
-        let color = RgbaF32::lerp(&self.color_a, &self.color_b, wave);
-        let srgb = color.to_srgba();
+        let color = self.color_a.lerp(self.color_b, wave);
+        let srgb = color.to_encoded();
 
         for y in 0..input.canvas_height {
             canvas.set_pixel(x, y, srgb);
@@ -96,7 +96,7 @@ Uses Oklch for perceptually uniform gradients:
 // Gradient stops defined as ControlValue::Gradient(Vec<GradientStop>)
 // Each stop: { position: f32 (0.0-1.0), color: [f32; 4] (linear RGBA) }
 
-fn sample_gradient(stops: &[GradientStop], t: f32) -> RgbaF32 {
+fn sample_gradient(stops: &[GradientStop], t: f32) -> LinearRgba {
     // Find surrounding stops
     // Convert both to Oklch
     // Interpolate in Oklch space (avoids muddy midpoints)

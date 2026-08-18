@@ -5,7 +5,7 @@ use tracing::debug;
 
 use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
 use hypercolor_core::types::canvas::PublishedSurface;
-#[cfg(any(feature = "wgpu", test))]
+#[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 
@@ -407,11 +407,11 @@ fn display_finalize_frame_to_group(
 mod tests {
     use std::collections::HashMap;
 
-    use hypercolor_core::bus::{
-        DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget, DisplayGroupViewport,
-        DisplayYuv420Frame,
-    };
+    #[cfg(feature = "wgpu")]
+    use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupTarget, DisplayYuv420Frame};
+    use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
     use hypercolor_core::types::canvas::Canvas;
+    #[cfg(feature = "wgpu")]
     use hypercolor_types::canvas::Rgba;
     #[cfg(feature = "wgpu")]
     use hypercolor_types::config::RenderAccelerationMode;

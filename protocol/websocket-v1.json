@@ -1,12 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "protocol": "hypercolor.websocket",
   "version": "1.0",
   "subprotocol": "hypercolor-v1",
   "default_subscriptions": [
     "events"
   ],
-  "channels": [
+  "topics": [
     {
       "name": "frames",
       "kind": "binary",
@@ -39,7 +39,8 @@
       "name": "screen_canvas",
       "kind": "binary",
       "default_fps": 15,
-      "description": "Captured screen-source preview canvas."
+      "description": "Captured screen-source preview canvas.",
+      "requires_control": true
     },
     {
       "name": "screen_zones",
@@ -79,7 +80,16 @@
       "name": "display_preview",
       "kind": "binary",
       "default_fps": 15,
-      "description": "Per-display JPEG preview frame stream."
+      "description": "Per-display JPEG preview frame stream, keyed by device.",
+      "key": "device_id"
+    },
+    {
+      "name": "interactive_preview",
+      "kind": "binary",
+      "key": "preview_id",
+      "default_fps": 30,
+      "requires_control": true,
+      "description": "Interactive scene preview lane keyed by a client-chosen preview id. Subscribing opens the lane; unsubscribing closes it."
     },
     {
       "name": "input_events",
@@ -103,6 +113,7 @@
     "device_metrics",
     "sensors",
     "display_preview",
+    "interactive_preview",
     "input_events",
     "commands",
     "canvas_format_jpeg",
@@ -145,8 +156,6 @@
       "command",
       "zone_layout_preview",
       "zone_layout_preview_clear",
-      "interactive_preview_open",
-      "interactive_preview_close",
       "input_inject",
       "interactive_preview_claim_authoritative",
       "interactive_preview_release_authoritative"
@@ -162,8 +171,6 @@
       "backpressure",
       "error",
       "response",
-      "interactive_preview_opened",
-      "interactive_preview_closed",
       "input_injected",
       "interactive_preview_authoritative_claimed",
       "interactive_preview_authoritative_released"
@@ -172,7 +179,6 @@
   "json_payloads": {
     "timed_input_event_v1": {
       "schema_version": 1,
-      "channel": "input_events",
       "event": "input_event_received",
       "required_fields": [
         "event"
@@ -183,11 +189,11 @@
         "physical_code": null,
         "repeat_count": 1
       },
-      "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload."
+      "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+      "topic": "input_events"
     },
     "input_source_status_changed_v1": {
       "schema_version": 1,
-      "channel": "events",
       "event": "input_source_status_changed",
       "required_fields": [
         "source_id",
@@ -209,11 +215,12 @@
         "lifecycle_issue_code": null,
         "freshness_issue_code": null
       },
-      "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents."
+      "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents.",
+      "topic": "events"
     },
     "macos_daemon_ownership_changed_v1": {
       "schema_version": 1,
-      "channel": "events",
+      "topic": "events",
       "event": "macos_daemon_ownership_changed",
       "required_fields": [
         "active_owner",
@@ -230,7 +237,6 @@
     {
       "name": "led_frame",
       "tag": 1,
-      "channel": "frames",
       "layout": [
         [
           "u8",
@@ -252,12 +258,12 @@
           "repeated_zone",
           "zones"
         ]
-      ]
+      ],
+      "topic": "frames"
     },
     {
       "name": "spectrum",
       "tag": 2,
-      "channel": "spectrum",
       "layout": [
         [
           "u8",
@@ -299,91 +305,98 @@
           "repeated_f32_le",
           "bins"
         ]
-      ]
+      ],
+      "topic": "spectrum"
     },
     {
       "name": "canvas",
       "tag": 3,
-      "channel": "canvas",
-      "layout": "preview_frame"
+      "layout": "preview_frame",
+      "topic": "canvas"
     },
     {
       "name": "screen_canvas",
       "tag": 5,
-      "channel": "screen_canvas",
-      "layout": "preview_frame"
+      "layout": "preview_frame",
+      "topic": "screen_canvas"
     },
     {
       "name": "screen_zones",
       "tag": 9,
-      "channel": "screen_zones",
-      "layout": "screen_zones_frame"
+      "layout": "screen_zones_frame",
+      "topic": "screen_zones"
     },
     {
       "name": "web_viewport_canvas",
       "tag": 6,
-      "channel": "web_viewport_canvas",
-      "layout": "preview_frame"
+      "layout": "preview_frame",
+      "topic": "web_viewport_canvas"
     },
     {
       "name": "zone_preview",
       "tag": 8,
-      "channel": "zone_preview",
-      "layout": "zone_preview_frame"
+      "layout": "zone_preview_frame",
+      "topic": "zone_preview"
     },
     {
       "name": "display_preview",
       "tag": 7,
-      "channel": "display_preview",
-      "layout": "preview_frame"
+      "layout": "display_preview_frame",
+      "topic": "display_preview"
     },
     {
       "name": "interactive_preview",
       "tag": 10,
-      "channel": "interactive_preview",
-      "layout": "interactive_preview_frame"
+      "layout": "interactive_preview_frame",
+      "topic": "interactive_preview"
     },
     {
       "name": "wide_preview",
       "tag": 11,
-      "channel": "preview_transport",
-      "layout": "wide_preview_frame"
+      "layout": "wide_preview_frame",
+      "topic": "preview_transport"
     },
     {
       "name": "wide_zone_preview",
       "tag": 12,
-      "channel": "zone_preview",
-      "layout": "wide_zone_preview_frame"
+      "layout": "wide_zone_preview_frame",
+      "topic": "zone_preview"
     },
     {
       "name": "wide_interactive_preview",
       "tag": 13,
-      "channel": "interactive_preview",
-      "layout": "wide_interactive_preview_frame"
+      "layout": "wide_interactive_preview_frame",
+      "topic": "interactive_preview"
     },
     {
       "name": "wide_screen_zones",
       "tag": 14,
-      "channel": "screen_zones",
-      "layout": "wide_screen_zones_frame"
+      "layout": "wide_screen_zones_frame",
+      "topic": "screen_zones"
     },
     {
       "name": "preview_chunk",
       "tag": 15,
-      "channel": "preview_transport",
-      "layout": "preview_chunk_frame"
+      "layout": "preview_chunk_frame",
+      "topic": "preview_transport"
     },
     {
       "name": "preview_cancel",
       "tag": 16,
-      "channel": "preview_transport",
-      "layout": "preview_cancel_frame"
+      "layout": "preview_cancel_frame",
+      "topic": "preview_transport"
     },
     {
       "name": "extended_screen_zones",
       "tag": 17,
-      "channel": "screen_zones",
-      "layout": "extended_screen_zones_frame"
+      "layout": "extended_screen_zones_frame",
+      "topic": "screen_zones"
+    },
+    {
+      "name": "wide_display_preview",
+      "tag": 18,
+      "layout": "wide_display_preview_frame",
+      "topic": "display_preview"
     }
   ],
   "preview_frame": {
@@ -573,76 +586,226 @@
     "header_len": 19,
     "description": "Additive preview layout for u32 dimensions. The channel_tag identifies the logical passive preview stream.",
     "layout": [
-      ["u8", "tag"],
-      ["u8", "channel_tag"],
-      ["u32_le", "frame_number"],
-      ["u32_le", "timestamp_ms"],
-      ["u32_le", "width"],
-      ["u32_le", "height"],
-      ["u8", "format"],
-      ["bytes", "payload"]
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u8",
+        "channel_tag"
+      ],
+      [
+        "u32_le",
+        "frame_number"
+      ],
+      [
+        "u32_le",
+        "timestamp_ms"
+      ],
+      [
+        "u32_le",
+        "width"
+      ],
+      [
+        "u32_le",
+        "height"
+      ],
+      [
+        "u8",
+        "format"
+      ],
+      [
+        "bytes",
+        "payload"
+      ]
     ]
   },
   "wide_zone_preview_frame": {
     "header_len": 50,
     "layout": [
-      ["u8", "tag"],
-      ["u32_le", "frame_number"],
-      ["u32_le", "timestamp_ms"],
-      ["uuid", "scene_id"],
-      ["uuid", "zone_id"],
-      ["u32_le", "width"],
-      ["u32_le", "height"],
-      ["u8", "format"],
-      ["bytes", "payload"]
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u32_le",
+        "frame_number"
+      ],
+      [
+        "u32_le",
+        "timestamp_ms"
+      ],
+      [
+        "uuid",
+        "scene_id"
+      ],
+      [
+        "uuid",
+        "zone_id"
+      ],
+      [
+        "u32_le",
+        "width"
+      ],
+      [
+        "u32_le",
+        "height"
+      ],
+      [
+        "u8",
+        "format"
+      ],
+      [
+        "bytes",
+        "payload"
+      ]
     ]
   },
   "wide_interactive_preview_frame": {
     "prefix_len": 19,
     "layout": [
-      ["u8", "tag"],
-      ["u8", "preview_id_len"],
-      ["u32_le", "frame_number"],
-      ["u32_le", "timestamp_ms"],
-      ["u32_le", "width"],
-      ["u32_le", "height"],
-      ["u8", "format"],
-      ["utf8", "preview_id"],
-      ["bytes", "payload"]
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u8",
+        "preview_id_len"
+      ],
+      [
+        "u32_le",
+        "frame_number"
+      ],
+      [
+        "u32_le",
+        "timestamp_ms"
+      ],
+      [
+        "u32_le",
+        "width"
+      ],
+      [
+        "u32_le",
+        "height"
+      ],
+      [
+        "u8",
+        "format"
+      ],
+      [
+        "utf8",
+        "preview_id"
+      ],
+      [
+        "bytes",
+        "payload"
+      ]
     ]
   },
   "wide_screen_zones_frame": {
     "header_len": 23,
     "layout": [
-      ["u8", "tag"],
-      ["u32_le", "frame_number"],
-      ["u32_le", "timestamp_ms"],
-      ["u32_le", "source_width"],
-      ["u32_le", "source_height"],
-      ["u8", "grid_cols"],
-      ["u8", "grid_rows"],
-      ["u8", "letterbox_top"],
-      ["u8", "letterbox_bottom"],
-      ["u8", "letterbox_left"],
-      ["u8", "letterbox_right"],
-      ["repeated_u8_rgb", "zone_colors"]
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u32_le",
+        "frame_number"
+      ],
+      [
+        "u32_le",
+        "timestamp_ms"
+      ],
+      [
+        "u32_le",
+        "source_width"
+      ],
+      [
+        "u32_le",
+        "source_height"
+      ],
+      [
+        "u8",
+        "grid_cols"
+      ],
+      [
+        "u8",
+        "grid_rows"
+      ],
+      [
+        "u8",
+        "letterbox_top"
+      ],
+      [
+        "u8",
+        "letterbox_bottom"
+      ],
+      [
+        "u8",
+        "letterbox_left"
+      ],
+      [
+        "u8",
+        "letterbox_right"
+      ],
+      [
+        "repeated_u8_rgb",
+        "zone_colors"
+      ]
     ]
   },
   "extended_screen_zones_frame": {
     "header_len": 41,
     "layout": [
-      ["u8", "tag"],
-      ["u32_le", "frame_number"],
-      ["u32_le", "timestamp_ms"],
-      ["u32_le", "source_width"],
-      ["u32_le", "source_height"],
-      ["u32_le", "grid_cols"],
-      ["u32_le", "grid_rows"],
-      ["u32_le", "letterbox_top"],
-      ["u32_le", "letterbox_bottom"],
-      ["u32_le", "letterbox_left"],
-      ["u32_le", "letterbox_right"],
-      ["repeated_u8_rgb", "zone_colors"]
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u32_le",
+        "frame_number"
+      ],
+      [
+        "u32_le",
+        "timestamp_ms"
+      ],
+      [
+        "u32_le",
+        "source_width"
+      ],
+      [
+        "u32_le",
+        "source_height"
+      ],
+      [
+        "u32_le",
+        "grid_cols"
+      ],
+      [
+        "u32_le",
+        "grid_rows"
+      ],
+      [
+        "u32_le",
+        "letterbox_top"
+      ],
+      [
+        "u32_le",
+        "letterbox_bottom"
+      ],
+      [
+        "u32_le",
+        "letterbox_left"
+      ],
+      [
+        "u32_le",
+        "letterbox_right"
+      ],
+      [
+        "repeated_u8_rgb",
+        "zone_colors"
+      ]
     ]
   },
   "preview_chunk_frame": {
@@ -650,23 +813,74 @@
     "fixed_header_len": 55,
     "description": "Bounded chunk envelope around one fully encoded legacy or wide preview publication.",
     "layout": [
-      ["u8", "tag"],
-      ["u8", "schema"],
-      ["u8", "stream_kind"],
-      ["u8", "channel_tag"],
-      ["u8", "format"],
-      ["u16_le", "stream_identity_len"],
-      ["u64_le", "publication_id"],
-      ["u32_le", "frame_number"],
-      ["u32_le", "timestamp_ms"],
-      ["u32_le", "width"],
-      ["u32_le", "height"],
-      ["u64_le", "total_encoded_bytes"],
-      ["u64_le", "chunk_offset"],
-      ["u32_le", "chunk_index"],
-      ["u32_le", "chunk_count"],
-      ["bytes", "stream_identity"],
-      ["bytes", "chunk_payload"]
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u8",
+        "schema"
+      ],
+      [
+        "u8",
+        "stream_kind"
+      ],
+      [
+        "u8",
+        "channel_tag"
+      ],
+      [
+        "u8",
+        "format"
+      ],
+      [
+        "u16_le",
+        "stream_identity_len"
+      ],
+      [
+        "u64_le",
+        "publication_id"
+      ],
+      [
+        "u32_le",
+        "frame_number"
+      ],
+      [
+        "u32_le",
+        "timestamp_ms"
+      ],
+      [
+        "u32_le",
+        "width"
+      ],
+      [
+        "u32_le",
+        "height"
+      ],
+      [
+        "u64_le",
+        "total_encoded_bytes"
+      ],
+      [
+        "u64_le",
+        "chunk_offset"
+      ],
+      [
+        "u32_le",
+        "chunk_index"
+      ],
+      [
+        "u32_le",
+        "chunk_count"
+      ],
+      [
+        "bytes",
+        "stream_identity"
+      ],
+      [
+        "bytes",
+        "chunk_payload"
+      ]
     ]
   },
   "preview_cancel_frame": {
@@ -674,16 +888,37 @@
     "fixed_header_len": 14,
     "description": "Publication-specific cancellation preserving per-stream high-water state.",
     "layout": [
-      ["u8", "tag"],
-      ["u8", "schema"],
-      ["u8", "stream_kind"],
-      ["u8", "channel_tag"],
-      ["u16_le", "stream_identity_len"],
-      ["u64_le", "publication_id"],
-      ["bytes", "stream_identity"]
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u8",
+        "schema"
+      ],
+      [
+        "u8",
+        "stream_kind"
+      ],
+      [
+        "u8",
+        "channel_tag"
+      ],
+      [
+        "u16_le",
+        "stream_identity_len"
+      ],
+      [
+        "u64_le",
+        "publication_id"
+      ],
+      [
+        "bytes",
+        "stream_identity"
+      ]
     ]
   },
-  "channel_config": {
+  "topic_config": {
     "frames": {
       "fps": {
         "min": 1,
@@ -827,14 +1062,53 @@
       }
     },
     "display_preview": {
-      "device_id": {
-        "nullable": true
-      },
       "fps": {
         "min": 1,
         "max": 30,
         "default": 15
       }
+    },
+    "interactive_preview": {
+      "target": {
+        "values": [
+          "active_scene"
+        ],
+        "default": "active_scene"
+      },
+      "fps": {
+        "min": 1,
+        "max": 60,
+        "default": 30
+      },
+      "width": {
+        "min": 1,
+        "default": 640
+      },
+      "height": {
+        "min": 1,
+        "default": 480
+      },
+      "format": {
+        "values": [
+          "rgb",
+          "rgba",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      }
     }
+  },
+  "display_preview_frame": {
+    "prefix_len": 15,
+    "layout": "tag u8 | device_id_len u8 | frame u32 | timestamp u32 | width u16 | height u16 | format u8 | device_id utf8 | payload",
+    "formats": {
+      "rgb": 0,
+      "rgba": 1,
+      "jpeg": 2
+    }
+  },
+  "wide_display_preview_frame": {
+    "prefix_len": 19,
+    "layout": "tag u8 | device_id_len u8 | frame u32 | timestamp u32 | width u32 | height u32 | format u8 | device_id utf8 | payload"
   }
 }

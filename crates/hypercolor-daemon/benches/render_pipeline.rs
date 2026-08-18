@@ -42,9 +42,13 @@ const FRAME_INTERVAL_MS: u32 = 16;
 const BENCH_DEVICE_COUNT: usize = 3;
 const BENCH_LEDS_PER_DEVICE: u32 = 120;
 const CANVAS_RGBA_BYTES: u64 = 320_u64 * 200_u64 * 4;
+#[cfg(feature = "wgpu")]
 const EXTREME_LAYER_COUNT: usize = 12;
+#[cfg(feature = "wgpu")]
 const EXTREME_GRID_WIDTH: usize = 8;
+#[cfg(feature = "wgpu")]
 const EXTREME_ZONE_COUNT: usize = 64;
+#[cfg(feature = "wgpu")]
 const EXTREME_LEDS_PER_ZONE: u32 = 256;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
@@ -236,6 +240,7 @@ fn inverse_patterned_canvas_for(width: u32, height: u32) -> Canvas {
     canvas
 }
 
+#[cfg(feature = "wgpu")]
 fn extreme_layer_canvas(width: u32, height: u32, variant: u32, layer: u32) -> Canvas {
     let mut canvas = Canvas::new(width, height);
     let red_phase = 17_u32
@@ -259,6 +264,7 @@ fn extreme_layer_canvas(width: u32, height: u32, variant: u32, layer: u32) -> Ca
     canvas
 }
 
+#[cfg(feature = "wgpu")]
 fn extreme_composition_plans(width: u32, height: u32) -> Vec<CompositionPlan> {
     (0..4_u32)
         .map(|variant| {
@@ -281,6 +287,7 @@ fn extreme_composition_plans(width: u32, height: u32) -> Vec<CompositionPlan> {
         .collect()
 }
 
+#[cfg(feature = "wgpu")]
 fn extreme_zones() -> Vec<Output> {
     debug_assert_eq!(EXTREME_GRID_WIDTH * EXTREME_GRID_WIDTH, EXTREME_ZONE_COUNT);
     let cell = 1.0_f32 / EXTREME_GRID_WIDTH as f32;

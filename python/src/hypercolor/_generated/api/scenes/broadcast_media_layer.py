@@ -83,7 +83,10 @@ def sync_detailed(
 
     Args:
         id (str):
-        body (BroadcastMediaLayerRequest):
+        body (BroadcastMediaLayerRequest): Request body for `POST
+            /api/v1/scenes/{id}/layers/broadcast-media`.
+
+            Creates one media layer per target zone in a single transaction.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -115,7 +118,10 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        body (BroadcastMediaLayerRequest):
+        body (BroadcastMediaLayerRequest): Request body for `POST
+            /api/v1/scenes/{id}/layers/broadcast-media`.
+
+            Creates one media layer per target zone in a single transaction.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

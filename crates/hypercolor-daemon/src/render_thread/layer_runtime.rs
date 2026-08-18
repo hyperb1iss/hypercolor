@@ -114,7 +114,7 @@ impl LayerRuntimeRegistry {
             .drain(..)
             .map(|event| HypercolorEvent::LayerHealthChanged {
                 scene_id: event.scene_id,
-                group_id: event.key.group_id,
+                zone_id: event.key.group_id,
                 layer_id: event.key.layer_id,
                 health: event.health,
             })

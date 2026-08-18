@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use crate::api;
 use crate::control_value_json::controls_to_json;
 use crate::toasts;
+use hypercolor_color::Hsl;
 use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
 use hypercolor_types::effect::ControlValue;
 
@@ -61,21 +62,13 @@ fn djb2_hash_reversed(s: &str) -> u32 {
 
 /// Plain HSL → sRGB triplet string — vivid but still within a readable
 /// neon band once the saturation/lightness are pre-clamped by caller.
+///
+/// The kernel clamps saturation and lightness and wraps hue, so a
+/// caller that drifts out of range now degrades to the nearest legal
+/// color instead of relying on the byte cast to saturate for it.
 fn hsl_to_rgb_triplet(h: f32, s: f32, l: f32) -> String {
-    let c = (1.0 - (2.0f32 * l - 1.0).abs()) * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
-    let (r1, g1, b1) = match h_prime as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    let to_byte = |v: f32| -> u8 { ((v + m) * 255.0).round() as u8 };
-    format!("{}, {}, {}", to_byte(r1), to_byte(g1), to_byte(b1))
+    let rgb = Hsl::new(h, s, l).to_rgb();
+    format!("{}, {}, {}", rgb.r, rgb.g, rgb.b)
 }
 
 /// Compact preset toolbar for the effect detail sidebar.
@@ -239,11 +232,11 @@ pub fn PresetToolbar(
         let pid = preset.id.clone();
         let refresh = refresh_presets;
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name,
                 description: None,
                 effect: eid.clone(),
-                controls: serde_json::Value::Object(controls_json),
+                controls: Some(serde_json::Value::Object(controls_json)),
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {
@@ -262,19 +255,20 @@ pub fn PresetToolbar(
         let target_zone = zones_ctx.focused_zone_id_untracked();
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name,
                 description: None,
                 effect: eid.clone(),
-                controls: serde_json::Value::Object(controls_json),
+                controls: Some(serde_json::Value::Object(controls_json)),
                 tags: None,
             };
             match api::create_preset(&req).await {
                 Ok(created) => {
-                    match api::apply_effect_preset(&eid, &created.id, target_zone.as_deref()).await
+                    let created_id = created.id.to_string();
+                    match api::apply_effect_preset(&eid, &created_id, target_zone.as_deref()).await
                     {
                         Ok(()) => {
-                            set_selected_id.set(Some(created.id));
+                            set_selected_id.set(Some(created_id));
                             toasts::toast_success("Preset created");
                             refresh();
                         }
@@ -306,11 +300,13 @@ pub fn PresetToolbar(
         let refresh = refresh_presets;
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name: new_name,
                 description: None,
                 effect: eid,
-                controls: serde_json::Value::Object(controls_to_json(&preset.controls)),
+                controls: Some(serde_json::Value::Object(controls_to_json(
+                    &preset.controls,
+                ))),
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {

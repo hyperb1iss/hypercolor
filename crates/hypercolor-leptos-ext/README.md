@@ -10,12 +10,11 @@ available for real load testing.
 
 ## Feature Matrix
 
-- `ws-core`: binary frame traits, schema negotiation, transports, reconnect,
-  backpressure policies, raw RPC frames, session replay records, and Hypercolor
-  preview frame codecs.
-- `ws-client-wasm`: browser `web_sys::WebSocket` transport for
+- `ws-core`: the Hypercolor preview, zone, screen-zones, spectrum, and input
+  event frame codecs, plus the reconnect backoff schedule the clients share.
+- `ws-client-wasm`: browser `web_sys::WebSocket` helpers for
   `wasm32-unknown-unknown`.
-- `axum`: server-side Axum WebSocket transport.
+- `axum`: server-side Axum WebSocket upgrade handler.
 - `events`, `canvas`, `raf`, `prelude`: browser helper modules, gated to
   `wasm32`.
 - `webgpu`: extends `canvas` with a `wgpu` surface for GPU canvas access.
@@ -25,22 +24,17 @@ available for real load testing.
 Default features are empty. Consumers opt into exactly the runtime surface they
 need.
 
-The `#[derive(BinaryFrame)]` proc macro is provided by the companion crate
-`hypercolor-leptos-ext-macros`, which is automatically pulled in as a
-dependency. Users do not need to add it separately.
-
 ## Current Extraction Target
 
-The stream core is the first viable public extraction candidate. The intended
-public crate shape is:
+The generic stream layer this crate originally prototyped (a transport trait,
+typed binary channels, backpressure policies, reconnect wrappers, RPC envelopes,
+and session replay) never acquired a production consumer and has been removed.
+What survives is what Hypercolor actually runs on, so the extraction candidates
+are now:
 
-- `cinder-stream`: `BinaryFrame`, schema negotiation, `CinderTransport`,
-  `BinaryChannel`, reconnect policy primitives, backpressure queues, raw RPC
-  envelopes, and session replay records.
 - `cinder-web`: browser-native event, animation frame, canvas, and WebSocket
   wrappers once the UI migration proves the ergonomics.
-- `cinder-leptos`: Leptos adapters layered above `cinder-web` and
-  `cinder-stream`.
+- `cinder-leptos`: Leptos adapters layered above `cinder-web`.
 
 The visual preview media path is intentionally not locked into a new protocol
 yet. Hypercolor's current raw/JPEG WebSocket preview remains the Year 1 V1 codec

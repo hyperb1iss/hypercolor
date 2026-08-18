@@ -170,7 +170,7 @@ async function waitForHtml(url, label) {
 
 function buildConfigToml() {
   return [
-    "schema_version = 3",
+    "schema_version = 4",
     "",
     "[mcp]",
     "enabled = true",

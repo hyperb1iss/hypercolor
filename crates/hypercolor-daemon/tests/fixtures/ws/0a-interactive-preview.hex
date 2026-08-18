@@ -1,0 +1,18 @@
+# hypercolor websocket golden fixture
+# fixture: 0a-interactive-preview
+# tag: 0x0a (INTERACTIVE_PREVIEW_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::InteractivePreviewFrame::encode
+# input: preview_id "golden-preview", 2x2 rgba
+# total-bytes: 45
+# stored-bytes: 45
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+0a                                              # tag (interactive preview)
+0e                                              # preview_id length u8
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+02 00                                           # width u16le
+02 00                                           # height u16le
+01                                              # format u8
+67 6f 6c 64 65 6e 2d 70 72 65 76 69 65 77       # preview_id utf8
+70 77 7e 85 8c 93 9a a1 a8 af b6 bd c4 cb d2 d9 # payload

@@ -18,12 +18,11 @@ the contract, not a curated subset. The same daemon also speaks
 http://localhost:9420
 ```
 
-Three paths sit outside the `/api/v1` tree:
+Two paths sit outside the `/api/v1` tree:
 
 | Path | Purpose |
 | --- | --- |
 | `/health` | Liveness check, no auth, returns `200 OK` when the daemon is up. |
-| `/preview` | Standalone canvas-preview HTML page. |
 | `/mcp` | MCP server (Streamable HTTP), mounted only when `mcp.enabled` is true. |
 
 Everything else lives under `/api/v1`. Axum 0.8 path parameters use brace
@@ -60,8 +59,7 @@ Error bodies replace `data` with `error`:
 {
   "error": {
     "code": "validation_error",
-    "message": "brightness must be between 0 and 100",
-    "details": null
+    "message": "brightness must be between 0 and 100"
   },
   "meta": {
     "api_version": "1.0",
@@ -75,22 +73,24 @@ The `code` is a `snake_case` string that maps to an HTTP status. The full set:
 
 | `code` | HTTP status |
 | --- | --- |
-| `bad_request` | 400 |
+| `malformed_request` | 400 |
 | `unauthorized` | 401 |
 | `forbidden` | 403 |
 | `not_found` | 404 |
 | `conflict` | 409 |
+| `precondition_failed` | 412 |
 | `payload_too_large` | 413 |
 | `unsupported_media_type` | 415 |
 | `validation_error` | **422** |
 | `rate_limited` | 429 |
 | `internal_error` | 500 |
+| `device_unavailable` | 503 |
 
 {% callout(type="info") %}
 `validation_error` is **422 Unprocessable Entity**, not 400. A well-formed
 request that fails a business rule (out-of-range brightness, an effect that
 isn't runnable) lands here, while a structurally malformed request is
-`bad_request` / 400.
+`malformed_request` / 400.
 {% end %}
 
 ## Authentication
@@ -112,7 +112,7 @@ enabled. The auth and rate-limiting model is documented in full on the
 ## Concurrency: revisions and `If-Match`
 
 Scene-zone structural edits use optimistic concurrency. A `GET` on a scene's
-zones returns a `groups_revision` and an `ETag` header carrying the same
+zones returns a `zones_revision` and an `ETag` header carrying the same
 revision. Send that value back as `If-Match` on the mutating request. If the
 revision is stale, the daemon rejects the write with `412 Precondition Failed`
 rather than clobbering a concurrent edit. The Studio zone editor relies on this
@@ -219,6 +219,11 @@ A single named sensor reading. Common labels: `cpu_temp`, `gpu_load`,
 `ram_used`.
 {% end %}
 
+{% api_endpoint(method="GET", path="/api/v1/system/audio-devices") %}
+List available audio capture devices for reactive effects. Pick the **monitor**
+of your output, not a microphone, if you want lights to follow what's playing.
+{% end %}
+
 ## Effects
 
 {{ img(path="img/ui/effects.webp", alt="Browsing the effect catalog in the web UI") }}
@@ -293,9 +298,8 @@ binding, the resolved transition (`cut`, `0` today), and a `warnings` array.
 The currently active effect and its live control values.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/effects/current/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/effects/active/controls") %}
 Patch controls on the running effect. Changes take effect on the next frame.
-Note the path segment is `current`, not `active`.
 
 **Request body:**
 
@@ -309,12 +313,12 @@ Note the path segment is `current`, not `active`.
 ```
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/effects/current/controls/{name}/binding") %}
+{% api_endpoint(method="PUT", path="/api/v1/effects/active/controls/{name}/binding") %}
 Bind one named control on the running effect to an input source (audio band,
 sensor reading, etc.) so it modulates live instead of holding a fixed value.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/effects/current/reset") %}
+{% api_endpoint(method="POST", path="/api/v1/effects/active/reset") %}
 Reset every control on the running effect back to its default.
 {% end %}
 
@@ -324,37 +328,6 @@ Patch controls on a specific effect by ID, whether or not it is the active one.
 
 {% api_endpoint(method="POST", path="/api/v1/effects/stop") %}
 Stop the running effect. Output goes dark.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/pause") %}
-Pause output without clearing the active effect. The render loop pauses, and
-devices hold the configured static off color until a resume. Returns `404`
-when no effect is active.
-
-**Response:**
-
-```json
-{
-  "paused": true,
-  "effect": { "id": "borealis", "name": "Borealis" },
-  "off_output_behavior": "static",
-  "off_output_color": [0, 0, 0]
-}
-```
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/resume") %}
-Resume output for the preserved active effect after a pause. Returns `404`
-when no effect is active.
-
-**Response:**
-
-```json
-{
-  "resumed": true,
-  "effect": { "id": "borealis", "name": "Borealis" }
-}
-```
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/effects/rescan") %}
@@ -791,12 +764,12 @@ is no top-level `/zones` collection.
 {{ img(path="img/ui/ui-studio-zones.webp", alt="Building zones in Studio") }}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
-List a scene's zones. The response includes `groups_revision` and an `ETag`
+List a scene's zones. The response includes `zones_revision` and an `ETag`
 header carrying the same revision for optimistic concurrency.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
-Create a zone in a scene. Send `If-Match` with the last seen `groups_revision`;
+Create a zone in a scene. Send `If-Match` with the last seen `zones_revision`;
 a stale revision returns `412 Precondition Failed`.
 
 **Request body:**
@@ -895,27 +868,27 @@ Values are `"off"`, `"hold"`, or `{ "fallback": "<zone_uuid>" }`.
 Each zone (render group) stacks layers: effects, faces, and media composited
 with a blend mode and opacity.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 List the layers in a zone.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
 Add a layer to a zone.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/order") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/order") %}
 Reorder the layers in a zone.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Update one layer (blend mode, opacity, transform, color, source binding).
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
 Delete a layer.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls") %}
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls") %}
 Patch the control values on one layer's source effect.
 {% end %}
 
@@ -1085,28 +1058,45 @@ Start a playlist. Effects cycle on the playlist's timing.
 Stop the running playlist.
 {% end %}
 
-## Settings and audio
+## Output
 
-{% api_endpoint(method="GET", path="/api/v1/settings/brightness") %}
-The current global brightness level.
+Global output has one resource and two knobs. Pausing preserves the live
+scene, its effects, and their controls: devices hold the configured static
+off color until you set power back to `running`.
+
+{% api_endpoint(method="GET", path="/api/v1/output") %}
+Read global output power and brightness.
+
+**Response:**
+
+```json
+{
+  "power": "running",
+  "brightness": 0.8
+}
+```
+
+`power` is `running` or `paused`. A destructive stop leaves outputs dark, so
+it reads as `paused` here; the stop's other consequences are visible on the
+effect surface. `brightness` is a float on `0.0` to `1.0`.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/settings/brightness") %}
-Set global brightness as an integer percent, `0` to `100`. An out-of-range
-value returns `422` with the message `brightness must be between 0 and 100`.
+{% api_endpoint(method="PATCH", path="/api/v1/output") %}
+Set power, brightness, or both. Every field is optional, but a document that
+sets neither returns `422` rather than quietly succeeding, so a client that
+drops its payload hears about it. Use `GET` to read.
 
 **Request body:**
 
 ```json
 {
-  "brightness": 80
+  "power": "paused",
+  "brightness": 0.35
 }
 ```
-{% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/audio/devices") %}
-List available audio capture devices for reactive effects. Pick the **monitor**
-of your output, not a microphone, if you want lights to follow what's playing.
+A brightness outside `0.0` to `1.0` returns `422` naming the offending field,
+and it is refused before power moves, so a rejected patch changes nothing.
 {% end %}
 
 ## Screen capture
@@ -1171,35 +1161,47 @@ dropdown and the portal picker button.
 
 {% api_endpoint(method="GET", path="/api/v1/config") %}
 Show the full current configuration.
+
+Secret-classified sections render masked as `{"redacted": true}`: every
+`drivers` entry, plus any top-level section this build does not model. Driver
+settings are read and edited through `/api/v1/drivers/{id}/config`.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/config/get?key=path.to.key") %}
-Get one configuration value by dotted key path.
+{% api_endpoint(method="GET", path="/api/v1/config/keys/{key}") %}
+Read one configuration value. The dotted key is a single path segment.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/config/set") %}
-Set a configuration value.
-
-**Request body:**
+{% api_endpoint(method="PUT", path="/api/v1/config/keys/{key}") %}
+Write one configuration value and persist it. The request body is the value
+itself:
 
 ```json
-{
-  "key": "audio.enabled",
-  "value": true
-}
+true
 ```
+
+Add `?live=false` to persist without re-applying the change to the running
+daemon; the default re-applies every live-classified key.
+
+The response carries the effective value, whether the daemon applied it live,
+whether the key is boot-frozen (`requires_restart`), and which sections are
+currently waiting on a restart (`pending_restart`).
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/config/keys/{key}") %}
+Restore one configuration value to its default. Takes the same `?live=` query
+parameter as the write.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/config/reset") %}
-Reset a configuration value to its default.
+Restore the whole configuration to defaults. The `drivers` map, unmodeled
+extension sections, and the include list survive the reset.
+{% end %}
 
-**Request body:**
-
-```json
-{
-  "key": "audio.device_name"
-}
-```
+{% api_endpoint(method="GET", path="/api/v1/config/schema") %}
+Describe every configuration key: how a change applies (`live` with a section,
+`live_on_read`, `next_scan`, `restart`, or `inert`), how it renders on read
+surfaces, and whether the daemon validates it beyond type checking. Clients
+derive their live and restart affordances from this table.
 {% end %}
 
 ## Diagnostics

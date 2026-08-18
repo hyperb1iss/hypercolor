@@ -575,7 +575,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     result = await client.apply_effect_preset(
         "aurora/main",
         "bundled-calm",
-        render_group="zone-left",
+        zone_id="zone-left",
     )
 
     assert list_route.called
@@ -583,7 +583,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     assert presets[0].editable is False
     assert presets[1].origin is EffectPresetOrigin.SAVED
     assert presets[1].editable is True
-    assert json.loads(apply_route.calls[0].request.content) == {"render_group": "zone-left"}
+    assert json.loads(apply_route.calls[0].request.content) == {"zone_id": "zone-left"}
     assert result.effect.id == "aurora/main"
 
 
@@ -617,21 +617,23 @@ async def test_upload_effect_uses_install_endpoint(client: HypercolorClient) -> 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_set_brightness_uses_generated_route_with_body(
+async def test_set_brightness_patches_the_output_resource(
     client: HypercolorClient,
 ) -> None:
-    route = respx.put("http://hyperia.test:9420/api/v1/settings/brightness").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/output").mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"brightness": 42}),
+            content=_envelope({"power": "running", "brightness": 0.42}),
         )
     )
 
-    result = await client.set_brightness(42)
+    result = await client.set_brightness(0.42)
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {"brightness": 42}
-    assert result.brightness == 42
+    assert json.loads(route.calls[0].request.content) == {"brightness": 0.42}
+    assert result.brightness == 0.42
+    assert result.brightness_percent == 42
+    assert result.paused is False
 
 
 @respx.mock
@@ -698,22 +700,32 @@ async def test_stop_effect_uses_generated_route(client: HypercolorClient) -> Non
 @respx.mock
 @pytest.mark.asyncio
 async def test_pause_and_resume_preserve_effect_state(client: HypercolorClient) -> None:
-    route = respx.put("http://hyperia.test:9420/api/v1/output/power").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/output").mock(
         side_effect=[
-            httpx.Response(200, content=_envelope({"state": "paused"})),
-            httpx.Response(200, content=_envelope({"state": "running"})),
+            httpx.Response(200, content=_envelope({"power": "paused", "brightness": 1.0})),
+            httpx.Response(200, content=_envelope({"power": "running", "brightness": 1.0})),
         ]
     )
 
     paused = await client.pause_rendering()
 
     assert paused.paused is True
-    assert route.calls[0].request.content == b'{"state":"paused"}'
+    assert route.calls[0].request.content == b'{"power":"paused"}'
 
     running = await client.resume_rendering()
 
     assert running.paused is False
-    assert route.calls[1].request.content == b'{"state":"running"}'
+    assert route.calls[1].request.content == b'{"power":"running"}'
+
+
+@pytest.mark.asyncio
+async def test_set_output_refuses_a_patch_that_sets_nothing(
+    client: HypercolorClient,
+) -> None:
+    # The daemon answers 422 for an empty patch; the client refuses to
+    # spend the round trip.
+    with pytest.raises(ValueError, match="power, brightness, or both"):
+        await client.set_output()
 
 
 @respx.mock
@@ -779,7 +791,7 @@ async def test_get_effect_raises_not_found(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_update_controls_wraps_controls_payload(client: HypercolorClient) -> None:
-    route = respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -802,7 +814,7 @@ async def test_update_controls_wraps_controls_payload(client: HypercolorClient) 
 @respx.mock
 @pytest.mark.asyncio
 async def test_update_controls_raises_validation_error(client: HypercolorClient) -> None:
-    respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
+    respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
         return_value=httpx.Response(
             422,
             content=msgspec.json.encode(
@@ -1224,7 +1236,7 @@ async def test_scene_profile_display_and_diagnostics_helpers(
                     "device_id": "streamdeck",
                     "scene_id": "scene-a",
                     "effect": {"id": "clock", "name": "Clock"},
-                    "group": {"id": "group-a"},
+                    "zone": {"id": "zone-a"},
                 }
             ),
         )
@@ -1339,7 +1351,7 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_audio_devices(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/audio/devices").mock(
+    respx.get("http://hyperia.test:9420/api/v1/system/audio-devices").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -1366,7 +1378,7 @@ async def test_get_audio_devices(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/config/set").mock(
+    route = respx.put("http://hyperia.test:9420/api/v1/config/keys/audio.device").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -1374,6 +1386,8 @@ async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> Non
                     "key": "audio.device",
                     "value": "default",
                     "live": True,
+                    "requires_restart": False,
+                    "pending_restart": [],
                     "path": "/var/lib/hypercolor/hypercolor.toml",
                 }
             ),
@@ -1383,9 +1397,9 @@ async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> Non
     result = await client.set_audio_device("default")
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {
-        "key": "audio.device",
-        "value": '"default"',
-        "live": True,
-    }
+    request = route.calls[0].request
+    assert json.loads(request.content) == "default"
+    assert request.url.params["live"] == "true"
     assert result.key == "audio.device"
+    assert result.requires_restart is False
+    assert result.pending_restart == []

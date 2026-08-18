@@ -21,7 +21,7 @@ use crate::color::CanvasFrameAnalysis;
 use crate::components::modal::Modal;
 use crate::components::shell::Shell;
 use crate::components::welcome_overlay::WelcomeOverlay;
-use crate::config_state::ConfigContext;
+use crate::config_state::{ConfigContext, ConfigSchemaContext};
 use crate::control_value_json::controls_to_json;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
@@ -63,7 +63,7 @@ pub struct WsContext {
     /// Latest per-display JPEG frame from the `display_preview` WS
     /// channel. Cleared when the selected display changes (handled by
     /// `set_display_preview_device`).
-    pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    pub display_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
@@ -300,7 +300,7 @@ impl EffectsContext {
                     (!prefs.control_values.is_empty())
                         .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
                 }),
-                render_group: target_zone_id.clone(),
+                zone_id: target_zone_id.clone(),
                 ..api::ApplyEffectBody::default()
             });
 
@@ -412,7 +412,7 @@ impl EffectsContext {
         self.set_last_effect_error.set(None);
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::pause_effect().await.is_err() {
+            if api::pause_output().await.is_err() {
                 ctx.refresh_active_effect();
                 toasts::toast_error("Couldn't pause the effect");
             }
@@ -425,7 +425,7 @@ impl EffectsContext {
         self.set_last_effect_error.set(None);
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::resume_effect().await.is_ok() {
+            if api::resume_output().await.is_ok() {
                 ctx.refresh_active_effect();
             } else {
                 ctx.set_is_playing.set(false);
@@ -516,7 +516,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         canvas_frame: ws.canvas_frame,
         screen_canvas_frame: ws.screen_canvas_frame,
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
-        display_preview_frame: ws.display_preview_frame,
+        display_preview_frames: ws.display_preview_frames,
         interactive_preview_frames: ws.interactive_preview_frames,
         interactive_preview_lifecycles: ws.interactive_preview_lifecycles,
         interactive_preview_available: ws.interactive_preview_available,
@@ -582,6 +582,20 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         capabilities: capabilities.into(),
     });
 
+    // The daemon's config key registry. Fetched once per connection —
+    // the table is fixed per daemon build — so every settings control
+    // can ask how its key applies instead of mirroring the rules.
+    let config_schema_resource = api::daemon_resource(api::fetch_config_schema);
+    let config_schema_entries = Memo::new(move |_| {
+        config_schema_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    });
+    provide_context(ConfigSchemaContext {
+        entries: config_schema_entries.into(),
+    });
+
     Effect::new(move |_| {
         let Some(frame) = ws.canvas_frame.get() else {
             return;
@@ -608,16 +622,16 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             .unwrap_or_default()
     });
     // Per-zone effect state — what each LED zone is playing, derived
-    // from the shared scene (zip preserves surfaces_from_groups' 1:1
+    // from the shared scene (zip preserves surfaces_from_zones' 1:1
     // scene ordering) plus the effects index for display names.
     let zone_effects = Memo::new(move |_| {
         let Some(scene) = zones_ctx.active_scene.get() else {
             return Vec::new();
         };
-        let surfaces = crate::zones::surface::surfaces_from_groups(&scene.groups);
+        let surfaces = crate::zones::surface::surfaces_from_zones(&scene.zones);
         effects_index.with(|effects| {
             scene
-                .groups
+                .zones
                 .iter()
                 .zip(surfaces)
                 .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)

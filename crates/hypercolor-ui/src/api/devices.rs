@@ -1,7 +1,5 @@
 //! Device-related API types and fetch functions.
 
-use serde::{Deserialize, Serialize};
-
 use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -10,100 +8,24 @@ use super::client;
 // hypercolor-types) — drift is now a compile error, not a runtime parse
 // failure. Pairing vocabulary likewise comes from hypercolor-types.
 pub use hypercolor_types::api::devices::{
-    DeviceConnectionSummary, DeviceListResponse, DeviceSummary, UpdateDeviceRequest, ZoneSummary,
-    ZoneTopologySummary,
+    ComponentBindingSummary, DeletePairingResponse, DeviceComponentsResponse,
+    DeviceComponentsUpdateResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
+    IdentifyAttachmentRequest, IdentifyRequest, PairDeviceResponse, UpdateAttachmentsRequest,
+    UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
 };
+pub use hypercolor_types::attachment::ComponentBinding;
 pub use hypercolor_types::pairing::{
     DeviceAuthState, DeviceAuthSummary, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
     PairingFieldDescriptor, PairingFlowKind,
 };
 
-/// Response from `POST /api/v1/devices/:id/pair`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PairDeviceResponse {
-    pub status: PairDeviceStatus,
-    pub message: String,
-}
-
-/// Response from `DELETE /api/v1/devices/:id/pair`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DeletePairingResponse {
-    pub message: String,
-}
-
-/// Global brightness payload from `/api/v1/settings/brightness`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrightnessSettingsResponse {
-    pub brightness: u8,
-}
-
 // ── Attachment Types ────────────────────────────────────────────────────────
 
-/// Attachment binding summary from `GET /api/v1/devices/:id/attachments`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ComponentBindingSummary {
-    pub slot_id: String,
-    pub template_id: String,
-    pub template_name: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    pub enabled: bool,
-    pub instances: u32,
-    pub led_offset: u32,
-    pub effective_led_count: u32,
-}
-
-/// Device attachment profile summary from `GET /api/v1/devices/:id/attachments`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeviceComponentsResponse {
-    pub device_id: String,
-    pub device_name: String,
-    #[serde(default)]
-    pub slots: Vec<hypercolor_types::attachment::ComponentSlot>,
-    #[serde(default)]
-    pub bindings: Vec<ComponentBindingSummary>,
-    #[serde(default)]
-    pub suggested_zones: Vec<hypercolor_types::attachment::ComponentSuggestedZone>,
-}
-
-/// Template summary from `GET /api/v1/attachments/templates`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TemplateSummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub category: hypercolor_types::attachment::ComponentCategory,
-    #[serde(default)]
-    pub origin: Option<hypercolor_types::attachment::ComponentOrigin>,
-    pub led_count: u32,
-    pub description: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-/// Paginated template list response.
-#[derive(Debug, Deserialize)]
-pub struct TemplateListResponse {
-    pub items: Vec<TemplateSummary>,
-}
-
-/// Request body for `PUT /api/v1/devices/:id/attachments`.
-#[derive(Debug, Serialize)]
-pub struct UpdateAttachmentsRequest {
-    pub bindings: Vec<ComponentBindingRequest>,
-}
-
-/// A single binding entry sent to the update endpoint.
-#[derive(Debug, Clone, Serialize)]
-pub struct ComponentBindingRequest {
-    pub slot_id: String,
-    pub template_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub enabled: bool,
-    pub instances: u32,
-    pub led_offset: u32,
-}
+// The attachment-template catalog contracts are shared with the daemon
+// (hypercolor-types::api::attachments).
+pub use hypercolor_types::api::attachments::{
+    TemplateDetail, TemplateListResponse, TemplateSummary,
+};
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
@@ -127,9 +49,17 @@ pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> Result<Device
         .map_err(Into::into)
 }
 
+/// The identify blink the UI asks for: two seconds in the given hex color.
+fn identify_request(color: &str) -> IdentifyRequest {
+    IdentifyRequest {
+        duration_ms: Some(2000),
+        color: Some(color.to_owned()),
+    }
+}
+
 /// Identify a device by flashing its LEDs.
 pub async fn identify_device(id: &str) -> Result<(), String> {
-    let body = serde_json::json!({ "duration_ms": 2000, "color": "FF06B5" });
+    let body = identify_request("FF06B5");
     client::post_json_discard(&format!("/api/v1/devices/{id}/identify"), &body)
         .await
         .map_err(Into::into)
@@ -137,7 +67,7 @@ pub async fn identify_device(id: &str) -> Result<(), String> {
 
 /// Identify a single zone by flashing only its LEDs.
 pub async fn identify_zone(device_id: &str, zone_id: &str) -> Result<(), String> {
-    let body = serde_json::json!({ "duration_ms": 2000, "color": "FF06B5" });
+    let body = identify_request("FF06B5");
     client::post_json_discard(
         &format!("/api/v1/devices/{device_id}/zones/{zone_id}/identify"),
         &body,
@@ -153,13 +83,11 @@ pub async fn identify_attachment(
     binding_index: Option<usize>,
     instance: Option<u32>,
 ) -> Result<(), String> {
-    let mut body = serde_json::json!({ "duration_ms": 2000, "color": "80FFEA" });
-    if let Some(idx) = binding_index {
-        body["binding_index"] = serde_json::json!(idx);
-    }
-    if let Some(instance) = instance {
-        body["instance"] = serde_json::json!(instance);
-    }
+    let body = IdentifyAttachmentRequest {
+        base: identify_request("80FFEA"),
+        binding_index,
+        instance,
+    };
     client::post_json_discard(
         &format!("/api/v1/devices/{device_id}/attachments/{slot_id}/identify"),
         &body,
@@ -171,7 +99,7 @@ pub async fn identify_attachment(
 /// Create a user-authored attachment template (custom strip, matrix, etc.).
 pub async fn create_attachment_template(
     template: &hypercolor_types::attachment::ComponentTemplate,
-) -> Result<TemplateSummary, String> {
+) -> Result<TemplateDetail, String> {
     client::post_json("/api/v1/attachments/templates", template)
         .await
         .map_err(Into::into)
@@ -200,18 +128,10 @@ pub async fn fetch_attachment_templates(
 pub async fn update_device_attachments(
     device_id: &str,
     req: &UpdateAttachmentsRequest,
-) -> Result<DeviceComponentsResponse, String> {
+) -> Result<DeviceComponentsUpdateResponse, String> {
     client::put_json(&format!("/api/v1/devices/{device_id}/attachments"), req)
         .await
         .map_err(Into::into)
-}
-
-/// Update the global output brightness.
-pub async fn set_global_brightness(brightness: u8) -> Result<u8, String> {
-    let body = serde_json::json!({ "brightness": brightness });
-    let resp: BrightnessSettingsResponse =
-        client::put_json("/api/v1/settings/brightness", &body).await?;
-    Ok(resp.brightness)
 }
 
 // ── Pairing Functions ───────────────────────────────────────────────────────
@@ -236,11 +156,4 @@ pub async fn delete_simulated_display(id: &str) -> Result<(), String> {
     client::delete_empty(&format!("/api/v1/simulators/displays/{id}"))
         .await
         .map_err(Into::into)
-}
-
-/// Fetch the current global brightness.
-pub async fn fetch_global_brightness() -> Result<u8, String> {
-    let resp: BrightnessSettingsResponse =
-        client::fetch_json("/api/v1/settings/brightness").await?;
-    Ok(resp.brightness)
 }

@@ -1,4 +1,13 @@
-import { canvas, clamp, color, combo, num } from 'hypercolor'
+import {
+    canvas,
+    clamp,
+    color,
+    combo,
+    hslToRgb as hslFromUnit,
+    num,
+    hexToRgb as parseHexColor,
+    rgbToHsl,
+} from 'hypercolor'
 
 interface Firefly {
     x: number
@@ -104,60 +113,15 @@ function mixRgb(a: RGB, b: RGB, amount: number): RGB {
     }
 }
 
+const FALLBACK_GLOW: RGB = { b: 94, g: 255, r: 132 }
+
 function hexToRgb(hex: string): RGB {
-    const normalized = hex.replace('#', '')
-    const full =
-        normalized.length === 3
-            ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
-            : normalized
-    const parsed = parseInt(full, 16)
-    if (Number.isNaN(parsed)) return { b: 94, g: 255, r: 132 }
-    return { b: parsed & 255, g: (parsed >> 8) & 255, r: (parsed >> 16) & 255 }
+    return parseHexColor(hex, FALLBACK_GLOW)
 }
 
-function rgbToHsl(color: RGB): HSL {
-    const r = color.r / 255
-    const g = color.g / 255
-    const b = color.b / 255
-    const max = Math.max(r, g, b)
-    const min = Math.min(r, g, b)
-    const delta = max - min
-    const l = (max + min) / 2
-
-    if (delta === 0) return { h: 0, l, s: 0 }
-
-    const s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min)
-    let h = 0
-    if (max === r) h = (g - b) / delta + (g < b ? 6 : 0)
-    else if (max === g) h = (b - r) / delta + 2
-    else h = (r - g) / delta + 4
-
-    return { h: h * 60, l, s }
-}
-
+/** Percent-domain saturation and lightness, as the call sites below carry them. */
 function hslToRgb(h: number, sPercent: number, lPercent: number): RGB {
-    const s = clamp(sPercent, 0, 100) / 100
-    const l = clamp(lPercent, 0, 100) / 100
-    const c = (1 - Math.abs(2 * l - 1)) * s
-    const hPrime = (((h % 360) + 360) % 360) / 60
-    const x = c * (1 - Math.abs((hPrime % 2) - 1))
-
-    let r = 0
-    let g = 0
-    let b = 0
-    if (hPrime < 1) [r, g, b] = [c, x, 0]
-    else if (hPrime < 2) [r, g, b] = [x, c, 0]
-    else if (hPrime < 3) [r, g, b] = [0, c, x]
-    else if (hPrime < 4) [r, g, b] = [0, x, c]
-    else if (hPrime < 5) [r, g, b] = [x, 0, c]
-    else [r, g, b] = [c, 0, x]
-
-    const m = l - c / 2
-    return {
-        b: Math.round((b + m) * 255),
-        g: Math.round((g + m) * 255),
-        r: Math.round((r + m) * 255),
-    }
+    return hslFromUnit(h, sPercent / 100, lPercent / 100)
 }
 
 function fract(value: number): number {

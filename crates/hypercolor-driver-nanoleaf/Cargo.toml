@@ -12,8 +12,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-driver-api = { workspace = true }
+hypercolor-color = { workspace = true }
 hypercolor-types = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

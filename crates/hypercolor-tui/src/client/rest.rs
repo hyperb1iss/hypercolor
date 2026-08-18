@@ -2,15 +2,18 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use futures_util::stream::{self, StreamExt};
+use hypercolor_types::api::controls::InvokeControlActionRequest;
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
 use hypercolor_types::api::effects::{
     ActiveEffectResponse as ApiActiveEffectResponse, ApplyEffectRequest,
-    EffectDetailResponse as ApiEffectDetailResponse, EffectListResponse as ApiEffectListResponse,
-    EffectSummary as ApiEffectSummary, ResetControlsRequest,
+    EffectListResponse as ApiEffectListResponse, EffectSummary as ApiEffectSummary,
+    ResetControlsRequest, UpdateActiveControlsRequest,
 };
+use hypercolor_types::api::envelope::ApiErrorBody;
+use hypercolor_types::api::layers::PatchLayerControlsRequest;
+use hypercolor_types::api::library::{AddFavoriteRequest, FavoriteListResponse};
 use hypercolor_types::api::scenes::{
     ActiveSceneResponse as ApiActiveSceneResponse, SceneListResponse as ApiSceneListResponse,
 };
@@ -74,8 +77,8 @@ impl DaemonClient {
         Ok(DaemonState {
             running: status.running,
             brightness: status.global_brightness,
-            fps_target: 0.0,
-            fps_actual: 0.0,
+            fps_target: status.render_loop.target_fps,
+            fps_actual: status.render_loop.actual_fps,
             effect_name: active_effect
                 .as_ref()
                 .and_then(|effect| effect.name.clone())
@@ -89,41 +92,16 @@ impl DaemonClient {
         })
     }
 
-    /// Fetch all available effects.
+    /// Fetch all available effects, controls and presets included.
+    ///
+    /// The catalog arrives fully hydrated in one response: the daemon
+    /// expands each summary on request, so browsing the library costs a
+    /// single round trip rather than one per effect.
     pub async fn get_effects(&self) -> Result<Vec<EffectSummary>> {
-        let response: ApiEffectListResponse = self.get_data("/effects").await?;
+        let response: ApiEffectListResponse =
+            self.get_data("/effects?include=controls,presets").await?;
 
-        let mut effects = stream::iter(response.items.into_iter().map(|summary| {
-            let client = self.clone();
-            async move {
-                let detail = client
-                    .get_effect_detail(&summary.id)
-                    .await
-                    .map_err(|error| {
-                        tracing::warn!(
-                            effect_id = %summary.id,
-                            %error,
-                            "Failed to fetch effect details; using summary only"
-                        );
-                        error
-                    });
-
-                map_effect_summary(summary, detail.ok())
-            }
-        }))
-        .buffer_unordered(8)
-        .collect::<Vec<_>>()
-        .await;
-
-        effects.sort_by(|left, right| {
-            let left_norm = left.name.to_ascii_lowercase();
-            let right_norm = right.name.to_ascii_lowercase();
-            left_norm
-                .cmp(&right_norm)
-                .then_with(|| left.name.cmp(&right.name))
-        });
-
-        Ok(effects)
+        Ok(response.items.into_iter().map(map_effect_summary).collect())
     }
 
     /// Fetch all connected devices.
@@ -225,9 +203,7 @@ impl DaemonClient {
         }
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Simulator frame request failed ({status}): {body}");
+            return Err(daemon_error("Simulator frame request failed", response).await);
         }
 
         let bytes = response.bytes().await?;
@@ -245,12 +221,12 @@ impl DaemonClient {
     }
 
     /// Apply an effect by ID, optionally with control overrides and a
-    /// target zone (`render_group`). No target = the scene's primary zone.
+    /// target zone (`zone_id`). No target = the scene's primary zone.
     pub async fn apply_effect(
         &self,
         effect_id: &str,
         controls: Option<&serde_json::Value>,
-        render_group: Option<&str>,
+        zone_id: Option<&str>,
     ) -> Result<()> {
         let url = format!(
             "{}/api/v1/effects/{}/apply",
@@ -259,7 +235,7 @@ impl DaemonClient {
         );
         let body = ApplyEffectRequest {
             controls: controls.cloned(),
-            render_group: render_group.map(ToOwned::to_owned),
+            zone_id: zone_id.map(ToOwned::to_owned),
             ..ApplyEffectRequest::default()
         };
         let response = self
@@ -315,12 +291,12 @@ impl DaemonClient {
     }
 
     /// Update zone metadata (enabled, brightness). Guarded by the scene's
-    /// `groups_revision` via `If-Match`; the daemon answers 412 when stale.
+    /// `zones_revision` via `If-Match`; the daemon answers 412 when stale.
     pub async fn update_zone(
         &self,
         scene_id: &str,
         zone_id: &str,
-        groups_revision: u64,
+        zones_revision: u64,
         enabled: Option<bool>,
         brightness: Option<f32>,
     ) -> Result<()> {
@@ -337,7 +313,7 @@ impl DaemonClient {
         };
         let response = self
             .auth_request(self.http.patch(&url))
-            .header(reqwest::header::IF_MATCH, groups_revision.to_string())
+            .header(reqwest::header::IF_MATCH, zones_revision.to_string())
             .json(&body)
             .send()
             .await
@@ -346,7 +322,7 @@ impl DaemonClient {
     }
 
     /// Patch effect controls on a zone through its legacy layer — the
-    /// zone-scoped equivalent of `PATCH /effects/current/controls`. The
+    /// zone-scoped equivalent of `PATCH /effects/active/controls`. The
     /// layer id is the zone id (see `Zone::legacy_layer_id`).
     ///
     /// Deliberately sends no `If-Match`: live control edits are
@@ -360,13 +336,15 @@ impl DaemonClient {
     ) -> Result<()> {
         let zone = path_segment(zone_id);
         let url = format!(
-            "{}/api/v1/scenes/{}/groups/{zone}/layers/{zone}/controls",
+            "{}/api/v1/scenes/{}/zones/{zone}/layers/{zone}/controls",
             self.base_url,
             path_segment(scene_id),
         );
         let response = self
             .auth_request(self.http.patch(&url))
-            .json(&serde_json::json!({ "controls": controls }))
+            .json(&PatchLayerControlsRequest {
+                controls: Some(controls.clone()),
+            })
             .send()
             .await
             .with_context(|| format!("Failed to update controls for zone {zone_id}"))?;
@@ -387,7 +365,9 @@ impl DaemonClient {
             let url = format!("{}/api/v1/library/favorites", self.base_url);
             let response = self
                 .auth_request(self.http.post(&url))
-                .json(&serde_json::json!({ "effect": effect_id }))
+                .json(&AddFavoriteRequest {
+                    effect: effect_id.to_owned(),
+                })
                 .send()
                 .await?;
             ensure_success(response, &format!("Failed to add favorite {effect_id}")).await?;
@@ -397,10 +377,12 @@ impl DaemonClient {
 
     /// Update a control value on the active effect.
     pub async fn update_control(&self, control_id: &str, value: &serde_json::Value) -> Result<()> {
-        let url = format!("{}/api/v1/effects/current/controls", self.base_url);
+        let url = format!("{}/api/v1/effects/active/controls", self.base_url);
         let response = self
             .auth_request(self.http.patch(&url))
-            .json(&serde_json::json!({ "controls": { control_id: value } }))
+            .json(&UpdateActiveControlsRequest {
+                controls: Some(serde_json::json!({ control_id: value })),
+            })
             .send()
             .await
             .with_context(|| "Failed to update control")?;
@@ -408,12 +390,12 @@ impl DaemonClient {
     }
 
     /// Reset the active effect's controls to their defaults. A
-    /// `render_group` scopes the reset to that zone's effect; `None`
+    /// `zone_id` scopes the reset to that zone's effect; `None`
     /// resets the primary zone (legacy behavior).
-    pub async fn reset_controls(&self, render_group: Option<&str>) -> Result<()> {
-        let url = format!("{}/api/v1/effects/current/reset", self.base_url);
+    pub async fn reset_controls(&self, zone_id: Option<&str>) -> Result<()> {
+        let url = format!("{}/api/v1/effects/active/reset", self.base_url);
         let body = ResetControlsRequest {
-            render_group: render_group.map(ToOwned::to_owned),
+            zone_id: zone_id.map(ToOwned::to_owned),
         };
         let response = self
             .auth_request(self.http.post(&url))
@@ -435,9 +417,7 @@ impl DaemonClient {
             .with_context(|| format!("Failed to connect to daemon at {url}"))?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("API request failed ({status}): {body}");
+            return Err(daemon_error("API request failed", response).await);
         }
 
         // The API wraps responses in { "data": T, "meta": {...} }
@@ -495,10 +475,6 @@ impl DaemonClient {
         response_data(response).await
     }
 
-    async fn get_effect_detail(&self, effect_id: &str) -> Result<ApiEffectDetailResponse> {
-        self.get_data(&format!("/effects/{effect_id}")).await
-    }
-
     async fn get_active_effect(&self) -> Result<ApiActiveEffectResponse> {
         self.get_data("/effects/active").await
     }
@@ -525,21 +501,6 @@ struct ControlSurfaceListResponse {
     surfaces: Vec<ControlSurfaceDocument>,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct InvokeControlActionRequest {
-    input: ControlValueMap,
-}
-
-#[derive(Debug, Deserialize)]
-struct FavoriteListResponse {
-    items: Vec<FavoriteSummaryResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FavoriteSummaryResponse {
-    effect_id: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct SystemStatusResponse {
     running: bool,
@@ -549,27 +510,26 @@ struct SystemStatusResponse {
     active_scene: Option<String>,
     #[serde(default)]
     active_scene_snapshot_locked: bool,
+    /// The daemon nests every FPS figure here. A flat `fps` field would
+    /// silently deserialize to its default and read as a stalled render
+    /// loop, which is exactly what the status view used to show.
+    #[serde(default)]
+    render_loop: RenderLoopStatus,
 }
 
-fn map_effect_summary(
-    summary: ApiEffectSummary,
-    detail: Option<ApiEffectDetailResponse>,
-) -> EffectSummary {
-    if let Some(detail) = detail {
-        return EffectSummary {
-            id: detail.id,
-            name: detail.name,
-            description: detail.description,
-            author: detail.author,
-            category: detail.category,
-            source: detail.source,
-            audio_reactive: detail.audio_reactive,
-            tags: detail.tags,
-            controls: detail.controls.iter().map(map_control_definition).collect(),
-            presets: detail.presets.iter().map(map_preset_template).collect(),
-        };
-    }
+/// The `render_loop` block of `GET /api/v1/status`.
+#[derive(Debug, Default, Deserialize)]
+struct RenderLoopStatus {
+    #[serde(default)]
+    target_fps: f32,
+    /// Matches the `actual` figure the WebSocket `metrics` topic
+    /// publishes, so REST refreshes and metrics ticks agree on what the
+    /// number means.
+    #[serde(default)]
+    actual_fps: f32,
+}
 
+fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
     EffectSummary {
         id: summary.id,
         name: summary.name,
@@ -579,8 +539,18 @@ fn map_effect_summary(
         source: summary.source,
         audio_reactive: summary.audio_reactive,
         tags: summary.tags,
-        controls: Vec::new(),
-        presets: Vec::new(),
+        controls: summary
+            .controls
+            .unwrap_or_default()
+            .iter()
+            .map(map_control_definition)
+            .collect(),
+        presets: summary
+            .presets
+            .unwrap_or_default()
+            .iter()
+            .map(map_preset_template)
+            .collect(),
     }
 }
 
@@ -659,8 +629,8 @@ fn map_active_scene(response: ApiActiveSceneResponse) -> ActiveScene {
         name: response.name,
         kind: response.kind,
         mutation_mode: response.mutation_mode,
-        groups_revision: response.groups_revision,
-        zones: response.groups.iter().map(map_zone_summary).collect(),
+        zones_revision: response.zones_revision,
+        zones: response.zones.iter().map(map_zone_summary).collect(),
     }
 }
 
@@ -715,16 +685,37 @@ async fn ensure_success(response: reqwest::Response, context: &str) -> Result<()
         return Ok(());
     }
 
+    Err(daemon_error(context, response).await)
+}
+
+/// Turn a failed daemon response into one line a user can act on.
+///
+/// The daemon answers every error with the canonical envelope
+/// `{ error: { code, message, details }, meta }`, so the code and message
+/// are what a toast should carry. The raw body is the fallback for the
+/// surfaces that bypass the envelope (Axum's own rejections, binary
+/// routes).
+async fn daemon_error(context: &str, response: reqwest::Response) -> anyhow::Error {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    anyhow::bail!("{context} ({status}): {body}");
+    if let Ok(envelope) = serde_json::from_str::<ApiErrorBody>(&body) {
+        return anyhow::anyhow!(
+            "{context} ({status}, {}): {}",
+            envelope.error.code,
+            envelope.error.message
+        );
+    }
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        anyhow::anyhow!("{context} ({status})")
+    } else {
+        anyhow::anyhow!("{context} ({status}): {trimmed}")
+    }
 }
 
 async fn response_data<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("API request failed ({status}): {body}");
+        return Err(daemon_error("API request failed", response).await);
     }
 
     let envelope: serde_json::Value = response.json().await?;

@@ -2,7 +2,7 @@
 
 A zone owns an effect (or layer stack), a spatial layout claiming device
 outputs, and per-zone brightness. Zone structure mutations are guarded by
-the scene's ``groups_revision`` via ``If-Match`` preconditions.
+the scene's ``zones_revision`` via ``If-Match`` preconditions.
 """
 
 from __future__ import annotations
@@ -78,14 +78,14 @@ class ZoneListResult(msgspec.Struct, kw_only=True):
     """Zone set of a scene plus the revision guarding its structure."""
 
     items: list[Zone]
-    groups_revision: int
+    zones_revision: int
 
 
 class ZoneResult(msgspec.Struct, kw_only=True):
     """One zone after a create/get/update."""
 
     zone: Zone
-    groups_revision: int
+    zones_revision: int
 
 
 class ZoneDeleteResult(msgspec.Struct, kw_only=True):
@@ -93,11 +93,11 @@ class ZoneDeleteResult(msgspec.Struct, kw_only=True):
 
     zone_id: str
     deleted: bool
-    groups_revision: int
+    zones_revision: int
 
 
 class UnassignedBehaviorResult(msgspec.Struct, kw_only=True):
     """Scene policy for device outputs claimed by no zone."""
 
     unassigned_behavior: str | dict[str, Any]
-    groups_revision: int
+    zones_revision: int

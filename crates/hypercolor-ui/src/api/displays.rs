@@ -3,110 +3,15 @@
 //! Covers display discovery, face assignment, face control updates, and the
 //! preview JPEG URL.
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
-use serde::{Deserialize, Serialize};
+use hypercolor_types::scene::DisplayFaceBlendMode;
 use std::collections::HashMap;
 
 use super::client;
 
-/// Summary row from `GET /api/v1/displays`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DisplaySummary {
-    pub id: String,
-    pub name: String,
-    pub vendor: String,
-    pub family: String,
-    pub width: u32,
-    pub height: u32,
-    pub circular: bool,
-}
-
-/// Effect metadata carried inside a display-face assignment response.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DisplayFaceEffect {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub author: String,
-    #[serde(default)]
-    pub controls: Vec<ControlDefinition>,
-    #[serde(default)]
-    pub presets: Vec<PresetTemplate>,
-}
-
-/// Render-group details carried inside a display-face assignment response.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DisplayFaceGroup {
-    pub id: String,
-    #[serde(default)]
-    pub controls: HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub display_target: Option<DisplayFaceTarget>,
-}
-
-/// Which assignment layer a face operation targets (spec 69 §3.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayFaceScope {
-    /// Persists across scenes — the display's own face.
-    #[default]
-    Default,
-    /// Lives in the active scene's display zone; wins while that scene is active.
-    Scene,
-}
-
-impl DisplayFaceScope {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Scene => "scene",
-        }
-    }
-}
-
-/// Response from `GET /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DisplayFaceResponse {
-    pub device_id: String,
-    pub scene_id: String,
-    pub effect: DisplayFaceEffect,
-    pub group: DisplayFaceGroup,
-    /// Which layer the returned assignment lives on.
-    #[serde(default)]
-    pub live_scope: DisplayFaceScope,
-    /// Whether the active scene carries its own assignment for this display.
-    #[serde(default)]
-    pub scene_assigned: bool,
-    /// Whether a persisted default face exists for this display.
-    #[serde(default)]
-    pub default_assigned: bool,
-}
-
-/// Request body for `PUT /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Serialize)]
-pub struct SetDisplayFaceRequest {
-    pub effect_id: String,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub controls: HashMap<String, ControlValue>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub opacity: Option<f32>,
-    pub scope: DisplayFaceScope,
-}
-
-/// Request body for `PATCH /api/v1/displays/{id}/face/composition`.
-#[derive(Debug, Clone, Serialize)]
-pub struct UpdateDisplayFaceCompositionRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub opacity: Option<f32>,
-}
+pub use hypercolor_types::api::displays::{
+    DisplayFaceResponse, DisplayFaceScope, DisplaySummary, SetDisplayFaceRequest,
+    UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+};
 
 /// `GET /api/v1/displays` — list display-capable devices.
 pub async fn fetch_displays() -> Result<Vec<DisplaySummary>, String> {
@@ -161,8 +66,10 @@ pub async fn update_display_face_controls(
     controls: &serde_json::Value,
 ) -> Result<DisplayFaceResponse, String> {
     let url = format!("/api/v1/displays/{display_id}/face/controls");
-    let body = serde_json::json!({ "controls": controls });
-    client::patch_json::<serde_json::Value, DisplayFaceResponse>(&url, &body)
+    let body = UpdateDisplayFaceControlsRequest {
+        controls: Some(controls.clone()),
+    };
+    client::patch_json::<UpdateDisplayFaceControlsRequest, DisplayFaceResponse>(&url, &body)
         .await
         .map_err(Into::into)
 }

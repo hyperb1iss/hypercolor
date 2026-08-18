@@ -1,0 +1,522 @@
+{
+  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8)",
+  "_regenerate": "parse the appendix table; this file is target data for the wave-78.5 convergence test, not a live assertion",
+  "_scope": "the /api/v1 surface (JSON routes plus the /ws upgrade, matched by path only) and /health; document routes excluded",
+  "paths": [
+    {
+      "path": "/health",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/system",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/system/sensors",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/system/audio-devices",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/output",
+      "methods": [
+        "GET",
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/v1/config",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/config/schema",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/config/keys/{key}",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/config/reset",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/diagnose",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/drivers",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/drivers/{id}/config",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/drivers/{id}/controls",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/devices",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/discover",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/{id}",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/{id}/controls",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/{id}/identify",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/{id}/segments/{segment}/identify",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/{id}/pair",
+      "methods": [
+        "POST",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/{id}/attachments",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/{id}/attachments/{slot}/identify",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/attachments/templates",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/control-surfaces",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/control-surfaces/{id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/control-surfaces/{id}/values",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/v1/control-surfaces/{id}/actions/{action}",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/displays",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/displays/{id}/frame",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/displays/{id}/face",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/displays/{id}/face/controls",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/v1/displays/{id}/face/composition",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/v1/simulators/displays",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/simulators/displays/{id}",
+      "methods": [
+        "GET",
+        "PATCH",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/simulators/displays/{id}/frame",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/effects",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/effects/{id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/effects/{id}/cover",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/effects/{id}/presets",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/effects/{id}/presets/{preset}/apply",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/effects/{id}/apply",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/effects/install",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/effects/rescan",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scene",
+      "methods": [
+        "GET",
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/deactivate",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/clear",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}",
+      "methods": [
+        "GET",
+        "PATCH",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}/layout",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}/members",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}/members/{member}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}/layers",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}/layers/order",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}/layers/{layer}",
+      "methods": [
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "path": "/api/v1/scenes",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scenes/snapshot",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/scenes/{id}",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/scenes/{id}/activate",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/layouts",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/layouts/active",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/layouts/active/preview",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/v1/layouts/{id}",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/layouts/{id}/apply",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/library/presets",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/library/presets/{id}",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/library/favorites",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/library/favorites/{effect}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/library/playlists",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/library/playlists/active",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/library/playlists/deactivate",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/library/playlists/{id}",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/library/playlists/{id}/activate",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/assets",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/assets/{id}",
+      "methods": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/v1/assets/{id}/blob",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/assets/{id}/thumbnail",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/capture/monitors",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/capture/source",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/v1/ws",
+      "methods": [
+        "GET"
+      ]
+    }
+  ]
+}

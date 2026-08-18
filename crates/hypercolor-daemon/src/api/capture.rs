@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::extract::{Extension, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use tracing::{info, warn};
 
 use hypercolor_core::input::{
@@ -18,12 +18,31 @@ use hypercolor_types::api::capture::{
 };
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::ApiResponse;
 use crate::api::security::RequestAuthContext;
+use crate::domain::DomainError;
+
+fn domain_validation(message: impl Into<String>) -> Response {
+    DomainError::validation(message).into_response()
+}
+
+fn domain_validation_details(message: impl Into<String>, details: serde_json::Value) -> Response {
+    DomainError::validation_details(message, details).into_response()
+}
+
+fn domain_internal(message: impl Into<String>) -> Response {
+    DomainError::Internal(anyhow::anyhow!(message.into())).into_response()
+}
+
+fn domain_conflict(message: impl Into<String>) -> Response {
+    DomainError::conflict(message).into_response()
+}
 
 pub(crate) fn protected_control_rejection(auth_context: RequestAuthContext) -> Option<Response> {
-    (!auth_context.can_protected_control())
-        .then(|| ApiError::forbidden("Protected capture access requires a control credential"))
+    (!auth_context.can_protected_control()).then(|| {
+        DomainError::forbidden("Protected capture access requires a control credential")
+            .into_response()
+    })
 }
 
 const fn grant_owner(owner: MacosCapabilityOwner) -> ProtectedSourceGrantOwner {
@@ -52,7 +71,7 @@ fn requires_app_ui_details(active_owner: MacosCapabilityOwner) -> serde_json::Va
 }
 
 fn requires_app_ui(action: &str, active_owner: MacosCapabilityOwner) -> Response {
-    ApiError::validation_with_details(
+    domain_validation_details(
         format!("{action} must run in Hypercolor.app for the active process topology"),
         requires_app_ui_details(active_owner),
     )
@@ -156,7 +175,7 @@ fn install_macos_picker_persistence_task(
         (
             status = 403,
             description = "Control credential required",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "capture"
@@ -169,11 +188,14 @@ pub(crate) async fn authorize_input_monitoring(
         return response;
     }
     let Some(manager) = state.config_manager.as_ref() else {
-        return ApiError::internal("Config manager unavailable in this runtime");
+        return DomainError::Internal(anyhow::anyhow!(
+            "Config manager unavailable in this runtime"
+        ))
+        .into_response();
     };
     let config = manager.get();
     if !config.input.enabled || !config.input.keyboard {
-        return ApiError::validation(
+        return domain_validation(
             "Keyboard input is disabled; enable input.enabled and input.keyboard before authorizing",
         );
     }
@@ -182,7 +204,8 @@ pub(crate) async fn authorize_input_monitoring(
         input_manager.resolved_input_authorization_action()
     };
     let Some(action) = action else {
-        return ApiError::validation("No Input Monitoring authorization action is available");
+        return DomainError::validation("No Input Monitoring authorization action is available")
+            .into_response();
     };
     let (action, grant_owner) = match action {
         ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
@@ -200,9 +223,9 @@ pub(crate) async fn authorize_input_monitoring(
         }
         Ok(Err(error)) => {
             warn!(%error, "Input Monitoring authorization failed");
-            ApiError::internal(format!("Failed to authorize Input Monitoring: {error}"))
+            domain_internal(format!("Failed to authorize Input Monitoring: {error}"))
         }
-        Err(error) => ApiError::internal(format!(
+        Err(error) => domain_internal(format!(
             "Input Monitoring authorization task failed: {error}"
         )),
     }
@@ -221,7 +244,7 @@ pub(crate) async fn authorize_input_monitoring(
         (
             status = 403,
             description = "Control credential required",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "capture"
@@ -234,10 +257,13 @@ pub(crate) async fn authorize_screen_recording(
         return response;
     }
     let Some(manager) = state.config_manager.as_ref() else {
-        return ApiError::internal("Config manager unavailable in this runtime");
+        return DomainError::Internal(anyhow::anyhow!(
+            "Config manager unavailable in this runtime"
+        ))
+        .into_response();
     };
     if !manager.get().capture.enabled {
-        return ApiError::validation(
+        return domain_validation(
             "Screen capture is disabled; enable capture.enabled before authorizing",
         );
     }
@@ -246,7 +272,8 @@ pub(crate) async fn authorize_screen_recording(
         input_manager.resolved_screen_authorization_action()
     };
     let Some(action) = action else {
-        return ApiError::validation("No Screen Recording authorization action is available");
+        return DomainError::validation("No Screen Recording authorization action is available")
+            .into_response();
     };
     let (action, grant_owner) = match action {
         ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
@@ -264,9 +291,9 @@ pub(crate) async fn authorize_screen_recording(
         }
         Ok(Err(error)) => {
             warn!(%error, "Screen Recording authorization failed");
-            ApiError::internal(format!("Failed to authorize Screen Recording: {error}"))
+            domain_internal(format!("Failed to authorize Screen Recording: {error}"))
         }
-        Err(error) => ApiError::internal(format!(
+        Err(error) => domain_internal(format!(
             "Screen Recording authorization task failed: {error}"
         )),
     }
@@ -287,7 +314,7 @@ pub(crate) async fn authorize_screen_recording(
         (
             status = 403,
             description = "Control credential required",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "capture"
@@ -300,20 +327,24 @@ pub(crate) async fn pick_capture_source(
         return response;
     }
     let Some(manager) = state.config_manager.as_ref() else {
-        return ApiError::internal("Config manager unavailable in this runtime");
+        return DomainError::Internal(anyhow::anyhow!(
+            "Config manager unavailable in this runtime"
+        ))
+        .into_response();
     };
 
     let expected = manager.get();
     if !expected.capture.enabled {
-        return ApiError::validation(
+        return DomainError::validation(
             "Screen capture is disabled; enable capture.enabled before picking a source",
-        );
+        )
+        .into_response();
     }
 
     let (action, screen_status) = {
         let input_manager = state.input_manager.lock().await;
         if !input_manager.has_screen_source() {
-            return ApiError::validation(
+            return domain_validation(
                 "No screen capture source is registered; restart the daemon or re-enable capture",
             );
         }
@@ -327,7 +358,8 @@ pub(crate) async fn pick_capture_source(
         (input_manager.resolved_screen_source_picker_action(), status)
     };
     let Some(action) = action else {
-        return ApiError::validation("No detached screen source picker action is available");
+        return DomainError::validation("No detached screen source picker action is available")
+            .into_response();
     };
     let (action, grant_owner) = match action {
         ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
@@ -337,11 +369,13 @@ pub(crate) async fn pick_capture_source(
     };
     #[cfg(target_os = "macos")]
     let Some(macos_status) = screen_status else {
-        return ApiError::internal("macOS screen source status is unavailable");
+        return DomainError::Internal(anyhow::anyhow!("macOS screen source status is unavailable"))
+            .into_response();
     };
     #[cfg(target_os = "macos")]
     let Some((baseline_revision, _)) = macos_selection(&macos_status) else {
-        return ApiError::internal("macOS screen source status is unavailable");
+        return DomainError::Internal(anyhow::anyhow!("macOS screen source status is unavailable"))
+            .into_response();
     };
     #[cfg(target_os = "macos")]
     let macos_persistence =
@@ -352,7 +386,7 @@ pub(crate) async fn pick_capture_source(
         ) {
             Ok(persistence) => persistence,
             Err(error) => {
-                return ApiError::conflict(format!(
+                return domain_conflict(format!(
                     "Capture configuration changed before picker dispatch: {error}"
                 ));
             }
@@ -375,7 +409,8 @@ pub(crate) async fn pick_capture_source(
         #[cfg(target_os = "macos")]
         macos_persistence.revoke();
         warn!(%error, "Failed to re-open screen source picker");
-        return ApiError::internal(format!("Failed to re-open source picker: {error}"));
+        return DomainError::Internal(anyhow::anyhow!("Failed to re-open source picker: {error}"))
+            .into_response();
     }
 
     #[cfg(target_os = "macos")]
@@ -418,7 +453,7 @@ pub(crate) async fn pick_capture_source(
         (
             status = 403,
             description = "Control credential required",
-            body = crate::api::envelope::ApiErrorResponse
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "capture"

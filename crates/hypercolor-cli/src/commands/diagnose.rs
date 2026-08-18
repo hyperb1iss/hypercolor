@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Args;
+use hypercolor_types::api::diagnose::DiagnoseRequest;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat};
@@ -34,18 +35,10 @@ pub async fn execute(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let mut body = serde_json::json!({
-        "system": args.system,
-    });
-
-    if !args.check.is_empty() {
-        body["checks"] = serde_json::Value::Array(
-            args.check
-                .iter()
-                .map(|c| serde_json::Value::String(c.clone()))
-                .collect(),
-        );
-    }
+    let body = DiagnoseRequest {
+        checks: (!args.check.is_empty()).then(|| args.check.clone()),
+        system: Some(args.system),
+    };
 
     let response = client.post("/diagnose", &body).await?;
 

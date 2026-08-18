@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
-use serde::{Deserialize, Serialize};
+use axum::response::{IntoResponse, Response};
 
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::{
@@ -18,39 +17,19 @@ use hypercolor_types::scene::ZoneId;
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{
-    admit_scene_store_snapshot, save_admitted_scene_store_snapshot, scene_store_coordinator,
-};
+use crate::api::envelope::ApiResponse;
+use crate::domain::{DomainError, ResourceKind};
 
 use super::{
     ActivateEffectError, ActivationResult, activate_effect_with_controls, normalize_tags,
     resolve_preset_id, store_error_to_response, unix_epoch_ms,
 };
 
-// ── Request / Response Types ────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct PresetListResponse {
-    pub items: Vec<EffectPreset>,
-    pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SavePresetRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub effect: String,
-    pub controls: Option<serde_json::Value>,
-    pub tags: Option<Vec<String>>,
-}
-
-/// Optional body for `apply_preset` — scopes the apply to one zone.
-#[derive(Debug, Default, Deserialize)]
-pub struct ApplyPresetRequest {
-    /// Target zone (render-group id). Omitted targets the primary zone.
-    pub render_group: Option<String>,
-}
+// Wire contracts live in hypercolor-types::api::library — shared with
+// the web UI and the TUI.
+pub use hypercolor_types::api::library::{
+    ApplyPresetRequest, DeletePresetResponse, PresetListResponse, SavePresetRequest,
+};
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -73,11 +52,11 @@ pub async fn list_presets(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/library/presets/:id` — fetch one preset.
 pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
     let Some(preset) = state.library_store.get_preset(preset_id).await else {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
     ApiResponse::ok(preset)
@@ -89,13 +68,13 @@ pub async fn create_preset(
     Json(body): Json<SavePresetRequest>,
 ) -> Response {
     if body.name.trim().is_empty() {
-        return ApiError::validation("Preset name must not be empty");
+        return DomainError::validation("Preset name must not be empty").into_response();
     }
 
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return ApiError::not_found(format!("Effect not found: {}", body.effect));
+            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
         };
         effect
     };
@@ -103,10 +82,11 @@ pub async fn create_preset(
     let controls = match parse_preset_controls(&effect, body.controls.as_ref()) {
         Ok(controls) => controls,
         Err(rejected) => {
-            return ApiError::validation(format!(
+            return DomainError::validation(format!(
                 "Invalid preset controls: {}",
                 rejected.join(", ")
-            ));
+            ))
+            .into_response();
         }
     };
 
@@ -143,20 +123,20 @@ pub async fn update_preset(
     Json(body): Json<SavePresetRequest>,
 ) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
     if body.name.trim().is_empty() {
-        return ApiError::validation("Preset name must not be empty");
+        return DomainError::validation("Preset name must not be empty").into_response();
     }
 
     let Some(existing) = state.library_store.get_preset(preset_id).await else {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
     let effect = {
         let registry = state.effect_registry.read().await;
         let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return ApiError::not_found(format!("Effect not found: {}", body.effect));
+            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
         };
         effect
     };
@@ -164,10 +144,11 @@ pub async fn update_preset(
     let controls = match parse_preset_controls(&effect, body.controls.as_ref()) {
         Ok(controls) => controls,
         Err(rejected) => {
-            return ApiError::validation(format!(
+            return DomainError::validation(format!(
                 "Invalid preset controls: {}",
                 rejected.join(", ")
-            ));
+            ))
+            .into_response();
         }
     };
 
@@ -199,7 +180,7 @@ pub async fn update_preset(
 /// `DELETE /api/v1/library/presets/:id` — remove a preset.
 pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
     let removed = match state.library_store.remove_preset(preset_id).await {
@@ -207,7 +188,7 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
         Err(error) => return store_error_to_response(&error),
     };
     if !removed {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     }
     state
         .event_bus
@@ -217,10 +198,10 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
             kind: LibraryChangeKind::Removed,
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "id": preset_id.to_string(),
-        "deleted": true,
-    }))
+    ApiResponse::ok(DeletePresetResponse {
+        id: preset_id.to_string(),
+        deleted: true,
+    })
 }
 
 /// `POST /api/v1/library/presets/:id/apply` — activate a preset immediately.
@@ -235,30 +216,27 @@ pub async fn apply_preset(
     body: Option<Json<ApplyPresetRequest>>,
 ) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
     let Some(preset) = state.library_store.get_preset(preset_id).await else {
-        return ApiError::not_found(format!("Preset not found: {id}"));
+        return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(entry) = registry.get(&preset.effect_id) else {
-            return ApiError::not_found(format!(
-                "Preset references missing effect: {}",
-                preset.effect_id
-            ));
+            return DomainError::not_found(ResourceKind::Effect, preset.effect_id).into_response();
         };
         entry.metadata.clone()
     };
 
-    // A render_group naming a non-Primary zone takes the zone-scoped
+    // A zone_id naming a non-Primary zone takes the zone-scoped
     // path; naming the Primary (or omitting it) keeps legacy semantics.
-    let target_group = match crate::api::effects::parse_render_group(
-        body.as_ref().and_then(|body| body.render_group.as_deref()),
+    let target_group = match crate::api::effects::parse_zone_id_field(
+        body.as_ref().and_then(|body| body.zone_id.as_deref()),
     ) {
         Ok(target) => target,
-        Err(response) => return *response,
+        Err(error) => return error.into_response(),
     };
     let named_target = match target_group {
         None => None,
@@ -286,40 +264,27 @@ pub async fn apply_preset(
             crate::api::effects::normalize_control_values(&metadata, &preset.controls);
         let Some((group, _)) = crate::api::effects::active_primary_effect(state.as_ref()).await
         else {
-            return ApiError::not_found("No effect is currently active");
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
         };
-        let coordinator = scene_store_coordinator(state.as_ref()).await;
-        let pending = {
-            let mut scene_manager = state.scene_manager.write().await;
-            if let Err(error) = crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
-                return ApiError::conflict(error.message("applying a preset"));
-            }
-            let rollback = scene_manager.clone();
-            if scene_manager
-                .reset_group_controls(
-                    group.id,
-                    crate::api::effects::default_control_values(&metadata),
-                )
+        let mut mutation = state.begin_scene_mutation().await;
+        if let Err(error) = mutation.active_scene_for_runtime_mutation("applying a preset") {
+            return DomainError::conflict(error.to_string()).into_response();
+        }
+        if mutation
+            .reset_zone_controls(
+                group.id,
+                crate::api::effects::default_control_values(&metadata),
+            )
+            .is_none()
+            || mutation
+                .patch_zone_controls(group.id, applied.clone())
                 .is_none()
-            {
-                return ApiError::not_found("No effect is currently active");
-            }
-            if scene_manager
-                .patch_group_controls(group.id, applied.clone())
-                .is_none()
-            {
-                return ApiError::not_found("No effect is currently active");
-            }
-            let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
-            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-                Ok(pending) => pending,
-                Err(error) => {
-                    return ApiError::internal(format!("Failed to persist scene: {error}"));
-                }
-            }
-        };
-        if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-            return ApiError::internal(format!("Failed to persist scene: {error}"));
+        {
+            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
+        }
+        mutation.set_zone_preset_id(group.id, Some(preset.id));
+        if let Err(error) = crate::domain::scene::commit_scene(state.as_ref(), mutation).await {
+            return error.into_response();
         }
 
         ActivationResult {
@@ -331,45 +296,38 @@ pub async fn apply_preset(
         // Different effect — full activation path
         match activate_effect_with_controls(&state, &metadata, &preset.controls).await {
             Err(ActivateEffectError::Conflict(error)) => {
-                return ApiError::conflict(error);
+                return DomainError::conflict(error).into_response();
             }
             Ok(activation) => {
                 if let Some((group, _)) =
                     crate::api::effects::active_primary_effect(state.as_ref()).await
                 {
-                    let coordinator = scene_store_coordinator(state.as_ref()).await;
-                    let mut scene_manager = state.scene_manager.write().await;
-                    let rollback = scene_manager.clone();
-                    let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
-                    let pending = match admit_scene_store_snapshot(
-                        &coordinator,
-                        &mut scene_manager,
-                        rollback,
-                    ) {
-                        Ok(pending) => pending,
-                        Err(error) => {
-                            return ApiError::internal(format!("Failed to persist scene: {error}"));
-                        }
-                    };
-                    drop(scene_manager);
+                    let mut mutation = state.begin_scene_mutation().await;
+                    mutation.set_zone_preset_id(group.id, Some(preset.id));
                     if let Err(error) =
-                        save_admitted_scene_store_snapshot(state.as_ref(), pending).await
+                        crate::domain::scene::commit_scene(state.as_ref(), mutation).await
                     {
-                        return ApiError::internal(format!("Failed to persist scene: {error}"));
+                        return error.into_response();
                     }
                 }
                 activation
             }
             Err(ActivateEffectError::Activation(error)) => {
-                return ApiError::internal(format!(
+                return DomainError::Internal(anyhow::anyhow!(
                     "Failed to activate effect '{}' from preset '{}': {error}",
-                    metadata.name, preset.name
-                ));
+                    metadata.name,
+                    preset.name
+                ))
+                .into_response();
             }
         }
     };
     crate::api::persist_runtime_session(&state).await;
 
+    // Held back from the wave 3.1c type promotion deliberately:
+    // `applied_controls` carries f32 control values, and `json!` widens
+    // them to f64 while a derived struct does not, so naming this shape
+    // would reprint every non-representable float.
     ApiResponse::ok(serde_json::json!({
         "preset": {
             "id": preset.id.to_string(),
@@ -398,86 +356,79 @@ async fn apply_preset_to_zone(
     let (applied, rejected) =
         crate::api::effects::normalize_control_values(metadata, &preset.controls);
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, group, previous_effect_id, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return ApiError::conflict(error.message("applying a preset")),
-        };
-        let rollback = scene_manager.clone();
-        let previous_effect_id = scene_manager
-            .active_scene()
-            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .and_then(|group| group.effect_id);
-
-        if previous_effect_id == Some(metadata.id) {
-            if scene_manager
-                .reset_group_controls(
-                    group_id,
-                    crate::api::effects::default_control_values(metadata),
-                )
-                .is_none()
-                || scene_manager
-                    .patch_group_controls(group_id, applied.clone())
-                    .is_none()
-            {
-                return ApiError::not_found("Zone not found in active scene");
-            }
-            let _ = scene_manager.set_group_preset_id(group_id, Some(preset.id));
-        } else if let Err(error) = scene_manager.apply_effect_to_group(
-            group_id,
-            metadata,
-            applied.clone(),
-            Some(preset.id),
-        ) {
-            return ApiError::validation(format!("Failed to apply preset to zone: {error}"));
-        }
-
-        let Some(group) = scene_manager
-            .active_scene()
-            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .cloned()
-        else {
-            return ApiError::not_found("Zone not found in active scene");
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, group, previous_effect_id, pending)
+    // Naming the outgoing effect needs the registry, and the outgoing
+    // effect is not known until the candidate is in hand. Taking the
+    // whole index up front keeps every await out of the window between
+    // the snapshot and its compare-and-swap, the same way apply_effect
+    // does.
+    let effect_refs = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .map(|(id, entry)| (*id, crate::api::effects::effect_ref(&entry.metadata)))
+            .collect::<HashMap<_, _>>()
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
+
+    let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = match mutation.active_scene_for_runtime_mutation("applying a preset") {
+        Ok(scene_id) => scene_id,
+        Err(error) => return DomainError::conflict(error.to_string()).into_response(),
+    };
+    let previous_effect_id = mutation.zone_effect(group_id);
+
+    if previous_effect_id == Some(metadata.id) {
+        if mutation
+            .reset_zone_controls(
+                group_id,
+                crate::api::effects::default_control_values(metadata),
+            )
+            .is_none()
+            || mutation
+                .patch_zone_controls(group_id, applied.clone())
+                .is_none()
+        {
+            return DomainError::not_found(ResourceKind::Zone, group_id).into_response();
+        }
+        mutation.set_zone_preset_id(group_id, Some(preset.id));
+    } else if let Err(error) =
+        mutation.apply_effect_to_zone(group_id, metadata, applied.clone(), Some(preset.id))
+    {
+        return DomainError::validation(error.to_string()).into_response();
     }
 
+    let Some(group) = mutation
+        .scenes()
+        .active_scene()
+        .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
+        .cloned()
+    else {
+        return DomainError::not_found(ResourceKind::Zone, group_id).into_response();
+    };
+
     if previous_effect_id != Some(metadata.id) {
-        let previous = match previous_effect_id {
-            Some(effect_id) => {
-                let registry = state.effect_registry.read().await;
-                registry
-                    .get(&effect_id)
-                    .map(|entry| crate::api::effects::effect_ref(&entry.metadata))
-            }
-            None => None,
-        };
-        state.event_bus.publish(HypercolorEvent::EffectStarted {
+        let previous =
+            previous_effect_id.and_then(|effect_id| effect_refs.get(&effect_id).cloned());
+        mutation.record(HypercolorEvent::EffectStarted {
             effect: crate::api::effects::effect_ref(metadata),
             trigger: ChangeTrigger::Api,
             previous,
             transition: None,
-            group_id: Some(group.id),
-            group_name: Some(group.name.clone()),
+            zone_id: Some(group.id),
+            zone_name: Some(group.name.clone()),
         });
     }
-    crate::api::publish_render_group_changed(
-        state.as_ref(),
+    mutation.record(crate::domain::scene::zone_changed_event(
         scene_id,
         &group,
         ZoneChangeKind::Updated,
-    );
+    ));
+
+    if let Err(error) = crate::domain::scene::commit_scene(state.as_ref(), mutation).await {
+        return error.into_response();
+    }
     crate::api::persist_runtime_session(state).await;
 
+    // Held back for the same f32 reprint reason as the primary path.
     ApiResponse::ok(serde_json::json!({
         "preset": {
             "id": preset.id.to_string(),

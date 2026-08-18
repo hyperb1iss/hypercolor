@@ -22,6 +22,7 @@ pub mod effects;
 pub mod layers;
 pub mod layouts;
 pub mod library;
+pub mod output;
 pub mod scenes;
 pub mod system;
 pub mod zones;
@@ -61,6 +62,7 @@ pub use effects::*;
 pub use layers::*;
 pub use layouts::*;
 pub use library::*;
+pub use output::*;
 pub use scenes::*;
 pub use system::*;
 // `zones` is referenced by its module path (`api::zones::…`) rather than

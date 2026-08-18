@@ -43,7 +43,7 @@ preview_route = "browser"
 
 Each route accepts `host`, `browser`, or `merge`. `daemon_route` controls the input used for authoritative device output. `preview_route` controls each interactive browser preview. Browser input is addressed to the preview that opened it, so two tabs or preview panels do not accidentally drive each other. `merge` combines host and addressed browser state only when that behavior is intentional.
 
-The web UI opens an addressed preview before it sends pointer or key events. Older clients that send a source-less `input_inject` message are incompatible with this protocol and must add `preview_id` plus the matching `interactive_preview_open` and `interactive_preview_close` lifecycle.
+The web UI subscribes to the keyed `interactive_preview` topic before it sends pointer or key events. Every `input_inject` message names the preview it drives, so a client owns the matching subscribe and unsubscribe lifecycle for that preview id.
 
 ---
 

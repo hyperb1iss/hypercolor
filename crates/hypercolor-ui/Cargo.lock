@@ -171,6 +171,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -769,19 +770,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-color"
+version = "0.3.2"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "utoipa",
+]
+
+[[package]]
 name = "hypercolor-leptos-ext"
 version = "0.3.2"
 dependencies = [
- "async-trait",
  "bytes",
- "futures-channel",
- "futures-core",
- "futures-util",
  "gloo-events",
- "hypercolor-leptos-ext-macros",
  "js-sys",
  "leptos",
  "leptos-use",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "wasm-bindgen",
@@ -790,18 +796,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "hypercolor-leptos-ext-macros"
-version = "0.3.2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "hypercolor-types"
 version = "0.3.2"
 dependencies = [
+ "chrono",
+ "hypercolor-color",
  "serde",
  "serde_json",
  "strum",
@@ -819,6 +818,7 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "gloo-net 0.7.0",
+ "hypercolor-color",
  "hypercolor-leptos-ext",
  "hypercolor-types",
  "icondata",
@@ -833,6 +833,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "strum",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",

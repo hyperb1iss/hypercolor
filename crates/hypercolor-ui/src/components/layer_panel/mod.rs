@@ -79,7 +79,7 @@ pub fn LayerPanel(
         assets
             .get()
             .into_iter()
-            .map(|asset| (asset.id, asset.name))
+            .map(|asset| (asset.id.to_string(), asset.name))
             .collect::<HashMap<String, String>>()
     });
     // Effect ids on a layer are UUIDs; resolve them to registry names so
@@ -117,7 +117,7 @@ pub fn LayerPanel(
             .get()
             .map(|scene| {
                 scene
-                    .groups
+                    .zones
                     .into_iter()
                     .map(|group| (group.id.to_string(), group.name))
                     .collect::<Vec<_>>()
@@ -129,14 +129,14 @@ pub fn LayerPanel(
     let scopes = Signal::derive(move || {
         active_scene
             .get()
-            .map(|scene| available_add_layer_scopes(&scene.groups))
+            .map(|scene| available_add_layer_scopes(&scene.zones))
             .unwrap_or_default()
     });
     let selected_group_role = Signal::derive(move || {
         let selected = selected_group_id.get()?;
         active_scene
             .get()?
-            .groups
+            .zones
             .into_iter()
             .find(|group| group.id.to_string() == selected)
             .map(|group| group.role)
@@ -152,7 +152,7 @@ pub fn LayerPanel(
             toasts::toast_error("No surface is selected");
             return;
         };
-        let targets = resolve_add_layer_targets(scope, &scene.groups, &group_id);
+        let targets = resolve_add_layer_targets(scope, &scene.zones, &group_id);
         if targets.is_empty() {
             toasts::toast_error("No target surfaces for that scope");
             return;
@@ -365,7 +365,7 @@ fn update_layer(
     on_layers_mutated: Callback<()>,
 ) {
     let layer_id = layer.id.to_string();
-    let request = api::UpdateLayerRequest::from(&layer);
+    let request = api::update_request_from_layer(&layer);
     leptos::task::spawn_local(async move {
         match api::update_layer(
             &scene_id,

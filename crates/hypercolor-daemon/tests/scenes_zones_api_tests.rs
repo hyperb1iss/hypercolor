@@ -213,7 +213,7 @@ async fn zone_crud_uses_groups_revision_etags() {
         .expect("zone id should be a string")
         .to_owned();
     assert_eq!(json["data"]["zone"]["role"], "custom");
-    assert_eq!(json["data"]["groups_revision"], 1);
+    assert_eq!(json["data"]["zones_revision"], 1);
 
     let response = send(
         &app,
@@ -331,7 +331,7 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
         );
     }
 
-    let next_revision = json["data"]["groups_revision"]
+    let next_revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
     let response = send(
@@ -366,7 +366,7 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
         );
     }
 
-    let revision = json["data"]["groups_revision"]
+    let revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
     let mut invalid_zone = sample_zone("primary-zone");
@@ -431,7 +431,7 @@ async fn unassigned_behavior_route_validates_fallback_zone() {
         .as_str()
         .expect("zone id should be a string")
         .to_owned();
-    let revision = json["data"]["groups_revision"]
+    let revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
 
@@ -511,7 +511,7 @@ async fn zone_layout_route_merges_placement_and_rejects_output_changes() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let revision = json["data"]["groups_revision"]
+    let revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
     let zone_id = json["data"]["items"]
@@ -545,7 +545,7 @@ async fn zone_layout_route_merges_placement_and_rejects_output_changes() {
     let output = &json["data"]["zone"]["layout"]["zones"][0];
     assert_eq!(output["display_order"].as_i64(), Some(9));
     assert_eq!(output["device_id"].as_str(), Some("mock:primary-zone"));
-    let next_revision = json["data"]["groups_revision"]
+    let next_revision = json["data"]["zones_revision"]
         .as_u64()
         .expect("revision should be u64");
 
@@ -618,4 +618,103 @@ async fn created_scenes_are_born_with_a_default_zone() {
     let zones = json["data"]["items"].as_array().expect("zones array");
     assert_eq!(zones.len(), 1);
     assert_eq!(zones[0]["role"], "primary");
+}
+
+/// The `groups_revision` precondition guards the whole request, so a
+/// caller working from a stale revision learns that first — before the
+/// daemon reports that one of its output references no longer resolves,
+/// which is usually a consequence of the same staleness.
+#[tokio::test]
+async fn a_stale_revision_outranks_an_unresolvable_output_reference() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    seed_primary_group(&state, "primary-zone").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scenes/default/zones".into(),
+            serde_json::json!({ "name": "Room" }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let current = response_etag(&response)
+        .trim_matches('"')
+        .parse::<u64>()
+        .expect("etag should be a revision");
+    let json = body_json(response).await;
+    let zone_id = json["data"]["zone"]["id"]
+        .as_str()
+        .expect("zone id should be a string")
+        .to_owned();
+
+    let response = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/default/zones/{zone_id}/devices"),
+                serde_json::json!({
+                    "device_zones": [{ "id": "no-such-output" }]
+                }),
+            ),
+            current.saturating_sub(1),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "precondition_failed");
+    assert_eq!(json["error"]["details"]["current"], current);
+
+    // With a current revision the same request reports the reference.
+    let response = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/default/zones/{zone_id}/devices"),
+                serde_json::json!({
+                    "device_zones": [{ "id": "no-such-output" }]
+                }),
+            ),
+            current,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        body_json(response).await["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("device not found")),
+        "the unresolvable reference should name itself once the revision is current"
+    );
+}
+
+/// A blank zone name is a client mistake the daemon can answer without
+/// looking anything up, so it answers the same `422` whether or not the
+/// scene resolves — the name is rejected before the lookup runs.
+#[tokio::test]
+async fn a_blank_zone_name_is_rejected_before_the_scene_is_resolved() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    for scene in ["default", "no-such-scene"] {
+        let response = send(
+            &app,
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/{scene}/zones"),
+                serde_json::json!({ "name": "   " }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a blank name answers the same way whether or not the scene exists ({scene})"
+        );
+    }
 }

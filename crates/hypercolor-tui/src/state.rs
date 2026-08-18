@@ -62,7 +62,7 @@ impl AppState {
 /// One saved scene, as listed by `GET /scenes` (shared wire contract).
 pub use hypercolor_types::api::scenes::SceneSummary;
 
-/// The active scene with its render groups (zones).
+/// The active scene with its zones.
 #[derive(Debug, Clone)]
 pub struct ActiveScene {
     pub id: String,
@@ -70,7 +70,7 @@ pub struct ActiveScene {
     pub kind: SceneKind,
     pub mutation_mode: SceneMutationMode,
     pub snapshot_locked: bool,
-    pub groups_revision: u64,
+    pub zones_revision: u64,
     pub zones: Vec<ZoneSummary>,
 }
 

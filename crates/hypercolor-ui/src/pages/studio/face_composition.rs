@@ -59,7 +59,7 @@ pub fn ScreenCompositionSection(
     let (blend_mode, set_blend_mode) = signal(DisplayFaceBlendMode::Alpha);
     let (opacity, set_opacity) = signal(1.0_f32);
     Effect::new(move |_| {
-        let target = face.get().and_then(|face| face.group.display_target);
+        let target = face.get().and_then(|face| face.zone.display_target);
         if let Some(target) = target {
             set_blend_mode.set(target.blend_mode);
             set_opacity.set(target.opacity.clamp(0.0, 1.0));

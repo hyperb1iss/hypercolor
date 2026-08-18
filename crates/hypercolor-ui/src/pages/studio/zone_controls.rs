@@ -5,7 +5,7 @@
 //! they drive. Extracted so the zone tree can reuse them without dragging
 //! in the retired surface rail.
 //!
-//! Every mutation carries the active scene's `groups_revision` as the
+//! Every mutation carries the active scene's `zones_revision` as the
 //! `If-Match` precondition; a `Stale` outcome reloads the scene so the
 //! user retries against the fresh revision rather than clobbering a
 //! concurrent edit.
@@ -252,7 +252,7 @@ fn scene_context(studio: StudioContext) -> Option<(String, u64)> {
     studio
         .active_scene
         .get_untracked()
-        .map(|scene| (scene.id, scene.groups_revision))
+        .map(|scene| (scene.id, scene.zones_revision))
 }
 
 /// Create a zone from a typed name. Returns whether the request was sent

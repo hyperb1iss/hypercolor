@@ -36,7 +36,7 @@ immediately with a `{ error, meta }` envelope (see
 graph TD
   A[Incoming request] --> B{Allowed by network policy?}
   B -- no --> R1[403 forbidden]
-  B -- yes --> C{Exempt path? /health, /api/v1/server}
+  B -- yes --> C{Bearer-exempt path?}
   C -- yes --> P[Handler]
   C -- no --> D{Loopback client?}
   D -- yes --> E{Cross-site mutating request?}
@@ -295,11 +295,34 @@ Exceeding a limit returns `429` with the `rate_limited` error code:
 
 ## Exempt paths
 
-Two routes bypass the entire security stack (no auth, no rate limiting) so
+Some paths do not require a bearer token. Every one of them still passes the
+network access policy first, so an exemption is from presenting a key, never
+from being allowed to reach the daemon at all. Exempt paths are not rate
+limited, which is deliberate: a single page load pulls more asset requests
+than the read limit allows.
+
+Two routes bypass the security stack entirely (no auth, no rate limiting) so
 health checks and instance discovery work regardless of configuration:
 
 - `GET /health`: liveness probe.
 - `GET /api/v1/server`: server identity for multi-daemon clients.
+
+Two more are exempt because a browser cannot authenticate them. A page loads
+its scripts, stylesheets, and fonts through tags that carry no `Authorization`
+header, so a keyed daemon that guarded them would serve an interface no
+browser could render:
+
+- The bundled web UI and its assets, whenever a UI directory is configured.
+  The UI is served as the router's fallback, so this covers the shell, its
+  hashed asset bundles, and every SPA deep link.
+- `GET /api/v1/docs` (Swagger UI) and `GET /api/v1/openapi.json`, which the
+  docs page fetches as a second request.
+
+The asset exemption is defined by subtraction: a path is an asset when no
+dynamic mount claims it. The daemon derives that list where the routes are
+mounted, so the API surface, `/health`, and the MCP mount at its configured
+base path are never inside it. The UI shell loads without a key; every API
+call the UI then makes still needs one.
 
 The MCP server (mounted at `/mcp` when `mcp.enabled` is true) sits outside the
 `/api/v1` middleware stack. MCP is **off by default**; enable it before using

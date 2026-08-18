@@ -573,10 +573,7 @@ pub struct EffectEngineConfig {
     #[serde(default = "defaults::auto_string")]
     pub wgpu_backend: String,
 
-    #[serde(
-        default = "defaults::compositor_acceleration_mode",
-        alias = "render_acceleration_mode"
-    )]
+    #[serde(default = "defaults::compositor_acceleration_mode")]
     pub compositor_acceleration_mode: RenderAccelerationMode,
 
     #[serde(default)]

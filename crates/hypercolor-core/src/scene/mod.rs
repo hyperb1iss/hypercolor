@@ -69,8 +69,10 @@ pub enum LayerMutationError {
     LayerMissing { layer_id: SceneLayerId },
     /// The requested layer id already exists in the group.
     DuplicateLayer { layer_id: SceneLayerId },
-    /// The supplied `layers_version` precondition is stale.
-    Stale { current: u64 },
+    /// The supplied `layers_version` precondition is stale. `expected`
+    /// is the version the request carried, `current` the one the zone
+    /// holds.
+    Stale { expected: u64, current: u64 },
     /// The supplied layer payload violates layer-stack invariants.
     InvalidLayer { errors: Vec<String> },
     /// The requested insertion index is outside the current layer stack.
@@ -206,6 +208,8 @@ impl SceneManager {
             enabled: true,
             metadata: HashMap::new(),
             unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+            layout_id: None,
+            activation_brightness: None,
             kind: SceneKind::Ephemeral,
             mutation_mode: SceneMutationMode::Live,
         };
@@ -1221,6 +1225,7 @@ impl SceneManager {
                 && expected != group.layers_version
             {
                 return Err(LayerMutationError::Stale {
+                    expected,
                     current: group.layers_version,
                 });
             }
@@ -1869,6 +1874,7 @@ impl SceneManager {
             && expected != group.layers_version
         {
             return Err(LayerMutationError::Stale {
+                expected,
                 current: group.layers_version,
             });
         }
@@ -1955,6 +1961,16 @@ impl SceneManager {
             self.refresh_active_render_groups();
         }
         removed
+    }
+
+    /// Every runtime default face zone, in insertion order.
+    ///
+    /// A default hidden behind an assigned display zone never reaches
+    /// the resolved render groups, so a caller comparing scene state
+    /// for concurrent modification has to read the set directly.
+    #[must_use]
+    pub fn default_display_groups(&self) -> &[Zone] {
+        &self.default_display_groups
     }
 
     /// The runtime default face zone registered for a display, if any.
@@ -2210,6 +2226,8 @@ pub fn make_scene(name: &str) -> Scene {
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
     }

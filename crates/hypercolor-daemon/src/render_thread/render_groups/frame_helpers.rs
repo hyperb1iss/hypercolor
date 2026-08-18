@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::sample_viewport;
 use hypercolor_types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, Rgba, RgbaF32, SurfaceDescriptor,
+    Canvas, LinearRgba, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
     SurfaceResourceError,
 };
 use hypercolor_types::layer::{
@@ -152,7 +152,7 @@ pub(super) fn color_fill_frame(
     cache.frame(
         width,
         height,
-        RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba(),
+        LinearRgba::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_encoded(),
     )
 }
 

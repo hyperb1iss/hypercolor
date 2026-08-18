@@ -1,6 +1,9 @@
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
-use hypercolor_ui::api::{ComponentBindingRequest, PairDeviceRequest, SetDisplayFaceRequest};
+use hypercolor_ui::api::{
+    ComponentBinding, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
+    SetDisplayFaceRequest,
+};
 use hypercolor_ui::control_value_json::{
     controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value,
 };
@@ -85,7 +88,7 @@ fn pair_device_request_serializes_canonical_shape() {
 
 #[test]
 fn attachment_binding_request_keeps_explicit_defaults_on_wire() {
-    let payload = serde_json::to_value(ComponentBindingRequest {
+    let payload = serde_json::to_value(ComponentBinding {
         slot_id: "slot-1".to_owned(),
         template_id: "template-1".to_owned(),
         name: None,
@@ -95,11 +98,15 @@ fn attachment_binding_request_keeps_explicit_defaults_on_wire() {
     })
     .expect("attachment binding request should serialize");
 
+    // enabled, instances, and led_offset all carry serde defaults on the
+    // daemon side, so the point of this pin is that the UI states them
+    // rather than letting the daemon reconstruct them.
     assert_eq!(
         payload,
         serde_json::json!({
             "slot_id": "slot-1",
             "template_id": "template-1",
+            "name": null,
             "enabled": true,
             "instances": 1,
             "led_offset": 0
@@ -368,7 +375,72 @@ fn hex_to_rgba_json_preserves_alpha_and_linearizes_rgb() {
 #[test]
 fn hex_to_rgba_rejects_malformed_input() {
     assert!(hex_to_rgba("").is_none());
-    assert!(hex_to_rgba("#abc").is_none());
+    assert!(hex_to_rgba("#12345").is_none());
     assert!(hex_to_rgba("#nothexx").is_none());
     assert!(hex_to_rgba("abcdefghij").is_none());
+}
+
+/// The color kernel's grammar takes the CSS shorthand forms, so `#abc`
+/// expands to `#aabbcc` where this parser used to reject it. The
+/// widening admits input that previously failed and changes nothing
+/// about input that previously succeeded.
+#[test]
+fn hex_to_rgba_expands_css_shorthand() {
+    let Some(short) = hex_to_rgba("#abc") else {
+        panic!("shorthand hex should parse");
+    };
+    let Some(long) = hex_to_rgba("#aabbcc") else {
+        panic!("full hex should parse");
+    };
+    assert_eq!(short, long);
+
+    let Some(short_alpha) = hex_to_rgba("#abcd") else {
+        panic!("shorthand hex with alpha should parse");
+    };
+    let Some(long_alpha) = hex_to_rgba("#aabbccdd") else {
+        panic!("full hex with alpha should parse");
+    };
+    assert_eq!(short_alpha, long_alpha);
+}
+
+/// Round-trip fence for the display-face wire shape.
+///
+/// The daemon serializes `hypercolor_types::api::displays::DisplayFaceResponse`
+/// and this crate deserializes that same struct, so field renames are a
+/// compile error and need no test. What the compiler cannot see is a
+/// change to a field's VALUE representation — a type swap, a different
+/// enum tagging, a serde attribute — which keeps every key path intact
+/// and so also slips past the daemon's
+/// `display_face_response_shape_matches_the_shared_fixture` pin, since
+/// that one compares key paths and never decodes.
+///
+/// This test closes that gap by decoding the daemon's recorded payload:
+/// the fixture is a real captured response, and it has to keep parsing
+/// into the shared type value for value.
+#[test]
+fn display_face_response_decodes_the_daemon_shape() {
+    let wire: serde_json::Value = serde_json::from_str(include_str!(
+        "../../hypercolor-daemon/tests/fixtures/rest_v1/display_face_shape.json"
+    ))
+    .expect("shared fixture parses");
+
+    let decoded: DisplayFaceResponse = serde_json::from_value(wire.clone())
+        .expect("daemon face payload should decode into the shared type");
+
+    assert_eq!(decoded.device_id, wire["device_id"]);
+    assert_eq!(decoded.zone.id.to_string(), wire["zone"]["id"]);
+    assert_eq!(decoded.live_scope, DisplayFaceScope::Scene);
+    let target = decoded
+        .zone
+        .display_target
+        .expect("display target should decode");
+    assert_eq!(
+        target.device_id.to_string(),
+        wire["zone"]["display_target"]["device_id"]
+    );
+    // The zone's patched control survives the tolerant decode.
+    assert!(
+        decoded.zone.controls.contains_key("label"),
+        "zone controls should carry the fixture's label control"
+    );
 }

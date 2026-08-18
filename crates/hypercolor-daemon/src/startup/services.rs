@@ -1,7 +1,6 @@
 //! Subsystem initialization: bus, engines, managers, stores, and input sources.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -17,7 +16,9 @@ use tracing::{info, warn};
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::config::{CapturePersistenceEpoch, CapturePersistenceSource, ConfigManager};
+use hypercolor_core::config::{
+    BootConfig, CapturePersistenceEpoch, CapturePersistenceSource, ConfigManager,
+};
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
@@ -88,19 +89,26 @@ fn open_persisted_library_store(
 }
 
 impl DaemonState {
-    pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
-        Self::initialize_with_macos_owner(config, config_path, None)
+    pub fn initialize(boot: BootConfig, config_manager: Arc<ConfigManager>) -> Result<Self> {
+        Self::initialize_with_macos_owner(boot, config_manager, None)
     }
 
     pub fn initialize_with_macos_owner(
-        config: &HypercolorConfig,
-        config_path: PathBuf,
+        boot: BootConfig,
+        config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
     ) -> Result<Self> {
-        Self::initialize_inner(config, config_path, macos_owner_snapshot)
+        Self::initialize_inner(boot, config_manager, macos_owner_snapshot)
     }
 
     /// Initialize all subsystems from a loaded configuration.
+    ///
+    /// `boot` is **consumed by value** (Spec 76 §3.2): subsystems freeze
+    /// the boot values they need during construction, and the config dies
+    /// with this call, so no live handle to a [`BootConfig`] can outlast
+    /// initialization. `config_manager` is the live authority the load
+    /// pipeline already built, so nothing here re-reads or re-parses the
+    /// config file.
     ///
     /// This wires together the bus, registry, engines, and render loop
     /// but does **not** start any background tasks. Call [`start`](Self::start)
@@ -108,17 +116,18 @@ impl DaemonState {
     ///
     /// # Errors
     ///
-    /// Returns an error if the config manager cannot be created from the
-    /// resolved config path.
+    /// Returns an error if the configuration is invalid or a subsystem
+    /// fails to construct.
     #[expect(
         clippy::too_many_lines,
         reason = "initialization is inherently sequential; splitting would scatter related setup across helpers"
     )]
     fn initialize_inner(
-        config: &HypercolorConfig,
-        config_path: PathBuf,
+        boot: BootConfig,
+        config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
     ) -> Result<Self> {
+        let config: &HypercolorConfig = &boot;
         info!("Initializing daemon subsystems");
         #[cfg(not(target_os = "macos"))]
         let _ = macos_owner_snapshot;
@@ -174,14 +183,8 @@ impl DaemonState {
 
         let server_identity =
             resolve_server_identity(config).context("failed to resolve server identity")?;
-        // ── Configuration ───────────────────────────────────────────────
         let api_extensions = Vec::new();
         let lifecycle_extensions = Vec::new();
-
-        let config_manager =
-            ConfigManager::new(config_path).context("failed to initialize config manager")?;
-        config_manager.update(config.clone());
-        let config_manager = Arc::new(config_manager);
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
@@ -301,13 +304,9 @@ impl DaemonState {
         ));
         info!("Spatial engine created (empty default layout)");
 
-        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         let driver_inventory = Arc::new(
-            DriverInventoryStore::open(
-                ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME),
-                &runtime_state_path,
-            )
-            .context("failed to open driver inventory store")?,
+            DriverInventoryStore::open(ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME))
+                .context("failed to open driver inventory store")?,
         );
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
@@ -552,6 +551,7 @@ impl DaemonState {
         );
 
         // ── Runtime Session Store ───────────────────────────────────
+        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         info!(
             path = %runtime_state_path.display(),
             "Runtime session store ready"
@@ -641,6 +641,7 @@ impl DaemonState {
             effect_registry,
             scene_manager,
             scene_store,
+            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus,
             macos_daemon_ownership,
             #[cfg(target_os = "macos")]

@@ -56,10 +56,7 @@ test("servo stack renders a bundled HTML effect through Servo", async ({ playwri
       socket.send(
         JSON.stringify({
           type: "subscribe",
-          channels: ["metrics"],
-          config: {
-            metrics: { interval_ms: 250 },
-          },
+          topics: [{ topic: "metrics", config: { interval_ms: 250 } }],
         }),
       );
       await inbox.waitFor((message) => message.type === "subscribed");

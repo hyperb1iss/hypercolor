@@ -805,7 +805,7 @@ The UI sends integer-valued floats; the effect rounds and stores.
 
 ### 9.1 Control PATCH
 
-The existing `PATCH /api/v1/effects/current/controls` endpoint is
+The existing `PATCH /api/v1/effects/active/controls` endpoint is
 insufficient for this modal. "Current effect" is a moving target —
 another UI client, the CLI, or an MCP tool can change the active
 effect between the moment the modal opens (snapshotting controls
@@ -842,12 +842,13 @@ Version lifecycle:
    The modal reads the new version from either location and
    advances its draft token before the next PATCH.
 3. If the server's current version differs from the request's
-   `If-Match`, it returns `412 Precondition Failed` with a body
-   containing the current server version so the client can decide
-   whether to reload or retry. The reconciliation dialog fires at
-   this point: "Another client changed this effect's controls while
-   you were editing. Reload and re-apply, or overwrite?" — default
-   action is "Reload."
+   `If-Match`, it returns `412 Precondition Failed` with
+   `code: "precondition_failed"` and `details` carrying `expected`
+   and `current`, plus the current version in the `ETag`, so the
+   client can decide whether to reload or retry. The
+   reconciliation dialog fires at this point: "Another client
+   changed this effect's controls while you were editing. Reload
+   and re-apply, or overwrite?" — default action is "Reload."
 
 Live mid-drag PATCHes (viewport rect at 80 ms throttle, § 6.1) use
 this loop: each successful throttled PATCH pulls back the new
@@ -1297,7 +1298,7 @@ repaint that follows is on Servo's timeline, not the render loop.
   frame differs from a scroll_y=0 frame (same URL). Uses the
   existing test harness.
 - WS control PATCH round-trip: open WS, PATCH `scroll_x`, read back
-  effect state via `GET /api/v1/effects/current`, verify value
+  effect state via `GET /api/v1/effects/active`, verify value
   propagated.
 
 ### 13.4 Cross-origin manual test

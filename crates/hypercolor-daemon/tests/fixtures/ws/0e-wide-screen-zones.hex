@@ -1,0 +1,20 @@
+# hypercolor websocket golden fixture
+# fixture: 0e-wide-screen-zones
+# tag: 0x0e (WIDE_SCREEN_ZONES_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::ScreenZonesFrame::try_encode
+# input: 70000x1080 source (wide layout), 4x3 grid
+# total-bytes: 59
+# stored-bytes: 59
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+0e                                              # tag
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+70 11 01 00                                     # source_width u32le
+38 04 00 00                                     # source_height u32le
+04                                              # grid_cols u8
+03                                              # grid_rows u8
+01 01 00 00                                     # letterbox u8 x4 (top, bottom, left, right)
+a0 a7 ae b5 bc c3 ca d1 d8 df e6 ed f4 fb 02 09 # payload rgb grid, row-major [+0x000]
+10 17 1e 25 2c 33 3a 41 48 4f 56 5d 64 6b 72 79 # payload rgb grid, row-major [+0x010]
+80 87 8e 95                                     # payload rgb grid, row-major [+0x020]
