@@ -1,5 +1,5 @@
 {
-  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 7)",
+  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8)",
   "_regenerate": "parse the appendix table; this file is target data for the wave-78.5 convergence test, not a live assertion",
   "_scope": "the /api/v1 surface (JSON routes plus the /ws upgrade, matched by path only) and /health; document routes excluded",
   "paths": [

@@ -90,6 +90,11 @@ pub struct ZoneLayoutResource {
 }
 
 /// One member's spatial placement inside its zone's layout.
+///
+/// Deliberately tolerant of unknown fields: this shape is dual-use
+/// (request body and zone-resource read-back), and the response-side
+/// client-tolerance convention wins for embedded resources. The
+/// strict envelope around it still rejects unknown top-level fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemberPlacement {
     pub member: ZoneMemberId,
