@@ -250,16 +250,17 @@ async fn protected_capture_routes_reject_unauthenticated_loopback_clients() {
 #[tokio::test]
 async fn privacy_bearing_config_and_diagnose_reject_unauthenticated_loopback_clients() {
     let app = test_app();
-    for (path, body) in [
+    for (method, path, body) in [
+        (Method::PUT, "/api/v1/config/keys/capture.enabled", "true"),
+        (Method::POST, "/api/v1/config/reset", "{}"),
         (
-            "/api/v1/config/set",
-            r#"{"key":"capture.enabled","value":"true"}"#,
+            Method::POST,
+            "/api/v1/diagnose",
+            r#"{"checks":["macos_screen_parity"]}"#,
         ),
-        ("/api/v1/config/reset", "{}"),
-        ("/api/v1/diagnose", r#"{"checks":["macos_screen_parity"]}"#),
     ] {
         let mut request = Request::builder()
-            .method(Method::POST)
+            .method(method)
             .uri(path)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
