@@ -233,6 +233,7 @@ struct InputRouteCache {
     interaction_router: InteractionRouter,
     routed_interaction: RoutedInteraction,
     screen_publication_route: Option<ScreenPublicationRoute>,
+    last_screen_observation: Option<(bool, bool, bool)>,
 }
 
 struct ScreenPublicationRoute {
@@ -271,6 +272,7 @@ impl InputRouteCache {
             interaction_router: InteractionRouter::default(),
             routed_interaction: RoutedInteraction::new(AUTHORITATIVE_INPUT_CONSUMER),
             screen_publication_route: None,
+            last_screen_observation: None,
         }
     }
 
@@ -322,7 +324,28 @@ impl InputRouteCache {
             .and_then(|route| route.lease.as_ref())
             .map(|lease| lease.observe(Instant::now()));
         let (publication, delivery_state) = observation.unzip();
-        (plan_generation, publication.flatten(), delivery_state)
+        let publication = publication.flatten();
+        // Transition-only log: silent gaps between a healthy hub and a
+        // black compositor have cost hours; state changes here name the
+        // broken link (no lease = plan/observation mismatch, lease
+        // without publication = starved or stale deliveries).
+        let observed = (
+            target_id.is_some(),
+            self.screen_publication_route
+                .as_ref()
+                .is_some_and(|route| route.lease.is_some()),
+            publication.is_some(),
+        );
+        if self.last_screen_observation != Some(observed) {
+            self.last_screen_observation = Some(observed);
+            tracing::debug!(
+                target = observed.0,
+                lease = observed.1,
+                publication = observed.2,
+                "screen publication observation changed"
+            );
+        }
+        (plan_generation, publication, delivery_state)
     }
 
     fn screen_descriptor(&self) -> Option<&ResolvedScreenPublicationDescriptor> {
