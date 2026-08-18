@@ -129,7 +129,17 @@ pub async fn set_power(state: &AppState, requested: OutputPowerMode) {
 /// A destructive stop and a session sleep both leave outputs dark, so
 /// both read as `paused` — the resource reports whether output is
 /// running, and the stop's extra consequences (released ownership,
-/// cleared effect state) are observable on the effect surface.
+/// cleared effect state) are observable on the effect surface. The read
+/// has to round-trip: a caller that reads `running` and then patches
+/// `running` must not be silently clearing a stop.
+///
+/// [`OutputPowerState::reported_paused`] answers a different question
+/// ("did the user latch a pause?") and keeps returning `false` for a
+/// stop, because a stop publishes no `Paused` event. The WS hello and
+/// the MCP status surfaces read that one. §3 of the REST matrix names
+/// the split and the wave that collapses it.
+///
+/// [`OutputPowerState::reported_paused`]: crate::session::OutputPowerState::reported_paused
 fn observed_power(power: OutputPowerState) -> OutputPowerMode {
     if power.sleeping() {
         OutputPowerMode::Paused

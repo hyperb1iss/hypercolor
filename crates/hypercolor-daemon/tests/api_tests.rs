@@ -6655,7 +6655,10 @@ async fn output_patch_rejects_brightness_outside_the_unit_interval() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
 
-    for rejected in ["1.5", "-0.1"] {
+    // `1e40` overflows the f32 cast to infinity, which fails the range
+    // check the same way NaN would: every comparison against a non-finite
+    // value is false, so `contains` says no.
+    for rejected in ["1.5", "-0.1", "1e40", "-1e40"] {
         let response = app
             .clone()
             .oneshot(output_patch_request(&format!(
@@ -6826,6 +6829,76 @@ async fn stop_active_clears_primary_effect_id_but_keeps_scene() {
         .primary_group()
         .expect("primary group shell should remain after stop");
     assert!(primary.effect_id.is_none());
+}
+
+/// The wire-level receipt for the two-state projection: a destructive
+/// stop leaves outputs dark, so the resource reads `paused`, and
+/// patching `running` clears the stop rather than being a no-op.
+///
+/// The status surfaces answer differently on purpose. `reported_paused`
+/// (`session.rs:86`) means "the user latched a pause", and a stop
+/// publishes no `Paused` event, so the WS hello and the MCP status keep
+/// reporting `paused: false` here. Both readings are pinned; §3 of the
+/// REST matrix names the split.
+#[tokio::test]
+async fn a_stopped_output_reads_as_paused_and_patches_back_to_running() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    state.render_loop.write().await.start();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let applied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(applied.status(), StatusCode::OK);
+
+    let stopped = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stopped.status(), StatusCode::OK);
+    assert_eq!(
+        state.power_state.borrow().output_override,
+        OutputOverride::Stopped
+    );
+
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/output")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(body_json(read).await["data"]["power"], "paused");
+
+    let resumed = app
+        .oneshot(output_patch_request(r#"{"power":"running"}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resumed.status(), StatusCode::OK);
+    assert_eq!(body_json(resumed).await["data"]["power"], "running");
+    assert_eq!(
+        state.power_state.borrow().output_override,
+        OutputOverride::None
+    );
 }
 
 #[tokio::test]

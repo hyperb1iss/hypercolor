@@ -206,6 +206,30 @@ Retired paths answer 404, with one pinned exception: a POST to
 GET-only `/api/v1/effects/{id}` sibling and answers `405`. That is still a
 deletion, and the 405 is what would catch someone re-adding a handler.
 
+**Two spellings of "paused", on purpose.** `GET /api/v1/output` reports
+`power: "paused"` after a destructive stop, because the resource answers
+whether output is running and the read has to round-trip: a client that reads
+`running` and then patches `running` must not be silently clearing a stop. The
+status surfaces answer the other question. `OutputPowerState::reported_paused`
+(`src/session.rs:86`) means "the user latched a pause", a stop publishes no
+`Paused` event (`session.rs` test `destructive_stop_does_not_publish_a_pause_event`),
+and so the WS `hello` payload, MCP `get_status`, and `hypercolor://state` all
+report `paused: false` for a stopped output.
+
+Both readings are deliberately pinned, and the tests look contradictory unless
+you know which question each one answers:
+
+| Surface | Stopped reads as | Pinned by |
+| --- | --- | --- |
+| `GET /output` | `power: "paused"` | `api_tests.rs::a_stopped_output_reads_as_paused_and_patches_back_to_running`, `domain/output.rs::every_dark_state_observes_as_paused` |
+| WS `hello` | `paused: false` | `api/ws/session.rs::hello_does_not_report_destructive_stop_as_pause` |
+| MCP `get_status`, `hypercolor://state` | `paused: false` | `mcp_tests.rs::mcp_status_surfaces_report_effective_session_pause` |
+
+Collapsing the two onto one word means deciding whether a destructive stop
+publishes `Paused`, which moves the event vocabulary. Spec 78 §7.1 assigns the
+hello payload and the event vocabulary to wave 78.3; the reconciliation lands
+there rather than splitting across waves.
+
 | Method | Path | Request | Success body | Notes |
 | --- | --- | --- | --- | --- |
 | GET | `/api/v1/output` | Empty | `200`, enveloped `{power, brightness}` | `power` is `running` \| `paused`; a destructive stop and a session sleep both read as `paused`. `brightness` is a float on `0.0..=1.0`, not a percentage |
