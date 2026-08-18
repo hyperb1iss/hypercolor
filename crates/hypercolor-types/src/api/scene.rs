@@ -249,7 +249,7 @@ pub struct ApplyEffectRequest {
 /// One post-commit side-effect outcome (Spec 78 §2.3, §3.2): the
 /// commit stands, the outcome says whether the side effect landed,
 /// and a failure carries its reason.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SideEffectOutcome {
     pub applied: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
