@@ -2457,16 +2457,11 @@ fn publish_frame(
         }
         publish_macos_scalar_exact(&frame, &capture, &source, exact, exact_runtimes, telemetry)?;
     }
-    if !needs_legacy_cpu_publication(exact_delivery) {
-        if let Some(status) = status_session.load() {
-            status.record_sample(captured_at, fresh_until, 1)?;
-        }
-        let mut publication = lock(publication);
-        if publication.worker_generation == worker_generation {
-            publication.latest = None;
-        }
-        return Ok(());
-    }
+    // The exact lane feeds native compositing only; HTML effects read the
+    // analyzed ScreenData that flows through the legacy slot publication.
+    // Treating the lanes as exclusive turns every HTML screen effect black
+    // the moment an exact plan commits, so the legacy analysis always runs
+    // alongside exact deliveries.
     let capture = legacy_cpu_capture_frame(
         prepared,
         &frame,
@@ -2512,6 +2507,20 @@ fn publish_frame(
     Ok(())
 }
 
+/// Ceiling on the surface handed to the legacy analyzer. The analyzer reduces
+/// whatever it receives into the coarse ScreenData grid, so tone-mapping every
+/// pixel of a native 4K HDR frame is wasted work that blows the publication
+/// freshness budget and starves every HTML screen effect.
+const LEGACY_ANALYSIS_MAX_WIDTH: u32 = 640;
+const LEGACY_ANALYSIS_MAX_HEIGHT: u32 = 480;
+
+fn legacy_analysis_decimation(extent: PixelExtent) -> u32 {
+    extent
+        .width()
+        .div_ceil(LEGACY_ANALYSIS_MAX_WIDTH)
+        .max(extent.height().div_ceil(LEGACY_ANALYSIS_MAX_HEIGHT))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn legacy_cpu_capture_frame(
     prepared: &mut PreparedWorker,
@@ -2523,12 +2532,27 @@ fn legacy_cpu_capture_frame(
     topology_generation: u64,
 ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
     let extent = source.geometry.storage_extent();
-    let row_stride = usize::try_from(extent.width())
+    let decimation = if frame.pixel_format == MacosCapturePixelFormat::Bgra8 {
+        // The Bgra8 plane also feeds the CPU-exact publication, which is
+        // exact by contract, so it keeps every native pixel.
+        1
+    } else {
+        legacy_analysis_decimation(extent)
+    };
+    let storage_extent = if decimation == 1 {
+        extent
+    } else {
+        PixelExtent::new(
+            extent.width().div_ceil(decimation),
+            extent.height().div_ceil(decimation),
+        )?
+    };
+    let row_stride = usize::try_from(storage_extent.width())
         .ok()
         .and_then(|width| width.checked_mul(4))
         .ok_or_else(|| anyhow!("macOS capture row stride overflow"))?;
     let byte_len = row_stride
-        .checked_mul(usize::try_from(extent.height())?)
+        .checked_mul(usize::try_from(storage_extent.height())?)
         .ok_or_else(|| anyhow!("macOS capture plane length overflow"))?;
     let mut plane = prepared.plane_pool.try_acquire(byte_len)?;
     plane.resize(byte_len, 0);
@@ -2549,11 +2573,17 @@ fn legacy_cpu_capture_frame(
             calibration,
         )?;
         frame.with_cpu_source(|samples| -> anyhow::Result<()> {
-            for y in 0..extent.height() {
+            for y in 0..storage_extent.height() {
+                let source_y = y
+                    .checked_mul(decimation)
+                    .ok_or_else(|| anyhow!("macOS legacy sample row overflow"))?;
                 let row_start = usize::try_from(y)?
                     .checked_mul(row_stride)
                     .ok_or_else(|| anyhow!("macOS legacy row offset overflow"))?;
-                for x in 0..extent.width() {
+                for x in 0..storage_extent.width() {
+                    let source_x = x
+                        .checked_mul(decimation)
+                        .ok_or_else(|| anyhow!("macOS legacy sample column overflow"))?;
                     let pixel_start = usize::try_from(x)?
                         .checked_mul(4)
                         .and_then(|offset| row_start.checked_add(offset))
@@ -2561,7 +2591,7 @@ fn legacy_cpu_capture_frame(
                     let pixel_end = pixel_start
                         .checked_add(4)
                         .ok_or_else(|| anyhow!("macOS legacy pixel end overflow"))?;
-                    let source_pixel = samples.sample_rgba32f(x, y)?;
+                    let source_pixel = samples.sample_rgba32f(source_x, source_y)?;
                     plane[pixel_start..pixel_end].copy_from_slice(
                         &tone_map.encode(tone_map.decode_and_map_source(source_pixel)),
                     );
@@ -2570,6 +2600,47 @@ fn legacy_cpu_capture_frame(
             Ok(())
         })??;
         (CapturePixelFormat::Rgba8, CaptureColorimetry::SRGB)
+    };
+    let geometry = if decimation == 1 {
+        source.geometry
+    } else {
+        super::CaptureGeometry::new(
+            source.geometry.origin(),
+            source.geometry.native_extent(),
+            storage_extent,
+            source.geometry.rotation(),
+            source.geometry.crop(),
+            source.geometry.source_scale(),
+        )?
+    };
+    let damage = if decimation == 1 {
+        CaptureDamage::new(
+            frame
+                .damage
+                .iter()
+                .map(|rect| {
+                    Ok(PixelRect::new(
+                        u32::try_from(rect.x)?,
+                        u32::try_from(rect.y)?,
+                        rect.width,
+                        rect.height,
+                    )?)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            Vec::new(),
+        )
+    } else {
+        // Native damage rects no longer address the decimated pixels, and the
+        // analyzer resamples the whole surface anyway.
+        CaptureDamage::new(
+            vec![PixelRect::new(
+                0,
+                0,
+                storage_extent.width(),
+                storage_extent.height(),
+            )?],
+            Vec::new(),
+        )
     };
     let sequence = frame
         .sequence
@@ -2583,7 +2654,7 @@ fn legacy_cpu_capture_frame(
             sequence,
             captured_at,
             fresh_until,
-            geometry: source.geometry,
+            geometry,
             colorimetry,
             cursor: CaptureCursor {
                 visible: frame.cursor_composed,
@@ -2604,21 +2675,7 @@ fn legacy_cpu_capture_frame(
             i64::try_from(row_stride)?,
             0,
         )),
-        CaptureDamage::new(
-            frame
-                .damage
-                .iter()
-                .map(|rect| {
-                    Ok(PixelRect::new(
-                        u32::try_from(rect.x)?,
-                        u32::try_from(rect.y)?,
-                        rect.width,
-                        rect.height,
-                    )?)
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?,
-            Vec::new(),
-        ),
+        damage,
     )?)
 }
 
@@ -2687,10 +2744,6 @@ struct MacosExactDelivery {
     native: bool,
     cpu: bool,
     stale: bool,
-}
-
-const fn needs_legacy_cpu_publication(delivery: MacosExactDelivery) -> bool {
-    !delivery.native && !delivery.cpu
 }
 
 #[cfg(all(test, feature = "macos-capture-fixtures"))]
@@ -5835,18 +5888,27 @@ mod tests {
     }
 
     #[test]
-    fn exact_delivery_never_materializes_a_legacy_full_frame() {
-        assert!(!needs_legacy_cpu_publication(MacosExactDelivery {
-            native: true,
-            cpu: false,
-            stale: false,
-        }));
-        assert!(!needs_legacy_cpu_publication(MacosExactDelivery {
-            native: false,
-            cpu: true,
-            stale: false,
-        }));
-        assert!(needs_legacy_cpu_publication(MacosExactDelivery::default()));
+    fn legacy_analysis_decimation_keeps_the_surface_near_the_analyzer_budget() {
+        // Native 4K HDR display (retina 2x): must decimate hard enough to fit
+        // the tone-map conversion inside the publication freshness budget.
+        let native_4k = PixelExtent::new(4112, 2658).expect("valid extent");
+        assert_eq!(legacy_analysis_decimation(native_4k), 7);
+        // Surfaces already at or under the analyzer budget pass through exact.
+        let analyzer_sized = PixelExtent::new(640, 480).expect("valid extent");
+        assert_eq!(legacy_analysis_decimation(analyzer_sized), 1);
+        let small_window = PixelExtent::new(320, 200).expect("valid extent");
+        assert_eq!(legacy_analysis_decimation(small_window), 1);
+        // The limiting axis wins: a wide-but-short surface decimates by width.
+        let ultrawide = PixelExtent::new(5120, 400).expect("valid extent");
+        assert_eq!(legacy_analysis_decimation(ultrawide), 8);
+        // Every decimated sample position stays inside the source surface.
+        for extent in [native_4k, analyzer_sized, small_window, ultrawide] {
+            let step = legacy_analysis_decimation(extent);
+            let last_x = (extent.width().div_ceil(step) - 1) * step;
+            let last_y = (extent.height().div_ceil(step) - 1) * step;
+            assert!(last_x < extent.width());
+            assert!(last_y < extent.height());
+        }
     }
 
     #[test]
