@@ -2564,15 +2564,10 @@ pub(super) async fn relay_device_metrics(
         }
 
         let message = build_device_metrics_message(&state);
-        if let Ok(text) = serde_json::to_string(&message) {
-            if !try_enqueue_json(&json_tx, text, "device_metrics") {
-                backpressure.record_drop(
-                    &json_tx,
-                    "device_metrics",
-                    None,
-                    cadence_fps(interval_ms),
-                );
-            }
+        if let Ok(text) = serde_json::to_string(&message)
+            && !try_enqueue_json(&json_tx, text, "device_metrics")
+        {
+            backpressure.record_drop(&json_tx, "device_metrics", None, cadence_fps(interval_ms));
         }
     }
 }

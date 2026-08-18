@@ -325,7 +325,6 @@ fn frames_patch_validates_cadence_and_zone_selection() {
     let accepted = FramesConfigPatch {
         fps: Some(60),
         zones: Some(vec!["desk".to_owned()]),
-        ..FramesConfigPatch::default()
     };
     let next = apply_patch_transactionally(&config, &accepted).expect("in-range patch applies");
     assert_eq!(next.fps, 60);

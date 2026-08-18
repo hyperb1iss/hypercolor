@@ -108,6 +108,8 @@ fn effect_events_have_effect_category() {
             control_id: "speed".into(),
             old_value: EventControlValue::Number(0.5),
             new_value: EventControlValue::Number(0.8),
+            zone_id: None,
+            layer_id: None,
             trigger: ChangeTrigger::Api,
         },
         HypercolorEvent::EffectLayerAdded {

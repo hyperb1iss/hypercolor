@@ -51,10 +51,8 @@ fn parse_ws_hello_message() {
     assert!(!state.paused);
     assert_eq!(state.brightness, 75);
     assert_eq!(state.device_count, 3);
-
-    let effect = state.effect.expect("should have active effect");
-    assert_eq!(effect.id, "abc-123");
-    assert_eq!(effect.name, "Aurora Borealis");
+    // A daemon that still sends an effect has it ignored: the handshake
+    // reports how the daemon is running, not what it is rendering.
 }
 
 #[test]

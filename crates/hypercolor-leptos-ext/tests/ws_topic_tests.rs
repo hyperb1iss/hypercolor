@@ -119,18 +119,22 @@ define_ws_topics! {
     topic Events => "events" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [], control: false,
+        backpressure: Lossless,
     }
     topic Frames => "frames" {
         key: unkeyed, config: FramesConfig, patch: FramesPatch,
         tags: [0x01], control: false,
+        backpressure: DropWithNotice,
     }
     topic ScreenZones => "screen_zones" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [0x09, 0x0E, 0x11], control: true,
+        backpressure: LatestWins,
     }
     topic DisplayPreview => "display_preview" {
         key: DeviceKey, config: PreviewConfig, patch: PreviewPatch,
         tags: [0x07, 0x0B], control: false,
+        backpressure: LatestWins,
     }
 }
 
@@ -144,6 +148,27 @@ fn names_round_trip_and_order_is_declaration_order() {
     assert_eq!(Topic::parse("no_such_topic"), None);
     assert!(Topic::ScreenZones.requires_control());
     assert!(!Topic::Frames.requires_control());
+}
+
+#[test]
+fn every_topic_declares_how_it_behaves_under_a_slow_reader() {
+    use hypercolor_leptos_ext::ws::topic::BackpressureClass;
+
+    // The class is mandatory by construction: the macro will not accept
+    // an entry without one, so the manifest can always state it.
+    assert_eq!(
+        Topic::Events.vtable().backpressure,
+        BackpressureClass::Lossless
+    );
+    assert_eq!(
+        Topic::Frames.vtable().backpressure,
+        BackpressureClass::DropWithNotice
+    );
+    assert_eq!(
+        Topic::DisplayPreview.vtable().backpressure,
+        BackpressureClass::LatestWins
+    );
+    assert_eq!(BackpressureClass::LatestWins.as_str(), "latest_wins");
 }
 
 #[test]

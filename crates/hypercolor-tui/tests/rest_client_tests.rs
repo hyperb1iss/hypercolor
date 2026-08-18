@@ -171,57 +171,39 @@ async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
 }
 
 #[tokio::test]
-async fn get_status_maps_system_and_active_effect_responses() {
-    let router = Router::new()
-        .route(
-            "/api/v1/status",
-            get(|| async {
-                Json(json!({
-                    "data": {
-                        "running": true,
-                        "global_brightness": 42,
-                        "device_count": 3,
-                        "active_effect": "Rainbow Wave",
-                        "active_scene": "Focus",
-                        "active_scene_snapshot_locked": true,
-                        "render_loop": {
-                            "state": "running",
-                            "fps_tier": "sixty",
-                            "target_fps": 60,
-                            "ceiling_fps": 60,
-                            "capacity_fps": 59.8,
-                            "delivered_fps": 59.4,
-                            "actual_fps": 59.8,
-                            "consecutive_misses": 0,
-                            "total_frames": 12_000
-                        }
-                    }
-                }))
-            }),
-        )
-        .route(
-            "/api/v1/effects/active",
-            get(|| async {
-                Json(json!({
-                    "data": {
-                        "id": "rainbow",
-                        "name": "Rainbow Wave",
+async fn get_status_maps_the_system_response_without_an_active_effect_call() {
+    let router = Router::new().route(
+        "/api/v1/status",
+        get(|| async {
+            Json(json!({
+                "data": {
+                    "running": true,
+                    "global_brightness": 42,
+                    "device_count": 3,
+                    "active_effect": "Rainbow Wave",
+                    "active_scene": "Focus",
+                    "active_scene_snapshot_locked": true,
+                    "render_loop": {
                         "state": "running",
-                        "controls": [],
-                        "control_values": {},
-                        "active_preset_id": null
+                        "fps_tier": "sixty",
+                        "target_fps": 60,
+                        "ceiling_fps": 60,
+                        "capacity_fps": 59.8,
+                        "delivered_fps": 59.4,
+                        "actual_fps": 59.8,
+                        "consecutive_misses": 0,
+                        "total_frames": 12_000
                     }
-                }))
-            }),
-        );
+                }
+            }))
+        }),
+    );
 
     let client = client_for(spawn_server(router).await);
     let status = client.get_status().await.expect("fetch status");
 
     assert!(status.running);
     assert_eq!(status.brightness, 42);
-    assert_eq!(status.effect_id.as_deref(), Some("rainbow"));
-    assert_eq!(status.effect_name.as_deref(), Some("Rainbow Wave"));
     assert_eq!(status.scene_name.as_deref(), Some("Focus"));
     assert!(status.scene_snapshot_locked);
     assert_eq!(status.device_count, 3);

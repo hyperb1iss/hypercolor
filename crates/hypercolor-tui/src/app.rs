@@ -1677,10 +1677,8 @@ impl App {
                 .iter()
                 .find(|simulator| simulator.id == simulator_id)
                 .map_or("Simulator", |simulator| simulator.name.as_str())
-        } else if let Some(label) = multi_zone_label.as_deref() {
-            label
         } else {
-            "—"
+            multi_zone_label.as_deref().unwrap_or("—")
         };
 
         let fps = self.state.daemon.as_ref().map_or(0.0, |d| d.fps_actual);
