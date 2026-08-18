@@ -103,7 +103,7 @@ pub async fn set_brightness(
 }
 
 pub(crate) fn capture_input_available() -> bool {
-    if cfg!(target_os = "windows") {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
         return true;
     }
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
