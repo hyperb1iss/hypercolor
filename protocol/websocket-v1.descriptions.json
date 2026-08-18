@@ -65,7 +65,7 @@
           "timestamp_ms"
         ],
         [
-          "u8",
+          "u16_le",
           "zone_count"
         ],
         [
@@ -301,13 +301,6 @@
         "max": 60,
         "default": 30
       },
-      "format": {
-        "values": [
-          "binary",
-          "json"
-        ],
-        "default": "binary"
-      },
       "zones": {
         "default": [
           "all"
@@ -375,6 +368,13 @@
       "height": {
         "min": 0,
         "default": 0
+      }
+    },
+    "screen_zones": {
+      "fps": {
+        "min": 1,
+        "max": 60,
+        "default": 15
       }
     },
     "web_viewport_canvas": {

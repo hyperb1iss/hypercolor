@@ -8,6 +8,7 @@
 mod cache;
 mod command;
 mod interactive_preview_relay;
+pub mod manifest;
 mod preview_encode;
 mod preview_scale;
 mod protocol;

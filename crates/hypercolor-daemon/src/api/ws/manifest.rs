@@ -27,9 +27,9 @@ use hypercolor_leptos_ext::ws::registry::TopicId;
 use hypercolor_types::event::event_vocabulary;
 use serde_json::{Map, Value, json};
 
-use super::protocol::{
-    MAX_PREVIEW_PUBLICATION_BYTES, MAX_WS_MESSAGE_BYTES, PREVIEW_MIN_MESSAGE_BYTES, ws_capabilities,
-};
+use hypercolor_leptos_ext::ws::PREVIEW_MIN_MESSAGE_BYTES;
+
+use super::protocol::{MAX_PREVIEW_PUBLICATION_BYTES, MAX_WS_MESSAGE_BYTES, ws_capabilities};
 
 /// The authored half of the manifest, as committed.
 pub const DESCRIPTIONS_JSON: &str =
@@ -55,10 +55,7 @@ pub fn build() -> anyhow::Result<Value> {
     let mut manifest = Map::new();
 
     manifest.insert("schema_version".to_owned(), json!(SCHEMA_VERSION));
-    manifest.insert(
-        "protocol".to_owned(),
-        json!("hypercolor-websocket-v1"),
-    );
+    manifest.insert("protocol".to_owned(), json!("hypercolor.websocket"));
     manifest.insert("version".to_owned(), json!(PROTOCOL_VERSION));
     manifest.insert("subprotocol".to_owned(), json!(SUBPROTOCOL));
     manifest.insert("default_subscriptions".to_owned(), json!(["events"]));
@@ -70,9 +67,18 @@ pub fn build() -> anyhow::Result<Value> {
         "preview_transport".to_owned(),
         preview_transport(&descriptions)?,
     );
-    manifest.insert("json_messages".to_owned(), authored(&descriptions, "json_messages")?);
-    manifest.insert("json_payloads".to_owned(), authored(&descriptions, "json_payloads")?);
-    manifest.insert("binary_messages".to_owned(), binary_messages(&descriptions)?);
+    manifest.insert(
+        "json_messages".to_owned(),
+        authored(&descriptions, "json_messages")?,
+    );
+    manifest.insert(
+        "json_payloads".to_owned(),
+        authored(&descriptions, "json_payloads")?,
+    );
+    manifest.insert(
+        "binary_messages".to_owned(),
+        binary_messages(&descriptions)?,
+    );
 
     for block in FRAME_BLOCKS {
         manifest.insert((*block).to_owned(), authored(&descriptions, block)?);
@@ -202,7 +208,7 @@ fn binary_messages(descriptions: &Value) -> anyhow::Result<Value> {
     for (name, body) in authored {
         let mut entry = Map::new();
         entry.insert("name".to_owned(), json!(name));
-        let tag = super::codec_tag(name)
+        let tag = codec_tag(name)
             .ok_or_else(|| anyhow::anyhow!("binary message {name} has no declared tag"))?;
         entry.insert("tag".to_owned(), json!(tag));
         if let Some(body) = body.as_object() {
@@ -274,6 +280,45 @@ fn preview_transport(descriptions: &Value) -> anyhow::Result<Value> {
     );
     block.insert("jpeg_max_axis".to_owned(), json!(u16::MAX));
     Ok(Value::Object(block))
+}
+
+/// The wire tag each binary message carries.
+///
+/// Every value is a symbol rather than a literal: the preview family's
+/// tags are the codec constants `hypercolor-leptos-ext` declares, and
+/// the four topic-owned tags come from the registry entry that owns
+/// them. A tag cannot drift between the encoder and the manifest
+/// because there is only one of it.
+fn codec_tag(name: &str) -> Option<u8> {
+    use hypercolor_leptos_ext::ws::{
+        DISPLAY_PREVIEW_FRAME_TAG, EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG,
+        PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, SCREEN_ZONES_FRAME_TAG,
+        SPECTRUM_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+        WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
+        ZONE_PREVIEW_FRAME_TAG,
+    };
+
+    let owned = |topic: TopicId| topic.vtable().owned_tags.first().copied();
+    match name {
+        "led_frame" => owned(TopicId::Frames),
+        "spectrum" => Some(SPECTRUM_FRAME_TAG),
+        "canvas" => owned(TopicId::Canvas),
+        "screen_canvas" => owned(TopicId::ScreenCanvas),
+        "web_viewport_canvas" => owned(TopicId::WebViewportCanvas),
+        "screen_zones" => Some(SCREEN_ZONES_FRAME_TAG),
+        "zone_preview" => Some(ZONE_PREVIEW_FRAME_TAG),
+        "display_preview" => Some(DISPLAY_PREVIEW_FRAME_TAG),
+        "interactive_preview" => Some(INTERACTIVE_PREVIEW_FRAME_TAG),
+        "wide_preview" => Some(WIDE_PREVIEW_FRAME_TAG),
+        "wide_zone_preview" => Some(WIDE_ZONE_PREVIEW_FRAME_TAG),
+        "wide_interactive_preview" => Some(WIDE_INTERACTIVE_PREVIEW_FRAME_TAG),
+        "wide_screen_zones" => Some(WIDE_SCREEN_ZONES_FRAME_TAG),
+        "wide_display_preview" => Some(WIDE_DISPLAY_PREVIEW_FRAME_TAG),
+        "extended_screen_zones" => Some(EXTENDED_SCREEN_ZONES_FRAME_TAG),
+        "preview_chunk" => Some(PREVIEW_CHUNK_FRAME_TAG),
+        "preview_cancel" => Some(PREVIEW_CANCEL_FRAME_TAG),
+        _ => None,
+    }
 }
 
 fn authored(descriptions: &Value, key: &str) -> anyhow::Result<Value> {
