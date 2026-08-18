@@ -14,6 +14,7 @@ use std::str::FromStr;
 use strum::VariantNames;
 
 use hypercolor_types::api::effects::EffectLayoutApplyResult;
+use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
@@ -152,6 +153,9 @@ pub struct EffectApplied {
     pub applied_layout: Option<EffectLayoutApplyResult>,
     /// The transition the daemon applied.
     pub transition: AppliedTransition,
+    /// Whether the post-commit power wake left output running
+    /// (Spec 78 §2.3). The commit stands either way.
+    pub output: SideEffectOutcome,
     /// The commit receipt.
     pub commit: SceneCommit,
 }
@@ -192,7 +196,6 @@ pub async fn apply_effect(
         )));
     }
 
-    crate::api::effects::wake_output_for_effect_start(state).await;
     let layout = crate::api::effects::resolve_full_scope_layout(state).await;
 
     let mut mutation = state.begin_scene_mutation().await;
@@ -245,6 +248,14 @@ pub async fn apply_effect(
 
     let commit = commit_scene(state, mutation).await?;
 
+    // Every refusal above returns before this point, so nothing the
+    // caller can get rejected for has woken output (Spec 78 §2.3).
+    let output = if crate::api::effects::wake_output_for_effect_start(state).await {
+        SideEffectOutcome::applied()
+    } else {
+        SideEffectOutcome::failed("output did not resume; patch /output to retry")
+    };
+
     // A named zone keeps its own layout; only a primary apply adopts the
     // effect's associated one.
     let applied_layout = if named_target.is_some() {
@@ -262,6 +273,7 @@ pub async fn apply_effect(
         previous_effect,
         applied_layout,
         transition,
+        output,
         commit,
     })
 }
