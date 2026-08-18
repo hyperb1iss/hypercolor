@@ -66,11 +66,13 @@ pub async fn insert_layer(
     layer: SceneLayer,
     index: Option<usize>,
     expected_version: Option<u64>,
+    expected_scene_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, expected_version) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
@@ -125,11 +127,13 @@ pub async fn update_layer(
     layer_id: SceneLayerId,
     layer: SceneLayer,
     expected_version: Option<u64>,
+    expected_scene_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.update_layer(scene_id, zone_id, layer_id, layer, expected_version) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
@@ -155,11 +159,13 @@ pub async fn remove_layer(
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     expected_version: Option<u64>,
+    expected_scene_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, expected_version) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
@@ -185,11 +191,13 @@ pub async fn reorder_layers(
     zone_id: ZoneId,
     layer_ids: Vec<SceneLayerId>,
     expected_version: Option<u64>,
+    expected_scene_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, expected_version) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
@@ -216,11 +224,13 @@ pub async fn patch_layer_controls(
     layer_id: SceneLayerId,
     controls: HashMap<String, ControlValue>,
     expected_version: Option<u64>,
+    expected_scene_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.patch_layer_controls(
         scene_id,
         zone_id,

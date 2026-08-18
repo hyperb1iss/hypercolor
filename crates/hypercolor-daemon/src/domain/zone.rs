@@ -23,6 +23,7 @@ use hypercolor_types::spatial::{Output, SpatialLayout};
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
 use crate::domain::scene::{SceneMutation, commit_scene, zone_changed_event};
+use crate::domain::scene_tree::check_scene_revision;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::layout_auto_exclusions;
 
@@ -41,6 +42,9 @@ pub struct CreateZone {
     pub fallback_canvas: (u32, u32),
     /// The `groups_revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
+    /// The scene `revision` the caller last saw, when it sent one
+    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
+    pub expected_scene_revision: Option<u64>,
 }
 
 /// Patch a zone's presentation metadata.
@@ -57,6 +61,9 @@ pub struct UpdateZone {
     /// Only a structural patch (promoting a zone to primary) checks it —
     /// renaming or recoloring a zone races with nothing.
     pub expected_revision: Option<u64>,
+    /// The scene `revision` the caller last saw, when it sent one
+    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
+    pub expected_scene_revision: Option<u64>,
 }
 
 /// Remove a custom zone from a scene.
@@ -68,6 +75,9 @@ pub struct DeleteZone {
     pub zone_id: ZoneId,
     /// The `groups_revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
+    /// The scene `revision` the caller last saw, when it sent one
+    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
+    pub expected_scene_revision: Option<u64>,
 }
 
 /// Move outputs into a zone.
@@ -87,6 +97,9 @@ pub struct AssignOutputs {
     pub placement: OutputPlacement,
     /// The `groups_revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
+    /// The scene `revision` the caller last saw, when it sent one
+    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
+    pub expected_scene_revision: Option<u64>,
 }
 
 /// Drop one output out of whatever zone holds it.
@@ -100,6 +113,9 @@ pub struct UnassignOutput {
     pub output_id: String,
     /// The `groups_revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
+    /// The scene `revision` the caller last saw, when it sent one
+    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
+    pub expected_scene_revision: Option<u64>,
 }
 
 /// Reposition a zone's outputs without changing which it owns.
@@ -113,6 +129,9 @@ pub struct SetZoneLayout {
     pub layout: SpatialLayout,
     /// The `groups_revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
+    /// The scene `revision` the caller last saw, when it sent one
+    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
+    pub expected_scene_revision: Option<u64>,
 }
 
 /// Choose what a scene does with outputs no zone claims.
@@ -124,6 +143,9 @@ pub struct SetUnassignedBehavior {
     pub behavior: UnassignedBehavior,
     /// The `groups_revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
+    /// The scene `revision` the caller last saw, when it sent one
+    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
+    pub expected_scene_revision: Option<u64>,
 }
 
 // ── Outcomes ─────────────────────────────────────────────────────────────
@@ -200,6 +222,7 @@ pub async fn create_zone(
     }
 
     let mut mutation = state.begin_scene_mutation().await;
+    check_scene_revision(&mutation, command.expected_scene_revision)?;
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
 
     let zone_id = mutation
@@ -244,6 +267,7 @@ pub async fn update_zone(
     let structural = command.patch.make_primary == Some(true);
     let mut mutation = state.begin_scene_mutation().await;
     if structural {
+        check_scene_revision(&mutation, command.expected_scene_revision)?;
         check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
     }
 
@@ -282,6 +306,7 @@ pub async fn delete_zone(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    check_scene_revision(&mutation, command.expected_scene_revision)?;
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
 
     let zone = zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
@@ -320,6 +345,7 @@ pub async fn assign_outputs(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    check_scene_revision(&mutation, command.expected_scene_revision)?;
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
     let previous_zones = scene_zones(&mutation, command.scene_id)?;
     zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
@@ -354,6 +380,7 @@ pub async fn unassign_output(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    check_scene_revision(&mutation, command.expected_scene_revision)?;
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
     let previous_zones = scene_zones(&mutation, command.scene_id)?;
     let target = zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
@@ -404,6 +431,7 @@ pub async fn set_zone_layout(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    check_scene_revision(&mutation, command.expected_scene_revision)?;
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
 
     let zone = mutation
@@ -439,6 +467,7 @@ pub async fn set_unassigned_behavior(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    check_scene_revision(&mutation, command.expected_scene_revision)?;
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
 
     let behavior = mutation
@@ -483,7 +512,7 @@ async fn finish_partition_mutation(
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
-    update_zone_auto_exclusions(state, scene_id, previous_zones, &zones).await;
+    reconcile_zone_auto_exclusions(state, scene_id, previous_zones, &zones).await;
 
     Ok(ZonesWritten {
         zones,
@@ -636,7 +665,7 @@ fn zone_error(
 /// A zone whose output set the user edited by hand stops accepting
 /// automatic layout sync for the outputs they removed, so the exclusion
 /// set travels with the edit rather than with the endpoint that made it.
-async fn update_zone_auto_exclusions(
+pub async fn reconcile_zone_auto_exclusions(
     state: &AppState,
     scene_id: SceneId,
     previous_zones: &[Zone],

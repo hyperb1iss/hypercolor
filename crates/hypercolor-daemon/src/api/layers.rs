@@ -101,6 +101,7 @@ pub async fn create_layer(
         layer,
         query.index,
         expected_version,
+        None,
         MutationContext::api(),
     )
     .await
@@ -203,6 +204,7 @@ pub async fn update_layer(
         layer_id,
         body.into_layer(),
         expected_version,
+        None,
         MutationContext::api(),
     )
     .await
@@ -244,6 +246,7 @@ pub async fn delete_layer(
         zone_id,
         layer_id,
         expected_version,
+        None,
         MutationContext::api(),
     )
     .await
@@ -283,6 +286,7 @@ pub async fn reorder_layers(
         zone_id,
         body.layer_ids,
         expected_version,
+        None,
         MutationContext::api(),
     )
     .await
@@ -367,6 +371,7 @@ pub async fn patch_layer_controls(
         layer_id,
         normalized,
         expected_version,
+        None,
         MutationContext::api(),
     )
     .await

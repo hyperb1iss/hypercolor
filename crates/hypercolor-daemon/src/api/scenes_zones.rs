@@ -72,6 +72,7 @@ pub async fn create_zone(
             color: body.color,
             fallback_canvas,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -126,6 +127,7 @@ pub async fn update_zone(
             zone_id,
             patch: zone_update_patch(body),
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -158,6 +160,7 @@ pub async fn delete_zone(
             scene_id,
             zone_id,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -222,6 +225,7 @@ pub async fn assign_devices(
             assignments: body.device_zones,
             placement,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -255,6 +259,7 @@ pub async fn unassign_device(
             zone_id,
             output_id: device_zone_id,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -296,6 +301,7 @@ pub async fn update_zone_layout(
             zone_id,
             layout,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -329,6 +335,7 @@ pub async fn update_unassigned_behavior(
             scene_id,
             behavior: body.unassigned_behavior,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )

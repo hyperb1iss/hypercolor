@@ -41,6 +41,7 @@ pub mod effect;
 pub mod layer;
 pub mod output;
 pub mod scene;
+pub mod scene_tree;
 pub mod zone;
 
 use axum::Json;

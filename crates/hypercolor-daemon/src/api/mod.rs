@@ -26,6 +26,7 @@ mod macos_screen_parity;
 pub mod openapi;
 pub mod output;
 pub mod profiles;
+pub mod scene;
 pub mod scenes;
 pub mod scenes_zones;
 pub mod security;
@@ -1315,6 +1316,51 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/effects/{id}/controls",
             axum::routing::patch(effects::update_effect_controls),
+        )
+        // ── The live scene tree (Spec 78 §1) ─────────────────────────
+        .route(
+            "/scene",
+            axum::routing::get(scene::get_scene).patch(scene::patch_scene),
+        )
+        .route(
+            "/scene/deactivate",
+            axum::routing::post(scene::deactivate_scene),
+        )
+        .route("/scene/clear", axum::routing::post(scene::clear_scene))
+        .route("/scene/zones", axum::routing::post(scene::create_zone))
+        .route(
+            "/scene/zones/{zone}",
+            axum::routing::get(scene::get_zone)
+                .patch(scene::patch_zone)
+                .delete(scene::delete_zone),
+        )
+        .route(
+            "/scene/zones/{zone}/layout",
+            axum::routing::put(scene::put_zone_layout),
+        )
+        .route(
+            "/scene/zones/{zone}/members",
+            axum::routing::post(scene::assign_members),
+        )
+        .route(
+            "/scene/zones/{zone}/members/{member}",
+            axum::routing::delete(scene::unassign_member),
+        )
+        .route(
+            "/scene/zones/{zone}/layers",
+            axum::routing::get(scene::list_layers).post(scene::create_layer),
+        )
+        .route(
+            "/scene/zones/{zone}/layers/order",
+            axum::routing::patch(scene::reorder_layers),
+        )
+        .route(
+            "/scene/zones/{zone}/layers/{layer}",
+            axum::routing::put(scene::replace_layer).delete(scene::delete_layer),
+        )
+        .route(
+            "/scene/zones/{zone}/layers/{layer}/controls",
+            axum::routing::patch(scene::patch_layer_controls),
         )
         // ── Scenes ───────────────────────────────────────────────────
         .route(
