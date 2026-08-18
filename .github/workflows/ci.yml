@@ -508,6 +508,13 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Seed native app frontend fixture
+        if: matrix.suite == 'native'
+        run: |
+          mkdir -p crates/hypercolor-ui/dist
+          printf '<!doctype html><title>Hypercolor test fixture</title>' \
+            > crates/hypercolor-ui/dist/index.html
+
       - name: Run shared crate tests
         if: matrix.suite == 'shared'
         run: >-
