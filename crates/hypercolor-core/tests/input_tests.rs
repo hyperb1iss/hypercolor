@@ -2574,14 +2574,16 @@ fn wayland_screen_capture_input_stays_idle_without_capture_demand() {
 fn wayland_picker_action_is_detached_and_names_the_platform_backend() {
     let persisted = Arc::new(Mutex::new(Vec::new()));
     let sink_log = Arc::clone(&persisted);
-    let mut config = CaptureConfig::default();
-    config.restore_token = Some("persisted-selection".to_owned());
+    let config = CaptureConfig {
+        restore_token: Some("persisted-selection".to_owned()),
+        ..CaptureConfig::default()
+    };
     let source =
         WaylandScreenCaptureInput::new(config).with_restore_token_sink(Arc::new(move |token| {
             sink_log
                 .lock()
                 .expect("restore-token sink lock")
-                .push(token)
+                .push(token);
         }));
     let mut manager = InputManager::new();
     manager.add_source(Box::new(source));
