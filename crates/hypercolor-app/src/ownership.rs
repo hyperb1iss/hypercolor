@@ -1,10 +1,13 @@
 //! Local-only macOS daemon ownership coordination.
 
+#[cfg(target_os = "macos")]
 use hypercolor_macos_owner::{
-    MACOS_APP_PRODUCT_NAME, MacosDaemonOwner, MacosHandoverPhase, MacosOwnerCoordinatorOutcome,
-    MacosOwnerExecutionError, MacosOwnerRemedy,
+    MACOS_APP_PRODUCT_NAME, MacosHandoverPhase, MacosOwnerExecutionError,
 };
-use tauri::{AppHandle, Runtime, State};
+use hypercolor_macos_owner::{MacosDaemonOwner, MacosOwnerCoordinatorOutcome, MacosOwnerRemedy};
+#[cfg(target_os = "macos")]
+use tauri::Runtime;
+use tauri::{AppHandle, State};
 
 use crate::supervisor::{MacosDaemonOwnerOfflineStatus, SupervisorState};
 

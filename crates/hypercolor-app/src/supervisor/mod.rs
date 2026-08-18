@@ -11,13 +11,13 @@ use std::{
 use anyhow::{Context, Result};
 use hypercolor_core::config::paths::data_dir;
 use hypercolor_macos_owner::{
-    MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy, MacosOwnerStore,
-    MacosProtectedControlCredential, MacosServerSessionId,
+    MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy, MacosProtectedControlCredential,
+    MacosServerSessionId,
 };
 #[cfg(target_os = "macos")]
 use hypercolor_macos_owner::{
     MacosDaemonSessionAttestation, MacosOwnerExecutionError, MacosOwnerIncarnation,
-    try_acquire_macos_daemon_guard,
+    MacosOwnerStore, try_acquire_macos_daemon_guard,
 };
 use hypercolor_types::event::MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -243,6 +243,7 @@ impl SupervisorState {
             .unwrap_or_else(PoisonError::into_inner) = status;
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn clear_macos_owner_offline_if(
         &self,
         status: MacosDaemonOwnerOfflineStatus,
@@ -692,25 +693,26 @@ pub fn build_daemon_command(
     effects_dir: Option<&Path>,
 ) -> DaemonCommand {
     let mut args = vec!["--bind".to_owned(), bind.to_owned()];
-    let mut environment = Vec::new();
-
-    // Arms the daemon's parent-death watch (the daemon's
-    // SUPERVISED_PARENT_PID_ENV): if this app dies without reaping its
-    // child, the daemon observes the reparent and shuts itself down
-    // instead of orphaning on the port and the ownership guard.
-    #[cfg(unix)]
-    environment.push((
-        "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
-        std::process::id().to_string(),
-    ));
+    let environment = vec![
+        // Arms the daemon's parent-death watch (the daemon's
+        // SUPERVISED_PARENT_PID_ENV): if this app dies without reaping its
+        // child, the daemon observes the reparent and shuts itself down
+        // instead of orphaning on the port and the ownership guard.
+        #[cfg(unix)]
+        (
+            "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
+            std::process::id().to_string(),
+        ),
+        #[cfg(target_os = "macos")]
+        (
+            "HYPERCOLOR_MACOS_OWNER".to_owned(),
+            "app-sidecar".to_owned(),
+        ),
+    ];
 
     #[cfg(target_os = "macos")]
     {
         args.extend(["--macos-owner".to_owned(), "app-sidecar".to_owned()]);
-        environment.push((
-            "HYPERCOLOR_MACOS_OWNER".to_owned(),
-            "app-sidecar".to_owned(),
-        ));
     }
 
     if let Some(ui_dir) = ui_dir {
