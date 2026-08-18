@@ -21,6 +21,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::Router;
+use axum::extract::ws::Message;
+use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_leptos_ext::ws::TimedInputEventPayload;
@@ -273,6 +275,27 @@ async fn recv_until_type(stream: &mut TcpStream, expected: &str) -> Result<Value
         }
     }
     bail!("did not receive a {expected} message within 16 attempts");
+}
+
+async fn recv_trusted_until_type(
+    socket: &mut TrustedLocalWebSocket,
+    expected: &str,
+) -> Result<Value> {
+    for _ in 0..16 {
+        let message = timeout(Duration::from_secs(2), socket.recv())
+            .await
+            .context("timed out waiting for trusted JSON server message")?
+            .context("trusted WebSocket closed before the expected message")?;
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let message: Value = serde_json::from_str(text.as_str())
+            .with_context(|| format!("parse trusted JSON: {text}"))?;
+        if message.get("type").and_then(Value::as_str) == Some(expected) {
+            return Ok(message);
+        }
+    }
+    bail!("did not receive a trusted {expected} message within 16 attempts");
 }
 
 // ── Scenario 5: Hello handshake success path ─────────────────────────────
@@ -757,17 +780,23 @@ async fn a_keyed_topic_refuses_a_subscribe_without_its_key() {
 #[tokio::test]
 async fn input_event_subscription_receives_canonical_timed_payload() {
     let state = test_app_state();
-    let addr = spawn_test_daemon_with_state(Arc::clone(&state)).await;
-    let mut stream = ws_connect(addr).await.expect("ws handshake");
-    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+    let api = TrustedLocalApi::new(Arc::clone(&state));
+    let mut socket = api
+        .open_websocket("/api/v1/ws")
+        .expect("trusted websocket should open");
+    let _ = recv_trusted_until_type(&mut socket, "hello")
+        .await
+        .expect("hello");
 
-    ws_send_text(
-        &mut stream,
-        &json!({ "type": "subscribe", "topics": [{ "topic": "input_events" }] }).to_string(),
-    )
-    .await
-    .expect("send input event subscription");
-    let ack = recv_until_type(&mut stream, "subscribed")
+    socket
+        .send(Message::Text(
+            json!({ "type": "subscribe", "topics": [{ "topic": "input_events" }] })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send input event subscription");
+    let ack = recv_trusted_until_type(&mut socket, "subscribed")
         .await
         .expect("input event subscribed ack");
     assert!(subscribed_topics(&ack).contains(&"input_events".to_owned()));
@@ -788,7 +817,7 @@ async fn input_event_subscription_receives_canonical_timed_payload() {
             },
         });
 
-    let message = recv_until_type(&mut stream, "event")
+    let message = recv_trusted_until_type(&mut socket, "event")
         .await
         .expect("timed input event relay");
     assert_eq!(message["event"], "input_event_received");
@@ -801,6 +830,8 @@ async fn input_event_subscription_receives_canonical_timed_payload() {
     assert_eq!(decoded.event["source_id"], "host:integration-keyboard");
     assert_eq!(decoded.event["key"], "space");
     assert_eq!(decoded.event["state"], "repeated");
+
+    socket.shutdown().await;
 }
 
 // ── Scenario 3: Subscribe with an unsupported channel ────────────────────
