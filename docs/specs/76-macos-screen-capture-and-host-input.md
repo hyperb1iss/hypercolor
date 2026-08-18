@@ -1140,9 +1140,11 @@ passes the native GPU path and HDR acceptance where supported. Missing native
 capability never lowers capture resolution or FPS and never activates the
 oracle. It publishes typed native-unavailable state and no screen frame.
 
-The oracle and GPU output use the same golden fixture suite. A native path that
-cannot match the canonical transform within the format's tolerance does not
-become active.
+The oracle and GPU output use the same golden fixture suite. Packed and float
+RGB formats match exactly. YUV formats may differ by at most one 8-bit output
+code value per channel because Metal device families can contract floating-point
+operations differently at a UNORM rounding boundary. A native path that cannot
+match the canonical transform within that tolerance does not become active.
 
 ## 11. IOSurface and Metal path
 

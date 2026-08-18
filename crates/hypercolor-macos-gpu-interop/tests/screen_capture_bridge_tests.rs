@@ -341,7 +341,21 @@ fn every_native_format_matches_the_scalar_source_oracle() -> Result<(), String> 
             extent.width,
             extent.height,
         )?;
-        assert_eq!(actual, expected, "{format:?} scalar parity");
+        let tolerance = match format {
+            MacosCapturePixelFormat::Yuv420VideoRange
+            | MacosCapturePixelFormat::Yuv420FullRange
+            | MacosCapturePixelFormat::Yuv44410BiPlanar => 1,
+            MacosCapturePixelFormat::Bgra8
+            | MacosCapturePixelFormat::Argb2101010
+            | MacosCapturePixelFormat::Rgba16Float => 0,
+        };
+        assert_eq!(actual.len(), expected.len(), "{format:?} output length");
+        for (byte_index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= tolerance,
+                "{format:?} scalar parity at byte {byte_index}: actual {actual}, expected {expected}, tolerance {tolerance}"
+            );
+        }
     }
     Ok(())
 }
