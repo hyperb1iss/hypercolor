@@ -510,6 +510,30 @@ impl SceneMutation {
         Ok(zone)
     }
 
+    /// Merge control overrides and drop named input bindings in one
+    /// mutation (Spec 78 §1.6).
+    pub fn patch_layer_controls_and_bindings(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layer_id: SceneLayerId,
+        updates: HashMap<String, ControlValue>,
+        clear_bindings: &[String],
+        expected_version: Option<u64>,
+    ) -> Result<Zone, LayerMutationError> {
+        let (zone, _version) = self.candidate.patch_scene_layer_controls_and_bindings(
+            scene_id,
+            zone_id,
+            layer_id,
+            updates,
+            clear_bindings,
+            expected_version,
+        )?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
     // ── Display zones ────────────────────────────────────────────────
 
     /// Assign a face to a display in the active scene, creating the

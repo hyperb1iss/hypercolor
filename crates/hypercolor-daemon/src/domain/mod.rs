@@ -160,6 +160,14 @@ pub enum DomainError {
         /// Caller-actionable structured context.
         details: Option<serde_json::Value>,
     },
+    /// A control write names keys an input binding already drives
+    /// (Spec 78 §1.6). Recoverable in the same shape: the caller either
+    /// drops the key or clears its binding in the same request.
+    #[error("controls are driven by an input binding: {}", keys.join(", "))]
+    ControlBound {
+        /// The bound keys the request tried to write, sorted.
+        keys: Vec<String>,
+    },
     /// Credentials are missing or unrecognized.
     #[error("{message}")]
     Unauthorized {
@@ -334,6 +342,7 @@ impl DomainError {
             Self::Validation { .. } => "validation_error",
             Self::Malformed { .. } => "malformed_request",
             Self::Conflict { .. } => "conflict",
+            Self::ControlBound { .. } => "control_bound",
             Self::Unauthorized { .. } => "unauthorized",
             Self::Forbidden { .. } => "forbidden",
             Self::PayloadTooLarge { .. } => "payload_too_large",
@@ -352,7 +361,7 @@ impl DomainError {
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Malformed { .. } => StatusCode::BAD_REQUEST,
-            Self::Conflict { .. } => StatusCode::CONFLICT,
+            Self::Conflict { .. } | Self::ControlBound { .. } => StatusCode::CONFLICT,
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
@@ -368,6 +377,7 @@ impl DomainError {
         let details = match self {
             Self::Validation { field, details, .. } => merge_field(details.clone(), field.as_ref()),
             Self::Conflict { details, .. } | Self::Forbidden { details, .. } => details.clone(),
+            Self::ControlBound { keys } => Some(json!({ "bound": keys })),
             Self::PreconditionFailed {
                 expected, current, ..
             } => Some(json!({ "expected": expected, "current": current })),
@@ -457,6 +467,7 @@ impl From<DomainError> for ToolError {
                 param: "request".to_owned(),
                 reason: message,
             },
+            error @ DomainError::ControlBound { .. } => ToolError::Conflict(error.to_string()),
             DomainError::Conflict { message, .. }
             | DomainError::Unauthorized { message }
             | DomainError::Forbidden { message, .. }

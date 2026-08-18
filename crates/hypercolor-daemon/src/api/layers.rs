@@ -544,6 +544,9 @@ fn layer_mutation_error(error: LayerMutationError, target: LayerTarget<'_>) -> R
             DomainError::validation("layer_ids must be an exact permutation of current layer IDs")
                 .into_response()
         }
+        LayerMutationError::ControlBound { keys } => {
+            DomainError::ControlBound { keys }.into_response()
+        }
     }
 }
 
