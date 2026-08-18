@@ -1029,8 +1029,10 @@ class HypercolorEventStream:
     @staticmethod
     def _parse_led_frame(payload: bytes) -> FrameData:
         frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
-        zone_count = payload[9]
-        offset = 10
+        # The zone count is a u16: a u8 silently dropped every zone past
+        # 255 on a large rig (spec 78 section 7.1).
+        zone_count = struct.unpack_from("<H", payload, 9)[0]
+        offset = 11
         zones: list[FrameZoneData] = []
 
         for _ in range(zone_count):

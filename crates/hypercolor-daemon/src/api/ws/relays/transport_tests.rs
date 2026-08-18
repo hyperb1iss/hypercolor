@@ -502,8 +502,11 @@ fn router_allocation_failure_is_reported_without_panicking() {
 }
 
 #[test]
-fn cursor_rejects_more_than_advertised_chunk_count() {
-    let capability = PreviewTransportCapability::default();
+fn cursor_rejects_more_than_the_v1_advertised_chunk_count() {
+    // A fixed chunk ceiling is a v1 property: v2 bounds a publication by
+    // its encoded byte budget instead, so this pins the negotiated-down
+    // transport explicitly rather than whichever one is the default.
+    let capability = PreviewTransportCapability::default().legacy_v1();
     let publication = PreviewPublication {
         metadata: PreviewPublicationMetadata {
             stream: PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
@@ -525,7 +528,13 @@ fn cursor_rejects_more_than_advertised_chunk_count() {
     };
 
     assert!(matches!(
-        PreviewSendCursor::new(publication, PREVIEW_CHUNK_FIXED_HEADER_LEN + 1),
+        PreviewSendCursor::with_capability(
+            publication,
+            PreviewTransportCapability {
+                max_message_bytes: PREVIEW_CHUNK_FIXED_HEADER_LEN + 1,
+                ..capability
+            }
+        ),
         Err(PreviewOutboundError::ChunkEncoding(_))
     ));
 }
@@ -697,11 +706,13 @@ fn hello_capabilities_advertise_shared_preview_transport_limits() {
         Some(v2)
     );
 
+    // A fresh channel starts on the advertised default, which is v2; a
+    // v1 client negotiates back down on subscribe (Spec 78 §7.1).
     let (sender, _receiver) = super::preview_outbound_channel();
     let state = sender
         .shared
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(state.capability, v1);
+    assert_eq!(state.capability, v2);
 }

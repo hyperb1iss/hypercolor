@@ -12,9 +12,6 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 
 use anyhow::{Context, Result};
 use axum::body::Bytes;
-use axum::extract::ws::Utf8Bytes;
-use serde::Serialize;
-use serde::ser::SerializeSeq;
 use tracing::{trace, warn};
 
 #[cfg(test)]
@@ -30,7 +27,7 @@ use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{SceneId, ZoneId};
 
-use hypercolor_leptos_ext::ws::registry::{CanvasFormat, FrameFormat};
+use hypercolor_leptos_ext::ws::registry::CanvasFormat;
 
 use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_payload_scaled_stateless,
@@ -281,7 +278,6 @@ pub(super) struct FramePayloadCacheKey {
     pub(super) frame_number: u32,
     pub(super) timestamp_ms: u32,
     pub(super) selection_hash: u64,
-    pub(super) format: FrameFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -298,11 +294,10 @@ pub(super) struct SpectrumPayloadCacheKey {
     pub(super) bpm_bits: u32,
 }
 
-#[derive(Clone)]
-pub(super) enum FrameRelayMessage {
-    Json(Utf8Bytes),
-    Binary(Bytes),
-}
+/// One cached frame payload. Binary only: the JSON encoding had zero
+/// consumers and opted its subscriber out of backpressure notices
+/// (Spec 78 §7.1).
+pub(super) type FrameRelayMessage = Bytes;
 
 pub(super) fn cached_command_router(state: &Arc<AppState>) -> axum::Router {
     let key = Arc::as_ptr(state).addr();
@@ -328,7 +323,6 @@ pub(super) fn cached_frame_payload(
         frame_number: frame.frame_number,
         timestamp_ms: frame.timestamp_ms,
         selection_hash: config.selection_hash,
-        format: config.config.format,
     };
 
     if let Some(cached) = frame_payload_cache_get(key) {
@@ -336,14 +330,7 @@ pub(super) fn cached_frame_payload(
         return cached;
     }
 
-    let payload = match config.config.format {
-        FrameFormat::Binary => FrameRelayMessage::Binary(Bytes::from(
-            encode_frame_binary_selected(frame, &config.selection),
-        )),
-        FrameFormat::Json => {
-            FrameRelayMessage::Json(encode_frame_json_selected(frame, &config.selection))
-        }
-    };
+    let payload = Bytes::from(encode_frame_binary_selected(frame, &config.selection));
     WS_FRAME_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     frame_payload_cache_put(key, payload.clone());
     payload
@@ -366,8 +353,7 @@ pub fn encode_frame_binary_selected(
 }
 
 fn encode_frame_binary_all(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
-    let max_zone_count = usize::from(u8::MAX);
-    let included_zones = frame.zones.len().min(max_zone_count);
+    let included_zones = frame.zones.len().min(MAX_FRAME_ZONE_COUNT);
     let payload_bytes = frame
         .zones
         .iter()
@@ -375,12 +361,12 @@ fn encode_frame_binary_all(frame: &hypercolor_types::event::FrameData) -> Vec<u8
         .map(frame_zone_binary_len)
         .sum::<usize>();
 
-    let mut out = vec![0; 10_usize.saturating_add(payload_bytes)];
+    let mut out = vec![0; FRAME_HEADER_LEN.saturating_add(payload_bytes)];
     out[0] = 0x01;
     out[1..5].copy_from_slice(&frame.frame_number.to_le_bytes());
     out[5..9].copy_from_slice(&frame.timestamp_ms.to_le_bytes());
-    out[9] = u8::try_from(included_zones).unwrap_or(u8::MAX);
-    let mut offset = 10;
+    out[9..11].copy_from_slice(&frame_zone_count(included_zones).to_le_bytes());
+    let mut offset = FRAME_HEADER_LEN;
 
     for zone in frame.zones.iter().take(included_zones) {
         write_frame_zone_binary(&mut out, &mut offset, zone);
@@ -393,32 +379,44 @@ fn encode_filtered_frame_binary(
     frame: &hypercolor_types::event::FrameData,
     selection: &FrameZoneSelection,
 ) -> Vec<u8> {
-    let max_zone_count = usize::from(u8::MAX);
     let mut encoded_zone_count = 0_usize;
     let payload_bytes = frame
         .zones
         .iter()
         .filter(|zone| selection.includes(zone.zone_id.as_str()))
-        .take(max_zone_count)
+        .take(MAX_FRAME_ZONE_COUNT)
         .map(frame_zone_binary_len)
         .sum::<usize>();
-    let mut out = vec![0; 10_usize.saturating_add(payload_bytes)];
+    let mut out = vec![0; FRAME_HEADER_LEN.saturating_add(payload_bytes)];
     out[0] = 0x01;
     out[1..5].copy_from_slice(&frame.frame_number.to_le_bytes());
     out[5..9].copy_from_slice(&frame.timestamp_ms.to_le_bytes());
-    let mut offset = 10;
+    let mut offset = FRAME_HEADER_LEN;
 
     for zone in &frame.zones {
-        if encoded_zone_count >= max_zone_count || !selection.includes(zone.zone_id.as_str()) {
+        if encoded_zone_count >= MAX_FRAME_ZONE_COUNT || !selection.includes(zone.zone_id.as_str())
+        {
             continue;
         }
 
         write_frame_zone_binary(&mut out, &mut offset, zone);
         encoded_zone_count = encoded_zone_count.saturating_add(1);
     }
-    out[9] = u8::try_from(encoded_zone_count).unwrap_or(u8::MAX);
+    out[9..11].copy_from_slice(&frame_zone_count(encoded_zone_count).to_le_bytes());
 
     out
+}
+
+/// Tag `0x01`'s header: tag, frame number, timestamp, and a `u16` zone
+/// count. The count was a `u8`, which silently dropped every zone past
+/// 255 on a large rig (Spec 78 §7.1).
+const FRAME_HEADER_LEN: usize = 11;
+
+/// The most zones one frame can carry, bounded by the count field.
+const MAX_FRAME_ZONE_COUNT: usize = u16::MAX as usize;
+
+fn frame_zone_count(count: usize) -> u16 {
+    u16::try_from(count).unwrap_or(u16::MAX)
 }
 
 fn frame_zone_binary_len(zone: &hypercolor_types::event::ZoneColors) -> usize {
@@ -451,62 +449,6 @@ fn write_frame_zone_binary(
         out[*offset..*offset + 3].copy_from_slice(color);
         *offset += 3;
     }
-}
-
-#[derive(Serialize)]
-struct BorrowedFrameZone<'a> {
-    zone_id: &'a str,
-    colors: &'a [[u8; 3]],
-}
-
-struct SelectedFrameZones<'a> {
-    zones: &'a [hypercolor_types::event::ZoneColors],
-    selection: &'a FrameZoneSelection,
-}
-
-impl Serialize for SelectedFrameZones<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut seq = serializer.serialize_seq(None)?;
-        for zone in self.zones {
-            if !self.selection.includes(zone.zone_id.as_str()) {
-                continue;
-            }
-            seq.serialize_element(&BorrowedFrameZone {
-                zone_id: zone.zone_id.as_str(),
-                colors: zone.colors.as_slice(),
-            })?;
-        }
-        seq.end()
-    }
-}
-
-#[derive(Serialize)]
-struct BorrowedFrameMessage<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    frame_number: u32,
-    timestamp_ms: u32,
-    zones: SelectedFrameZones<'a>,
-}
-
-fn encode_frame_json_selected(
-    frame: &hypercolor_types::event::FrameData,
-    selection: &FrameZoneSelection,
-) -> Utf8Bytes {
-    serde_json::to_string(&BorrowedFrameMessage {
-        kind: "frame",
-        frame_number: frame.frame_number,
-        timestamp_ms: frame.timestamp_ms,
-        zones: SelectedFrameZones {
-            zones: &frame.zones,
-            selection,
-        },
-    })
-    .unwrap_or_default()
-    .into()
 }
 
 pub fn encode_spectrum_binary(

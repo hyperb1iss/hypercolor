@@ -122,16 +122,6 @@ fn validate_identity(value: &str, max_bytes: usize, subject: &str) -> Result<(),
     Ok(())
 }
 
-/// Frame delivery encoding for the `frames` topic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FrameFormat {
-    /// Packed binary LED frames.
-    Binary,
-    /// JSON frame payloads.
-    Json,
-}
-
 /// Pixel encoding for the passive preview canvas topics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -150,8 +140,6 @@ pub enum CanvasFormat {
 pub struct FramesConfig {
     /// Delivery cadence in frames per second.
     pub fps: u32,
-    /// Frame encoding.
-    pub format: FrameFormat,
     /// Zone ids to deliver; `["all"]` selects every zone.
     pub zones: Vec<String>,
 }
@@ -160,7 +148,6 @@ impl Default for FramesConfig {
     fn default() -> Self {
         Self {
             fps: 30,
-            format: FrameFormat::Binary,
             zones: vec!["all".to_owned()],
         }
     }
@@ -173,9 +160,6 @@ pub struct FramesConfigPatch {
     /// Replacement cadence.
     #[serde(default)]
     pub fps: Option<u32>,
-    /// Replacement encoding.
-    #[serde(default)]
-    pub format: Option<FrameFormat>,
     /// Replacement zone selection.
     #[serde(default)]
     pub zones: Option<Vec<String>>,
@@ -186,9 +170,6 @@ impl TopicPatch<FramesConfig> for FramesConfigPatch {
         if let Some(fps) = self.fps {
             validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
             config.fps = fps;
-        }
-        if let Some(format) = self.format {
-            config.format = format;
         }
         if let Some(zones) = self.zones.clone() {
             if zones.is_empty() {
@@ -242,6 +223,46 @@ impl TopicPatch<SpectrumConfig> for SpectrumConfigPatch {
                 ));
             }
             config.bins = bins;
+        }
+        Ok(())
+    }
+}
+
+/// Per-subscription configuration for the `screen_zones` topic.
+///
+/// The topic used to be configless and was paced by `screen_canvas`'s
+/// cadence — a value a `screen_zones`-only subscriber never set, on a
+/// topic it was not subscribed to (Spec 78 §7.1). It owns its own now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenZonesConfig {
+    /// Delivery cadence in frames per second.
+    pub fps: u32,
+}
+
+impl Default for ScreenZonesConfig {
+    fn default() -> Self {
+        // The cadence it effectively ran at while borrowing
+        // `screen_canvas`'s config. Owning the field changes who decides
+        // the rate, not the rate itself.
+        Self { fps: 15 }
+    }
+}
+
+/// Patch for [`ScreenZonesConfig`].
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenZonesConfigPatch {
+    /// Replacement cadence.
+    #[serde(default)]
+    pub fps: Option<u32>,
+}
+
+impl TopicPatch<ScreenZonesConfig> for ScreenZonesConfigPatch {
+    fn apply(&self, config: &mut ScreenZonesConfig) -> Result<(), PatchError> {
+        if let Some(fps) = self.fps {
+            validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
+            config.fps = fps;
         }
         Ok(())
     }
@@ -508,61 +529,76 @@ define_ws_topics! {
     topic Frames => "frames" {
         key: unkeyed, config: FramesConfig, patch: FramesConfigPatch,
         tags: [0x01], control: false,
+        backpressure: DropWithNotice,
     }
     topic Spectrum => "spectrum" {
         key: unkeyed, config: SpectrumConfig, patch: SpectrumConfigPatch,
         tags: [0x02], control: false,
+        backpressure: DropWithNotice,
     }
     topic Events => "events" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [], control: false,
+        backpressure: Lossless,
     }
     topic FrameEvents => "frame_events" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [], control: false,
+        backpressure: Lossless,
     }
     topic Canvas => "canvas" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
         tags: [0x03], control: false,
+        backpressure: LatestWins,
     }
     topic ScreenCanvas => "screen_canvas" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
         tags: [0x05], control: true,
+        backpressure: LatestWins,
     }
     topic ScreenZones => "screen_zones" {
-        key: unkeyed, config: (), patch: NoPatch,
+        key: unkeyed, config: ScreenZonesConfig, patch: ScreenZonesConfigPatch,
         tags: [0x09, 0x0e, 0x11], control: true,
+        backpressure: LatestWins,
     }
     topic WebViewportCanvas => "web_viewport_canvas" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
         tags: [0x06], control: false,
+        backpressure: LatestWins,
     }
     topic ZonePreview => "zone_preview" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
         tags: [0x08, 0x0c], control: false,
+        backpressure: LatestWins,
     }
     topic Metrics => "metrics" {
         key: unkeyed, config: MetricsConfig, patch: MetricsConfigPatch,
         tags: [], control: false,
+        backpressure: DropWithNotice,
     }
     topic DeviceMetrics => "device_metrics" {
         key: unkeyed, config: MetricsConfig, patch: MetricsConfigPatch,
         tags: [], control: false,
+        backpressure: DropWithNotice,
     }
     topic Sensors => "sensors" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [], control: false,
+        backpressure: DropWithNotice,
     }
     topic DisplayPreview => "display_preview" {
         key: DeviceKey, config: DisplayPreviewConfig, patch: DisplayPreviewConfigPatch,
         tags: [0x07, 0x12], control: false,
+        backpressure: LatestWins,
     }
     topic InteractivePreview => "interactive_preview" {
         key: PreviewKey, config: InteractivePreviewConfig, patch: InteractivePreviewConfigPatch,
         tags: [0x0a, 0x0d], control: true,
+        backpressure: LatestWins,
     }
     topic InputEvents => "input_events" {
         key: unkeyed, config: (), patch: NoPatch,
         tags: [], control: true,
+        backpressure: Lossless,
     }
 }

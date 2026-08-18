@@ -154,6 +154,8 @@ pub trait WsTopic {
     const OWNED_TAGS: &'static [u8];
     /// Whether subscribing requires the control tier.
     const REQUIRES_CONTROL: bool;
+    /// What happens to this topic's messages under a slow reader.
+    const BACKPRESSURE: BackpressureClass;
     /// Subscription key type; `()` for unkeyed.
     type Key: TopicKey;
     /// Per-subscription config; `()` for configless.
@@ -184,6 +186,38 @@ where
     Ok(candidate)
 }
 
+/// How a topic behaves when its subscriber cannot keep up.
+///
+/// Declared per topic rather than emerging from whichever send call a
+/// relay happened to reach for, so the manifest can state it and a
+/// client can plan for it (Spec 78 §7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackpressureClass {
+    /// Every message is delivered; a slow reader backpressures the
+    /// producer. Correct where each message is a distinct fact rather
+    /// than a newer version of one.
+    Lossless,
+    /// Only the newest value matters, so a slow reader skips whatever
+    /// it missed. Correct for frames and previews.
+    LatestWins,
+    /// A message that will not fit is dropped and the subscriber is
+    /// told, so it can reduce its own demand.
+    DropWithNotice,
+}
+
+impl BackpressureClass {
+    /// The wire spelling used in the protocol manifest.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lossless => "lossless",
+            Self::LatestWins => "latest_wins",
+            Self::DropWithNotice => "drop_with_notice",
+        }
+    }
+}
+
 /// Type-erased per-topic operations for wire-boundary dispatch — one
 /// table replaces the hand-unrolled per-channel match chains.
 pub struct TopicVTable {
@@ -193,6 +227,8 @@ pub struct TopicVTable {
     pub owned_tags: &'static [u8],
     /// Control-tier gate.
     pub requires_control: bool,
+    /// What happens to this topic's messages under a slow reader.
+    pub backpressure: BackpressureClass,
     /// Whether the topic takes a key.
     pub keyed: bool,
     /// Whether the topic takes config (false = configless).
@@ -274,7 +310,8 @@ macro_rules! define_ws_topics {
         reserved [ $( $reserved:literal ),* $(,)? ];
         $( topic $topic:ident => $name:literal {
             key: $key:tt, config: $config:ty, patch: $patch:ty,
-            tags: [ $( $tag:literal ),* ], control: $control:literal $(,)?
+            tags: [ $( $tag:literal ),* ], control: $control:literal,
+            backpressure: $backpressure:ident $(,)?
         } )+
     ) => {
         $(
@@ -286,6 +323,8 @@ macro_rules! define_ws_topics {
                 const NAME: &'static str = $name;
                 const OWNED_TAGS: &'static [u8] = &[ $( $tag ),* ];
                 const REQUIRES_CONTROL: bool = $control;
+                const BACKPRESSURE: $crate::ws::topic::BackpressureClass =
+                    $crate::ws::topic::BackpressureClass::$backpressure;
                 type Key = $crate::define_ws_topics!(@key_type $key);
                 type Config = $config;
                 type Patch = $patch;
@@ -341,6 +380,7 @@ macro_rules! define_ws_topics {
                                 name: $name,
                                 owned_tags: <$topic as $crate::ws::topic::WsTopic>::OWNED_TAGS,
                                 requires_control: <$topic as $crate::ws::topic::WsTopic>::REQUIRES_CONTROL,
+                                backpressure: <$topic as $crate::ws::topic::WsTopic>::BACKPRESSURE,
                                 keyed: $crate::define_ws_topics!(@keyed $key),
                                 // `()` serializes to null — configless by
                                 // construction. A config whose DEFAULT fails to

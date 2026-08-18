@@ -721,7 +721,7 @@ fn frames_golden(name: &'static str, selection: &FrameZoneSelection) -> Golden {
         seg(1, "tag (led frame)"),
         seg(4, "frame_number u32le"),
         seg(4, "timestamp_ms u32le"),
-        seg(1, "zone_count u8"),
+        seg(2, "zone_count u16le"),
     ];
     for (index, zone) in included.iter().enumerate() {
         segments.push(seg(2, &format!("zone[{index}] id length u16le")));

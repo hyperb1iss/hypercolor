@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::cache::{
-    FrameRelayMessage, WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
+    WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CLIENT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
     WS_WEB_VIEWPORT_CANVAS_HEADER, cached_display_preview_payload, cached_frame_payload,
@@ -77,7 +77,7 @@ pub(super) struct PreviewOutboundLimits {
 
 impl Default for PreviewOutboundLimits {
     fn default() -> Self {
-        let capability = PreviewTransportCapability::default().legacy_v1();
+        let capability = PreviewTransportCapability::default();
         Self {
             max_publication_bytes: capability.max_encoded_publication_bytes,
             max_connection_bytes: capability.max_connection_bytes,
@@ -431,7 +431,7 @@ pub(super) fn preview_outbound_channel_with_limits(
             cancellation_order: VecDeque::new(),
             next_publication_id: 1,
             limits,
-            capability: PreviewTransportCapability::default().legacy_v1(),
+            capability: PreviewTransportCapability::default(),
         }),
         notify: Notify::new(),
     });
@@ -886,7 +886,7 @@ impl PreviewSendCursor {
         publication: PreviewPublication,
         max_message_bytes: usize,
     ) -> Result<Self, PreviewOutboundError> {
-        let capability = PreviewTransportCapability::default().legacy_v1();
+        let capability = PreviewTransportCapability::default();
         if max_message_bytes > capability.max_message_bytes {
             return Err(PreviewOutboundError::ChunkEncoding(format!(
                 "message budget {max_message_bytes} exceeds advertised limit {}",
@@ -1535,15 +1535,8 @@ pub(super) async fn relay_frames(
         };
         let outbound = cached_frame_payload(&frame, frame_config);
 
-        match outbound {
-            FrameRelayMessage::Json(text) => {
-                let _ = try_enqueue_json(&json_tx, text, "frames");
-            }
-            FrameRelayMessage::Binary(bytes) => {
-                if binary_tx.try_send(bytes).is_err() {
-                    backpressure.record_drop(&json_tx, "frames", None, frame_config.config.fps);
-                }
-            }
+        if binary_tx.try_send(outbound).is_err() {
+            backpressure.record_drop(&json_tx, "frames", None, frame_config.config.fps);
         }
     }
 }
@@ -2455,6 +2448,7 @@ pub(super) async fn relay_metrics(
 ) {
     let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
     let mut active_interval_ms = None::<u32>;
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_interval_ms.is_none() {
@@ -2510,8 +2504,10 @@ pub(super) async fn relay_metrics(
         };
 
         let message = build_metrics_message(&state, bytes_per_sec).await;
-        if let Ok(text) = serde_json::to_string(&message) {
-            let _ = try_enqueue_json(&json_tx, text, "metrics");
+        if let Ok(text) = serde_json::to_string(&message)
+            && !try_enqueue_json(&json_tx, text, "metrics")
+        {
+            backpressure.record_drop(&json_tx, "metrics", None, cadence_fps(interval_ms));
         }
     }
 }
@@ -2523,6 +2519,7 @@ pub(super) async fn relay_device_metrics(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut active_interval_ms = None::<u32>;
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_interval_ms.is_none() {
@@ -2568,7 +2565,14 @@ pub(super) async fn relay_device_metrics(
 
         let message = build_device_metrics_message(&state);
         if let Ok(text) = serde_json::to_string(&message) {
-            let _ = try_enqueue_json(&json_tx, text, "device_metrics");
+            if !try_enqueue_json(&json_tx, text, "device_metrics") {
+                backpressure.record_drop(
+                    &json_tx,
+                    "device_metrics",
+                    None,
+                    cadence_fps(interval_ms),
+                );
+            }
         }
     }
 }
@@ -2580,6 +2584,7 @@ pub(super) async fn relay_sensors(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut sensor_rx = sensor_snapshot_receiver(&state).await;
+    let mut backpressure = BackpressureReporter::default();
     let mut sent_current_snapshot = false;
 
     loop {
@@ -2593,7 +2598,7 @@ pub(super) async fn relay_sensors(
         }
 
         let Some(rx) = sensor_rx.as_mut() else {
-            enqueue_sensor_snapshot(&json_tx, &SystemSnapshot::empty());
+            enqueue_sensor_snapshot(&json_tx, &mut backpressure, &SystemSnapshot::empty());
             sent_current_snapshot = true;
 
             if subscriptions.changed().await.is_err() {
@@ -2606,7 +2611,7 @@ pub(super) async fn relay_sensors(
 
         if !sent_current_snapshot {
             let snapshot = Arc::clone(&rx.borrow_and_update());
-            enqueue_sensor_snapshot(&json_tx, snapshot.as_ref());
+            enqueue_sensor_snapshot(&json_tx, &mut backpressure, snapshot.as_ref());
             sent_current_snapshot = true;
         }
 
@@ -2627,7 +2632,7 @@ pub(super) async fn relay_sensors(
 
                 if subscriptions.borrow().contains(TopicId::Sensors) {
                     let snapshot = Arc::clone(&rx.borrow_and_update());
-                    enqueue_sensor_snapshot(&json_tx, snapshot.as_ref());
+                    enqueue_sensor_snapshot(&json_tx, &mut backpressure, snapshot.as_ref());
                 }
             }
         }
@@ -3246,15 +3251,27 @@ async fn sensor_snapshot_receiver(
 
 fn enqueue_sensor_snapshot(
     json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
+    backpressure: &mut BackpressureReporter,
     snapshot: &SystemSnapshot,
 ) {
     let message = ServerMessage::Sensors {
         timestamp: format_iso8601_now(),
         data: snapshot.clone(),
     };
-    if let Ok(text) = serde_json::to_string(&message) {
-        let _ = try_enqueue_json(json_tx, text, "sensors");
+    if let Ok(text) = serde_json::to_string(&message)
+        && !try_enqueue_json(json_tx, text, "sensors")
+    {
+        backpressure.record_drop(json_tx, "sensors", None, 1);
     }
+}
+
+/// Project a millisecond cadence onto the frames-per-second the
+/// backpressure notice recommends halving.
+fn cadence_fps(interval_ms: u32) -> u32 {
+    if interval_ms == 0 {
+        return 1;
+    }
+    1000_u32.saturating_div(interval_ms).max(1)
 }
 
 #[derive(Debug, Clone, Copy, Default)]

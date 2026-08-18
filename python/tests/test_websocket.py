@@ -130,7 +130,7 @@ def test_parse_led_frame() -> None:
     payload = bytearray()
     payload.extend(b"\x01")
     payload.extend(struct.pack("<II", 7, 1234))
-    payload.extend(b"\x01")
+    payload.extend(struct.pack("<H", 1))
     payload.extend(struct.pack("<H", len(zone_id)))
     payload.extend(zone_id)
     payload.extend(struct.pack("<H", 2))
