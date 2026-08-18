@@ -115,8 +115,8 @@ pub struct WsContext {
     /// on connect, layers that failed before this session connected.
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
-    pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
-    pub clear_zone_layout_preview: Callback<(String, String)>,
+    pub send_zone_layout_preview: Callback<(String, SpatialLayout)>,
+    pub clear_zone_layout_preview: Callback<String>,
     pub open_interactive_preview: Callback<InteractivePreviewRequest>,
     pub close_interactive_preview: Callback<String>,
     /// Send addressed browser-preview input edges as one control-authorized

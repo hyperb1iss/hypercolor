@@ -1680,11 +1680,7 @@ impl App {
         } else if let Some(label) = multi_zone_label.as_deref() {
             label
         } else {
-            self.state
-                .daemon
-                .as_ref()
-                .and_then(|d| d.effect_name.as_deref())
-                .unwrap_or("—")
+            "—"
         };
 
         let fps = self.state.daemon.as_ref().map_or(0.0, |d| d.fps_actual);

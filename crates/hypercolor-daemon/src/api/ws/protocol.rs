@@ -483,7 +483,7 @@ pub(super) fn validate_passive_preview_shape(
 /// Hard transport ceiling for one complete WebSocket message or frame.
 pub(crate) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum decoded surface bytes admitted for one preview publication.
-pub(super) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
+pub(crate) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES;
 /// Maximum number of edges accepted in one browser-input batch.
 pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
@@ -521,13 +521,16 @@ pub(super) enum ClientMessage {
         body: Option<serde_json::Value>,
     },
     /// Transient per-zone layout preview for Studio drag interactions.
+    ///
+    /// Active-scene-only and zone-keyed: fine-grained mutation is
+    /// live-tree-only across every transport, so there is no scene to
+    /// select (Spec 78 §1.5).
     ZoneLayoutPreview {
-        scene_id: String,
         zone_id: String,
         layout: SpatialLayout,
     },
     /// Clear one transient per-zone layout preview.
-    ZoneLayoutPreviewClear { scene_id: String, zone_id: String },
+    ZoneLayoutPreviewClear { zone_id: String },
     /// Inject browser-preview input edges into one active preview.
     InputInject {
         #[serde(deserialize_with = "deserialize_interactive_preview_id")]
@@ -978,14 +981,18 @@ pub(super) enum ServerMessage {
     },
 }
 
+/// The handshake snapshot.
+///
+/// Deliberately says nothing about what is rendering: the live tree is
+/// multi-zone and multi-layer, so a single `effect` name could only
+/// ever describe one corner of it. Clients read `/scene` for content
+/// and follow the events channel for changes (Spec 78 §7.1).
 #[derive(Debug, Serialize)]
 pub(super) struct HelloState {
     pub(super) running: bool,
     pub(super) paused: bool,
     pub(super) brightness: u8,
     pub(super) fps: HelloFps,
-    pub(super) effect: Option<NameRef>,
-    pub(super) active_preset_id: Option<String>,
     pub(super) scene: Option<SceneRef>,
     pub(super) profile: Option<NameRef>,
     pub(super) layout: Option<NameRef>,
@@ -1435,6 +1442,12 @@ pub(super) struct MetricsWebsocket {
     pub(super) preview_queue_bytes: usize,
 }
 
+/// A WS command refusal, rendered with the same code vocabulary REST
+/// serves (Spec 78 §7.1).
+///
+/// The parallel WS-only code set is deleted: a client that already
+/// knows `malformed_request`, `validation_error`, and `forbidden` from
+/// the REST envelope reads a socket refusal without a second table.
 #[derive(Debug)]
 pub(super) struct WsProtocolError {
     pub(super) code: &'static str,
@@ -1445,7 +1458,7 @@ pub(super) struct WsProtocolError {
 impl WsProtocolError {
     pub(super) fn invalid_request(message: impl Into<String>) -> Self {
         Self {
-            code: "invalid_request",
+            code: "malformed_request",
             message: message.into(),
             details: None,
         }
@@ -1463,7 +1476,7 @@ impl WsProtocolError {
         let field = field.into();
         let reason = reason.into();
         Self {
-            code: "invalid_config",
+            code: "validation_error",
             message: format!("Invalid configuration for {field}: {reason}"),
             details: Some(json!({"field": field, "reason": reason})),
         }
@@ -1477,7 +1490,7 @@ impl WsProtocolError {
     ) -> Self {
         let field = field.into();
         Self {
-            code: "invalid_config",
+            code: "validation_error",
             message: format!("Invalid configuration for {field}: {reason}"),
             details: Some(json!({
                 "field": field,
@@ -1573,7 +1586,7 @@ pub(super) fn parse_selectors(
         .collect()
 }
 
-pub(super) fn ws_capabilities() -> Vec<String> {
+pub(crate) fn ws_capabilities() -> Vec<String> {
     let mut capabilities: Vec<String> = TopicId::ALL
         .iter()
         .map(|topic| topic.as_str().to_owned())

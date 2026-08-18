@@ -19,8 +19,8 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasFormat, FrameFormat, FramesConfig, InteractivePreviewConfig, InteractivePreviewTarget,
-    TopicId, TopicSet,
+    CanvasFormat, FramesConfig, InteractivePreviewConfig, InteractivePreviewTarget, TopicId,
+    TopicSet,
 };
 use hypercolor_leptos_ext::ws::topic::{TopicSelector, TopicSubscription};
 use hypercolor_leptos_ext::ws::{
@@ -44,7 +44,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SamplingMode;
 
 use super::cache::{
-    FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
+    WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
     WS_CANVAS_JPEG_BODY_CACHE_HIT_COUNT, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CANVAS_RAW_BODY_BUILD_COUNT,
     WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT, WS_DISPLAY_PREVIEW_HEADER,
@@ -175,7 +175,7 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
             serde_json::json!({"screen_canvas": {"fps": 0}}),
         )
         .expect_err("a zero cadence is refused before it can be stored");
-    assert_eq!(refused.code, "invalid_config");
+    assert_eq!(refused.code, "validation_error");
     leases
         .synchronize(&subscriptions)
         .expect("the live subscription still synchronizes");
@@ -2440,7 +2440,7 @@ fn parse_subscriptions_accepts_supported_topics() {
 fn parse_subscriptions_rejects_an_unknown_topic() {
     let error = parse_subscriptions(&[TopicSubscription::unkeyed("unknown")])
         .expect_err("unknown topic should fail");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 }
 
 #[test]
@@ -2459,7 +2459,7 @@ fn parse_subscriptions_carries_the_key_through_to_the_selection() {
 fn parse_subscriptions_refuses_a_keyless_keyed_topic() {
     let error = parse_subscriptions(&[TopicSubscription::unkeyed("display_preview")])
         .expect_err("display_preview needs a device");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
     assert!(error.message.contains("display_preview"));
 }
 
@@ -2473,7 +2473,7 @@ fn parse_subscriptions_refuses_two_entries_for_one_subscription() {
         TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"interval_ms": 300})),
     ])
     .expect_err("a repeated subscription is refused");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 
     // Two keys of one topic are two subscriptions, not a duplicate.
     parse_subscriptions(&[
@@ -2486,7 +2486,7 @@ fn parse_subscriptions_refuses_two_entries_for_one_subscription() {
 #[test]
 fn parse_selectors_requires_at_least_one_entry() {
     let error = parse_selectors(&[]).expect_err("an empty unsubscribe is refused");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 }
 
 #[test]
@@ -2618,11 +2618,9 @@ fn control_auth_allows_private_capture_subscriptions() {
 
 #[test]
 fn zone_layout_preview_client_messages_deserialize() {
-    let scene_id = SceneId::new().to_string();
     let zone_id = ZoneId::new().to_string();
     let preview: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "zone_layout_preview",
-        "scene_id": scene_id,
         "zone_id": zone_id,
         "layout": {
             "id": "zone-layout",
@@ -2641,11 +2639,9 @@ fn zone_layout_preview_client_messages_deserialize() {
 
     match preview {
         ClientMessage::ZoneLayoutPreview {
-            scene_id: parsed_scene_id,
             zone_id: parsed_zone_id,
             layout,
         } => {
-            assert_eq!(parsed_scene_id, scene_id);
             assert_eq!(parsed_zone_id, zone_id);
             assert_eq!(layout.id, "zone-layout");
         }
@@ -2654,19 +2650,30 @@ fn zone_layout_preview_client_messages_deserialize() {
 
     let clear: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "zone_layout_preview_clear",
-        "scene_id": scene_id,
         "zone_id": zone_id
     }))
     .expect("clear message should deserialize");
 
     match clear {
         ClientMessage::ZoneLayoutPreviewClear {
-            scene_id: parsed_scene_id,
             zone_id: parsed_zone_id,
-        } => {
-            assert_eq!(parsed_scene_id, scene_id);
-            assert_eq!(parsed_zone_id, zone_id);
-        }
+        } => assert_eq!(parsed_zone_id, zone_id),
+        _ => panic!("expected zone_layout_preview_clear variant"),
+    }
+
+    // A client that still sends a scene id gets it ignored rather than
+    // honored: previews apply to the live tree, so the daemon owns
+    // which scene that is (Spec 78 §1.5).
+    let with_scene: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "zone_layout_preview_clear",
+        "scene_id": SceneId::new().to_string(),
+        "zone_id": zone_id
+    }))
+    .expect("a stale scene id is ignored, not fatal");
+    match with_scene {
+        ClientMessage::ZoneLayoutPreviewClear {
+            zone_id: parsed_zone_id,
+        } => assert_eq!(parsed_zone_id, zone_id),
         _ => panic!("expected zone_layout_preview_clear variant"),
     }
 }
@@ -2689,7 +2696,7 @@ async fn zone_layout_preview_rejects_invalid_sampling_radii() {
 
         let error = validated_zone_layout_preview(scene, group.id, layout)
             .expect_err("invalid radii must be rejected before preview state changes");
-        assert_eq!(error.code, "invalid_request");
+        assert_eq!(error.code, "malformed_request");
         assert!(error.message.contains("radius_x"));
     }
 }
@@ -2703,14 +2710,16 @@ fn topic_config_apply_patch_supports_every_configurable_topic() {
                 "spectrum",
                 "canvas",
                 "screen_canvas",
+                "screen_zones",
                 "metrics",
                 "device_metrics",
             ],
             serde_json::json!({
-                "frames": {"fps": 30, "format": "binary"},
+                "frames": {"fps": 30},
                 "spectrum": {"fps": 20, "bins": 32},
                 "canvas": {"fps": 60, "format": "jpeg", "width": 320, "height": 0},
                 "screen_canvas": {"fps": 24, "format": "jpeg", "width": 480, "height": 270},
+                "screen_zones": {"fps": 12},
                 "metrics": {"interval_ms": 500},
                 "device_metrics": {"interval_ms": 250}
             }),
@@ -2718,6 +2727,10 @@ fn topic_config_apply_patch_supports_every_configurable_topic() {
         .expect("full channel config patch should be accepted");
 
     let json = state.config_by_topic();
+    assert_eq!(
+        json["screen_zones"]["fps"], 12,
+        "screen_zones paces itself instead of borrowing screen_canvas's cadence"
+    );
     assert_eq!(json["canvas"]["fps"], 60);
     assert_eq!(json["canvas"]["format"], "jpeg");
     assert_eq!(json["canvas"]["width"], 320);
@@ -2765,7 +2778,7 @@ fn topic_config_rejects_over_budget_shape_transactionally() {
         )
         .expect_err("over-budget shape is rejected");
 
-    assert_eq!(error.code, "invalid_config");
+    assert_eq!(error.code, "validation_error");
     // The valid stanza in the same request did not land either.
     let json = live.config_by_topic();
     assert_eq!(json["canvas"]["fps"], 15);
@@ -2791,7 +2804,10 @@ fn topic_config_defaults_are_stable() {
         .config_by_topic();
 
     assert_eq!(json["frames"]["fps"], 30);
-    assert_eq!(json["frames"]["format"], "binary");
+    assert!(
+        json["frames"].get("format").is_none(),
+        "the frames topic has one encoding; the JSON toggle had no consumers"
+    );
     assert_eq!(json["spectrum"]["bins"], 64);
     assert_eq!(json["canvas"]["fps"], 15);
     assert_eq!(json["canvas"]["width"], 0);
@@ -2813,7 +2829,7 @@ fn config_for_a_configless_topic_is_refused_the_same_way_in_both_phases() {
             .subscribed_unkeyed(&["sensors"], serde_json::json!({"sensors": stanza}))
             .expect_err("sensors takes no config");
 
-        assert_eq!(error.code, "invalid_config");
+        assert_eq!(error.code, "validation_error");
         assert_eq!(
             error.details,
             Some(serde_json::json!({
@@ -3067,7 +3083,7 @@ fn staging_a_preview_transport_does_not_adopt_it() {
     // refuses without having changed anything.
     let error = commit_preview_transport(staged, &sender, &mut cursors, &mut capability)
         .expect_err("an active transport cannot renegotiate");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
     assert_eq!(capability, PreviewTransportCapability::default());
 }
 
@@ -4076,11 +4092,11 @@ fn interactive_preview_dimensions_use_format_aware_shape_admission() {
             ),
         ])
         .expect_err("over-budget interactive shape is rejected");
-    assert_eq!(over_budget.code, "invalid_request");
+    assert_eq!(over_budget.code, "malformed_request");
 
     let error = validate_interactive_preview_shape(32_768, 4_097, CanvasFormat::Rgba)
         .expect_err("over-budget interactive shape is rejected");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 }
 
 #[test]
@@ -4098,7 +4114,7 @@ fn an_interactive_preview_subscribe_rejects_invalid_render_config() {
                 TopicSubscription::keyed("interactive_preview", "main").with_config(patch),
             ])
             .expect_err("out-of-range interactive preview config must be rejected");
-        assert_eq!(error.code, "invalid_config");
+        assert_eq!(error.code, "validation_error");
     }
 
     SubscriptionState::default()
@@ -4141,7 +4157,7 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
         subscribe_interactive_previews(&mut session, &[("alpha", resized), ("omega", refused)])
             .await
             .expect_err("an unopenable preview refuses the whole reconcile");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 
     assert!(
         session.publication_id("omega").is_none(),
@@ -4192,7 +4208,7 @@ async fn interactive_preview_input_requires_same_connection_open_and_stays_isola
     let error = second
         .inject("shared".to_owned(), vec![pressed_key("foreign")])
         .expect_err("another connection cannot address the first preview");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 
     subscribe_interactive_preview(&mut second, "shared", interactive_preview_config())
         .await
@@ -4745,7 +4761,7 @@ fn a_display_preview_subscription_is_named_by_its_device() {
     let error = SubscriptionState::default()
         .subscribed_unkeyed(&["display_preview"], serde_json::Value::Null)
         .expect_err("display_preview needs a device");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 }
 
 #[test]
@@ -4753,7 +4769,7 @@ fn a_display_preview_key_must_name_a_real_device() {
     let error = SubscriptionState::default()
         .subscribed(vec![TopicSubscription::keyed("display_preview", "   ")])
         .expect_err("whitespace is not a device");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
     assert!(error.message.contains("device id"));
 }
 
@@ -4766,7 +4782,7 @@ fn display_preview_cadence_must_be_in_range() {
                     .with_config(serde_json::json!({"fps": fps})),
             ])
             .expect_err("out-of-range cadence should be rejected");
-        assert_eq!(error.code, "invalid_config");
+        assert_eq!(error.code, "validation_error");
         assert_eq!(
             error.details,
             Some(serde_json::json!({
@@ -4823,7 +4839,7 @@ fn sync_preview_receiver_drops_screen_subscription_cleanly() {
 #[test]
 fn parse_command_method_rejects_invalid_values() {
     let error = parse_command_method("BREW").expect_err("BREW should be rejected");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 }
 
 #[test]
@@ -4841,7 +4857,7 @@ fn normalize_command_path_adds_api_prefix() {
 #[test]
 fn normalize_command_path_rejects_relative_paths() {
     let error = normalize_command_path("status").expect_err("relative path must fail");
-    assert_eq!(error.code, "invalid_request");
+    assert_eq!(error.code, "malformed_request");
 }
 
 #[tokio::test]
@@ -4957,7 +4973,7 @@ async fn dispatch_command_rejects_invalid_method() {
             assert!(data.is_none());
             assert_eq!(
                 error.and_then(|value| value.get("code").cloned()),
-                Some(serde_json::json!("invalid_request"))
+                Some(serde_json::json!("malformed_request"))
             );
         }
         _ => panic!("expected command response"),
@@ -5104,7 +5120,9 @@ fn frame_binary_encoder_writes_header_and_payload() {
         u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
         1234
     );
-    assert_eq!(encoded[9], 1);
+    // The zone count is a u16: a u8 dropped every zone past 255 on a
+    // large rig without saying so (Spec 78 §7.1).
+    assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 1);
 }
 
 #[test]
@@ -5128,11 +5146,34 @@ fn filtered_frame_binary_encoder_writes_selected_zone_count_and_payload() {
         encode_frame_binary_selected(&frame, &FrameZoneSelection::new(&["right".to_owned()]));
 
     assert_eq!(encoded[0], 0x01);
-    assert_eq!(encoded[9], 1);
-    assert_eq!(u16::from_le_bytes([encoded[10], encoded[11]]), 5);
-    assert_eq!(&encoded[12..17], b"right");
-    assert_eq!(u16::from_le_bytes([encoded[17], encoded[18]]), 2);
-    assert_eq!(&encoded[19..25], &[0, 0, 255, 0, 255, 0]);
+    assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 1);
+    assert_eq!(u16::from_le_bytes([encoded[11], encoded[12]]), 5);
+    assert_eq!(&encoded[13..18], b"right");
+    assert_eq!(u16::from_le_bytes([encoded[18], encoded[19]]), 2);
+    assert_eq!(&encoded[20..26], &[0, 0, 255, 0, 255, 0]);
+}
+
+#[test]
+fn the_frame_zone_count_survives_past_the_old_u8_ceiling() {
+    let zones = (0..300)
+        .map(|index| ZoneColors {
+            zone_id: format!("z{index}"),
+            colors: vec![[1, 2, 3]],
+        })
+        .collect::<Vec<_>>();
+    let frame = FrameData {
+        frame_number: 1,
+        timestamp_ms: 1,
+        zones,
+    };
+
+    let encoded = encode_frame_binary(&frame);
+
+    assert_eq!(
+        u16::from_le_bytes([encoded[9], encoded[10]]),
+        300,
+        "a u8 count silently truncated this to 44"
+    );
 }
 
 #[test]
@@ -5186,20 +5227,14 @@ fn cached_frame_payload_reuses_binary_bytes_for_matching_requests() {
     let frame = sample_frame();
     let config = ActiveFramesConfig::new(FramesConfig {
         fps: 30,
-        format: FrameFormat::Binary,
         zones: vec!["right".to_owned()],
     });
 
     let first = cached_frame_payload(&frame, &config);
     let second = cached_frame_payload(&frame, &config);
 
-    match (first, second) {
-        (FrameRelayMessage::Binary(first), FrameRelayMessage::Binary(second)) => {
-            assert_eq!(first, second);
-            assert_eq!(first.as_ptr(), second.as_ptr());
-        }
-        _ => panic!("expected binary relay payloads"),
-    }
+    assert_eq!(first, second);
+    assert_eq!(first.as_ptr(), second.as_ptr());
 
     assert_eq!(
         WS_FRAME_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
@@ -5212,50 +5247,37 @@ fn cached_frame_payload_reuses_binary_bytes_for_matching_requests() {
 }
 
 #[test]
-fn cached_frame_payload_keys_selection_and_format_separately() {
+fn cached_frame_payload_keys_each_zone_selection_separately() {
     let _guard = WS_CACHE_TEST_LOCK
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
 
     let frame = sample_frame();
-    let left_binary = cached_frame_payload(
+    let left = cached_frame_payload(
         &frame,
         &ActiveFramesConfig::new(FramesConfig {
             fps: 30,
-            format: FrameFormat::Binary,
             zones: vec!["left".to_owned()],
         }),
     );
-    let right_binary = cached_frame_payload(
+    let right = cached_frame_payload(
         &frame,
         &ActiveFramesConfig::new(FramesConfig {
             fps: 30,
-            format: FrameFormat::Binary,
             zones: vec!["right".to_owned()],
         }),
     );
-    let left_json = cached_frame_payload(
+    let both = cached_frame_payload(
         &frame,
         &ActiveFramesConfig::new(FramesConfig {
             fps: 30,
-            format: FrameFormat::Json,
-            zones: vec!["left".to_owned()],
+            zones: vec!["all".to_owned()],
         }),
     );
 
-    match (left_binary, right_binary, left_json) {
-        (
-            FrameRelayMessage::Binary(left_binary),
-            FrameRelayMessage::Binary(right_binary),
-            FrameRelayMessage::Json(left_json),
-        ) => {
-            assert_ne!(left_binary, right_binary);
-            assert!(left_json.contains("\"zone_id\":\"left\""));
-            assert!(!left_json.contains("\"zone_id\":\"right\""));
-        }
-        _ => panic!("unexpected relay payload variants"),
-    }
+    assert_ne!(left, right);
+    assert_ne!(left, both);
 
     assert_eq!(
         WS_FRAME_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),

@@ -365,7 +365,7 @@ async fn hello_handshake_returns_expected_capability_set() {
 }
 
 #[tokio::test]
-async fn hello_handshake_reports_scene_backed_active_effect() {
+async fn hello_handshake_names_the_scene_but_not_its_contents() {
     let state = test_app_state();
     let effect = insert_test_effect(&state, "Aurora").await;
     let preset_id = PresetId::stable("calm");
@@ -394,9 +394,15 @@ async fn hello_handshake_reports_scene_backed_active_effect() {
         .await
         .expect("hello message should arrive");
 
-    assert_eq!(hello["state"]["effect"]["id"], effect.id.to_string());
-    assert_eq!(hello["state"]["effect"]["name"], effect.name);
-    assert_eq!(hello["state"]["active_preset_id"], preset_id.to_string());
+    // The live tree is multi-zone, so one effect name could only ever
+    // describe a corner of it. Clients read /scene for content and
+    // follow the events channel for changes (Spec 78 §7.1).
+    for singleton in ["effect", "active_preset_id"] {
+        assert!(
+            hello["state"].get(singleton).is_none(),
+            "the handshake carries no {singleton}"
+        );
+    }
     assert_eq!(
         hello["state"]["scene"]["id"],
         hypercolor_types::scene::SceneId::DEFAULT.to_string()
@@ -767,7 +773,7 @@ async fn a_keyed_topic_refuses_a_subscribe_without_its_key() {
     let err = recv_until_type(&mut stream, "error")
         .await
         .expect("error response");
-    assert_eq!(err["code"], "invalid_request");
+    assert_eq!(err["code"], "malformed_request");
     assert!(
         err["message"]
             .as_str()
@@ -857,7 +863,7 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
         .await
         .expect("error response");
     assert_eq!(err["type"], "error");
-    assert_eq!(err["code"], "invalid_request");
+    assert_eq!(err["code"], "malformed_request");
     let message = err["message"].as_str().unwrap_or_default();
     assert!(
         message.to_lowercase().contains("lasers") || message.to_lowercase().contains("topic"),

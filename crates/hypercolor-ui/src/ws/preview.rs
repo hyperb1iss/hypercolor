@@ -281,29 +281,26 @@ pub(super) fn send_display_preview_unsubscribe(ws: &web_sys::WebSocket, device_i
     let _ = send_websocket_json(ws, &unsubscribe_msg);
 }
 
+/// Stage a drag preview on the live tree.
+///
+/// Zone-keyed only: previews apply to what is rendering, so the daemon
+/// owns which scene that is (Spec 78 §1.5).
 pub(super) fn send_zone_layout_preview(
     ws: &web_sys::WebSocket,
-    scene_id: &str,
     zone_id: &str,
     layout: &SpatialLayout,
 ) {
     let msg = serde_json::json!({
         "type": "zone_layout_preview",
-        "scene_id": scene_id,
         "zone_id": zone_id,
         "layout": layout
     });
     let _ = send_websocket_json(ws, &msg);
 }
 
-pub(super) fn send_zone_layout_preview_clear(
-    ws: &web_sys::WebSocket,
-    scene_id: &str,
-    zone_id: &str,
-) {
+pub(super) fn send_zone_layout_preview_clear(ws: &web_sys::WebSocket, zone_id: &str) {
     let msg = serde_json::json!({
         "type": "zone_layout_preview_clear",
-        "scene_id": scene_id,
         "zone_id": zone_id
     });
     let _ = send_websocket_json(ws, &msg);

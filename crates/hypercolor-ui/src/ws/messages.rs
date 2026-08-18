@@ -902,9 +902,10 @@ pub(super) fn handle_json_message(
 
     match msg_type {
         "hello" => {
-            // Extract active effect from hello state
+            // The handshake carries no effect: the live tree is
+            // multi-zone, so what renders comes from /scene and the
+            // effect lifecycle events (Spec 78 §7.1).
             if let Some(state) = msg.get("state") {
-                set_active.set(extract_active_effect_name(state));
                 set_output_paused.set(
                     state
                         .get("paused")
@@ -1285,16 +1286,6 @@ pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
         "zone_changed" => hint.zone_role != Some(ZoneRole::Display),
         _ => true,
     }
-}
-
-fn extract_active_effect_name(state: &serde_json::Value) -> Option<String> {
-    let active = state.get("effect").or_else(|| state.get("active_effect"))?;
-    active
-        .get("name")
-        .or_else(|| active.get("effect_name"))
-        .and_then(serde_json::Value::as_str)
-        .map(String::from)
-        .or_else(|| active.as_str().map(String::from))
 }
 
 fn extract_effect_name_from_event(data: &serde_json::Value) -> Option<String> {

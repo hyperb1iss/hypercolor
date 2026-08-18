@@ -7,9 +7,8 @@ use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
 use hypercolor_types::api::effects::{
-    ActiveEffectResponse as ApiActiveEffectResponse, ApplyEffectRequest,
-    EffectListResponse as ApiEffectListResponse, EffectSummary as ApiEffectSummary,
-    ResetControlsRequest, UpdateActiveControlsRequest,
+    ApplyEffectRequest, EffectListResponse as ApiEffectListResponse,
+    EffectSummary as ApiEffectSummary, ResetControlsRequest, UpdateActiveControlsRequest,
 };
 use hypercolor_types::api::envelope::ApiErrorBody;
 use hypercolor_types::api::layers::PatchLayerControlsRequest;
@@ -64,12 +63,7 @@ impl DaemonClient {
 
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
-        let (status, active_effect) = tokio::join!(
-            self.get_data::<SystemStatusResponse>("/status"),
-            self.get_active_effect()
-        );
-        let status = status?;
-        let active_effect = active_effect.ok();
+        let status = self.get_data::<SystemStatusResponse>("/status").await?;
 
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let device_count = status.device_count as u32;
@@ -79,11 +73,6 @@ impl DaemonClient {
             brightness: status.global_brightness,
             fps_target: status.render_loop.target_fps,
             fps_actual: status.render_loop.actual_fps,
-            effect_name: active_effect
-                .as_ref()
-                .and_then(|effect| effect.name.clone())
-                .or(status.active_effect),
-            effect_id: active_effect.and_then(|effect| effect.id),
             scene_name: status.active_scene,
             scene_snapshot_locked: status.active_scene_snapshot_locked,
             profile_name: None,
@@ -475,10 +464,6 @@ impl DaemonClient {
         response_data(response).await
     }
 
-    async fn get_active_effect(&self) -> Result<ApiActiveEffectResponse> {
-        self.get_data("/effects/active").await
-    }
-
     fn auth_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(api_key) = &self.api_key {
             request.bearer_auth(api_key)
@@ -506,7 +491,6 @@ struct SystemStatusResponse {
     running: bool,
     global_brightness: u8,
     device_count: usize,
-    active_effect: Option<String>,
     active_scene: Option<String>,
     #[serde(default)]
     active_scene_snapshot_locked: bool,

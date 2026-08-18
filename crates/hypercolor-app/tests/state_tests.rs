@@ -248,7 +248,6 @@ fn websocket_snapshot_clears_stale_pause_and_effect_state() {
         paused: false,
         brightness: 64,
         device_count: 3,
-        effect: None,
     }));
 
     assert!(state.running);

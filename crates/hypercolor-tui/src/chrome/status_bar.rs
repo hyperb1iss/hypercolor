@@ -113,27 +113,19 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
         .is_some_and(crate::state::ActiveScene::multi_zone);
     let target = state.target_zone();
 
-    // Current effect name — gradient brand style. In a multi-zone scene
-    // the daemon's singular "active effect" is just the primary zone, so
-    // show the targeted zone's effect instead.
-    let effect_name = if multi_zone {
-        target
-            .and_then(|zone| zone.effect_id.as_deref())
-            .map(|effect_id| {
-                state
-                    .effects
-                    .iter()
-                    .find(|effect| effect.id == effect_id)
-                    .map_or_else(|| effect_id.to_string(), |effect| effect.name.clone())
-            })
-            .unwrap_or_else(|| "No effect".to_string())
-    } else {
-        state
-            .daemon
-            .as_ref()
-            .and_then(|d| d.effect_name.clone())
-            .unwrap_or_else(|| "No effect".to_string())
-    };
+    // Current effect name — gradient brand style. The targeted zone
+    // falls back to the primary one, which is what the daemon's deleted
+    // singular "active effect" always described.
+    let effect_name = target
+        .and_then(|zone| zone.effect_id.as_deref())
+        .map(|effect_id| {
+            state
+                .effects
+                .iter()
+                .find(|effect| effect.id == effect_id)
+                .map_or_else(|| effect_id.to_string(), |effect| effect.name.clone())
+        })
+        .unwrap_or_else(|| "No effect".to_string());
 
     gradient_text(&mut spans, &effect_name);
 

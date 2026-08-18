@@ -814,26 +814,19 @@ pub(crate) fn ZoneLayoutProvider(
     let set_layout = session.write;
     let is_dirty = session.is_dirty;
 
-    let active_preview_key = StoredValue::new(None::<(String, String)>);
+    // Previews are keyed by zone alone: the daemon applies them to the
+    // live tree, so the scene is not the client's to choose.
+    let active_preview_key = StoredValue::new(None::<String>);
     let push_preview = Callback::new(move |snapshot: SpatialLayout| {
-        let Some(scene_id) =
-            active_scene.with_untracked(|scene| scene.as_ref().map(|scene| scene.id.clone()))
-        else {
-            return;
-        };
         let Some(zone_id) = selected_zone_id.get_untracked() else {
             return;
         };
-        active_preview_key.set_value(Some((scene_id.clone(), zone_id.clone())));
-        ws_ctx
-            .send_zone_layout_preview
-            .run((scene_id, zone_id, snapshot));
+        active_preview_key.set_value(Some(zone_id.clone()));
+        ws_ctx.send_zone_layout_preview.run((zone_id, snapshot));
     });
 
     Effect::new(move |_| {
-        let next_key = active_scene
-            .with(|scene| scene.as_ref().map(|scene| scene.id.clone()))
-            .zip(selected_zone_id.get());
+        let next_key = selected_zone_id.get();
         let previous_key = active_preview_key.get_value();
         if previous_key != next_key {
             if let Some(key) = previous_key {
@@ -936,17 +929,13 @@ pub(crate) fn ZoneLayoutProvider(
                 Ok(api::zones::ZoneOutcome::Applied(_)) => {
                     set_saved_layout.set(Some(current));
                     set_layout.mark_clean();
-                    ws_ctx
-                        .clear_zone_layout_preview
-                        .run((scene_id.clone(), zone_id.clone()));
+                    ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
                     active_preview_key.set_value(None);
                     toasts::toast_success("Zone layout saved");
                     refresh_scene.run(());
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                    ws_ctx
-                        .clear_zone_layout_preview
-                        .run((scene_id.clone(), zone_id.clone()));
+                    ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
                     active_preview_key.set_value(None);
                     toasts::toast_error("Scene changed elsewhere — reloaded, try again");
                     refresh_scene.run(());

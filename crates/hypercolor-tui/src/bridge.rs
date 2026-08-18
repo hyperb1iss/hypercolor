@@ -365,8 +365,6 @@ fn merge_metrics_into_daemon_state(
         brightness: 100,
         fps_target: 0.0,
         fps_actual: 0.0,
-        effect_name: None,
-        effect_id: None,
         scene_name: None,
         scene_snapshot_locked: false,
         profile_name: None,
@@ -418,8 +416,6 @@ fn merge_active_scene_into_daemon_state(
         brightness: 100,
         fps_target: 0.0,
         fps_actual: 0.0,
-        effect_name: None,
-        effect_id: None,
         scene_name: None,
         scene_snapshot_locked: false,
         profile_name: None,
@@ -470,16 +466,6 @@ fn parse_hello_state(hello: &serde_json::Value) -> Option<DaemonState> {
             .and_then(|f| f.get("actual"))
             .and_then(serde_json::Value::as_f64)
             .map_or(0.0, |v| v as f32),
-        effect_name: state
-            .get("effect")
-            .and_then(|e| e.get("name"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-        effect_id: state
-            .get("effect")
-            .and_then(|e| e.get("id"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
         scene_name: state
             .get("scene")
             .and_then(|s| s.get("name"))

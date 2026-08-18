@@ -169,8 +169,8 @@ pub struct WsManager {
     /// channel to that device, or `None` to unsubscribe. The subscription
     /// effect inside `WsManager` sends the actual WS messages.
     pub set_display_preview_device: WriteSignal<Option<String>>,
-    pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
-    pub clear_zone_layout_preview: Callback<(String, String)>,
+    pub send_zone_layout_preview: Callback<(String, SpatialLayout)>,
+    pub clear_zone_layout_preview: Callback<String>,
     pub open_interactive_preview: Callback<InteractivePreviewRequest>,
     pub close_interactive_preview: Callback<String>,
     /// Send addressed browser-preview input edges as one `input_inject` message.
@@ -827,19 +827,17 @@ impl WsManager {
             connect_fn();
         }
 
-        let send_zone_layout_preview = Callback::new(
-            move |(scene_id, zone_id, layout): (String, String, SpatialLayout)| {
+        let send_zone_layout_preview =
+            Callback::new(move |(zone_id, layout): (String, SpatialLayout)| {
                 if let Some(ws) = ws_handle.get_value() {
-                    super::preview::send_zone_layout_preview(&ws, &scene_id, &zone_id, &layout);
-                }
-            },
-        );
-        let clear_zone_layout_preview =
-            Callback::new(move |(scene_id, zone_id): (String, String)| {
-                if let Some(ws) = ws_handle.get_value() {
-                    super::preview::send_zone_layout_preview_clear(&ws, &scene_id, &zone_id);
+                    super::preview::send_zone_layout_preview(&ws, &zone_id, &layout);
                 }
             });
+        let clear_zone_layout_preview = Callback::new(move |zone_id: String| {
+            if let Some(ws) = ws_handle.get_value() {
+                super::preview::send_zone_layout_preview_clear(&ws, &zone_id);
+            }
+        });
         let open_interactive_preview = Callback::new(move |request: InteractivePreviewRequest| {
             set_interactive_preview_frames.update(|frames| {
                 frames.remove(&request.preview_id);

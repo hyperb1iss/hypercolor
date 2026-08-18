@@ -288,10 +288,6 @@ impl DaemonClient {
                     paused: state.paused,
                     brightness: state.brightness,
                     device_count: state.device_count,
-                    effect: state.effect.map(|effect| EffectInfo {
-                        id: effect.id,
-                        name: effect.name,
-                    }),
                 }));
             return Ok(());
         }

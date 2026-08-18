@@ -87,13 +87,14 @@ impl AppState {
                 paused,
                 brightness,
                 device_count,
-                effect,
             } => {
+                // The handshake says nothing about content: the live
+                // tree is multi-zone, so what is rendering arrives from
+                // the effect lifecycle events instead (Spec 78 §7.1).
                 self.running = running;
                 self.paused = paused;
                 self.brightness = brightness;
                 self.device_count = device_count;
-                self.current_effect = effect;
             }
         }
     }
@@ -168,7 +169,6 @@ pub enum StateUpdate {
         paused: bool,
         brightness: u8,
         device_count: usize,
-        effect: Option<EffectInfo>,
     },
 }
 
@@ -268,14 +268,6 @@ pub struct WsHelloState {
     pub paused: bool,
     pub brightness: u8,
     pub device_count: usize,
-    pub effect: Option<WsNameRef>,
-}
-
-/// Name/ID reference used in WebSocket messages.
-#[derive(Debug, Deserialize)]
-pub struct WsNameRef {
-    pub id: String,
-    pub name: String,
 }
 
 /// A generic WebSocket event message from the daemon.
@@ -317,7 +309,6 @@ mod app_state_tests {
             paused: false,
             brightness: 64,
             device_count: 3,
-            effect: None,
         });
 
         assert!(state.running);

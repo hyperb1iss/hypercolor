@@ -17,8 +17,8 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
 use hypercolor_leptos_ext::ws::PreviewTransportCapability;
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasConfig, CanvasFormat, InteractivePreviewConfig, InteractivePreviewTarget, SpectrumConfig,
-    TopicId,
+    CanvasConfig, CanvasFormat, InteractivePreviewConfig, InteractivePreviewTarget,
+    ScreenZonesConfig, SpectrumConfig, TopicId,
 };
 use hypercolor_leptos_ext::ws::topic::ActiveSubscription;
 use serde::Serialize;
@@ -49,8 +49,8 @@ use super::cache::{
 use super::command::dispatch_command;
 use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
-    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, NameRef,
-    SceneRef, ServerMessage, SubscriptionState, TopicSelection, WsProtocolError, parse_selectors,
+    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, SceneRef,
+    ServerMessage, SubscriptionState, TopicSelection, WsProtocolError, parse_selectors,
     parse_subscriptions, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
@@ -60,12 +60,10 @@ use super::relays::{
 };
 use super::topics::{RelayContext, spawn_relays};
 use crate::api::AppState;
-use crate::api::effects::active_primary_effect;
 use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
-use crate::api::scenes;
 use crate::api::security::RequestAuthContext;
 use crate::interaction_routing::{
     AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl,
@@ -325,7 +323,9 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    let mut preview_capability = PreviewTransportCapability::default().legacy_v1();
+    // The advertised default is v2; a v1 client negotiates back down
+    // on subscribe (Spec 78 §7.1).
+    let mut preview_capability = PreviewTransportCapability::default();
     let mut preview_cursors = PreviewCursorQueue::with_capability(preview_capability);
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
@@ -591,12 +591,22 @@ impl WsInputDemandLeases {
         subscriptions: &SubscriptionState,
     ) -> Result<ProjectedInputDemand, WsProtocolError> {
         let screen_canvas = subscriptions.config_of::<CanvasConfig>(TopicId::ScreenCanvas, None);
+        let screen_zones = subscriptions.config_of::<ScreenZonesConfig>(TopicId::ScreenZones, None);
         let screen_active = subscriptions.contains(TopicId::ScreenCanvas)
             || subscriptions.contains(TopicId::ScreenZones);
         let (screen_demand, screen_requested_extent) = if screen_active {
-            let requested_hz = NonZeroU32::new(screen_canvas.fps).ok_or_else(|| {
+            // Each screen topic paces itself from its own config, so a
+            // subscriber is never refused for a field it does not own
+            // (Spec 78 §7.1).
+            let canvas_hz = NonZeroU32::new(screen_canvas.fps).ok_or_else(|| {
                 WsProtocolError::invalid_config(
                     "config.screen_canvas.fps",
+                    "expected a non-zero cadence",
+                )
+            })?;
+            let zones_hz = NonZeroU32::new(screen_zones.fps).ok_or_else(|| {
+                WsProtocolError::invalid_config(
+                    "config.screen_zones.fps",
                     "expected a non-zero cadence",
                 )
             })?;
@@ -634,7 +644,7 @@ impl WsInputDemandLeases {
                 branches.push(screen_branch_demand(
                     ScreenPublicationKind::Surface,
                     extent_request,
-                    requested_hz,
+                    canvas_hz,
                     canvas_extent,
                 ));
                 requested_extent = Some(canvas_extent);
@@ -651,7 +661,7 @@ impl WsInputDemandLeases {
                         rows: self.screen_grid_rows,
                     },
                     extent_request,
-                    requested_hz,
+                    zones_hz,
                     self.screen_base_extent,
                 ));
                 requested_extent.get_or_insert(self.screen_base_extent);
@@ -1469,41 +1479,26 @@ async fn handle_client_message(
             let response = dispatch_command(state, auth_context, id, method, path, body).await;
             let _ = send_json(socket, &response).await;
         }
-        ClientMessage::ZoneLayoutPreview {
-            scene_id,
-            zone_id,
-            layout,
-        } => {
+        ClientMessage::ZoneLayoutPreview { zone_id, layout } => {
             if let Err(error) = ensure_control_tier(auth_context) {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
 
-            if let Err(error) = handle_zone_layout_preview(
-                state,
-                zone_layout_preview_keys,
-                scene_id,
-                zone_id,
-                layout,
-            )
-            .await
+            if let Err(error) =
+                handle_zone_layout_preview(state, zone_layout_preview_keys, zone_id, layout).await
             {
                 let _ = send_json(socket, &error.into_message()).await;
             }
         }
-        ClientMessage::ZoneLayoutPreviewClear { scene_id, zone_id } => {
+        ClientMessage::ZoneLayoutPreviewClear { zone_id } => {
             if let Err(error) = ensure_control_tier(auth_context) {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
 
-            if let Err(error) = handle_zone_layout_preview_clear(
-                state,
-                zone_layout_preview_keys,
-                &scene_id,
-                &zone_id,
-            )
-            .await
+            if let Err(error) =
+                handle_zone_layout_preview_clear(state, zone_layout_preview_keys, &zone_id).await
             {
                 let _ = send_json(socket, &error.into_message()).await;
             }
@@ -1545,24 +1540,25 @@ fn ensure_control_tier(auth_context: RequestAuthContext) -> Result<(), WsProtoco
     }
 }
 
+/// Stage a drag preview against the live tree.
+///
+/// The caller names a zone and nothing else: previews only ever apply
+/// to what is rendering, so the scene comes from the daemon rather
+/// than from the request (Spec 78 §1.5).
 async fn handle_zone_layout_preview(
     state: &Arc<AppState>,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
-    scene_id_raw: String,
     zone_id_raw: String,
     layout: SpatialLayout,
 ) -> Result<(), WsProtocolError> {
     let zone_id = parse_zone_preview_id(&zone_id_raw)?;
     let (scene_id, layout) = {
         let manager = state.scene_manager.read().await;
-        let scene_id = scenes::resolve_scene_id(&manager, &scene_id_raw).ok_or_else(|| {
-            WsProtocolError::invalid_request(format!("Scene not found: {scene_id_raw}"))
-        })?;
-        let scene = manager.get(&scene_id).ok_or_else(|| {
-            WsProtocolError::invalid_request(format!("Scene not found: {scene_id_raw}"))
-        })?;
+        let scene = manager
+            .active_scene()
+            .ok_or_else(|| WsProtocolError::invalid_request("No active scene"))?;
         let layout = validated_zone_layout_preview(scene, zone_id, layout)?;
-        (scene_id, layout)
+        (scene.id, layout)
     };
 
     state
@@ -1576,11 +1572,16 @@ async fn handle_zone_layout_preview(
 async fn handle_zone_layout_preview_clear(
     state: &Arc<AppState>,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
-    scene_id_raw: &str,
     zone_id_raw: &str,
 ) -> Result<(), WsProtocolError> {
-    let scene_id = parse_scene_preview_id(scene_id_raw)?;
     let zone_id = parse_zone_preview_id(zone_id_raw)?;
+    let scene_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .map(|scene| scene.id)
+            .ok_or_else(|| WsProtocolError::invalid_request("No active scene"))?
+    };
     state.zone_layout_previews.clear(scene_id, zone_id).await;
     zone_layout_preview_keys.remove(&(scene_id, zone_id));
     Ok(())
@@ -1659,15 +1660,6 @@ pub(super) fn validated_zone_layout_preview(
     Ok(preview)
 }
 
-fn parse_scene_preview_id(raw: &str) -> Result<SceneId, WsProtocolError> {
-    match raw {
-        "default" => Ok(SceneId::DEFAULT),
-        _ => Uuid::parse_str(raw).map(SceneId).map_err(|_| {
-            WsProtocolError::invalid_request("scene_id must be a valid UUID or 'default'")
-        }),
-    }
-}
-
 fn parse_zone_preview_id(raw: &str) -> Result<ZoneId, WsProtocolError> {
     Uuid::parse_str(raw)
         .map(ZoneId)
@@ -1685,18 +1677,6 @@ async fn build_hello_state(state: &AppState) -> HelloState {
             0.0
         };
 
-    let (active_effect, active_preset_id) =
-        active_primary_effect(state)
-            .await
-            .map_or((None, None), |(group, metadata)| {
-                (
-                    Some(NameRef {
-                        id: metadata.id.to_string(),
-                        name: metadata.name,
-                    }),
-                    group.preset_id.map(|preset_id| preset_id.to_string()),
-                )
-            });
     let active_scene = {
         let scene_manager = state.scene_manager.read().await;
         scene_manager.active_scene().map(|scene| SceneRef {
@@ -1722,8 +1702,6 @@ async fn build_hello_state(state: &AppState) -> HelloState {
             delivered: (delivered_fps * 10.0).round() / 10.0,
             actual: (capacity_fps * 10.0).round() / 10.0,
         },
-        effect: active_effect,
-        active_preset_id,
         scene: active_scene,
         profile: None,
         layout: None,
@@ -1790,7 +1768,7 @@ mod hello_state_tests {
     }
 
     #[tokio::test]
-    async fn hello_does_not_report_destructive_stop_as_pause() {
+    async fn hello_reports_a_destructive_stop_as_paused() {
         let state = AppState::new();
         state
             .power_state
@@ -1798,8 +1776,24 @@ mod hello_state_tests {
 
         let hello = build_hello_state(&state).await;
 
-        assert!(!hello.paused);
-        assert!(hello.effect.is_none());
+        // Paused is the exact complement of running on every surface,
+        // so the handshake agrees with GET /output about a stop rather
+        // than contradicting it (Spec 78 §7.1).
+        assert!(hello.paused);
+    }
+
+    #[tokio::test]
+    async fn hello_says_nothing_about_what_is_rendering() {
+        let state = AppState::new();
+        let hello =
+            serde_json::to_value(build_hello_state(&state).await).expect("hello state serializes");
+
+        for singleton in ["effect", "active_preset_id"] {
+            assert!(
+                hello.get(singleton).is_none(),
+                "{singleton} is the pre-multi-zone vocabulary; clients read /scene instead"
+            );
+        }
     }
 }
 
