@@ -281,7 +281,7 @@ The daemon exposes REST + WebSocket on `:9420` (Axum):
 - `GET/POST /api/v1/layouts`: Spatial layout CRUD
 - `GET/POST /api/v1/profiles`: Profile save/load
 - `WebSocket /api/v1/ws`: Real-time state (events, canvas frames, metrics, spectrum)
-- **MCP server**: 16 tools, 5 resources, and 3 prompt templates for AI integration
+- **MCP server**: 17 tools, 5 resources, and 3 prompt templates for AI integration
 
 Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
 

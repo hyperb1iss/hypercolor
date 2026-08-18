@@ -108,7 +108,7 @@ hypercolor status -j
 
 ### 2. Discover before you act
 
-Effect names are fuzzy-matched, but searching first means an agent applies a known effect instead of a guess. The catalog ships **11 native built-in effects** compiled into the engine plus roughly four dozen HTML effects from the SDK, so browse rather than hardcode names. Filter the list server-side with `--search`, `--category`, `--engine`, or `--audio`.
+Effect names are fuzzy-matched, but searching first means an agent applies a known effect instead of a guess. The catalog ships **11 native built-in effects** compiled into the engine plus roughly four dozen HTML effects from the SDK, so browse rather than hardcode names. Filter the list server-side with `--search`, `--category`, `--source`, or `--audio`.
 
 ```bash
 hypercolor effects list --search aurora -j
@@ -241,7 +241,7 @@ hypercolor effects activate aurora
 ## Where to go next
 
 - [MCP setup](@/agents/mcp-setup.md): the typed, schema-validated alternative to shell scripting.
-- [Tools reference](@/agents/tools-reference.md): all 16 MCP tools with arguments and return shapes.
+- [Tools reference](@/agents/tools-reference.md): all 17 MCP tools with arguments and return shapes.
 - [Prompt templates](@/agents/prompt-templates.md): the three shipped prompts agents can invoke.
 - [CLI reference](@/api/cli.md): the complete command tree, human-facing.
 - [REST API reference](@/api/rest.md): the daemon contract the CLI sits on top of.

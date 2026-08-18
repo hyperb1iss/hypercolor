@@ -21,7 +21,7 @@ source of truth and four ways to reach it.
 | [REST API](@/api/rest.md) | HTTP on `:9420` | Scripting, automation, one-shot reads and writes |
 | [WebSocket](@/api/websocket.md) | WS on `:9420` | Live state, canvas previews, spectrum streaming, low-latency UIs |
 | [CLI](@/api/cli.md) | HTTP client to the daemon | Terminal workflows, shell scripts, agent tooling |
-| [MCP server](@/api/mcp.md) | Streamable HTTP at `/mcp` | AI assistants and agents (16 tools, 5 resources, 3 prompts) |
+| [MCP server](@/api/mcp.md) | Streamable HTTP at `/mcp` | AI assistants and agents (17 tools, 5 resources, 3 prompts) |
 
 REST and WebSocket share the same port and the same `AppState`. The CLI is a thin
 HTTP client over the REST surface with table/JSON/plain rendering on top. MCP is a

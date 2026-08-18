@@ -43,6 +43,7 @@ use hypercolor_types::spatial::{
 };
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
+use strum::VariantNames;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -1083,32 +1084,99 @@ async fn stateful_set_effect_rejects_display_faces() {
     assert!(format!("{error}").contains("display face"));
 }
 
-/// `transition_ms` used to be accepted, echoed back, and never applied.
-/// Routing through the shared service gives it the rule REST has always
-/// enforced: a zero-duration cut applies, anything else is refused.
+/// `set_effect` takes no transition argument at all.
+///
+/// The parameter's only accepted value was its no-op, which fails the
+/// same rule that deletes an ignored parameter (Spec 78 §6.1). The
+/// shared transition vocabulary arrives with the 78.1 contract; until
+/// then the tool advertises a closed shape with no transition in it.
+#[test]
+fn set_effect_advertises_no_transition_argument() {
+    let tools = build_tool_definitions();
+    let set_effect = tools
+        .iter()
+        .find(|tool| tool.name == "set_effect")
+        .expect("set_effect should be registered");
+
+    let properties = set_effect.input_schema["properties"]
+        .as_object()
+        .expect("set_effect should declare properties");
+    let mut declared = properties.keys().cloned().collect::<Vec<_>>();
+    declared.sort();
+    assert_eq!(declared, vec!["controls".to_owned(), "query".to_owned()]);
+    assert_eq!(
+        set_effect.input_schema["additionalProperties"],
+        json!(false),
+        "the closed shape is what stops a client sending a deleted parameter"
+    );
+}
+
+/// A deleted parameter is refused, not quietly dropped.
+///
+/// `additionalProperties: false` is enforced in the dispatch path
+/// because nothing under `rmcp` validates a call against the schema.
+/// Without that, a caller who kept sending `transition_ms` would get a
+/// cut and no indication the request had been ignored, which is the
+/// same silence the phantom-parameter deletion exists to end.
 #[tokio::test]
-async fn stateful_set_effect_refuses_a_transition_it_cannot_apply() {
+async fn deleted_parameters_are_refused_rather_than_dropped() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    for (tool, params, phantom) in [
+        (
+            "set_effect",
+            json!({ "query": "aurora", "transition_ms": 500 }),
+            "transition_ms",
+        ),
+        (
+            "set_effect",
+            json!({ "query": "aurora", "devices": ["strip-1"] }),
+            "devices",
+        ),
+        (
+            "set_brightness",
+            json!({ "brightness": 42, "device_id": "strip-1" }),
+            "device_id",
+        ),
+        (
+            "stop_effect",
+            json!({ "transition_ms": 300 }),
+            "transition_ms",
+        ),
+        ("diagnose", json!({ "checks": ["connectivity"] }), "checks"),
+    ] {
+        let result = execute_tool_with_state(tool, &params, state.as_ref()).await;
+        let error = result.expect_err(&format!(
+            "{tool} must refuse the deleted parameter '{phantom}' rather than drop it"
+        ));
+        assert!(
+            format!("{error}").contains(phantom),
+            "{tool}'s refusal should name '{phantom}': {error}"
+        );
+    }
+}
+
+/// A refused call changes nothing.
+#[tokio::test]
+async fn a_refused_deleted_parameter_leaves_the_scene_untouched() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     insert_test_effect(&state, "Aurora").await;
 
     let error = execute_tool_with_state(
         "set_effect",
-        &json!({
-            "query": "aurora",
-            "transition_ms": 500
-        }),
+        &json!({ "query": "aurora", "transition_ms": 500 }),
         state.as_ref(),
     )
     .await
-    .expect_err("effect transitions are not implemented");
+    .expect_err("set_effect no longer accepts a transition argument");
     assert!(
-        format!("{error}").contains("not implemented yet"),
-        "unexpected error: {error}"
+        format!("{error}").contains("transition_ms"),
+        "the refusal names the parameter: {error}"
     );
 
-    // The scene is untouched, because the refusal happens before any
-    // mutation.
     let manager = state.scene_manager.read().await;
     assert!(
         manager
@@ -1116,7 +1184,7 @@ async fn stateful_set_effect_refuses_a_transition_it_cannot_apply() {
             .and_then(|scene| scene.primary_group())
             .and_then(|zone| zone.effect_id)
             .is_none(),
-        "a refused apply must not load the effect"
+        "a refused call must not load the effect"
     );
 }
 
@@ -1571,6 +1639,173 @@ fn tool_definitions_have_valid_schemas() {
         diagnose.output_schema["properties"]["overall_status"]["enum"],
         json!(["healthy", "warning", "unhealthy"])
     );
+}
+
+/// Every tool's top-level argument set is closed.
+///
+/// The dispatch gate only refuses undeclared arguments for tools whose
+/// schema says `additionalProperties: false`, so a tool without the
+/// marker silently drops whatever it is handed. That is the same
+/// decoration-instead-of-enforcement failure the phantom deletions
+/// exist to end, one layer up, and it is why this sweeps all of them
+/// rather than naming the ones that were fixed: tool eighteen cannot
+/// ship open.
+///
+/// Nested objects are deliberately exempt. `set_effect.controls` and
+/// the display-face payload carry per-effect keys the schema cannot
+/// enumerate, so they stay open on purpose.
+#[test]
+fn every_tool_closes_its_top_level_argument_set() {
+    for tool in build_tool_definitions() {
+        assert_eq!(
+            tool.input_schema["additionalProperties"],
+            json!(false),
+            "{} must declare additionalProperties: false, or the dispatch \
+             gate will silently drop arguments it does not declare",
+            tool.name
+        );
+    }
+}
+
+/// The gate refuses an undeclared argument on every tool.
+///
+/// Closing the schemas and enforcing them are two different things, so
+/// this drives the real dispatch path rather than reading the schema.
+#[tokio::test]
+async fn undeclared_arguments_are_refused_on_every_tool() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+
+    for tool in build_tool_definitions() {
+        let mut params = json!({ "hypercolor_not_a_real_argument": 1 });
+        // Satisfy required arguments so the refusal is provably about
+        // the undeclared key rather than a missing one.
+        if let Some(required) = tool.input_schema["required"].as_array() {
+            let object = params.as_object_mut().expect("params is an object");
+            for name in required.iter().filter_map(Value::as_str) {
+                object.insert(name.to_owned(), json!("placeholder"));
+            }
+        }
+
+        let error = execute_tool_with_state(&tool.name, &params, state.as_ref())
+            .await
+            .expect_err(&format!(
+                "{} should refuse an undeclared argument",
+                tool.name
+            ));
+        assert!(
+            format!("{error}").contains("hypercolor_not_a_real_argument"),
+            "{}'s refusal should name the undeclared argument: {error}",
+            tool.name
+        );
+    }
+}
+
+/// A parameter exists only when its behavior does (Spec 78 §6.1).
+///
+/// Each entry below was advertised in a tool's schema while the handler
+/// either never read it or read it only to echo it back. They are named
+/// here rather than described so that reintroducing one fails loudly.
+#[test]
+fn deleted_phantom_parameters_stay_deleted() {
+    let phantoms: &[(&str, &str)] = &[
+        ("set_effect", "devices"),
+        ("set_effect", "transition_ms"),
+        ("set_color", "devices"),
+        ("set_brightness", "device_id"),
+        ("set_brightness", "transition_ms"),
+        ("diagnose", "device_id"),
+        ("diagnose", "checks"),
+        ("stop_effect", "transition_ms"),
+        ("create_scene", "transition_ms"),
+        ("set_profile", "transition_ms"),
+        // Nested, so the closed-schema sweep cannot see it: the
+        // handler reads trigger.type and nothing else.
+        ("create_scene", "trigger.cron"),
+    ];
+
+    let tools = build_tool_definitions();
+    for (tool_name, param) in phantoms {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == *tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} should be registered"));
+        let mut node = &tool.input_schema["properties"];
+        for (depth, segment) in param.split('.').enumerate() {
+            if depth > 0 {
+                node = &node["properties"];
+            }
+            let Some(next) = node.get(segment) else {
+                node = &Value::Null;
+                break;
+            };
+            node = next;
+        }
+        assert!(
+            node.is_null(),
+            "{tool_name} must not advertise the phantom parameter {param}"
+        );
+    }
+}
+
+/// The category filter's advertised vocabulary comes from the type.
+#[test]
+fn list_effects_advertises_the_real_effect_categories() {
+    let tools = build_tool_definitions();
+    let list_effects = tools
+        .iter()
+        .find(|tool| tool.name == "list_effects")
+        .expect("list_effects should be registered");
+
+    let advertised = list_effects.input_schema["properties"]["category"]["enum"]
+        .as_array()
+        .expect("the category filter should advertise an enum")
+        .iter()
+        .map(|value| value.as_str().expect("categories are strings").to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(advertised, EffectCategory::VARIANTS);
+    for fabricated in ["reactive", "gaming", "productivity"] {
+        assert!(
+            !advertised.iter().any(|value| value == fabricated),
+            "'{fabricated}' is not an EffectCategory and must not be advertised"
+        );
+    }
+}
+
+/// `destructive` is a per-tool fact, not a hardcoded false.
+#[test]
+fn tool_annotations_report_what_each_tool_actually_does() {
+    let tools = build_tool_definitions();
+    let annotation = |name: &str| {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} should be registered"));
+        (tool.read_only, tool.destructive)
+    };
+
+    // Tools that discard state the caller cannot recover.
+    for name in [
+        "stop_effect",
+        "set_effect",
+        "set_color",
+        "activate_scene",
+        "set_profile",
+        "set_display_face",
+    ] {
+        assert_eq!(annotation(name), (false, true), "{name}");
+    }
+
+    // Reversible value writes and pure creations.
+    for name in ["set_brightness", "set_output_power", "create_scene"] {
+        assert_eq!(annotation(name), (false, false), "{name}");
+    }
+
+    // Read-only tools never claim to destroy anything.
+    for tool in tools.iter().filter(|tool| tool.read_only) {
+        assert!(!tool.destructive, "{} is read-only", tool.name);
+    }
 }
 
 #[tokio::test]

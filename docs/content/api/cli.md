@@ -167,10 +167,15 @@ hypercolor effects list --search aurora
 
 | Flag | Purpose |
 | --- | --- |
-| `--engine <TYPE>` | Filter by engine: `native`, `web`, `wasm`. |
+| `--source <KIND>` | Filter by rendering source: `native`, `html`, `shader`. |
 | `--audio` | Audio-reactive effects only. |
-| `--search <TEXT>` | Match name or description. |
+| `--search <TEXT>` | Match name, description, author, or tags. |
 | `--category <NAME>` | Filter by category. |
+
+The daemon narrows the catalog, so every flag above is one query parameter on
+`GET /api/v1/effects` and the payload carries only the matching rows. A flag
+naming a category or source that does not exist answers with a validation
+error rather than an empty list.
 
 Activate an effect by name or slug (fuzzy-matched). Tune it with repeatable
 `--param key=value` pairs, or the `--speed` / `--intensity` shorthands.

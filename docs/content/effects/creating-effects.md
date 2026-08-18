@@ -332,7 +332,7 @@ you were watching drives the LEDs.
 Once your effect is installed, an AI agent can drive it over MCP. The shipped
 `list_effects` and `set_effect` tools discover and apply effects by name, and
 `get_status` reads current state first. MCP is **off by default**; enable it before
-configuring a client. The Agents section covers MCP setup, the 16 tools, 5 resources,
+configuring a client. The Agents section covers MCP setup, the 17 tools, 5 resources,
 and 3 prompts in full.
 
 ## Success checkpoint

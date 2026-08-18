@@ -237,7 +237,7 @@ fn build_cmd() -> clap::Command {
                 .subcommand(
                     Command::new("list")
                         .about("List effects")
-                        .arg(Arg::new("engine").long("engine"))
+                        .arg(Arg::new("source").long("source"))
                         .arg(Arg::new("audio").long("audio").action(ArgAction::SetTrue))
                         .arg(Arg::new("search").long("search"))
                         .arg(Arg::new("category").long("category")),
@@ -865,24 +865,59 @@ fn parse_effects_list() {
     assert_eq!(sub.subcommand_name(), Some("list"));
 }
 
+/// Parsed by the real `Cli`, not the mirror below.
+///
+/// `build_cmd` is a hand-written copy of the command tree, which cannot
+/// notice a flag being renamed: it kept asserting `--engine` for a full
+/// release after the real parser had moved to `--source`. Every filter
+/// this test names reaches a live query parameter, so it reads the
+/// shipped definition.
 #[test]
 fn parse_effects_list_with_filters() {
-    let cmd = build_cmd();
-    let matches = cmd
-        .try_get_matches_from([
-            "hyper", "effects", "list", "--engine", "native", "--audio", "--search", "aurora",
-        ])
-        .expect("effects list with filters should parse");
-    let (_, sub) = matches.subcommand().expect("should have subcommand");
-    let (_, list) = sub.subcommand().expect("should have list");
-    assert_eq!(
-        list.get_one::<String>("engine").map(String::as_str),
-        Some("native")
-    );
-    assert!(list.get_flag("audio"));
-    assert_eq!(
-        list.get_one::<String>("search").map(String::as_str),
-        Some("aurora")
+    use clap::Parser as _;
+    use hypercolor_cli::Commands;
+    use hypercolor_cli::commands::effects::EffectCommand;
+
+    let cli = hypercolor_cli::Cli::try_parse_from([
+        "hyper",
+        "effects",
+        "list",
+        "--source",
+        "native",
+        "--audio",
+        "--search",
+        "aurora",
+        "--category",
+        "ambient",
+    ])
+    .expect("effects list with filters should parse");
+
+    let Commands::Effects(effects) = cli.command else {
+        panic!("expected the effects subcommand");
+    };
+    let EffectCommand::List(list) = effects.command else {
+        panic!("expected the list subcommand");
+    };
+
+    assert_eq!(list.source.as_deref(), Some("native"));
+    assert!(list.audio);
+    assert_eq!(list.search.as_deref(), Some("aurora"));
+    assert_eq!(list.category.as_deref(), Some("ambient"));
+}
+
+/// The renamed flag is gone, not aliased.
+///
+/// `--engine` named values (`web`, `wasm`) the daemon never emitted, so
+/// keeping it as an alias would forward two spellings that now answer
+/// with a validation error.
+#[test]
+fn the_old_engine_flag_no_longer_parses() {
+    use clap::Parser as _;
+
+    assert!(
+        hypercolor_cli::Cli::try_parse_from(["hyper", "effects", "list", "--engine", "native"])
+            .is_err(),
+        "--engine was renamed to --source"
     );
 }
 

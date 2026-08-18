@@ -31,10 +31,12 @@ pub(super) fn build_get_devices() -> ToolDefinition {
                     "type": "string",
                     "description": "Optional output backend id filter. Use ids reported by device origin metadata."
                 }
-            }
+            },
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -43,7 +45,7 @@ pub(super) fn build_set_brightness() -> ToolDefinition {
     ToolDefinition {
         name: "set_brightness".into(),
         title: "Set Brightness".into(),
-        description: "Set the brightness level globally or for specific devices. Brightness is a percentage from 0 (off/dark) to 100 (maximum).".into(),
+        description: "Set the global brightness level. Brightness is a percentage from 0 (off/dark) to 100 (maximum), and the change is immediate.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -52,23 +54,14 @@ pub(super) fn build_set_brightness() -> ToolDefinition {
                     "minimum": 0,
                     "maximum": 100,
                     "description": "Brightness percentage (0 = off, 100 = full brightness)"
-                },
-                "device_id": {
-                    "type": "string",
-                    "description": "Optional device ID for per-device brightness"
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Fade transition duration in milliseconds",
-                    "default": 300,
-                    "minimum": 0,
-                    "maximum": 5000
                 }
             },
-            "required": ["brightness"]
+            "required": ["brightness"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -184,17 +177,9 @@ pub(super) async fn handle_set_brightness_with_state(
         new_value: brightness_percent(normalized),
     });
 
-    let device_id = params.get("device_id").and_then(Value::as_str);
-    let scope = if device_id.is_some() {
-        "device"
-    } else {
-        "global"
-    };
-
     Ok(json!({
         "brightness": brightness,
-        "scope": scope,
-        "device_id": device_id,
+        "scope": "global",
         "previous_brightness": previous
     }))
 }
