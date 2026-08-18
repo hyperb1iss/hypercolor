@@ -232,6 +232,14 @@ once, here.
   **exceeds the 10-minute foreground command cap**, so run it with
   `run_in_background: true` writing to a log, then wait on a
   `until grep -q VERIFY_EXIT` loop.
+- **`cargo check -p <crate> --all-targets` is not enough** before claiming a
+  shared-type change compiles. Changing a `hypercolor-types` enum or a client
+  struct breaks test targets in `hypercolor-types`, `hypercolor-tui`,
+  `hypercolor-app` and `hypercolor-leptos-ext` that a daemon-scoped check never
+  builds. Use `cargo check --workspace --all-targets`, then `just lint`, then
+  the full gate. 78.3c touches every client, so this will bite otherwise.
+- **The web UI is outside all of that.** `--workspace` excludes
+  `crates/hypercolor-ui` entirely; check and test it on its own manifest.
 - **`just effects-build` once per worktree** before workspace tests.
 - **Known flakes, not your bug.** `pipeline_gpu_*` in
   `crates/hypercolor-daemon/tests/render_thread_tests.rs` fail under parallel
