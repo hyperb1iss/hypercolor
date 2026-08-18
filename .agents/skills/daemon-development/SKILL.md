@@ -74,7 +74,7 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 | `/layouts`                      | Spatial layout CRUD + active + preview + `{id}/apply`    |
 | `/profiles`                     | Profile save/load + `{id}/apply`                         |
 | `/config`                       | Show/get/set/reset system config values                  |
-| `/settings/brightness`          | Global brightness get/set                                |
+| `/output`                       | Global output power and brightness get/patch             |
 | `/status`                       | Daemon status (aliased as `/state`)                      |
 | `/server`                       | Server identity                                          |
 | `/diagnose`                     | System diagnostics                                       |

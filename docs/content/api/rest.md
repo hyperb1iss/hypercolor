@@ -219,6 +219,11 @@ A single named sensor reading. Common labels: `cpu_temp`, `gpu_load`,
 `ram_used`.
 {% end %}
 
+{% api_endpoint(method="GET", path="/api/v1/system/audio-devices") %}
+List available audio capture devices for reactive effects. Pick the **monitor**
+of your output, not a microphone, if you want lights to follow what's playing.
+{% end %}
+
 ## Effects
 
 {{ img(path="img/ui/effects.webp", alt="Browsing the effect catalog in the web UI") }}
@@ -323,37 +328,6 @@ Patch controls on a specific effect by ID, whether or not it is the active one.
 
 {% api_endpoint(method="POST", path="/api/v1/effects/stop") %}
 Stop the running effect. Output goes dark.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/pause") %}
-Pause output without clearing the active effect. The render loop pauses, and
-devices hold the configured static off color until a resume. Returns `404`
-when no effect is active.
-
-**Response:**
-
-```json
-{
-  "paused": true,
-  "effect": { "id": "borealis", "name": "Borealis" },
-  "off_output_behavior": "static",
-  "off_output_color": [0, 0, 0]
-}
-```
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/resume") %}
-Resume output for the preserved active effect after a pause. Returns `404`
-when no effect is active.
-
-**Response:**
-
-```json
-{
-  "resumed": true,
-  "effect": { "id": "borealis", "name": "Borealis" }
-}
-```
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/effects/rescan") %}
@@ -1084,28 +1058,45 @@ Start a playlist. Effects cycle on the playlist's timing.
 Stop the running playlist.
 {% end %}
 
-## Settings and audio
+## Output
 
-{% api_endpoint(method="GET", path="/api/v1/settings/brightness") %}
-The current global brightness level.
+Global output has one resource and two knobs. Pausing preserves the live
+scene, its effects, and their controls: devices hold the configured static
+off color until you set power back to `running`.
+
+{% api_endpoint(method="GET", path="/api/v1/output") %}
+Read global output power and brightness.
+
+**Response:**
+
+```json
+{
+  "power": "running",
+  "brightness": 0.8
+}
+```
+
+`power` is `running` or `paused`. A destructive stop leaves outputs dark, so
+it reads as `paused` here; the stop's other consequences are visible on the
+effect surface. `brightness` is a float on `0.0` to `1.0`.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/settings/brightness") %}
-Set global brightness as an integer percent, `0` to `100`. An out-of-range
-value returns `422` with the message `brightness must be between 0 and 100`.
+{% api_endpoint(method="PATCH", path="/api/v1/output") %}
+Set power, brightness, or both. Every field is optional, but a document that
+sets neither returns `422` rather than quietly succeeding, so a client that
+drops its payload hears about it. Use `GET` to read.
 
 **Request body:**
 
 ```json
 {
-  "brightness": 80
+  "power": "paused",
+  "brightness": 0.35
 }
 ```
-{% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/audio/devices") %}
-List available audio capture devices for reactive effects. Pick the **monitor**
-of your output, not a microphone, if you want lights to follow what's playing.
+A brightness outside `0.0` to `1.0` returns `422` naming the offending field,
+and it is refused before power moves, so a rejected patch changes nothing.
 {% end %}
 
 ## Screen capture

@@ -207,7 +207,7 @@ beat_sensitivity = 0.6      # Beat detection threshold (0.0 = never, 1.0 = alway
 **`device`** special values: `"default"` captures from the system monitor (what you hear); `"microphone"` uses the default input device; any other string is matched against PulseAudio/PipeWire device names. List available devices:
 
 ```bash
-curl http://localhost:9420/api/v1/audio/devices | jq
+curl http://localhost:9420/api/v1/system/audio-devices | jq
 ```
 
 **`fft_size`** must be a power of two. Smaller values give faster response, larger values give better low-frequency resolution. 1024 is a good default for most music.
