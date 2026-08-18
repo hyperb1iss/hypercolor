@@ -31,6 +31,8 @@ fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary
             ..EffectCapabilitySet::default()
         },
         cover_image_url: None,
+        controls: None,
+        presets: None,
     }
 }
 

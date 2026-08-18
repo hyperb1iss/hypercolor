@@ -66,7 +66,7 @@ fn http_config(config: &McpConfig) -> StreamableHttpServerConfig {
     http
 }
 
-fn normalize_base_path(path: &str) -> String {
+pub(crate) fn normalize_base_path(path: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed == "/" {
         return "/mcp".to_owned();
@@ -256,7 +256,7 @@ fn tool_to_mcp(tool: &tools::ToolDefinition) -> Tool {
     .with_annotations(
         ToolAnnotations::new()
             .read_only(tool.read_only)
-            .destructive(false)
+            .destructive(tool.destructive)
             .idempotent(tool.idempotent)
             .open_world(false),
     )

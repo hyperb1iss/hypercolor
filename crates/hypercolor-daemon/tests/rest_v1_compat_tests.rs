@@ -599,8 +599,9 @@ async fn frozen_list_endpoints_ignore_offset_and_limit_query_params() {
     register_effect(&state, "aurora").await;
     let app = test_app(&state);
 
-    // None of the six take a `Query` extractor, so paging arguments are
-    // silently discarded rather than rejected.
+    // Effects is the one row of the six with a `Query` extractor, and it
+    // names only the Spec 78 §2.1 filters. Paging arguments fall outside
+    // that set, so they stay silently discarded rather than rejected.
     let response = send(&app, get("/api/v1/effects?offset=2&limit=1")).await;
 
     assert_eq!(response.status(), StatusCode::OK);

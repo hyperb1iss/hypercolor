@@ -9,9 +9,14 @@
 //! same order.
 
 use std::collections::HashMap;
+use std::str::FromStr;
+
+use strum::VariantNames;
 
 use hypercolor_types::api::effects::EffectLayoutApplyResult;
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectId, EffectMetadata};
+use hypercolor_types::effect::{
+    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+};
 use hypercolor_types::event::{EffectRef, HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
@@ -585,6 +590,184 @@ pub async fn invalidate_active_zones(state: &AppState) -> Result<SceneCommit, Do
     .await?
     .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("invalidation produced no commit")))?;
     Ok(commit)
+}
+
+// ── Catalog ──────────────────────────────────────────────────────────────
+
+/// A narrowing of the effect catalog.
+///
+/// Every transport that lists effects builds one of these and hands it
+/// to [`list_catalog`]; none of them filters on its own. `None` on a
+/// field means the caller did not narrow on that axis.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EffectCatalogQuery {
+    /// Exact category match.
+    pub category: Option<EffectCategory>,
+    /// Declared audio reactivity.
+    pub audio_reactive: Option<bool>,
+    /// Declared screen reactivity.
+    pub screen_reactive: Option<bool>,
+    /// Declared input reactivity.
+    pub input_reactive: Option<bool>,
+    /// Rendering source: `native`, `html`, or `shader`.
+    pub source: Option<String>,
+    /// Case-insensitive substring over name, description, author, and
+    /// tags.
+    ///
+    /// Case is folded with `str::to_lowercase`, which is Unicode-aware
+    /// but is lowercasing rather than full case folding. The pairs it
+    /// still misses all change length or context: eszett against `ss`,
+    /// Turkish dotted capital I, and medial against final sigma. Closing
+    /// those needs a folding crate; std does not offer one.
+    pub search: Option<String>,
+}
+
+impl EffectCatalogQuery {
+    /// Parse the wire spellings of the narrowing axes.
+    ///
+    /// `category` and `source` fold with ASCII rules because both are
+    /// closed vocabularies spelled in ASCII; only the free-text search
+    /// term needs the Unicode fold.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Validation`] when a category or source names a
+    /// value the type system does not have. An unrecognized filter
+    /// value is a caller mistake worth reporting, not an empty list.
+    pub fn parse(
+        category: Option<&str>,
+        source: Option<&str>,
+        search: Option<&str>,
+    ) -> Result<Self, DomainError> {
+        let category = category
+            .map(|raw| {
+                EffectCategory::from_str(&raw.to_ascii_lowercase()).map_err(|_| {
+                    DomainError::validation_field(
+                        "category",
+                        format!(
+                            "unknown effect category '{raw}'; expected one of {}",
+                            EffectCategory::VARIANTS.join(", ")
+                        ),
+                    )
+                })
+            })
+            .transpose()?;
+
+        let source = source
+            .map(|raw| {
+                let normalized = raw.to_ascii_lowercase();
+                if EFFECT_SOURCE_KINDS.contains(&normalized.as_str()) {
+                    Ok(normalized)
+                } else {
+                    Err(DomainError::validation_field(
+                        "source",
+                        format!(
+                            "unknown effect source '{raw}'; expected one of {}",
+                            EFFECT_SOURCE_KINDS.join(", ")
+                        ),
+                    ))
+                }
+            })
+            .transpose()?;
+
+        Ok(Self {
+            category,
+            source,
+            // Unicode-aware on purpose: effect names, descriptions,
+            // authors, and tags are free text, so an ASCII fold would
+            // leave every non-ASCII uppercase letter unmatchable.
+            search: search
+                .map(str::trim)
+                .filter(|term| !term.is_empty())
+                .map(str::to_lowercase),
+            ..Self::default()
+        })
+    }
+
+    /// Whether one effect survives this narrowing.
+    #[must_use]
+    pub fn matches(&self, metadata: &EffectMetadata) -> bool {
+        if self
+            .category
+            .is_some_and(|wanted| wanted != metadata.category)
+        {
+            return false;
+        }
+        if self
+            .audio_reactive
+            .is_some_and(|wanted| wanted != metadata.audio_reactive)
+        {
+            return false;
+        }
+        if self
+            .screen_reactive
+            .is_some_and(|wanted| wanted != metadata.screen_reactive)
+        {
+            return false;
+        }
+        if self
+            .input_reactive
+            .is_some_and(|wanted| wanted != metadata.input_reactive)
+        {
+            return false;
+        }
+        if self
+            .source
+            .as_deref()
+            .is_some_and(|wanted| wanted != effect_source_kind(&metadata.source))
+        {
+            return false;
+        }
+        self.search
+            .as_deref()
+            .is_none_or(|term| effect_matches_search(metadata, term))
+    }
+}
+
+/// The catalog, narrowed and ordered by name.
+///
+/// Ordering is case-insensitive with the raw name as the tiebreak, so
+/// two effects differing only in case keep a stable relative order.
+pub async fn list_catalog(state: &AppState, query: &EffectCatalogQuery) -> Vec<EffectMetadata> {
+    let mut matched: Vec<EffectMetadata> = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .map(|(_, entry)| &entry.metadata)
+            .filter(|metadata| query.matches(metadata))
+            .cloned()
+            .collect()
+    };
+    matched.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    matched
+}
+
+/// The wire spelling of an effect's rendering source.
+#[must_use]
+pub fn effect_source_kind(source: &EffectSource) -> &'static str {
+    match source {
+        EffectSource::Native { .. } => "native",
+        EffectSource::Html { .. } => "html",
+        EffectSource::Shader { .. } => "shader",
+    }
+}
+
+/// Every wire spelling [`effect_source_kind`] can produce.
+pub const EFFECT_SOURCE_KINDS: [&str; 3] = ["native", "html", "shader"];
+
+fn effect_matches_search(metadata: &EffectMetadata, term: &str) -> bool {
+    metadata.name.to_lowercase().contains(term)
+        || metadata.description.to_lowercase().contains(term)
+        || metadata.author.to_lowercase().contains(term)
+        || metadata
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(term))
 }
 
 // ── Shared steps ─────────────────────────────────────────────────────────

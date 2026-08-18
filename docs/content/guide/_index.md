@@ -138,7 +138,7 @@ The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/p
 
 **CLI**: the `hypercolor` binary talks to the daemon over HTTP. Every action you can take in the UI is available via the CLI. See the [CLI reference](@/api/cli.md).
 
-**MCP server**: 16 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
+**MCP server**: 17 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
 
 ## Getting help
 

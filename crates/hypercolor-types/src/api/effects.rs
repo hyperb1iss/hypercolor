@@ -52,6 +52,11 @@ pub struct EffectListResponse {
 }
 
 /// One effect in the list response.
+///
+/// `controls` and `presets` are expansions: they are absent unless the
+/// request asked for them via `include=controls,presets`, so the default
+/// list shape is unchanged and a client that ignores the parameter sees
+/// exactly the payload it saw before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct EffectSummary {
     pub id: String,
@@ -71,6 +76,10 @@ pub struct EffectSummary {
     pub capabilities: EffectCapabilitySet,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_image_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controls: Option<Vec<ControlDefinition>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presets: Option<Vec<PresetTemplate>>,
 }
 
 /// Typed source requirements declared by an effect.

@@ -9,8 +9,11 @@ use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metada
 use crate::api::AppState;
 use crate::api::effects::normalize_control_payload;
 use crate::domain::MutationContext;
-use crate::domain::effect::{ApplyEffect, RequestedTransition, apply_effect, stop_effect};
+use crate::domain::effect::{
+    ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog, stop_effect,
+};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
+use strum::VariantNames;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -30,24 +33,14 @@ pub(super) fn build_set_effect() -> ToolDefinition {
                     "type": "object",
                     "description": "Optional effect parameter overrides as key-value pairs",
                     "additionalProperties": true
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade duration in milliseconds. Effect transitions are not implemented yet, so only 0 (immediate cut) is accepted.",
-                    "default": 0,
-                    "minimum": 0,
-                    "maximum": 0
-                },
-                "devices": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional list of device IDs to target. Omit to apply to all devices."
                 }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -62,7 +55,10 @@ pub(super) fn build_list_effects() -> ToolDefinition {
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["ambient", "reactive", "audio", "gaming", "productivity", "utility", "interactive", "generative"],
+                    // Generated from EffectCategory so the advertised
+                    // vocabulary cannot drift from the one the daemon
+                    // matches against.
+                    "enum": EffectCategory::VARIANTS,
                     "description": "Filter by effect category"
                 },
                 "audio_reactive": {
@@ -86,10 +82,12 @@ pub(super) fn build_list_effects() -> ToolDefinition {
                     "default": 0,
                     "minimum": 0
                 }
-            }
+            },
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -101,18 +99,12 @@ pub(super) fn build_stop_effect() -> ToolDefinition {
         description: "Destructively stop the current effect, clear its live controls and preset provenance, and release network-device ownership. Use set_output_power with state 'paused' for a reversible blackout.".into(),
         input_schema: json!({
             "type": "object",
-            "properties": {
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Fade-out duration in milliseconds",
-                    "default": 300,
-                    "minimum": 0,
-                    "maximum": 5000
-                }
-            }
+            "properties": {},
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -121,7 +113,7 @@ pub(super) fn build_set_color() -> ToolDefinition {
     ToolDefinition {
         name: "set_color".into(),
         title: "Set Solid Color".into(),
-        description: "Set a solid color on all or specific RGB devices. Accepts CSS color names ('coral', 'dodgerblue'), hex codes ('#ff6ac1'), RGB values ('rgb(255, 106, 193)'), HSL values ('hsl(330, 100%, 71%)'), or natural language descriptions ('warm sunset orange', 'deep ocean blue').".into(),
+        description: "Set a solid color across the LED pipeline. Accepts CSS color names ('coral', 'dodgerblue'), hex codes ('#ff6ac1'), RGB values ('rgb(255, 106, 193)'), HSL values ('hsl(330, 100%, 71%)'), or natural language descriptions ('warm sunset orange', 'deep ocean blue').".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -141,17 +133,14 @@ pub(super) fn build_set_color() -> ToolDefinition {
                     "default": 0,
                     "minimum": 0,
                     "maximum": 0
-                },
-                "devices": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional list of device IDs. Omit to apply to all devices."
                 }
             },
-            "required": ["color"]
+            "required": ["color"],
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -166,14 +155,6 @@ pub(super) async fn handle_set_effect_with_state(
         .get("query")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("query".into()))?;
-
-    // Absent means the caller asked for no transition, which the daemon
-    // renders as an immediate cut. It used to default to 500 and echo
-    // that back without ever applying it.
-    let transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
 
     let effect_catalog = {
         let registry = state.effect_registry.read().await;
@@ -232,7 +213,7 @@ pub(super) async fn handle_set_effect_with_state(
             controls: normalized_controls.clone(),
             preset_id: None,
             target_zone: None,
-            transition: RequestedTransition::of_duration(transition_ms),
+            transition: RequestedTransition::cut(),
         },
         MutationContext::mcp(),
     )
@@ -266,51 +247,16 @@ pub(super) async fn handle_list_effects_with_state(
 ) -> Result<Value, ToolError> {
     let limit_u64 = params.get("limit").and_then(Value::as_u64).unwrap_or(20);
     let offset_u64 = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
-    let category_filter = params.get("category").and_then(Value::as_str);
-    let query_filter = params.get("query").and_then(Value::as_str);
-    let audio_reactive_filter = params.get("audio_reactive").and_then(Value::as_bool);
 
-    let effect_catalog = {
-        let registry = state.effect_registry.read().await;
-        registry
-            .iter()
-            .map(|(_, entry)| entry.metadata.clone())
-            .collect::<Vec<_>>()
+    let query = EffectCatalogQuery {
+        audio_reactive: params.get("audio_reactive").and_then(Value::as_bool),
+        ..EffectCatalogQuery::parse(
+            params.get("category").and_then(Value::as_str),
+            None,
+            params.get("query").and_then(Value::as_str),
+        )?
     };
-
-    let mut filtered = effect_catalog
-        .into_iter()
-        .filter(|metadata| {
-            let category_ok = category_filter.is_none_or(|category| {
-                format!("{}", metadata.category).eq_ignore_ascii_case(category)
-            });
-            let query_ok = query_filter.is_none_or(|query| {
-                metadata.name.to_lowercase().contains(&query.to_lowercase())
-                    || metadata
-                        .description
-                        .to_lowercase()
-                        .contains(&query.to_lowercase())
-                    || metadata
-                        .tags
-                        .iter()
-                        .any(|tag| tag.to_lowercase().contains(&query.to_lowercase()))
-            });
-            let is_audio_reactive = metadata.audio_reactive
-                || metadata
-                    .tags
-                    .iter()
-                    .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
-                || matches!(
-                    metadata.category,
-                    hypercolor_types::effect::EffectCategory::Audio
-                );
-            let audio_ok =
-                audio_reactive_filter.is_none_or(|required| required == is_audio_reactive);
-            category_ok && query_ok && audio_ok
-        })
-        .collect::<Vec<_>>();
-
-    filtered.sort_by_cached_key(|metadata| metadata.name.to_lowercase());
+    let filtered = list_catalog(state, &query).await;
 
     let total = filtered.len();
     let limit = usize::try_from(limit_u64).unwrap_or(20);
@@ -321,21 +267,12 @@ pub(super) async fn handle_list_effects_with_state(
     let effects = filtered[start..end]
         .iter()
         .map(|metadata| {
-            let audio_reactive = metadata.audio_reactive
-                || metadata
-                    .tags
-                    .iter()
-                    .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
-                || matches!(
-                    metadata.category,
-                    hypercolor_types::effect::EffectCategory::Audio
-                );
             json!({
                 "id": metadata.id.to_string(),
                 "name": metadata.name,
                 "description": metadata.description,
                 "category": format!("{}", metadata.category),
-                "audio_reactive": audio_reactive,
+                "audio_reactive": metadata.audio_reactive,
                 "tags": metadata.tags,
                 "controls": metadata.controls.iter().map(|control| json!({
                     "id": control.control_id(),
@@ -362,25 +299,18 @@ pub(super) async fn handle_list_effects_with_state(
 }
 
 pub(super) async fn handle_stop_effect_with_state(
-    params: &Value,
+    _params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    let transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(300);
-
     let Some(stopped) = stop_effect(state, MutationContext::mcp()).await? else {
         return Ok(json!({
             "stopped": false,
-            "transition_ms": transition_ms,
             "effect": null
         }));
     };
 
     Ok(json!({
         "stopped": true,
-        "transition_ms": transition_ms,
         "released_network_devices": stopped.released_network_devices,
         "effect": {
             "id": stopped.effect.id,

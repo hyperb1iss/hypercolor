@@ -28,6 +28,7 @@ pub(super) fn build_get_status() -> ToolDefinition {
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -61,6 +62,7 @@ pub(super) fn build_set_output_power() -> ToolDefinition {
             "additionalProperties": false
         }),
         read_only: false,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -76,6 +78,7 @@ pub(super) fn build_get_audio_state() -> ToolDefinition {
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -91,6 +94,7 @@ pub(super) fn build_get_layout() -> ToolDefinition {
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -99,24 +103,11 @@ pub(super) fn build_diagnose() -> ToolDefinition {
     ToolDefinition {
         name: "diagnose".into(),
         title: "Diagnose Issues".into(),
-        description: "Run diagnostics on the Hypercolor system or a specific device. Checks connectivity, protocol health, frame delivery, latency, and error rates. Returns actionable findings with severity levels.".into(),
+        description: "Run full-system diagnostics. Checks connectivity, protocol health, frame delivery, latency, and error rates across every device. Returns actionable findings with severity levels.".into(),
         input_schema: json!({
             "type": "object",
-            "properties": {
-                "device_id": {
-                    "type": "string",
-                    "description": "Specific device to diagnose. Omit for full system diagnostics."
-                },
-                "checks": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["connectivity", "latency", "frame_delivery", "color_accuracy", "protocol", "all"]
-                    },
-                    "description": "Which diagnostic checks to run. Defaults to 'all'.",
-                    "default": ["all"]
-                }
-            }
+            "properties": {},
+            "additionalProperties": false
         }),
         output_schema: json!({
             "type": "object",
@@ -146,6 +137,7 @@ pub(super) fn build_diagnose() -> ToolDefinition {
             "additionalProperties": false
         }),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -167,6 +159,7 @@ pub(super) fn build_get_sensor_data() -> ToolDefinition {
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }

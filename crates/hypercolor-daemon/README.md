@@ -47,7 +47,7 @@ The daemon serves on `:9420`:
 - `GET|POST /api/v1/profiles` — profile save/load
 - `WebSocket /api/v1/ws` — real-time events, canvas frames, metrics, spectrum
 - `GET /swagger-ui` — interactive API docs
-- MCP server — 16 tools, 5 resources for AI integration
+- MCP server — 17 tools, 5 resources for AI integration
 
 ## Usage
 

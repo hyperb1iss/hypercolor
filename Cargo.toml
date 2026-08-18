@@ -102,6 +102,7 @@ sha2 = "0.10"
 arc-swap = "1.7"
 rayon = "1.12"
 strum = { version = "0.28", features = ["derive"] }
+subtle = "2.6"
 
 # Config
 dirs = "6.0"

@@ -1485,14 +1485,21 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     router = router.merge(openapi::router());
 
     // Serve the web UI with SPA fallback when a UI directory is configured.
+    //
+    // Every dynamic mount above is named here so the middleware can tell
+    // an asset request from an API one. The UI is the fallback, so its
+    // surface is whatever those prefixes do not claim, and a browser
+    // fetching a script or stylesheet attaches no bearer header.
+    let mut static_assets = security::StaticAssetSurface::default();
     if let Some(ui_path) = ui_dir {
         let index = ui_path.join("index.html");
         router = router.fallback_service(ServeDir::new(ui_path).fallback(ServeFile::new(index)));
+        static_assets = security::StaticAssetSurface::mounted(dynamic_route_prefixes(&mcp_config));
     }
 
     router
         .layer(axum::middleware::from_fn_with_state(
-            security_state,
+            security_state.with_static_assets(static_assets),
             security::enforce_security,
         ))
         .layer(
@@ -1511,6 +1518,22 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         .layer(axum::middleware::from_fn(access_log::log_access))
         .with_state(state)
+}
+
+/// The prefixes this router answers from a handler that
+/// [`StaticAssetSurface`](security::StaticAssetSurface) does not already
+/// protect.
+///
+/// The web UI mounts as the fallback, so the security layer identifies an
+/// asset request by exclusion. `/api` and `/health` are seeded by the
+/// surface itself; what varies per daemon is the MCP mount, whose base
+/// path is configurable, so it is derived here next to the mount.
+fn dynamic_route_prefixes(mcp_config: &McpConfig) -> Vec<String> {
+    let mut prefixes = Vec::new();
+    if mcp_config.enabled {
+        prefixes.push(crate::mcp::normalize_base_path(&mcp_config.base_path));
+    }
+    prefixes
 }
 
 fn cors_origins(web_config: &WebConfig, api_auth_required: bool) -> AllowOrigin {
@@ -1643,5 +1666,46 @@ mod cors_tests {
         let configured = configured_cors_origins(&config, true);
 
         assert_eq!(configured, vec![origin("https://studio.example")]);
+    }
+}
+
+#[cfg(test)]
+mod static_asset_surface_tests {
+    use hypercolor_types::config::McpConfig;
+
+    use super::dynamic_route_prefixes;
+
+    #[test]
+    fn the_mcp_mount_is_named() {
+        let prefixes = dynamic_route_prefixes(&McpConfig {
+            enabled: true,
+            base_path: "/mcp".to_owned(),
+            ..McpConfig::default()
+        });
+
+        assert_eq!(prefixes, vec!["/mcp"]);
+    }
+
+    #[test]
+    fn a_relocated_mcp_mount_follows_its_configured_path() {
+        // The exemption would hand an unauthenticated caller the MCP
+        // surface if this tracked the default instead of the config.
+        let prefixes = dynamic_route_prefixes(&McpConfig {
+            enabled: true,
+            base_path: "agents/".to_owned(),
+            ..McpConfig::default()
+        });
+
+        assert_eq!(prefixes, vec!["/agents"]);
+    }
+
+    #[test]
+    fn a_disabled_mcp_server_contributes_no_prefix() {
+        let prefixes = dynamic_route_prefixes(&McpConfig {
+            enabled: false,
+            ..McpConfig::default()
+        });
+
+        assert!(prefixes.is_empty());
     }
 }

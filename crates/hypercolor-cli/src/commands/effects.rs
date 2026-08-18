@@ -47,9 +47,9 @@ pub enum EffectCommand {
 /// Arguments for `effects list`.
 #[derive(Debug, Args)]
 pub struct EffectListArgs {
-    /// Filter by engine type (native, web, wasm).
+    /// Filter by rendering source (native, html, shader).
     #[arg(long)]
-    pub engine: Option<String>,
+    pub source: Option<String>,
 
     /// Filter to audio-reactive effects only.
     #[arg(long)]
@@ -186,14 +186,14 @@ async fn execute_list(
     let mut path = "/effects".to_string();
     let mut query_parts = Vec::new();
 
-    if let Some(engine) = &args.engine {
-        query_parts.push(format!("engine={}", urlencoded(engine)));
+    if let Some(source) = &args.source {
+        query_parts.push(format!("source={}", urlencoded(source)));
     }
     if args.audio {
-        query_parts.push("audio=true".to_string());
+        query_parts.push("audio_reactive=true".to_string());
     }
     if let Some(search) = &args.search {
-        query_parts.push(format!("search={}", urlencoded(search)));
+        query_parts.push(format!("q={}", urlencoded(search)));
     }
     if let Some(category) = &args.category {
         query_parts.push(format!("category={}", urlencoded(category)));

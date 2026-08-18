@@ -59,11 +59,6 @@ pub fn build_prompt_definitions() -> Vec<PromptDefinition> {
                     description: "Description of the problem (e.g., 'network strip not responding', 'colors look wrong', 'low frame rate')".into(),
                     required: true,
                 },
-                PromptArgument {
-                    name: "device_id".into(),
-                    description: "Specific device ID if the issue is device-specific".into(),
-                    required: false,
-                },
             ],
         },
         PromptDefinition {
@@ -174,8 +169,6 @@ fn build_troubleshoot_messages(arguments: &Value) -> Value {
         .get("issue")
         .and_then(Value::as_str)
         .unwrap_or("general issues");
-
-    let _device_id = arguments.get("device_id").and_then(Value::as_str);
 
     json!({
         "description": "Troubleshoot Hypercolor device and rendering issues",

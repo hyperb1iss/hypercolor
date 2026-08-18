@@ -5,7 +5,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -39,7 +39,11 @@ use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::ApiResponse;
 use crate::discovery;
 use crate::domain;
+// One definition of the source spelling, shared with the `source`
+// catalog filter: a second one here would let a listing narrow on values
+// the payload never reports.
 use crate::domain::effect::RequestedTransition;
+use crate::domain::effect::effect_source_kind as source_kind;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
@@ -262,53 +266,113 @@ fn elapsed_ms_u32(state: &AppState) -> u32 {
 
 // ── Handlers ─────────────────────────────────────────────────────────────
 
-/// `GET /api/v1/effects` — List all registered effects.
+/// Query string for `GET /api/v1/effects`.
+///
+/// Every field narrows the catalog; omitted fields do not. `include` is
+/// a comma-separated list of expansions (`controls`, `presets`) that add
+/// optional fields to each summary.
+///
+/// Parameters this type does not name stay ignored, which keeps the v1
+/// contract for the paging arguments the fabricated pagination block
+/// has always discarded.
+#[derive(Debug, Clone, Default, serde::Deserialize, utoipa::IntoParams)]
+pub struct EffectListQuery {
+    /// Exact effect category.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Declared audio reactivity.
+    #[serde(default)]
+    pub audio_reactive: Option<bool>,
+    /// Declared screen reactivity.
+    #[serde(default)]
+    pub screen_reactive: Option<bool>,
+    /// Declared input reactivity.
+    #[serde(default)]
+    pub input_reactive: Option<bool>,
+    /// Rendering source: `native`, `html`, or `shader`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Case-insensitive substring over name, description, author, tags.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Comma-separated expansions: `controls`, `presets`.
+    #[serde(default)]
+    pub include: Option<String>,
+}
+
+/// Which summary expansions a listing asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct EffectListIncludes {
+    controls: bool,
+    presets: bool,
+}
+
+impl EffectListIncludes {
+    fn parse(raw: Option<&str>) -> Result<Self, DomainError> {
+        let mut includes = Self::default();
+        for token in raw.unwrap_or_default().split(',') {
+            match token.trim() {
+                "" => {}
+                "controls" => includes.controls = true,
+                "presets" => includes.presets = true,
+                other => {
+                    return Err(DomainError::validation_field(
+                        "include",
+                        format!("unknown expansion '{other}'; expected controls or presets"),
+                    ));
+                }
+            }
+        }
+        Ok(includes)
+    }
+}
+
+/// `GET /api/v1/effects` — the effect catalog, narrowed server-side.
 #[utoipa::path(
     get,
     path = "/api/v1/effects",
+    params(EffectListQuery),
     responses(
         (
             status = 200,
             description = "Effect catalog",
             body = crate::api::envelope::ApiResponse<EffectListResponse>
+        ),
+        (
+            status = 422,
+            description = "A filter or expansion named a value that does not exist",
+            body = hypercolor_types::api::envelope::ApiErrorBody
         )
     ),
     tag = "effects"
 )]
-pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
-    let registry = state.effect_registry.read().await;
-    let mut items: Vec<EffectSummary> = registry
-        .iter()
-        .map(|(_, entry)| {
-            let meta = &entry.metadata;
-            EffectSummary {
-                id: meta.id.to_string(),
-                name: meta.name.clone(),
-                description: meta.description.clone(),
-                author: meta.author.clone(),
-                category: format!("{}", meta.category),
-                source: source_kind(&meta.source).to_owned(),
-                runnable: is_runnable_source(&meta.source),
-                tags: meta.tags.clone(),
-                version: meta.version.clone(),
-                audio_reactive: meta.audio_reactive,
-                input_reactive: meta.input_reactive,
-                capabilities: EffectCapabilitySet {
-                    audio_reactive: meta.audio_reactive,
-                    screen_reactive: meta.screen_reactive,
-                    input_reactive: meta.input_reactive,
-                },
-                cover_image_url: effect_cover_image_url(meta),
-            }
-        })
+pub async fn list_effects(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<EffectListQuery>,
+) -> Response {
+    let includes = match EffectListIncludes::parse(query.include.as_deref()) {
+        Ok(includes) => includes,
+        Err(error) => return error.into_response(),
+    };
+    let catalog_query = match domain::effect::EffectCatalogQuery::parse(
+        query.category.as_deref(),
+        query.source.as_deref(),
+        query.q.as_deref(),
+    ) {
+        Ok(parsed) => domain::effect::EffectCatalogQuery {
+            audio_reactive: query.audio_reactive,
+            screen_reactive: query.screen_reactive,
+            input_reactive: query.input_reactive,
+            ..parsed
+        },
+        Err(error) => return error.into_response(),
+    };
+
+    let items: Vec<EffectSummary> = domain::effect::list_catalog(state.as_ref(), &catalog_query)
+        .await
+        .into_iter()
+        .map(|meta| effect_summary(&meta, includes))
         .collect();
-    items.sort_by(|left, right| {
-        let left_norm = left.name.to_ascii_lowercase();
-        let right_norm = right.name.to_ascii_lowercase();
-        left_norm
-            .cmp(&right_norm)
-            .then_with(|| left.name.cmp(&right.name))
-    });
 
     let total = items.len();
     ApiResponse::ok(EffectListResponse {
@@ -320,6 +384,30 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
             has_more: false,
         },
     })
+}
+
+fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> EffectSummary {
+    EffectSummary {
+        id: meta.id.to_string(),
+        name: meta.name.clone(),
+        description: meta.description.clone(),
+        author: meta.author.clone(),
+        category: format!("{}", meta.category),
+        source: source_kind(&meta.source).to_owned(),
+        runnable: is_runnable_source(&meta.source),
+        tags: meta.tags.clone(),
+        version: meta.version.clone(),
+        audio_reactive: meta.audio_reactive,
+        input_reactive: meta.input_reactive,
+        capabilities: EffectCapabilitySet {
+            audio_reactive: meta.audio_reactive,
+            screen_reactive: meta.screen_reactive,
+            input_reactive: meta.input_reactive,
+        },
+        cover_image_url: effect_cover_image_url(meta),
+        controls: includes.controls.then(|| meta.controls.clone()),
+        presets: includes.presets.then(|| meta.presets.clone()),
+    }
 }
 
 /// `GET /api/v1/effects/:id` — Get a single effect's metadata.
@@ -1907,14 +1995,6 @@ fn cover_slug(value: &str) -> String {
         let _ = slug.pop();
     }
     slug
-}
-
-fn source_kind(source: &EffectSource) -> &'static str {
-    match source {
-        EffectSource::Native { .. } => "native",
-        EffectSource::Html { .. } => "html",
-        EffectSource::Shader { .. } => "shader",
-    }
 }
 
 fn is_runnable_source(source: &EffectSource) -> bool {

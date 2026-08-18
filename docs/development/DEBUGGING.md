@@ -501,7 +501,7 @@ echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":5
 
 **Source:** `crates/hypercolor-daemon/src/mcp/tools/`
 
-Hypercolor exposes 16 MCP tools for AI assistant integration. These give agents
+Hypercolor exposes 17 MCP tools for AI assistant integration. These give agents
 programmatic control over the lighting system.
 
 ### Tool Inventory

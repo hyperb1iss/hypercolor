@@ -28,15 +28,15 @@ hypercolor effects list --audio
 # Free-text search across names and descriptions
 hypercolor effects list --search aurora
 
-# Narrow by category or rendering engine
+# Narrow by category or rendering source
 hypercolor effects list --category ambient
-hypercolor effects list --engine native
+hypercolor effects list --source native
 
 # Full detail for one effect
 hypercolor effects info borealis
 ```
 
-`effects list` takes four filters, all optional and combinable: `--engine <native|web|wasm>`, `--audio` (a flag, audio-reactive only), `--search <text>`, and `--category <name>`. The table view prints effect name, category, author, and version, then a count footer. Add `-o json` for the raw response or `-o plain` for one name per line, which pipes cleanly into other tools.
+`effects list` takes four filters, all optional and combinable: `--source <native|html|shader>`, `--audio` (a flag, audio-reactive only), `--search <text>`, and `--category <name>`. The daemon applies them, so the response carries only the matching rows, and a `--category` or `--source` value that does not exist answers with a validation error rather than an empty list. The table view prints effect name, category, author, and version, then a count footer. Add `-o json` for the raw response or `-o plain` for one name per line, which pipes cleanly into other tools.
 
 ```bash
 # Names only, ready for a shell loop
