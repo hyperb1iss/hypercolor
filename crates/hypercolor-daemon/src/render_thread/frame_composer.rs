@@ -126,6 +126,14 @@ fn producer_frame_requires_composition_for_preview(
 
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
+        let observed_invalidation_epoch = self.inputs.screen_invalidation_epoch;
+        if synchronize_screen_invalidation_epoch(
+            self.compose.screen_queue,
+            &mut self.inputs.screen_compositor_epoch,
+            observed_invalidation_epoch,
+        ) {
+            self.compose.sparkleflinger.release_native_screen_caches();
+        }
         self.compose_render_group_frame_set(Instant::now()).await
     }
 
@@ -477,7 +485,13 @@ impl ComposeContext<'_> {
 
     fn latch_screen_frame(&mut self) -> Option<ProducedFrame> {
         let native_submitted = {
-            #[cfg(all(feature = "wgpu", target_os = "windows"))]
+            #[cfg(all(
+                feature = "wgpu",
+                any(
+                    target_os = "windows",
+                    all(target_os = "macos", feature = "screen-capture")
+                )
+            ))]
             {
                 self.inputs.screen_publication.as_ref().is_some_and(
                     |publication| match self
@@ -494,13 +508,11 @@ impl ComposeContext<'_> {
                         }
                         Ok(None) => false,
                         Err(error) => {
-                            if super::sparkleflinger::gpu::native_screen_copy_error_invalidates_frame(
-                                &error,
-                            ) {
-                                let _ = self.compose.screen_queue.clear_latest();
-                            }
-                            let retained = native_copy_failure_retains_last_frame(
+                            let retained = apply_native_copy_failure_policy(
                                 self.compose.screen_queue,
+                                super::sparkleflinger::gpu::native_screen_copy_error_invalidates_frame(
+                                    &error,
+                                ),
                             );
                             if super::sparkleflinger::gpu::is_retryable_native_screen_copy_error(
                                 &error,
@@ -518,7 +530,13 @@ impl ComposeContext<'_> {
                     },
                 )
             }
-            #[cfg(not(all(feature = "wgpu", target_os = "windows")))]
+            #[cfg(not(all(
+                feature = "wgpu",
+                any(
+                    target_os = "windows",
+                    all(target_os = "macos", feature = "screen-capture")
+                )
+            )))]
             {
                 false
             }
@@ -719,9 +737,51 @@ pub(super) fn synchronize_screen_plan_generation(
     changed
 }
 
-#[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
+fn synchronize_screen_invalidation_epoch(
+    screen_queue: &mut ProducerQueue,
+    current_epoch: &mut u64,
+    observed_epoch: u64,
+) -> bool {
+    if observed_epoch <= *current_epoch {
+        return false;
+    }
+    let _ = screen_queue.clear_latest();
+    *current_epoch = observed_epoch;
+    true
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "wgpu",
+        any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        )
+    )
+))]
 fn native_copy_failure_retains_last_frame(screen_queue: &ProducerQueue) -> bool {
     screen_queue.has_latest()
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "wgpu",
+        any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        )
+    )
+))]
+fn apply_native_copy_failure_policy(
+    screen_queue: &mut ProducerQueue,
+    invalidates_frame: bool,
+) -> bool {
+    if invalidates_frame {
+        let _ = screen_queue.clear_latest();
+    }
+    native_copy_failure_retains_last_frame(screen_queue)
 }
 
 fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {
@@ -851,3 +911,28 @@ fn scene_canvas_forces_full_surface(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod h21_tests {
+    use hypercolor_core::types::canvas::Canvas;
+
+    use super::{ProducerFrame, ProducerQueue, synchronize_screen_invalidation_epoch};
+
+    #[test]
+    fn invalidation_epoch_clears_old_output_before_fresh_publication() {
+        let mut queue = ProducerQueue::new();
+        let mut epoch = 0;
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+
+        assert!(synchronize_screen_invalidation_epoch(
+            &mut queue, &mut epoch, 1
+        ));
+        assert!(!queue.has_latest());
+
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+        assert!(!synchronize_screen_invalidation_epoch(
+            &mut queue, &mut epoch, 1
+        ));
+        assert!(queue.has_latest());
+    }
+}

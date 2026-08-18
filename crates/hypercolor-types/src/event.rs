@@ -212,6 +212,30 @@ pub enum InputButtonState {
     Repeated,
 }
 
+/// Coordinate unit carried by a two-axis pointer scroll event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerScrollUnit {
+    /// Integral units are 1/120 of one physical wheel notch.
+    Line120,
+    /// Integral units are display-space pixels.
+    Pixels,
+}
+
+/// Lifecycle phase for a pointer scroll gesture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerScrollPhase {
+    #[default]
+    None,
+    MayBegin,
+    Began,
+    Changed,
+    Stationary,
+    Ended,
+    Cancelled,
+}
+
 /// MIDI transport-control messages that matter to rhythmic lighting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -244,6 +268,16 @@ pub enum InputEvent {
     MouseWheel {
         source_id: String,
         delta_hi_res: i32,
+    },
+
+    /// Two-axis pointer scroll with exact signed Q16.16 deltas.
+    PointerScroll {
+        source_id: String,
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
+        unit: PointerScrollUnit,
+        phase: PointerScrollPhase,
+        momentum_phase: PointerScrollPhase,
     },
 
     /// A MIDI note changed state.
@@ -285,6 +319,7 @@ impl InputEvent {
             Self::Key { source_id, .. }
             | Self::MouseButton { source_id, .. }
             | Self::MouseWheel { source_id, .. }
+            | Self::PointerScroll { source_id, .. }
             | Self::MidiNote { source_id, .. }
             | Self::MidiControlChange { source_id, .. }
             | Self::MidiPitchBend { source_id, .. }
@@ -367,6 +402,61 @@ pub enum EventControlValue {
     Number(f32),
     Boolean(bool),
     String(String),
+}
+
+/// Process topology that owns the active macOS daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosDaemonOwnerEvent {
+    AppSidecar,
+    LaunchdService,
+    HomebrewService,
+    Standalone,
+}
+
+/// Process exit code for a non-launchd macOS daemon ownership contender.
+pub const MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE: i32 = 73;
+
+/// Losing macOS daemon topology observed beside the active owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacosDaemonOwnerConflictEvent {
+    pub active: MacosDaemonOwnerEvent,
+    pub contender: MacosDaemonOwnerEvent,
+    pub observed_at_ms: u64,
+}
+
+/// Durable phase of a macOS daemon-owner handover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosDaemonHandoverPhaseEvent {
+    Prepared,
+    AutostartsConfigured,
+    StopRequested,
+    OutgoingOwnerStopped,
+    AwaitingGuardRelease,
+    GuardReleased,
+    StartRequested,
+    RequestedOwnerStarted,
+    CommitPending,
+    Committed,
+    RollbackPending,
+    RollbackAutostartsRestored,
+    RollbackStopRequested,
+    RollbackOwnerStopped,
+    RollbackAwaitingGuardRelease,
+    RollbackGuardReleased,
+    RollbackStartRequested,
+    PriorOwnerStarted,
+    RollbackCommitPending,
+    RolledBack,
+}
+
+/// Path-free recovery status for a daemon that cannot complete the journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacosDaemonOwnerRecoveryRequiredEvent {
+    pub requested_owner: MacosDaemonOwnerEvent,
+    pub prior_owner: MacosDaemonOwnerEvent,
+    pub phase: MacosDaemonHandoverPhaseEvent,
 }
 
 /// Per-stage frame timing in microseconds.
@@ -904,6 +994,14 @@ pub enum HypercolorEvent {
         reason: String,
     },
 
+    /// The authoritative macOS daemon owner or contender changed.
+    MacosDaemonOwnershipChanged {
+        active_owner: MacosDaemonOwnerEvent,
+        owner_epoch: u64,
+        conflict: Option<MacosDaemonOwnerConflictEvent>,
+        recovery_required: Option<MacosDaemonOwnerRecoveryRequiredEvent>,
+    },
+
     /// Global brightness changed.
     BrightnessChanged { old: u8, new_value: u8 },
 
@@ -1096,6 +1194,7 @@ impl HypercolorEvent {
             | Self::ShutdownRequested { .. }
             | Self::DaemonStarted { .. }
             | Self::DaemonShutdown { .. }
+            | Self::MacosDaemonOwnershipChanged { .. }
             | Self::BrightnessChanged { .. }
             | Self::Paused
             | Self::Resumed

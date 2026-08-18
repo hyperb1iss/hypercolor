@@ -33,20 +33,15 @@ export interface KeyInputEvent {
     repeatCount: number
 }
 
-/**
- * A single mouse button or wheel event, ordered by `seq` and stamped with
- * the capture timestamp (`atMs`, monotonic milliseconds).
- */
-export interface MouseInputEvent {
-    kind: 'button' | 'wheel'
+/** Coordinate unit carried by an exact scroll event. */
+export type MouseScrollUnit = 'line120' | 'pixels'
+
+/** Lifecycle phase carried by an exact scroll event. */
+export type MouseScrollPhase = 'none' | 'may_begin' | 'began' | 'changed' | 'stationary' | 'ended' | 'cancelled'
+
+interface MouseInputEventBase {
     /** Identifier of the device that produced the event. */
     source: string
-    /** Button name (present for `kind: 'button'`). */
-    button?: string
-    /** Button lifecycle (present for `kind: 'button'`). */
-    state?: KeyEventState
-    /** Wheel delta in notches (present for `kind: 'wheel'`). */
-    delta?: number
     /** Capture timestamp in monotonic milliseconds. */
     atMs: number
     /** Strictly increasing sequence number. */
@@ -55,6 +50,46 @@ export interface MouseInputEvent {
     physicalCode?: string
     /** Number of equivalent ordered events represented by this entry. */
     repeatCount: number
+}
+
+/** One ordered mouse-button lifecycle event. */
+export interface MouseButtonInputEvent extends MouseInputEventBase {
+    kind: 'button'
+    button: string
+    state: KeyEventState
+}
+
+/** One ordered exact two-axis scroll event. */
+export interface MouseScrollInputEvent extends MouseInputEventBase {
+    kind: 'scroll'
+    deltaX: number
+    deltaY: number
+    unit: MouseScrollUnit
+    phase: MouseScrollPhase
+    momentumPhase: MouseScrollPhase
+}
+
+/**
+ * One ordered legacy vertical wheel event.
+ *
+ * @deprecated Consume the adjacent `scroll` event instead. This member remains
+ * available through the next API major.
+ */
+export interface MouseWheelInputEvent extends MouseInputEventBase {
+    kind: 'wheel'
+    /** Integral vertical wheel delta in 1/120-notch units. */
+    delta: number
+}
+
+/** Mouse event ordered by `seq` and stamped with monotonic capture time. */
+export type MouseInputEvent = MouseButtonInputEvent | MouseScrollInputEvent | MouseWheelInputEvent
+
+/** Exact two-axis scroll totals for the current frame. */
+export interface MouseScrollState {
+    line120X: number
+    line120Y: number
+    pixelX: number
+    pixelY: number
 }
 
 /** Keyboard snapshot for the current frame. */
@@ -85,11 +120,13 @@ export interface MouseInputState {
     mode: MouseMode
     /** True when pointer coordinates are meaningful (`mode !== 'none'`). */
     available: boolean
-    /** Accumulated wheel notches this frame (hi-res deltas divided by 120). */
+    /** Accumulated integral vertical wheel delta in 1/120-notch units. */
     wheel: number
+    /** Exact two-axis scroll accumulated independently by coordinate unit. */
+    scroll: MouseScrollState
     /** Normalized pointer motion magnitude per second. */
     velocity: number
-    /** Ordered button/wheel events captured since the last frame. */
+    /** Ordered button, scroll, and compatibility wheel events captured this frame. */
     events: MouseInputEvent[]
 }
 

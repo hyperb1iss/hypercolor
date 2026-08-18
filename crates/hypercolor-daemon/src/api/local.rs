@@ -325,6 +325,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn trusted_websocket_preserves_protected_control_without_api_keys() {
+        let api = TrustedLocalApi::new(Arc::new(AppState::new()));
+        let mut socket = api
+            .open_websocket("/api/v1/ws")
+            .expect("canonical trusted local websocket path should open");
+
+        assert_eq!(
+            message_json(
+                socket
+                    .recv()
+                    .await
+                    .expect("trusted local websocket should emit hello")
+            )["type"],
+            "hello"
+        );
+        socket
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "command",
+                    "id": "capture_monitors",
+                    "method": "GET",
+                    "path": "/capture/monitors"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("trusted local websocket should accept a command frame");
+        let response = message_json(
+            socket
+                .recv()
+                .await
+                .expect("trusted local websocket should emit a command response"),
+        );
+        assert_eq!(response["type"], "response");
+        assert_eq!(response["id"], "capture_monitors");
+        assert_eq!(response["status"], 200);
+
+        socket.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn trusted_websocket_shutdown_joins_active_preview_cleanup() {
         let mut source = BrowserInputSource::new();
         source.start().expect("browser input source should start");

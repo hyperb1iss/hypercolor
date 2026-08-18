@@ -20,6 +20,7 @@
 
 pub mod assets;
 pub mod attachments;
+pub mod capture;
 pub mod common;
 pub mod config;
 pub mod controls;

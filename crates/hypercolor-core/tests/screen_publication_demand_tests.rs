@@ -145,7 +145,7 @@ impl ExactWorkerState {
 }
 
 struct ExactDemandProbe {
-    source: ResolvedScreenSource,
+    sources: Vec<ResolvedScreenSource>,
     hub: Arc<Mutex<Option<Arc<ScreenPublicationHub>>>>,
     worker: Arc<ExactWorkerState>,
     preparation_barrier: Option<Arc<Barrier>>,
@@ -168,38 +168,8 @@ impl ExactDemandProbe {
         selector: ScreenSourceSelector,
         source_id: CaptureSourceId,
     ) -> Self {
-        let extent = PixelExtent::new(7_680, 4_320).expect("test extent is non-empty");
-        let geometry = CaptureGeometry::new(
-            PhysicalOrigin::default(),
-            extent,
-            extent,
-            CaptureRotation::Identity,
-            None,
-            SourceScale::ONE,
-        )
-        .expect("test geometry is valid");
         Self {
-            source: ResolvedScreenSource::new(
-                selector,
-                CaptureEpoch {
-                    source_id,
-                    topology_generation: 3,
-                    session_generation: 5,
-                },
-                ResolvedScreenSourceConfig::new(
-                    geometry,
-                    extent,
-                    ScreenSourceReflection::None,
-                    CapturePixelFormat::Rgba8,
-                    CaptureColorimetry::SRGB,
-                    ScreenBackendResourceIdentity::new(
-                        ScreenCaptureBackend::Synthetic,
-                        ScreenResourceApi::Cpu,
-                        7,
-                        11,
-                    ),
-                ),
-            ),
+            sources: vec![resolved_source(selector, source_id)],
             hub,
             worker,
             preparation_barrier: None,
@@ -216,6 +186,51 @@ impl ExactDemandProbe {
         self.completion_pause = Some(pause);
         self
     }
+
+    fn with_alias_source(mut self, source_id: CaptureSourceId) -> Self {
+        self.sources.push(resolved_source(
+            ScreenSourceSelector::Exact(source_id.clone()),
+            source_id,
+        ));
+        self
+    }
+}
+
+fn resolved_source(
+    selector: ScreenSourceSelector,
+    source_id: CaptureSourceId,
+) -> ResolvedScreenSource {
+    let extent = PixelExtent::new(7_680, 4_320).expect("test extent is non-empty");
+    let geometry = CaptureGeometry::new(
+        PhysicalOrigin::default(),
+        extent,
+        extent,
+        CaptureRotation::Identity,
+        None,
+        SourceScale::ONE,
+    )
+    .expect("test geometry is valid");
+    ResolvedScreenSource::new(
+        selector,
+        CaptureEpoch {
+            source_id,
+            topology_generation: 3,
+            session_generation: 5,
+        },
+        ResolvedScreenSourceConfig::new(
+            geometry,
+            extent,
+            ScreenSourceReflection::None,
+            CapturePixelFormat::Rgba8,
+            CaptureColorimetry::SRGB,
+            ScreenBackendResourceIdentity::new(
+                ScreenCaptureBackend::Synthetic,
+                ScreenResourceApi::Cpu,
+                7,
+                11,
+            ),
+        ),
+    )
 }
 
 impl InputSource for ExactDemandProbe {
@@ -254,20 +269,25 @@ impl InputSource for ExactDemandProbe {
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<hypercolor_core::input::screen::ResolvedScreenBranchDemand>> {
         self.worker.resolutions.fetch_add(1, Ordering::AcqRel);
-        if demand.request().selector() != self.source.selector() {
+        let Some(source) = self
+            .sources
+            .iter()
+            .find(|source| demand.request().selector() == source.selector())
+        else {
             return Ok(None);
-        }
+        };
         let capabilities = CpuReductionExecutor::new(NonZeroUsize::MIN, NonZeroU32::MIN)
             .expect("test CPU reducer builds")
             .capabilities();
-        Ok(Some(demand.resolve_with_color_capabilities(
-            &self.source,
-            capabilities,
-        )?))
+        Ok(Some(
+            demand.resolve_with_color_capabilities(source, capabilities)?,
+        ))
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.source.epoch().source_id == *source_id
+        self.sources
+            .iter()
+            .any(|source| source.epoch().source_id == *source_id)
     }
 
     fn begin_screen_publication_preparation(
@@ -416,7 +436,17 @@ fn manager_fixture() -> (
 #[tokio::test]
 async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
     let (mut manager, hub, worker) = manager_fixture();
-    let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
+    let demand = demand(
+        &manager,
+        5,
+        [
+            branch(ScreenPublicationKind::Surface),
+            branch(ScreenPublicationKind::Zones {
+                columns: NonZeroU32::MIN,
+                rows: NonZeroU32::MIN,
+            }),
+        ],
+    );
     let preparation = manager
         .begin_screen_publication_transition(demand.clone())
         .expect("exact plan resolves")
@@ -432,8 +462,12 @@ async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
         .commit_screen_publication_transition(prepared, demand.revision())
         .expect("fenced exact plan commits");
     let committed = finish_retirements(committed).await;
-    assert_eq!(committed.plan().branches().len(), 1);
-    assert_eq!(hub.committed_state().branch_count(), 1);
+    assert_eq!(committed.plan().branches().len(), 2);
+    assert_eq!(hub.committed_state().branch_count(), 2);
+    assert_eq!(
+        manager.source_status_registry().snapshot().statuses()[0].active_consumer_count,
+        2
+    );
     assert_eq!(worker.aborts.load(Ordering::Acquire), 0);
     assert!(
         manager
@@ -445,6 +479,11 @@ async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
     retirement
         .try_reclaim()
         .expect("first commit retires no visible resources");
+    manager.stop_all();
+    assert_eq!(
+        manager.source_status_registry().snapshot().statuses()[0].active_consumer_count,
+        0
+    );
 }
 
 #[tokio::test]
@@ -558,12 +597,105 @@ async fn independent_source_workers_prepare_concurrently() {
         .expect("multi-source exact plan commits");
     let committed = finish_retirements(committed).await;
     assert_eq!(committed.plan().branches().len(), 2);
+    let statuses = manager.source_status_registry().snapshot().statuses();
+    assert_eq!(statuses.len(), 2);
+    assert!(
+        statuses
+            .iter()
+            .all(|status| status.active_consumer_count == 1)
+    );
+}
+
+#[tokio::test]
+async fn one_adapter_sums_consumers_across_owned_capture_source_ids() {
+    let first_id =
+        CaptureSourceId::new("synthetic:alias:first").expect("test source id is non-empty");
+    let second_id =
+        CaptureSourceId::new("synthetic:alias:second").expect("test source id is non-empty");
+    let worker = Arc::new(ExactWorkerState::default());
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(
+        ExactDemandProbe::for_source(
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&worker),
+            ScreenSourceSelector::Exact(first_id.clone()),
+            first_id.clone(),
+        )
+        .with_alias_source(second_id.clone()),
+    ));
+    let exact = demand(
+        &manager,
+        11,
+        [
+            branch_for(
+                ScreenSourceSelector::Exact(first_id),
+                ScreenPublicationKind::Surface,
+            ),
+            branch_for(
+                ScreenSourceSelector::Exact(second_id),
+                ScreenPublicationKind::Surface,
+            ),
+        ],
+    );
+    let prepared = manager
+        .begin_screen_publication_transition(exact.clone())
+        .expect("both owned source identities resolve")
+        .expect("multi-identity plan requires preparation")
+        .await_workers()
+        .await
+        .expect("one worker acknowledges both identities");
+    let committed = manager
+        .commit_screen_publication_transition(prepared, exact.revision())
+        .expect("multi-identity exact plan commits");
+    let committed = finish_retirements(committed).await;
+
+    assert_eq!(committed.plan().branches().len(), 2);
+    assert_eq!(
+        manager.source_status_registry().snapshot().statuses()[0].active_consumer_count,
+        2
+    );
+    let retired_handle = manager.source_status_registry().snapshot().handles()[0].clone();
+    let plan = manager.plan_screen_runtime_config(false);
+    let mut replacement = None;
+    let retirement = manager
+        .commit_screen_runtime_config(&plan, &mut replacement)
+        .expect("screen runtime removal commits");
+    retirement.retire();
+    let retired = retired_handle.snapshot();
+    assert!(retired.retired);
+    assert_eq!(retired.active_consumer_count, 0);
 }
 
 #[tokio::test]
 async fn demand_race_aborts_candidate_and_preserves_committed_authority() {
     let (mut manager, hub, worker) = manager_fixture();
-    let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
+    let active = demand(&manager, 4, [branch(ScreenPublicationKind::Surface)]);
+    let prepared = manager
+        .begin_screen_publication_transition(active.clone())
+        .expect("initial exact plan resolves")
+        .expect("initial exact plan prepares")
+        .await_workers()
+        .await
+        .expect("initial worker acknowledges exact resources");
+    let committed = manager
+        .commit_screen_publication_transition(prepared, active.revision())
+        .expect("initial exact plan commits");
+    let committed = finish_retirements(committed).await;
+    let (_, retirement) = committed.into_parts();
+    retirement
+        .try_reclaim()
+        .expect("initial plan retires no visible resources");
+    let demand = demand(
+        &manager,
+        5,
+        [
+            branch(ScreenPublicationKind::Surface),
+            branch(ScreenPublicationKind::Zones {
+                columns: NonZeroU32::MIN,
+                rows: NonZeroU32::MIN,
+            }),
+        ],
+    );
     let before = hub.committed_state();
     let prepared = manager
         .begin_screen_publication_transition(demand.clone())
@@ -586,7 +718,11 @@ async fn demand_race_aborts_candidate_and_preserves_committed_authority() {
         )
     ));
     assert!(Arc::ptr_eq(&before, &hub.committed_state()));
-    assert_eq!(failure.abort().active_plan().generation().get(), 0);
+    assert_eq!(
+        manager.source_status_registry().snapshot().statuses()[0].active_consumer_count,
+        1
+    );
+    assert_eq!(failure.abort().active_plan().generation().get(), 1);
     drop(failure);
     assert_eq!(worker.aborts.load(Ordering::Acquire), 1);
 }
@@ -804,6 +940,10 @@ async fn empty_demand_retires_worker_and_reclaims_after_reader_release() {
     let (plan, retirement) = committed.into_parts();
 
     assert!(plan.branches().is_empty());
+    assert_eq!(
+        manager.source_status_registry().snapshot().statuses()[0].active_consumer_count,
+        0
+    );
     assert!(worker.retirements.load(Ordering::Acquire) >= 2);
     assert!(
         worker

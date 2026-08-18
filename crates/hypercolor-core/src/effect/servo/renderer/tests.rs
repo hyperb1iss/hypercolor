@@ -857,7 +857,7 @@ fn display_frame_payloads_keep_fixed_animation_cap() {
 }
 
 #[test]
-fn html_effects_use_host_driven_animation() {
+fn html_effects_use_the_platform_animation_driver() {
     let html = html_metadata(PathBuf::from("effect.html"));
     let display = display_html_metadata(PathBuf::from("display.html"));
     let mut webgl = html_metadata(PathBuf::from("webgl.html"));
@@ -867,8 +867,8 @@ fn html_effects_use_host_driven_animation() {
 
     assert!(host_driven_animation(&html));
     assert!(host_driven_animation(&display));
-    assert!(!host_driven_animation(&webgl));
-    assert!(!host_driven_animation(&canvas2d));
+    assert_eq!(host_driven_animation(&webgl), cfg!(target_os = "macos"));
+    assert_eq!(host_driven_animation(&canvas2d), cfg!(target_os = "macos"));
 }
 
 #[test]
@@ -1341,11 +1341,11 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
 }
 
 #[test]
-fn queued_device_query_transition_keeps_canonical_edges_and_latest_state() {
+fn queued_macos_transition_keeps_canonical_edges_and_latest_state() {
     let audio = custom_audio(0.0);
     let mut first_interaction = custom_interaction(&["legacy-a"], &["a"]);
     first_interaction.batch.events = vec![timed_key(
-        "host:device_query",
+        "host:macos",
         "a",
         InputButtonState::Pressed,
         1,
@@ -1353,8 +1353,8 @@ fn queued_device_query_transition_keeps_canonical_edges_and_latest_state() {
     )];
     let mut second_interaction = custom_interaction(&["legacy-b"], &["b"]);
     second_interaction.batch.events = vec![
-        timed_key("host:device_query", "a", InputButtonState::Released, 2, 1),
-        timed_key("host:device_query", "b", InputButtonState::Pressed, 3, 1),
+        timed_key("host:macos", "a", InputButtonState::Released, 2, 1),
+        timed_key("host:macos", "b", InputButtonState::Pressed, 3, 1),
     ];
     let first = frame_input_with(1.0 / 60.0, 1, &audio, &first_interaction, 320, 200);
     let second = frame_input_with(1.0 / 60.0, 2, &audio, &second_interaction, 320, 200);
@@ -1369,7 +1369,7 @@ fn queued_device_query_transition_keeps_canonical_edges_and_latest_state() {
         .queued_frame
         .as_ref()
         .and_then(QueuedFrameInput::queued_interaction)
-        .expect("coalesced device_query interaction");
+        .expect("coalesced macOS interaction");
     assert_eq!(interaction.keyboard.pressed_keys, ["b"]);
     assert_eq!(interaction.keyboard.recent_keys, ["a", "b"]);
     assert_eq!(

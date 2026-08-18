@@ -488,7 +488,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
                 assert_eq!(zones.rows(), NonZeroU32::MIN);
                 assert_eq!(zones.colors().len(), 2);
             }
-            ScreenBranchPayload::GpuSurface(_) => {
+            ScreenBranchPayload::GpuSurface(_) | ScreenBranchPayload::NativeWork(_) => {
                 panic!("Wayland exact CPU runtime cannot publish a GPU surface")
             }
         }
@@ -668,7 +668,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
             ScreenBranchPayload::Zones(_) => {
                 assert_eq!(publication.worker_plan_generation(), mixed_generation);
             }
-            ScreenBranchPayload::GpuSurface(_) => {
+            ScreenBranchPayload::GpuSurface(_) | ScreenBranchPayload::NativeWork(_) => {
                 panic!("Wayland exact CPU runtime cannot publish a GPU surface")
             }
         }

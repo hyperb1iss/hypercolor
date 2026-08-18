@@ -49,9 +49,9 @@ use super::cache::{
 use super::protocol::{
     ActiveFramesConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane, MetricsDisplayOutput,
     MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory, MetricsPacing,
-    MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces, MetricsStages,
-    MetricsTimeline, MetricsWebsocket, ServerMessage, SubscriptionState, event_message_parts,
-    should_relay_event,
+    MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces,
+    MetricsSessionLatency, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
+    SubscriptionState, event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
 use crate::interactive_preview::PreviewResourceLease;
@@ -2847,6 +2847,13 @@ pub(super) async fn build_metrics_message(
                 p99_ms: round_2(frame_time.p99_ms),
                 max_ms: round_2(frame_time.max_ms),
             },
+            input_latency: MetricsSessionLatency {
+                sample_count: performance_snapshot.input_time_sample_count,
+                avg_ms: round_2(performance_snapshot.input_time.avg_ms),
+                p95_ms: round_2(performance_snapshot.input_time.p95_ms),
+                p99_ms: round_2(performance_snapshot.input_time.p99_ms),
+                max_ms: round_2(performance_snapshot.input_time.max_ms),
+            },
             stages: MetricsStages {
                 input_sampling_ms: round_2(us_to_ms(latest_frame.input_us)),
                 producer_rendering_ms: round_2(us_to_ms(latest_frame.producer_us)),
@@ -3183,6 +3190,9 @@ pub(super) async fn build_metrics_message(
                     latest_frame.publication_full_frame_copy.bytes,
                 )),
                 publication_reason: latest_frame.publication_full_frame_copy.reason,
+                session_full_frame_count: performance_snapshot.full_frame_copy_count_total,
+                session_full_frame_frames: performance_snapshot.full_frame_copy_frames_total,
+                session_full_frame_bytes: performance_snapshot.full_frame_copy_bytes_total,
             },
             memory: MetricsMemory {
                 daemon_rss_mb: round_1(daemon_rss_mb),

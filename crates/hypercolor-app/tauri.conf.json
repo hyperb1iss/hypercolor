@@ -2,10 +2,15 @@
   "productName": "Hypercolor",
   "version": "0.3.2",
   "identifier": "tech.hyperbliss.hypercolor",
+  "build": {
+    "frontendDist": "../hypercolor-ui/dist"
+  },
   "app": {
     "windows": [],
     "withGlobalTauri": true,
-    "security": {}
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss:; img-src 'self' data: blob: http: https:; media-src 'self' data: blob: http: https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src 'self' data: https://fonts.bunny.net; object-src 'none'; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'none'"
+    }
   },
   "bundle": {
     "active": true,
@@ -41,7 +46,7 @@
       "timestampUrl": "http://timestamp.digicert.com"
     },
     "macOS": {
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "15.2",
       "hardenedRuntime": true,
       "entitlements": "entitlements.plist",
       "infoPlist": "Info.plist",

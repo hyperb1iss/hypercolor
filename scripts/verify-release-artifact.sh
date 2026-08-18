@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+MACOS_SIGNING_ACTOR="${ROOT_DIR}/scripts/sign-macos-artifacts.sh"
+
+if [[ "${1:-}" == "--macos-app" ]]; then
+  app="${2:-}"
+  dmg="${3:-}"
+  provenance="${4:-}"
+  target="${5:-}"
+  [[ "$#" -eq 5 ]] || {
+    echo "usage: scripts/verify-release-artifact.sh --macos-app <app> <dmg> <provenance> <target>" >&2
+    exit 2
+  }
+  [[ -n "${APPLE_TEAM_ID:-}" ]] || {
+    echo "APPLE_TEAM_ID is required for macOS release verification" >&2
+    exit 1
+  }
+  "${MACOS_SIGNING_ACTOR}" verify-app \
+    --app "${app}" \
+    --dmg "${dmg}" \
+    --provenance "${provenance}" \
+    --target "${target}" \
+    --team-id "${APPLE_TEAM_ID}"
+  exit 0
+fi
+
 tarball="${1:-}"
 checksum_file="${2:-${tarball}.sha256}"
 
@@ -197,6 +222,19 @@ case "${platform}" in
       echo "missing macOS launchd plist" >&2
       exit 1
     }
+    [[ -n "${APPLE_TEAM_ID:-}" ]] || {
+      echo "APPLE_TEAM_ID is required for macOS release verification" >&2
+      exit 1
+    }
+    case "${platform}" in
+      macos-arm64) macos_target="aarch64-apple-darwin" ;;
+      macos-amd64) macos_target="x86_64-apple-darwin" ;;
+      *) echo "unsupported macOS platform: ${platform}" >&2; exit 1 ;;
+    esac
+    "${MACOS_SIGNING_ACTOR}" verify-standalone \
+      --directory "${root_dir}" \
+      --target "${macos_target}" \
+      --team-id "${APPLE_TEAM_ID}"
     ;;
 esac
 

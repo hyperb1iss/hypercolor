@@ -22,8 +22,12 @@ use hypercolor_types::config_registry::{
     self, ApplyPolicy, ConfigKeyDescriptor, KeyPattern, LiveSection, Redaction,
 };
 
+use axum::Extension;
+
 use crate::api::AppState;
+use crate::api::capture::protected_control_rejection;
 use crate::api::envelope::ApiResponse;
+use crate::api::security::RequestAuthContext;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::config::ConfigApplyQuery;
@@ -101,41 +105,103 @@ pub async fn get_config_key(
     }))
 }
 
+/// Privacy-bearing config keys. Mutating them starts, retargets, or
+/// enables screen, audio, or host-input capture, so they carry the same
+/// control-credential requirement as the dedicated capture endpoints
+/// (`/capture/source/pick` guards the identical `capture.source` mutation).
+///
+/// The whole `capture` domain qualifies (screen content is the most
+/// sensitive plane and every leaf feeds the capture reconfiguration
+/// transaction). For audio and input, only the leaves that enable capture
+/// or retarget a device qualify: DSP tuning (`audio.fft_size`,
+/// `audio.smoothing`, ...) and interaction routing policy shape an
+/// already-consented stream and stay credential-free so a keyless install
+/// keeps its sliders.
+fn key_requires_protected_control(key: &str) -> bool {
+    if key == "capture"
+        || key
+            .strip_prefix("capture")
+            .is_some_and(|rest| rest.starts_with('.'))
+    {
+        return true;
+    }
+    matches!(
+        key,
+        "audio"
+            | "audio.enabled"
+            | "audio.device"
+            | "input"
+            | "input.enabled"
+            | "input.keyboard"
+            | "input.mouse"
+    )
+}
+
+/// Pseudo-key resetting the LED calibration cluster in one request. Not a
+/// registry key: the four fields are leaves of `capture`, not a subtree,
+/// so a section reset cannot address them together.
+pub(crate) const CAPTURE_CALIBRATION_RESET_KEY: &str = "capture.calibration";
+pub(crate) const CAPTURE_CALIBRATION_FIELDS: [&str; 4] = [
+    "capture.target_led_white_x",
+    "capture.target_led_white_y",
+    "capture.target_led_reference_white_nits",
+    "capture.target_led_peak_nits",
+];
+
 /// `PUT /api/v1/config/keys/{key}` — write one dotted key and persist.
 ///
 /// The request body is the value itself, so a section writes as a JSON
 /// object and a string writes as a JSON string.
-pub async fn put_config_key(
+pub(crate) async fn put_config_key(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
     Query(apply): Query<ConfigApplyQuery>,
+    Extension(auth_context): Extension<RequestAuthContext>,
     Json(value): Json<serde_json::Value>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
+    }
+    if key_requires_protected_control(&key)
+        && let Some(rejection) = protected_control_rejection(auth_context)
+    {
+        return rejection;
     }
 
     write_config_key(&state, &key, value, apply.live).await
 }
 
 /// `DELETE /api/v1/config/keys/{key}` — restore one key to its default.
-pub async fn delete_config_key(
+pub(crate) async fn delete_config_key(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
     Query(apply): Query<ConfigApplyQuery>,
+    Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
-    if !config_registry::is_valid_key(&key) {
+    if key != CAPTURE_CALIBRATION_RESET_KEY && !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
+    }
+    if key_requires_protected_control(&key)
+        && let Some(rejection) = protected_control_rejection(auth_context)
+    {
+        return rejection;
     }
 
     reset_config_state(&state, Some(&key), apply.live).await
 }
 
 /// `POST /api/v1/config/reset` — restore the whole config to defaults.
-pub async fn reset_config(
+///
+/// A full reset rewrites the capture domain along with everything else,
+/// so it carries the protected-control requirement.
+pub(crate) async fn reset_config(
     State(state): State<Arc<AppState>>,
     Query(apply): Query<ConfigApplyQuery>,
+    Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
+    if let Some(rejection) = protected_control_rejection(auth_context) {
+        return rejection;
+    }
     reset_config_state(&state, None, apply.live).await
 }
 
@@ -514,13 +580,20 @@ async fn reset_config_state(
                 return internal_config_error(format!("Failed to serialize default config: {e}"));
             }
         };
-        let Some(default_value) = get_json_path(&defaults, key) else {
-            return DomainError::not_found(ResourceKind::ConfigKey, key).into_response();
+        let reset_fields: &[&str] = if key == CAPTURE_CALIBRATION_RESET_KEY {
+            &CAPTURE_CALIBRATION_FIELDS
+        } else {
+            std::slice::from_ref(&key)
         };
+        for field in reset_fields {
+            let Some(default_value) = get_json_path(&defaults, field) else {
+                return DomainError::not_found(ResourceKind::ConfigKey, *field).into_response();
+            };
 
-        if !set_json_path(&mut current, key, default_value.clone()) {
-            return DomainError::validation(format!("Invalid config key path: {key}"))
-                .into_response();
+            if !set_json_path(&mut current, field, default_value.clone()) {
+                return DomainError::validation(format!("Invalid config key path: {field}"))
+                    .into_response();
+            }
         }
 
         match serde_json::from_value(current) {
@@ -545,7 +618,14 @@ async fn reset_config_state(
         return DomainError::validation(error.to_string()).into_response();
     }
 
-    let sections = live_sections_for(requested_key.as_deref());
+    // The calibration pseudo-key is absent from the registry; any of its
+    // four member fields yields the same capture live-section answer.
+    let sections_key = if requested_key.as_deref() == Some(CAPTURE_CALIBRATION_RESET_KEY) {
+        Some(CAPTURE_CALIBRATION_FIELDS[0])
+    } else {
+        requested_key.as_deref()
+    };
+    let sections = live_sections_for(sections_key);
     let apply_capture = sections.capture && live_requested;
     let capture_live_applied = if apply_capture {
         match apply_capture_config_transaction(state, &current_snapshot, updated.capture.clone())
@@ -952,7 +1032,7 @@ async fn apply_capture_config_transaction(
             "config manager unavailable"
         )));
     };
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let (plan, capacity_plan, capacity_preparation, admission_coordinator) = {
         let input_manager = state.input_manager.lock().await;
         let plan = input_manager.plan_screen_runtime_config(capture.enabled);
@@ -989,13 +1069,13 @@ async fn apply_capture_config_transaction(
             input_manager.screen_admission_coordinator(),
         )
     };
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     let plan = {
         let input_manager = state.input_manager.lock().await;
         input_manager.plan_screen_runtime_config(capture.enabled)
     };
     let (mut replacement, persistence) = if plan.enabled() {
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let (mut source, persistence) =
             crate::startup::services::prepare_platform_screen_capture_source(
                 &capture,
@@ -1005,7 +1085,7 @@ async fn apply_capture_config_transaction(
                 capacity_plan.total_capacity(),
             )
             .map_err(CaptureConfigTransactionError::Prepare)?;
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let (mut source, persistence) =
             crate::startup::services::prepare_platform_screen_capture_source(
                 &capture,
@@ -1056,7 +1136,7 @@ async fn apply_capture_config_transaction(
         stop_prepared_capture_source(replacement).await;
         return Err(CaptureConfigTransactionError::Commit(error));
     }
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     if let Some(capacity_preparation) = &capacity_preparation
         && let Err(error) = input_manager.validate_screen_capacity(capacity_preparation)
     {
@@ -1101,7 +1181,7 @@ async fn apply_capture_config_transaction(
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let retirement = if let Some(capacity_preparation) = capacity_preparation {
         input_manager.commit_screen_capacity_and_runtime_config(
             capacity_preparation,
@@ -1112,7 +1192,7 @@ async fn apply_capture_config_transaction(
         input_manager.commit_screen_runtime_config(&plan, &mut replacement)
     }
     .expect("screen capacity and runtime were validated under the same input-manager lock");
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     let retirement = input_manager
         .commit_screen_runtime_config(&plan, &mut replacement)
         .expect("screen runtime plan was validated under the same input-manager lock");
@@ -1460,7 +1540,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use hypercolor_core::config::ConfigManager;
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
     use hypercolor_core::input::{
@@ -1908,7 +1988,7 @@ mod tests {
         assert!(stopped.load(Ordering::Acquire));
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     async fn capture_transaction_applies_publication_capacity_with_config() {
         let tempdir = tempfile::tempdir().expect("temporary config directory should build");
@@ -1953,7 +2033,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     async fn capture_transaction_conflict_preserves_publication_capacity() {
         let tempdir = tempfile::tempdir().expect("temporary config directory should build");
@@ -2085,6 +2165,7 @@ mod tests {
             axum::extract::State(Arc::clone(&state)),
             axum::extract::Path("capture.enabled".to_owned()),
             axum::extract::Query(ConfigApplyQuery { live: true }),
+            axum::Extension(crate::api::security::RequestAuthContext::control()),
             axum::Json(serde_json::json!(false)),
         )
         .await;
@@ -2124,6 +2205,7 @@ mod tests {
                 axum::extract::State(request_state),
                 axum::extract::Path("capture.capture_fps".to_owned()),
                 axum::extract::Query(ConfigApplyQuery { live: true }),
+                axum::Extension(crate::api::security::RequestAuthContext::control()),
                 axum::Json(serde_json::json!(unchanged_fps)),
             )
             .await

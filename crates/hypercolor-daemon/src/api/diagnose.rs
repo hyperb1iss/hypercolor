@@ -2,15 +2,17 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
 use serde::Serialize;
 
 use crate::api::AppState;
+use crate::api::capture::protected_control_rejection;
 use crate::api::envelope::ApiResponse;
+use crate::api::security::RequestAuthContext;
 use crate::api::system::{InputStatus, actionable_input_diagnostics, input_status_snapshot};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
@@ -51,6 +53,8 @@ struct DiagnoseSnapshot {
     usb: DiagnoseUsbActorSnapshot,
     display_output: DiagnoseDisplayOutputSnapshot,
     device_output: DiagnoseDeviceOutputSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    macos_screen_parity: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -206,8 +210,9 @@ struct DiagnoseDeviceOutputItem {
     clippy::too_many_lines,
     reason = "diagnostics response assembly keeps checks and snapshot state in one handler"
 )]
-pub async fn run_diagnostics(
+pub(crate) async fn run_diagnostics(
     State(state): State<Arc<AppState>>,
+    Extension(auth_context): Extension<RequestAuthContext>,
     body: Option<Json<DiagnoseRequest>>,
 ) -> Response {
     let requested = body
@@ -224,6 +229,15 @@ pub async fn run_diagnostics(
             ]
         });
 
+    // The parity check actuates a real screenshot-reference capture, so
+    // it rides the protected-capture credential like every other capture
+    // actuation. The default check set stays credential-free.
+    if requested.iter().any(|check| check == "macos_screen_parity")
+        && let Some(rejection) = protected_control_rejection(auth_context)
+    {
+        return rejection;
+    }
+
     let include_system = body.as_ref().and_then(|b| b.system).unwrap_or(false);
 
     let render_elapsed_ms = state.start_time.elapsed().as_secs_f64() * 1000.0;
@@ -232,7 +246,11 @@ pub async fn run_diagnostics(
     let display_output_metrics = state.display_frames.read().await.metrics_snapshot();
     let device_metrics = state.device_metrics.load_full();
     let input = input_status_snapshot(&state);
-    let snapshot = build_diagnose_snapshot(
+    #[allow(
+        unused_mut,
+        reason = "macOS parity attaches its report only in the feature-gated build"
+    )]
+    let mut snapshot = build_diagnose_snapshot(
         input,
         &performance,
         render_elapsed_ms,
@@ -413,6 +431,49 @@ pub async fn run_diagnostics(
                     }));
                 }
             }
+            "macos_screen_parity" => {
+                #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+                match super::macos_screen_parity::run_macos_screen_parity(&state).await {
+                    Ok(report) => {
+                        let detail = report.detail();
+                        match serde_json::to_value(report) {
+                            Ok(report) => {
+                                snapshot.macos_screen_parity = Some(report);
+                                checks.push(DiagnoseCheck {
+                                    category: "input".to_owned(),
+                                    name: "macos_screen_parity".to_owned(),
+                                    status: "pass".to_owned(),
+                                    detail,
+                                });
+                            }
+                            Err(_) => checks.push(DiagnoseCheck {
+                                category: "input".to_owned(),
+                                name: "macos_screen_parity".to_owned(),
+                                status: "fail".to_owned(),
+                                detail: "the parity report could not be serialized".to_owned(),
+                            }),
+                        }
+                    }
+                    Err(error) => checks.push(DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: "macos_screen_parity".to_owned(),
+                        status: error.status().to_owned(),
+                        detail: error.detail().to_owned(),
+                    }),
+                }
+
+                #[cfg(not(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                )))]
+                checks.push(DiagnoseCheck {
+                    category: "input".to_owned(),
+                    name: "macos_screen_parity".to_owned(),
+                    status: "warning".to_owned(),
+                    detail: "macOS screen parity is unavailable in this build".to_owned(),
+                });
+            }
             other => {
                 checks.push(DiagnoseCheck {
                     category: "custom".to_owned(),
@@ -536,6 +597,7 @@ fn build_diagnose_snapshot(
         usb: build_usb_actor_snapshot(usb_actor_metrics),
         display_output: build_display_output_snapshot(display_output_metrics),
         device_output: build_device_output_snapshot(device_metrics),
+        macos_screen_parity: None,
     }
 }
 

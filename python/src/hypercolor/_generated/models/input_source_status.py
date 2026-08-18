@@ -10,6 +10,12 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.input_source_issue_status import InputSourceIssueStatus
+    from ..models.input_source_platform_status_type_0 import (
+        InputSourcePlatformStatusType0,
+    )
+    from ..models.input_source_platform_status_type_1 import (
+        InputSourcePlatformStatusType1,
+    )
 
 
 T = TypeVar("T", bound="InputSourceStatus")
@@ -20,6 +26,7 @@ class InputSourceStatus:
     """Lock-free lifecycle and freshness status for one input source.
 
     Attributes:
+        active_consumer_count (int):
         backend (str):
         configured (bool):
         consented (bool):
@@ -38,8 +45,10 @@ class InputSourceStatus:
         issue (InputSourceIssueStatus | None | Unset):
         last_sample_age_ms (int | None | Unset):
         lifecycle_issue (InputSourceIssueStatus | None | Unset):
+        platform (InputSourcePlatformStatusType0 | InputSourcePlatformStatusType1 | None | Unset):
     """
 
+    active_consumer_count: int
     backend: str
     configured: bool
     consented: bool
@@ -58,10 +67,21 @@ class InputSourceStatus:
     issue: InputSourceIssueStatus | None | Unset = UNSET
     last_sample_age_ms: int | None | Unset = UNSET
     lifecycle_issue: InputSourceIssueStatus | None | Unset = UNSET
+    platform: (
+        InputSourcePlatformStatusType0 | InputSourcePlatformStatusType1 | None | Unset
+    ) = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.input_source_issue_status import InputSourceIssueStatus
+        from ..models.input_source_platform_status_type_0 import (
+            InputSourcePlatformStatusType0,
+        )
+        from ..models.input_source_platform_status_type_1 import (
+            InputSourcePlatformStatusType1,
+        )
+
+        active_consumer_count = self.active_consumer_count
 
         backend = self.backend
 
@@ -125,10 +145,21 @@ class InputSourceStatus:
         else:
             lifecycle_issue = self.lifecycle_issue
 
+        platform: dict[str, Any] | None | Unset
+        if isinstance(self.platform, Unset):
+            platform = UNSET
+        elif isinstance(self.platform, InputSourcePlatformStatusType0):
+            platform = self.platform.to_dict()
+        elif isinstance(self.platform, InputSourcePlatformStatusType1):
+            platform = self.platform.to_dict()
+        else:
+            platform = self.platform
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "active_consumer_count": active_consumer_count,
                 "backend": backend,
                 "configured": configured,
                 "consented": consented,
@@ -154,14 +185,24 @@ class InputSourceStatus:
             field_dict["last_sample_age_ms"] = last_sample_age_ms
         if lifecycle_issue is not UNSET:
             field_dict["lifecycle_issue"] = lifecycle_issue
+        if platform is not UNSET:
+            field_dict["platform"] = platform
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.input_source_issue_status import InputSourceIssueStatus
+        from ..models.input_source_platform_status_type_0 import (
+            InputSourcePlatformStatusType0,
+        )
+        from ..models.input_source_platform_status_type_1 import (
+            InputSourcePlatformStatusType1,
+        )
 
         d = dict(src_dict)
+        active_consumer_count = d.pop("active_consumer_count")
+
         backend = d.pop("backend")
 
         configured = d.pop("configured")
@@ -265,7 +306,50 @@ class InputSourceStatus:
 
         lifecycle_issue = _parse_lifecycle_issue(d.pop("lifecycle_issue", UNSET))
 
+        def _parse_platform(
+            data: object,
+        ) -> (
+            InputSourcePlatformStatusType0
+            | InputSourcePlatformStatusType1
+            | None
+            | Unset
+        ):
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_input_source_platform_status_type_0 = (
+                    InputSourcePlatformStatusType0.from_dict(data)
+                )
+
+                return componentsschemas_input_source_platform_status_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_input_source_platform_status_type_1 = (
+                    InputSourcePlatformStatusType1.from_dict(data)
+                )
+
+                return componentsschemas_input_source_platform_status_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(
+                InputSourcePlatformStatusType0
+                | InputSourcePlatformStatusType1
+                | None
+                | Unset,
+                data,
+            )
+
+        platform = _parse_platform(d.pop("platform", UNSET))
+
         input_source_status = cls(
+            active_consumer_count=active_consumer_count,
             backend=backend,
             configured=configured,
             consented=consented,
@@ -284,6 +368,7 @@ class InputSourceStatus:
             issue=issue,
             last_sample_age_ms=last_sample_age_ms,
             lifecycle_issue=lifecycle_issue,
+            platform=platform,
         )
 
         input_source_status.additional_properties = d

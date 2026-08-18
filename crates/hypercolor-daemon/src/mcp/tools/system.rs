@@ -245,20 +245,7 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         ("unknown", "unknown")
     };
     let input = input_status_snapshot(state);
-    let input_state = if input.enabled {
-        match input.degraded.as_deref() {
-            Some(code) if code == InteractionDegradation::AccessDenied.code() => {
-                "blocked_permissions"
-            }
-            Some(code) if code == InteractionDegradation::NoInteractiveSession.code() => {
-                "no_interactive_session"
-            }
-            Some(_) => "unavailable",
-            None => "enabled",
-        }
-    } else {
-        "disabled"
-    };
+    let input_state = interaction_state(input.enabled, input.degraded.as_deref());
 
     let power = *state.power_state.borrow();
     let paused = power.reported_paused();
@@ -297,6 +284,29 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         "uptime_seconds": state.start_time.elapsed().as_secs(),
         "version": env!("CARGO_PKG_VERSION")
     }))
+}
+
+fn interaction_state(enabled: bool, degraded: Option<&str>) -> &'static str {
+    if enabled {
+        match degraded {
+            Some(code) if code == InteractionDegradation::AccessDenied.code() => {
+                "blocked_permissions"
+            }
+            Some(code) if code == InteractionDegradation::NoInteractiveSession.code() => {
+                "no_interactive_session"
+            }
+            Some(code)
+                if code == InteractionDegradation::InputMonitoringPermissionDenied.code()
+                    || code == InteractionDegradation::InputMonitoringPermissionRevoked.code() =>
+            {
+                "blocked_permissions"
+            }
+            Some(_) => "unavailable",
+            None => "enabled",
+        }
+    } else {
+        "disabled"
+    }
 }
 
 pub(super) async fn handle_get_sensor_data_with_state(
@@ -552,4 +562,23 @@ pub(super) async fn handle_diagnose_with_state(
             }
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interaction_state;
+    use hypercolor_core::input::InteractionDegradation;
+
+    #[test]
+    fn macos_permission_failures_report_blocked_permissions() {
+        for degradation in [
+            InteractionDegradation::InputMonitoringPermissionDenied,
+            InteractionDegradation::InputMonitoringPermissionRevoked,
+        ] {
+            assert_eq!(
+                interaction_state(true, Some(degradation.code())),
+                "blocked_permissions"
+            );
+        }
+    }
 }

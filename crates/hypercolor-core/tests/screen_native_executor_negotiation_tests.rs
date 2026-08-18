@@ -11,14 +11,15 @@ use hypercolor_core::input::screen::{
     ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenExecutorColorCapabilities, ScreenExtentRequest,
     ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeTargetPreparation,
+    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetPreparation,
     ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
     ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanGeneration,
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationError,
     ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerExactLedgerBuilder, SourceScale,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerExactLedgerBuilder,
+    ScreenWorkerLedgerBuildError, SourceScale,
 };
 
 #[path = "support/native_target.rs"]
@@ -56,8 +57,31 @@ fn target(
     )
 }
 
+#[test]
+fn native_target_carries_its_exact_color_capabilities() {
+    let capabilities = ScreenColorTransformCapabilities::new(
+        true,
+        true,
+        true,
+        NonZeroU32::new(7).expect("test revision is nonzero"),
+    );
+    let target = target(1, PlatformGpuApi::Direct3d11, gpu_device(1), 16_384)
+        .with_color_capabilities(capabilities);
+
+    assert_eq!(target.color_capabilities(), capabilities);
+}
+
 struct CountingPreparer {
     calls: Arc<AtomicUsize>,
+}
+
+struct SplitCountingPreparer {
+    calls: Arc<AtomicUsize>,
+}
+
+struct DispatchCountingPreparer {
+    quote_calls: Arc<AtomicUsize>,
+    prepare_calls: Arc<AtomicUsize>,
 }
 
 impl ScreenNativeTargetPreparer for CountingPreparer {
@@ -86,6 +110,67 @@ impl ScreenNativeTargetPreparer for CountingPreparer {
     }
 }
 
+impl ScreenNativeTargetPreparer for SplitCountingPreparer {
+    fn quote_retained_bytes(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        Ok(1)
+    }
+
+    fn quote_retention(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeRetentionQuote> {
+        Ok(ScreenNativeRetentionQuote::split(1, 1))
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(ScreenNativeTargetPreparation::with_retention(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(()),
+            ),
+            ScreenNativeRetentionQuote::split(1, 1),
+        ))
+    }
+}
+
+impl ScreenNativeTargetPreparer for DispatchCountingPreparer {
+    fn quote_retained_bytes(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        self.quote_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(1)
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        self.prepare_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(ScreenNativeTargetPreparation::new(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(()),
+            ),
+            1,
+        ))
+    }
+}
+
 struct WrongOutputPreparer {
     calls: Arc<AtomicUsize>,
     output_descriptor: hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
@@ -93,6 +178,8 @@ struct WrongOutputPreparer {
 }
 
 struct MisquotingPreparer;
+
+struct MisquotingSharedPreparer;
 
 impl ScreenNativeTargetPreparer for MisquotingPreparer {
     fn quote_retained_bytes(
@@ -115,6 +202,39 @@ impl ScreenNativeTargetPreparer for MisquotingPreparer {
                 Arc::new(()),
             ),
             8,
+        ))
+    }
+}
+
+impl ScreenNativeTargetPreparer for MisquotingSharedPreparer {
+    fn quote_retained_bytes(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        Ok(7)
+    }
+
+    fn quote_retention(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeRetentionQuote> {
+        Ok(ScreenNativeRetentionQuote::split(7, 11))
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        Ok(ScreenNativeTargetPreparation::with_retention(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(()),
+            ),
+            ScreenNativeRetentionQuote::split(7, 12),
         ))
     }
 }
@@ -319,6 +439,71 @@ fn native_target_rejects_substituted_preparer_output_before_binding() {
 }
 
 #[test]
+fn native_target_rejects_foreign_plan_generation_before_quote_or_prepare() {
+    let device = gpu_device(10);
+    let resolved_source = source(
+        extent(1920, 1080),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(device.clone()),
+    );
+    let quote_calls = Arc::new(AtomicUsize::new(0));
+    let prepare_calls = Arc::new(AtomicUsize::new(0));
+    let target = ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(91).expect("test target identity is non-zero"),
+        ),
+        PlatformGpuApi::Direct3d11,
+        device,
+        non_zero_u32(16_384),
+        Arc::new(DispatchCountingPreparer {
+            quote_calls: Arc::clone(&quote_calls),
+            prepare_calls: Arc::clone(&prepare_calls),
+        }),
+    );
+    let demand = resolve_exact(
+        &resolved_source,
+        ScreenPublicationExecutorRequest::SourceNative(target.clone()),
+    );
+    let mut plan_builder = ScreenPlanBuilder::new();
+    let mut preparing = plan_builder
+        .prepare(
+            [demand.clone()],
+            None,
+            InputPublicationDemandRevision::new(1),
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("foreign-generation regression plan prepares");
+    let ticket = preparing
+        .worker_ticket(&resolved_source.epoch().source_id)
+        .expect("foreign-generation regression owns one worker ticket");
+    assert_ne!(ticket.plan_generation(), ScreenPlanGeneration::default());
+    let foreign = ScreenNativePreparationPayload::new(
+        demand.descriptor(),
+        ScreenPlanGeneration::default(),
+        Arc::new(()),
+    );
+    let mut ledger =
+        ScreenWorkerExactLedgerBuilder::new(ticket).expect("native ledger metadata prepares");
+
+    let error = ledger
+        .prepare_native_target(
+            &target,
+            demand.descriptor(),
+            &foreign,
+            "native-foreign-generation",
+            "worker-runtime-total",
+        )
+        .expect_err("foreign plan generation is rejected before renderer dispatch");
+    assert!(matches!(
+        error.downcast_ref::<ScreenWorkerLedgerBuildError>(),
+        Some(ScreenWorkerLedgerBuildError::NativePlanGenerationMismatch { .. })
+    ));
+    assert_eq!(quote_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(prepare_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn native_target_rejects_renderer_allocation_drift_from_preflight_quote() {
     let device = gpu_device(6);
     let resolved_source = source(
@@ -339,11 +524,6 @@ fn native_target_rejects_renderer_allocation_drift_from_preflight_quote() {
         &resolved_source,
         ScreenPublicationExecutorRequest::SourceNative(target.clone()),
     );
-    let platform = ScreenNativePreparationPayload::new(
-        resolved.descriptor(),
-        ScreenPlanGeneration::default(),
-        Arc::new(()),
-    );
     let mut plan_builder = ScreenPlanBuilder::new();
     let mut preparing = plan_builder
         .prepare(
@@ -357,6 +537,11 @@ fn native_target_rejects_renderer_allocation_drift_from_preflight_quote() {
     let ticket = preparing
         .worker_ticket(&resolved_source.epoch().source_id)
         .expect("native source owns one worker ticket");
+    let platform = ScreenNativePreparationPayload::new(
+        resolved.descriptor(),
+        ticket.plan_generation(),
+        Arc::new(()),
+    );
     let mut ledger =
         ScreenWorkerExactLedgerBuilder::new(ticket).expect("native ledger metadata prepares");
     let error = ledger
@@ -375,6 +560,52 @@ fn native_target_rejects_renderer_allocation_drift_from_preflight_quote() {
             &ScreenNativeTargetPreparationError::PreparedRetainedBytesMismatch {
                 quoted: 7,
                 actual: 8,
+            }
+        )
+    );
+}
+
+#[test]
+fn native_target_rejects_shared_allocation_drift_from_preflight_quote() {
+    let device = gpu_device(8);
+    let resolved_source = source(
+        extent(1920, 1080),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(device.clone()),
+    );
+    let target = ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(43).expect("test target identity is non-zero"),
+        ),
+        PlatformGpuApi::Direct3d11,
+        device,
+        non_zero_u32(16_384),
+        Arc::new(MisquotingSharedPreparer),
+    );
+    let resolved = resolve_exact(
+        &resolved_source,
+        ScreenPublicationExecutorRequest::SourceNative(target.clone()),
+    );
+    let platform = ScreenNativePreparationPayload::new(
+        resolved.descriptor(),
+        ScreenPlanGeneration::default(),
+        Arc::new(()),
+    );
+    let error = prepare_with_admission(
+        &resolved_source,
+        &resolved,
+        &target,
+        resolved.descriptor(),
+        &platform,
+    )
+    .expect_err("shared allocation drift from the admitted quote is rejected");
+
+    assert_eq!(
+        error.downcast_ref::<ScreenNativeTargetPreparationError>(),
+        Some(
+            &ScreenNativeTargetPreparationError::PreparedSharedRetainedBytesMismatch {
+                quoted: 11,
+                actual: 12,
             }
         )
     );
@@ -432,6 +663,76 @@ fn admitted_native_target_keeps_its_quote_after_builder_and_plan_drop() {
     assert_eq!(coordinator.snapshot().reserved_bytes(), 1);
     drop(admitted);
     assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
+
+#[test]
+fn shared_admission_failure_never_dispatches_renderer_preparation() {
+    let coordinator =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let resolved_source = source(
+        extent(1920, 1080),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(gpu_device(9)),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let target = ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(90).expect("test target identity is non-zero"),
+        ),
+        PlatformGpuApi::Direct3d11,
+        gpu_device(9),
+        non_zero_u32(16_384),
+        Arc::new(SplitCountingPreparer {
+            calls: Arc::clone(&calls),
+        }),
+    );
+    let demand = resolve_exact(
+        &resolved_source,
+        ScreenPublicationExecutorRequest::SourceNative(target.clone()),
+    );
+    let mut plan_builder = ScreenPlanBuilder::with_publication_slots_and_admission(
+        ScreenPublicationSlotPolicy::default(),
+        coordinator.clone(),
+    );
+    let mut preparing = plan_builder
+        .prepare(
+            [demand.clone()],
+            None,
+            InputPublicationDemandRevision::new(1),
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("split admission regression plan prepares");
+    let ticket = preparing
+        .worker_ticket(&resolved_source.epoch().source_id)
+        .expect("split admission regression owns one worker ticket");
+    let modeled_bytes = coordinator.snapshot().reserved_bytes();
+    coordinator
+        .try_set_capacity(ScreenAdmissionCapacity::new(
+            modeled_bytes + 1,
+            modeled_bytes + 1,
+        ))
+        .expect("one exclusive byte remains available");
+    let platform = ScreenNativePreparationPayload::new(
+        demand.descriptor(),
+        ticket.plan_generation(),
+        Arc::new(()),
+    );
+    let mut ledger =
+        ScreenWorkerExactLedgerBuilder::new(ticket).expect("native ledger metadata prepares");
+
+    ledger
+        .prepare_native_target(
+            &target,
+            demand.descriptor(),
+            &platform,
+            "native-shared-admission-failure",
+            "worker-runtime-total",
+        )
+        .expect_err("shared physical byte exceeds the remaining exact capacity");
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), modeled_bytes);
+    drop(preparing.abort());
 }
 
 fn source(
@@ -529,11 +830,16 @@ fn prepare_with_admission(
     let ticket = preparing
         .worker_ticket(&source.epoch().source_id)
         .expect("native test source owns one worker ticket");
+    let platform = ScreenNativePreparationPayload::new(
+        platform.descriptor(),
+        ticket.plan_generation(),
+        Arc::new(()),
+    );
     let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
     ledger.prepare_native_target(
         target,
         descriptor,
-        platform,
+        &platform,
         "native-negotiation-test",
         "worker-runtime-total",
     )

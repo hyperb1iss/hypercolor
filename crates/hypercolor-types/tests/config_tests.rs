@@ -1,12 +1,13 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
 use hypercolor_types::config::{
-    AudioConfig, CaptureConfig, CaptureConfigValidationError, CapturePlatform, DaemonConfig,
-    DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
-    FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig, InteractionRoutePolicy, LogLevel,
-    McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
-    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
-    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    AudioConfig, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError, CapturePlatform,
+    DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig,
+    EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig,
+    InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig, NetworkAccessMode,
+    NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
+    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
+    default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -101,6 +102,7 @@ fn capture_defaults_match_spec() {
     let c = CaptureConfig::default();
     assert_eq!(c.source, "auto");
     assert_eq!(c.capture_fps, 30);
+    assert_eq!(c.cadence, CaptureCadenceMode::Fixed);
     assert_eq!(c.grid_cols, 8);
     assert_eq!(c.grid_rows, 6);
     assert_eq!(c.publication_memory_bytes, None);
@@ -113,7 +115,62 @@ fn capture_defaults_match_spec() {
     assert!((c.saturation - 1.0).abs() < f32::EPSILON);
     assert!((c.brightness - 1.0).abs() < f32::EPSILON);
     assert!((c.gamma - 1.0).abs() < f32::EPSILON);
+    assert!((c.target_led_white_x - 0.3127).abs() < f32::EPSILON);
+    assert!((c.target_led_white_y - 0.3290).abs() < f32::EPSILON);
+    assert!((c.target_led_reference_white_nits - 203.0).abs() < f32::EPSILON);
+    assert!((c.target_led_peak_nits - 406.0).abs() < f32::EPSILON);
+    assert!(c.exposure_ev.abs() < f32::EPSILON);
     assert_eq!(c.restore_token, None);
+}
+
+#[test]
+fn capture_native_refresh_is_explicit_and_roundtrips_without_a_zero_sentinel() {
+    let config: CaptureConfig = toml::from_str("capture_fps = 30\ncadence = \"native_refresh\"\n")
+        .expect("native refresh capture config parses");
+    assert_eq!(config.capture_fps, 30);
+    assert_eq!(config.cadence, CaptureCadenceMode::NativeRefresh);
+    config
+        .validate_for_platform(CapturePlatform::MacosScreenCaptureKit)
+        .expect("native refresh retains a valid analysis cadence");
+
+    let serialized = toml::to_string(&config).expect("capture config serializes");
+    let roundtrip: CaptureConfig =
+        toml::from_str(&serialized).expect("serialized capture config parses");
+    assert_eq!(roundtrip.cadence, CaptureCadenceMode::NativeRefresh);
+    assert_eq!(roundtrip.capture_fps, 30);
+}
+
+#[test]
+fn capture_tone_mapping_fields_default_when_omitted() {
+    let parsed: CaptureConfig = toml::from_str("").expect("empty capture config parses");
+    let expected = CaptureConfig::default();
+
+    assert_eq!(parsed.target_led_white_x, expected.target_led_white_x);
+    assert_eq!(parsed.target_led_white_y, expected.target_led_white_y);
+    assert_eq!(
+        parsed.target_led_reference_white_nits,
+        expected.target_led_reference_white_nits
+    );
+    assert_eq!(parsed.target_led_peak_nits, expected.target_led_peak_nits);
+    assert_eq!(parsed.exposure_ev, expected.exposure_ev);
+}
+
+#[test]
+fn capture_platform_matches_build_target() {
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        CapturePlatform::current(),
+        CapturePlatform::WindowsDesktopDuplication
+    );
+    #[cfg(target_os = "linux")]
+    assert_eq!(CapturePlatform::current(), CapturePlatform::LinuxPipeWire);
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        CapturePlatform::current(),
+        CapturePlatform::MacosScreenCaptureKit
+    );
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    assert_eq!(CapturePlatform::current(), CapturePlatform::Unsupported);
 }
 
 #[test]
@@ -130,6 +187,7 @@ fn capture_config_accepts_any_nonzero_backend_rate() {
     for platform in [
         CapturePlatform::WindowsDesktopDuplication,
         CapturePlatform::LinuxPipeWire,
+        CapturePlatform::MacosScreenCaptureKit,
     ] {
         config.source = "auto".to_owned();
         config.capture_fps = 1;
@@ -202,6 +260,95 @@ fn capture_config_rejects_empty_grid_and_invalid_float_values() {
 }
 
 #[test]
+fn capture_config_accepts_tone_mapping_boundaries() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let mut config = CaptureConfig {
+        target_led_white_x: 0.000_1,
+        target_led_white_y: 0.999_8,
+        target_led_reference_white_nits: 1.0,
+        target_led_peak_nits: 10_000.0,
+        exposure_ev: -8.0,
+        ..CaptureConfig::default()
+    };
+    config
+        .validate_for_platform(platform)
+        .expect("minimum tone-mapping boundaries should validate");
+
+    config.target_led_reference_white_nits = 5_000.0;
+    config.exposure_ev = 8.0;
+    config
+        .validate_for_platform(platform)
+        .expect("maximum tone-mapping boundaries should validate");
+}
+
+#[test]
+fn capture_config_rejects_invalid_target_white_point() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    for (x, y) in [
+        (f32::NAN, 0.3290),
+        (0.3127, f32::INFINITY),
+        (0.0, 0.3290),
+        (0.3127, 0.0),
+        (0.4, 0.6),
+    ] {
+        let config = CaptureConfig {
+            target_led_white_x: x,
+            target_led_white_y: y,
+            ..CaptureConfig::default()
+        };
+        assert!(matches!(
+            config.validate_for_platform(platform),
+            Err(CaptureConfigValidationError::WhitePointChromaticity { .. })
+        ));
+    }
+}
+
+#[test]
+fn capture_config_rejects_invalid_target_luminance_and_exposure() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let mut config = CaptureConfig {
+        target_led_reference_white_nits: 0.99,
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "target_led_reference_white_nits",
+            ..
+        })
+    ));
+
+    config.target_led_reference_white_nits = 203.0;
+    config.target_led_peak_nits = 10_000.1;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "target_led_peak_nits",
+            ..
+        })
+    ));
+
+    config.target_led_peak_nits = 203.0;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::PeakNotAboveReference {
+            reference: 203.0,
+            peak: 203.0
+        })
+    ));
+
+    config.target_led_peak_nits = 406.0;
+    config.exposure_ev = 8.01;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "exposure_ev",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn capture_config_accepts_optional_nonzero_publication_memory_budget() {
     let platform = CapturePlatform::WindowsDesktopDuplication;
     let mut config = CaptureConfig {
@@ -244,6 +391,60 @@ fn capture_config_validates_source_by_backend() {
     config.source = "auto\0hidden".to_owned();
     assert!(matches!(
         config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        Err(CaptureConfigValidationError::Source { .. })
+    ));
+}
+
+#[test]
+fn macos_capture_source_accepts_only_persistable_picker_grammar() {
+    let platform = CapturePlatform::MacosScreenCaptureKit;
+    let mut config = CaptureConfig {
+        enabled: true,
+        ..CaptureConfig::default()
+    };
+
+    for source in [
+        "auto",
+        "primary_display",
+        "session_scoped",
+        "display:7607E722-6D21-4812-8926-D93DBF8FDC58",
+        "display:7607e722-6d21-4812-8926-d93dbf8fdc58",
+    ] {
+        config.source = source.to_owned();
+        config
+            .validate_for_platform(platform)
+            .unwrap_or_else(|error| panic!("{source} should validate: {error}"));
+    }
+
+    for source in [
+        "display:1",
+        "display:not-a-uuid",
+        "display:{7607E722-6D21-4812-8926-D93DBF8FDC58}",
+        "window:42",
+        "application:com.example.editor",
+        "primary-display",
+        "AUTO",
+    ] {
+        config.source = source.to_owned();
+        assert!(
+            matches!(
+                config.validate_for_platform(platform),
+                Err(CaptureConfigValidationError::Source { .. })
+            ),
+            "{source} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn macos_capture_source_is_validated_while_capture_is_disabled() {
+    let config = CaptureConfig {
+        enabled: false,
+        source: "monitor:legacy-windows-id".to_owned(),
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_platform(CapturePlatform::MacosScreenCaptureKit),
         Err(CaptureConfigValidationError::Source { .. })
     ));
 }

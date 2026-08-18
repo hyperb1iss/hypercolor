@@ -2,18 +2,37 @@
 # frozen_string_literal: true
 
 # Homebrew formula for Hypercolor
-# Auto-updated by CI — do not edit SHA256 sums manually.
+# Updated manually after release artifacts pass signed acceptance.
 
 class Hypercolor < Formula
+  # Sequoia's symbolic version cannot distinguish 15.0 from the 15.2 floor.
+  class MacosVersionRequirement < Requirement
+    fatal true
+
+    satisfy(build_env: false) do
+      !OS.mac? || MacOS.version >= Version.new("15.2")
+    end
+
+    def message
+      "Hypercolor requires macOS 15.2 or newer."
+    end
+  end
+
   desc "Open-source RGB lighting orchestration engine"
   homepage "https://github.com/hyperb1iss/hypercolor"
   version "VERSION_PLACEHOLDER"
   license "Apache-2.0"
 
   on_macos do
+    depends_on macos: ">= :sequoia"
+    depends_on MacosVersionRequirement
+
     if Hardware::CPU.arm?
       url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-arm64.tar.gz"
       sha256 "SHA256_MACOS_ARM64"
+    elsif Hardware::CPU.intel?
+      url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-amd64.tar.gz"
+      sha256 "SHA256_MACOS_AMD64"
     end
   end
 
@@ -66,11 +85,11 @@ class Hypercolor < Formula
   end
 
   service do
-    run [opt_bin/"hypercolor-daemon", "--ui-dir", share/"hypercolor/ui"]
-    keep_alive true
+    run [opt_bin/"hypercolor-daemon", "--macos-owner", "homebrew", "--ui-dir", share/"hypercolor/ui"]
+    keep_alive successful_exit: false
     log_path var/"log/hypercolor/hypercolor.log"
     error_log_path var/"log/hypercolor/hypercolor.log"
-    environment_variables HYPERCOLOR_LOG: "info"
+    environment_variables HYPERCOLOR_LOG: "info", HYPERCOLOR_MACOS_OWNER: "homebrew"
   end
 
   test do

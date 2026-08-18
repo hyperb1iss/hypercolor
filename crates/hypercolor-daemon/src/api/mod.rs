@@ -21,6 +21,8 @@ pub mod layers;
 pub mod layouts;
 pub mod library;
 pub mod local;
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+mod macos_screen_parity;
 pub mod openapi;
 pub mod output;
 pub mod profiles;
@@ -37,11 +39,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
+#[cfg(any(target_os = "macos", test))]
+use std::sync::atomic::AtomicU64;
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, Method, header};
@@ -106,6 +110,9 @@ use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 #[cfg(test)]
 static APP_STATE_TEST_DATA_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_os = "macos")]
+type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, JoinHandle<()>)>>>;
+
 /// Shared application state injected into every API handler.
 ///
 /// All fields are wrapped in `Arc` or interior-mutable containers so
@@ -134,6 +141,9 @@ pub struct AppState {
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Latest durable macOS daemon ownership state.
+    pub macos_daemon_ownership: Arc<ArcSwapOption<crate::macos_owner::MacosOwnerSnapshot>>,
 
     /// Daemon-managed user media asset library.
     pub asset_library: Arc<RwLock<AssetLibrary>>,
@@ -192,8 +202,21 @@ pub struct AppState {
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,
 
+    /// Monotonic request order for macOS picker-persistence observers.
+    #[cfg(target_os = "macos")]
+    pub(crate) capture_picker_request_epoch: Arc<AtomicU64>,
+
+    /// Latest macOS picker-persistence observer, fenced by request order.
+    #[cfg(target_os = "macos")]
+    pub(crate) capture_picker_persistence_task: CapturePickerPersistenceTask,
+
     /// Aggregate typed input demand shared with render and connection consumers.
     pub input_publication_demands: InputPublicationDemandHandle,
+
+    /// Active-renderer mailbox for explicit macOS screen parity snapshots.
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) macos_screen_parity_diagnostics:
+        Option<crate::render_thread::MacosScreenParityDiagnosticHandle>,
 
     /// Lock-free latest-value health for the live input graph.
     pub input_status: SourceStatusRegistry,
@@ -291,6 +314,9 @@ pub struct AppState {
 
     /// Stable network identity exposed by API and discovery surfaces.
     pub server_identity: ServerIdentity,
+
+    /// Current daemon process session identifier, when one was attested.
+    pub server_session_id: Option<String>,
 
     /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
     pub security_state: security::SecurityState,
@@ -567,6 +593,7 @@ impl AppState {
             scene_store,
             scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus,
+            macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
             asset_library: Arc::new(RwLock::new(asset_library)),
             preview_runtime,
             zone_layout_previews,
@@ -586,7 +613,13 @@ impl AppState {
             api_extensions: Vec::new(),
             input_manager,
             screen_capacity_status,
+            #[cfg(target_os = "macos")]
+            capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            capture_picker_persistence_task: Arc::new(StdMutex::new(None)),
             input_publication_demands: InputPublicationDemandHandle::new(),
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_diagnostics: None,
             input_status,
             browser_input,
             interaction_routing,
@@ -624,6 +657,7 @@ impl AppState {
                 instance_name: "hypercolor".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
+            server_session_id: None,
             security_state: security::SecurityState::from_config(&HypercolorConfig::default()),
         }
     }
@@ -652,6 +686,7 @@ impl AppState {
             scene_store: Arc::clone(&daemon.scene_store),
             scene_commits: Arc::clone(&daemon.scene_commits),
             event_bus: Arc::clone(&daemon.event_bus),
+            macos_daemon_ownership: Arc::clone(&daemon.macos_daemon_ownership),
             asset_library: Arc::clone(&daemon.asset_library),
             preview_runtime: Arc::clone(&daemon.preview_runtime),
             zone_layout_previews: Arc::clone(&daemon.zone_layout_previews),
@@ -671,9 +706,15 @@ impl AppState {
             api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(&daemon.input_manager),
             screen_capacity_status: daemon.screen_capacity_status.clone(),
+            #[cfg(target_os = "macos")]
+            capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            capture_picker_persistence_task: Arc::new(StdMutex::new(None)),
             input_publication_demands: daemon
                 .input_publication_demands()
                 .expect("live API state requires a running input publication pump"),
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_diagnostics: daemon.macos_screen_parity_diagnostics(),
             input_status: daemon.input_status.clone(),
             browser_input: daemon.browser_input.clone(),
             interaction_routing: daemon.interaction_routing.clone(),
@@ -707,8 +748,18 @@ impl AppState {
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
+            server_session_id: None,
             security_state: security::SecurityState::from_config(&daemon.config_manager.get()),
         }
+    }
+
+    pub(crate) fn install_macos_daemon_session(
+        &mut self,
+        attestation: &crate::macos_owner::MacosDaemonSessionAttestation,
+    ) {
+        self.server_session_id = Some(attestation.server_session_id.as_str().to_owned());
+        self.security_state
+            .install_macos_daemon_session(attestation);
     }
 }
 
@@ -1416,7 +1467,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── System ───────────────────────────────────────────────────
         .route("/server", axum::routing::get(system::get_server))
-        .route("/status", axum::routing::get(system::get_status))
+        .route("/status", axum::routing::get(system::get_status_route))
         .route("/system/sensors", axum::routing::get(system::get_sensors))
         .route(
             "/system/sensors/{label}",
@@ -1427,6 +1478,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(system::list_audio_devices),
         )
         // ── Screen Capture ───────────────────────────────────────────
+        .route(
+            "/input/authorize",
+            axum::routing::post(capture::authorize_input_monitoring),
+        )
+        .route(
+            "/capture/authorize",
+            axum::routing::post(capture::authorize_screen_recording),
+        )
         .route(
             "/capture/source/pick",
             axum::routing::post(capture::pick_capture_source),
@@ -1593,7 +1652,9 @@ fn configured_cors_origin(origin: &str) -> Option<HeaderValue> {
 }
 
 fn is_allowed_cors_origin(origin: &HeaderValue, configured_origins: &[HeaderValue]) -> bool {
-    is_loopback_origin(origin) || configured_origins.iter().any(|allowed| allowed == origin)
+    is_loopback_origin(origin)
+        || security::is_trusted_tauri_origin(origin)
+        || configured_origins.iter().any(|allowed| allowed == origin)
 }
 
 fn is_http_origin(origin: &str) -> bool {
@@ -1649,6 +1710,17 @@ mod cors_tests {
         ));
         assert!(is_allowed_cors_origin(
             &origin("http://127.0.0.1:9430"),
+            &configured
+        ));
+        for native_origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            assert!(is_allowed_cors_origin(&origin(native_origin), &configured));
+        }
+        assert!(!is_allowed_cors_origin(
+            &origin("tauri://attacker.example"),
             &configured
         ));
     }

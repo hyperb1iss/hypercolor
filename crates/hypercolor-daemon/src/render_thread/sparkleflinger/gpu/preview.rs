@@ -211,12 +211,25 @@ impl GpuSparkleFlinger {
         if self.pending_preview_readback().is_none() {
             return Ok(());
         }
-        let (frame_in_flight, queue) = (&mut self.frame_in_flight, &self.queue);
-        let submission_index = frame_in_flight
-            .as_mut()
-            .and_then(|frame| frame.submit(queue));
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        let mut native_screen_leases = Vec::new();
+        let submission_index = {
+            let frame_in_flight = &mut self.frame_in_flight;
+            let submission_index = frame_in_flight
+                .as_mut()
+                .and_then(|frame| frame.submit(&self.queue));
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            if submission_index.is_some()
+                && let Some(frame) = frame_in_flight.as_mut()
+            {
+                native_screen_leases = frame.take_native_screen_leases();
+            }
+            submission_index
+        };
         if let Some(submission_index) = submission_index {
-            self.finish_pending_uploads(submission_index);
+            self.finish_pending_uploads(submission_index.clone());
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            self.retire_native_screen_leases(submission_index, native_screen_leases);
             self.release_retired_uniform_slots();
         }
         if self.pending_preview_map.is_some() {
@@ -562,6 +575,9 @@ impl GpuSparkleFlinger {
         request: PreviewSurfaceRequest,
         cache_as_full_size: bool,
         encoder: Option<wgpu::CommandEncoder>,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: Vec<
+            super::MacosScreenTextureLease,
+        >,
         prepared_surface_change: Option<PreparedPreviewSurfaceChange>,
     ) -> Result<ComposedFrameSet> {
         if !cache_as_full_size
@@ -621,10 +637,10 @@ impl GpuSparkleFlinger {
             .map(|pending| match &pending.readback {
                 PendingPreviewReadback::PreviewBuffer { slot, .. } => *slot,
             });
-        if let Some(encoder) =
+        if let Some(stashed) =
             self.supersede_frame_in_flight("preview restaged over retained frame")
         {
-            drop(encoder);
+            drop(stashed);
             self.discard_pending_uploads();
         }
         let preview_surfaces = self
@@ -719,6 +735,18 @@ impl GpuSparkleFlinger {
                 u64::from(preview_surfaces.padded_bytes_per_row) * u64::from(request.height),
             );
         }
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        self.stage_frame_in_flight_with_native_screen_leases(
+            encoder,
+            Some(PendingPreviewReadback::PreviewBuffer {
+                request,
+                readback_key,
+                cache_as_full_size,
+                slot: readback_slot,
+            }),
+            native_screen_leases,
+        );
+        #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
         self.stage_frame_in_flight(
             encoder,
             Some(PendingPreviewReadback::PreviewBuffer {

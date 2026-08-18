@@ -479,6 +479,7 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
                 .surface_pixels_mut()
                 .expect("physical surface remains writable"),
             frame.metadata().captured_at,
+            false,
             &mut zones_publication,
         )
         .expect("the same physical bytes stage Zones");
@@ -523,6 +524,7 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
             physical,
             surface.pixels(),
             rejected_frame.metadata().captured_at,
+            false,
             &mut rejected_publication,
         )
         .expect("next Zones state stages");
@@ -831,7 +833,9 @@ fn mixed_fanout_materializes_retained_and_added_branch_bindings() {
                 publication.worker_plan_generation(),
                 runtime_binding.plan_generation()
             ),
-            ScreenBranchPayload::GpuSurface(_) => panic!("CPU fanout cannot publish GPU storage"),
+            ScreenBranchPayload::GpuSurface(_) | ScreenBranchPayload::NativeWork(_) => {
+                panic!("CPU fanout cannot publish GPU storage")
+            }
         }
     }
     assert_ne!(initial_plan.generation(), mixed_plan.generation());

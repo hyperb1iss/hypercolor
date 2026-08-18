@@ -840,6 +840,7 @@ impl MediaProviderSession {
         })
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn disconnect(&mut self) {
         self.provider.disconnect();
         self.connected = false;
@@ -1406,6 +1407,7 @@ struct CompletedMediaPoll {
 enum MediaPublicationKind {
     BackendSuccess,
     StateUpdate,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     BackendFailure,
 }
 
@@ -1469,6 +1471,7 @@ impl MediaPollPublisher {
         true
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn publish_unavailable(&self, completed_at: Instant) -> bool {
         let mut publication = self
             .publication

@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 
+pub use hypercolor_types::api::capture::CaptureMonitor;
 use hypercolor_types::config_registry::ConfigKeySchemaEntry;
 
 use super::client;
@@ -57,18 +58,6 @@ pub async fn fetch_config_schema() -> Result<Vec<ConfigKeySchemaEntry>, String> 
         .map_err(Into::into)
 }
 
-/// One display output capture can address, from `/api/v1/capture/monitors`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct CaptureMonitor {
-    pub index: usize,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    pub primary: bool,
-    /// Ready-to-store `capture.source` value selecting this output.
-    pub value: String,
-}
-
 /// Display outputs the capture backend can address. Empty on portal
 /// platforms, which is the UI's cue to show the picker button instead.
 pub async fn fetch_capture_monitors() -> Result<Vec<CaptureMonitor>, String> {
@@ -87,6 +76,20 @@ pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
 /// Re-open the desktop portal source picker for screen capture.
 pub async fn pick_capture_source() -> Result<(), String> {
     client::post_empty("/api/v1/capture/source/pick")
+        .await
+        .map_err(Into::into)
+}
+
+/// Explicitly request Input Monitoring from the active macOS owner.
+pub async fn authorize_input_monitoring() -> Result<(), String> {
+    client::post_empty("/api/v1/input/authorize")
+        .await
+        .map_err(Into::into)
+}
+
+/// Explicitly request Screen Recording from the active macOS owner.
+pub async fn authorize_screen_recording() -> Result<(), String> {
+    client::post_empty("/api/v1/capture/authorize")
         .await
         .map_err(Into::into)
 }

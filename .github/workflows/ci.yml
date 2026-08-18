@@ -40,6 +40,8 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   RUST_TOOLCHAIN: "1.95.0"
+  XCODE_VERSION: "26.5"
+  MACOSX_DEPLOYMENT_TARGET: "15.2"
   APT_STEP_TIMEOUT: 35m
   APT_HTTP_TIMEOUT: "20"
   APT_RETRIES: "5"
@@ -129,6 +131,10 @@ jobs:
               - 'scripts/cargo-target-gc.sh'
               - 'scripts/tests/cargo-cache-build-tests.sh'
               - 'scripts/tests/cargo-target-gc-tests.sh'
+              - 'scripts/sign-macos-artifacts.sh'
+              - 'scripts/macos-signing-keychain.c'
+              - 'scripts/build-mac-installer.sh'
+              - 'scripts/tests/macos-signing-secret-transport-tests.sh'
               - 'packaging/systemd/user/hypercolor-cargo-target-gc.*'
               - 'justfile'
               - '.github/actions/rust-build-cache/**'
@@ -238,6 +244,187 @@ jobs:
           cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
 
+  rust-check-macos:
+    name: Rust macOS / ${{ matrix.label }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon
+            os: macos-26
+            expected-arch: arm64
+          - label: Intel
+            os: macos-26-intel
+            expected-arch: x86_64
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-macos
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Qualify macOS runner and SDK
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          sdk_version="$(xcrun --show-sdk-version)"
+          printf 'macOS SDK: %s\n' "${sdk_version}"
+          test "$(uname -m)" = "${{ matrix.expected-arch }}"
+          test "${sdk_version%%.*}" = "26"
+
+      - name: Verify macOS signing secret transport
+        run: ./scripts/tests/macos-signing-secret-transport-tests.sh
+
+      - name: Install NASM
+        if: matrix.expected-arch == 'x86_64'
+        run: brew install nasm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: rust-check-macos-${{ matrix.expected-arch }}
+          workspaces: . -> .cache/hypercolor/target/rust-check-macos
+          cache-on-failure: "false"
+
+      - name: Install nextest
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-nextest
+
+      - name: Qualify Intel Metal fixture
+        if: matrix.expected-arch == 'x86_64'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-macos-gpu-interop
+          --features screen-capture --test screen_capture_bridge_tests
+          -E 'test(intel_runner_qualification_requires_native_device_and_both_import_candidates)'
+
+      - name: Seed native app frontend fixture
+        run: |
+          mkdir -p crates/hypercolor-ui/dist
+          printf '<!doctype html><title>Hypercolor test fixture</title>' \
+            > crates/hypercolor-ui/dist/index.html
+
+      - name: Check macOS workspace
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo check --workspace --locked
+
+      - name: Clippy macOS interop
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-macos-gpu-interop --features screen-capture
+          --all-targets
+          -- -D warnings
+
+      - name: Clippy macOS capture fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-macos-capture --features capture-fixtures --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-core --features macos-capture-fixtures \
+            --test macos_screen_capture_tests \
+            -- -D warnings
+
+      - name: Clippy macOS host input and ownership
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-macos-input --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-macos-owner --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-daemon --no-default-features \
+            --bin hypercolor-daemon --test macos_owner_tests \
+            -- -D warnings
+
+      - name: Run macOS interop fixtures
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-macos-gpu-interop
+          --features screen-capture
+
+      - name: Run macOS capture fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-capture --features capture-fixtures
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-core --features macos-capture-fixtures \
+            --test macos_screen_capture_tests
+
+      - name: Run macOS host input and ownership fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-input \
+            --test input_contract_tests \
+            --test process_identity_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-owner \
+            --test coordinator_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-core --features macos-native-fixtures \
+            --test macos_host_input_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-daemon --no-default-features \
+            --test macos_owner_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-daemon --no-default-features \
+            --bin hypercolor-daemon \
+            -E 'test(/(launchd_managed_contenders_exit_zero_without_respawn|held_guard_applies_topology_policy_without_an_owner_record|malformed_diagnostics_never_override_held_guard_policy)/)'
+
+      - name: Run macOS status API fixtures
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked
+          -p hypercolor-daemon --no-default-features --features wgpu
+          -E 'test(/api::system::tests::(input_source_status|macos_)/)'
+
+      - name: Build deployment and Sequoia availability fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo build --locked -p hypercolor-cli --bin hypercolor
+          ./scripts/cargo-cache-build.sh \
+            cargo build --locked -p hypercolor-daemon --no-default-features \
+            --features wgpu,screen-capture --bin hypercolor-daemon
+
+      - name: Verify deployment target
+        run: |
+          ./scripts/verify-macos-deployment-target.sh \
+            "${CARGO_TARGET_DIR}/debug/hypercolor" \
+            "${CARGO_TARGET_DIR}/debug/hypercolor-daemon"
+
+      - name: Reject unguarded Tahoe symbols in the Sequoia artifact
+        run: |
+          set -euo pipefail
+          artifact="${CARGO_TARGET_DIR}/debug/hypercolor-daemon"
+          tahoe_symbols='SCScreenshot(Configuration|Manager)|CG(Context(Get|Set)ContentToneMappingInfo|ImageGetContentAverageLightLevel)|kCG(PreferredDynamicRange|DynamicRange(Standard|Constrained|High)|ContentAverageLightLevel)'
+          if xcrun nm -u "${artifact}" | grep -E "${tahoe_symbols}"; then
+            echo "unguarded Tahoe-only symbol found in ${artifact}" >&2
+            exit 1
+          fi
+          echo "Sequoia availability scan passed: Tahoe-only APIs are runtime-resolved"
+
   # ── Generated Effects Artifact ────────────────────────────────
   generated-effects:
     name: Generated Effects
@@ -326,6 +513,13 @@ jobs:
         uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
         with:
           tool: cargo-nextest
+
+      - name: Seed native app frontend fixture
+        if: matrix.suite == 'native'
+        run: |
+          mkdir -p crates/hypercolor-ui/dist
+          printf '<!doctype html><title>Hypercolor test fixture</title>' \
+            > crates/hypercolor-ui/dist/index.html
 
       - name: Run shared crate tests
         if: matrix.suite == 'shared'
@@ -1018,9 +1212,45 @@ jobs:
             /tmp/hypercolor-e2e-*
 
   # ── Docs (Zola → GitHub Pages) ─────────────────────────────────
-  docs:
-    name: Docs
+  docs-build:
+    name: Docs Build
     needs: changes
+    if: >-
+      (github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true') ||
+      (github.ref == 'refs/heads/main' && (
+        (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+      ))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Zola
+        run: |
+          ZOLA_VERSION="0.22.1"
+          curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xz -C /usr/local/bin
+
+      - name: Build site
+        working-directory: docs
+        run: zola build
+
+      - name: Upload Pages artifact
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (
+            (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+            (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+          )
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/public
+
+  docs-deploy:
+    name: Docs Deploy
+    needs: [changes, docs-build]
     if: >-
       github.ref == 'refs/heads/main' &&
       (
@@ -1036,23 +1266,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Zola
-        run: |
-          ZOLA_VERSION="0.22.1"
-          curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar xz -C /usr/local/bin
-
-      - name: Build site
-        working-directory: docs
-        run: zola build
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: docs/public
-
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v5
@@ -1117,7 +1330,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     strategy:
       fail-fast: false
       matrix:
@@ -1132,27 +1345,21 @@ jobs:
               target/release/bundle/nsis/*.exe
               crates/hypercolor-app/target/release/bundle/nsis/*.exe
           - target: macos-arm64
-            os: macos-latest
+            os: macos-26
             rust-target: aarch64-apple-darwin
-            bundles: dmg,app
-            artifact-kind: dmg-app
+            bundles: app
+            artifact-kind: unsigned-app
             cask_arch: arm64
             artifact-path: |
-              target/release/bundle/dmg/*.dmg
-              target/release/bundle/macos/*.app
-              crates/hypercolor-app/target/release/bundle/dmg/*.dmg
-              crates/hypercolor-app/target/release/bundle/macos/*.app
+              target/aarch64-apple-darwin/release/bundle/macos/*.app
           - target: macos-x64
-            os: macos-15-intel
+            os: macos-26-intel
             rust-target: x86_64-apple-darwin
-            bundles: dmg,app
-            artifact-kind: dmg-app
+            bundles: app
+            artifact-kind: unsigned-app
             cask_arch: x86_64
             artifact-path: |
-              target/release/bundle/dmg/*.dmg
-              target/release/bundle/macos/*.app
-              crates/hypercolor-app/target/release/bundle/dmg/*.dmg
-              crates/hypercolor-app/target/release/bundle/macos/*.app
+              target/x86_64-apple-darwin/release/bundle/macos/*.app
     runs-on: ${{ matrix.os }}
     env:
       # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
@@ -1163,6 +1370,17 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v6
+
+      - name: Qualify macOS runner and SDK
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          sdk_version="$(xcrun --show-sdk-version)"
+          printf 'macOS SDK: %s\n' "${sdk_version}"
+          test "${sdk_version%%.*}" = "26"
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -1296,12 +1514,7 @@ jobs:
         shell: pwsh
         env:
           TAURI_BUNDLES: ${{ matrix.bundles }}
-          # Ad-hoc bundle signing. --no-sign leaves only linker signatures
-          # with no resource seal, which Gatekeeper reports as "damaged"
-          # on quarantined downloads — right-click→Open can't bypass that.
-          # A valid ad-hoc signature downgrades the verdict to
-          # "unidentified developer", which right-click→Open accepts.
-          APPLE_SIGNING_IDENTITY: "-"
+          RUST_TARGET: ${{ matrix.rust-target }}
         run: |
           $configArgs = @()
           if (Test-Path "tauri.bundle.conf.json") {
@@ -1311,44 +1524,36 @@ jobs:
             $configArgs += @("--config", "tauri.windows.bundle.conf.json")
           }
           $buildArgs = @("--ci", "--bundles", $env:TAURI_BUNDLES)
-          if ($env:RUNNER_OS -eq "Windows") {
-            # No signtool identity on Windows runners yet.
-            $buildArgs += "--no-sign"
+          # Public CI proves packaging without receiving release credentials.
+          $buildArgs += "--no-sign"
+          if ($env:RUNNER_OS -eq "macOS") {
+            $buildArgs += @("--target", $env:RUST_TARGET)
           }
           cargo tauri build @buildArgs @configArgs
 
-      - name: Normalize macOS DMG artifact name
+      - name: Verify unsigned macOS app deployment target
         if: matrix.cask_arch != ''
-        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $version = "${{ steps.version.outputs.version }}"
-          $arch = "${{ matrix.cask_arch }}"
-          $dmgFiles = @()
+          profile_dir="target/${{ matrix.rust-target }}/release"
+          app="${profile_dir}/bundle/macos/Hypercolor.app"
+          ./scripts/verify-macos-deployment-target.sh "${app}"
 
-          foreach ($dir in @("target/release/bundle/dmg", "crates/hypercolor-app/target/release/bundle/dmg")) {
-            if (Test-Path -LiteralPath $dir) {
-              $dmgFiles += @(Get-ChildItem -LiteralPath $dir -Filter "*.dmg" -File)
-            }
-          }
-
-          if ($dmgFiles.Count -ne 1) {
-            $found = ($dmgFiles | ForEach-Object { $_.FullName }) -join ", "
-            throw "Expected exactly one DMG for cask packaging, found $($dmgFiles.Count): $found"
-          }
-
-          $targetName = "Hypercolor-$version-$arch.dmg"
-          $targetPath = Join-Path $dmgFiles[0].DirectoryName $targetName
-          if ($dmgFiles[0].FullName -ne $targetPath) {
-            Move-Item -LiteralPath $dmgFiles[0].FullName -Destination $targetPath -Force
-          }
-
-      - name: Upload native app bundle
+      - name: Upload native release bundle
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
+
+      - name: Upload unsigned macOS packaging fixture
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: oss-ci-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
+          retention-days: 7
 
   # ── Build Release Tarballs ────────────────────────────────────
   build-release-smoke:
@@ -1403,8 +1608,6 @@ jobs:
             --web-assets web-assets \
             --target linux-amd64 \
             --version "${{ steps.version.outputs.version }}"
-          # macOS bash 3.2 exits 0 after a fatal set -u abort inside the
-          # script; trust the artifact, not the exit status.
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
       - name: Generate release checksum
@@ -1463,7 +1666,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     strategy:
       fail-fast: false
       matrix:
@@ -1474,9 +1677,6 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-          - target: macos-arm64
-            os: macos-latest
-            rust-target: aarch64-apple-darwin
     # This lane is cold on every run: it only fires on tag refs, and the cache
     # action saves on main alone, so no release-* key is ever written. A cold
     # release build of the Servo stack runs well over half an hour on the
@@ -1559,7 +1759,8 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "dist_name=hypercolor-${VERSION}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
 
-      - name: Assemble distribution
+      - name: Assemble Linux distribution
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           # Exhausting memory takes the runner down rather than failing a
@@ -1587,8 +1788,6 @@ jobs:
             --web-assets web-assets \
             --target ${{ matrix.target }} \
             --version "${{ steps.version.outputs.version }}"
-          # macOS bash 3.2 exits 0 after a fatal set -u abort inside the
-          # script; trust the artifact, not the exit status.
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
       # Kept for the failure modes that leave the runner alive. Memory
@@ -1617,7 +1816,8 @@ jobs:
             cat "${tarball}.sha256"
           )
 
-      - name: Verify release tarball
+      - name: Verify Linux release tarball
+        if: runner.os == 'Linux'
         run: |
           dist_name="${{ steps.version.outputs.dist_name }}"
           ./scripts/verify-release-artifact.sh \
@@ -1666,7 +1866,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app]
+    needs: [build-release, build-native-app, python, python-generated]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1690,7 +1890,7 @@ jobs:
           # hundreds of internal files into individual release assets.
           mapfile -t files < <(find release-artifacts -type f \
             \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \
-               -o -name '*.dmg' -o -name '*.deb' -o -name '*-setup.exe' \) | sort)
+               -o -name '*.deb' -o -name '*-setup.exe' \) | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No release artifacts found" >&2
             exit 1
@@ -1791,102 +1991,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-
-  # ── Update Homebrew Tap ────────────────────────────────────────
-  update-homebrew:
-    if: >-
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      startsWith(github.ref, 'refs/tags/') &&
-      !contains(github.ref_name, '-')
-    needs: create-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Determine version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Download release artifacts and compute checksums
-        id: checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          for platform in linux-amd64 linux-arm64 macos-arm64; do
-            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
-            url="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${tarball}"
-            echo "Downloading ${tarball}..."
-            curl -fSL "${url}" -o "${tarball}"
-            sha=$(sha256sum "${tarball}" | cut -d' ' -f1)
-            echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
-            echo "  ${platform}: ${sha}"
-          done
-
-          for arch in arm64 x86_64; do
-            dmg="Hypercolor-${VERSION}-${arch}.dmg"
-            url="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${dmg}"
-            echo "Downloading ${dmg}..."
-            curl -fSL "${url}" -o "${dmg}"
-            sha=$(sha256sum "${dmg}" | cut -d' ' -f1)
-            case "${arch}" in
-              arm64) echo "sha256_macos_app_arm64=${sha}" >> "$GITHUB_OUTPUT" ;;
-              x86_64) echo "sha256_macos_app_x86_64=${sha}" >> "$GITHUB_OUTPUT" ;;
-            esac
-            echo "  macos-app-${arch}: ${sha}"
-          done
-
-      - name: Generate Homebrew files
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          sed \
-            -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
-            -e "s/SHA256_MACOS_ARM64/${{ steps.checksums.outputs.sha256_macos_arm64 }}/g" \
-            -e "s/SHA256_LINUX_AMD64/${{ steps.checksums.outputs.sha256_linux_amd64 }}/g" \
-            -e "s/SHA256_LINUX_ARM64/${{ steps.checksums.outputs.sha256_linux_arm64 }}/g" \
-            packaging/homebrew/hypercolor.rb > hypercolor.rb
-          sed \
-            -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
-            -e "s/SHA256_MACOS_APP_ARM64/${{ steps.checksums.outputs.sha256_macos_app_arm64 }}/g" \
-            -e "s/SHA256_MACOS_APP_X86_64/${{ steps.checksums.outputs.sha256_macos_app_x86_64 }}/g" \
-            packaging/homebrew/hypercolor-app.rb > hypercolor-app.rb
-          echo "Generated formula:"
-          cat hypercolor.rb
-          echo "Generated cask:"
-          cat hypercolor-app.rb
-
-      - name: Upload Homebrew files
-        uses: actions/upload-artifact@v7
-        with:
-          name: homebrew-hypercolor-${{ steps.version.outputs.version }}
-          path: |
-            hypercolor.rb
-            hypercolor-app.rb
-          if-no-files-found: error
-
-      - name: Push to homebrew-tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
-            echo "HOMEBREW_TAP_TOKEN is not configured; artifact only."
-            exit 0
-          fi
-
-          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/hyperb1iss/homebrew-tap.git" tap
-          mkdir -p tap/Formula tap/Casks
-          cp hypercolor.rb tap/Formula/hypercolor.rb
-          cp hypercolor-app.rb tap/Casks/hypercolor-app.rb
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/hypercolor.rb Casks/hypercolor-app.rb
-          git commit -m "hypercolor: update to ${{ steps.version.outputs.version }}"
-          git push
 
   # ── Update AUR Package ────────────────────────────────────────
   update-aur:

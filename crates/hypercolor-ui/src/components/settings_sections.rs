@@ -5,11 +5,17 @@ use std::net::IpAddr;
 use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkClientScope};
 use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::components::settings_controls::*;
 use crate::icons::*;
+use crate::input_access::{input_status_epoch, screen_status_line};
 use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
+};
+use crate::{
+    api::{InputSourcePlatformStatus, InputStatus, SystemStatus},
+    app::WsContext,
 };
 
 mod about;
@@ -18,6 +24,8 @@ mod developer;
 mod discovery;
 mod input;
 mod session;
+
+use input::MacosSystemSettingsButton;
 
 pub use about::AboutSection;
 pub use audio::AudioSection;
@@ -113,6 +121,7 @@ pub fn CaptureSection(
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
+    let ws = expect_context::<WsContext>();
     let enabled = Signal::derive(move || read_config(config, |cfg| cfg.capture.enabled));
     let source = Signal::derive(move || read_config(config, |cfg| cfg.capture.source.clone()));
     let capture_fps =
@@ -135,6 +144,37 @@ pub fn CaptureSection(
     let brightness =
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.brightness)));
     let gamma = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.gamma)));
+    let target_led_white_x = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.target_led_white_x))
+    });
+    let target_led_white_y = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.target_led_white_y))
+    });
+    let target_led_reference_white_nits = Signal::derive(move || {
+        read_config(config, |cfg| {
+            f64::from(cfg.capture.target_led_reference_white_nits)
+        })
+    });
+    let target_led_peak_nits = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.target_led_peak_nits))
+    });
+    let exposure_ev =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.exposure_ev)));
+    let reset_calibration = Callback::new(move |()| {
+        on_reset.run("capture.calibration".to_owned());
+    });
+    let capture_status = LocalResource::new(move || {
+        let connection_generation = ws.connection_generation.get();
+        let source_event = ws.last_input_source_status_event.get();
+        let owner_event = ws.last_macos_daemon_ownership_event.get();
+        let epoch = config.with(|current| {
+            input_status_epoch(connection_generation, source_event, current.as_ref())
+        });
+        async move {
+            let _ = (epoch, owner_event);
+            crate::api::fetch_status().await
+        }
+    });
 
     // Monitor picker data. Empty means the platform's backend owns source
     // selection (the XDG portal on Linux), so the portal button renders
@@ -166,16 +206,34 @@ pub fn CaptureSection(
     });
 
     let (picking, set_picking) = signal(false);
+    let (authorizing, set_authorizing) = signal(false);
+    let (action_error, set_action_error) = signal(None::<String>);
     let pick_source = move |_| {
         if picking.get_untracked() {
             return;
         }
         set_picking.set(true);
+        set_action_error.set(None);
         leptos::task::spawn_local(async move {
             if let Err(e) = crate::api::pick_capture_source().await {
-                leptos::logging::warn!("Capture source pick failed: {e}");
+                set_action_error.set(Some(e));
             }
             set_picking.set(false);
+            capture_status.refetch();
+        });
+    };
+    let authorize_screen = move |_| {
+        if authorizing.get_untracked() {
+            return;
+        }
+        set_authorizing.set(true);
+        set_action_error.set(None);
+        leptos::task::spawn_local(async move {
+            if let Err(error) = crate::api::authorize_screen_recording().await {
+                set_action_error.set(Some(error));
+            }
+            set_authorizing.set(false);
+            capture_status.refetch();
         });
     };
 
@@ -189,6 +247,45 @@ pub fn CaptureSection(
                 value=enabled
                 on_change=on_change
             />
+            <Show when=move || {
+                capture_status
+                    .get()
+                    .and_then(Result::ok)
+                    .is_some_and(|status| macos_screen_needs_authorization(&status.input))
+            }>
+                <div class="flex items-center justify-between gap-4 border-b border-edge-subtle/40 py-3">
+                    <div class="min-w-0">
+                        <div class="text-[13px] text-fg-primary">"Screen Recording"</div>
+                        <div class="text-xs text-fg-tertiary">
+                            "Open Screen Recording in System Settings, enable Hypercolor, then return here."
+                        </div>
+                    </div>
+                    <div class="flex shrink-0 items-center gap-2">
+                        <MacosSystemSettingsButton
+                            pane=crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording
+                        />
+                        <button
+                            type="button"
+                            class="glow-ring inline-flex shrink-0 items-center rounded-md border border-accent-muted bg-accent-subtle px-2.5 py-1.5 text-xs text-accent hover:bg-accent-muted/20 disabled:opacity-50"
+                            disabled=move || !enabled.get() || authorizing.get()
+                            on:click=authorize_screen
+                        >
+                            {move || if authorizing.get() { "Requesting…" } else { "Authorize" }}
+                        </button>
+                    </div>
+                </div>
+            </Show>
+            {move || capture_status
+                .get()
+                .and_then(Result::ok)
+                .and_then(|status| macos_screen_restart_coordinates(&status))
+                .map(|(owner, epoch)| view! {
+                    <MacosCaptureOwnerRestartAction
+                        owner=owner
+                        epoch=epoch
+                        on_complete=Callback::new(move |()| capture_status.refetch())
+                    />
+                })}
             <Show when=move || has_monitor_picker.get()>
                 <SettingDropdown
                     label="Monitor"
@@ -199,12 +296,26 @@ pub fn CaptureSection(
                     on_change=on_change
                 />
             </Show>
+            {move || action_error.get().map(|error| view! {
+                <div class="mt-2 rounded-lg border border-status-error/24 bg-status-error/8 px-3 py-2 text-xs text-status-error">
+                    {error}
+                </div>
+            })}
+
+            {move || {
+                let status = capture_status.get().and_then(Result::ok)?;
+                if !enabled.get() || macos_screen_needs_authorization(&status.input) {
+                    return None;
+                }
+                screen_status_line(&status.input)
+                    .map(|(tone, text)| input::status_line_view(tone, text))
+            }}
             <Show when=move || !has_monitor_picker.get()>
                 <div class="flex items-center justify-between gap-4 py-3 border-b border-edge-subtle/40">
                     <div class="min-w-0">
                         <div class="text-[13px] text-fg-primary">"Capture source"</div>
                         <div class="text-xs text-fg-tertiary">
-                            "Pick which screen or window to mirror; the choice persists across restarts"
+                            "Pick a display, window, or app. Displays persist across restarts; windows and apps stay session scoped"
                         </div>
                     </div>
                     <button
@@ -263,6 +374,62 @@ pub fn CaptureSection(
                     on_change=on_change
                     min=0.4 max=2.5 step=0.05
                 />
+                <div class="mt-3 border-t border-edge-subtle/40 pt-3">
+                    <div class="text-sm font-medium text-fg-primary">"LED tone mapping"</div>
+                    <div class="mt-0.5 text-xs text-fg-tertiary/70">
+                        "Calibrate HDR white, output headroom, and exposure"
+                    </div>
+                </div>
+                <SettingNumberInput
+                    label="White point x"
+                    description="CIE xy x coordinate. D65 is 0.3127"
+                    key="capture.target_led_white_x"
+                    value=target_led_white_x
+                    on_change=on_change
+                    min={f64::from(f32::MIN_POSITIVE)} max=0.9999999403953552 step=0.0001
+                    integer=false
+                />
+                <SettingNumberInput
+                    label="White point y"
+                    description="CIE xy y coordinate. D65 is 0.3290"
+                    key="capture.target_led_white_y"
+                    value=target_led_white_y
+                    on_change=on_change
+                    min={f64::from(f32::MIN_POSITIVE)} max=0.9999999403953552 step=0.0001
+                    integer=false
+                />
+                <SettingNumberInput
+                    label="Reference white"
+                    description="Nominal LED reference white in nits"
+                    key="capture.target_led_reference_white_nits"
+                    value=target_led_reference_white_nits
+                    on_change=on_change
+                    min=1.0 max=5000.0 step=1.0
+                />
+                <SettingNumberInput
+                    label="Peak luminance"
+                    description="Calibrated LED peak in nits. Must exceed reference white"
+                    key="capture.target_led_peak_nits"
+                    value=target_led_peak_nits
+                    on_change=on_change
+                    min=1.0 max=10000.0 step=1.0
+                />
+                <SettingNumberInput
+                    label="Exposure"
+                    description="Tone-mapping exposure in EV stops"
+                    key="capture.exposure_ev"
+                    value=exposure_ev
+                    on_change=on_change
+                    min=-8.0 max=8.0 step=0.1
+                    integer=false
+                />
+                <button
+                    class="glow-ring mt-1 inline-flex items-center gap-1.5 rounded-md border border-edge-subtle px-2.5 py-1.5 text-xs text-fg-tertiary transition-colors hover:border-accent-muted hover:text-accent"
+                    on:click=move |_| reset_calibration.run(())
+                >
+                    <Icon icon=LuUndo2 width="12px" height="12px" />
+                    "Reset calibration"
+                </button>
                 <SettingSlider
                     label="Sampling columns"
                     description="Ambient color regions across the screen. Layouts reference these zones \u{2014} changing this remaps them"
@@ -311,6 +478,223 @@ pub fn CaptureSection(
             </AdvancedDisclosure>
             <SectionReset section_label="Capture" on_reset=Callback::new(move |()| on_reset.run("capture".to_string())) />
         </section>
+    }
+}
+
+fn macos_screen_needs_authorization(status: &InputStatus) -> bool {
+    status.sources.iter().any(|source| {
+        if source.retired {
+            return false;
+        }
+        let Some(InputSourcePlatformStatus::MacosScreen { state, tcc, .. }) =
+            source.platform.as_ref()
+        else {
+            return false;
+        };
+        matches!(
+            state.as_deref(),
+            Some("needs_user_action" | "permission_denied" | "revoked")
+        ) || matches!(
+            tcc.as_deref(),
+            Some("not_determined" | "denied" | "revoked")
+        )
+    })
+}
+
+fn macos_screen_needs_restart(status: &InputStatus) -> bool {
+    status.sources.iter().any(|source| {
+        if source.retired {
+            return false;
+        }
+        matches!(
+            source.platform.as_ref(),
+            Some(InputSourcePlatformStatus::MacosScreen { state, .. })
+                if state.as_deref() == Some("needs_process_restart")
+        )
+    })
+}
+
+fn macos_screen_restart_coordinates(status: &SystemStatus) -> Option<(String, u64)> {
+    macos_screen_needs_restart(&status.input)
+        .then_some(status.macos_daemon_ownership.as_ref())
+        .flatten()
+        .and_then(|ownership| {
+            Some((
+                validate_macos_restart_owner(ownership.active_owner.as_deref()?)?,
+                ownership.owner_epoch?,
+            ))
+        })
+}
+
+pub(super) fn validate_macos_restart_owner(owner: &str) -> Option<String> {
+    match owner {
+        "app_sidecar" | "launchd_service" | "homebrew_service" | "standalone" => {
+            Some(owner.to_owned())
+        }
+        _ => None,
+    }
+}
+
+#[component]
+pub(super) fn MacosCaptureOwnerRestartAction(
+    owner: String,
+    epoch: u64,
+    on_complete: Callback<()>,
+) -> impl IntoView {
+    let native_available = crate::tauri_bridge::is_tauri_available();
+    let owner_for_action = StoredValue::new(owner.clone());
+    let (restarting, set_restarting) = signal(false);
+    let (result_message, set_result_message) = signal(None::<String>);
+    let restart = move |_| {
+        if restarting.get_untracked() || !native_available {
+            return;
+        }
+        set_restarting.set(true);
+        set_result_message.set(None);
+        let owner = owner_for_action.get_value();
+        leptos::task::spawn_local(async move {
+            match crate::tauri_bridge::restart_macos_capture_owner(&owner, epoch).await {
+                Ok(Some(crate::tauri_bridge::MacosCaptureOwnerRestartOutcome::Restarted {
+                    owner,
+                    ..
+                })) => {
+                    let _ = owner;
+                    let message = "Capture service restarted.".to_owned();
+                    crate::toasts::toast_success(&message);
+                    set_result_message.set(Some(message));
+                }
+                Ok(Some(
+                    crate::tauri_bridge::MacosCaptureOwnerRestartOutcome::UserActionRequired {
+                        remedy,
+                        ..
+                    },
+                )) => set_result_message.set(Some(match remedy {
+                    crate::tauri_bridge::MacosOwnerRemedy::StopStandaloneOwner { pid } => {
+                        format!("Stop standalone process {pid}, then retry.")
+                    }
+                    _ => "The active owner requires a local user action.".to_owned(),
+                })),
+                Ok(Some(crate::tauri_bridge::MacosCaptureOwnerRestartOutcome::Unknown)) => {
+                    set_result_message.set(Some(
+                        "A newer Hypercolor app returned an unknown restart result.".to_owned(),
+                    ));
+                }
+                Ok(None) => set_result_message.set(Some(
+                    "Open Hypercolor.app to finish this restart.".to_owned(),
+                )),
+                Err(error) => {
+                    set_result_message.set(Some(format!("Capture owner restart failed: {error}")))
+                }
+            }
+            set_restarting.set(false);
+            on_complete.run(());
+        });
+    };
+
+    view! {
+        <div class="flex items-center justify-between gap-4 border-b border-edge-subtle/40 py-3">
+            <div class="min-w-0">
+                <div class="text-[13px] text-fg-primary">"Restart capture owner"</div>
+                <div class="text-xs text-fg-tertiary">
+                    "Permission granted. Hypercolor needs a quick restart of its capture service to start using it."
+                </div>
+                <Show when=move || !native_available>
+                    <div class="mt-1 text-xs text-status-warning">
+                        "Open Hypercolor.app to restart it."
+                    </div>
+                </Show>
+                {move || result_message.get().map(|message| view! {
+                    <div class="mt-1 text-xs text-fg-secondary">{message}</div>
+                })}
+            </div>
+            <button
+                type="button"
+                class="glow-ring inline-flex shrink-0 items-center rounded-md border border-accent-muted bg-accent-subtle px-2.5 py-1.5 text-xs text-accent hover:bg-accent-muted/20 disabled:opacity-50"
+                disabled=move || !native_available || restarting.get()
+                on:click=restart
+            >
+                {move || if restarting.get() { "Restarting…" } else { "Restart" }}
+            </button>
+        </div>
+    }
+}
+
+#[cfg(test)]
+mod macos_capture_tests {
+    use crate::api::{
+        InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
+        SystemStatus,
+    };
+
+    use super::{macos_screen_restart_coordinates, validate_macos_restart_owner};
+
+    fn system_status(
+        input: InputStatus,
+        macos_daemon_ownership: Option<MacosDaemonOwnershipStatus>,
+    ) -> SystemStatus {
+        SystemStatus {
+            running: true,
+            version: "test".to_owned(),
+            config_path: String::new(),
+            uptime_seconds: 1,
+            device_count: 0,
+            effect_count: 0,
+            active_effect: None,
+            active_scene: None,
+            active_scene_snapshot_locked: false,
+            global_brightness: 100,
+            compositor_acceleration: crate::api::RenderAccelerationStatus::default(),
+            render_loop: crate::api::RenderLoopStatus::default(),
+            capabilities: Vec::new(),
+            input,
+            macos_daemon_ownership,
+        }
+    }
+
+    #[test]
+    fn screen_restart_coordinates_require_exact_restart_state() {
+        let mut status = system_status(
+            InputStatus {
+                sources: vec![InputSourceStatus {
+                    kind: "screen".to_owned(),
+                    platform: Some(InputSourcePlatformStatus::MacosScreen {
+                        state: Some("needs_process_restart".to_owned()),
+                        tcc: Some("authorized".to_owned()),
+                        owner: Some("launchd_service".to_owned()),
+                        selection: None,
+                        tahoe: None,
+                        tahoe_selection: None,
+                        owner_conflict: None,
+                    }),
+                    ..InputSourceStatus::default()
+                }],
+                ..InputStatus::default()
+            },
+            Some(MacosDaemonOwnershipStatus {
+                active_owner: Some("launchd_service".to_owned()),
+                owner_epoch: Some(31),
+                ..MacosDaemonOwnershipStatus::default()
+            }),
+        );
+
+        assert_eq!(
+            macos_screen_restart_coordinates(&status),
+            Some(("launchd_service".to_owned(), 31))
+        );
+        status.input.sources[0].retired = true;
+        assert_eq!(macos_screen_restart_coordinates(&status), None);
+        status.input.sources[0].retired = false;
+        status.input.sources.clear();
+        assert_eq!(macos_screen_restart_coordinates(&status), None);
+    }
+
+    #[test]
+    fn owner_command_names_are_closed() {
+        assert_eq!(
+            validate_macos_restart_owner("homebrew_service").as_deref(),
+            Some("homebrew_service")
+        );
+        assert_eq!(validate_macos_restart_owner("future_owner"), None);
     }
 }
 

@@ -9,13 +9,13 @@ pub mod browser;
 #[cfg(target_os = "linux")]
 pub mod evdev;
 mod graph;
-#[cfg(target_os = "macos")]
-pub mod interaction;
 pub mod keymap;
+pub mod macos;
 pub mod media;
 pub mod net;
 pub mod routing;
 pub mod screen;
+mod scroll;
 pub mod sensor;
 mod status;
 mod traits;
@@ -34,24 +34,34 @@ pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
     InputPublicationRead, InputSourceSlot, InteractionSourceOrigin, InteractionTransientTotals,
 };
-#[cfg(target_os = "macos")]
-pub use interaction::InteractionInput;
+pub use macos::{MacosHostInput, MacosInputFoldDiagnostics};
+#[cfg(feature = "macos-native-fixtures")]
+pub use macos::{MacosHostInputFixture, MacosInputFixtureBackend};
 pub use media::MediaSource;
 pub use net::NetSource;
 pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};
+pub use scroll::{LegacyWheelProjector, Q16_16_SCALE, q16_16_to_f64};
 pub use sensor::SensorPoller;
 pub use status::{
-    ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
-    SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
+    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
+    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities,
+    MacosTahoeSelectionCapabilities, MacosTimingStatus, ScreenCaptureDiagnostics,
+    ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness, SourceIssue, SourceKind,
+    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
     SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError, SourceStatusHandle,
     SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };
+#[cfg(target_os = "macos")]
+pub use traits::MacosScreenshotReferenceAction;
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
-    InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
-    ScreenZoneColors,
+    InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode,
+    ProtectedSourceActionExecutor, ProtectedSourceActionOwner, ProtectedSourceAuthorizationAction,
+    ResolvedProtectedSourceAction, ScreenData, ScreenSourcePickerAction, ScreenZoneColors,
+    ScrollAggregate,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
@@ -66,6 +76,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
+use thiserror::Error;
 use tokio::sync::watch;
 
 use tracing::{error, info};
@@ -224,6 +235,38 @@ pub enum ScreenReconfigurationConflict {
     InvalidReplacement,
 }
 
+/// Rejected host-input source swap.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum HostReconfigurationError {
+    /// More than one host source violates the manager's replacement invariant.
+    #[error("more than one host input source is registered")]
+    SourceTopologyChanged,
+    /// The candidate is not a running host interaction source.
+    #[error("prepared host input replacement is invalid")]
+    InvalidReplacement,
+}
+
+/// Host sources detached by an atomic graph commit.
+#[must_use = "retired host sources must be stopped outside the input manager lock"]
+pub struct HostRuntimeRetirement {
+    source: Option<ManagedInputSource>,
+    source_graph_generation: u64,
+}
+
+impl HostRuntimeRetirement {
+    /// Stop the detached source and retire its status handle.
+    pub fn retire(mut self) {
+        let Some(source) = &mut self.source else {
+            return;
+        };
+        source.stop();
+        if let Err(error) = source.retire_source_status(self.source_graph_generation) {
+            error!(source = source.name(), %error, "Failed to retire host input source status");
+        }
+        info!(source = source.name(), "Retired host input source");
+    }
+}
+
 /// Screen sources detached by an atomic graph commit.
 #[must_use = "retired screen sources must be stopped outside the input manager lock"]
 pub struct ScreenRuntimeRetirement {
@@ -235,6 +278,7 @@ impl ScreenRuntimeRetirement {
     /// Stop detached workers and retire their status handles.
     pub fn retire(mut self) {
         for source in &mut self.sources {
+            source.set_active_consumer_count(0);
             source.stop();
             if let Err(error) = source.retire_source_status(self.source_graph_generation) {
                 error!(source = source.name(), %error, "Failed to retire screen input source status");
@@ -306,6 +350,10 @@ pub struct InputManager {
     source_status_registry: SourceStatusRegistry,
     event_scratch: Vec<TimedInputEvent>,
     audio_capture_active: Option<bool>,
+    macos_capability_owner: MacosCapabilityOwner,
+    macos_owner_conflict: Option<MacosDaemonOwnerConflict>,
+    macos_owner_designated_requirement_hash: Option<Arc<str>>,
+    macos_metal4: bool,
     screen_capture_demand: Option<ScreenCaptureDemand>,
     screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
     screen_publication_source_snapshot: Vec<(u64, u64)>,
@@ -379,11 +427,33 @@ impl ManagedInputSource {
         self.slot.status().clone()
     }
 
+    fn mark_prestarted_compatibility_live(&mut self) {
+        let Some(status) = &mut self.compatibility_status else {
+            return;
+        };
+        let session = status
+            .begin_session()
+            .expect("validated compatibility host source can begin its session")
+            .expect("manager-bound compatibility host source creates a session");
+        session.mark_event_driven_live_without_deadline(1);
+    }
+
     fn set_source_graph_generation(&mut self, source_graph_generation: u64) {
         self.source
             .set_source_graph_generation(source_graph_generation);
         if let Some(status) = &mut self.compatibility_status {
             status.set_source_graph_generation(source_graph_generation);
+        }
+    }
+
+    fn set_active_consumer_count(&mut self, active_consumer_count: usize) {
+        if let Err(error) = self.source.set_active_consumer_count(active_consumer_count) {
+            error!(source = self.source.name(), %error, "Failed to publish active consumer count");
+        }
+        if let Some(status) = &mut self.compatibility_status
+            && let Err(error) = status.set_active_consumer_count(active_consumer_count)
+        {
+            error!(source = self.source.name(), %error, "Failed to publish compatibility consumer count");
         }
     }
 
@@ -550,6 +620,10 @@ impl InputManager {
             source_status_registry: SourceStatusRegistry::new(),
             event_scratch: Vec::with_capacity(INPUT_EVENT_RING_CAPACITY),
             audio_capture_active: None,
+            macos_capability_owner: MacosCapabilityOwner::Standalone,
+            macos_owner_conflict: None,
+            macos_owner_designated_requirement_hash: None,
+            macos_metal4: false,
             screen_capture_demand: None,
             screen_publication_demand: None,
             screen_publication_source_snapshot: Vec::new(),
@@ -611,6 +685,9 @@ impl InputManager {
         );
         let replacement = self.create_managed_source(source, source_graph_generation);
         let mut previous = std::mem::replace(&mut self.sources[index], replacement);
+        if previous_domains.1 {
+            previous.set_active_consumer_count(0);
+        }
         previous.stop();
         if let Err(error) = previous.retire_source_status(source_graph_generation) {
             error!(source = previous.name(), %error, "Failed to retire replaced input source status");
@@ -1371,6 +1448,18 @@ impl InputManager {
         self.screen_publication_resolution_revision
     }
 
+    /// Whether the committed screen publication plan still matches the
+    /// sources' current resolution state. A source-internal invalidation
+    /// (a capture worker retiring its publication source) advances the
+    /// resolution revision without touching the demand revision or the
+    /// structural graph generation, so the publication loop must probe
+    /// this to notice a committed-but-starved plan and re-plan.
+    #[must_use]
+    pub fn screen_publication_commitment_is_current(&mut self) -> bool {
+        let current = self.screen_publication_resolution_revision();
+        self.committed_screen_publication_resolution_revision == Some(current)
+    }
+
     /// Resolve and start one exact screen-plan preparation transaction.
     ///
     /// Source methods may only enqueue worker-owned work here. Awaiting real
@@ -1409,7 +1498,7 @@ impl InputManager {
         resolved
             .try_reserve_exact(demand.branches().len())
             .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
-        let mut owners: Vec<(screen::CaptureSourceId, usize)> = Vec::new();
+        let mut owners: Vec<(screen::CaptureSourceId, usize, usize)> = Vec::new();
         for (branch_index, branch) in demand.branches().iter().enumerate() {
             let mut resolution = None;
             for (source_index, source) in self.sources.iter().enumerate() {
@@ -1442,7 +1531,10 @@ impl InputManager {
                 });
             };
             let source_id = branch.descriptor().source_epoch().source_id.clone();
-            if let Some((_, owner)) = owners.iter().find(|(candidate, _)| *candidate == source_id) {
+            if let Some((_, owner, active_consumer_count)) = owners
+                .iter_mut()
+                .find(|(candidate, _, _)| *candidate == source_id)
+            {
                 if *owner != source_index {
                     return Err(
                         screen::ScreenPublicationTransitionError::SourceOwnershipConflict {
@@ -1450,14 +1542,25 @@ impl InputManager {
                         },
                     );
                 }
+                *active_consumer_count += 1;
             } else {
                 owners
                     .try_reserve(1)
                     .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
-                owners.push((source_id, source_index));
+                owners.push((source_id, source_index, 1));
             }
             resolved.push(branch);
         }
+
+        let mut active_consumer_counts = Vec::new();
+        active_consumer_counts
+            .try_reserve_exact(owners.len())
+            .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
+        active_consumer_counts.extend(
+            owners
+                .iter()
+                .map(|(source_id, _, count)| (source_id.clone(), *count)),
+        );
 
         let compatibility_surface =
             resolved_compatibility_descriptor(&demand, &resolved, demand.compatibility_surface());
@@ -1492,8 +1595,8 @@ impl InputManager {
             };
             let owner = owners
                 .iter()
-                .find(|(candidate, _)| candidate == &source_id)
-                .map(|(_, source_index)| *source_index)
+                .find(|(candidate, _, _)| candidate == &source_id)
+                .map(|(_, source_index, _)| *source_index)
                 .or_else(|| {
                     self.sources.iter().position(|source| {
                         source.is_screen_source()
@@ -1548,6 +1651,7 @@ impl InputManager {
             workers,
             demand,
             source_resolution_revision,
+            active_consumer_counts,
         )))
     }
 
@@ -1569,6 +1673,7 @@ impl InputManager {
         screen::ScreenPublicationTransitionFailure,
     > {
         let demand = prepared.demand().clone();
+        let active_consumer_counts = prepared.active_consumer_counts().to_vec();
         let expected_source_resolution_revision = prepared.source_resolution_revision();
         let observed_source_resolution_revision = self.screen_publication_resolution_revision();
         if expected_source_resolution_revision != observed_source_resolution_revision {
@@ -1608,6 +1713,7 @@ impl InputManager {
                 )
             })?;
         prepared.disarm_worker_aborts();
+        self.set_screen_publication_active_consumer_counts(&active_consumer_counts);
         self.screen_publication_demand = Some(demand);
         self.committed_screen_publication_resolution_revision =
             Some(observed_source_resolution_revision);
@@ -1719,6 +1825,9 @@ impl InputManager {
             }
             (None, None) => {}
         }
+        if topology_changed {
+            self.invalidate_capture_domains((false, true, false));
+        }
         self.screen_capture_demand = Some(plan.capture_demand);
         ScreenRuntimeRetirement {
             sources: retired,
@@ -1794,6 +1903,69 @@ impl InputManager {
             .any(|source| source.is_host_capture_source())
     }
 
+    /// Atomically replace the registered host source with one pre-started candidate.
+    ///
+    /// The detached source remains running in the returned retirement owner until
+    /// the caller releases it outside the input-manager lock. A rejected candidate
+    /// leaves the current source and graph generation unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager does not contain exactly zero or one host
+    /// source, or when the supplied candidate is not a running host interaction
+    /// source.
+    pub fn swap_host_capture_source(
+        &mut self,
+        replacement: &mut Option<Box<dyn InputSource>>,
+    ) -> Result<HostRuntimeRetirement, HostReconfigurationError> {
+        let mut host_indices = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, source)| source.is_host_capture_source().then_some(index));
+        let current_index = host_indices.next();
+        if host_indices.next().is_some() {
+            return Err(HostReconfigurationError::SourceTopologyChanged);
+        }
+        if replacement.as_ref().is_some_and(|source| {
+            !source.is_host_capture_source()
+                || !source.is_interaction_source()
+                || !source.is_running()
+        }) {
+            return Err(HostReconfigurationError::InvalidReplacement);
+        }
+        if current_index.is_none() && replacement.is_none() {
+            return Ok(HostRuntimeRetirement {
+                source: None,
+                source_graph_generation: self.source_graph_generation,
+            });
+        }
+
+        let source_graph_generation = self.bump_source_graph_generation();
+        let prepared = replacement.take().map(|source| {
+            let mut prepared = self.create_managed_source(source, source_graph_generation);
+            prepared.mark_prestarted_compatibility_live();
+            prepared
+        });
+        let retired = match (current_index, prepared) {
+            (Some(index), Some(prepared)) => {
+                Some(std::mem::replace(&mut self.sources[index], prepared))
+            }
+            (Some(index), None) => Some(self.sources.remove(index)),
+            (None, Some(prepared)) => {
+                self.sources.push(prepared);
+                None
+            }
+            (None, None) => unreachable!("empty host swap returned before graph mutation"),
+        };
+        self.interaction_capture_active = None;
+        self.publish_source_status_registry();
+        Ok(HostRuntimeRetirement {
+            source: retired,
+            source_graph_generation,
+        })
+    }
+
     /// Stop and remove only host hardware capture sources.
     ///
     /// Leaves the browser injection source in place so disabling host
@@ -1831,6 +2003,7 @@ impl InputManager {
         let source_graph_generation = self.bump_source_graph_generation();
         self.sources.retain_mut(|source| {
             if source.is_screen_source() {
+                source.set_active_consumer_count(0);
                 source.stop();
                 if let Err(error) = source.retire_source_status(source_graph_generation) {
                     error!(source = source.name(), %error, "Failed to retire screen input source status");
@@ -1841,7 +2014,7 @@ impl InputManager {
                 true
             }
         });
-        self.screen_capture_demand = None;
+        self.invalidate_capture_domains((false, true, false));
         self.publish_source_status_registry();
     }
 
@@ -1878,6 +2051,160 @@ impl InputManager {
         }
         self.publish_source_status_registry();
         result
+    }
+
+    /// Apply processing-only screen settings without rebuilding native capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a registered screen source rejects the profile.
+    pub fn reconfigure_screen_processing(
+        &mut self,
+        config: &screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                source.reconfigure_screen_processing(config)?;
+            }
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    /// Mirror the active macOS daemon topology into every native source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a source can no longer publish status.
+    pub fn set_macos_daemon_ownership(
+        &mut self,
+        owner: MacosCapabilityOwner,
+        conflict: Option<MacosDaemonOwnerConflict>,
+        designated_requirement_hash: Option<Arc<str>>,
+    ) -> anyhow::Result<()> {
+        self.macos_capability_owner = owner;
+        self.macos_owner_conflict.clone_from(&conflict);
+        self.macos_owner_designated_requirement_hash
+            .clone_from(&designated_requirement_hash);
+        for source in &mut self.sources {
+            source.set_macos_daemon_ownership(
+                owner,
+                conflict.clone(),
+                designated_requirement_hash.clone(),
+            )?;
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    /// Publish the active renderer device's Metal 4 capability into macOS source status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a source can no longer publish status.
+    pub fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
+        self.macos_metal4 = metal4;
+        for source in &mut self.sources {
+            source.set_macos_metal4_capability(metal4)?;
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    /// Resolve the explicit Input Monitoring request without retaining the
+    /// input-manager lock while native authorization UI runs.
+    #[must_use]
+    pub fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.input_authorization_action())
+    }
+
+    fn resolve_protected_source_action<A>(
+        &self,
+        action: A,
+        executor: ProtectedSourceActionExecutor,
+        presentation_required: bool,
+    ) -> ResolvedProtectedSourceAction<A> {
+        if executor == ProtectedSourceActionExecutor::PlatformBackend {
+            return ResolvedProtectedSourceAction::Local {
+                action,
+                owner: ProtectedSourceActionOwner::PlatformBackend,
+            };
+        }
+
+        let active_owner = self.macos_capability_owner;
+        let requires_app_ui = matches!(
+            active_owner,
+            MacosCapabilityOwner::App | MacosCapabilityOwner::Broker
+        ) || presentation_required
+            && matches!(
+                active_owner,
+                MacosCapabilityOwner::LaunchdService | MacosCapabilityOwner::HomebrewService
+            );
+        if requires_app_ui {
+            return ResolvedProtectedSourceAction::RequiresAppUi { active_owner };
+        }
+        ResolvedProtectedSourceAction::Local {
+            action,
+            owner: ProtectedSourceActionOwner::Macos(active_owner),
+        }
+    }
+
+    /// Resolve the explicit Input Monitoring request against this process.
+    #[must_use]
+    pub fn resolved_input_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        let action = self.input_authorization_action()?;
+        let executor = action.executor();
+        Some(self.resolve_protected_source_action(action, executor, false))
+    }
+
+    /// Resolve the explicit Screen Recording request without retaining the
+    /// input-manager lock while native authorization UI runs.
+    #[must_use]
+    pub fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.screen_authorization_action())
+    }
+
+    /// Resolve the explicit Screen Recording request against this process.
+    #[must_use]
+    pub fn resolved_screen_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        let action = self.screen_authorization_action()?;
+        let executor = action.executor();
+        Some(self.resolve_protected_source_action(action, executor, false))
+    }
+
+    /// Resolve the native picker action without retaining the input-manager
+    /// lock while system UI runs.
+    #[must_use]
+    pub fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.screen_source_picker_action())
+    }
+
+    /// Resolve the native picker request against its exact local executor.
+    #[must_use]
+    pub fn resolved_screen_source_picker_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ScreenSourcePickerAction>> {
+        let action = self.screen_source_picker_action()?;
+        let executor = action.executor();
+        Some(self.resolve_protected_source_action(action, executor, true))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.macos_screenshot_reference_action())
     }
 
     /// Ask screen sources to discard their persisted selection and re-prompt.
@@ -1927,9 +2254,19 @@ impl InputManager {
 
     fn create_managed_source(
         &mut self,
-        source: Box<dyn InputSource>,
+        mut source: Box<dyn InputSource>,
         source_graph_generation: u64,
     ) -> ManagedInputSource {
+        source
+            .set_macos_daemon_ownership(
+                self.macos_capability_owner,
+                self.macos_owner_conflict.clone(),
+                self.macos_owner_designated_requirement_hash.clone(),
+            )
+            .expect("new source accepts retained macOS ownership status");
+        source
+            .set_macos_metal4_capability(self.macos_metal4)
+            .expect("new source accepts retained macOS Metal 4 status");
         let id = self.next_source_slot_id;
         self.next_source_slot_id = self
             .next_source_slot_id
@@ -2121,9 +2458,38 @@ impl InputManager {
             self.screen_capture_demand = None;
             self.screen_publication_demand = None;
             self.committed_screen_publication_resolution_revision = None;
+            self.set_screen_publication_active_consumer_count(0);
         }
         if domains.2 {
             self.interaction_capture_active = None;
+        }
+    }
+
+    fn set_screen_publication_active_consumer_count(&mut self, active_consumer_count: usize) {
+        for source in self
+            .sources
+            .iter_mut()
+            .filter(|source| source.is_screen_source())
+        {
+            source.set_active_consumer_count(active_consumer_count);
+        }
+    }
+
+    fn set_screen_publication_active_consumer_counts(
+        &mut self,
+        active_consumer_counts: &[(screen::CaptureSourceId, usize)],
+    ) {
+        for source in self
+            .sources
+            .iter_mut()
+            .filter(|source| source.is_screen_source())
+        {
+            let active_consumer_count = active_consumer_counts
+                .iter()
+                .filter(|(source_id, _)| source.owns_screen_publication_source(source_id))
+                .map(|(_, count)| *count)
+                .sum();
+            source.set_active_consumer_count(active_consumer_count);
         }
     }
 
@@ -2223,5 +2589,122 @@ fn sample_managed_source(
 impl Default for InputManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod host_source_swap_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{HostReconfigurationError, InputData, InputManager, InputSource, SourceState};
+
+    struct HostSource {
+        name: &'static str,
+        running: bool,
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl HostSource {
+        fn new(name: &'static str, stopped: Arc<AtomicBool>) -> Self {
+            Self {
+                name,
+                running: false,
+                stopped,
+            }
+        }
+    }
+
+    impl InputSource for HostSource {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+            self.stopped.store(true, Ordering::Release);
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        fn is_interaction_source(&self) -> bool {
+            true
+        }
+
+        fn is_host_capture_source(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn successful_host_swap_defers_old_source_retirement() {
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let candidate_stopped = Arc::new(AtomicBool::new(false));
+        let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
+        old.start().expect("old host source starts");
+        let mut manager = InputManager::new();
+        manager.add_source(old);
+        let initial_generation = manager.source_graph_generation();
+
+        let mut candidate: Option<Box<dyn InputSource>> = Some(Box::new(HostSource::new(
+            "candidate-host",
+            Arc::clone(&candidate_stopped),
+        )));
+        candidate
+            .as_mut()
+            .expect("candidate exists")
+            .start()
+            .expect("candidate host source starts");
+        let retirement = manager
+            .swap_host_capture_source(&mut candidate)
+            .expect("running candidate swaps atomically");
+
+        assert!(candidate.is_none());
+        assert_eq!(manager.source_names(), ["candidate-host"]);
+        assert!(manager.source_graph_generation() > initial_generation);
+        assert_eq!(
+            manager.source_status_registry().snapshot().statuses()[0].state,
+            SourceState::Live
+        );
+        assert!(!old_stopped.load(Ordering::Acquire));
+        assert!(!candidate_stopped.load(Ordering::Acquire));
+
+        retirement.retire();
+        assert!(old_stopped.load(Ordering::Acquire));
+        assert!(!candidate_stopped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn nonrunning_candidate_preserves_last_good_host_source() {
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
+        old.start().expect("old host source starts");
+        let mut manager = InputManager::new();
+        manager.add_source(old);
+        let initial_generation = manager.source_graph_generation();
+        let mut candidate: Option<Box<dyn InputSource>> = Some(Box::new(HostSource::new(
+            "failed-candidate",
+            Arc::new(AtomicBool::new(false)),
+        )));
+
+        assert!(matches!(
+            manager.swap_host_capture_source(&mut candidate),
+            Err(HostReconfigurationError::InvalidReplacement)
+        ));
+        assert!(candidate.is_some());
+        assert_eq!(manager.source_names(), ["old-host"]);
+        assert_eq!(manager.source_graph_generation(), initial_generation);
+        assert!(!old_stopped.load(Ordering::Acquire));
     }
 }

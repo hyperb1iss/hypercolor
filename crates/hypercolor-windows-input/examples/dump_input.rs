@@ -132,11 +132,13 @@ fn windows_main() {
                         if *pressed { "down" } else { "up" },
                         short_id(&device.source_id)
                     ),
-                    RawInputEvent::Wheel {
+                    RawInputEvent::Scroll {
                         device,
-                        delta_hi_res,
+                        delta_x_q16_16,
+                        delta_y_q16_16,
                     } => println!(
-                        "{:>8} #{batch_no:<5} wheel {delta_hi_res:+} {}",
+                        "{:>8} #{batch_no:<5} scroll x={delta_x_q16_16:+} \
+                         y={delta_y_q16_16:+} {}",
                         batch.at_ms,
                         short_id(&device.source_id)
                     ),

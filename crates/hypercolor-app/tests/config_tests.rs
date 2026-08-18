@@ -4,6 +4,7 @@
 //! and carries the metadata the Tauri runtime expects at startup. They do
 //! not spawn a Tauri app; they only read the file from the manifest dir.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,85 @@ fn default_capability() -> serde_json::Value {
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn repository_root() -> PathBuf {
+    manifest_dir().join("../..")
+}
+
+fn plist_string_entries(plist: &str) -> BTreeMap<&str, &str> {
+    let lines: Vec<_> = plist.lines().map(str::trim).collect();
+    lines
+        .windows(2)
+        .filter_map(|pair| {
+            let key = pair[0].strip_prefix("<key>")?.strip_suffix("</key>")?;
+            let value = pair[1]
+                .strip_prefix("<string>")?
+                .strip_suffix("</string>")?;
+            Some((key, value))
+        })
+        .collect()
+}
+
+fn plist_boolean_entries(plist: &str) -> BTreeMap<&str, bool> {
+    let mut lines = plist.lines().map(str::trim);
+    let mut entries = BTreeMap::new();
+
+    while let Some(line) = lines.next() {
+        let Some(key) = line
+            .strip_prefix("<key>")
+            .and_then(|key| key.strip_suffix("</key>"))
+        else {
+            continue;
+        };
+        let value_line = lines
+            .next()
+            .expect("plist keys should have a following value");
+        let value = match value_line {
+            "<true/>" => true,
+            "<false/>" => false,
+            other => panic!("plist key {key} should have a Boolean value, got {other}"),
+        };
+        assert!(
+            entries.insert(key, value).is_none(),
+            "plist key should be unique: {key}"
+        );
+    }
+
+    entries
+}
+
+fn signing_manifest_entries(manifest: &str) -> BTreeMap<(&str, &str), (&str, &str)> {
+    let mut entries = BTreeMap::new();
+
+    for (line_index, line) in manifest.lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut fields = line.split('\t');
+        let scope = fields.next().expect("manifest rows should have a scope");
+        let path = fields.next().expect("manifest rows should have a path");
+        let identifier = fields
+            .next()
+            .expect("manifest rows should have an identifier");
+        let entitlements = fields
+            .next()
+            .expect("manifest rows should have an entitlements profile");
+        assert!(
+            fields.next().is_none(),
+            "manifest line {} should have exactly four fields",
+            line_index + 1
+        );
+        assert!(
+            entries
+                .insert((scope, path), (identifier, entitlements))
+                .is_none(),
+            "manifest scope and path should be unique: {scope}/{path}"
+        );
+    }
+
+    entries
 }
 
 #[test]
@@ -59,20 +139,12 @@ fn default_capability_grants_window_and_autostart_permissions() {
 }
 
 #[test]
-fn default_capability_allows_local_daemon_remote_ipc() {
+fn default_capability_rejects_every_remote_ipc_origin() {
     let capability = default_capability();
-    let urls = capability
-        .get("remote")
-        .and_then(|remote| remote.get("urls"))
-        .and_then(serde_json::Value::as_array)
-        .expect("remote.urls should be configured");
-
-    for expected in ["http://127.0.0.1:9420/*", "http://localhost:9420/*"] {
-        assert!(
-            urls.iter().any(|value| value == expected),
-            "capability should allow IPC from {expected}"
-        );
-    }
+    assert!(
+        capability.get("remote").is_none(),
+        "bundled-origin commands must not be authorized for any remote document"
+    );
 }
 
 #[test]
@@ -174,6 +246,18 @@ fn tauri_config_declares_macos_hardened_runtime_metadata() {
 }
 
 #[test]
+fn tauri_config_requires_macos_15_2() {
+    let config = tauri_config();
+    let minimum_system_version = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("macOS"))
+        .and_then(|macos| macos.get("minimumSystemVersion"))
+        .and_then(serde_json::Value::as_str);
+
+    assert_eq!(minimum_system_version, Some("15.2"));
+}
+
+#[test]
 fn macos_bundle_plists_declare_required_permissions() {
     let root = manifest_dir();
     let entitlements = fs::read_to_string(root.join("entitlements.plist"))
@@ -195,12 +279,92 @@ fn macos_bundle_plists_declare_required_permissions() {
         );
     }
 
-    for key in [
-        "NSMicrophoneUsageDescription",
-        "NSAppleEventsUsageDescription",
-    ] {
-        assert!(info_plist.contains(key), "Info.plist should declare {key}");
-    }
+    let expected_privacy_entries = BTreeMap::from([
+        (
+            "NSMicrophoneUsageDescription",
+            "Hypercolor uses your microphone for audio-reactive lighting effects.",
+        ),
+        (
+            "NSScreenCaptureUsageDescription",
+            "Hypercolor captures your screen to create screen-reactive lighting effects.",
+        ),
+    ]);
+    assert_eq!(
+        plist_string_entries(&info_plist),
+        expected_privacy_entries,
+        "Info.plist should declare only the required privacy purpose strings"
+    );
+    assert!(
+        !info_plist.contains("NSAppleEventsUsageDescription"),
+        "Info.plist should not request unrelated Apple Events permission"
+    );
+}
+
+#[test]
+fn macos_daemon_signing_contract_is_exact() {
+    let root = repository_root();
+    let manifest = fs::read_to_string(root.join("packaging/macos/signing-manifest.tsv"))
+        .expect("macOS signing manifest should be readable");
+    let entitlements = fs::read_to_string(root.join("packaging/macos/daemon.entitlements.plist"))
+        .expect("macOS daemon entitlements should be readable");
+
+    let expected_manifest = BTreeMap::from([
+        (
+            ("app", "Contents/MacOS/Hypercolor"),
+            (
+                "tech.hyperbliss.hypercolor",
+                "crates/hypercolor-app/entitlements.plist",
+            ),
+        ),
+        (
+            ("app", "Contents/MacOS/hypercolor-daemon-{target}"),
+            (
+                "tech.hyperbliss.hypercolor.sidecar",
+                "packaging/macos/daemon.entitlements.plist",
+            ),
+        ),
+        (
+            ("app", "Contents/MacOS/hypercolor-{target}"),
+            ("tech.hyperbliss.hypercolor.cli", "none"),
+        ),
+        (
+            ("standalone", "bin/hypercolor-daemon"),
+            (
+                "tech.hyperbliss.hypercolor.daemon",
+                "packaging/macos/daemon.entitlements.plist",
+            ),
+        ),
+        (
+            ("standalone", "bin/hypercolor"),
+            ("tech.hyperbliss.hypercolor.cli", "none"),
+        ),
+        (
+            ("standalone", "bin/hypercolor-app"),
+            (
+                "tech.hyperbliss.hypercolor.app-host",
+                "crates/hypercolor-app/entitlements.plist",
+            ),
+        ),
+        (
+            ("standalone", "bin/hypercolor-tray"),
+            ("tech.hyperbliss.hypercolor.tray", "none"),
+        ),
+    ]);
+    assert_eq!(signing_manifest_entries(&manifest), expected_manifest);
+
+    let expected_entitlements = BTreeMap::from([
+        ("com.apple.security.cs.allow-jit", true),
+        (
+            "com.apple.security.cs.allow-unsigned-executable-memory",
+            true,
+        ),
+        ("com.apple.security.cs.disable-library-validation", true),
+        ("com.apple.security.device.audio-input", true),
+        ("com.apple.security.device.usb", true),
+        ("com.apple.security.network.client", true),
+        ("com.apple.security.network.server", true),
+    ]);
+    assert_eq!(plist_boolean_entries(&entitlements), expected_entitlements);
 }
 
 #[test]
@@ -398,7 +562,7 @@ fn tauri_config_has_app_section() {
 }
 
 #[test]
-fn tauri_config_exposes_global_tauri_api_for_local_remote_ui() {
+fn tauri_config_exposes_global_tauri_api_for_bundled_ui_bridge() {
     let config = tauri_config();
     let with_global_tauri = config
         .get("app")

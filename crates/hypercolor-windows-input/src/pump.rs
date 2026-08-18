@@ -44,7 +44,7 @@ use windows::core::{PCWSTR, w};
 use crate::claim::PROCESS_CLAIM;
 use crate::decode::{
     AbsoluteSpace, CanonicalKeyReport, KeyCanonicalizer, MotionKind, RecordStep, button_edges,
-    is_horizontal_wheel, motion_kind, next_record, normalize_absolute, wheel_delta,
+    motion_kind, next_record, normalize_absolute, scroll_delta_q16_16,
 };
 use crate::devices::{DeviceCache, DeviceResolution, enumerate_devices, seed_cache};
 use crate::metrics::{MonitorTopology, monitor_topology, pin_dpi_context, sample_cursor};
@@ -869,13 +869,14 @@ impl Pump {
             });
         }
 
-        if let Some(delta) = wheel_delta(button_flags, button_data) {
-            self.events.push(RawInputEvent::Wheel {
+        if let Some((delta_x_q16_16, delta_y_q16_16)) =
+            scroll_delta_q16_16(button_flags, button_data)
+        {
+            self.events.push(RawInputEvent::Scroll {
                 device: Arc::clone(device),
-                delta_hi_res: delta,
+                delta_x_q16_16,
+                delta_y_q16_16,
             });
-        } else if is_horizontal_wheel(button_flags) {
-            tracing::trace!("dropping horizontal wheel: the shared event contract has no axis");
         }
 
         match motion_kind(flags) {

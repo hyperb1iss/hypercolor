@@ -1,3 +1,9 @@
+#[cfg(unix)]
+use std::process::Command;
+
+const CARGO_CONFIG: &str = include_str!("../../../.cargo/config.toml");
+const GET_INSTALLER: &str = include_str!("../../../scripts/get-hypercolor.sh");
+const HOMEBREW_FORMULA: &str = include_str!("../../../packaging/homebrew/hypercolor.rb");
 const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor-app.rb");
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const JUSTFILE: &str = include_str!("../../../justfile");
@@ -12,11 +18,13 @@ const CARGO_TARGET_GC_SERVICE: &str =
     include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.service");
 const CARGO_TARGET_GC_TIMER: &str =
     include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.timer");
+const RUN_MACOS_TCC_CANARY_SH: &str = include_str!("../../../scripts/run-macos-tcc-canary-row.sh");
 const BRAND_BUILD_PY: &str = include_str!("../../../assets/brand/build.py");
 const DIAGNOSE_WINDOWS_PS1: &str = include_str!("../../../scripts/diagnose-windows.ps1");
 const FETCH_PAWNIO_ASSETS_PS1: &str = include_str!("../../../scripts/fetch-pawnio-assets.ps1");
 const INSTALL_BUNDLED_PAWNIO_PS1: &str =
     include_str!("../../../scripts/install-bundled-pawnio.ps1");
+const INSTALL_RELEASE_SH: &str = include_str!("../../../scripts/install-release.sh");
 const INSTALL_PAWNIO_MODULES_PS1: &str =
     include_str!("../../../scripts/install-pawnio-modules.ps1");
 const INSTALL_WINDOWS_SERVICE_PS1: &str =
@@ -25,6 +33,22 @@ const INSTALL_WINDOWS_SMBUS_SERVICE_PS1: &str =
     include_str!("../../../scripts/install-windows-smbus-service.ps1");
 const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh");
+const VERIFY_RELEASE_SH: &str = include_str!("../../../scripts/verify-release-artifact.sh");
+const VERIFY_MACOS_DEPLOYMENT_TARGET_SH: &str =
+    include_str!("../../../scripts/verify-macos-deployment-target.sh");
+const SIGN_MACOS_ARTIFACTS_SH: &str = include_str!("../../../scripts/sign-macos-artifacts.sh");
+const MACOS_SIGNING_KEYCHAIN_C: &str = include_str!("../../../scripts/macos-signing-keychain.c");
+const MACOS_SIGNING_MANIFEST: &str = include_str!("../../../packaging/macos/signing-manifest.tsv");
+const TAURI_CONFIG: &str = include_str!("../tauri.conf.json");
+const TAURI_MACOS_CONFIG: &str = include_str!("../tauri.macos.conf.json");
+const TAURI_BUNDLE_CONFIG: &str = include_str!("../tauri.bundle.conf.json");
+const TAURI_DEFAULT_CAPABILITY: &str = include_str!("../capabilities/default.json");
+const TAURI_BUILD_RS: &str = include_str!("../build.rs");
+const APP_MAIN_RS: &str = include_str!("../src/main.rs");
+const MACOS_DAEMON_ENTITLEMENTS: &str =
+    include_str!("../../../packaging/macos/daemon.entitlements.plist");
+const MACOS_LAUNCHD_PLIST: &str =
+    include_str!("../../../packaging/launchd/tech.hyperbliss.hypercolor.plist");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
@@ -49,6 +73,586 @@ const REQUIRED_PAWNIO_MODULES: &[&str] = &[
     "AMDFamily17.bin",
 ];
 
+fn csp_directives(
+    csp: &str,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    csp.split(';')
+        .filter_map(|directive| {
+            let mut fields = directive.split_whitespace();
+            let name = fields.next()?;
+            Some((
+                name.to_owned(),
+                fields
+                    .map(str::to_owned)
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ))
+        })
+        .collect()
+}
+
+fn csp_sources(values: &[&str]) -> std::collections::BTreeSet<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+#[test]
+fn app_window_is_bundled_and_never_accepts_daemon_document_bytes() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("Tauri config should parse");
+    let bundle_config: serde_json::Value =
+        serde_json::from_str(TAURI_BUNDLE_CONFIG).expect("bundle config should parse");
+
+    assert_eq!(config["build"]["frontendDist"], "../hypercolor-ui/dist");
+    assert_eq!(
+        bundle_config["build"]["frontendDist"],
+        "../../target/bundle-stage/ui"
+    );
+    assert!(APP_MAIN_RS.contains("WebviewUrl::App(\"index.html\".into())"));
+    assert!(!APP_MAIN_RS.contains("WebviewUrl::External"));
+    assert!(!APP_MAIN_RS.contains("window.navigate"));
+    assert!(!APP_MAIN_RS.contains("__HYPERCOLOR_DAEMON_BASE_URL__"));
+    assert!(!APP_MAIN_RS.contains("initialization_script(daemon"));
+}
+
+#[test]
+fn bundled_origin_capability_allows_exact_registered_commands_only() {
+    let capability: serde_json::Value =
+        serde_json::from_str(TAURI_DEFAULT_CAPABILITY).expect("default capability should parse");
+    assert!(capability.get("remote").is_none());
+    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+
+    let (_, build_commands) = TAURI_BUILD_RS
+        .split_once(".commands(&[")
+        .expect("build manifest should enumerate app commands");
+    let (build_commands, _) = build_commands
+        .split_once("]);")
+        .expect("build manifest command list should close");
+    let build_commands = build_commands
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix('"'))
+        .filter_map(|line| line.strip_suffix("\","))
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let (_, handlers) = APP_MAIN_RS
+        .split_once("tauri::generate_handler![")
+        .expect("app should register a command handler");
+    let (handlers, _) = handlers
+        .split_once("])")
+        .expect("command handler list should close");
+    let handlers = handlers
+        .split(',')
+        .filter_map(|entry| entry.trim().rsplit("::").next())
+        .filter(|entry| !entry.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(build_commands, handlers);
+
+    let command_permissions = capability["permissions"]
+        .as_array()
+        .expect("permissions should be an array")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter_map(|permission| permission.strip_prefix("allow-"))
+        .map(|permission| permission.replace('-', "_"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let build_commands = build_commands
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(command_permissions, build_commands);
+}
+
+#[test]
+fn bundled_origin_csp_is_exact_and_macos_network_access_is_loopback_only() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("Tauri config should parse");
+    let macos: serde_json::Value =
+        serde_json::from_str(TAURI_MACOS_CONFIG).expect("macOS Tauri config should parse");
+    let security = &config["app"]["security"];
+    let macos_security = &macos["app"]["security"];
+    assert!(
+        security
+            .get("dangerousDisableAssetCspModification")
+            .is_none()
+    );
+    assert!(
+        macos_security
+            .get("dangerousDisableAssetCspModification")
+            .is_none()
+    );
+
+    let base = csp_directives(
+        security["csp"]
+            .as_str()
+            .expect("base CSP should be a string"),
+    );
+    let macos = csp_directives(
+        macos_security["csp"]
+            .as_str()
+            .expect("macOS CSP should be a string"),
+    );
+    let directive_names = csp_sources(&[
+        "base-uri",
+        "connect-src",
+        "default-src",
+        "font-src",
+        "form-action",
+        "frame-ancestors",
+        "frame-src",
+        "img-src",
+        "media-src",
+        "object-src",
+        "script-src",
+        "style-src",
+        "worker-src",
+    ]);
+    assert_eq!(
+        base.keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        directive_names
+    );
+    assert_eq!(
+        macos
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        directive_names
+    );
+
+    for directives in [&base, &macos] {
+        assert_eq!(directives["default-src"], csp_sources(&["'self'"]));
+        assert_eq!(
+            directives["script-src"],
+            csp_sources(&["'self'", "'wasm-unsafe-eval'"])
+        );
+        assert_eq!(directives["worker-src"], csp_sources(&["'self'", "blob:"]));
+        assert_eq!(
+            directives["style-src"],
+            csp_sources(&["'self'", "'unsafe-inline'", "https://fonts.bunny.net"])
+        );
+        assert_eq!(
+            directives["font-src"],
+            csp_sources(&["'self'", "data:", "https://fonts.bunny.net"])
+        );
+        for denied in [
+            "object-src",
+            "base-uri",
+            "frame-src",
+            "frame-ancestors",
+            "form-action",
+        ] {
+            assert_eq!(directives[denied], csp_sources(&["'none'"]));
+        }
+    }
+
+    assert_eq!(
+        base["connect-src"],
+        csp_sources(&[
+            "'self'",
+            "ipc:",
+            "http://ipc.localhost",
+            "http:",
+            "https:",
+            "ws:",
+            "wss:",
+        ])
+    );
+    assert_eq!(
+        base["img-src"],
+        csp_sources(&["'self'", "data:", "blob:", "http:", "https:"])
+    );
+    assert_eq!(base["media-src"], base["img-src"]);
+
+    let loopback_http = [
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "http://[::1]:*",
+        "https://127.0.0.1:*",
+        "https://localhost:*",
+        "https://[::1]:*",
+    ];
+    let mut macos_connect = csp_sources(&["'self'", "ipc:", "http://ipc.localhost"]);
+    macos_connect.extend(loopback_http.iter().map(|source| (*source).to_owned()));
+    macos_connect.extend(
+        [
+            "ws://127.0.0.1:*",
+            "ws://localhost:*",
+            "ws://[::1]:*",
+            "wss://127.0.0.1:*",
+            "wss://localhost:*",
+            "wss://[::1]:*",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    assert_eq!(macos["connect-src"], macos_connect);
+    let mut macos_media = csp_sources(&["'self'", "data:", "blob:"]);
+    macos_media.extend(loopback_http.into_iter().map(str::to_owned));
+    assert_eq!(macos["img-src"], macos_media);
+    assert_eq!(macos["media-src"], macos["img-src"]);
+}
+
+#[test]
+fn macos_distribution_surfaces_require_15_2() {
+    assert!(
+        CARGO_CONFIG.contains(r#"MACOSX_DEPLOYMENT_TARGET = { value = "15.2", force = true }"#)
+    );
+    assert!(HOMEBREW_FORMULA.contains(r#"depends_on macos: ">= :sequoia""#));
+    assert!(HOMEBREW_FORMULA.contains("MacOS.version >= Version.new(\"15.2\")"));
+    assert!(HOMEBREW_CASK.contains(r#"depends_on macos: ">= :sequoia""#));
+    assert!(HOMEBREW_CASK.contains("MacOS.version < Version.new(\"15.2\")"));
+    assert!(GET_INSTALLER.contains("require_supported_macos"));
+}
+
+#[cfg(unix)]
+#[test]
+fn curl_installer_compares_macos_versions_by_numeric_component() {
+    let (_, function_tail) = GET_INSTALLER
+        .split_once("macos_version_supported() {")
+        .expect("installer should define macos_version_supported");
+    let (function_body, _) = function_tail
+        .split_once("# ── Argument Parsing")
+        .expect("version helper should precede argument parsing");
+    let script =
+        format!("macos_version_supported() {{{function_body}\nmacos_version_supported \"$1\"");
+
+    for (version, supported) in [
+        ("14.9", false),
+        ("15.0", false),
+        ("15.1", false),
+        ("15.2", true),
+        ("15.10", true),
+        ("26.0", true),
+        ("26.10", true),
+    ] {
+        let status = Command::new("bash")
+            .args(["-c", &script, "--", version])
+            .status()
+            .expect("bash should execute the installer version helper");
+        assert_eq!(
+            status.success(),
+            supported,
+            "unexpected support result for macOS {version}"
+        );
+    }
+}
+
+#[test]
+fn macos_packaging_and_installers_cover_both_architectures() {
+    assert!(CI_WORKFLOW.contains("target: macos-arm64"));
+    assert!(CI_WORKFLOW.contains("target: macos-x64"));
+    assert!(CI_WORKFLOW.contains("rust-target: aarch64-apple-darwin"));
+    assert!(CI_WORKFLOW.contains("rust-target: x86_64-apple-darwin"));
+
+    for expected in ["macos-arm64", "macos-amd64"] {
+        assert!(GET_INSTALLER.contains(expected));
+        assert!(INSTALL_RELEASE_SH.contains(expected));
+        assert!(HOMEBREW_FORMULA.contains(expected));
+    }
+
+    assert!(CI_WORKFLOW.contains("os: macos-26"));
+    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
+    assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
+    assert!(HOMEBREW_FORMULA.contains("keep_alive successful_exit: false"));
+    assert!(HOMEBREW_FORMULA.contains(r#""--macos-owner", "homebrew""#));
+}
+
+#[test]
+fn macos_launchers_identify_their_daemon_topology() {
+    let (_, launchd_arguments) = MACOS_LAUNCHD_PLIST
+        .split_once("<key>ProgramArguments</key>")
+        .expect("launchd plist should declare program arguments");
+    let (launchd_arguments, _) = launchd_arguments
+        .split_once("</array>")
+        .expect("launchd argument array should close");
+    assert_eq!(
+        launchd_arguments
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("<string>"))
+            .filter_map(|line| line.strip_suffix("</string>"))
+            .collect::<Vec<_>>(),
+        [
+            "@BIN_DIR@/hypercolor-daemon",
+            "--macos-owner",
+            "direct-launchd",
+            "--ui-dir",
+            "@UI_DIR@",
+        ]
+    );
+
+    let (_, launchd_environment) = MACOS_LAUNCHD_PLIST
+        .split_once("<key>EnvironmentVariables</key>")
+        .expect("launchd plist should declare environment variables");
+    let (launchd_environment, _) = launchd_environment
+        .split_once("</dict>")
+        .expect("launchd environment dictionary should close");
+    let launchd_environment = launchd_environment
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "<dict>")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        launchd_environment,
+        [
+            "<key>HYPERCOLOR_MACOS_OWNER</key>",
+            "<string>direct-launchd</string>",
+            "<key>HYPERCOLOR_LOG</key>",
+            "<string>info</string>",
+            "<key>PATH</key>",
+            "<string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:@BIN_DIR@</string>",
+        ]
+    );
+
+    let (_, homebrew_service) = HOMEBREW_FORMULA
+        .split_once("  service do\n")
+        .expect("Homebrew formula should declare a service");
+    let (homebrew_service, _) = homebrew_service
+        .split_once("\n  end")
+        .expect("Homebrew service block should close");
+    assert_eq!(
+        homebrew_service,
+        concat!(
+            "    run [opt_bin/\"hypercolor-daemon\", \"--macos-owner\", \"homebrew\", ",
+            "\"--ui-dir\", share/\"hypercolor/ui\"]\n",
+            "    keep_alive successful_exit: false\n",
+            "    log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "    error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "    environment_variables HYPERCOLOR_LOG: \"info\", ",
+            "HYPERCOLOR_MACOS_OWNER: \"homebrew\"",
+        )
+    );
+}
+
+#[test]
+fn macos_launchd_conflict_exit_does_not_restart_the_losing_daemon() {
+    assert!(MACOS_LAUNCHD_PLIST.contains(
+        "<key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>"
+    ));
+    assert!(CI_WORKFLOW.contains("launchd_managed_contenders_exit_zero_without_respawn"));
+}
+
+#[test]
+fn app_sidecar_identity_matches_tauri_and_signing_artifacts() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("Tauri config should parse");
+    assert_eq!(
+        config["productName"],
+        hypercolor_macos_owner::MACOS_APP_PRODUCT_NAME
+    );
+    assert_eq!(
+        hypercolor_macos_owner::MACOS_APP_LAUNCH_AGENT_PLIST_FILE_NAME,
+        format!("{}.plist", hypercolor_macos_owner::MACOS_APP_PRODUCT_NAME)
+    );
+    assert!(MACOS_SIGNING_MANIFEST.lines().any(|line| {
+        line.split('\t').nth(1)
+            == Some(hypercolor_macos_owner::MACOS_APP_BUNDLE_EXECUTABLE_RELATIVE_PATH)
+    }));
+}
+
+#[test]
+fn macos_release_verifier_pins_every_macho_to_15_2() {
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("xcrun vtool -show-build"));
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("LC_BUILD_VERSION minos"));
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("expected 15.2"));
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("no Mach-O files found"));
+}
+
+#[test]
+fn ci_qualifies_both_macos_architectures_with_xcode_26() {
+    assert!(CI_WORKFLOW.contains("rust-check-macos:"));
+    assert!(CI_WORKFLOW.contains("os: macos-26"));
+    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
+    assert!(CI_WORKFLOW.contains("XCODE_VERSION: \"26.5\""));
+    assert!(CI_WORKFLOW.contains("xcodebuild -version"));
+    assert!(CI_WORKFLOW.contains("xcrun --show-sdk-version"));
+    assert!(CI_WORKFLOW.contains("test \"${sdk_version%%.*}\" = \"26\""));
+}
+
+#[test]
+fn ci_installs_nasm_before_intel_macos_compilation() {
+    let (_, macos_job) = CI_WORKFLOW
+        .split_once("\n  rust-check-macos:\n")
+        .expect("CI should define the macOS check job");
+    let (macos_job, _) = macos_job
+        .split_once("\n  generated-effects:\n")
+        .expect("generated effects should follow the macOS check job");
+    let install = macos_job
+        .find("- name: Install NASM")
+        .expect("Intel macOS checks should install NASM");
+    let (_, install_and_after) = macos_job
+        .split_once("- name: Install NASM\n")
+        .expect("Intel macOS checks should install NASM");
+    let (install_step, _) = install_and_after
+        .split_once("\n\n      - ")
+        .expect("another macOS step should follow NASM installation");
+    let qualification = macos_job
+        .find("- name: Qualify Intel Metal fixture")
+        .expect("Intel macOS checks should qualify native Metal import");
+    let workspace = macos_job
+        .find("- name: Check macOS workspace")
+        .expect("macOS checks should compile the workspace");
+
+    assert!(install_step.contains("if: matrix.expected-arch == 'x86_64'"));
+    assert!(install_step.contains("run: brew install nasm"));
+    assert!(install < qualification);
+    assert!(install < workspace);
+}
+
+#[test]
+fn ci_runs_inline_and_integration_macos_capture_fixtures() {
+    let (_, fixture_steps) = CI_WORKFLOW
+        .split_once("- name: Run macOS capture fixtures")
+        .expect("CI should run macOS capture fixtures");
+    let (fixture_steps, _) = fixture_steps
+        .split_once("- name: Run macOS host input and ownership fixtures")
+        .expect("host input fixtures should follow capture fixtures");
+    let (_, first_command_and_after) = fixture_steps
+        .split_once("./scripts/cargo-cache-build.sh")
+        .expect("capture fixtures should invoke the Cargo wrapper");
+    let (capture_command, _) = first_command_and_after
+        .split_once("\n          ./scripts/cargo-cache-build.sh")
+        .expect("core capture fixtures should follow crate capture fixtures");
+
+    assert!(capture_command.contains(
+        "cargo nextest run --locked \\\n            -p hypercolor-macos-capture --features capture-fixtures"
+    ));
+    for selector in ["--lib", "--tests", "--test", "-E"] {
+        assert!(
+            !capture_command.contains(selector),
+            "capture crate command must not select a target with {selector}"
+        );
+    }
+    assert!(fixture_steps.contains("--test macos_screen_capture_tests"));
+}
+
+#[test]
+fn ci_builds_pr_docs_without_widening_deployment_permissions() {
+    let (_, docs_jobs) = CI_WORKFLOW
+        .split_once("\n  docs-build:\n")
+        .expect("CI should define an unprivileged docs build job");
+    let (build_job, deploy_and_after) = docs_jobs
+        .split_once("\n  docs-deploy:\n")
+        .expect("CI should define a separate docs deployment job");
+    let (deploy_job, _) = deploy_and_after
+        .split_once("\n  web-assets:\n")
+        .expect("web assets should follow the docs jobs");
+    let (_, build_condition_and_after) = build_job
+        .split_once("    if: >-\n")
+        .expect("docs build should define a job condition");
+    let (build_condition, _) = build_condition_and_after
+        .split_once("    runs-on:")
+        .expect("docs build condition should precede its runner");
+    let (_, upload_and_after) = build_job
+        .split_once("      - name: Upload Pages artifact\n")
+        .expect("docs build should upload its Pages artifact");
+    let upload_step = upload_and_after;
+    let (_, upload_condition_and_after) = upload_step
+        .split_once("        if: >-\n")
+        .expect("Pages upload should define a condition");
+    let (upload_condition, _) = upload_condition_and_after
+        .split_once("        uses:")
+        .expect("Pages upload condition should precede its action");
+    let (_, deploy_condition_and_after) = deploy_job
+        .split_once("    if: >-\n")
+        .expect("docs deploy should define a job condition");
+    let (deploy_condition, _) = deploy_condition_and_after
+        .split_once("    runs-on:")
+        .expect("docs deploy condition should precede its runner");
+    let normalize = |condition: &str| condition.split_whitespace().collect::<Vec<_>>().join(" ");
+    let expected_build = normalize(
+        "(github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true') ||
+         (github.ref == 'refs/heads/main' && (
+           (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+         ))",
+    );
+    let expected_deploy = normalize(
+        "github.ref == 'refs/heads/main' && (
+           (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+         )",
+    );
+
+    assert_eq!(normalize(build_condition), expected_build);
+    assert!(build_job.contains("permissions:\n      contents: read"));
+    assert!(build_job.contains("working-directory: docs\n        run: zola build"));
+    assert!(!build_job.contains("pages: write"));
+    assert!(!build_job.contains("id-token: write"));
+    assert!(!build_job.contains("actions/deploy-pages"));
+    assert!(upload_step.contains("uses: actions/upload-pages-artifact@v5"));
+    assert!(upload_step.contains("path: docs/public"));
+
+    assert!(deploy_job.contains("needs: [changes, docs-build]"));
+    assert_eq!(normalize(upload_condition), expected_deploy);
+    assert_eq!(normalize(deploy_condition), expected_deploy);
+    assert!(deploy_job.contains("pages: write"));
+    assert!(deploy_job.contains("id-token: write"));
+    assert!(deploy_job.contains("actions/deploy-pages@v5"));
+}
+
+#[test]
+fn public_ci_audits_pr_and_unsigned_app_macho_deployment_targets() {
+    assert!(CI_WORKFLOW.contains("cargo check --workspace --locked"));
+    assert!(CI_WORKFLOW.contains("cargo nextest run --locked -p hypercolor-macos-gpu-interop"));
+    assert!(CI_WORKFLOW.contains("cargo build --locked -p hypercolor-cli --bin hypercolor"));
+    assert_eq!(
+        CI_WORKFLOW
+            .matches("./scripts/verify-macos-deployment-target.sh")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn macos_signing_manifest_assigns_every_stable_identity() {
+    for identifier in [
+        "tech.hyperbliss.hypercolor",
+        "tech.hyperbliss.hypercolor.sidecar",
+        "tech.hyperbliss.hypercolor.daemon",
+        "tech.hyperbliss.hypercolor.cli",
+        "tech.hyperbliss.hypercolor.app-host",
+        "tech.hyperbliss.hypercolor.tray",
+    ] {
+        assert!(MACOS_SIGNING_MANIFEST.contains(identifier));
+    }
+    assert!(MACOS_SIGNING_MANIFEST.contains("hypercolor-daemon-{target}"));
+}
+
+#[test]
+fn macos_signing_actor_rejects_ad_hoc_and_unlisted_objects() {
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("ad-hoc signing identities are forbidden"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("matched ${matches} signing manifest entries"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("codesign --verify --strict"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("anchor apple generic"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("notarytool submit"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("stapler validate"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("tauri build --bundles app --no-sign"));
+}
+
+#[test]
+fn macos_daemon_entitlements_preserve_the_seven_key_profile() {
+    let keys = [
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.cs.disable-library-validation",
+        "com.apple.security.device.audio-input",
+        "com.apple.security.device.usb",
+        "com.apple.security.network.client",
+        "com.apple.security.network.server",
+    ];
+    assert_eq!(
+        MACOS_DAEMON_ENTITLEMENTS.matches("<key>").count(),
+        keys.len()
+    );
+    assert_eq!(
+        MACOS_DAEMON_ENTITLEMENTS.matches("<true/>").count(),
+        keys.len()
+    );
+    for key in keys {
+        assert!(MACOS_DAEMON_ENTITLEMENTS.contains(key));
+    }
+}
+
 #[test]
 fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
     assert!(HOMEBREW_CASK.contains(r#"cask "hypercolor-app" do"#));
@@ -64,21 +668,160 @@ fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
 }
 
 #[test]
-fn ci_normalizes_macos_dmg_artifacts_for_cask_urls() {
-    assert!(CI_WORKFLOW.contains("Normalize macOS DMG artifact name"));
+fn public_ci_builds_unsigned_macos_app_fixtures_only() {
     assert!(CI_WORKFLOW.contains("cask_arch: arm64"));
     assert!(CI_WORKFLOW.contains("cask_arch: x86_64"));
-    assert!(CI_WORKFLOW.contains("Hypercolor-$version-$arch.dmg"));
+    assert!(CI_WORKFLOW.contains("artifact-kind: unsigned-app"));
+    assert!(CI_WORKFLOW.contains("--no-sign"));
+    assert!(CI_WORKFLOW.contains(r#"@("--target", $env:RUST_TARGET)"#));
+    assert!(CI_WORKFLOW.contains("Upload unsigned macOS packaging fixture"));
+    assert!(CI_WORKFLOW.contains("name: oss-ci-${{ steps.version.outputs.version }}"));
+    assert!(!CI_WORKFLOW.contains("Build signed and notarized macOS artifacts"));
+    assert!(!CI_WORKFLOW.contains("APPLE_SIGNING_IDENTITY"));
+    assert!(!CI_WORKFLOW.contains("-name '*.dmg'"));
+    assert!(!CI_WORKFLOW.contains("-name '*.notarization.json'"));
 }
 
 #[test]
-fn ci_publishes_homebrew_formula_and_cask() {
-    assert!(CI_WORKFLOW.contains("packaging/homebrew/hypercolor.rb > hypercolor.rb"));
-    assert!(CI_WORKFLOW.contains("packaging/homebrew/hypercolor-app.rb > hypercolor-app.rb"));
-    assert!(CI_WORKFLOW.contains("sha256_macos_app_arm64"));
-    assert!(CI_WORKFLOW.contains("sha256_macos_app_x86_64"));
-    assert!(CI_WORKFLOW.contains("tap/Casks"));
-    assert!(CI_WORKFLOW.contains("Casks/hypercolor-app.rb"));
+fn proprietary_macos_release_tools_use_the_manifest_signing_actor() {
+    assert!(!CI_WORKFLOW.contains(r#"APPLE_SIGNING_IDENTITY: "-""#));
+    assert!(!CI_WORKFLOW.contains("./scripts/sign-macos-artifacts.sh"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains(r#"--bundles app"#));
+    assert!(!BUILD_MAC_INSTALLER_SH.contains("dmg,app"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains(r#""${SIGNING_ACTOR}" app"#));
+    assert!(DIST_SH.contains(r#""${MACOS_SIGNING_ACTOR}" standalone"#));
+}
+
+#[test]
+fn macos_signing_secrets_stay_out_of_process_arguments() {
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("printf '%s\\0%s\\0'"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("env -u APPLE_CERTIFICATE_PASSWORD"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("APPLE_NOTARY_KEYCHAIN_PROFILE"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("--keychain-profile"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("security create-keychain -p"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("security unlock-keychain -p"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("security import"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("set-key-partition-list"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("--apple-id"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("--password"));
+
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("read_secret_frame"));
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("SecItemImport"));
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("SecKeychainItemSetAccessWithPassword"));
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("memset_s"));
+
+    assert!(!CI_WORKFLOW.contains("APPLE_"));
+    assert!(!CI_WORKFLOW.contains("notarytool"));
+
+    assert!(BUILD_MAC_INSTALLER_SH.contains("APPLE_NOTARY_KEYCHAIN_PROFILE"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains("raw Apple ID credentials are unsupported"));
+}
+
+#[test]
+fn signed_macos_builds_can_enable_the_physical_tcc_canary_explicitly() {
+    assert!(BUILD_MAC_INSTALLER_SH.contains("--tcc-canary"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains("--tcc-canary requires --notarize"));
+    assert!(
+        BUILD_MAC_INSTALLER_SH.contains(r#"daemon_features="${daemon_features},macos-tcc-canary""#)
+    );
+    assert!(DIST_SH.contains("--tcc-canary requires a macOS target"));
+    assert!(DIST_SH.contains("DAEMON_FEATURE_FLAG=(--features macos-tcc-canary)"));
+    assert!(DIST_SH.contains(r#""${MACOS_SIGNING_ACTOR}" standalone"#));
+}
+
+#[test]
+fn tcc_canary_runner_uses_the_daemon_canonical_data_directory() {
+    assert!(
+        RUN_MACOS_TCC_CANARY_SH
+            .contains(r#"${HOME:?HOME must be set}/Library/Application Support/hypercolor"#)
+    );
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains("--data-dir"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--execute-protected-actions"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--macos-tcc-canary-check-request"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("regular non-symlink witness"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("request process_replacement_witness_id is invalid"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("login_arbitration_witness_id"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("armed request does not exactly match"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("identifier_is_safe"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#"$1" != "." && "$1" != "..""#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("installed_row_artifacts"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("install_new_artifact"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--macos-tcc-canary-publish"));
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains(r#"/bin/ln "${source}" "${destination}""#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("require_real_path_ancestors"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("path has a symlink ancestor"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("row_committed=true"));
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains("kill -TERM \"${predecessor_pid}\""));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--cli PATH"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${cli}" service enable"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${cli}" service stop"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${cli}" service start"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${brew}" services start hypercolor"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${brew}" services stop hypercolor"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${brew}" services start hypercolor"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("app_supervisor_daemon_restart"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("app_quit_then_minimized_launch"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("launchd_login_start"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("brew_services_login_start"));
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains("launchctl kickstart"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("operation_timeout_ms + 999"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("minimum_timeout_seconds"));
+    assert!(
+        RUN_MACOS_TCC_CANARY_SH
+            .contains(r#""${daemon}" --macos-owner standalone >/dev/null 2>&1 &"#)
+    );
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("ensure_descendant_directory"));
+    let predecessor_stop = RUN_MACOS_TCC_CANARY_SH
+        .find(r#""${cli}" service stop"#)
+        .expect("runner should stop the direct service before replacement");
+    let exit_observation = RUN_MACOS_TCC_CANARY_SH
+        .find("action_observed_unix_ms=$(( $(date +%s) * 1000 ))")
+        .expect("runner should timestamp predecessor exit after waiting");
+    let replacement_witness = RUN_MACOS_TCC_CANARY_SH
+        .find(r#"kind: "process_replacement""#)
+        .expect("runner should record a replacement witness");
+    let successor_start = RUN_MACOS_TCC_CANARY_SH
+        .rfind(r#""${cli}" service start"#)
+        .expect("runner should start the direct successor after its witness");
+    assert!(predecessor_stop < exit_observation);
+    assert!(exit_observation < replacement_witness);
+    assert!(replacement_witness < successor_start);
+    let pending_receipt_wait = RUN_MACOS_TCC_CANARY_SH
+        .find("a regular atomic pending receipt did not arrive")
+        .expect("runner should wait for an atomic pending receipt");
+    let receipt_wait = RUN_MACOS_TCC_CANARY_SH
+        .find("a regular atomic receipt did not arrive")
+        .expect("runner should wait for an atomic receipt");
+    let settings_install = RUN_MACOS_TCC_CANARY_SH
+        .find(r#"install_witness "${settings_witness_id}" system_settings_identity"#)
+        .expect("runner should install the settings witness");
+    assert!(pending_receipt_wait < settings_install);
+    assert!(settings_install < receipt_wait);
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(".signing.audit_token_bound_valid == true"));
+    assert!(
+        RUN_MACOS_TCC_CANARY_SH
+            .contains(".launcher.parent_signing.audit_token_bound_valid == true")
+    );
+}
+
+#[test]
+fn macos_release_verifier_checks_signatures_and_notarization_provenance() {
+    assert!(VERIFY_RELEASE_SH.contains("verify-app"));
+    assert!(VERIFY_RELEASE_SH.contains("verify-standalone"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("verify_scope"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("verify_inventory"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("app_notarization.status"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("dmg_notarization.status"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("notarization.status"));
+}
+
+#[test]
+fn public_ci_leaves_homebrew_promotion_to_the_proprietary_release_pipeline() {
+    assert!(!CI_WORKFLOW.contains("update-homebrew:"));
+    assert!(!CI_WORKFLOW.contains("HOMEBREW_TAP_TOKEN"));
+    assert!(!CI_WORKFLOW.contains("tap/Casks"));
+    assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_ARM64"));
+    assert!(HOMEBREW_CASK.contains("SHA256_MACOS_APP_ARM64"));
 }
 
 #[test]

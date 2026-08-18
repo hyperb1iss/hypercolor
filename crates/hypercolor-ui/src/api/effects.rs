@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use gloo_net::http::Request;
+use gloo_net::http::Method;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use web_sys::{File, FormData};
 
@@ -46,6 +46,8 @@ pub struct ActiveEffectResponse {
     pub active_preset_modified: bool,
     #[serde(default)]
     pub zone_id: Option<String>,
+    #[serde(default)]
+    pub cover_image_url: Option<String>,
     /// Server-side controls version (matches the `ETag` header).
     /// `Some` while an effect is running, `None` on the idle response.
     /// Clients that want optimistic concurrency echo this back via
@@ -59,7 +61,7 @@ pub struct ActiveEffectResponse {
 /// Fetch all registered effects.
 pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
     let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
-    Ok(list.items)
+    Ok(list.items.into_iter().map(route_effect_summary).collect())
 }
 
 /// Fetch the currently active effect, if any.
@@ -81,15 +83,28 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
             active_preset_modified: effect.active_preset_modified,
             zone_id: effect.zone_id,
             controls_version: effect.controls_version,
+            cover_image_url: route_cover_image_url(effect.cover_image_url),
         })
     }))
 }
 
 /// Fetch detailed metadata for one effect.
 pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, String> {
-    client::fetch_json(&format!("/api/v1/effects/{}", path_segment(id)))
-        .await
-        .map_err(Into::into)
+    let mut detail: EffectDetailResponse =
+        client::fetch_json(&format!("/api/v1/effects/{}", path_segment(id)))
+            .await
+            .map_err(String::from)?;
+    detail.cover_image_url = route_cover_image_url(detail.cover_image_url);
+    Ok(detail)
+}
+
+fn route_effect_summary(mut effect: EffectSummary) -> EffectSummary {
+    effect.cover_image_url = route_cover_image_url(effect.cover_image_url);
+    effect
+}
+
+fn route_cover_image_url(cover_image_url: Option<String>) -> Option<String> {
+    cover_image_url.and_then(|url| client::daemon_url(&url))
 }
 
 /// Fetch the bundled and saved preset stack for one effect.
@@ -227,7 +242,8 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
         .append_with_blob_and_filename("file", &file, &file.name())
         .map_err(|error| format!("{error:?}"))?;
 
-    let response = client::with_auth(Request::post("/api/v1/effects/install"))
+    let request = client::request(Method::POST, "/api/v1/effects/install").map_err(String::from)?;
+    let response = request
         .body(form_data)
         .map_err(|error| error.to_string())?
         .send()
@@ -264,4 +280,27 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
         .await
         .map(|payload| payload.data)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn effect_cover_urls_require_verified_native_route_and_preserve_browser_same_origin() {
+        crate::api::client::reset_daemon_transport_for_test();
+        let route = Some("/api/v1/effects/prism/cover".to_owned());
+        assert_eq!(super::route_cover_image_url(route.clone()), route);
+
+        crate::api::client::begin_native_daemon_verification();
+        assert_eq!(super::route_cover_image_url(route.clone()), None);
+
+        crate::api::client::install_verified_daemon_connection(
+            "http://127.0.0.1:9420",
+            Some("protected"),
+        );
+        assert_eq!(
+            super::route_cover_image_url(route),
+            Some("http://127.0.0.1:9420/api/v1/effects/prism/cover".to_owned())
+        );
+        crate::api::client::reset_daemon_transport_for_test();
+    }
 }

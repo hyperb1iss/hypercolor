@@ -529,6 +529,7 @@ pub struct ScreenExactResource {
     resource: ScreenResourceKind,
     bytes: u64,
     native_binding: Option<ScreenNativeResourceBindingKey>,
+    native_shared_binding: Option<ScreenNativeSharedResourceBindingKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -550,6 +551,44 @@ impl ScreenNativeResourceBindingKey {
 
     pub(crate) const fn target_id(&self) -> NonZeroU64 {
         self.target_id
+    }
+
+    pub(crate) const fn descriptor(&self) -> &Arc<ResolvedScreenPublicationDescriptor> {
+        &self.descriptor
+    }
+
+    pub(crate) fn matches(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> bool {
+        self.target_id == target_id && self.descriptor.as_ref() == descriptor
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScreenNativeSharedResourceBindingKey {
+    target_id: NonZeroU64,
+    descriptor: Arc<ScreenPhysicalReductionDescriptor>,
+}
+
+impl ScreenNativeSharedResourceBindingKey {
+    pub(crate) fn new(
+        target_id: NonZeroU64,
+        descriptor: Arc<ScreenPhysicalReductionDescriptor>,
+    ) -> Self {
+        Self {
+            target_id,
+            descriptor,
+        }
+    }
+
+    pub(crate) fn matches(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ScreenPhysicalReductionDescriptor,
+    ) -> bool {
+        self.target_id == target_id && self.descriptor.as_ref() == descriptor
     }
 }
 
@@ -600,6 +639,7 @@ impl ScreenExactResource {
             resource,
             bytes,
             native_binding: None,
+            native_shared_binding: None,
         })
     }
 
@@ -616,6 +656,22 @@ impl ScreenExactResource {
             bytes,
         )?;
         resource.native_binding = Some(native_binding);
+        Ok(resource)
+    }
+
+    pub(crate) fn try_new_native_shared_target(
+        name: impl Into<Arc<str>>,
+        accounting_scope: impl Into<Arc<str>>,
+        bytes: u64,
+        native_shared_binding: ScreenNativeSharedResourceBindingKey,
+    ) -> Result<Self, ScreenPlanError> {
+        let mut resource = Self::try_new_scoped(
+            name,
+            accounting_scope,
+            ScreenResourceKind::WorkerAdditional,
+            bytes,
+        )?;
+        resource.native_shared_binding = Some(native_shared_binding);
         Ok(resource)
     }
 
@@ -646,6 +702,12 @@ impl ScreenExactResource {
     pub(crate) const fn native_binding(&self) -> Option<&ScreenNativeResourceBindingKey> {
         self.native_binding.as_ref()
     }
+
+    pub(crate) const fn native_shared_binding(
+        &self,
+    ) -> Option<&ScreenNativeSharedResourceBindingKey> {
+        self.native_shared_binding.as_ref()
+    }
 }
 
 #[derive(Debug)]
@@ -656,6 +718,7 @@ struct ScreenResourceLifetimeInner {
     transaction_id: ScreenPlanTransactionId,
     worker_nonce: NonZeroU64,
     allocation_nonce: NonZeroU64,
+    finalization: Arc<Mutex<()>>,
     resource: ScreenExactResource,
     retirement_charge: Arc<ScreenRetirementCharge>,
     admission_lease: OnceLock<ScreenByteLease>,
@@ -708,6 +771,38 @@ impl ScreenResourceLifetime {
             && self.inner.demand_revision == other.inner.demand_revision
             && self.inner.transaction_id == other.inner.transaction_id
             && self.inner.worker_nonce == other.inner.worker_nonce
+            && Arc::ptr_eq(&self.inner.finalization, &other.inner.finalization)
+    }
+
+    pub(crate) fn belongs_to_binding(&self, binding: &ScreenWorkerBinding) -> bool {
+        self.inner.source_id == *binding.source_id()
+            && self.inner.plan_generation == binding.plan_generation()
+            && self.inner.demand_revision == binding.demand_revision()
+            && self.inner.transaction_id == binding.transaction_id()
+            && self.inner.worker_nonce == binding.worker_nonce()
+            && Arc::ptr_eq(&self.inner.finalization, &binding.inner.finalization)
+    }
+
+    pub(crate) fn matches_native_target(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> bool {
+        self.inner
+            .resource
+            .native_binding()
+            .is_some_and(|binding| binding.matches(target_id, descriptor))
+    }
+
+    pub(crate) fn matches_native_shared_target(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ScreenPhysicalReductionDescriptor,
+    ) -> bool {
+        self.inner
+            .resource
+            .native_shared_binding()
+            .is_some_and(|binding| binding.matches(target_id, descriptor))
     }
 
     pub(crate) fn is_final_owner(&self) -> bool {
@@ -1123,6 +1218,7 @@ impl ScreenWorkerPreparationTicket {
                 transaction_id: self.transaction_id,
                 worker_nonce: self.worker_nonce,
                 allocation_nonce,
+                finalization: Arc::clone(&self.finalization),
                 resource: resource.clone(),
                 retirement_charge: Arc::new(ScreenRetirementCharge::new(
                     Arc::clone(&self.pending_retired_bytes),
@@ -1241,7 +1337,9 @@ impl ScreenWorkerPreparationTicket {
                     .ok()
                     .map(|index| &exact_ledger.resources()[index]);
                 if resource.is_none_or(|resource| {
-                    resource.native_binding().is_none() || resource.bytes() != claim.lease.bytes()
+                    (resource.native_binding().is_none()
+                        && resource.native_shared_binding().is_none())
+                        || resource.bytes() != claim.lease.bytes()
                 }) {
                     return Err(ScreenPlanError::ExternalAdmissionMismatch {
                         name: Arc::clone(&claim.resource_name),

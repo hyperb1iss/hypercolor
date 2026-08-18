@@ -1,11 +1,14 @@
 # 57 - macOS Servo GPU Surface Interop
 
-**Status:** Implemented; macOS live validation captured; `just dev` defaults to
-`auto`
+**Status:** Implemented on Apple Silicon. The original hardcoded shared-storage
+importer was Apple-Silicon-only. Spec 76 owns family-aware storage selection,
+and signed Intel CPU-oracle parity remains required before Intel parity is
+discharged. `just dev` defaults to `auto`.
 **Author:** Nova
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`, optional interop crate
-**Related:** Specs 48, 56, 59;
+**Related:** Specs 48, 56, 59, and
+[76](76-macos-screen-capture-and-host-input.md), the macOS authority;
 `docs/design/34-servo-perf-and-crash-isolation.md`,
 `docs/design/45-graphics-pipeline-unification-plan.md`
 
@@ -353,8 +356,9 @@ macOS-specific diagnostics should report:
 - fallback reason
 
 During development, default to `off` or a hidden opt-in. Default to `auto` only
-after soak and parity pass on Apple Silicon and at least one Intel Mac if we
-still support that target.
+after soak and parity pass on Apple Silicon. Intel parity is discharged only
+after Spec 76's family-aware W4 storage selection passes its signed Intel
+CPU-oracle acceptance.
 
 ## 10. Implementation Waves
 

@@ -28,7 +28,13 @@ impl ProjectedLookupAllocationFixture {
 use anyhow::{Result, bail};
 #[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayYuv420Frame;
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
 use hypercolor_core::input::screen::ScreenBranchPublication;
 use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_core::spatial::PreparedZonePlan;
@@ -676,6 +682,14 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn macos_metal4_capability(&self) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.macos_metal4_capability(),
+        }
+    }
+
     #[cfg_attr(not(feature = "wgpu"), allow(unused_variables))]
     pub(crate) fn prepare_zone_sampling_plan(
         &mut self,
@@ -781,7 +795,13 @@ impl SparkleFlinger {
     }
 
     pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
-        #[cfg(all(feature = "wgpu", target_os = "windows"))]
+        #[cfg(all(
+            feature = "wgpu",
+            any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            )
+        ))]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
             return gpu.screen_native_execution_target();
         }
@@ -789,13 +809,25 @@ impl SparkleFlinger {
     }
 
     pub(crate) fn release_native_screen_caches(&mut self) {
-        #[cfg(all(feature = "wgpu", target_os = "windows"))]
+        #[cfg(all(
+            feature = "wgpu",
+            any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            )
+        ))]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             gpu.release_native_screen_caches();
         }
     }
 
-    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    #[cfg(all(
+        feature = "wgpu",
+        any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        )
+    ))]
     pub(crate) fn copy_screen_publication(
         &mut self,
         publication: &std::sync::Arc<ScreenBranchPublication>,
@@ -1551,6 +1583,20 @@ impl SparkleFlinger {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(None),
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.current_output_frame(),
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn sample_texture_zone_plan(
+        &mut self,
+        frame: &GpuTextureFrame,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> Result<Option<Vec<ZoneColors>>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.sample_texture_zone_plan(frame, prepared_zones)
+            }
         }
     }
 

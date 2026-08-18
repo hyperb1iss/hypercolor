@@ -5,7 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, webview::WebviewWindowBuilder};
 
 fn maybe_open_devtools<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     #[cfg(debug_assertions)]
@@ -13,6 +13,15 @@ fn maybe_open_devtools<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 
     #[cfg(not(debug_assertions))]
     let _ = window;
+}
+
+fn autostart_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    let builder = tauri_plugin_autostart::Builder::new()
+        .app_name(hypercolor_macos_owner::MACOS_APP_PRODUCT_NAME)
+        .arg("--minimized");
+    #[cfg(target_os = "macos")]
+    let builder = builder.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
+    builder.build()
 }
 
 fn main() -> anyhow::Result<()> {
@@ -39,11 +48,17 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::first_run::is_first_run_pending,
             hypercolor_app::first_run::mark_first_run_complete,
             hypercolor_app::first_run::reset_first_run,
+            hypercolor_app::ownership::choose_daemon_owner,
+            hypercolor_app::ownership::execute_macos_daemon_owner_offline_remedy,
+            hypercolor_app::ownership::macos_daemon_owner_offline_status,
+            hypercolor_app::ownership::restart_macos_capture_owner,
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::detect_windows_daemon_service,
             hypercolor_app::support::launch_pawnio_helper,
             hypercolor_app::support::repair_smbus_service,
-            hypercolor_app::window::open_external_url
+            hypercolor_app::window::open_external_url,
+            hypercolor_app::window::open_macos_system_settings,
+            hypercolor_app::supervisor::get_verified_daemon_connection
         ])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let forwarded = hypercolor_app::cli::AppArgs::parse(args);
@@ -54,27 +69,32 @@ fn main() -> anyhow::Result<()> {
                 tracing::warn!(%error, "failed to show main window from forwarded invocation");
             }
         }))
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec!["--minimized"]),
-        ))
+        .plugin(autostart_plugin())
         .setup(move |app| {
             let url: url::Url = daemon_url
                 .parse()
                 .expect("HYPERCOLOR_URL must be a valid URL");
 
-            tracing::info!(scheme = %url.scheme(), host = ?url.host_str(), port = ?url.port_or_known_default(), "creating webview window");
+            tracing::info!("creating bundled webview window");
 
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.clone()))
-                .title("Hypercolor")
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(800.0, 500.0)
-                .initialization_script(hypercolor_app::window::visibility_state_script(
-                    !cli.start_minimized,
-                ))
-                .on_new_window(hypercolor_app::window::open_new_window_in_system_browser)
-                .visible(!cli.start_minimized)
-                .build()?;
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("Hypercolor")
+                    .inner_size(1200.0, 800.0)
+                    .min_inner_size(800.0, 500.0)
+                    .initialization_script(hypercolor_app::window::visibility_state_script(
+                        !cli.start_minimized,
+                    ))
+                    .on_new_window(hypercolor_app::window::open_new_window_in_system_browser)
+                    .on_navigation(|url| {
+                        let trusted = hypercolor_app::window::navigation_is_trusted(url);
+                        if !trusted {
+                            tracing::warn!(%url, "blocked untrusted navigation in the app webview");
+                        }
+                        trusted
+                    })
+                    .visible(!cli.start_minimized)
+                    .build()?;
 
             maybe_open_devtools(&window);
 
@@ -93,6 +113,17 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(false) = event
+                && let Some(webview_window) = window.app_handle().get_webview_window(window.label())
+                && let Err(error) =
+                    hypercolor_app::window::release_webview_secure_input(&webview_window)
+            {
+                tracing::warn!(
+                    %error,
+                    label = %window.label(),
+                    "failed to release webview secure input"
+                );
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 tracing::info!(label = %window.label(), "hiding window instead of closing");
                 if let Err(error) = hypercolor_app::window::hide(window) {
@@ -101,8 +132,17 @@ fn main() -> anyhow::Result<()> {
                 api.prevent_close();
             }
         })
-        .run(tauri::generate_context!())
-        .map_err(|e| anyhow::anyhow!("tauri runtime error: {e}"))?;
+        .build(tauri::generate_context!())
+        .map_err(|e| anyhow::anyhow!("tauri build error: {e}"))?
+        .run(|app_handle, event| {
+            // app.exit() terminates without unwinding, so the managed
+            // daemon must be reaped here, while the process still lives.
+            if matches!(event, tauri::RunEvent::Exit) {
+                app_handle
+                    .state::<hypercolor_app::supervisor::SupervisorState>()
+                    .terminate_managed_daemon_for_exit();
+            }
+        });
 
     Ok(())
 }

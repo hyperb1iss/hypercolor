@@ -9,6 +9,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>@BIN_DIR@/hypercolor-daemon</string>
+        <string>--macos-owner</string>
+        <string>direct-launchd</string>
         <string>--ui-dir</string>
         <string>@UI_DIR@</string>
     </array>
@@ -33,6 +35,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>HYPERCOLOR_MACOS_OWNER</key>
+        <string>direct-launchd</string>
         <key>HYPERCOLOR_LOG</key>
         <string>info</string>
         <key>PATH</key>

@@ -4,8 +4,6 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-#[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::types::canvas::{
     PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
@@ -37,6 +35,13 @@ use super::{
     ScreenUploadContentKey, padded_bytes_per_row, texture_extent,
 };
 use crate::performance::CompositorBackendKind;
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use crate::render_thread::producer_queue::MacosScreenTextureLease;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
+use crate::render_thread::producer_queue::NativeScreenCacheLease;
 use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin, ProducerFrame,
 };
@@ -198,6 +203,8 @@ impl GpuSparkleFlinger {
                 requires_cpu_sampling_canvas,
                 preview_surface_request,
                 None,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                Vec::new(),
                 None,
             );
         }
@@ -302,6 +309,15 @@ impl GpuSparkleFlinger {
             )?;
             let pending_output_submission =
                 self.supersede_frame_in_flight("current output readback restaged");
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            let (pending_output_submission, native_screen_leases) = pending_output_submission
+                .map_or_else(
+                    || (None, Vec::new()),
+                    |stashed| (Some(stashed.encoder), stashed.native_screen_leases),
+                );
+            #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
+            let pending_output_submission =
+                pending_output_submission.map(|stashed| stashed.encoder);
             if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
                 self.ready_preview_surface = None;
             } else {
@@ -315,6 +331,8 @@ impl GpuSparkleFlinger {
                 requires_cpu_sampling_canvas,
                 preview_surface_request,
                 pending_output_submission,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                native_screen_leases,
                 prepared_preview_surface,
             );
         }
@@ -400,6 +418,8 @@ impl GpuSparkleFlinger {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("SparkleFlinger GPU compose"),
             });
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        let mut native_screen_leases = Vec::new();
 
         let mut use_front_as_current = true;
         let mut uploaded_screen_frames = uploaded_screen_frame_scratch
@@ -421,6 +441,8 @@ impl GpuSparkleFlinger {
                 &mut surfaces.source_copy_bind_groups,
                 &mut encoder,
                 &first_layer.frame,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                &mut native_screen_leases,
                 #[cfg(test)]
                 &mut surfaces.front_upload_count,
             );
@@ -443,6 +465,8 @@ impl GpuSparkleFlinger {
                 first_layer,
                 first_uploaded_screen_frame,
                 true,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                &mut native_screen_leases,
             );
             if let Err(error) = compose_result {
                 drop(uploaded_screen_frames);
@@ -466,6 +490,8 @@ impl GpuSparkleFlinger {
                 layer,
                 uploaded_screen_frame,
                 use_front_as_current,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                &mut native_screen_leases,
             );
             if let Err(error) = compose_result {
                 drop(uploaded_screen_frames);
@@ -492,6 +518,13 @@ impl GpuSparkleFlinger {
         self.output_generation = self.output_generation.saturating_add(1);
         self.cached_sample_result = None;
         if !requires_cpu_sampling_canvas && !requires_preview_surface {
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            self.stage_frame_in_flight_with_native_screen_leases(
+                encoder,
+                None,
+                native_screen_leases,
+            );
+            #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
             self.stage_frame_in_flight(encoder, None);
             return Ok(gpu_composed_without_surfaces());
         }
@@ -503,7 +536,9 @@ impl GpuSparkleFlinger {
         {
             let cached_surface = cached.surface.clone();
             let submission_index = self.queue.submit(Some(encoder.finish()));
-            self.finish_pending_uploads(submission_index);
+            self.finish_pending_uploads(submission_index.clone());
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            self.retire_native_screen_leases(submission_index, native_screen_leases);
             self.release_retired_uniform_slots();
             return Ok(gpu_composed_from_surface(
                 cached_surface,
@@ -518,6 +553,8 @@ impl GpuSparkleFlinger {
             requires_cpu_sampling_canvas,
             preview_surface_request,
             Some(encoder),
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases,
             prepared_preview_surface,
         )
     }
@@ -776,6 +813,9 @@ impl GpuSparkleFlinger {
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
         encoder: Option<wgpu::CommandEncoder>,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: Vec<
+            MacosScreenTextureLease,
+        >,
         prepared_preview_surface: Option<PreparedPreviewSurfaceChange>,
     ) -> Result<ComposedFrameSet> {
         if requires_cpu_sampling_canvas {
@@ -786,11 +826,24 @@ impl GpuSparkleFlinger {
             // sampler through the one-frame readback latch.
             if readback_key.is_some() {
                 if let Some(encoder) = encoder {
+                    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                    self.stage_frame_in_flight_with_native_screen_leases(
+                        encoder,
+                        None,
+                        native_screen_leases,
+                    );
+                    #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
                     self.stage_frame_in_flight(encoder, None);
                 }
                 return Ok(gpu_composed_without_surfaces());
             }
-            return self.latch_sampling_surface_readback(width, height, encoder);
+            return self.latch_sampling_surface_readback(
+                width,
+                height,
+                encoder,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                native_screen_leases,
+            );
         }
         let Some(current_output) = self.current_output else {
             anyhow::bail!("GPU readback requested without a composed output surface");
@@ -805,10 +858,19 @@ impl GpuSparkleFlinger {
                 request,
                 cache_as_full_size,
                 encoder,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                native_screen_leases,
                 prepared_preview_surface,
             );
         }
         if let Some(encoder) = encoder {
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            self.stage_frame_in_flight_with_native_screen_leases(
+                encoder,
+                None,
+                native_screen_leases,
+            );
+            #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
             self.stage_frame_in_flight(encoder, None);
         }
         Ok(gpu_composed_without_surfaces())
@@ -835,6 +897,9 @@ impl GpuSparkleFlinger {
         width: u32,
         height: u32,
         encoder: Option<wgpu::CommandEncoder>,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: Vec<
+            MacosScreenTextureLease,
+        >,
     ) -> Result<ComposedFrameSet> {
         self.resolve_pending_sampling_readback();
         let latched = self
@@ -843,7 +908,13 @@ impl GpuSparkleFlinger {
             .as_ref()
             .filter(|latched| latched.width == width && latched.height == height)
             .map(|latched| latched.surface.clone());
-        self.stage_sampling_surface_readback(width, height, encoder)?;
+        self.stage_sampling_surface_readback(
+            width,
+            height,
+            encoder,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases,
+        )?;
         Ok(match latched {
             Some(surface) => gpu_composed_from_surface(surface, true),
             None => gpu_composed_without_surfaces(),
@@ -932,6 +1003,9 @@ impl GpuSparkleFlinger {
         width: u32,
         height: u32,
         encoder: Option<wgpu::CommandEncoder>,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))] mut native_screen_leases: Vec<
+            MacosScreenTextureLease,
+        >,
     ) -> Result<()> {
         // A staged preview readback shares the deferred-submission slot.
         // Route it through the preview machinery first so its buffer map
@@ -946,14 +1020,32 @@ impl GpuSparkleFlinger {
             .has_pending_output_submission()
             .then(|| self.supersede_frame_in_flight("sampling readback chained"))
             .flatten();
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
         let encoder = match (encoder, stashed) {
             (Some(encoder), Some(stashed)) => {
                 // Submit the stashed encoder first so its work stays ordered
                 // ahead of the compose encoder we are extending.
-                self.queue.submit(Some(stashed.finish()));
+                let submission_index = self.queue.submit(Some(stashed.encoder.finish()));
+                self.retire_native_screen_leases(submission_index, stashed.native_screen_leases);
                 Some(encoder)
             }
-            (Some(encoder), None) | (None, Some(encoder)) => Some(encoder),
+            (Some(encoder), None) => Some(encoder),
+            (None, Some(stashed)) => {
+                native_screen_leases.extend(stashed.native_screen_leases);
+                Some(stashed.encoder)
+            }
+            (None, None) => None,
+        };
+        #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
+        let encoder = match (encoder, stashed) {
+            (Some(encoder), Some(stashed)) => {
+                // Submit the stashed encoder first so its work stays ordered
+                // ahead of the compose encoder we are extending.
+                self.queue.submit(Some(stashed.encoder.finish()));
+                Some(encoder)
+            }
+            (Some(encoder), None) => Some(encoder),
+            (None, Some(stashed)) => Some(stashed.encoder),
             (None, None) => None,
         };
 
@@ -982,7 +1074,11 @@ impl GpuSparkleFlinger {
             || height == 0
             || source_texture.is_none()
         {
-            self.submit_sampling_encoder(encoder);
+            self.submit_sampling_encoder(
+                encoder,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                native_screen_leases,
+            );
             return Ok(());
         }
         let Some(source_texture) = source_texture else {
@@ -1024,6 +1120,8 @@ impl GpuSparkleFlinger {
         let readback = buffers.readbacks[slot].clone();
         let submission_index = self.queue.submit(Some(encoder.finish()));
         self.finish_pending_uploads(submission_index.clone());
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        self.retire_native_screen_leases(submission_index.clone(), native_screen_leases);
         self.release_retired_uniform_slots();
         let (sender, receiver) = mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
         readback
@@ -1043,10 +1141,18 @@ impl GpuSparkleFlinger {
         Ok(())
     }
 
-    fn submit_sampling_encoder(&mut self, encoder: Option<wgpu::CommandEncoder>) {
+    fn submit_sampling_encoder(
+        &mut self,
+        encoder: Option<wgpu::CommandEncoder>,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: Vec<
+            MacosScreenTextureLease,
+        >,
+    ) {
         if let Some(encoder) = encoder {
             let submission_index = self.queue.submit(Some(encoder.finish()));
-            self.finish_pending_uploads(submission_index);
+            self.finish_pending_uploads(submission_index.clone());
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            self.retire_native_screen_leases(submission_index, native_screen_leases);
             self.release_retired_uniform_slots();
         }
     }
@@ -1138,6 +1244,9 @@ fn compose_layer_into_gpu(
     layer: &CompositionLayer,
     uploaded_screen_frame: Option<&GpuTextureFrame>,
     use_front_as_current: bool,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: &mut Vec<
+        MacosScreenTextureLease,
+    >,
 ) -> Result<()> {
     let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
         ComposeShaderMode::Replace
@@ -1186,6 +1295,8 @@ fn compose_layer_into_gpu(
             &mut surfaces.source_copy_bind_groups,
             frame,
             output,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases,
         );
         set_texture_contents(
             surfaces,
@@ -1244,6 +1355,10 @@ fn compose_layer_into_gpu(
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
     }
     if let Some(frame) = gpu_frame.as_ref() {
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        if let Some(lease) = frame.macos_screen_lease() {
+            native_screen_leases.push(lease);
+        }
         if uploaded_screen_frame.is_none() {
             record_gpu_source_upload_skipped();
         }
@@ -1290,8 +1405,11 @@ fn compose_layer_into_gpu(
                     use_front_as_current,
                     current_view,
                     output_view,
-                    #[cfg(target_os = "windows")]
-                    frame.screen_target_lifetime(),
+                    #[cfg(any(
+                        target_os = "windows",
+                        all(target_os = "macos", feature = "screen-capture")
+                    ))]
+                    frame.native_screen_cache_lease(),
                 )
             }
         };
@@ -1479,8 +1597,11 @@ struct CachedComposeSourceBindGroup {
     source_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     source_lease: Option<Weak<GpuTextureFrameLease>>,
-    #[cfg(target_os = "windows")]
-    screen_target_lifetime: Option<ScreenResourceLifetime>,
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
+    native_screen_lease: Option<NativeScreenCacheLease>,
 }
 
 const COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP: usize = 4;
@@ -1534,8 +1655,11 @@ impl ComposeSourceBindGroupCache {
                             "SparkleFlinger admitted projected-source bind group",
                         ),
                         source_lease: Some(source_lease.clone()),
-                        #[cfg(target_os = "windows")]
-                        screen_target_lifetime: None,
+                        #[cfg(any(
+                            target_os = "windows",
+                            all(target_os = "macos", feature = "screen-capture")
+                        ))]
+                        native_screen_lease: None,
                     }
                 };
                 entries.insert(key, entry);
@@ -1627,7 +1751,11 @@ impl ComposeSourceBindGroupCache {
         front_as_current: bool,
         current_view: &wgpu::TextureView,
         output_view: &wgpu::TextureView,
-        #[cfg(target_os = "windows")] screen_target_lifetime: Option<&ScreenResourceLifetime>,
+        #[cfg(any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        ))]
+        native_screen_lease: Option<NativeScreenCacheLease>,
     ) -> wgpu::BindGroup {
         let key = ComposeSourceBindGroupKey {
             target_generation,
@@ -1662,8 +1790,11 @@ impl ComposeSourceBindGroupCache {
                 source_view: source_view.clone(),
                 bind_group: bind_group.clone(),
                 source_lease: None,
-                #[cfg(target_os = "windows")]
-                screen_target_lifetime: screen_target_lifetime.cloned(),
+                #[cfg(any(
+                    target_os = "windows",
+                    all(target_os = "macos", feature = "screen-capture")
+                ))]
+                native_screen_lease,
             });
         bind_group
     }
@@ -1677,14 +1808,17 @@ impl ComposeSourceBindGroupCache {
             .retain(|entry| entry.key.source_storage_id != source_storage_id);
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
     pub(super) fn release_native_screen_entries(&mut self) {
         self.projected_entries
-            .retain(|_, entry| entry.screen_target_lifetime.is_none());
+            .retain(|_, entry| entry.native_screen_lease.is_none());
         self.retired_projected_entries
-            .retain(|_, entry| entry.screen_target_lifetime.is_none());
+            .retain(|_, entry| entry.native_screen_lease.is_none());
         self.transient_entries
-            .retain(|entry| entry.screen_target_lifetime.is_none());
+            .retain(|entry| entry.native_screen_lease.is_none());
     }
 
     #[cfg(test)]

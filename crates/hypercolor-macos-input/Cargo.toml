@@ -1,0 +1,42 @@
+[package]
+name = "hypercolor-macos-input"
+description = "macOS event-tap host input capture for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[dependencies]
+crossbeam-queue = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, features = ["std"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSEvent", "objc2-core-graphics"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFMachPort", "CFRunLoop"] }
+objc2-core-graphics = { workspace = true, features = [
+  "std",
+  "CGDirectDisplay",
+  "CGError",
+  "CGEvent",
+  "CGEventTypes",
+  "libc",
+] }
+mach2 = { workspace = true }
+
+[[example]]
+name = "dump_macos_input"
+test = true
+
+[[example]]
+name = "probe_macos_tcc_owner"
+test = true

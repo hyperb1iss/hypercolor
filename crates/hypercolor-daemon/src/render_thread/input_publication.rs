@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
 use hypercolor_core::input::screen::{
-    CommittedScreenPublicationTransition, InputPublicationDemandRevision, PixelExtent,
-    RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchLease, ScreenCaptureDemand,
-    ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
-    ScreenPlanGeneration, ScreenProcessingProfile, ScreenPublicationDemandSnapshot,
+    CommittedScreenPublicationTransition, InputPublicationDemandRevision, LedToneMapCalibration,
+    PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchLease,
+    ScreenCaptureDemand, ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration,
+    ScreenNativeExecutionTarget, ScreenPlanGeneration, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenPublicationDemandSnapshot,
     ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
     ScreenPublicationRequest, ScreenPublicationRetirement, ScreenSourceSelector,
-    ScreenUpscalePolicy,
+    ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
@@ -28,6 +29,9 @@ use tracing::{debug, info};
 use super::capture_demand::{CaptureDemand, CaptureDemandState};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
+// Staleness probe for a committed exact screen plan; capped by how long a
+// source-internal retirement may starve the plan before it re-plans.
+const COMMITMENT_PROBE_INTERVAL: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// Retry cadence for an exact plan that failed with no committed plan to
 /// replace: the source itself must change (session, consent, capacity)
@@ -106,13 +110,26 @@ impl InputScreenBranchDemand {
             NonZeroU32::new(requested_extent.height()),
             ScreenUpscalePolicy::Never,
         );
+        // The default profile rejects HDR sources outright, which makes an
+        // HDR-configured capture stream permanently unresolvable. Enabling
+        // the spec 76 BT.2390 tone map here is what admits HDR sources at
+        // all; the platform source refreshes the calibration from the live
+        // capture config during branch resolution, so the default
+        // calibration never reaches a kernel.
+        let profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                LedToneMapCalibration::DEFAULT,
+            )),
+            ..ScreenProcessingProfileConfig::default()
+        });
         let request = ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
             executor,
             extent,
             ScreenAspectPolicy::Contain,
-            Arc::new(ScreenProcessingProfile::default()),
+            Arc::new(profile),
         );
         Some(Self::new(
             RegisteredScreenBranchDemand::new(request, requested_hz),
@@ -1099,6 +1116,7 @@ async fn run_pump(
     let mut publication_retirements = VecDeque::new();
     let mut worker_retirement_tasks = JoinSet::new();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
+    let mut last_commitment_probe = Instant::now();
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
     loop {
@@ -1163,10 +1181,13 @@ async fn run_pump(
                     // changes; one warning per streak keeps the log honest
                     // without flooding it at the retry cadence.
                     if exact_screen_failure_streak == 0 {
-                        tracing::warn!(%error, "exact screen publication transition failed");
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            "exact screen publication transition failed"
+                        );
                     } else if exact_screen_failure_streak.is_multiple_of(60) {
                         tracing::warn!(
-                            %error,
+                            error = format!("{error:#}"),
                             suppressed_failures = exact_screen_failure_streak,
                             "exact screen publication still failing"
                         );
@@ -1344,6 +1365,19 @@ async fn run_pump(
         };
         if demands.snapshot().revision() != demand.revision() {
             continue;
+        }
+        // A screen source can retire its publication source without any
+        // demand or graph change (a capture worker restart does exactly
+        // this), leaving a committed plan with no producer behind it.
+        // Piggyback a throttled currency probe on the sampling lock so a
+        // starved plan gets re-planned instead of trusted forever.
+        if applied_exact_screen.is_some()
+            && last_commitment_probe.elapsed() >= COMMITMENT_PROBE_INTERVAL
+        {
+            last_commitment_probe = Instant::now();
+            if !manager.screen_publication_commitment_is_current() {
+                applied_exact_screen = None;
+            }
         }
         schedule.collect_due(Instant::now(), &mut due_sources);
         manager.sample_source_kinds(&due_sources);

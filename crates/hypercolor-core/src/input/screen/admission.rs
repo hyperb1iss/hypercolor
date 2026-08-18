@@ -608,6 +608,58 @@ impl ScreenByteLease {
         self.inner.bytes.load(Ordering::Acquire)
     }
 
+    /// Atomically rebase a live reservation to an exact backing size.
+    ///
+    /// An increase is admitted before this lease exposes the larger size. A
+    /// rejected increase preserves both the lease and process-wide totals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScreenByteAdmissionError::CapacityExceeded`] when an increase
+    /// cannot fit inside the installed process and backend fences.
+    pub fn try_reconcile_exact(&self, exact_bytes: u64) -> Result<(), ScreenByteAdmissionError> {
+        loop {
+            let current = self.inner.bytes.load(Ordering::Acquire);
+            if exact_bytes == current {
+                return Ok(());
+            }
+            if exact_bytes < current {
+                if self
+                    .inner
+                    .bytes
+                    .compare_exchange_weak(
+                        current,
+                        exact_bytes,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    self.inner.coordinator.release(current - exact_bytes);
+                    return Ok(());
+                }
+                continue;
+            }
+
+            let additional = exact_bytes - current;
+            let top_up = ScreenByteAdmissionCoordinator {
+                inner: Arc::clone(&self.inner.coordinator),
+            }
+            .try_acquire(additional)?;
+            if self
+                .inner
+                .bytes
+                .compare_exchange(current, exact_bytes, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let top_up = top_up.freeze();
+                top_up.inner.bytes.store(0, Ordering::Release);
+                return Ok(());
+            }
+            drop(top_up);
+        }
+    }
+
     pub(crate) fn is_same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }

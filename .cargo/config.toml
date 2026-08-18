@@ -5,6 +5,7 @@ rustdocflags = ["--cfg", "docsrs"]
 # sessions. tikv-jemalloc-sys consumes these target-prefixed env vars at build
 # time when Hypercolor is built for Linux GNU targets.
 [env]
+MACOSX_DEPLOYMENT_TARGET = { value = "15.2", force = true }
 X86_64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000,abort_conf:true"
 AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000,abort_conf:true"
 

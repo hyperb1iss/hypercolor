@@ -39,6 +39,8 @@ pub mod gpu_device;
 mod input_publication;
 mod layer_runtime;
 mod lighting_feed;
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+mod macos_screen_diagnostics;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
@@ -67,6 +69,11 @@ pub use self::input_publication::{
     InputPublicationDemandRegistration, InputPublicationStatus, InputScreenBranchDemand,
 };
 use self::input_publication::{InputPublicationMonitor, InputPublicationPump};
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+pub(crate) use self::macos_screen_diagnostics::{
+    MacosScreenParityDiagnosticHandle, MacosScreenParityLiveSnapshot,
+    MacosScreenParitySnapshotError,
+};
 use self::pipeline_driver::run_pipeline;
 pub(crate) use self::producer_queue::ProducerFrame;
 pub(crate) use self::render_groups::{RenderSceneContext, ZoneFrameInputs};
@@ -239,6 +246,8 @@ pub struct RenderThread {
     cancel: CancellationToken,
     input_publication_demands: InputPublicationDemandHandle,
     input_publication_monitor: InputPublicationMonitor,
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    macos_screen_parity_diagnostics: MacosScreenParityDiagnosticHandle,
 }
 
 /// All shared state the render thread needs.
@@ -361,6 +370,9 @@ impl RenderThread {
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<InputPublicationMonitor>>(1);
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        let (macos_screen_parity_diagnostics, macos_screen_parity_mailbox) =
+            macos_screen_diagnostics::macos_screen_parity_diagnostic_channel();
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || -> Result<()> {
@@ -387,6 +399,12 @@ impl RenderThread {
                     &state,
                     input_pump.reader(),
                     pipeline_demands,
+                    #[cfg(all(
+                        target_os = "macos",
+                        feature = "wgpu",
+                        feature = "screen-capture"
+                    ))]
+                    macos_screen_parity_mailbox,
                 ));
                 match pipeline {
                     Ok(runtime_state) => {
@@ -437,6 +455,8 @@ impl RenderThread {
             cancel,
             input_publication_demands,
             input_publication_monitor,
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_diagnostics,
         })
     }
 
@@ -448,6 +468,11 @@ impl RenderThread {
     /// Read the input-publication worker lifecycle state without blocking.
     pub fn input_publication_status(&self) -> InputPublicationStatus {
         self.input_publication_monitor.status()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn macos_screen_parity_diagnostics(&self) -> MacosScreenParityDiagnosticHandle {
+        self.macos_screen_parity_diagnostics.clone()
     }
 
     /// Wait for the render thread to exit.

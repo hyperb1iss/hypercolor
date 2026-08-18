@@ -301,6 +301,12 @@ fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
 }
 
+/// Build a trusted in-process API for tests exercising privacy-bearing
+/// config keys, which require the protected-control credential.
+fn trusted_api(state: Arc<AppState>) -> api::local::TrustedLocalApi {
+    api::local::TrustedLocalApi::new(state)
+}
+
 /// Build a test router with a web UI mounted, which installs the SPA
 /// fallback. The returned tempdir must outlive the router.
 fn test_app_with_ui() -> (axum::Router, tempfile::TempDir) {
@@ -1047,7 +1053,40 @@ where
     F: Fn() -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    let request = app.oneshot(request);
+    let response = async move {
+        app.oneshot(request)
+            .await
+            .expect("failed to execute request")
+    };
+    layout_ack_pump(response, state, before_publication).await
+}
+
+/// Like [`request_with_layout_ack`], but through the trusted local API so
+/// the request carries the protected-control grant the config gates need.
+async fn trusted_request_with_layout_ack(
+    trusted: api::local::TrustedLocalApi,
+    request: Request<Body>,
+    state: &Arc<AppState>,
+) -> (axum::response::Response, Vec<SpatialLayout>) {
+    let response = async move {
+        trusted
+            .execute(request)
+            .await
+            .expect("trusted request should execute")
+    };
+    layout_ack_pump(response, state, || async {}).await
+}
+
+async fn layout_ack_pump<R, F, Fut>(
+    request: R,
+    state: &Arc<AppState>,
+    before_publication: F,
+) -> (axum::response::Response, Vec<SpatialLayout>)
+where
+    R: Future<Output = axum::response::Response>,
+    F: Fn() -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     tokio::pin!(request);
     let mut applied = Vec::new();
     let mut publications: Vec<
@@ -1064,10 +1103,7 @@ where
                         .expect("layout publication task should not panic")
                         .expect("layout publication should succeed");
                 }
-                return (
-                    response.expect("failed to execute request"),
-                    applied,
-                );
+                return (response, applied);
             }
             () = tokio::time::sleep(Duration::from_millis(1)) => {
                 let mut deferred = Vec::new();
@@ -1527,17 +1563,40 @@ async fn status_returns_200_with_envelope() {
             .is_some_and(|s| !s.is_empty()),
         "cache_dir should be a non-empty string"
     );
-    assert!(
-        json["data"]["audio_available"].is_boolean(),
-        "audio_available should be a bool"
-    );
+    assert_eq!(json["data"]["audio_available"], false);
     assert_eq!(
         json["data"]["capture_available"],
         serde_json::json!(
-            cfg!(target_os = "windows")
+            cfg!(any(target_os = "windows", target_os = "macos"))
                 || (cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some())
         )
     );
+}
+
+#[tokio::test]
+async fn status_derives_audio_availability_from_registered_sources() {
+    let state = Arc::new(isolated_state());
+    let (source, _) = ObservableInputSource::new("available_audio", false, Duration::from_secs(1));
+    state
+        .input_manager
+        .lock()
+        .await
+        .add_source(Box::new(source));
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["audio_available"], true);
 }
 
 #[tokio::test]
@@ -2000,10 +2059,10 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(config_put_request(
+        .execute(config_put_request(
             "audio.device",
             &serde_json::json!("microphone"),
             Some(false),
@@ -2232,7 +2291,7 @@ async fn config_write_rejection_keeps_detail_for_a_plain_key() {
 #[tokio::test]
 async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     for (key, value) in [
         ("capture.capture_fps", "0"),
@@ -2241,8 +2300,7 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         ("capture.gamma", "nan"),
     ] {
         let response = app
-            .clone()
-            .oneshot(config_put_request(key, &config_test_value(value), None))
+            .execute(config_put_request(key, &config_test_value(value), None))
             .await
             .expect("failed to execute request");
 
@@ -2262,10 +2320,10 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
 #[tokio::test]
 async fn config_set_rejects_capture_resource_plan_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(config_put_request(
+        .execute(config_put_request(
             "capture.publication_memory_bytes",
             &serde_json::json!(1),
             None,
@@ -2284,7 +2342,7 @@ async fn config_set_rejects_capture_resource_plan_before_persistence() {
 #[tokio::test]
 async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let source = r"monitor:\\?\DISPLAY#TEST#stable";
     for (key, value) in [
@@ -2295,8 +2353,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
         ),
     ] {
         let response = app
-            .clone()
-            .oneshot(config_put_request(key, &config_test_value(&value), None))
+            .execute(config_put_request(key, &config_test_value(&value), None))
             .await
             .expect("failed to execute request");
 
@@ -2307,7 +2364,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     }
 
     let response = app
-        .oneshot(config_put_request(
+        .execute(config_put_request(
             "capture.enabled",
             &serde_json::json!(false),
             None,
@@ -2338,10 +2395,10 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(config_put_request(
+        .execute(config_put_request(
             "audio.device",
             &serde_json::json!("microphone"),
             Some(true),
@@ -2388,10 +2445,10 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(config_put_request(
+        .execute(config_put_request(
             "audio.device",
             &serde_json::json!("mic"),
             Some(true),
@@ -2433,10 +2490,10 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(config_put_request(
+        .execute(config_put_request(
             "audio.device",
             &serde_json::json!("auto"),
             Some(true),
@@ -2476,10 +2533,10 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(config_put_request(
+        .execute(config_put_request(
             "audio.device",
             &serde_json::json!("default"),
             Some(true),
@@ -2737,9 +2794,11 @@ fn reset_fixture_app(config_path: &Path) -> (axum::Router, Arc<AppState>, Arc<Co
 /// queues a canvas transaction that waits on a pipeline acknowledgment.
 /// The test state's layout starts at 320x200 against a 640x480 config
 /// default, so the reset genuinely resizes and needs the ack pump.
-async fn post_config_reset(app: axum::Router, state: &Arc<AppState>) -> axum::response::Response {
-    request_with_layout_ack(
-        app,
+/// It rides the trusted local API because a full reset rewrites the
+/// capture domain and carries the protected-control requirement.
+async fn post_config_reset(state: &Arc<AppState>) -> axum::response::Response {
+    trusted_request_with_layout_ack(
+        trusted_api(Arc::clone(state)),
         Request::builder()
             .method("POST")
             .uri("/api/v1/config/reset")
@@ -2761,9 +2820,9 @@ async fn delete_config_key(app: axum::Router, key: &str) -> axum::response::Resp
 async fn config_full_reset_preserves_driver_settings_and_seeds_builtin_entries() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, state, config_manager) = reset_fixture_app(&config_path);
+    let (state, config_manager) = reset_fixture_state(&config_path);
 
-    let response = post_config_reset(app, &state).await;
+    let response = post_config_reset(&state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
@@ -2821,9 +2880,9 @@ async fn config_full_reset_preserves_driver_settings_and_seeds_builtin_entries()
 async fn config_full_reset_preserves_extension_sections_and_the_include_list() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, state, config_manager) = reset_fixture_app(&config_path);
+    let (state, config_manager) = reset_fixture_state(&config_path);
 
-    let response = post_config_reset(app, &state).await;
+    let response = post_config_reset(&state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
@@ -3172,7 +3231,7 @@ async fn config_full_reset_retunes_the_render_loop() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(state.render_loop.read().await.stats().max_tier.fps(), 20);
 
-    let response = post_config_reset(app, &state).await;
+    let response = post_config_reset(&state).await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["live"], true);
@@ -3191,7 +3250,6 @@ async fn config_full_reset_round_trips_a_nested_extension_document() {
     let config_path = tempdir.path().join("hypercolor.toml");
     let (state, config_manager) =
         reset_fixture_state_from(&config_path, RESET_NESTED_EXTENSION_CONFIG);
-    let app = test_app_with_state(Arc::clone(&state));
     let authored: HypercolorConfig =
         toml::from_str(RESET_NESTED_EXTENSION_CONFIG).expect("fixture should parse");
     let authored_telemetry = authored
@@ -3199,7 +3257,7 @@ async fn config_full_reset_round_trips_a_nested_extension_document() {
         .get("telemetry")
         .expect("the nested fixture section lands in the catch-all");
 
-    let response = post_config_reset(app, &state).await;
+    let response = post_config_reset(&state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
@@ -3243,10 +3301,9 @@ async fn config_full_reset_event_carries_no_config_payload() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
     let (state, _config_manager) = reset_fixture_state(&config_path);
-    let app = test_app_with_state(Arc::clone(&state));
     let mut events = state.event_bus.subscribe_all();
 
-    let response = post_config_reset(app, &state).await;
+    let response = post_config_reset(&state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let (key, new_value) = tokio::time::timeout(Duration::from_secs(2), async {
@@ -3300,7 +3357,7 @@ async fn config_full_reset_is_not_blocked_by_an_invalid_driver_entry() {
         .expect("failed to execute request");
     assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let response = post_config_reset(app, &state).await;
+    let response = post_config_reset(&state).await;
     assert_eq!(
         response.status(),
         StatusCode::OK,

@@ -25,7 +25,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use leptos::prelude::*;
 use serde::Deserialize;
 
-use crate::api::DeviceMetricsSnapshot;
+use crate::api::{DeviceMetricsSnapshot, MacosDaemonOwnershipStatus};
 
 // ── Connection State ────────────────────────────────────────────────────────
 
@@ -76,6 +76,7 @@ pub const LAYER_HEALTH_EVENTS: &[&str] = &["layer_health_changed"];
 pub struct PerformanceMetrics {
     pub fps: MetricsFps,
     pub frame_time: MetricsFrameTime,
+    pub input_latency: MetricsSessionLatency,
     pub stages: MetricsStages,
     pub pacing: MetricsPacing,
     pub effect_health: MetricsEffectHealth,
@@ -87,6 +88,16 @@ pub struct PerformanceMetrics {
     pub memory: MetricsMemory,
     pub devices: MetricsDevices,
     pub websocket: MetricsWebsocket,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsSessionLatency {
+    pub sample_count: u64,
+    pub avg_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub max_ms: f64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -385,6 +396,9 @@ pub struct MetricsCopies {
     pub publication_full_frame_count: u32,
     pub publication_full_frame_kb: f64,
     pub publication_reason: Option<String>,
+    pub session_full_frame_count: u64,
+    pub session_full_frame_frames: u64,
+    pub session_full_frame_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -477,6 +491,7 @@ pub struct InputSourceStatusEventHint {
     pub configured: bool,
     pub consented: bool,
     pub demanded: bool,
+    pub active_consumer_count: usize,
     pub state: String,
     pub freshness: String,
     pub source_graph_generation: u64,
@@ -487,6 +502,9 @@ pub struct InputSourceStatusEventHint {
     pub freshness_issue_code: Option<String>,
     pub retired: bool,
 }
+
+/// Authoritative macOS daemon-owner snapshot used to invalidate REST status.
+pub type MacosDaemonOwnershipEventHint = MacosDaemonOwnershipStatus;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlSurfaceEventHint {
@@ -871,6 +889,7 @@ pub(super) fn handle_json_message(
     set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
     set_last_extension_event: &WriteSignal<Option<ExtensionEventHint>>,
     set_last_input_source_status_event: &WriteSignal<Option<InputSourceStatusEventHint>>,
+    set_last_macos_daemon_ownership_event: &WriteSignal<Option<MacosDaemonOwnershipEventHint>>,
     set_layer_health: &WriteSignal<HashMap<String, LayerHealth>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
@@ -1046,6 +1065,10 @@ pub(super) fn handle_json_message(
                     let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_input_source_status_event
                         .set(extract_input_source_status_event_hint(data));
+                } else if event_type == "macos_daemon_ownership_changed" {
+                    let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    set_last_macos_daemon_ownership_event
+                        .set(extract_macos_daemon_ownership_event_hint(data));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {
@@ -1069,6 +1092,13 @@ pub fn extract_input_source_status_event_hint(
 ) -> Option<InputSourceStatusEventHint> {
     let hint = InputSourceStatusEventHint::deserialize(data).ok()?;
     (!hint.source_id.is_empty()).then_some(hint)
+}
+
+pub fn extract_macos_daemon_ownership_event_hint(
+    data: &serde_json::Value,
+) -> Option<MacosDaemonOwnershipEventHint> {
+    let hint = MacosDaemonOwnershipEventHint::deserialize(data).ok()?;
+    (hint.active_owner.is_some() && hint.owner_epoch.is_some()).then_some(hint)
 }
 
 pub fn extract_control_surface_event_hint(
@@ -1304,4 +1334,27 @@ fn extract_device_event_hint(
         device_id,
         found_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::extract_input_source_status_event_hint;
+
+    #[test]
+    fn input_status_hint_decodes_exact_and_legacy_consumer_counts() {
+        let current = extract_input_source_status_event_hint(&json!({
+            "source_id": "macos:session",
+            "active_consumer_count": 4
+        }))
+        .expect("current input status event should decode");
+        let legacy = extract_input_source_status_event_hint(&json!({
+            "source_id": "macos:session"
+        }))
+        .expect("additive field should preserve legacy event decoding");
+
+        assert_eq!(current.active_consumer_count, 4);
+        assert_eq!(legacy.active_consumer_count, 0);
+    }
 }

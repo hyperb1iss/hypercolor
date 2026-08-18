@@ -24,6 +24,9 @@ const VKEY_UNMAPPED: u16 = 0xFF;
 /// wheel travel passes through with no conversion.
 pub const WHEEL_DELTA: i32 = 120;
 
+/// Scale factor for the shared signed Q16.16 scroll representation.
+pub const SCROLL_Q16_16_SCALE: i64 = 1 << 16;
+
 /// Absolute pointer reports span this range over their chosen rect.
 const ABSOLUTE_RANGE: f32 = 65535.0;
 
@@ -196,26 +199,23 @@ pub fn button_edges(flags: u32) -> Vec<(RawButton, bool)> {
     edges
 }
 
-/// Vertical wheel travel, or `None` when this report carries no wheel.
+/// Two-axis wheel travel in signed Q16.16 `Line120` units.
 ///
 /// `usButtonData` is declared `u16` but carries a signed value: scroll-down
 /// arrives as `0xFF88`. Widening the `u16` yields 65416 instead of −120, so
-/// the reinterpretation is mandatory. `RI_MOUSE_HWHEEL` returns `None` — the
-/// shared event contract has no horizontal axis, and reporting horizontal
-/// scroll through the vertical channel would be a silent lie.
+/// the reinterpretation is mandatory. One Raw Input report owns one data
+/// field, so a malformed record with both wheel flags set resolves to the
+/// vertical axis rather than duplicating one value across both axes.
 #[must_use]
-pub const fn wheel_delta(flags: u32, button_data: u16) -> Option<i32> {
-    if flags & button_flags::WHEEL == 0 {
-        return None;
+pub const fn scroll_delta_q16_16(flags: u32, button_data: u16) -> Option<(i64, i64)> {
+    let delta = (button_data.cast_signed() as i64) << 16;
+    if flags & button_flags::WHEEL != 0 {
+        Some((0, delta))
+    } else if flags & button_flags::HWHEEL != 0 {
+        Some((delta, 0))
+    } else {
+        None
     }
-    Some(button_data.cast_signed() as i32)
-}
-
-/// Whether this report carries a horizontal wheel, which is deliberately
-/// dropped rather than folded into the vertical channel.
-#[must_use]
-pub const fn is_horizontal_wheel(flags: u32) -> bool {
-    flags & button_flags::HWHEEL != 0
 }
 
 /// A screen rectangle in physical pixels.

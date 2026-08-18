@@ -1,7 +1,7 @@
 use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
 use hypercolor_ui::components::canvas_preview::{
     canonical_injection_key, effect_wants_interaction, normalized_canvas_position,
-    wheel_delta_hi_res,
+    wheel_scroll_edge,
 };
 use hypercolor_ui::ws::interactive_preview::{
     InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker,
@@ -10,7 +10,8 @@ use hypercolor_ui::ws::interactive_preview::{
 };
 use hypercolor_ui::ws::messages::interactive_preview_supported;
 use hypercolor_ui::ws::{
-    InputEdgeButton, InputEdgeState, InputInjectEdge, InteractivePreviewRequest,
+    InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
+    InteractivePreviewRequest,
 };
 
 fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary {
@@ -49,6 +50,13 @@ fn edges_serialize_to_daemon_wire_shape() {
         },
         InputInjectEdge::Move { nx: 0.25, ny: 1.0 },
         InputInjectEdge::Wheel { delta_hi_res: -120 },
+        InputInjectEdge::Scroll {
+            delta_x_q16_16: 98_304,
+            delta_y_q16_16: -131_072,
+            unit: InputEdgeScrollUnit::Pixels,
+            phase: InputEdgeScrollPhase::Changed,
+            momentum_phase: InputEdgeScrollPhase::Began,
+        },
     ];
     let message = input_inject_message("main", &edges);
     assert_eq!(
@@ -61,6 +69,14 @@ fn edges_serialize_to_daemon_wire_shape() {
                 { "kind": "button", "button": "left", "state": "released" },
                 { "kind": "move", "nx": 0.25, "ny": 1.0 },
                 { "kind": "wheel", "delta_hi_res": -120 },
+                {
+                    "kind": "scroll",
+                    "delta_x_q16_16": 98304,
+                    "delta_y_q16_16": -131072,
+                    "unit": "pixels",
+                    "phase": "changed",
+                    "momentum_phase": "began"
+                },
             ],
         })
     );
@@ -279,15 +295,39 @@ fn injection_keys_match_daemon_canonical_names() {
 }
 
 #[test]
-fn wheel_deltas_scale_to_hi_res_notches() {
-    // One standard pixel-mode notch (100px down) = -120 hi-res units.
-    assert_eq!(wheel_delta_hi_res(100.0, 0), -120);
-    assert_eq!(wheel_delta_hi_res(-100.0, 0), 120);
-    // Firefox line mode: 3 lines per notch.
-    assert_eq!(wheel_delta_hi_res(3.0, 1), -144);
-    // Page mode scales through the page-height equivalent.
-    assert_eq!(wheel_delta_hi_res(1.0, 2), -480);
-    assert_eq!(wheel_delta_hi_res(0.0, 0), 0);
+fn wheel_deltas_preserve_axes_and_dom_units() {
+    assert_eq!(
+        wheel_scroll_edge(12.5, 100.0, 0),
+        Some(InputInjectEdge::Scroll {
+            delta_x_q16_16: -819_200,
+            delta_y_q16_16: -6_553_600,
+            unit: InputEdgeScrollUnit::Pixels,
+            phase: InputEdgeScrollPhase::None,
+            momentum_phase: InputEdgeScrollPhase::None,
+        })
+    );
+    assert_eq!(
+        wheel_scroll_edge(0.0, 3.0, 1),
+        Some(InputInjectEdge::Scroll {
+            delta_x_q16_16: 0,
+            delta_y_q16_16: -9_437_184,
+            unit: InputEdgeScrollUnit::Line120,
+            phase: InputEdgeScrollPhase::None,
+            momentum_phase: InputEdgeScrollPhase::None,
+        })
+    );
+    assert_eq!(
+        wheel_scroll_edge(1.0, -0.5, 2),
+        Some(InputInjectEdge::Scroll {
+            delta_x_q16_16: -26_214_400,
+            delta_y_q16_16: 13_107_200,
+            unit: InputEdgeScrollUnit::Pixels,
+            phase: InputEdgeScrollPhase::None,
+            momentum_phase: InputEdgeScrollPhase::None,
+        })
+    );
+    assert_eq!(wheel_scroll_edge(0.0, 0.0, 0), None);
+    assert_eq!(wheel_scroll_edge(f64::NAN, 1.0, 0), None);
 }
 
 #[test]

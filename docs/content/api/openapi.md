@@ -78,29 +78,26 @@ graph TD
     F --> H["hypercolor-openapi binary"]
 {% end %}
 
-A handful of endpoints (system, drivers, devices, effects) carry full utoipa
-`#[utoipa::path]` annotations with request and response schemas. Most other
-routes are registered through the static `ROUTES` catalog, so the document
-lists the path-and-method surface even where a per-operation body schema is
-not yet annotated. The document covers the cataloged surface, and the parity
-test asserts one direction only: every cataloged route must appear in the
-document. A router path missing from the catalog is not caught, and eight
-`/api/v1` paths currently live in the router without a catalog entry:
-`/assets`, `/assets/{id}`, `/assets/{id}/blob`, `/assets/{id}/thumbnail`,
-`/capture/source/pick`, `/capture/monitors`, `/diagnose/memory`, and
-`/effects/screenshots`. The [REST reference](@/api/rest.md) documents those
-routes; the OpenAPI document does not list them until they are cataloged.
+A handful of endpoints (system, drivers, devices, effects, and protected
+capture actions) carry full utoipa `#[utoipa::path]` annotations with request
+and response schemas. Most other routes are registered through the static
+`ROUTES` catalog, so the document lists the path-and-method surface even where
+a per-operation body schema is not yet annotated. The parity tests check both
+directions: every cataloged route must appear in the document, and every static
+router operation must have a catalog entry. A new REST route therefore cannot
+silently disappear from OpenAPI.
 
 The schema components are drawn from `hypercolor-types`, the shared contract crate.
 
 ## hypercolor-types is the contract source
 
 Request and response bodies for the core domains live in one place:
-`hypercolor-types::api`, with submodules `common`, `devices`, `effects`, `scenes`,
-and `zones`. The daemon serializes these exact types and both UIs deserialize them,
-so a wire change is a compile error rather than a runtime surprise. When the
-OpenAPI document references a schema like `EffectSummary` or `CreateZoneRequest`,
-it is referencing those shared definitions.
+`hypercolor-types::api`, with submodules `capture`, `common`, `devices`, `effects`,
+`scenes`, and `zones`. The daemon serializes these exact types and both UIs
+deserialize them, so a wire change is a compile error rather than a runtime
+surprise. When the OpenAPI document references a schema like `CaptureMonitor`,
+`EffectSummary`, or `CreateZoneRequest`, it is referencing those shared
+definitions.
 
 {% callout(type="info") %}
 Diagnostic telemetry (system status internals and metrics payloads) deliberately
@@ -119,11 +116,9 @@ The document describes the REST surface only. A few things are out of scope:
   [Binary frame format](@/api/websocket-binary-frames.md).
 - **MCP** at `/mcp` is a separate Streamable HTTP surface with its own tool,
   resource, and prompt schemas. See the [Agents & MCP](@/agents/_index.md) section.
-- **Per-operation request bodies** are fully annotated for the core endpoints and
-  catalogued (path + method + standard responses) for the rest of the cataloged
-  surface; the eight uncataloged paths above are absent entirely. The
-  [REST reference](@/api/rest.md) is the human-readable companion enumerated from
-  the same router.
+- **Per-operation request bodies** are fully annotated for the core endpoints
+  and catalogued (path + method + standard responses) for the rest of the REST
+  surface. The [REST reference](@/api/rest.md) is the human-readable companion.
 
 The security scheme advertised in the document is HTTP `Bearer` (`bearer_auth`,
 bearer format "API key"), matching the daemon's `Authorization: Bearer <token>`

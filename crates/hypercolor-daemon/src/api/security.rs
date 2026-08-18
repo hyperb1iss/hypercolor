@@ -24,6 +24,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::domain::DomainError;
+use crate::macos_owner::{MacosDaemonSessionAttestation, MacosProtectedControlCredential};
 use hypercolor_types::config::{
     HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
 };
@@ -34,6 +35,20 @@ const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
 const PAIRING_LIMIT_PER_MIN: u32 = 6;
 
+const TRUSTED_TAURI_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
+pub(crate) fn is_trusted_tauri_origin(origin: &HeaderValue) -> bool {
+    origin.to_str().is_ok_and(|origin| {
+        TRUSTED_TAURI_ORIGINS
+            .iter()
+            .any(|trusted| origin.eq_ignore_ascii_case(trusted))
+    })
+}
+
 const HEADER_RATE_LIMIT_LIMIT: HeaderName = HeaderName::from_static("x-ratelimit-limit");
 const HEADER_RATE_LIMIT_REMAINING: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
 const HEADER_RATE_LIMIT_RESET: HeaderName = HeaderName::from_static("x-ratelimit-reset");
@@ -42,6 +57,7 @@ const HEADER_RETRY_AFTER: HeaderName = HeaderName::from_static("retry-after");
 #[derive(Clone)]
 pub struct SecurityState {
     auth: AuthConfig,
+    macos_session_credential: Option<MacosProtectedControlCredential>,
     network: NetworkAccessPolicy,
     rate_limiter: Arc<Mutex<RateLimiter>>,
     static_assets: StaticAssetSurface,
@@ -100,6 +116,13 @@ impl StaticAssetSurface {
 pub(crate) struct RequestAuthContext {
     security_enabled: bool,
     granted_tier: Option<AccessTier>,
+    protected_control: ProtectedControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectedControl {
+    Denied,
+    Granted,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +134,7 @@ impl RequestAuthContext {
         Self {
             security_enabled: false,
             granted_tier: None,
+            protected_control: ProtectedControl::Denied,
         }
     }
 
@@ -119,6 +143,7 @@ impl RequestAuthContext {
         Self {
             security_enabled: true,
             granted_tier: None,
+            protected_control: ProtectedControl::Denied,
         }
     }
 
@@ -127,6 +152,19 @@ impl RequestAuthContext {
         Self {
             security_enabled: true,
             granted_tier: Some(granted_tier),
+            protected_control: match granted_tier {
+                AccessTier::Read => ProtectedControl::Denied,
+                AccessTier::Control => ProtectedControl::Granted,
+            },
+        }
+    }
+
+    #[must_use]
+    const fn macos_daemon_session(security_enabled: bool) -> Self {
+        Self {
+            security_enabled,
+            granted_tier: Some(AccessTier::Control),
+            protected_control: ProtectedControl::Granted,
         }
     }
 
@@ -153,6 +191,11 @@ impl RequestAuthContext {
     }
 
     #[must_use]
+    pub(crate) const fn can_protected_control(self) -> bool {
+        matches!(self.protected_control, ProtectedControl::Granted)
+    }
+
+    #[must_use]
     const fn granted_tier(self) -> Option<AccessTier> {
         self.granted_tier
     }
@@ -164,6 +207,7 @@ impl SecurityState {
         if cfg!(test) {
             return Self {
                 auth: AuthConfig::default(),
+                macos_session_credential: None,
                 network: NetworkAccessPolicy::default(),
                 rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
                 static_assets: StaticAssetSurface::default(),
@@ -177,6 +221,7 @@ impl SecurityState {
                 control_key,
                 read_key,
             },
+            macos_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
@@ -202,6 +247,29 @@ impl SecurityState {
 
     pub(crate) fn security_enabled(&self) -> bool {
         self.auth.control_key.is_some() || self.auth.read_key.is_some()
+    }
+
+    pub(crate) fn install_macos_daemon_session(
+        &mut self,
+        attestation: &MacosDaemonSessionAttestation,
+    ) {
+        self.macos_session_credential = Some(attestation.protected_control_credential.clone());
+    }
+
+    fn is_macos_session_credential(&self, token: &str) -> bool {
+        self.macos_session_credential
+            .as_ref()
+            .is_some_and(|credential| secret_matches(Some(credential.expose_secret()), token))
+    }
+
+    fn resolve_loopback_token(&self, token: &str) -> Option<RequestAuthContext> {
+        if self.is_macos_session_credential(token) {
+            Some(RequestAuthContext::macos_daemon_session(
+                self.security_enabled(),
+            ))
+        } else {
+            resolve_token_tier(token, &self.auth).map(RequestAuthContext::authenticated)
+        }
     }
 }
 
@@ -233,6 +301,7 @@ impl SecurityState {
                 control_key: control_key.map(ToOwned::to_owned),
                 read_key: read_key.map(ToOwned::to_owned),
             },
+            macos_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
@@ -242,15 +311,23 @@ impl SecurityState {
     pub(crate) fn with_network_config(network: NetworkConfig) -> Self {
         Self {
             auth: AuthConfig::default(),
+            macos_session_credential: None,
             network: NetworkAccessPolicy::from_config(&network),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
         }
     }
 
+    fn with_macos_session_credential(credential: MacosProtectedControlCredential) -> Self {
+        let mut state = Self::with_keys(None, None);
+        state.macos_session_credential = Some(credential);
+        state
+    }
+
     fn with_network_policy(network: NetworkAccessPolicy) -> Self {
         Self {
             auth: AuthConfig::default(),
+            macos_session_credential: None,
             network,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
@@ -596,7 +673,6 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
-
     if request
         .extensions_mut()
         .remove::<TrustedLocalControl>()
@@ -612,6 +688,12 @@ pub async fn enforce_security(
         return response;
     }
 
+    if !request_is_loopback(&request)
+        && extract_token(&request).is_some_and(|token| state.is_macos_session_credential(&token))
+    {
+        return DomainError::unauthorized("Invalid API key").into_response();
+    }
+
     if is_bearer_exempt(request.uri().path(), &state.static_assets) {
         request
             .extensions_mut()
@@ -620,29 +702,29 @@ pub async fn enforce_security(
     }
 
     if request_is_loopback(&request) {
-        if is_mutating_request(request.method()) && is_cross_site_request(&request) {
+        if is_mutating_request(request.method())
+            && is_cross_site_request(&request)
+            && !has_trusted_tauri_session(&state, &request)
+        {
             return DomainError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
             )
             .into_response();
         }
 
-        if !state.security_enabled() {
-            request
-                .extensions_mut()
-                .insert(RequestAuthContext::unsecured());
-            return next.run(request).await;
-        }
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::unsecured());
+        let auth_context = extract_token(&request)
+            .and_then(|token| state.resolve_loopback_token(&token))
+            .map_or_else(RequestAuthContext::unsecured, std::convert::identity);
+        request.extensions_mut().insert(auth_context);
         return next.run(request).await;
     }
 
     if !state.security_enabled() {
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::unsecured());
+        if request.extensions().get::<RequestAuthContext>().is_none() {
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::unsecured());
+        }
         return next.run(request).await;
     }
 
@@ -769,9 +851,9 @@ fn is_mutating_request(method: &Method) -> bool {
 }
 
 /// Returns `true` only when the browser explicitly marks the request as
-/// cross-site. Same-origin/same-site requests (the bundled web UI) and
-/// non-browser clients (CLI, SDK) omit or set a non-`cross-site` value, so
-/// this blocks drive-by CSRF without rejecting legitimate local clients.
+/// cross-site. Ordinary same-origin/same-site requests and non-browser clients
+/// omit or set a non-`cross-site` value. The bundled Tauri UI is cross-site and
+/// passes only through the separate exact-origin plus session-credential gate.
 fn is_cross_site_request(request: &Request<Body>) -> bool {
     request
         .headers()
@@ -795,6 +877,14 @@ fn secret_matches(configured: Option<&str>, presented: &str) -> bool {
             .unwrap_u8()
             == 1
     })
+}
+
+fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> bool {
+    request
+        .headers()
+        .get(header::ORIGIN)
+        .is_some_and(is_trusted_tauri_origin)
+        && extract_token(request).is_some_and(|token| state.is_macos_session_credential(&token))
 }
 
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
@@ -923,11 +1013,8 @@ fn request_is_loopback(request: &Request<Body>) -> bool {
 
 fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
     if let Some(socket_addr) = peer_socket_addr(request) {
-        if socket_addr.ip().is_loopback()
-            && let Some(forwarded_client) = forwarded_client_ip(request)
-            && let Ok(forwarded_ip) = forwarded_client.parse::<IpAddr>()
-        {
-            return Some(forwarded_ip);
+        if socket_addr.ip().is_loopback() && forwarded_client_header_present(request) {
+            return forwarded_client_ip(request)?.parse::<IpAddr>().ok();
         }
         return Some(socket_addr.ip());
     }
@@ -943,26 +1030,24 @@ fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
 }
 
 fn forwarded_client_ip(request: &Request<Body>) -> Option<String> {
-    if let Some(forwarded) = request.headers().get("x-forwarded-for")
-        && let Ok(value) = forwarded.to_str()
-        && let Some(first) = value.split(',').next()
-    {
+    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
+        let value = forwarded.to_str().ok()?;
+        let first = value.split(',').next()?;
         let trimmed = first.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
 
-    if let Some(real_ip) = request.headers().get("x-real-ip")
-        && let Ok(value) = real_ip.to_str()
-    {
+    if let Some(real_ip) = request.headers().get("x-real-ip") {
+        let value = real_ip.to_str().ok()?;
         let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
 
     None
+}
+
+fn forwarded_client_header_present(request: &Request<Body>) -> bool {
+    request.headers().contains_key("x-forwarded-for") || request.headers().contains_key("x-real-ip")
 }
 
 fn apply_rate_headers(response: &mut Response, decision: &RateDecision) {
@@ -1040,7 +1125,7 @@ fn masked_v6(address: Ipv6Addr, prefix: u8) -> u128 {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use axum::extract::ConnectInfo;
+    use axum::extract::{ConnectInfo, Extension};
     use axum::http::header::AUTHORIZATION;
     use axum::routing::{get, post};
     use axum::{Router, body::Body};
@@ -1051,9 +1136,11 @@ mod tests {
     use hypercolor_types::config::{NetworkAccessMode, NetworkClientScope, NetworkConfig};
 
     use super::{
-        AccessTier, AuthConfig, ClientAddressRule, NetworkAccessPolicy, SecurityState,
-        StaticAssetSurface, enforce_security, normalize_api_key, path_within, resolve_token_tier,
+        AccessTier, AuthConfig, ClientAddressRule, NetworkAccessPolicy, RequestAuthContext,
+        SecurityState, StaticAssetSurface, enforce_security, normalize_api_key, path_within,
+        resolve_token_tier,
     };
+    use crate::macos_owner::MacosProtectedControlCredential;
 
     const CONTROL_KEY: &str = "hc_ak_control_test";
     const READ_KEY: &str = "hc_ak_r_read_test";
@@ -1067,7 +1154,30 @@ mod tests {
         Router::new()
             .route("/health", get(|| async { StatusCode::OK }))
             .route("/api/v1/status", get(|| async { StatusCode::OK }))
-            .route("/api/v1/ws", get(|| async { StatusCode::OK }))
+            .route(
+                "/api/v1/ws",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        if context.can_protected_control() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::FORBIDDEN
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/protected-control",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        if context.can_protected_control() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::FORBIDDEN
+                        }
+                    },
+                ),
+            )
             .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
             .route(
                 "/api/v1/effects/install",
@@ -1119,6 +1229,32 @@ mod tests {
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::new(ip, port)));
         request
+    }
+
+    async fn loopback_cross_site_mutation(
+        state: SecurityState,
+        origin: Option<&str>,
+        token: Option<&str>,
+    ) -> StatusCode {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scenes")
+            .header("sec-fetch-site", "cross-site");
+        if let Some(origin) = origin {
+            builder = builder.header(http::header::ORIGIN, origin);
+        }
+        if let Some(token) = token {
+            builder = with_bearer(builder, token);
+        }
+        router_with_security_state(state)
+            .oneshot(with_connect_info(
+                builder.body(Body::empty()).expect("request should build"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed")
+            .status()
     }
 
     #[test]
@@ -1340,6 +1476,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loopback_locality_does_not_grant_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/protected-control")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn loopback_read_key_does_not_grant_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    READ_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn loopback_control_key_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    CONTROL_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn loopback_session_credential_grants_control_without_enabling_public_auth() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x42; 32]);
+        let state = SecurityState::with_macos_session_credential(credential.clone());
+        assert!(!state.security_enabled());
+        let context = state
+            .resolve_loopback_token(credential.expose_secret())
+            .expect("session credential should resolve");
+        assert!(context.can_control());
+        assert!(context.can_protected_control());
+        assert!(!context.security_enabled());
+
+        let response = router_with_security_state(state)
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    credential.expose_secret(),
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn nonloopback_session_credential_is_rejected_when_public_auth_is_disabled() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x24; 32]);
+        let state = SecurityState::with_macos_session_credential(credential.clone());
+        let response = router_with_security_state(state)
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    credential.expose_secret(),
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn loopback_proxy_with_forwarded_remote_ip_requires_authentication() {
         let app = secured_test_router();
         let response = app
@@ -1420,6 +1661,72 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let json = response_json(response).await;
         assert_eq!(json["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn tauri_cross_site_bypass_requires_exact_origin_and_current_session() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x63; 32]);
+        let session = credential.expose_secret();
+        let session_state = || SecurityState::with_macos_session_credential(credential.clone());
+
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("tauri://localhost"),
+                Some(session),
+            )
+            .await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(session_state(), Some("tauri://localhost"), None).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("tauri://attacker.example"),
+                Some(session),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("https://tauri.localhost.evil"),
+                Some(session),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+
+        let response = router_with_security_state(session_state())
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().method("POST").uri("/api/v1/scenes"),
+                    session,
+                )
+                .body(Body::empty())
+                .expect("native request should build"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("native request failed");
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let mut public_key_state = SecurityState::with_keys(Some(CONTROL_KEY), None);
+        public_key_state.macos_session_credential = Some(credential);
+        assert_eq!(
+            loopback_cross_site_mutation(
+                public_key_state,
+                Some("tauri://localhost"),
+                Some(CONTROL_KEY),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]
@@ -1517,7 +1824,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_upgrade_allows_query_token_authentication() {
+    async fn websocket_upgrade_read_query_lacks_protected_control() {
         let app = secured_test_router();
         let response = app
             .oneshot(
@@ -1530,7 +1837,66 @@ mod tests {
             .await
             .expect("request failed");
 
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().contains_key("x-ratelimit-limit"));
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_control_query_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/ws?token={CONTROL_KEY}"))
+                    .header("upgrade", "websocket")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key("x-ratelimit-limit"));
+    }
+
+    #[tokio::test]
+    async fn loopback_websocket_control_query_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri(format!("/api/v1/ws?token={CONTROL_KEY}"))
+                    .header("upgrade", "websocket")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-ratelimit-limit").is_none());
+    }
+
+    #[tokio::test]
+    async fn loopback_websocket_session_query_grants_protected_control() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x81; 32]);
+        let response = router_with_security_state(SecurityState::with_macos_session_credential(
+            credential.clone(),
+        ))
+        .oneshot(with_connect_info(
+            Request::builder()
+                .uri(format!("/api/v1/ws?token={}", credential.expose_secret()))
+                .header("upgrade", "websocket")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            1042,
+        ))
+        .await
+        .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-ratelimit-limit").is_none());
     }
 
     #[tokio::test]

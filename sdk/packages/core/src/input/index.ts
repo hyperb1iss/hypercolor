@@ -15,7 +15,13 @@ export type {
     KeyboardInputState,
     KeyEventState,
     KeyInputEvent,
+    MouseButtonInputEvent,
     MouseInputEvent,
     MouseInputState,
     MouseMode,
+    MouseScrollInputEvent,
+    MouseScrollPhase,
+    MouseScrollState,
+    MouseScrollUnit,
+    MouseWheelInputEvent,
 } from './types'

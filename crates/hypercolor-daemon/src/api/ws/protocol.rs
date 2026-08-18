@@ -491,6 +491,8 @@ pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
 pub(super) const MAX_INPUT_NAME_BYTES: usize = 128;
 /// Largest accepted browser wheel delta, equivalent to 100 notches.
 pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
+/// Largest accepted exact browser scroll delta on either axis.
+pub(super) const MAX_INPUT_SCROLL_Q16_16: i64 = (120_i64 * 100) << 16;
 
 /// Client-to-server subscription messages.
 #[derive(Debug, Deserialize)]
@@ -569,6 +571,17 @@ pub(super) enum BrowserInputEdgeWire {
         #[serde(deserialize_with = "deserialize_wheel_delta")]
         delta_hi_res: i32,
     },
+    Scroll {
+        #[serde(deserialize_with = "deserialize_scroll_delta")]
+        delta_x_q16_16: i64,
+        #[serde(deserialize_with = "deserialize_scroll_delta")]
+        delta_y_q16_16: i64,
+        unit: PointerScrollUnitWire,
+        #[serde(default)]
+        phase: PointerScrollPhaseWire,
+        #[serde(default)]
+        momentum_phase: PointerScrollPhaseWire,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -579,15 +592,48 @@ pub(super) enum InputButtonStateWire {
     Repeated,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PointerScrollUnitWire {
+    Line120,
+    Pixels,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PointerScrollPhaseWire {
+    #[default]
+    None,
+    MayBegin,
+    Began,
+    Changed,
+    Stationary,
+    Ended,
+    Cancelled,
+}
+
 impl BrowserInputEdgeWire {
     pub(super) fn into_edge(self) -> hypercolor_core::input::BrowserInputEdge {
         use hypercolor_core::input::BrowserInputEdge;
-        use hypercolor_types::event::InputButtonState;
+        use hypercolor_types::event::{InputButtonState, PointerScrollPhase, PointerScrollUnit};
 
         let map_state = |state: InputButtonStateWire| match state {
             InputButtonStateWire::Pressed => InputButtonState::Pressed,
             InputButtonStateWire::Released => InputButtonState::Released,
             InputButtonStateWire::Repeated => InputButtonState::Repeated,
+        };
+        let map_unit = |unit: PointerScrollUnitWire| match unit {
+            PointerScrollUnitWire::Line120 => PointerScrollUnit::Line120,
+            PointerScrollUnitWire::Pixels => PointerScrollUnit::Pixels,
+        };
+        let map_phase = |phase: PointerScrollPhaseWire| match phase {
+            PointerScrollPhaseWire::None => PointerScrollPhase::None,
+            PointerScrollPhaseWire::MayBegin => PointerScrollPhase::MayBegin,
+            PointerScrollPhaseWire::Began => PointerScrollPhase::Began,
+            PointerScrollPhaseWire::Changed => PointerScrollPhase::Changed,
+            PointerScrollPhaseWire::Stationary => PointerScrollPhase::Stationary,
+            PointerScrollPhaseWire::Ended => PointerScrollPhase::Ended,
+            PointerScrollPhaseWire::Cancelled => PointerScrollPhase::Cancelled,
         };
 
         match self {
@@ -604,6 +650,19 @@ impl BrowserInputEdgeWire {
                 norm_y: ny,
             },
             Self::Wheel { delta_hi_res } => BrowserInputEdge::Wheel { delta_hi_res },
+            Self::Scroll {
+                delta_x_q16_16,
+                delta_y_q16_16,
+                unit,
+                phase,
+                momentum_phase,
+            } => BrowserInputEdge::Scroll {
+                delta_x_q16_16,
+                delta_y_q16_16,
+                unit: map_unit(unit),
+                phase: map_phase(phase),
+                momentum_phase: map_phase(momentum_phase),
+            },
         }
     }
 }
@@ -807,6 +866,23 @@ where
     }
 }
 
+fn deserialize_scroll_delta<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = i64::deserialize(deserializer)?;
+    if value
+        .checked_abs()
+        .is_some_and(|magnitude| magnitude <= MAX_INPUT_SCROLL_Q16_16)
+    {
+        Ok(value)
+    } else {
+        Err(de::Error::custom(format_args!(
+            "browser input scroll delta must be within ±{MAX_INPUT_SCROLL_Q16_16}"
+        )))
+    }
+}
+
 pub(super) fn deserialize_finite_coordinate<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: Deserializer<'de>,
@@ -942,6 +1018,7 @@ pub(super) struct SceneRef {
 pub(super) struct MetricsPayload {
     pub(super) fps: MetricsFps,
     pub(super) frame_time: MetricsFrameTime,
+    pub(super) input_latency: MetricsSessionLatency,
     pub(super) stages: MetricsStages,
     pub(super) pacing: MetricsPacing,
     pub(super) effect_health: MetricsEffectHealth,
@@ -971,6 +1048,15 @@ pub(super) struct MetricsFps {
     reason = "JSON keys mirror protocol field names from the WebSocket spec"
 )]
 pub(super) struct MetricsFrameTime {
+    pub(super) avg_ms: f64,
+    pub(super) p95_ms: f64,
+    pub(super) p99_ms: f64,
+    pub(super) max_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MetricsSessionLatency {
+    pub(super) sample_count: u64,
     pub(super) avg_ms: f64,
     pub(super) p95_ms: f64,
     pub(super) p99_ms: f64,
@@ -1207,6 +1293,9 @@ pub(super) struct MetricsCopies {
     pub(super) publication_full_frame_count: u32,
     pub(super) publication_full_frame_kb: f64,
     pub(super) publication_reason: Option<&'static str>,
+    pub(super) session_full_frame_count: u64,
+    pub(super) session_full_frame_frames: u64,
+    pub(super) session_full_frame_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]

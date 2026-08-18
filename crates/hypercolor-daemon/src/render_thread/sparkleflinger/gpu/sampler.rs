@@ -121,6 +121,13 @@ impl GpuSparkleFlinger {
             .clone()
             .or(previous_submission)
         {
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            if let Some(frame) = frame_in_flight.as_mut() {
+                self.retire_native_screen_leases(
+                    submission_index.clone(),
+                    frame.take_native_screen_leases(),
+                );
+            }
             if let Some(pending_preview_readback) = frame_in_flight
                 .as_mut()
                 .and_then(FrameInFlight::take_preview_readback)

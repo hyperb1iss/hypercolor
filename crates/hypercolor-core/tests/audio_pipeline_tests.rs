@@ -1060,7 +1060,11 @@ fn missing_audio_device_reports_recoverable_device_loss() {
         .start()
         .expect("missing hardware should enter recoverable degraded mode");
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Discovery runs on a background thread against real CoreAudio; the
+    // bound only asserts it terminates, so it carries headroom for a
+    // fully loaded machine (the whole suite in parallel starves a tight
+    // deadline; solo runs finish in well under a second).
+    let deadline = Instant::now() + Duration::from_secs(10);
     let snapshot = loop {
         let _ = input.sample().expect("recovery polling should succeed");
         let snapshot = status.snapshot();

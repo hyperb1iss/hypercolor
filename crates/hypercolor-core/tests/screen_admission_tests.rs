@@ -29,6 +29,39 @@ fn admission_reservation_reconciles_only_before_freeze() {
 }
 
 #[test]
+fn live_lease_rebases_up_and_down_without_exposing_unadmitted_bytes() {
+    let coordinator = ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(100, 90));
+    let lease = coordinator
+        .try_acquire(40)
+        .expect("initial pool quote should fit")
+        .freeze();
+
+    lease
+        .try_reconcile_exact(80)
+        .expect("observed pool should fit");
+    assert_eq!(lease.bytes(), 80);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 80);
+
+    assert_eq!(
+        lease.try_reconcile_exact(95),
+        Err(ScreenByteAdmissionError::CapacityExceeded {
+            requested_bytes: 15,
+            available_bytes: 10,
+        })
+    );
+    assert_eq!(lease.bytes(), 80);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 80);
+
+    lease
+        .try_reconcile_exact(56)
+        .expect("exact pool observation may release variance");
+    assert_eq!(lease.bytes(), 56);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 56);
+    drop(lease);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
+
+#[test]
 fn capacity_shrink_rejects_without_mutating_live_fence() {
     let coordinator = ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(100, 90));
     let lease = coordinator

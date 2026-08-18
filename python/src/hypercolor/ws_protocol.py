@@ -51,6 +51,76 @@ WS_CAPABILITIES: Final = (
     "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
 )
 
+JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
+    {
+        "timed_input_event_v1": MappingProxyType(
+            {
+                "schema_version": 1,
+                "event": "input_event_received",
+                "required_fields": ("event",),
+                "optional_fields": MappingProxyType(
+                    {
+                        "at_ms": 0,
+                        "seq": 0,
+                        "physical_code": None,
+                        "repeat_count": 1,
+                    }
+                ),
+                "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+                "topic": "input_events",
+            }
+        ),
+        "input_source_status_changed_v1": MappingProxyType(
+            {
+                "schema_version": 1,
+                "event": "input_source_status_changed",
+                "required_fields": (
+                    "source_id",
+                    "kind",
+                    "backend",
+                    "configured",
+                    "consented",
+                    "demanded",
+                    "active_consumer_count",
+                    "state",
+                    "freshness",
+                    "source_graph_generation",
+                    "session_generation",
+                    "resource_count",
+                    "denied_resource_count",
+                    "retired",
+                ),
+                "optional_fields": MappingProxyType(
+                    {
+                        "lifecycle_issue_code": None,
+                        "freshness_issue_code": None,
+                    }
+                ),
+                "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents.",
+                "topic": "events",
+            }
+        ),
+        "macos_daemon_ownership_changed_v1": MappingProxyType(
+            {
+                "schema_version": 1,
+                "topic": "events",
+                "event": "macos_daemon_ownership_changed",
+                "required_fields": (
+                    "active_owner",
+                    "owner_epoch",
+                ),
+                "optional_fields": MappingProxyType(
+                    {
+                        "conflict": None,
+                        "recovery_required": None,
+                    }
+                ),
+                "description": "Authoritative macOS daemon topology snapshot. The event reports ownership state only and cannot request an owner change.",
+            }
+        ),
+    }
+)
+
 BINARY_MESSAGE_TAGS: Final = MappingProxyType(
     {
         "led_frame": 0x01,

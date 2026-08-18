@@ -93,8 +93,9 @@ pub async fn update_display_face_composition(
 /// URL of the latest composited preview JPEG for a display.
 #[must_use]
 pub fn display_preview_url(display_id: &str, cache_buster: Option<u64>) -> String {
-    cache_buster.map_or_else(
+    client::daemon_url(&cache_buster.map_or_else(
         || format!("/api/v1/displays/{display_id}/preview.jpg"),
         |cb| format!("/api/v1/displays/{display_id}/preview.jpg?ts={cb}"),
-    )
+    ))
+    .unwrap_or_default()
 }

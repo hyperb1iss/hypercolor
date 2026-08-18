@@ -16,8 +16,9 @@ use hypercolor_core::input::routing::{
     InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
 };
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenBranchLease, ScreenBranchPublication, ScreenNativeExecutionTarget,
-    ScreenNativeExecutionTargetId, ScreenPlanGeneration, ScreenPublicationExecutorRequest,
+    PixelExtent, ResolvedScreenPublicationDescriptor, ScreenBranchDeliveryState, ScreenBranchLease,
+    ScreenBranchPublication, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenPlanGeneration, ScreenPublicationExecutorRequest,
 };
 use hypercolor_core::input::{
     InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
@@ -52,6 +53,8 @@ use super::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationReader, OwnedInputPublicationDemand,
 };
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+use super::macos_screen_diagnostics::MacosScreenParityDiagnosticMailbox;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::{
     PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
@@ -89,6 +92,10 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) screen_publication: Option<Arc<ScreenBranchPublication>>,
+    pub(crate) screen_delivery_state: Option<ScreenBranchDeliveryState>,
+    pub(crate) screen_invalidation_epoch: u64,
+    pub(crate) screen_compositor_epoch: u64,
+    pub(crate) screen_descriptor: Option<ResolvedScreenPublicationDescriptor>,
     pub(crate) sensors: Arc<SystemSnapshot>,
     pub(crate) input_availability: InputSourceAvailability,
     empty_sensors: Arc<SystemSnapshot>,
@@ -163,8 +170,13 @@ impl InputReuseState {
     ) -> ScreenPlanGeneration {
         let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
             .expect("render canvas dimensions are non-empty");
-        let (generation, publication) = self.routes.read_screen(screen_target, screen_extent);
+        let (generation, publication, delivery_state) =
+            self.routes.read_screen(screen_target, screen_extent);
         self.cached_inputs.screen_publication = publication;
+        self.cached_inputs.screen_invalidation_epoch =
+            delivery_state.map_or(0, ScreenBranchDeliveryState::invalidation_epoch);
+        self.cached_inputs.screen_delivery_state = delivery_state;
+        self.cached_inputs.screen_descriptor = self.routes.screen_descriptor().cloned();
         generation
     }
 
@@ -221,6 +233,7 @@ struct InputRouteCache {
     interaction_router: InteractionRouter,
     routed_interaction: RoutedInteraction,
     screen_publication_route: Option<ScreenPublicationRoute>,
+    last_screen_observation: Option<(bool, bool, bool)>,
 }
 
 struct ScreenPublicationRoute {
@@ -259,6 +272,7 @@ impl InputRouteCache {
             interaction_router: InteractionRouter::default(),
             routed_interaction: RoutedInteraction::new(AUTHORITATIVE_INPUT_CONSUMER),
             screen_publication_route: None,
+            last_screen_observation: None,
         }
     }
 
@@ -284,7 +298,11 @@ impl InputRouteCache {
         &mut self,
         target: Option<&ScreenNativeExecutionTarget>,
         extent: PixelExtent,
-    ) -> (ScreenPlanGeneration, Option<Arc<ScreenBranchPublication>>) {
+    ) -> (
+        ScreenPlanGeneration,
+        Option<Arc<ScreenBranchPublication>>,
+        Option<ScreenBranchDeliveryState>,
+    ) {
         let target_id = target.map(ScreenNativeExecutionTarget::id);
         let (plan_generation, observed_lease) = self.reader.screen_observation(target, extent);
         let route_is_current = self.screen_publication_route.as_ref().is_some_and(|route| {
@@ -300,12 +318,41 @@ impl InputRouteCache {
                 lease: observed_lease,
             });
         }
-        let publication = self
+        let observation = self
             .screen_publication_route
             .as_ref()
             .and_then(|route| route.lease.as_ref())
-            .and_then(ScreenBranchLease::read);
-        (plan_generation, publication)
+            .map(|lease| lease.observe(Instant::now()));
+        let (publication, delivery_state) = observation.unzip();
+        let publication = publication.flatten();
+        // Transition-only log: silent gaps between a healthy hub and a
+        // black compositor have cost hours; state changes here name the
+        // broken link (no lease = plan/observation mismatch, lease
+        // without publication = starved or stale deliveries).
+        let observed = (
+            target_id.is_some(),
+            self.screen_publication_route
+                .as_ref()
+                .is_some_and(|route| route.lease.is_some()),
+            publication.is_some(),
+        );
+        if self.last_screen_observation != Some(observed) {
+            self.last_screen_observation = Some(observed);
+            tracing::debug!(
+                target = observed.0,
+                lease = observed.1,
+                publication = observed.2,
+                "screen publication observation changed"
+            );
+        }
+        (plan_generation, publication, delivery_state)
+    }
+
+    fn screen_descriptor(&self) -> Option<&ResolvedScreenPublicationDescriptor> {
+        self.screen_publication_route
+            .as_ref()
+            .and_then(|route| route.lease.as_ref())
+            .map(ScreenBranchLease::descriptor)
     }
 
     fn route_interaction_into(
@@ -621,7 +668,6 @@ impl FrameInputs {
         self.media = None;
         self.net = None;
         self.lighting = None;
-        self.screen_publication = None;
         self.screen_surface = None;
         self.screen_sector_grid.clear();
     }
@@ -642,6 +688,10 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             screen_publication: None,
+            screen_delivery_state: None,
+            screen_invalidation_epoch: 0,
+            screen_compositor_epoch: 0,
+            screen_descriptor: None,
             sensors: Arc::clone(&empty_sensors),
             input_availability: InputSourceAvailability::default(),
             empty_sensors,
@@ -1361,6 +1411,8 @@ pub(crate) struct RenderCaches {
     pub(crate) screen_queue: ProducerQueue,
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
     #[cfg(feature = "wgpu")]
     pub(crate) display_sparkleflinger: SparkleFlinger,
     #[cfg(feature = "wgpu")]
@@ -1848,6 +1900,23 @@ impl ZoneTransitionPlanner {
 }
 
 impl RenderCaches {
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn service_macos_screen_parity(
+        &mut self,
+        render_device: &GpuRenderDevice,
+        publication: Option<&Arc<ScreenBranchPublication>>,
+        descriptor: Option<&ResolvedScreenPublicationDescriptor>,
+        spatial_engine: &SpatialEngine,
+    ) {
+        self.macos_screen_parity_mailbox.service(
+            render_device,
+            &mut self.sparkleflinger,
+            publication,
+            descriptor,
+            spatial_engine,
+        );
+    }
+
     pub(crate) fn clear_inactive_groups(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
@@ -2095,9 +2164,11 @@ impl PipelineRuntime {
         state: &RenderThreadState,
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.read().await.clone();
-        Self::new_with_gpu_device(
+        let pipeline = Self::new_with_gpu_device(
             state.canvas_dims.width(),
             state.canvas_dims.height(),
             initial_spatial_engine,
@@ -2105,12 +2176,23 @@ impl PipelineRuntime {
             state.render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             state.render_gpu_device.clone(),
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_mailbox,
             Some(Arc::clone(&state.asset_library)),
             state.configured_max_fps_tier.get(),
             input_reader,
             input_demands,
             state.interaction_routing.clone(),
-        )
+        )?;
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        state
+            .input_manager
+            .lock()
+            .await
+            .set_macos_metal4_capability(
+                pipeline.render.sparkleflinger.macos_metal4_capability(),
+            )?;
+        Ok(pipeline)
     }
 
     #[cfg(test)]
@@ -2123,6 +2205,9 @@ impl PipelineRuntime {
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
         let input_demands = InputPublicationDemandHandle::new();
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        let (_, macos_screen_parity_mailbox) =
+            super::macos_screen_diagnostics::macos_screen_parity_diagnostic_channel();
         Self::new_with_gpu_device(
             canvas_width,
             canvas_height,
@@ -2131,6 +2216,8 @@ impl PipelineRuntime {
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             None,
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_mailbox,
             None,
             configured_max_fps_tier,
             InputPublicationReader::empty(),
@@ -2146,6 +2233,8 @@ impl PipelineRuntime {
         screen_capture_configured: bool,
         render_acceleration_mode: RenderAccelerationMode,
         #[cfg(feature = "wgpu")] render_gpu_device: Option<GpuRenderDevice>,
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
         asset_library: Option<Arc<RwLock<AssetLibrary>>>,
         configured_max_fps_tier: FpsTier,
         input_reader: InputPublicationReader,
@@ -2207,6 +2296,8 @@ impl PipelineRuntime {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger,
+                #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+                macos_screen_parity_mailbox,
                 #[cfg(feature = "wgpu")]
                 display_sparkleflinger,
                 #[cfg(feature = "wgpu")]
@@ -2251,7 +2342,8 @@ mod tests {
     };
     use hypercolor_core::input::{
         InputData, InputGraphSnapshot, InputManager, InputSource, InputSourceSlot, InteractionData,
-        MotionAggregate, SourceIssue, SourceKind, SourceStatusWriter,
+        MotionAggregate, Q16_16_SCALE, ScrollAggregate, SourceIssue, SourceKind,
+        SourceStatusWriter,
     };
     use hypercolor_core::spatial::{
         SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
@@ -2850,6 +2942,10 @@ mod tests {
         assert!((inputs.interaction.batch.motion.dy - 0.4).abs() < 0.000_1);
         assert_eq!(inputs.interaction.batch.wheel_hi_res, 80);
         assert_eq!(
+            inputs.interaction.batch.scroll.line120_y_q16_16,
+            80 * Q16_16_SCALE
+        );
+        assert_eq!(
             inputs
                 .interaction
                 .batch
@@ -2859,10 +2955,32 @@ mod tests {
                 .count(),
             2
         );
+        assert_eq!(
+            inputs
+                .interaction
+                .batch
+                .events
+                .iter()
+                .filter(|event| matches!(event.event, InputEvent::PointerScroll { .. }))
+                .count(),
+            2
+        );
+        assert!(
+            inputs
+                .interaction
+                .batch
+                .events
+                .chunks_exact(2)
+                .all(
+                    |pair| matches!(pair[0].event, InputEvent::PointerScroll { .. })
+                        && matches!(pair[1].event, InputEvent::MouseWheel { .. })
+                )
+        );
 
         resolve_authoritative(&mut routes, &graph, &event_bus, &mut inputs);
         assert_eq!(inputs.interaction.batch.motion, MotionAggregate::default());
         assert_eq!(inputs.interaction.batch.wheel_hi_res, 0);
+        assert_eq!(inputs.interaction.batch.scroll, ScrollAggregate::default());
         assert!(inputs.interaction.batch.events.is_empty());
     }
 

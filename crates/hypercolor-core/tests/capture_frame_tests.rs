@@ -1,6 +1,6 @@
 //! Contract tests for the backend-neutral capture frame envelope.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -10,8 +10,8 @@ use hypercolor_core::input::screen::{
     CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool,
     CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
     CpuCaptureStorage, KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface, ScreenAdmissionCapacity,
-    ScreenByteAdmissionCoordinator, SourceScale,
+    PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink, RawCaptureSurface,
+    ScreenAdmissionCapacity, ScreenByteAdmissionCoordinator, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -403,6 +403,51 @@ impl Drop for GpuLifetimeProbe {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
     }
+}
+
+#[derive(Default)]
+struct GpuTimingProbe {
+    import_ns: AtomicU64,
+    reduction_ns: AtomicU64,
+}
+
+impl PlatformGpuSurfaceTimingSink for GpuTimingProbe {
+    fn record_import(&self, elapsed: Duration) {
+        self.import_ns.store(
+            u64::try_from(elapsed.as_nanos()).expect("fixture duration fits u64"),
+            Ordering::Release,
+        );
+    }
+
+    fn record_native_reduction_submission(&self, elapsed: Duration) {
+        self.reduction_ns.store(
+            u64::try_from(elapsed.as_nanos()).expect("fixture duration fits u64"),
+            Ordering::Release,
+        );
+    }
+}
+
+#[test]
+fn gpu_surface_retains_and_forwards_backend_timing_observations() {
+    let timing = Arc::new(GpuTimingProbe::default());
+    let surface = PlatformGpuSurface::new(
+        PlatformGpuApi::Metal,
+        42,
+        extent(4, 3),
+        CapturePixelFormat::Bgra8,
+        Arc::new(()),
+    )
+    .expect("non-zero opaque handle is valid")
+    .with_timing_sink(Arc::clone(&timing));
+    let sink = surface
+        .timing_sink()
+        .expect("attached timing sink remains observable");
+
+    sink.record_import(Duration::from_nanos(17));
+    sink.record_native_reduction_submission(Duration::from_nanos(23));
+
+    assert_eq!(timing.import_ns.load(Ordering::Acquire), 17);
+    assert_eq!(timing.reduction_ns.load(Ordering::Acquire), 23);
 }
 
 #[test]

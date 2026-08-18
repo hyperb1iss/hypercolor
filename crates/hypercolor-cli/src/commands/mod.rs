@@ -1,5 +1,6 @@
 //! CLI subcommand modules.
 
+pub mod access;
 pub mod audio;
 pub mod brightness;
 pub mod completions;

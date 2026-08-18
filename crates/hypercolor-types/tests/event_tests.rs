@@ -8,6 +8,8 @@ use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
     FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
+    MacosDaemonHandoverPhaseEvent, MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent,
+    MacosDaemonOwnerRecoveryRequiredEvent, PointerScrollPhase, PointerScrollUnit,
     SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
     ZoneRef,
 };
@@ -306,6 +308,12 @@ fn system_events_have_system_category() {
         HypercolorEvent::DaemonShutdown {
             reason: "user".into(),
         },
+        HypercolorEvent::MacosDaemonOwnershipChanged {
+            active_owner: MacosDaemonOwnerEvent::AppSidecar,
+            owner_epoch: 7,
+            conflict: None,
+            recovery_required: None,
+        },
         HypercolorEvent::BrightnessChanged {
             old: 100,
             new_value: 50,
@@ -327,6 +335,40 @@ fn system_events_have_system_category() {
             "Expected System category for {event:?}"
         );
     }
+}
+
+#[test]
+fn macos_daemon_ownership_event_round_trips_bounded_payload() {
+    let event = HypercolorEvent::MacosDaemonOwnershipChanged {
+        active_owner: MacosDaemonOwnerEvent::LaunchdService,
+        owner_epoch: 42,
+        conflict: Some(MacosDaemonOwnerConflictEvent {
+            active: MacosDaemonOwnerEvent::LaunchdService,
+            contender: MacosDaemonOwnerEvent::HomebrewService,
+            observed_at_ms: 1_777,
+        }),
+        recovery_required: Some(MacosDaemonOwnerRecoveryRequiredEvent {
+            requested_owner: MacosDaemonOwnerEvent::AppSidecar,
+            prior_owner: MacosDaemonOwnerEvent::LaunchdService,
+            phase: MacosDaemonHandoverPhaseEvent::RollbackStartRequested,
+        }),
+    };
+
+    let json = serde_json::to_value(&event).expect("serialize ownership event");
+    assert_eq!(json["type"], "MacosDaemonOwnershipChanged");
+    assert_eq!(json["data"]["active_owner"], "launchd_service");
+    assert_eq!(json["data"]["owner_epoch"], 42);
+    assert_eq!(json["data"]["conflict"]["contender"], "homebrew_service");
+    assert_eq!(
+        json["data"]["recovery_required"]["phase"],
+        "rollback_start_requested"
+    );
+    assert_eq!(
+        serde_json::from_value::<HypercolorEvent>(json)
+            .expect("deserialize ownership event")
+            .category(),
+        EventCategory::System
+    );
 }
 
 #[test]
@@ -1246,6 +1288,35 @@ fn mouse_input_events_round_trip_through_json() {
     let restored: InputEvent = serde_json::from_str(&json).expect("deserialize wheel");
     assert_eq!(restored, wheel);
     assert_eq!(restored.source_id(), "host:/dev/input/event4");
+}
+
+#[test]
+fn pointer_scroll_round_trips_exact_q16_16_metadata() {
+    let scroll = InputEvent::PointerScroll {
+        source_id: "host:trackpad".into(),
+        delta_x_q16_16: -32_768,
+        delta_y_q16_16: 98_304,
+        unit: PointerScrollUnit::Pixels,
+        phase: PointerScrollPhase::Changed,
+        momentum_phase: PointerScrollPhase::Began,
+    };
+
+    let json = serde_json::to_value(&scroll).expect("serialize pointer scroll");
+    assert_eq!(json["kind"], "pointer_scroll");
+    assert_eq!(json["delta_x_q16_16"], -32_768);
+    assert_eq!(json["delta_y_q16_16"], 98_304);
+    assert_eq!(json["unit"], "pixels");
+    assert_eq!(json["phase"], "changed");
+    assert_eq!(json["momentum_phase"], "began");
+
+    let restored: InputEvent = serde_json::from_value(json).expect("deserialize pointer scroll");
+    assert_eq!(restored, scroll);
+    assert_eq!(restored.source_id(), "host:trackpad");
+}
+
+#[test]
+fn pointer_scroll_phase_defaults_to_none() {
+    assert_eq!(PointerScrollPhase::default(), PointerScrollPhase::None);
 }
 
 #[test]

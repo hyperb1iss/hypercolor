@@ -10,8 +10,8 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::{
-    config, controls, devices, drivers, effects, envelope, layers, output, profiles, scenes_zones,
-    system,
+    capture, config, controls, devices, drivers, effects, envelope, layers, output, profiles,
+    scenes_zones, system,
 };
 
 #[derive(OpenApi)]
@@ -20,6 +20,10 @@ use crate::api::{
         system::health_check,
         system::get_server,
         system::get_status,
+        capture::authorize_input_monitoring,
+        capture::authorize_screen_recording,
+        capture::pick_capture_source,
+        capture::list_capture_monitors,
         drivers::list_drivers,
         drivers::get_driver_config,
         devices::list_devices,
@@ -40,6 +44,9 @@ use crate::api::{
             hypercolor_types::api::envelope::ApiErrorBody,
             envelope::ApiResponse<system::SystemStatus>,
             envelope::ApiResponse<system::ServerInfo>,
+            envelope::ApiResponse<hypercolor_types::api::capture::CaptureAuthorizationResponse>,
+            envelope::ApiResponse<hypercolor_types::api::capture::CapturePickerResponse>,
+            envelope::ApiResponse<Vec<hypercolor_types::api::capture::CaptureMonitor>>,
             envelope::ApiResponse<drivers::DriverListResponse>,
             envelope::ApiResponse<drivers::DriverConfigResponse>,
             envelope::ApiResponse<devices::DeviceListResponse>,
@@ -100,6 +107,10 @@ use crate::api::{
             system::ServerInfo,
             system::HealthChecks,
             system::HealthResponse,
+            hypercolor_types::api::capture::ProtectedSourceGrantOwner,
+            hypercolor_types::api::capture::CaptureAuthorizationResponse,
+            hypercolor_types::api::capture::CapturePickerResponse,
+            hypercolor_types::api::capture::CaptureMonitor,
             drivers::DriverListResponse,
             drivers::DriverSummary,
             drivers::DriverConfigResponse,
@@ -201,6 +212,7 @@ use crate::api::{
         (name = "devices", description = "Tracked device inventory"),
         (name = "controls", description = "Generic control surfaces and typed value mutation"),
         (name = "effects", description = "Effect catalog and runtime control"),
+        (name = "assets", description = "Uploaded media assets"),
         (name = "displays", description = "Display devices, faces, and simulators"),
         (name = "attachments", description = "Physical attachment templates and bindings"),
         (name = "output", description = "Global output power and brightness"),
@@ -208,6 +220,7 @@ use crate::api::{
         (name = "profiles", description = "Saved lighting profile snapshots"),
         (name = "layouts", description = "Spatial layout CRUD and preview"),
         (name = "library", description = "Favorites, presets, and playlists"),
+        (name = "capture", description = "Protected host input and screen-capture actions"),
         (name = "config", description = "Daemon configuration inspection and mutation"),
         (name = "diagnostics", description = "Daemon diagnostics"),
         (name = "websocket", description = "Realtime WebSocket endpoint"),
@@ -308,6 +321,48 @@ impl RouteSpec {
 
 pub const ROUTES: &[RouteSpec] = &[
     RouteSpec::get(
+        "/api/v1/assets",
+        "list_assets",
+        "assets",
+        "List media assets",
+    ),
+    RouteSpec::post(
+        "/api/v1/assets",
+        "upload_asset",
+        "assets",
+        "Upload a media asset",
+    ),
+    RouteSpec::get(
+        "/api/v1/assets/{id}",
+        "get_asset",
+        "assets",
+        "Get one media asset",
+    ),
+    RouteSpec::put(
+        "/api/v1/assets/{id}",
+        "update_asset",
+        "assets",
+        "Update one media asset",
+    ),
+    RouteSpec::delete(
+        "/api/v1/assets/{id}",
+        "delete_asset",
+        "assets",
+        "Delete one media asset",
+    ),
+    RouteSpec::get(
+        "/api/v1/assets/{id}/blob",
+        "get_asset_blob",
+        "assets",
+        "Download media asset bytes",
+    ),
+    RouteSpec::get(
+        "/api/v1/assets/{id}/thumbnail",
+        "get_asset_thumbnail",
+        "assets",
+        "Get a media asset thumbnail",
+    ),
+    RouteSpec::get(
         "/health",
         "health_check",
         "system",
@@ -324,6 +379,30 @@ pub const ROUTES: &[RouteSpec] = &[
         "get_status",
         "system",
         "Get daemon status",
+    ),
+    RouteSpec::post(
+        "/api/v1/input/authorize",
+        "authorize_input_monitoring",
+        "capture",
+        "Request Input Monitoring authorization",
+    ),
+    RouteSpec::post(
+        "/api/v1/capture/authorize",
+        "authorize_screen_recording",
+        "capture",
+        "Request screen-capture authorization",
+    ),
+    RouteSpec::post(
+        "/api/v1/capture/source/pick",
+        "pick_capture_source",
+        "capture",
+        "Open the screen-capture source picker",
+    ),
+    RouteSpec::get(
+        "/api/v1/capture/monitors",
+        "list_capture_monitors",
+        "capture",
+        "List addressable capture displays",
     ),
     RouteSpec::get(
         "/api/v1/drivers",
@@ -699,6 +778,12 @@ pub const ROUTES: &[RouteSpec] = &[
         "Install effect",
     ),
     RouteSpec::get(
+        "/api/v1/effects/screenshots",
+        "get_effect_screenshot",
+        "effects",
+        "Serve bundled effect screenshots",
+    ),
+    RouteSpec::get(
         "/api/v1/effects/{id}",
         "get_effect",
         "effects",
@@ -733,6 +818,18 @@ pub const ROUTES: &[RouteSpec] = &[
         "apply_effect",
         "effects",
         "Apply effect",
+    ),
+    RouteSpec::get(
+        "/api/v1/effects/{id}/presets",
+        "list_effect_presets",
+        "effects",
+        "List effect presets",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/{id}/presets/{preset_id}/apply",
+        "apply_effect_preset",
+        "effects",
+        "Apply effect preset",
     ),
     RouteSpec::patch(
         "/api/v1/effects/{id}/controls",
@@ -1135,6 +1232,12 @@ pub const ROUTES: &[RouteSpec] = &[
         "diagnostics",
         "Run daemon diagnostics",
     ),
+    RouteSpec::post(
+        "/api/v1/diagnose/memory",
+        "memory_diagnostics",
+        "diagnostics",
+        "Run memory diagnostics",
+    ),
     RouteSpec::get(
         "/api/v1/ws",
         "ws_handler",
@@ -1163,6 +1266,7 @@ impl Modify for SecurityAddon {
 impl Modify for RouteCatalogAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
         for tag in [
+            "assets",
             "displays",
             "controls",
             "attachments",
@@ -1171,6 +1275,7 @@ impl Modify for RouteCatalogAddon {
             "profiles",
             "layouts",
             "library",
+            "capture",
             "config",
             "diagnostics",
             "websocket",

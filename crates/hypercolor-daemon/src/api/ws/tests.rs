@@ -3,7 +3,7 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use axum::body::Bytes;
-use axum::extract::ws::Utf8Bytes;
+use axum::extract::ws::{Message, Utf8Bytes};
 use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
@@ -68,10 +68,10 @@ use super::preview_encode::{
 };
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, ClientMessage, FrameZoneSelection,
-    InputButtonStateWire, MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA,
-    MAX_PREVIEW_PUBLICATION_BYTES, ServerMessage, SubscriptionState, TopicSelection,
-    deserialize_finite_coordinate, event_message_parts, parse_selectors, parse_subscriptions,
-    should_relay_event, to_snake_case, validate_interactive_preview_id,
+    InputButtonStateWire, MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_SCROLL_Q16_16,
+    MAX_INPUT_WHEEL_DELTA, MAX_PREVIEW_PUBLICATION_BYTES, ServerMessage, SubscriptionState,
+    TopicSelection, deserialize_finite_coordinate, event_message_parts, parse_selectors,
+    parse_subscriptions, should_relay_event, to_snake_case, validate_interactive_preview_id,
     validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
@@ -84,8 +84,8 @@ use super::relays::{
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics,
-    commit_preview_transport, negotiate_preview_transport, stage_preview_transport,
-    validated_zone_layout_preview,
+    commit_preview_transport, negotiate_preview_transport, spawn_test_local_socket,
+    stage_preview_transport, validated_zone_layout_preview,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
@@ -612,6 +612,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
         performance.record_effect_fallback_applied();
         performance.record_frame(&LatestFrameMetrics {
             timestamp_ms: 1234,
+            input_sampled: true,
             input_us: 200,
             deferred_sample_us: 60,
             producer_us: 900,
@@ -764,6 +765,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["gpu_readback_failed"], true);
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
     assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
+    assert_eq!(json["input_latency"]["sample_count"], 1);
+    assert_eq!(json["input_latency"]["p95_ms"], 0.2);
+    assert_eq!(json["input_latency"]["p99_ms"], 0.2);
     assert_eq!(json["pacing"]["push_avg_ms"], 0.25);
     assert_eq!(json["pacing"]["push_p95_ms"], 0.25);
     assert_eq!(json["pacing"]["publish_avg_ms"], 0.18);
@@ -786,6 +790,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["output_published_frame"], 1);
     assert_eq!(json["pacing"]["output_routed_reuse"], 0);
     assert_eq!(json["pacing"]["output_reused_published_frame"], 1);
+    assert_eq!(json["copies"]["session_full_frame_count"], 2);
+    assert_eq!(json["copies"]["session_full_frame_frames"], 1);
+    assert_eq!(json["copies"]["session_full_frame_bytes"], 2_048);
     assert_eq!(json["render_surfaces"]["scene_pool_slot_count"], 10);
     assert_eq!(json["render_surfaces"]["scene_pool_max_slots"], 12);
     assert_eq!(json["render_surfaces"]["direct_pool_slot_count"], 6);
@@ -2504,6 +2511,87 @@ fn read_only_auth_rejects_private_capture_subscriptions() {
 }
 
 #[test]
+fn unsecured_loopback_auth_rejects_private_capture_subscriptions() {
+    let channels = selections(&[
+        TopicId::ScreenCanvas,
+        TopicId::ScreenZones,
+        TopicId::InputEvents,
+    ]);
+
+    let error = authorize_subscription_topics(RequestAuthContext::unsecured(), &channels)
+        .expect_err("loopback locality must not authorize sensitive subscriptions");
+
+    assert_eq!(error.code, "forbidden");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "topics": ["screen_canvas", "screen_zones", "input_events"],
+            "required_tier": "control"
+        }))
+    );
+}
+
+#[tokio::test]
+async fn rejected_private_subscription_creates_no_input_demand() {
+    let state = Arc::new(AppState::new());
+    let mut socket = spawn_test_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        RequestAuthContext::unsecured(),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "subscribe",
+                "topics": [
+                    {"topic": "screen_canvas"},
+                    {"topic": "screen_zones"},
+                    {"topic": "input_events"}
+                ]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("test socket should accept subscription request");
+    let rejection = socket
+        .recv()
+        .await
+        .expect("test socket should emit subscription rejection");
+    let Message::Text(rejection) = rejection else {
+        panic!("subscription rejection should be JSON text");
+    };
+    let rejection: serde_json::Value =
+        serde_json::from_str(rejection.as_str()).expect("rejection should be JSON");
+    assert_eq!(rejection["type"], "error");
+    assert_eq!(rejection["code"], "forbidden");
+
+    assert_eq!(
+        state
+            .input_publication_demands
+            .registration_count(InputPublicationConsumer::PassiveStream),
+        0
+    );
+    assert_eq!(
+        state
+            .input_publication_demands
+            .requested_hz(SourceKind::Screen),
+        0
+    );
+    assert_eq!(
+        state
+            .input_publication_demands
+            .requested_hz(SourceKind::Interaction),
+        0
+    );
+
+    socket.shutdown().await;
+}
+
+#[test]
 fn read_only_auth_allows_non_capture_preview_subscriptions() {
     let channels = selections(&[
         TopicId::Events,
@@ -3113,6 +3201,7 @@ fn event_message_parts_exposes_input_status_as_a_dedicated_safe_event() {
         kind: hypercolor_core::bus::INPUT_STATUS_EVENT_KIND.to_owned(),
         payload: serde_json::json!({
             "source_id": "host-interaction",
+            "active_consumer_count": 3,
             "state": "failed",
             "session_generation": 9,
         }),
@@ -3121,6 +3210,7 @@ fn event_message_parts_exposes_input_status_as_a_dedicated_safe_event() {
     let (event_name, event_data) = event_message_parts(&event);
     assert_eq!(event_name, "input_source_status_changed");
     assert_eq!(event_data["source_id"], "host-interaction");
+    assert_eq!(event_data["active_consumer_count"], 3);
     assert_eq!(event_data["state"], "failed");
     assert_eq!(event_data["session_generation"], 9);
 }
@@ -3500,7 +3590,7 @@ fn default_subscription_excludes_input_events() {
 #[test]
 fn input_inject_message_parses_all_edge_kinds() {
     use hypercolor_core::input::BrowserInputEdge;
-    use hypercolor_types::event::InputButtonState;
+    use hypercolor_types::event::{InputButtonState, PointerScrollPhase, PointerScrollUnit};
 
     let raw = r#"{
         "type": "input_inject",
@@ -3509,7 +3599,21 @@ fn input_inject_message_parses_all_edge_kinds() {
             {"kind": "key", "key": "a", "state": "pressed"},
             {"kind": "button", "button": "left", "state": "released"},
             {"kind": "move", "nx": 0.5, "ny": 0.25},
-            {"kind": "wheel", "delta_hi_res": -240}
+            {"kind": "wheel", "delta_hi_res": -240},
+            {
+                "kind": "scroll",
+                "delta_x_q16_16": 98304,
+                "delta_y_q16_16": -131072,
+                "unit": "pixels",
+                "phase": "changed",
+                "momentum_phase": "began"
+            },
+            {
+                "kind": "scroll",
+                "delta_x_q16_16": 0,
+                "delta_y_q16_16": 65536,
+                "unit": "line120"
+            }
         ]
     }"#;
 
@@ -3519,7 +3623,7 @@ fn input_inject_message_parses_all_edge_kinds() {
         panic!("expected InputInject");
     };
     assert_eq!(preview_id, "main");
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 6);
 
     let edges: Vec<BrowserInputEdge> = events
         .into_iter()
@@ -3547,6 +3651,26 @@ fn input_inject_message_parses_all_edge_kinds() {
         }
     );
     assert_eq!(edges[3], BrowserInputEdge::Wheel { delta_hi_res: -240 });
+    assert_eq!(
+        edges[4],
+        BrowserInputEdge::Scroll {
+            delta_x_q16_16: 98_304,
+            delta_y_q16_16: -131_072,
+            unit: PointerScrollUnit::Pixels,
+            phase: PointerScrollPhase::Changed,
+            momentum_phase: PointerScrollPhase::Began,
+        }
+    );
+    assert_eq!(
+        edges[5],
+        BrowserInputEdge::Scroll {
+            delta_x_q16_16: 0,
+            delta_y_q16_16: 65_536,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
+        }
+    );
 }
 
 #[test]
@@ -3660,6 +3784,62 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
             "amplified wheel delta must be rejected"
         );
     }
+
+    for delta in [
+        MAX_INPUT_SCROLL_Q16_16.saturating_add(1),
+        MAX_INPUT_SCROLL_Q16_16.saturating_neg().saturating_sub(1),
+        i64::MIN,
+    ] {
+        for axis in ["delta_x_q16_16", "delta_y_q16_16"] {
+            let mut edge = serde_json::json!({
+                "kind": "scroll",
+                "delta_x_q16_16": 0,
+                "delta_y_q16_16": 0,
+                "unit": "line120"
+            });
+            edge[axis] = serde_json::json!(delta);
+            let payload = serde_json::json!({
+                "type": "input_inject",
+                "preview_id": "main",
+                "events": [edge]
+            });
+            assert!(
+                serde_json::from_value::<ClientMessage>(payload).is_err(),
+                "amplified {axis} scroll delta must be rejected"
+            );
+        }
+    }
+
+    for delta in [MAX_INPUT_SCROLL_Q16_16, -MAX_INPUT_SCROLL_Q16_16] {
+        let payload = serde_json::json!({
+            "type": "input_inject",
+            "preview_id": "main",
+            "events": [{
+                "kind": "scroll",
+                "delta_x_q16_16": delta,
+                "delta_y_q16_16": delta,
+                "unit": "pixels"
+            }]
+        });
+        assert!(
+            serde_json::from_value::<ClientMessage>(payload).is_ok(),
+            "inclusive scroll bound must be accepted"
+        );
+    }
+
+    let missing_unit = serde_json::json!({
+        "type": "input_inject",
+        "preview_id": "main",
+        "events": [{
+            "kind": "scroll",
+            "delta_x_q16_16": 0,
+            "delta_y_q16_16": 0
+        }]
+    });
+    assert!(
+        serde_json::from_value::<ClientMessage>(missing_unit).is_err(),
+        "scroll unit must be required"
+    );
 }
 
 #[test]
@@ -4425,6 +4605,18 @@ fn websocket_manifest_matches_protocol_constants() {
         manifest["json_payloads"]["timed_input_event_v1"]["schema_version"],
         hypercolor_leptos_ext::ws::INPUT_EVENT_PAYLOAD_SCHEMA
     );
+    let ownership = &manifest["json_payloads"]["macos_daemon_ownership_changed_v1"];
+    assert_eq!(ownership["schema_version"], 1);
+    assert_eq!(ownership["topic"], "events");
+    assert_eq!(ownership["event"], "macos_daemon_ownership_changed");
+    assert_eq!(
+        ownership["required_fields"],
+        serde_json::json!(["active_owner", "owner_epoch"])
+    );
+    assert_eq!(
+        ownership["optional_fields"]["conflict"],
+        serde_json::Value::Null
+    );
 
     let binary_tags = manifest["binary_messages"]
         .as_array()
@@ -4793,6 +4985,65 @@ async fn dispatch_command_preserves_secured_ws_auth_context() {
             error,
         } => {
             assert_eq!(id, "cmd_status");
+            assert_eq!(status, 200);
+            assert!(data.is_some());
+            assert!(error.is_none());
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_rejects_unsecured_protected_capture_access() {
+    let state = Arc::new(AppState::new());
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::unsecured(),
+        "cmd_capture_monitors".to_owned(),
+        "GET".to_owned(),
+        "/capture/monitors".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            status,
+            data,
+            error,
+            ..
+        } => {
+            assert_eq!(status, 403);
+            assert!(data.is_none());
+            assert_eq!(
+                error.and_then(|value| value.get("code").cloned()),
+                Some(serde_json::json!("forbidden"))
+            );
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_allows_control_protected_capture_access() {
+    let state = secured_state();
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::control(),
+        "cmd_capture_monitors".to_owned(),
+        "GET".to_owned(),
+        "/capture/monitors".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            status,
+            data,
+            error,
+            ..
+        } => {
             assert_eq!(status, 200);
             assert!(data.is_some());
             assert!(error.is_none());

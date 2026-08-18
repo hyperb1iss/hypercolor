@@ -306,7 +306,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -317,7 +317,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2672,20 +2672,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "device_query"
-version = "4.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7331225604b9b097b41872d550134933d4be83465d70a2c4a132b929f99aaca"
-dependencies = [
- "macos-accessibility-client",
- "pkg-config",
- "readkey",
- "readmouse",
- "windows 0.48.0",
- "x11",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2780,7 +2766,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2812,7 +2798,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.7.4",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -3218,7 +3204,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4043,7 +4029,7 @@ dependencies = [
  "gobject-sys 0.22.6",
  "libc",
  "system-deps 7.0.7",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4541,9 +4527,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.14"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "171fefbc92fe4a4de27e0698d6a5b392d6a0e333506bc49133760b3bcf948733"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -4948,13 +4934,18 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "chrono",
+ "core-foundation 0.10.1",
  "dirs 6.0.0",
  "futures-util",
  "hypercolor-core",
+ "hypercolor-macos-input",
+ "hypercolor-macos-owner",
  "hypercolor-types",
  "image",
+ "objc2 0.6.4",
  "open",
  "reqwest 0.12.28",
+ "security-framework",
  "serde",
  "serde_json",
  "tauri",
@@ -4982,9 +4973,11 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs 6.0.0",
+ "futures-util",
  "hypercolor-color",
  "hypercolor-core",
  "hypercolor-daemon",
+ "hypercolor-macos-owner",
  "hypercolor-tui",
  "hypercolor-types",
  "opaline",
@@ -4995,6 +4988,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "toml 0.8.2",
  "tracing-subscriber",
  "unicode-width",
@@ -5023,7 +5017,6 @@ dependencies = [
  "chrono",
  "cpal",
  "criterion",
- "device_query",
  "dirs 6.0.0",
  "dpi",
  "evdev",
@@ -5039,7 +5032,9 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-hal",
  "hypercolor-linux-gpu-interop",
+ "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
+ "hypercolor-macos-input",
  "hypercolor-platform-fs",
  "hypercolor-types",
  "hypercolor-windows-capture",
@@ -5097,8 +5092,10 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
+ "core-foundation 0.10.1",
  "cpal",
  "criterion",
+ "dispatch2",
  "fast_image_resize",
  "gif",
  "http 1.4.0",
@@ -5108,6 +5105,10 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
  "hypercolor-leptos-ext",
+ "hypercolor-macos-capture",
+ "hypercolor-macos-gpu-interop",
+ "hypercolor-macos-input",
+ "hypercolor-macos-owner",
  "hypercolor-network",
  "hypercolor-platform-fs",
  "hypercolor-types",
@@ -5117,13 +5118,19 @@ dependencies = [
  "if-addrs",
  "image",
  "mdns-sd",
+ "notify",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
  "owo-colors",
  "pollster",
  "reqwest 0.12.28",
  "rmcp",
  "sd-notify",
+ "security-framework",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "single-instance",
  "socket2 0.6.3",
  "spin_sleep",
@@ -5340,6 +5347,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-macos-capture"
+version = "0.3.2"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-io-surface",
+ "objc2-screen-capture-kit",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "hypercolor-macos-gpu-interop"
 version = "0.3.2"
 dependencies = [
@@ -5348,10 +5374,13 @@ dependencies = [
  "euclid",
  "gleam",
  "glow",
+ "hypercolor-macos-capture",
  "image",
  "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
  "pollster",
@@ -5362,6 +5391,33 @@ dependencies = [
  "webrender_api",
  "wgpu",
  "wgpu-hal",
+]
+
+[[package]]
+name = "hypercolor-macos-input"
+version = "0.3.2"
+dependencies = [
+ "crossbeam-queue",
+ "mach2 0.5.0",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hypercolor-macos-owner"
+version = "0.3.2"
+dependencies = [
+ "hypercolor-platform-fs",
+ "nix 0.29.0",
+ "notify",
+ "serde",
+ "serde_json",
+ "single-instance",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7228,16 +7284,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
-name = "macos-accessibility-client"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edf7710fbff50c24124331760978fb9086d6de6288dcdb38b25a97f8b1bdebbb"
-dependencies = [
- "core-foundation 0.9.4",
- "core-foundation-sys",
-]
-
-[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7903,7 +7949,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8029,7 +8075,7 @@ dependencies = [
  "rustix 1.1.4",
  "slab",
  "tokio",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8261,6 +8307,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-media"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
+dependencies = [
+ "bitflags 2.11.0",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-core-video",
+]
+
+[[package]]
 name = "objc2-core-text"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8285,6 +8346,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-io-surface",
+ "objc2-metal 0.3.2",
 ]
 
 [[package]]
@@ -8402,6 +8464,22 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
+]
+
+[[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "bitflags 2.11.0",
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -10251,18 +10329,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "readkey"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a36870cefdfcff57edbc0fa62165f42dfd4e5a0d8965117c1ea84c5700e4450"
-
-[[package]]
-name = "readmouse"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be105c72a1e6a5a1198acee3d5b506a15676b74a02ecd78060042a447f408d94"
-
-[[package]]
 name = "realfft"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10741,7 +10807,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10799,7 +10865,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -13129,7 +13195,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -14143,10 +14209,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -15058,7 +15124,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset 0.9.1",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -16335,7 +16401,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -16357,15 +16423,6 @@ dependencies = [
  "raw-window-handle",
  "windows-sys 0.59.0",
  "windows-version",
-]
-
-[[package]]
-name = "windows"
-version = "0.48.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e686886bc078bc1b0b600cac0147aadb815089b6e4da64016cbd754b6342700f"
-dependencies = [
- "windows-targets 0.48.5",
 ]
 
 [[package]]

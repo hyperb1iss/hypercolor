@@ -419,7 +419,7 @@ fn ScreenCastPaneStub() -> impl IntoView {
                     bg-surface-sunken/50 px-4 py-12 text-fg-tertiary">
             <Icon icon=icondata::LuMonitor width="24" height="24" />
             <span class="text-sm text-fg-secondary">
-                "Screen capture preview is unavailable in this build."
+                "Live screen preview is coming soon. Apply the effect to see it on your lights."
             </span>
         </div>
     }

@@ -9,9 +9,9 @@ Not every install path is right for every person. This page routes you to the co
 {% callout(type="info") %}
 Linux, Windows, and macOS are all supported install platforms. Linux
 additionally gets udev, systemd, and session integration (idle dim, lock and
-suspend behavior). Platform limits to know up front: macOS has no screen
-capture and no SMBus motherboard/DRAM RGB, and session integration is
-Linux-only today.
+suspend behavior). macOS supports screen capture and native host input, but it
+has no SMBus motherboard/DRAM RGB path. Session integration is Linux-only
+today.
 {% end %}
 
 ## Decide in 30 seconds
@@ -94,19 +94,34 @@ USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
 
 ### DMG
 
-Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg`
-(Intel) from the [download page](@/download.md), drag the app into
-`/Applications`, and launch. Minimum macOS 11 (Big Sur).
+When a release includes an accepted macOS build, download
+`Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
+the [download page](@/download.md), drag the app into `/Applications`, and
+launch. Minimum macOS 15.2 (Sequoia).
 
-{% callout(type="warning") %}
-Current builds are ad-hoc signed but not notarized, so Gatekeeper will block the app on first launch. Right-click the app and choose **Open** to confirm.
+{% callout(type="info") %}
+Public CI does not publish unsigned macOS packages. macOS artifacts are
+promoted manually only after Developer ID signing, notarization, and the signed
+physical acceptance checkpoint pass.
 {% end %}
 
-macOS supports audio-reactive effects (see [Audio setup](@/guide/audio-setup.md) for the loopback-device requirement) but has no screen capture, so screen-reactive effects are unavailable there.
+The native ScreenCaptureKit, host-input, HDR, and multi-owner implementations
+are present, but they are not release-qualified until the signed macOS physical
+acceptance matrix ships with the release provenance. Development builds do not
+establish durable TCC grants or hardware support claims. Screen Recording is
+requested only after an explicit local capture action. Audio-reactive effects
+still need the loopback setup described in [Audio setup](@/guide/audio-setup.md).
+
+The pending qualification matrix covers the app sidecar, direct launchd,
+Homebrew service, and standalone daemon as distinct TCC identities. It also
+covers Apple Silicon HDR, Intel SDR, and Tahoe paired-reference diagnostics.
+Until those signed receipts pass, use the packaged app sidecar for protected
+macOS sources and treat the other topologies as experimental.
 
 ### Homebrew {#homebrew}
 
-The tap carries both a cask and a formula, and CI updates both automatically on each tagged release:
+The tap carries both a cask and a formula. Maintainers update both manually
+after the matching signed artifacts pass acceptance:
 
 ```bash
 # Desktop app (both Mac architectures)
@@ -116,7 +131,11 @@ brew install --cask hyperb1iss/tap/hypercolor-app
 brew install hyperb1iss/tap/hypercolor
 ```
 
-The formula covers macOS arm64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
+The formula covers macOS arm64 and x86_64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
+
+The formula selects the Homebrew service topology when managed with
+`brew services`. Install the cask when protected macOS permissions or the
+system screen picker require the app UI.
 
 ---
 

@@ -3,12 +3,6 @@
   "identifier": "default",
   "description": "Default capability for the main window",
   "windows": ["main"],
-  "remote": {
-    "urls": [
-      "http://127.0.0.1:9420/*",
-      "http://localhost:9420/*"
-    ]
-  },
   "permissions": [
     "core:default",
     "autostart:allow-enable",
@@ -18,6 +12,20 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
-    "core:window:allow-unminimize"
+    "core:window:allow-unminimize",
+    "allow-is-first-run-pending",
+    "allow-mark-first-run-complete",
+    "allow-reset-first-run",
+    "allow-choose-daemon-owner",
+    "allow-execute-macos-daemon-owner-offline-remedy",
+    "allow-macos-daemon-owner-offline-status",
+    "allow-restart-macos-capture-owner",
+    "allow-detect-pawnio-support",
+    "allow-detect-windows-daemon-service",
+    "allow-launch-pawnio-helper",
+    "allow-repair-smbus-service",
+    "allow-open-external-url",
+    "allow-open-macos-system-settings",
+    "allow-get-verified-daemon-connection"
   ]
 }

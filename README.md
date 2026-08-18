@@ -178,14 +178,15 @@ Effects can react to your keyboard and mouse. The input pipeline is consent-gate
 demand-driven: it is off by default, sources open devices only while an interactive effect
 is running, and input events ride a dedicated control-tier channel that never leaves the
 render pipeline. Native backends per platform: evdev on Linux, Raw Input on Windows, and a
-polling bridge on macOS.
+Core Graphics event tap on macOS.
 
 ### 🌊 And More
 
 - **Scene engine** with priority stacking, Oklab cross-fades, and automation rules
 - **Display faces** for LCD-equipped devices: clocks, sensor dashboards, now-playing panels
 - **Screen capture** input for ambient backlighting: Desktop Duplication on Windows
-  (works out of the box), Wayland portal on Linux (opt-in)
+  (works out of the box), Wayland portal on Linux (opt-in), and Apple's system picker on
+  macOS
 - **Portable device identity**: devices keep their identity across cable moves, IP churn,
   and BIOS renumbering, and layouts can be rebound after hardware swaps
 - **REST API + WebSocket** for full programmatic control
@@ -267,10 +268,11 @@ Runs wherever you have a terminal.
 
 ## 🎯 Get Started
 
-Hypercolor ships installers for Linux, Windows, and macOS with every release. Grab the
-artifact for your platform from the
-[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases), or use one
-of the paths below.
+Public CI ships Linux and Windows installers with every tagged release. Signed
+macOS artifacts use a manual release lane because they require Developer ID
+signing, notarization, and physical acceptance. Grab an available artifact from
+the [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases), or
+use one of the paths below.
 
 ### Install on Linux
 
@@ -319,10 +321,11 @@ Duplication and is enabled by default.
 
 ### Install on macOS
 
-The macOS DMGs (`Hypercolor-<version>-arm64.dmg` for Apple Silicon, `-x86_64.dmg` for
-Intel) are on the
-[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag the app
-into `/Applications` and launch. Minimum macOS 11 (Big Sur).
+When a release includes an accepted macOS build, download
+`Hypercolor-<version>-arm64.dmg` for Apple Silicon or the `-x86_64.dmg` build for
+Intel from the
+[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag
+the app into `/Applications` and launch. Minimum macOS 15.2 (Sequoia).
 
 Or via Homebrew Cask:
 
@@ -330,11 +333,14 @@ Or via Homebrew Cask:
 brew install --cask hyperb1iss/tap/hypercolor-app
 ```
 
-> Current builds carry an ad-hoc signature rather than a notarized Developer ID one, so
-> Gatekeeper flags the first launch. Right-click the app and choose **Open** to confirm.
+> Public CI does not publish unsigned macOS packages. macOS artifacts and the
+> matching Homebrew updates are promoted manually only after signing,
+> notarization, and the signed physical acceptance checkpoint pass.
 
-Hue, WLED, Nanoleaf, Govee, and USB-HID lighting all work out of the box. On first run,
-macOS prompts for Microphone access if you enable audio-reactive effects.
+Hue, WLED, Nanoleaf, Govee, and USB-HID lighting all work out of the box. Hypercolor asks
+for Microphone, Screen Recording, or Input Monitoring access only when you explicitly
+enable the matching audio, screen, or keyboard feature. Pointer-only effects do not need
+Input Monitoring.
 
 ### What works where
 
@@ -343,17 +349,18 @@ macOS prompts for Microphone access if you enable audio-reactive effects.
 | Effects, devices, web UI, TUI, CLI | ✓ | ✓ | ✓ |
 | Audio-reactive (microphone) | ✓ | ✓ | ✓ |
 | Audio-reactive (system audio) | ✓ native monitor | loopback device¹ | loopback device¹ |
-| Screen capture | Wayland portal, opt-in | Desktop Duplication, default on | not available |
-| Keyboard/mouse input | evdev | Raw Input² | polling bridge |
+| Screen capture | Wayland portal, opt-in | Desktop Duplication, default on | ScreenCaptureKit system picker |
+| Keyboard/mouse input | evdev | Raw Input² | Core Graphics event tap³ |
 | Motherboard / DRAM RGB (SMBus) | `i2c-dev` | PawnIO helper | not available |
 | Session and power integration | logind + screensaver | not yet | not yet |
-| Background service | systemd user service | Windows service³ | launchd agent |
+| Background service | systemd user service | Windows service⁴ | launchd agent |
 
 ¹ System-audio reactivity needs a loopback input the OS exposes: Stereo Mix or a virtual
 cable on Windows, BlackHole or Loopback on macOS.
 ² A daemon installed as a Windows service cannot see host input across the session
 boundary; run it in your session for interactive effects.
-³ Or per-user autostart via the desktop app.
+³ Keyboard listening needs Input Monitoring. Pointer-only effects do not.
+⁴ Or per-user autostart via the desktop app.
 
 ### Run
 
@@ -501,18 +508,20 @@ blocks. Edition 2024. Rust 1.94+.
 
 ## 📡 Status
 
-Hypercolor is in active development. The core engine, effect SDK, web UI, TUI, and 12
-shipping driver families work today on Linux, Windows, and macOS, and every release ships
-installers for all three. Every screenshot in this README was captured from a live
-instance running on real hardware.
+Hypercolor is in active development. The core engine, effect SDK, web UI, TUI,
+and 12 shipping driver families work today on Linux, Windows, and macOS. Public
+release automation ships Linux and Windows installers; signed macOS artifacts
+use the manual acceptance lane described above. Every screenshot in this README
+was captured from a live instance running on real hardware.
 
 Worth knowing before you install:
 
-- macOS has no screen capture path yet, and SMBus (motherboard/DRAM RGB) is Linux and
-  Windows only. The "What works where" table above has the full picture.
+- SMBus (motherboard/DRAM RGB) is Linux and Windows only. The "What works where" table
+  above has the full picture.
 - Session and power integration (idle dim, sleep/resume device rescan) is Linux-only today.
-- Windows and macOS binaries are not yet code-signed, so expect a SmartScreen or
-  Gatekeeper speed bump on first launch.
+- Windows binaries are not yet code-signed, so expect a SmartScreen warning on
+  first launch. Published macOS artifacts are signed and notarized after manual
+  acceptance.
 - The [`hypercolor`](https://www.npmjs.com/package/hypercolor) SDK and
   [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder are on
   npm; scaffold an effect workspace with `bun create hypercolor`. The Python client is on

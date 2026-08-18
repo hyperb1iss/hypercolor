@@ -25,10 +25,12 @@ use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
-    SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle, SourceStatusReporter,
-    classify_source_resource_scan,
+    LegacyWheelProjector, SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle,
+    SourceStatusReporter, classify_source_resource_scan,
 };
-use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use crate::types::event::{
+    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -69,7 +71,8 @@ pub struct DeviceOpenStatus {
 struct DeviceCaps {
     keyboard: bool,
     pointer: bool,
-    hi_res_wheel: bool,
+    hi_res_vertical_scroll: bool,
+    hi_res_horizontal_scroll: bool,
 }
 
 struct OpenDevice {
@@ -154,6 +157,7 @@ struct SharedState {
     motion: MotionAggregate,
     pointer_present: bool,
     device_status: Vec<DeviceOpenStatus>,
+    legacy_wheel_projectors: BTreeMap<String, LegacyWheelProjector>,
 }
 
 impl SharedState {
@@ -182,6 +186,7 @@ impl SharedState {
         self.motion = MotionAggregate::default();
         self.pointer_present = false;
         self.device_status.clear();
+        self.legacy_wheel_projectors.clear();
     }
 }
 
@@ -874,36 +879,48 @@ fn fold_event(
                     device.relative_motion.accumulate(axis, value);
                 }
                 RelativeAxisCode::REL_WHEEL_HI_RES => {
-                    push_event(
+                    fold_scroll(
                         state,
-                        TimedInputEvent {
-                            event: InputEvent::MouseWheel {
-                                source_id: device.source_id.clone(),
-                                delta_hi_res: value,
-                            },
-                            at_ms,
-                            seq: 0,
-                            physical_code: Some("evdev:REL_WHEEL_HI_RES".to_owned()),
-                            repeat_count: 1,
-                        },
+                        &device.source_id,
+                        0,
+                        i64::from(value) << 16,
+                        "evdev:REL_WHEEL_HI_RES",
+                        at_ms,
                         event_limit,
                     );
                 }
-                // Devices with hi-res wheels report both; keep only the
-                // hi-res stream to avoid double counting.
-                RelativeAxisCode::REL_WHEEL if !device.caps.hi_res_wheel => {
-                    push_event(
+                RelativeAxisCode::REL_HWHEEL_HI_RES => {
+                    fold_scroll(
                         state,
-                        TimedInputEvent {
-                            event: InputEvent::MouseWheel {
-                                source_id: device.source_id.clone(),
-                                delta_hi_res: value.saturating_mul(120),
-                            },
-                            at_ms,
-                            seq: 0,
-                            physical_code: Some("evdev:REL_WHEEL".to_owned()),
-                            repeat_count: 1,
-                        },
+                        &device.source_id,
+                        i64::from(value) << 16,
+                        0,
+                        "evdev:REL_HWHEEL_HI_RES",
+                        at_ms,
+                        event_limit,
+                    );
+                }
+                // Devices with hi-res axes report both forms. Suppress each
+                // low-resolution axis independently to avoid double counting.
+                RelativeAxisCode::REL_WHEEL if !device.caps.hi_res_vertical_scroll => {
+                    fold_scroll(
+                        state,
+                        &device.source_id,
+                        0,
+                        (i64::from(value) * 120) << 16,
+                        "evdev:REL_WHEEL",
+                        at_ms,
+                        event_limit,
+                    );
+                }
+                RelativeAxisCode::REL_HWHEEL if !device.caps.hi_res_horizontal_scroll => {
+                    fold_scroll(
+                        state,
+                        &device.source_id,
+                        (i64::from(value) * 120) << 16,
+                        0,
+                        "evdev:REL_HWHEEL",
+                        at_ms,
                         event_limit,
                     );
                 }
@@ -915,6 +932,58 @@ fn fold_event(
         }
         _ => {}
     }
+}
+
+fn fold_scroll(
+    state: &mut SharedState,
+    source_id: &str,
+    delta_x_q16_16: i64,
+    delta_y_q16_16: i64,
+    physical_code: &str,
+    at_ms: u64,
+    event_limit: usize,
+) {
+    push_event(
+        state,
+        TimedInputEvent {
+            event: InputEvent::PointerScroll {
+                source_id: source_id.to_owned(),
+                delta_x_q16_16,
+                delta_y_q16_16,
+                unit: PointerScrollUnit::Line120,
+                phase: PointerScrollPhase::None,
+                momentum_phase: PointerScrollPhase::None,
+            },
+            at_ms,
+            seq: 0,
+            physical_code: Some(physical_code.to_owned()),
+            repeat_count: 1,
+        },
+        event_limit,
+    );
+
+    let legacy_delta = state
+        .legacy_wheel_projectors
+        .entry(source_id.to_owned())
+        .or_default()
+        .project(delta_y_q16_16);
+    if legacy_delta == 0 {
+        return;
+    }
+    push_event(
+        state,
+        TimedInputEvent {
+            event: InputEvent::MouseWheel {
+                source_id: source_id.to_owned(),
+                delta_hi_res: legacy_delta,
+            },
+            at_ms,
+            seq: 0,
+            physical_code: Some("evdev:legacy-wheel-shadow".to_owned()),
+            repeat_count: 1,
+        },
+        event_limit,
+    );
 }
 
 fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {
@@ -975,6 +1044,7 @@ fn synthesize_releases_at(
     event_limit: usize,
     at_ms: u64,
 ) {
+    state.legacy_wheel_projectors.remove(source_id);
     if let Some(keys) = state.pressed_keys.remove(source_id) {
         for key in keys {
             push_event(
@@ -1056,12 +1126,16 @@ fn classify_capabilities(
     let looks_like_pointer = axes.is_some_and(|axes| {
         axes.contains(RelativeAxisCode::REL_X) && axes.contains(RelativeAxisCode::REL_Y)
     }) && keys.is_some_and(|keys| keys.contains(KeyCode::BTN_LEFT));
-    let hi_res_wheel = axes.is_some_and(|axes| axes.contains(RelativeAxisCode::REL_WHEEL_HI_RES));
+    let hi_res_vertical_scroll =
+        axes.is_some_and(|axes| axes.contains(RelativeAxisCode::REL_WHEEL_HI_RES));
+    let hi_res_horizontal_scroll =
+        axes.is_some_and(|axes| axes.contains(RelativeAxisCode::REL_HWHEEL_HI_RES));
 
     DeviceCaps {
         keyboard: capture_keyboard && looks_like_keyboard,
         pointer: capture_pointer && looks_like_pointer,
-        hi_res_wheel,
+        hi_res_vertical_scroll,
+        hi_res_horizontal_scroll,
     }
 }
 
@@ -1124,7 +1198,8 @@ mod tests {
             caps: DeviceCaps {
                 keyboard,
                 pointer,
-                hi_res_wheel: false,
+                hi_res_vertical_scroll: false,
+                hi_res_horizontal_scroll: false,
             },
             relative_motion: RelativeMotionFrame::default(),
             discard_until_report: false,
@@ -1183,7 +1258,8 @@ mod tests {
                 DeviceCaps {
                     keyboard: true,
                     pointer: false,
-                    hi_res_wheel: false,
+                    hi_res_vertical_scroll: false,
+                    hi_res_horizontal_scroll: false,
                 },
                 "{} should make a media-only node eligible",
                 media_key.name
@@ -1229,6 +1305,115 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
+    }
+
+    #[test]
+    fn scroll_capabilities_are_detected_per_axis() {
+        let keys = [KeyCode::BTN_LEFT].into_iter().collect::<AttributeSet<_>>();
+        let axes = [
+            RelativeAxisCode::REL_X,
+            RelativeAxisCode::REL_Y,
+            RelativeAxisCode::REL_WHEEL_HI_RES,
+        ]
+        .into_iter()
+        .collect::<AttributeSet<_>>();
+
+        let caps = classify_capabilities(Some(&keys), Some(&axes), false, true);
+        assert!(caps.pointer);
+        assert!(caps.hi_res_vertical_scroll);
+        assert!(!caps.hi_res_horizontal_scroll);
+    }
+
+    #[test]
+    fn high_resolution_vertical_scroll_emits_exact_event_then_shadow() {
+        let mut state = SharedState::default();
+        let mut device = event_state("mouse", false, true);
+
+        fold_event(
+            &mut state,
+            &mut device,
+            relative_event(RelativeAxisCode::REL_WHEEL_HI_RES, -30),
+            7,
+            DEFAULT_EVENT_LIMIT,
+        );
+
+        assert_eq!(state.events.len(), 2);
+        assert!(matches!(
+            &state.events[0].event,
+            InputEvent::PointerScroll {
+                delta_x_q16_16: 0,
+                delta_y_q16_16,
+                unit: PointerScrollUnit::Line120,
+                ..
+            } if *delta_y_q16_16 == -30 * crate::input::Q16_16_SCALE
+        ));
+        assert!(matches!(
+            &state.events[1].event,
+            InputEvent::MouseWheel {
+                delta_hi_res: -30,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn high_resolution_horizontal_scroll_never_projects_to_legacy_wheel() {
+        let mut state = SharedState::default();
+        let mut device = event_state("mouse", false, true);
+
+        fold_event(
+            &mut state,
+            &mut device,
+            relative_event(RelativeAxisCode::REL_HWHEEL_HI_RES, 45),
+            7,
+            DEFAULT_EVENT_LIMIT,
+        );
+
+        assert_eq!(state.events.len(), 1);
+        assert!(matches!(
+            &state.events[0].event,
+            InputEvent::PointerScroll {
+                delta_x_q16_16,
+                delta_y_q16_16: 0,
+                ..
+            } if *delta_x_q16_16 == 45 * crate::input::Q16_16_SCALE
+        ));
+    }
+
+    #[test]
+    fn low_resolution_scroll_converts_notches_and_defers_to_each_high_res_axis() {
+        let mut state = SharedState::default();
+        let mut device = event_state("mouse", false, true);
+        device.caps.hi_res_vertical_scroll = true;
+
+        fold_event(
+            &mut state,
+            &mut device,
+            relative_event(RelativeAxisCode::REL_WHEEL, 1),
+            7,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut device,
+            relative_event(RelativeAxisCode::REL_HWHEEL, -1),
+            8,
+            DEFAULT_EVENT_LIMIT,
+        );
+
+        assert_eq!(
+            state.events.len(),
+            1,
+            "vertical low-res duplicate is suppressed"
+        );
+        assert!(matches!(
+            &state.events[0].event,
+            InputEvent::PointerScroll {
+                delta_x_q16_16,
+                delta_y_q16_16: 0,
+                ..
+            } if *delta_x_q16_16 == -120 * crate::input::Q16_16_SCALE
+        ));
     }
 
     #[test]

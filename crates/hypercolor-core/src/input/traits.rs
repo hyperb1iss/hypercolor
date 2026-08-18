@@ -5,14 +5,139 @@
 //! the render loop consumes per frame.
 
 use super::graph::InteractionSourceOrigin;
-use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
+use super::status::{
+    MacosCapabilityOwner, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
+};
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
-use crate::types::event::{TimedInputEvent, ZoneColors};
+use crate::types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::Deref;
 use std::sync::Arc;
+
+/// Process class that executes one detached protected-source action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtectedSourceActionExecutor {
+    /// The macOS process hosting the source executes the action locally.
+    CurrentMacosProcess,
+    /// The active platform backend executes the action locally.
+    PlatformBackend,
+}
+
+/// Exact process identity that owns a successfully executed protected action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtectedSourceActionOwner {
+    /// The authoritative macOS daemon topology for the current process.
+    Macos(MacosCapabilityOwner),
+    /// The active non-macOS capture backend.
+    PlatformBackend,
+}
+
+/// Whether a detached protected-source action can execute in this process.
+pub enum ResolvedProtectedSourceAction<A> {
+    /// The callback is locally executable after the input-manager lock drops.
+    Local {
+        /// Detached callback owned by the resolved executor.
+        action: A,
+        /// Exact owner of the resulting grant or selection.
+        owner: ProtectedSourceActionOwner,
+    },
+    /// The active topology cannot present the required native UI.
+    RequiresAppUi {
+        /// Authoritative macOS daemon topology that rejected local execution.
+        active_owner: MacosCapabilityOwner,
+    },
+}
+
+/// Explicit local authorization request detached from input-graph locks.
+#[derive(Clone)]
+pub struct ProtectedSourceAuthorizationAction {
+    callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
+    executor: ProtectedSourceActionExecutor,
+}
+
+impl ProtectedSourceAuthorizationAction {
+    pub(crate) fn current_macos_process(
+        callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
+    ) -> Self {
+        Self {
+            callback,
+            executor: ProtectedSourceActionExecutor::CurrentMacosProcess,
+        }
+    }
+
+    /// Return the process class that owns callback execution.
+    #[must_use]
+    pub const fn executor(&self) -> ProtectedSourceActionExecutor {
+        self.executor
+    }
+
+    /// Execute the detached authorization request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native authorization API rejects the request.
+    pub fn execute(&self) -> anyhow::Result<bool> {
+        (self.callback)()
+    }
+}
+
+/// Explicit native source-picker presentation detached from input-graph locks.
+#[derive(Clone)]
+pub struct ScreenSourcePickerAction {
+    callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+    executor: ProtectedSourceActionExecutor,
+}
+
+impl ScreenSourcePickerAction {
+    pub(crate) fn current_macos_process(
+        callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+    ) -> Self {
+        Self {
+            callback,
+            executor: ProtectedSourceActionExecutor::CurrentMacosProcess,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn platform_backend(
+        callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+    ) -> Self {
+        Self {
+            callback,
+            executor: ProtectedSourceActionExecutor::PlatformBackend,
+        }
+    }
+
+    /// Return the process class that owns callback execution.
+    #[must_use]
+    pub const fn executor(&self) -> ProtectedSourceActionExecutor {
+        self.executor
+    }
+
+    /// Execute the detached picker request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native picker cannot be presented.
+    pub fn execute(&self) -> anyhow::Result<()> {
+        (self.callback)()
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub type MacosScreenshotReferenceAction = Arc<
+    dyn Fn() -> anyhow::Result<
+            std::sync::mpsc::Receiver<
+                Result<
+                    hypercolor_macos_capture::MacosScreenshotReferenceCapture,
+                    hypercolor_macos_capture::MacosCaptureError,
+                >,
+            >,
+        > + Send
+        + Sync,
+>;
 
 // ── InputData ──────────────────────────────────────────────────────────────
 
@@ -114,6 +239,7 @@ impl InteractionData {
             .batch
             .wheel_hi_res
             .saturating_add(other.batch.wheel_hi_res);
+        self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
         self.batch.motion.distance += other.batch.motion.distance;
@@ -157,6 +283,7 @@ impl InteractionData {
             .batch
             .wheel_hi_res
             .saturating_add(other.batch.wheel_hi_res);
+        self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
         self.batch.motion.distance += other.batch.motion.distance;
@@ -171,7 +298,7 @@ impl InteractionData {
 /// Health snapshot for one interaction source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractionDiagnostics {
-    /// Backend identifier: `"evdev"`, `"device_query"`, or `"browser"`.
+    /// Backend identifier such as `"evdev"`, `"cg_event_tap"`, or `"browser"`.
     pub backend: &'static str,
     /// Whether this source captures from host hardware (vs injected input).
     pub host_capture: bool,
@@ -199,6 +326,10 @@ pub enum InteractionDegradation {
     /// scheduled task running without an interactive desktop. Raw Input
     /// registers happily in that state and simply never delivers a message.
     NoInteractiveSession,
+    /// The signed process lacks macOS Input Monitoring permission.
+    InputMonitoringPermissionDenied,
+    /// macOS revoked Input Monitoring during an active source session.
+    InputMonitoringPermissionRevoked,
     /// Device nodes present but unreadable — Linux udev rules missing.
     AccessDenied,
     /// The backend could not initialize, or its worker died.
@@ -211,6 +342,8 @@ impl InteractionDegradation {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NoInteractiveSession => "no_interactive_session",
+            Self::InputMonitoringPermissionDenied => "macos_input_permission_denied",
+            Self::InputMonitoringPermissionRevoked => "macos_input_permission_revoked",
             Self::AccessDenied => "access_denied",
             Self::Unavailable(_) => "unavailable",
         }
@@ -289,6 +422,8 @@ pub struct InteractionBatch {
     pub events: Vec<TimedInputEvent>,
     /// Accumulated wheel travel since last frame, in 1/120-notch units.
     pub wheel_hi_res: i32,
+    /// Exact two-axis scroll totals since the previous frame.
+    pub scroll: ScrollAggregate,
     /// Aggregate pointer motion since last frame.
     pub motion: MotionAggregate,
     /// Wall-clock span the motion aggregate covers, in seconds.
@@ -310,6 +445,7 @@ impl InteractionBatch {
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
             && self.wheel_hi_res == 0
+            && self.scroll == ScrollAggregate::default()
             && self.motion == MotionAggregate::default()
             && self.dropped_events == 0
     }
@@ -336,10 +472,45 @@ impl InteractionBatch {
         }
 
         self.wheel_hi_res = self.wheel_hi_res.saturating_add(prior.wheel_hi_res);
+        self.scroll.absorb(prior.scroll);
         self.motion.dx += prior.motion.dx;
         self.motion.dy += prior.motion.dy;
         self.motion.distance += prior.motion.distance;
         self.dropped_events = self.dropped_events.saturating_add(prior.dropped_events);
+    }
+}
+
+/// Exact two-axis scroll accumulated independently by coordinate unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScrollAggregate {
+    pub line120_x_q16_16: i64,
+    pub line120_y_q16_16: i64,
+    pub pixel_x_q16_16: i64,
+    pub pixel_y_q16_16: i64,
+}
+
+impl ScrollAggregate {
+    /// Add one exact scroll delta with saturating overflow behavior.
+    pub fn accumulate(
+        &mut self,
+        unit: PointerScrollUnit,
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
+    ) {
+        let (x, y) = match unit {
+            PointerScrollUnit::Line120 => (&mut self.line120_x_q16_16, &mut self.line120_y_q16_16),
+            PointerScrollUnit::Pixels => (&mut self.pixel_x_q16_16, &mut self.pixel_y_q16_16),
+        };
+        *x = x.saturating_add(delta_x_q16_16);
+        *y = y.saturating_add(delta_y_q16_16);
+    }
+
+    /// Fold another aggregate into this one with saturating arithmetic.
+    pub fn absorb(&mut self, other: Self) {
+        self.line120_x_q16_16 = self.line120_x_q16_16.saturating_add(other.line120_x_q16_16);
+        self.line120_y_q16_16 = self.line120_y_q16_16.saturating_add(other.line120_y_q16_16);
+        self.pixel_x_q16_16 = self.pixel_x_q16_16.saturating_add(other.pixel_x_q16_16);
+        self.pixel_y_q16_16 = self.pixel_y_q16_16.saturating_add(other.pixel_y_q16_16);
     }
 }
 
@@ -492,6 +663,16 @@ pub trait InputSource: Send {
         if let Some(status) = self.source_status_reporter() {
             status.set_source_graph_generation(source_graph_generation);
         }
+    }
+
+    /// Publish the number of consumers in the committed source domain.
+    fn set_active_consumer_count(
+        &mut self,
+        active_consumer_count: usize,
+    ) -> Result<(), SourceStatusError> {
+        self.source_status_reporter().map_or(Ok(()), |status| {
+            status.set_active_consumer_count(active_consumer_count)
+        })
     }
 
     /// Permanently retire this source's status at its removal generation.
@@ -819,6 +1000,32 @@ pub trait InputSource: Send {
         Ok(())
     }
 
+    /// Update screen processing without replacing the native capture session.
+    ///
+    /// Sources without a split processing contract retain the full
+    /// reconfiguration behavior.
+    fn reconfigure_screen_processing(
+        &mut self,
+        config: &crate::input::screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        self.reconfigure_screen_capture(config)
+    }
+
+    /// Mirror the active macOS daemon topology into source status.
+    fn set_macos_daemon_ownership(
+        &mut self,
+        _owner: crate::input::MacosCapabilityOwner,
+        _conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+        _designated_requirement_hash: Option<Arc<str>>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Publish whether the active renderer device exposes required Metal 4 facilities.
+    fn set_macos_metal4_capability(&mut self, _metal4: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Discard any persisted source selection and prompt the user to pick again.
     ///
     /// # Errors
@@ -826,5 +1033,25 @@ pub trait InputSource: Send {
     /// Returns an error if the source cannot restart its capture session.
     fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// Return the explicit Input Monitoring request owned by this source.
+    fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        None
+    }
+
+    /// Return the explicit Screen Recording request owned by this source.
+    fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        None
+    }
+
+    /// Return the system source-picker action owned by this source.
+    fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+        None
     }
 }

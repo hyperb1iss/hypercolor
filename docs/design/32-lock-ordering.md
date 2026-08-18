@@ -42,7 +42,7 @@ a canonical acquisition order to prevent deadlocks, and flags code that violates
 | `UsbBackend::prism_s`                   | `tokio::RwLock`        | PrismS device config cache            | `device/usb_backend.rs:214`          |
 | `AudioCaptureManager::analyzer`         | `std::Mutex`           | Audio FFT/beat analyzer state         | `input/audio/mod.rs:265`             |
 | `EvdevInputSource::shared`              | `std::Mutex`           | Keyboard/evdev latest snapshot        | `input/evdev.rs:42`                  |
-| `InteractionInputSource::shared`        | `std::Mutex`           | Mouse/interaction latest snapshot     | `input/interaction/mod.rs:31`        |
+| `MacosHostInput::shared`                | `std::Mutex`           | macOS held state and event batches    | `input/macos.rs:47`                  |
 | `WaylandScreenCapture::latest_snapshot` | `std::Mutex`           | Latest screen capture frame           | `input/screen/wayland.rs:34`         |
 | `ServoDelegate::last_url`               | `std::Mutex`           | Servo navigation URL                  | `effect/servo/delegate.rs:37`        |
 | `ServoDelegate::console_messages`       | `std::Mutex`           | Servo console message ring            | `effect/servo/delegate.rs:38`        |

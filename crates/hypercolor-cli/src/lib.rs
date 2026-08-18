@@ -165,6 +165,10 @@ pub enum Commands {
     #[command(display_order = 14)]
     Audio(commands::audio::AudioArgs),
 
+    /// Explicit host-input and screen-capture permission actions
+    #[command(display_order = 15)]
+    Access(commands::access::AccessArgs),
+
     // ── Library ───────────────────────────────────────────────
     /// Favorites, presets, and playlists
     #[command(display_order = 20)]
@@ -276,6 +280,7 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Layouts(args) => commands::layouts::execute(args, &client, &ctx).await,
         Commands::Brightness(args) => commands::brightness::execute(args, &client, &ctx).await,
         Commands::Audio(args) => commands::audio::execute(args, &client, &ctx).await,
+        Commands::Access(args) => commands::access::execute(args, &client, &ctx).await,
         Commands::Server(args) => commands::server::execute(args, &client, &ctx).await,
         Commands::Config(args) => commands::config::execute(args, &client, &ctx).await,
         Commands::Service(args) => commands::service::execute(args, &ctx).await,
@@ -293,7 +298,7 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
 
     if let Err(e) = result {
         ctx.error(&format!("{e:#}"));
-        std::process::exit(1);
+        std::process::exit(commands::status::exit_code_for_error(&e).unwrap_or(1));
     }
 
     Ok(())

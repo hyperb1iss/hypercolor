@@ -1,15 +1,80 @@
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::ImportedEffectFrame;
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+use hypercolor_core::input::screen::PlatformGpuSurfaceOwner;
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
 use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::input::screen::{
     CapturePixelFormat, ScreenBranchPayload, ScreenBranchPublication, ScreenSurfacePayload,
 };
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+use hypercolor_macos_capture::MacosCaptureFrame;
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+use hypercolor_macos_gpu_interop::ImportedMacosScreenFrame;
 #[cfg(all(feature = "wgpu", target_os = "windows"))]
 use hypercolor_windows_gpu_interop::ScreenTextureCopy;
+#[cfg(feature = "wgpu")]
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Values that must outlive the GPU submission that references them.
+///
+/// The compositor retires entries in queue order because wgpu submissions on
+/// one queue complete in that same order.
+#[cfg(feature = "wgpu")]
+#[derive(Debug)]
+pub(crate) struct SubmissionRetirementQueue<K, T> {
+    entries: VecDeque<(K, Vec<T>)>,
+}
+
+#[cfg(feature = "wgpu")]
+impl<K, T> Default for SubmissionRetirementQueue<K, T> {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl<K, T> SubmissionRetirementQueue<K, T> {
+    pub(crate) fn retire(&mut self, submission: K, values: Vec<T>) {
+        if !values.is_empty() {
+            self.entries.push_back((submission, values));
+        }
+    }
+
+    pub(crate) fn release_completed(&mut self, mut is_complete: impl FnMut(&K) -> bool) {
+        while self
+            .entries
+            .front()
+            .is_some_and(|(submission, _)| is_complete(submission))
+        {
+            self.entries.pop_front();
+        }
+    }
+
+    pub(crate) fn front_submission(&self) -> Option<&K> {
+        self.entries.front().map(|(submission, _)| submission)
+    }
+
+    pub(crate) fn release_front(&mut self) {
+        self.entries.pop_front();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 #[cfg(feature = "wgpu")]
 #[derive(Debug, Clone)]
@@ -28,6 +93,8 @@ pub(crate) struct GpuTextureFrame {
     pub(crate) immutable_lease: Option<Arc<GpuTextureFrameLease>>,
     #[cfg(target_os = "windows")]
     pub(crate) windows_screen_lease: Option<WindowsScreenTextureLease>,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    pub(crate) macos_screen_lease: Option<MacosScreenTextureLease>,
 }
 
 #[cfg(feature = "wgpu")]
@@ -55,18 +122,92 @@ impl WindowsScreenTextureLease {
             _capture_lifetime: capture_lifetime,
         }
     }
+}
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+#[derive(Clone)]
+pub(crate) struct MacosScreenTextureLease {
+    _imported: ImportedMacosScreenFrame,
+    _capture_owner: PlatformGpuSurfaceOwner<MacosCaptureFrame>,
+    _target_owner: PlatformGpuSurfaceOwner<
+        crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
+    >,
+    _target_lifetime: ScreenResourceLifetime,
+    _shared_target_lifetime: Option<ScreenResourceLifetime>,
+    _capture_lifetime: ScreenResourceLifetime,
+}
 
-    pub(crate) const fn target_lifetime(&self) -> &ScreenResourceLifetime {
-        &self.target_lifetime
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+impl MacosScreenTextureLease {
+    pub(crate) fn new(
+        imported: ImportedMacosScreenFrame,
+        capture_owner: PlatformGpuSurfaceOwner<MacosCaptureFrame>,
+        target_owner: PlatformGpuSurfaceOwner<
+            crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
+        >,
+        target_lifetime: ScreenResourceLifetime,
+        shared_target_lifetime: Option<ScreenResourceLifetime>,
+        capture_lifetime: ScreenResourceLifetime,
+    ) -> Self {
+        Self {
+            _imported: imported,
+            _capture_owner: capture_owner,
+            _target_owner: target_owner,
+            _target_lifetime: target_lifetime,
+            _shared_target_lifetime: shared_target_lifetime,
+            _capture_lifetime: capture_lifetime,
+        }
+    }
+}
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+impl std::fmt::Debug for MacosScreenTextureLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MacosScreenTextureLease")
+            .finish_non_exhaustive()
     }
 }
 
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
+#[derive(Debug, Clone)]
+#[allow(
+    dead_code,
+    reason = "cache lease payloads are retained for ownership rather than inspected"
+)]
+pub(crate) enum NativeScreenCacheLease {
+    #[cfg(target_os = "windows")]
+    Windows(ScreenResourceLifetime),
+    #[cfg(target_os = "macos")]
+    Macos(MacosScreenTextureLease),
+}
+
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
 impl GpuTextureFrame {
-    pub(crate) fn screen_target_lifetime(&self) -> Option<&ScreenResourceLifetime> {
-        self.windows_screen_lease
-            .as_ref()
-            .map(WindowsScreenTextureLease::target_lifetime)
+    pub(crate) fn native_screen_cache_lease(&self) -> Option<NativeScreenCacheLease> {
+        #[cfg(target_os = "windows")]
+        {
+            self.windows_screen_lease
+                .as_ref()
+                .map(|lease| NativeScreenCacheLease::Windows(lease.target_lifetime.clone()))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_screen_lease
+                .as_ref()
+                .cloned()
+                .map(NativeScreenCacheLease::Macos)
+        }
     }
 }
 
@@ -363,7 +504,16 @@ impl ProducerQueue {
         self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 
-    #[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
+    #[cfg(any(
+        test,
+        all(
+            feature = "wgpu",
+            any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            )
+        )
+    ))]
     pub(crate) const fn has_latest(&self) -> bool {
         self.latest.is_some()
     }
@@ -426,9 +576,62 @@ impl ProducerFrameState {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "wgpu")]
+    use std::sync::Arc;
+    #[cfg(feature = "wgpu")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 
+    #[cfg(feature = "wgpu")]
+    use super::SubmissionRetirementQueue;
     use super::{ProducerFrame, ProducerFrameState, ProducerQueue};
+
+    #[cfg(feature = "wgpu")]
+    struct LeaseDropProbe(Arc<AtomicUsize>);
+
+    #[cfg(feature = "wgpu")]
+    impl Drop for LeaseDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn submission_retirement_queue_keeps_evicted_leases_until_completion() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+
+        // Cache eviction only removes its own entry. The submission queue keeps
+        // the native owner alive until the device reports this submission done.
+        retirements.release_completed(|_| false);
+        assert_eq!(retirements.len(), 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        retirements.release_completed(|submission| *submission == 17);
+        assert_eq!(retirements.len(), 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn submission_retirement_queue_never_releases_past_an_incomplete_submission() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+        retirements.retire(18_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+
+        retirements.release_completed(|submission| *submission == 18);
+
+        assert_eq!(retirements.len(), 2);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        retirements.release_completed(|_| true);
+        assert_eq!(retirements.len(), 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn producer_queue_latches_fresh_then_retains() {

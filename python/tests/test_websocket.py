@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import runpy
 import struct
 import uuid
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 import msgspec
@@ -29,6 +33,7 @@ from hypercolor.websocket import (
 )
 
 PROTOCOL_MANIFEST = Path(__file__).resolve().parents[2] / "protocol" / "websocket-v1.json"
+WS_GENERATOR = Path(__file__).resolve().parents[1] / "scripts" / "generate_ws_protocol.py"
 
 
 class _TestClient:
@@ -56,6 +61,9 @@ def test_ws_protocol_constants_match_manifest() -> None:
     assert manifest["subprotocol"] == ws_protocol.WS_SUBPROTOCOL
     assert list(ws_protocol.WS_TOPICS) == [str(topic["name"]) for topic in topics]
     assert list(ws_protocol.WS_CAPABILITIES) == _expect_list(manifest["capabilities"])
+    assert _thaw_json(ws_protocol.JSON_PAYLOAD_CONTRACTS) == _expect_dict(
+        manifest["json_payloads"]
+    )
     assert dict(ws_protocol.BINARY_MESSAGE_TAGS) == {
         str(message["name"]): int(message["tag"]) for message in binary_messages
     }
@@ -67,6 +75,36 @@ def test_ws_protocol_constants_match_manifest() -> None:
     assert dict(ws_protocol.CANVAS_FORMAT_TAGS) == {
         int(tag): name for name, tag in preview_formats.items()
     }
+
+
+def test_ws_protocol_field_defaults_distinguish_absent_from_null() -> None:
+    timed_input = _expect_mapping(ws_protocol.JSON_PAYLOAD_CONTRACTS["timed_input_event_v1"])
+    required_fields = _expect_tuple(timed_input["required_fields"])
+    optional_fields = _expect_mapping(timed_input["optional_fields"])
+
+    assert "event" in required_fields
+    assert "event" not in optional_fields
+    assert "physical_code" in optional_fields
+    assert optional_fields["physical_code"] is None
+
+
+def test_ws_protocol_contracts_are_deeply_immutable() -> None:
+    timed_input = ws_protocol.JSON_PAYLOAD_CONTRACTS["timed_input_event_v1"]
+    required_fields = timed_input["required_fields"]
+    optional_fields = timed_input["optional_fields"]
+
+    assert isinstance(timed_input, MappingProxyType)
+    assert isinstance(required_fields, tuple)
+    assert isinstance(optional_fields, MappingProxyType)
+    with pytest.raises(TypeError):
+        cast(dict[str, Any], optional_fields)["at_ms"] = 99
+
+
+def test_ws_protocol_generator_round_trips_non_bmp_strings() -> None:
+    value = "😀"
+    quote = cast(Callable[[str], str], runpy.run_path(str(WS_GENERATOR))["quote"])
+
+    assert ast.literal_eval(quote(value)) == value
 
 
 def test_decode_hello_message() -> None:
@@ -270,6 +308,24 @@ def _expect_dict(value: Any) -> dict[str, Any]:
 
 def _expect_list(value: Any) -> list[Any]:
     assert isinstance(value, list)
+    return value
+
+
+def _expect_mapping(value: Any) -> Mapping[str, Any]:
+    assert isinstance(value, Mapping)
+    return value
+
+
+def _expect_tuple(value: Any) -> tuple[Any, ...]:
+    assert isinstance(value, tuple)
+    return value
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(child) for child in value]
     return value
 
 

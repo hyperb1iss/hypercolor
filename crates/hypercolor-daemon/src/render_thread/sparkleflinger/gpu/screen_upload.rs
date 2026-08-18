@@ -414,6 +414,8 @@ fn gpu_texture_frame(texture: &ScreenUploadTexture, content_generation: u64) -> 
         immutable_lease: None,
         #[cfg(target_os = "windows")]
         windows_screen_lease: None,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        macos_screen_lease: None,
     }
 }
 

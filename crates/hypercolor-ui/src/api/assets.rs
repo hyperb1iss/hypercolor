@@ -1,6 +1,6 @@
 //! User media asset API client.
 
-use gloo_net::http::Request;
+use gloo_net::http::Method;
 use web_sys::{File, FormData};
 
 use super::{ApiEnvelope, client};
@@ -37,7 +37,8 @@ pub async fn upload_asset(file: File) -> Result<AssetUploadResponse, String> {
         .append_with_blob_and_filename("file", &file, &file.name())
         .map_err(|error| format!("{error:?}"))?;
 
-    let response = client::with_auth(Request::post("/api/v1/assets"))
+    let request = client::request(Method::POST, "/api/v1/assets").map_err(String::from)?;
+    let response = request
         .body(form_data)
         .map_err(|error| error.to_string())?
         .send()

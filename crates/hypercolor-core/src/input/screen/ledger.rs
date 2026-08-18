@@ -2,13 +2,21 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::plan::ScreenExternalResourceAdmission;
+use super::plan::{ScreenExternalResourceAdmission, ScreenNativeSharedResourceBindingKey};
 use super::{
     AdmittedScreenNativeTargetPreparation, ResolvedScreenPublicationDescriptor,
     ScreenByteReservation, ScreenExactResource, ScreenExactResourceLedger,
     ScreenNativeExecutionTarget, ScreenNativePreparationPayload, ScreenPlanError,
     ScreenPreparedWorkerToken, ScreenResourceLifetime, ScreenWorkerPreparationTicket,
 };
+
+#[derive(Clone, Debug)]
+struct ScreenSharedNativeResource {
+    binding: ScreenNativeSharedResourceBindingKey,
+    bytes: u64,
+    resource_name: Option<Arc<str>>,
+    admission_lease: Option<super::ScreenByteLease>,
+}
 
 /// Ticket-scoped construction of one exhaustive exact worker ledger.
 #[derive(Debug)]
@@ -18,6 +26,7 @@ pub struct ScreenWorkerExactLedgerBuilder {
     additional_resources: Vec<ScreenExactResource>,
     admission_top_ups: Vec<ScreenByteReservation>,
     external_admissions: Vec<ScreenExternalResourceAdmission>,
+    shared_native_resources: Vec<ScreenSharedNativeResource>,
 }
 
 impl ScreenWorkerExactLedgerBuilder {
@@ -40,6 +49,7 @@ impl ScreenWorkerExactLedgerBuilder {
             additional_resources: Vec::new(),
             admission_top_ups: Vec::new(),
             external_admissions: Vec::new(),
+            shared_native_resources: Vec::new(),
         })
     }
 
@@ -73,29 +83,117 @@ impl ScreenWorkerExactLedgerBuilder {
         resource_name: impl Into<Arc<str>>,
         accounting_scope: impl Into<Arc<str>>,
     ) -> anyhow::Result<AdmittedScreenNativeTargetPreparation> {
+        if platform.plan_generation() != self.ticket.plan_generation() {
+            return Err(ScreenWorkerLedgerBuildError::NativePlanGenerationMismatch {
+                expected: self.ticket.plan_generation(),
+                observed: platform.plan_generation(),
+            }
+            .into());
+        }
         let quote = target.quote_preparation(descriptor, platform)?;
+        let retention = quote.retention();
+        let shared_binding = quote.shared_binding();
+        let existing_shared = self
+            .shared_native_resources
+            .iter()
+            .find(|shared| shared.binding == shared_binding)
+            .map(|shared| {
+                if shared.bytes != retention.shared_physical_bytes() {
+                    return Err(
+                        ScreenWorkerLedgerBuildError::ConflictingNativeSharedRetention {
+                            expected: shared.bytes,
+                            observed: retention.shared_physical_bytes(),
+                        },
+                    );
+                }
+                Ok((shared.resource_name.clone(), shared.admission_lease.clone()))
+            })
+            .transpose()?;
+        let records_shared = existing_shared.is_none();
+        let creates_shared = records_shared && retention.shared_physical_bytes() > 0;
+        let resource_name = resource_name.into();
+        let accounting_scope = accounting_scope.into();
         self.additional_resources
-            .try_reserve(1)
+            .try_reserve(usize::from(creates_shared) + 1)
             .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
         self.external_admissions
-            .try_reserve(1)
+            .try_reserve(usize::from(creates_shared) + 1)
             .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
-        let reservation = self
+        if records_shared {
+            self.shared_native_resources
+                .try_reserve(1)
+                .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
+        }
+        let exclusive_reservation = self
             .ticket
-            .reserve_additional_exact_bytes(quote.retained_bytes())?;
+            .reserve_additional_exact_bytes(retention.exclusive_bytes())?;
+        let shared_reservation = creates_shared
+            .then(|| {
+                self.ticket
+                    .reserve_additional_exact_bytes(retention.shared_physical_bytes())
+            })
+            .transpose()?;
         let preparation = target.prepare_quoted(descriptor, platform, quote)?;
-        let resource = preparation.exact_resource(resource_name, accounting_scope)?;
-        let resource_name = Arc::clone(resource.name());
-        self.report_native_target(resource)?;
-        let lease = reservation.freeze();
+        let resource = preparation
+            .exact_resource(Arc::clone(&resource_name), Arc::clone(&accounting_scope))?;
+        self.validate_native_target_resource(&resource)?;
+        let new_shared_name =
+            creates_shared.then(|| Arc::<str>::from(format!("{resource_name}-shared-physical")));
+        let new_shared_resource = match &new_shared_name {
+            Some(name) => {
+                let resource = ScreenExactResource::try_new_native_shared_target(
+                    Arc::clone(name),
+                    Arc::clone(&accounting_scope),
+                    retention.shared_physical_bytes(),
+                    shared_binding.clone(),
+                )?;
+                self.validate_native_target_resource(&resource)?;
+                Some(resource)
+            }
+            None => None,
+        };
+        self.additional_resources.push(resource);
+        if let Some(resource) = new_shared_resource {
+            self.additional_resources.push(resource);
+        }
+        let lease = exclusive_reservation.freeze();
         self.external_admissions
             .push(ScreenExternalResourceAdmission::new(
-                resource_name,
+                Arc::clone(&resource_name),
                 lease.clone(),
             ));
+        let (shared_resource_name, shared_lease) = if let Some((name, lease)) = existing_shared {
+            (name, lease)
+        } else if let (Some(name), Some(reservation)) = (new_shared_name, shared_reservation) {
+            let shared_lease = reservation.freeze();
+            self.external_admissions
+                .push(ScreenExternalResourceAdmission::new(
+                    Arc::clone(&name),
+                    shared_lease.clone(),
+                ));
+            self.shared_native_resources
+                .push(ScreenSharedNativeResource {
+                    binding: shared_binding,
+                    bytes: retention.shared_physical_bytes(),
+                    resource_name: Some(Arc::clone(&name)),
+                    admission_lease: Some(shared_lease.clone()),
+                });
+            (Some(name), Some(shared_lease))
+        } else {
+            self.shared_native_resources
+                .push(ScreenSharedNativeResource {
+                    binding: shared_binding,
+                    bytes: 0,
+                    resource_name: None,
+                    admission_lease: None,
+                });
+            (None, None)
+        };
         Ok(AdmittedScreenNativeTargetPreparation::new(
             preparation,
             lease,
+            shared_resource_name,
+            shared_lease,
         ))
     }
 
@@ -202,17 +300,11 @@ impl ScreenWorkerExactLedgerBuilder {
         Ok(())
     }
 
-    /// Report one renderer preparation through its target-bound ledger entry.
-    ///
-    /// # Errors
-    ///
-    /// Rejects generic worker resources, unknown or non-runtime scopes,
-    /// repeated names, and allocation failure while retaining prior reports.
-    pub(crate) fn report_native_target(
-        &mut self,
-        resource: ScreenExactResource,
+    fn validate_native_target_resource(
+        &self,
+        resource: &ScreenExactResource,
     ) -> Result<(), ScreenWorkerLedgerBuildError> {
-        if resource.native_binding().is_none() {
+        if resource.native_binding().is_none() && resource.native_shared_binding().is_none() {
             return Err(ScreenWorkerLedgerBuildError::UnboundNativeTargetResource {
                 name: Arc::clone(resource.name()),
             });
@@ -251,10 +343,6 @@ impl ScreenWorkerExactLedgerBuilder {
                 name: Arc::clone(resource.name()),
             });
         }
-        self.additional_resources
-            .try_reserve(1)
-            .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
-        self.additional_resources.push(resource);
         Ok(())
     }
 
@@ -370,6 +458,17 @@ pub enum ScreenWorkerLedgerBuildError {
         name: Arc<str>,
         minimum: u64,
         actual: u64,
+    },
+    /// Equal native physical work produced inconsistent shared byte quotes.
+    #[error(
+        "equal native physical work quoted conflicting shared retention: expected {expected}, observed {observed}"
+    )]
+    ConflictingNativeSharedRetention { expected: u64, observed: u64 },
+    /// A native payload belongs to another candidate plan generation.
+    #[error("native target payload belongs to plan generation {observed:?}, expected {expected:?}")]
+    NativePlanGenerationMismatch {
+        expected: super::ScreenPlanGeneration,
+        observed: super::ScreenPlanGeneration,
     },
     /// Ticket resource construction or acknowledgement failed.
     #[error(transparent)]

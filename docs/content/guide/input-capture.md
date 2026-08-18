@@ -102,7 +102,22 @@ An RDP session is a legitimate interactive session with its own desktop, and Hyp
 
 ## macOS
 
-macOS still uses a polling bridge that samples held keys rather than observing events, so press timing and pointer position are unavailable there. A native backend is planned.
+macOS uses native Core Graphics session event taps. Keyboard and pointer
+capture are independent, event-driven sources. The keyboard source reports
+physical key locations, modifiers, media keys, repeats, and releases. The
+pointer source reports global position, motion, buttons, exact wheel units,
+trackpad phases, and momentum.
+
+Keyboard listening requires **Input Monitoring** permission. Hypercolor first
+checks the current grant without prompting. Only an explicit authorization
+action may open the system prompt. Pointer-only effects do not request Input
+Monitoring, and Hypercolor does not request Accessibility or Apple Events
+access for host input.
+
+A permission loss, secure-input gap, session lock, disabled tap, or source
+restart releases every held key and button before capture resumes. This keeps
+interactive effects from retaining phantom input across a protected desktop
+transition.
 
 ---
 

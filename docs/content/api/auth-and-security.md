@@ -1,26 +1,29 @@
 +++
 title = "Auth & security"
-description = "Dual-key API auth, the loopback exemption, CORS, network allowlists, and rate limiting for the Hypercolor daemon on :9420."
+description = "Dual-key API auth, protected local controls, CORS, network allowlists, and rate limiting for the Hypercolor daemon on :9420."
 weight = 60
 template = "page.html"
 +++
 
-The daemon ships **open on loopback and closed to the network**. Local clients
-on `127.0.0.1` (CLI, TUI, web UI, an MCP client on the same box) work with no
-credentials, while every off-host request is gated by the layers on this page:
-API-key authentication, a per-client allowlist, CORS, and rate limiting. All of
-it is enforced by a single Axum middleware (`enforce_security`) that wraps the
-whole `/api/v1` surface.
+The daemon ships **open for ordinary control on loopback and closed to the
+network**. Local clients on `127.0.0.1` (CLI, TUI, web UI, an MCP client on the
+same box) can manage lighting with no credentials. Privacy-bearing capture and
+input operations always require an authenticated control credential, including
+on loopback. Every off-host request is also gated by API-key authentication, a
+per-client allowlist, CORS, and rate limiting. One Axum middleware
+(`enforce_security`) establishes both the ordinary API tier and the separate
+protected-control authority for the whole `/api/v1` surface.
 
 If you only ever drive Hypercolor from the same machine, you can stop reading
 after the loopback section. Everything else matters the moment you bind the
 daemon to a LAN address or put it behind a reverse proxy.
 
 {% callout(type="info") %}
-Authentication is **opt-in**. With no API-key environment variables set, the
-daemon enforces no keys at all: loopback is trusted and remote clients are
-governed only by the network allowlist (default: local-only). Setting a key
-flips on the full Bearer-token gate.
+Ordinary API authentication is **opt-in**. With no API-key environment
+variables set, loopback lighting control remains credentialless and remote
+clients are governed by the network allowlist (default: local-only). Protected
+capture and input surfaces remain unavailable until a control credential or
+trusted in-process capability is present.
 {% end %}
 
 ## The model at a glance
@@ -38,16 +41,20 @@ graph TD
   C -- no --> D{Loopback client?}
   D -- yes --> E{Cross-site mutating request?}
   E -- yes --> R2[403 forbidden - CSRF]
-  E -- no --> P
+  E -- no --> J{Protected capture or input?}
   D -- no --> F{Auth enabled?}
-  F -- no --> P
+  F -- no --> J
   F -- yes --> G{Valid Bearer token?}
   G -- no --> R3[401 unauthorized]
   G -- yes --> H{Tier satisfies method?}
   H -- no --> R4[403 forbidden]
   H -- yes --> I{Under rate limit?}
   I -- no --> R5[429 rate_limited]
-  I -- yes --> P
+  I -- yes --> J
+  J -- no --> P
+  J -- yes --> K{Authenticated control authority?}
+  K -- no --> R6[403 forbidden]
+  K -- yes --> P
 {% end %}
 
 ## Dual-key authentication
@@ -123,12 +130,30 @@ A missing or unparseable token on a non-loopback request returns
 ## The loopback exemption
 
 Requests whose client IP is loopback (`127.0.0.0/8`, `::1`) skip the API-key
-requirement entirely. This is why the CLI, TUI, web UI, and a local MCP client
-all work with no key on a default install. The daemon derives the client IP
-from the peer socket; when the peer is itself loopback (a reverse proxy on the
-same host) it honors `X-Forwarded-For` / `X-Real-IP` so the real remote IP is
-used for auth and allowlisting. Forwarded headers from a **non-loopback** peer
-are ignored, so you cannot spoof your way to a loopback exemption.
+requirement for ordinary lighting control. This is why the CLI, TUI, web UI,
+and a local MCP client all work with no key on a default install. The daemon
+derives the client IP from the peer socket; when the peer is itself loopback (a
+reverse proxy on the same host) it honors `X-Forwarded-For` / `X-Real-IP` so the
+real remote IP is used for auth and allowlisting. Forwarded headers from a
+**non-loopback** peer are ignored, so you cannot spoof your way to a loopback
+exemption.
+
+Loopback locality is not a user identity. These surfaces require protected
+control authority even when the TCP peer is loopback:
+
+- `POST /api/v1/input/authorize`
+- `POST /api/v1/capture/authorize`
+- `POST /api/v1/capture/source/pick`
+- `GET /api/v1/capture/monitors`
+- WebSocket subscriptions to `screen_canvas`, `screen_zones`, or `input_events`
+
+The ordinary status endpoint remains available, but capture selection IDs are
+redacted unless the request has protected control authority.
+
+An authenticated control-tier key grants that authority. A read key, a missing
+key, an `Origin` header, Fetch Metadata, and the peer IP do not. Trusted
+in-process transports receive the same authority only after their own
+authentication boundary has succeeded.
 
 ### CSRF protection on loopback
 
@@ -315,9 +340,11 @@ ws://studio.local:9420/api/v1/ws?token=hc_ak_super_secret
 
 Query-string tokens are accepted **only** on the `GET` WebSocket upgrade. Plain
 HTTP endpoints reject `?token=` and demand the `Authorization` header, so a
-token never leaks into an ordinary request URL or access log. On loopback the
-socket needs no token at all. For the channel and frame protocol once
-connected, see [WebSocket protocol](@/api/websocket.md).
+token never leaks into an ordinary request URL or access log. A loopback socket
+needs no token for ordinary channels. The three sensitive channels require a
+control token in the upgrade URL or a trusted in-process connection. For the
+channel and frame protocol once connected, see
+[WebSocket protocol](@/api/websocket.md).
 
 ## Hardening checklist
 

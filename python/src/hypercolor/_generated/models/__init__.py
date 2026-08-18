@@ -27,6 +27,16 @@ from .api_response_apply_effect_response_data import ApiResponseApplyEffectRespo
 from .api_response_apply_effect_response_data_applied_controls import (
     ApiResponseApplyEffectResponseDataAppliedControls,
 )
+from .api_response_capture_authorization_response import (
+    ApiResponseCaptureAuthorizationResponse,
+)
+from .api_response_capture_authorization_response_data import (
+    ApiResponseCaptureAuthorizationResponseData,
+)
+from .api_response_capture_picker_response import ApiResponseCapturePickerResponse
+from .api_response_capture_picker_response_data import (
+    ApiResponseCapturePickerResponseData,
+)
 from .api_response_control_action_result import ApiResponseControlActionResult
 from .api_response_control_action_result_data import ApiResponseControlActionResultData
 from .api_response_control_action_result_data_result_type_0 import (
@@ -84,6 +94,10 @@ from .api_response_server_info import ApiResponseServerInfo
 from .api_response_server_info_data import ApiResponseServerInfoData
 from .api_response_system_status import ApiResponseSystemStatus
 from .api_response_system_status_data import ApiResponseSystemStatusData
+from .api_response_vec_capture_monitor import ApiResponseVecCaptureMonitor
+from .api_response_vec_capture_monitor_data_item import (
+    ApiResponseVecCaptureMonitorDataItem,
+)
 from .applied_control_change import AppliedControlChange
 from .applied_control_change_value import AppliedControlChangeValue
 from .apply_control_changes_request import ApplyControlChangesRequest
@@ -136,6 +150,9 @@ from .broadcast_media_layer_zone_response import BroadcastMediaLayerZoneResponse
 from .broadcast_media_layer_zone_response_items_item import (
     BroadcastMediaLayerZoneResponseItemsItem,
 )
+from .capture_authorization_response import CaptureAuthorizationResponse
+from .capture_monitor import CaptureMonitor
+from .capture_picker_response import CapturePickerResponse
 from .config_key_schema_entry import ConfigKeySchemaEntry
 from .config_mutation_response import ConfigMutationResponse
 from .control_access import ControlAccess
@@ -243,15 +260,23 @@ from .effect_preset_summary import EffectPresetSummary
 from .effect_preset_summary_controls import EffectPresetSummaryControls
 from .effect_ref_summary import EffectRefSummary
 from .effect_summary import EffectSummary
+from .full_frame_copy_session_status import FullFrameCopySessionStatus
 from .gpu_compositor_probe_status import GpuCompositorProbeStatus
 from .gradient_stop import GradientStop
 from .health_checks import HealthChecks
 from .health_response import HealthResponse
 from .identify_request import IdentifyRequest
 from .input_source_issue_status import InputSourceIssueStatus
+from .input_source_platform_status_type_0 import InputSourcePlatformStatusType0
+from .input_source_platform_status_type_0_type import InputSourcePlatformStatusType0Type
+from .input_source_platform_status_type_1 import InputSourcePlatformStatusType1
+from .input_source_platform_status_type_1_type import InputSourcePlatformStatusType1Type
 from .input_source_status import InputSourceStatus
 from .input_status import InputStatus
 from .invoke_control_action_request import InvokeControlActionRequest
+from .latency_histogram_bucket_status import LatencyHistogramBucketStatus
+from .latency_histogram_status import LatencyHistogramStatus
+from .latency_percentiles_status import LatencyPercentilesStatus
 from .latest_frame_status import LatestFrameStatus
 from .layer_order_request import LayerOrderRequest
 from .layer_stack_response import LayerStackResponse
@@ -272,6 +297,31 @@ from .led_topology_type_5_type import LedTopologyType5Type
 from .led_topology_type_6 import LedTopologyType6
 from .led_topology_type_6_type import LedTopologyType6Type
 from .live_section import LiveSection
+from .macos_architecture_api import MacosArchitectureApi
+from .macos_authorization_state_api import MacosAuthorizationStateApi
+from .macos_capability_owner_api import MacosCapabilityOwnerApi
+from .macos_daemon_handover_phase_api import MacosDaemonHandoverPhaseApi
+from .macos_daemon_owner_conflict_api_status import MacosDaemonOwnerConflictApiStatus
+from .macos_daemon_owner_recovery_required_api_status import (
+    MacosDaemonOwnerRecoveryRequiredApiStatus,
+)
+from .macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
+from .macos_frame_drop_api_status import MacosFrameDropApiStatus
+from .macos_input_telemetry_api_status import MacosInputTelemetryApiStatus
+from .macos_protected_source_state_api import MacosProtectedSourceStateApi
+from .macos_screen_telemetry_api_status import MacosScreenTelemetryApiStatus
+from .macos_screen_timing_api_status import MacosScreenTimingApiStatus
+from .macos_selection_state_api_type_0 import MacosSelectionStateApiType0
+from .macos_selection_state_api_type_0_type import MacosSelectionStateApiType0Type
+from .macos_selection_state_api_type_1 import MacosSelectionStateApiType1
+from .macos_selection_state_api_type_1_type import MacosSelectionStateApiType1Type
+from .macos_selection_state_api_type_2 import MacosSelectionStateApiType2
+from .macos_selection_state_api_type_2_type import MacosSelectionStateApiType2Type
+from .macos_tahoe_capabilities_api_status import MacosTahoeCapabilitiesApiStatus
+from .macos_tahoe_selection_capabilities_api_status import (
+    MacosTahoeSelectionCapabilitiesApiStatus,
+)
+from .macos_timing_api_status import MacosTimingApiStatus
 from .meta import Meta
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
@@ -292,6 +342,7 @@ from .preset_template_controls import PresetTemplateControls
 from .preview_demand_status import PreviewDemandStatus
 from .preview_runtime_status import PreviewRuntimeStatus
 from .preview_source import PreviewSource
+from .protected_source_grant_owner import ProtectedSourceGrantOwner
 from .rebind_candidate_summary import RebindCandidateSummary
 from .rebind_device_request import RebindDeviceRequest
 from .redaction import Redaction
@@ -315,6 +366,7 @@ from .sampling_mode_type_3_type import SamplingModeType3Type
 from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
+from .session_performance_status import SessionPerformanceStatus
 from .space_definition import SpaceDefinition
 from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
@@ -379,6 +431,10 @@ __all__ = (
     "ApiResponseApplyEffectResponse",
     "ApiResponseApplyEffectResponseData",
     "ApiResponseApplyEffectResponseDataAppliedControls",
+    "ApiResponseCaptureAuthorizationResponse",
+    "ApiResponseCaptureAuthorizationResponseData",
+    "ApiResponseCapturePickerResponse",
+    "ApiResponseCapturePickerResponseData",
     "ApiResponseControlActionResult",
     "ApiResponseControlActionResultData",
     "ApiResponseControlActionResultDataResultType0",
@@ -412,6 +468,8 @@ __all__ = (
     "ApiResponseServerInfoData",
     "ApiResponseSystemStatus",
     "ApiResponseSystemStatusData",
+    "ApiResponseVecCaptureMonitor",
+    "ApiResponseVecCaptureMonitorDataItem",
     "AppliedControlChange",
     "AppliedControlChangeValue",
     "ApplyControlChangesRequest",
@@ -456,6 +514,9 @@ __all__ = (
     "BroadcastMediaLayerZoneResponseItemsItem",
     "BTreeMap",
     "BTreeMapAdditionalProperty",
+    "CaptureAuthorizationResponse",
+    "CaptureMonitor",
+    "CapturePickerResponse",
     "ConfigKeySchemaEntry",
     "ConfigMutationResponse",
     "ControlAccess",
@@ -555,15 +616,23 @@ __all__ = (
     "EffectPresetSummaryControls",
     "EffectRefSummary",
     "EffectSummary",
+    "FullFrameCopySessionStatus",
     "GpuCompositorProbeStatus",
     "GradientStop",
     "HealthChecks",
     "HealthResponse",
     "IdentifyRequest",
     "InputSourceIssueStatus",
+    "InputSourcePlatformStatusType0",
+    "InputSourcePlatformStatusType0Type",
+    "InputSourcePlatformStatusType1",
+    "InputSourcePlatformStatusType1Type",
     "InputSourceStatus",
     "InputStatus",
     "InvokeControlActionRequest",
+    "LatencyHistogramBucketStatus",
+    "LatencyHistogramStatus",
+    "LatencyPercentilesStatus",
     "LatestFrameStatus",
     "LayerOrderRequest",
     "LayerStackResponse",
@@ -584,6 +653,27 @@ __all__ = (
     "LedTopologyType6",
     "LedTopologyType6Type",
     "LiveSection",
+    "MacosArchitectureApi",
+    "MacosAuthorizationStateApi",
+    "MacosCapabilityOwnerApi",
+    "MacosDaemonHandoverPhaseApi",
+    "MacosDaemonOwnerConflictApiStatus",
+    "MacosDaemonOwnerRecoveryRequiredApiStatus",
+    "MacosDaemonOwnershipApiStatus",
+    "MacosFrameDropApiStatus",
+    "MacosInputTelemetryApiStatus",
+    "MacosProtectedSourceStateApi",
+    "MacosScreenTelemetryApiStatus",
+    "MacosScreenTimingApiStatus",
+    "MacosSelectionStateApiType0",
+    "MacosSelectionStateApiType0Type",
+    "MacosSelectionStateApiType1",
+    "MacosSelectionStateApiType1Type",
+    "MacosSelectionStateApiType2",
+    "MacosSelectionStateApiType2Type",
+    "MacosTahoeCapabilitiesApiStatus",
+    "MacosTahoeSelectionCapabilitiesApiStatus",
+    "MacosTimingApiStatus",
     "Meta",
     "NormalizedPosition",
     "NormalizedRect",
@@ -604,6 +694,7 @@ __all__ = (
     "PreviewDemandStatus",
     "PreviewRuntimeStatus",
     "PreviewSource",
+    "ProtectedSourceGrantOwner",
     "RebindCandidateSummary",
     "RebindDeviceRequest",
     "Redaction",
@@ -627,6 +718,7 @@ __all__ = (
     "ScreenCaptureCapacityStatus",
     "ServerIdentity",
     "ServerInfo",
+    "SessionPerformanceStatus",
     "SpaceDefinition",
     "SpatialLayout",
     "StripDirection",

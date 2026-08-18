@@ -347,6 +347,15 @@ fn read_pixel(
     Ok(match storage.format() {
         CapturePixelFormat::Rgba8 => [bytes[0], bytes[1], bytes[2], bytes[3]],
         CapturePixelFormat::Bgra8 => [bytes[2], bytes[1], bytes[0], bytes[3]],
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            return Err(CaptureFrameError::UnsupportedCpuStorageFormat(
+                storage.format(),
+            ));
+        }
     })
 }
 

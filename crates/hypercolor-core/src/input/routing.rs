@@ -848,6 +848,7 @@ impl ConsumerRouteState {
         interaction.mouse.mode = super::PointerMode::None;
         interaction.mouse.injected = false;
         interaction.batch.wheel_hi_res = 0;
+        interaction.batch.scroll = super::ScrollAggregate::default();
         interaction.batch.motion = super::MotionAggregate::default();
         interaction.batch.window_secs = 0.0;
         interaction.batch.dropped_events = 0;
@@ -905,6 +906,15 @@ impl ConsumerRouteState {
                     interaction.batch.wheel_hi_res =
                         interaction.batch.wheel_hi_res.saturating_add(*delta_hi_res);
                 }
+                InputEvent::PointerScroll {
+                    delta_x_q16_16,
+                    delta_y_q16_16,
+                    unit,
+                    ..
+                } => interaction
+                    .batch
+                    .scroll
+                    .accumulate(*unit, *delta_x_q16_16, *delta_y_q16_16),
                 InputEvent::Key { .. }
                 | InputEvent::MouseButton { .. }
                 | InputEvent::MidiNote { .. }
@@ -1250,6 +1260,7 @@ fn synthetic_release(press: &TimedInputEvent, now_ms: u64) -> TimedInputEvent {
         | InputEvent::MouseButton { state, .. }
         | InputEvent::MidiNote { state, .. } => *state = InputButtonState::Released,
         InputEvent::MouseWheel { .. }
+        | InputEvent::PointerScroll { .. }
         | InputEvent::MidiControlChange { .. }
         | InputEvent::MidiPitchBend { .. }
         | InputEvent::MidiRealtime { .. } => {

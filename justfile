@@ -442,22 +442,35 @@ app-build *args='': app-assets
 app-build *args='': app-assets
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
 
+# Build the native sidecars consumed by the Tauri bundle stage.
+[unix]
+app-bundle-binaries:
+    ./scripts/cargo-cache-build.sh cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-cli --bin hypercolor
+
+[windows]
+app-bundle-binaries:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-cli --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper
+
 # Stage triple-suffixed sidecars (and Windows-only PawnIO/SMBus payloads) under target/bundle-stage/
 [unix]
-app-bundle-assets *args='':
+app-bundle-assets *args='': app-bundle-binaries
     ./scripts/stage-app-bundle-assets.sh {{ args }}
 
 [windows]
-app-bundle-assets *args='':
+app-bundle-assets *args='': app-bundle-binaries
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/stage-app-bundle-assets.ps1 {{ args }}
 
-# Build native Tauri bundles for the unified desktop app
+# Build native Tauri bundles for the unified desktop app. On macOS the
+# bundle signs with APPLE_SIGNING_IDENTITY, falling back to the local
+# "Hypercolor Dev" certificate so TCC grants survive rebuilds (ad-hoc
+# signatures change identity every build); see docs/development/DEV_SETUP.md.
 [unix]
-app-bundle *args='': app-assets
-    cd crates/hypercolor-app && HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
+app-bundle *args='': app-assets app-bundle-assets
+    cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
+    ./scripts/macos-dev-postsign.sh
 
 [windows]
-app-bundle *args='': app-assets
+app-bundle *args='': app-assets app-bundle-assets
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
 
 # Build the full unsigned Windows NSIS installer package
@@ -470,8 +483,7 @@ windows-installer *args='':
 mac-installer *args='':
     ./scripts/build-mac-installer.sh {{ args }}
 
-# Regenerate the macOS icon ladder (.icns + PNG ladder) from packaging/icons/hypercolor.svg
-[macos]
+# Regenerate the app icon set from the brand masters (assets/brand)
 mac-icons:
     ./scripts/generate-mac-icons.sh
 

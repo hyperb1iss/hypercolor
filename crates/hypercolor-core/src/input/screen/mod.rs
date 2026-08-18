@@ -24,15 +24,18 @@ mod fanout;
 mod frame;
 mod hub;
 mod ledger;
+mod macos;
 mod materialize;
 mod plan;
 mod process;
 mod publication;
 mod reducer;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod retained;
 mod sampling;
 pub mod sector;
 pub mod smooth;
+mod tone_map;
 pub mod tune;
 #[cfg(target_os = "linux")]
 pub mod wayland;
@@ -73,22 +76,26 @@ pub use frame::{
     CapturePlanePool, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStageKind,
     CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, GeometryNormalizedCaptureSurface,
     KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
-    PlatformGpuSurface, PooledCapturePlane, RawCaptureSurface, SourceScale,
+    PlatformGpuSurface, PlatformGpuSurfaceOwner, PlatformGpuSurfaceTimingSink, PooledCapturePlane,
+    RawCaptureSurface, SourceScale,
 };
 pub use hub::{
     PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,
     ScreenBranchLease, ScreenBranchPayload, ScreenBranchPublication, ScreenBranchPublisher,
     ScreenCommittedState, ScreenContinuityActivationFailure, ScreenContinuityError,
     ScreenContinuityLease, ScreenContinuityStageFailure, ScreenGpuSurfacePayload,
-    ScreenLiveBranchReceipt, ScreenPayloadKind, ScreenPublicationColorimetry,
-    ScreenPublicationFreshness, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRetirement,
-    ScreenPublicationSlotPolicy, ScreenSurfacePayload, ScreenTwoPlanContinuityLease,
-    ScreenZonesPayload,
+    ScreenLiveBranchReceipt, ScreenNativeWorkPayload, ScreenPayloadKind,
+    ScreenPublicationColorimetry, ScreenPublicationFreshness, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationMetadata,
+    ScreenPublicationRetirement, ScreenPublicationSlotPolicy, ScreenSurfacePayload,
+    ScreenTwoPlanContinuityLease, ScreenZonesPayload,
 };
 pub use ledger::{
     ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,
 };
+#[cfg(feature = "macos-capture-fixtures")]
+pub use macos::MacosScreenCaptureFixture;
+pub use macos::{MacosNativeTargetManifest, MacosScreenCaptureInput};
 pub use materialize::{
     CpuSurfaceMaterializationError, CpuZoneMaterializationError, PreparedCpuSurfaceMaterializer,
     PreparedCpuZoneMaterializer, StagedCpuZonePublication,
@@ -115,8 +122,9 @@ pub use publication::{
     ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
     ScreenExtentRequest, ScreenGamutMapPolicy, ScreenGridPolicy, ScreenHdrPolicy,
     ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeTargetAllocation, ScreenNativeTargetBindingError,
-    ScreenNativeTargetPreparation, ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
+    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetAllocation,
+    ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
+    ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
     ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity,
     ScreenPhysicalReductionDescriptor, ScreenPhysicalReductionKey, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationError,
@@ -132,13 +140,20 @@ pub use reducer::{
     CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use retained::{ExactBoxList, ExactBoxNode};
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
-    CpuStorageCoordinate,
+    CpuScalarSamplingView, CpuScalarSource, CpuStorageCoordinate,
 };
 pub use sector::{LetterboxBars, SectorGrid, proportional_sector_bounds};
 pub use smooth::TemporalSmoother;
+pub use tone_map::{
+    LED_TONE_MAP_ALGORITHM_REVISION, LED_TONE_MAP_MAX_EXPOSURE_EV, LED_TONE_MAP_MIN_EXPOSURE_EV,
+    LED_TONE_MAP_TRANSITION_DURATION, LedToneMapCalibration, LedToneMapCalibrationError,
+    LedToneMapConstants, LedToneMapCurveTransition, LedToneMapTransitionSample, PreparedLedToneMap,
+    PreparedLedToneMapError,
+};
 pub use tune::ColorTuning;
 #[cfg(target_os = "linux")]
 pub use wayland::WaylandScreenCaptureInput;
@@ -156,8 +171,62 @@ use crate::types::canvas::{
 use crate::types::event::ZoneColors;
 use std::fmt::Write as _;
 use std::mem::size_of;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Acquisition cadence requested from a native screen backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenCaptureCadence {
+    /// Use the source's configured acquisition cadence.
+    #[default]
+    Configured,
+    /// Allow the native source to publish at the display's refresh cadence.
+    NativeRefresh,
+    /// Request an explicit nonzero acquisition rate.
+    FramesPerSecond(NonZeroU32),
+}
+
+impl ScreenCaptureCadence {
+    /// Construct an explicit nonzero acquisition rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureCadenceError::Zero`] when `frames_per_second` is zero.
+    pub const fn frames_per_second(frames_per_second: u32) -> Result<Self, CaptureCadenceError> {
+        let cadence = match CaptureCadence::new(frames_per_second) {
+            Ok(cadence) => cadence,
+            Err(error) => return Err(error),
+        };
+        Ok(Self::FramesPerSecond(
+            NonZeroU32::new(cadence.frames_per_second())
+                .expect("validated capture cadence is nonzero"),
+        ))
+    }
+
+    /// Resolve a demand override against the configured acquisition cadence.
+    #[must_use]
+    pub const fn resolve(self, configured: Self) -> Self {
+        match self {
+            Self::Configured => configured,
+            explicit => explicit,
+        }
+    }
+
+    const fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NativeRefresh, _) | (_, Self::NativeRefresh) => Self::NativeRefresh,
+            (Self::FramesPerSecond(left), Self::FramesPerSecond(right)) => {
+                if left.get() >= right.get() {
+                    Self::FramesPerSecond(left)
+                } else {
+                    Self::FramesPerSecond(right)
+                }
+            }
+            (Self::Configured, cadence) | (cadence, Self::Configured) => cadence,
+        }
+    }
+}
 
 /// Requested screen publication state for downstream render consumers.
 ///
@@ -172,6 +241,10 @@ pub enum ScreenCaptureDemand {
     Active {
         /// Maximum width and height requested by the current consumer union.
         requested_extent: PixelExtent,
+        /// Native acquisition cadence requested by the current consumer union.
+        cadence: ScreenCaptureCadence,
+        /// Cursor composition requested from the native source.
+        cursor: ScreenCursorPolicy,
     },
 }
 
@@ -179,7 +252,25 @@ impl ScreenCaptureDemand {
     /// Construct active demand from a validated extent.
     #[must_use]
     pub const fn active(requested_extent: PixelExtent) -> Self {
-        Self::Active { requested_extent }
+        Self::active_with_policy(
+            requested_extent,
+            ScreenCaptureCadence::Configured,
+            ScreenCursorPolicy::Exclude,
+        )
+    }
+
+    /// Construct active demand with an explicit acquisition and cursor policy.
+    #[must_use]
+    pub const fn active_with_policy(
+        requested_extent: PixelExtent,
+        cadence: ScreenCaptureCadence,
+        cursor: ScreenCursorPolicy,
+    ) -> Self {
+        Self::Active {
+            requested_extent,
+            cadence,
+            cursor,
+        }
     }
 
     /// Construct active demand from checked pixel dimensions.
@@ -205,7 +296,27 @@ impl ScreenCaptureDemand {
     pub const fn requested_extent(self) -> Option<PixelExtent> {
         match self {
             Self::Inactive => None,
-            Self::Active { requested_extent } => Some(requested_extent),
+            Self::Active {
+                requested_extent, ..
+            } => Some(requested_extent),
+        }
+    }
+
+    /// Requested native acquisition cadence, or `None` while inactive.
+    #[must_use]
+    pub const fn cadence(self) -> Option<ScreenCaptureCadence> {
+        match self {
+            Self::Inactive => None,
+            Self::Active { cadence, .. } => Some(cadence),
+        }
+    }
+
+    /// Requested cursor composition policy, or `None` while inactive.
+    #[must_use]
+    pub const fn cursor(self) -> Option<ScreenCursorPolicy> {
+        match self {
+            Self::Inactive => None,
+            Self::Active { cursor, .. } => Some(cursor),
         }
     }
 
@@ -217,11 +328,25 @@ impl ScreenCaptureDemand {
             (
                 Self::Active {
                     requested_extent: left,
+                    cadence: left_cadence,
+                    cursor: left_cursor,
                 },
                 Self::Active {
                     requested_extent: right,
+                    cadence: right_cadence,
+                    cursor: right_cursor,
                 },
-            ) => Self::active(left.union(right)),
+            ) => Self::active_with_policy(
+                left.union(right),
+                left_cadence.union(right_cadence),
+                if matches!(left_cursor, ScreenCursorPolicy::Include)
+                    || matches!(right_cursor, ScreenCursorPolicy::Include)
+                {
+                    ScreenCursorPolicy::Include
+                } else {
+                    ScreenCursorPolicy::Exclude
+                },
+            ),
         }
     }
 }
@@ -292,6 +417,9 @@ pub struct CaptureConfig {
     /// Target capture frames per second. Default: 30.
     pub target_fps: u32,
 
+    /// Cadence requested from the native acquisition backend.
+    pub acquisition_cadence: ScreenCaptureCadence,
+
     /// Sector grid columns (horizontal divisions). Default: 8.
     pub grid_cols: u32,
 
@@ -319,6 +447,21 @@ pub struct CaptureConfig {
     /// Color tuning applied to zone colors after smoothing.
     pub tuning: ColorTuning,
 
+    /// Target LED white-point x coordinate in CIE xy chromaticity space.
+    pub target_led_white_x: f32,
+
+    /// Target LED white-point y coordinate in CIE xy chromaticity space.
+    pub target_led_white_y: f32,
+
+    /// Target LED reference white in nits for HDR tone mapping.
+    pub target_led_reference_white_nits: f32,
+
+    /// Calibrated target LED peak in nits for HDR tone mapping.
+    pub target_led_peak_nits: f32,
+
+    /// User exposure adjustment in exposure-value stops.
+    pub exposure_ev: f32,
+
     /// XDG portal restore token from a previous session, if any.
     pub restore_token: Option<String>,
 
@@ -331,6 +474,9 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             target_fps: 30,
+            acquisition_cadence: ScreenCaptureCadence::FramesPerSecond(
+                NonZeroU32::new(30).expect("default capture cadence is nonzero"),
+            ),
             grid_cols: 8,
             grid_rows: 6,
             analysis_memory_bytes: u64::MAX,
@@ -339,6 +485,11 @@ impl Default for CaptureConfig {
             letterbox_threshold: 0.02,
             letterbox_enabled: false,
             tuning: ColorTuning::default(),
+            target_led_white_x: 0.3127,
+            target_led_white_y: 0.3290,
+            target_led_reference_white_nits: 203.0,
+            target_led_peak_nits: 406.0,
+            exposure_ev: 0.0,
             restore_token: None,
             source: "auto".to_owned(),
         }
@@ -985,6 +1136,7 @@ impl ScreenCaptureInput {
             &mut self.policy_pixels,
             elapsed,
             reset_smoother,
+            false,
             &self.surface_resource_owner,
         )?
         else {
@@ -1025,6 +1177,14 @@ impl ScreenCaptureInput {
     #[must_use]
     pub fn config(&self) -> &CaptureConfig {
         &self.config
+    }
+
+    pub(crate) fn set_led_tone_map_calibration(&mut self, calibration: LedToneMapCalibration) {
+        self.config.target_led_white_x = calibration.target_white_x();
+        self.config.target_led_white_y = calibration.target_white_y();
+        self.config.target_led_reference_white_nits = calibration.target_reference_white_nits();
+        self.config.target_led_peak_nits = calibration.target_peak_nits();
+        self.config.exposure_ev = calibration.exposure_ev();
     }
 
     /// Update the requested publication extent for the next analyzed frame.
@@ -1558,6 +1718,7 @@ fn downscale_frame(
     policy_pixels: &mut Vec<[u8; 3]>,
     elapsed: Duration,
     reset_smoother: bool,
+    suppress_scene_cut_bypass: bool,
     surface_resource_owner: &Arc<dyn SurfaceResourceOwner>,
 ) -> Result<Option<PublishedSurface>, SurfaceResourceError> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
@@ -1636,6 +1797,7 @@ fn downscale_frame(
         target_height,
         elapsed,
         reset_smoother,
+        suppress_scene_cut_bypass,
     ) {
         lease.release();
         return Ok(None);

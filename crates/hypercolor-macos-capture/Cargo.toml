@@ -1,0 +1,105 @@
+[package]
+name = "hypercolor-macos-capture"
+description = "ScreenCaptureKit acquisition and frame validation for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[features]
+default = []
+capture-fixtures = []
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2 = { workspace = true, features = ["std"] }
+objc2-core-foundation = { workspace = true, features = [
+  "std",
+  "CFArray",
+  "CFCGTypes",
+  "CFDictionary",
+  "CFData",
+  "CFNumber",
+  "CFString",
+  "CFURL",
+  "CFUUID",
+  "objc2",
+] }
+objc2-core-graphics = { workspace = true, features = [
+  "std",
+  "CGBitmapContext",
+  "CGColorSpace",
+  "CGContext",
+  "CGDataProvider",
+  "CGGeometry",
+  "CGImage",
+  "CGToneMapping",
+  "CGWindow",
+] }
+objc2-core-media = { workspace = true, features = [
+  "std",
+  "CMSampleBuffer",
+  "CMTime",
+  "objc2",
+  "objc2-core-video",
+] }
+objc2-core-video = { workspace = true, features = [
+  "std",
+  "CVBase",
+  "CVBuffer",
+  "CVImageBuffer",
+  "CVPixelBuffer",
+  "CVPixelBufferIOSurface",
+  "CVReturn",
+  "objc2",
+  "objc2-io-surface",
+] }
+objc2-foundation = { workspace = true, features = [
+  "std",
+  "NSArray",
+  "NSError",
+  "NSGeometry",
+  "NSObject",
+  "NSString",
+  "NSValue",
+  "objc2-core-foundation",
+] }
+objc2-io-surface = { workspace = true, features = [
+  "std",
+  "IOSurfaceRef",
+  "IOSurfaceTypes",
+  "objc2-core-foundation",
+] }
+objc2-screen-capture-kit = { workspace = true, features = [
+  "std",
+  "block2",
+  "dispatch2",
+  "SCContentSharingPicker",
+  "SCError",
+  "SCShareableContent",
+  "SCScreenshotManager",
+  "SCStream",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+  "objc2-core-media",
+] }
+
+[[test]]
+name = "capture_contract_tests"
+path = "tests/capture_contract_tests.rs"
+required-features = ["capture-fixtures"]

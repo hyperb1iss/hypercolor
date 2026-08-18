@@ -123,6 +123,8 @@ impl PreparedTemporalSmoother {
     /// Stage smoothing for one encoded RGB grid without committing history.
     ///
     /// `reset_history` is used when content cropping changes spatial identity.
+    /// `suppress_scene_cut_bypass` keeps smoothing active while a caller is
+    /// already blending between color transforms.
     /// Scene-cut distance is normalized to `0.0..=1.0` per channel in linear
     /// light. The exponential response derives directly from the configured
     /// time constant and capture timestamp delta.
@@ -139,6 +141,7 @@ impl PreparedTemporalSmoother {
         transfer: CaptureTransferFunction,
         elapsed: Duration,
         reset_history: bool,
+        suppress_scene_cut_bypass: bool,
     ) -> Result<(), PreparedTemporalSmoothingError> {
         if self.staged_shape.is_some() {
             return Err(PreparedTemporalSmoothingError::StagePending);
@@ -179,7 +182,8 @@ impl PreparedTemporalSmoother {
         let reset = reset_history
             || self.committed.len() != expected
             || self.committed_shape != Some(shape)
-            || scene_cut_detected(scene_cut, transfer, &self.committed, colors);
+            || !suppress_scene_cut_bypass
+                && scene_cut_detected(scene_cut, transfer, &self.committed, colors);
         if reset {
             self.staged.extend(
                 colors
@@ -475,7 +479,7 @@ impl TemporalSmoother {
         height: u32,
         elapsed: Duration,
     ) {
-        if self.stage_for_elapsed_grid(colors, width, height, elapsed, false) {
+        if self.stage_for_elapsed_grid(colors, width, height, elapsed, false, false) {
             self.commit_staged();
         }
     }
@@ -487,6 +491,7 @@ impl TemporalSmoother {
         height: u32,
         elapsed: Duration,
         reset_history: bool,
+        suppress_scene_cut_bypass: bool,
     ) -> bool {
         let Some(expected_len) = usize::try_from(width)
             .ok()
@@ -532,7 +537,7 @@ impl TemporalSmoother {
         let diff = self.frame_difference(colors);
 
         // Scene cut detected — snap to new colors immediately.
-        if diff > self.scene_cut_threshold {
+        if !suppress_scene_cut_bypass && diff > self.scene_cut_threshold {
             self.staged.extend(colors.iter().map(|color| {
                 [
                     srgb_u8_to_linear(color[0]) * 255.0,

@@ -96,13 +96,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Data structures
+crossbeam-queue = "0.3.12"
 uuid = { version = "1.11", features = ["v4", "v5", "v7", "serde"] }
 ulid = { version = "1.2.1", features = ["serde"] }
 sha2 = "0.10"
+subtle = "2.6"
 arc-swap = "1.7"
 rayon = "1.12"
 strum = { version = "0.28", features = ["derive"] }
-subtle = "2.6"
 
 # Config
 dirs = "6.0"
@@ -144,6 +145,9 @@ hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
+hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture" }
+hypercolor-macos-input = { path = "crates/hypercolor-macos-input" }
+hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner" }
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
@@ -162,7 +166,6 @@ realfft = "3.4"
 rustfft = "6.2"
 cpal = "0.17.3"
 libpulse-binding = "2.30.1"
-device_query = "4.0.1"
 evdev = "0.13.2"
 
 # HTTP client
@@ -174,6 +177,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 # Network / device backends
 if-addrs = "0.13.4"
 mdns-sd = "0.11"
+mach2 = "0.5"
 tonic = "0.12"
 prost = "0.13"
 nusb = { version = "0.2.2", features = ["tokio"] }
@@ -222,8 +226,14 @@ fast_image_resize = "6.0.0"
 wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
 wgpu-hal = { version = "29.0.1", default-features = false, features = ["vulkan"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false }
+objc2-core-graphics = { version = "0.3.2", default-features = false }
+objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-core-media = { version = "0.3.2", default-features = false }
+objc2-core-video = { version = "0.3.2", default-features = false }
+objc2-foundation = { version = "0.3.2", default-features = false }
 objc2-io-surface = { version = "0.3.2", default-features = false }
 objc2-metal = { version = "0.3.2", default-features = false }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false }
 objc2 = { version = "0.6.4", default-features = false }
 pollster = "0.4.0"
 

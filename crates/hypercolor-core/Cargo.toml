@@ -16,6 +16,8 @@ default = []
 allocation-contract-tests = []
 spatial-workspace-test-hooks = []
 windows-capture-fixtures = []
+macos-native-fixtures = []
+macos-capture-fixtures = ["hypercolor-macos-capture/capture-fixtures"]
 media-lottie = ["dep:rlottie"]
 media-video = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 servo = [
@@ -30,6 +32,7 @@ servo = [
 servo-gpu-import = [
     "servo",
     "hypercolor-linux-gpu-interop?/servo-context",
+    "hypercolor-macos-gpu-interop?/servo-context",
     "hypercolor-windows-gpu-interop?/servo-context",
     "dep:hypercolor-linux-gpu-interop",
     "dep:hypercolor-macos-gpu-interop",
@@ -46,6 +49,8 @@ hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 # Unconditional: monitor selector parsing and persistence are platform-neutral;
 # the capture crate supplies stubs when DXGI is unavailable.
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
+hypercolor-macos-input = { workspace = true }
+hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-platform-fs = { workspace = true }
@@ -146,12 +151,11 @@ name = "spatial_area_reuse_tests"
 path = "tests/spatial_area_reuse_tests.rs"
 required-features = ["allocation-contract-tests"]
 
+[[test]]
+name = "macos_screen_capture_tests"
+path = "tests/macos_screen_capture_tests.rs"
+required-features = ["macos-capture-fixtures"]
+
 [[bench]]
 name = "core_pipeline"
 harness = false
-
-[target.'cfg(target_os = "macos")'.dependencies]
-# The last consumer of the device_query polling bridge. Linux has evdev and
-# Windows has Raw Input, so neither should compile or ship a keylogging-capable
-# crate it no longer uses; the macOS backend spec deletes the rest.
-device_query = { workspace = true }

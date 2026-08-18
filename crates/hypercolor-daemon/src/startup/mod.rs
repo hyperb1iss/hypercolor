@@ -64,6 +64,8 @@ mod discovery_worker;
 pub(crate) mod input_status_events;
 mod lifecycle;
 pub mod logging;
+#[cfg(target_os = "macos")]
+mod macos_owner_watch;
 pub(crate) mod services;
 mod signals;
 
@@ -76,7 +78,7 @@ pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
-pub use signals::install_signal_handlers;
+pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
 
 /// The top-level daemon state, holding all subsystems.
 ///
@@ -119,6 +121,13 @@ pub struct DaemonState {
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Latest durable macOS daemon ownership state.
+    pub macos_daemon_ownership:
+        Arc<arc_swap::ArcSwapOption<crate::macos_owner::MacosOwnerSnapshot>>,
+
+    #[cfg(target_os = "macos")]
+    _macos_owner_watch: Option<macos_owner_watch::MacosOwnerWatch>,
 
     /// Daemon-managed user media asset library.
     pub asset_library: Arc<RwLock<AssetLibrary>>,
@@ -298,6 +307,15 @@ impl DaemonState {
         self.render_thread
             .as_ref()
             .map(RenderThread::input_publication_demands)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn macos_screen_parity_diagnostics(
+        &self,
+    ) -> Option<crate::render_thread::MacosScreenParityDiagnosticHandle> {
+        self.render_thread
+            .as_ref()
+            .map(RenderThread::macos_screen_parity_diagnostics)
     }
 
     pub(super) fn discovery_runtime(&self) -> discovery::DiscoveryRuntime {

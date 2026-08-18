@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use crate::session::SessionConfig;
 
@@ -123,6 +124,21 @@ mod defaults {
     }
     pub fn capture_letterbox_threshold() -> f32 {
         0.02
+    }
+    pub fn capture_target_led_white_x() -> f32 {
+        0.3127
+    }
+    pub fn capture_target_led_white_y() -> f32 {
+        0.3290
+    }
+    pub fn capture_target_led_reference_white_nits() -> f32 {
+        203.0
+    }
+    pub fn capture_target_led_peak_nits() -> f32 {
+        406.0
+    }
+    pub fn capture_exposure_ev() -> f32 {
+        0.0
     }
     pub fn unit_scale() -> f32 {
         1.0
@@ -674,6 +690,17 @@ impl Default for AudioConfig {
 
 // ─── Screen Capture ──────────────────────────────────────────────────────────
 
+/// Native acquisition cadence for screen capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureCadenceMode {
+    /// Acquire at `capture_fps`.
+    #[default]
+    Fixed,
+    /// Allow the native backend to acquire at the display refresh cadence.
+    NativeRefresh,
+}
+
 /// Screen capture settings for ambient lighting effects.
 ///
 /// The capture source is chosen interactively through the desktop portal
@@ -688,6 +715,9 @@ pub struct CaptureConfig {
 
     #[serde(default = "defaults::capture_fps")]
     pub capture_fps: u32,
+
+    #[serde(default)]
+    pub cadence: CaptureCadenceMode,
 
     /// Sector grid columns for ambilight zone sampling.
     #[serde(default = "defaults::capture_grid_cols")]
@@ -739,6 +769,26 @@ pub struct CaptureConfig {
     #[serde(default = "defaults::unit_scale")]
     pub gamma: f32,
 
+    /// Target LED white-point x coordinate in CIE xy chromaticity space.
+    #[serde(default = "defaults::capture_target_led_white_x")]
+    pub target_led_white_x: f32,
+
+    /// Target LED white-point y coordinate in CIE xy chromaticity space.
+    #[serde(default = "defaults::capture_target_led_white_y")]
+    pub target_led_white_y: f32,
+
+    /// Target LED reference white in nits for HDR tone mapping.
+    #[serde(default = "defaults::capture_target_led_reference_white_nits")]
+    pub target_led_reference_white_nits: f32,
+
+    /// Calibrated target LED peak in nits for HDR tone mapping.
+    #[serde(default = "defaults::capture_target_led_peak_nits")]
+    pub target_led_peak_nits: f32,
+
+    /// User exposure adjustment in exposure-value stops.
+    #[serde(default = "defaults::capture_exposure_ev")]
+    pub exposure_ev: f32,
+
     /// XDG portal restore token so the picked source survives restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_token: Option<String>,
@@ -751,6 +801,8 @@ pub enum CapturePlatform {
     WindowsDesktopDuplication,
     /// XDG desktop portal plus PipeWire.
     LinuxPipeWire,
+    /// ScreenCaptureKit with the system content picker.
+    MacosScreenCaptureKit,
     /// No native screen-capture implementation is available.
     Unsupported,
 }
@@ -767,7 +819,11 @@ impl CapturePlatform {
         {
             Self::LinuxPipeWire
         }
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            Self::MacosScreenCaptureKit
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
             Self::Unsupported
         }
@@ -811,6 +867,26 @@ pub enum CaptureConfigValidationError {
         max: f32,
         /// Rejected value.
         value: f32,
+    },
+    /// The target LED white point lies outside the CIE xy triangle.
+    #[error(
+        "capture target LED white point must be finite with x > 0, y > 0, and x + y < 1, got ({x}, {y})"
+    )]
+    WhitePointChromaticity {
+        /// Rejected CIE xy x coordinate.
+        x: f32,
+        /// Rejected CIE xy y coordinate.
+        y: f32,
+    },
+    /// Target peak does not leave any headroom above reference white.
+    #[error(
+        "capture.target_led_peak_nits must be greater than target_led_reference_white_nits ({reference}), got {peak}"
+    )]
+    PeakNotAboveReference {
+        /// Configured target reference white in nits.
+        reference: f32,
+        /// Rejected target peak in nits.
+        peak: f32,
     },
     /// The selected source cannot be represented by the native backend.
     #[error("capture.source is invalid for {platform}: {reason}")]
@@ -857,6 +933,36 @@ impl CaptureConfig {
         validate_capture_float("saturation", self.saturation, 0.0, 4.0)?;
         validate_capture_float("brightness", self.brightness, 0.0, 4.0)?;
         validate_capture_float("gamma", self.gamma, 0.2, 5.0)?;
+        if !self.target_led_white_x.is_finite()
+            || !self.target_led_white_y.is_finite()
+            || self.target_led_white_x <= 0.0
+            || self.target_led_white_y <= 0.0
+            || self.target_led_white_x + self.target_led_white_y >= 1.0
+        {
+            return Err(CaptureConfigValidationError::WhitePointChromaticity {
+                x: self.target_led_white_x,
+                y: self.target_led_white_y,
+            });
+        }
+        validate_capture_float(
+            "target_led_reference_white_nits",
+            self.target_led_reference_white_nits,
+            1.0,
+            5_000.0,
+        )?;
+        validate_capture_float(
+            "target_led_peak_nits",
+            self.target_led_peak_nits,
+            1.0,
+            10_000.0,
+        )?;
+        if self.target_led_peak_nits <= self.target_led_reference_white_nits {
+            return Err(CaptureConfigValidationError::PeakNotAboveReference {
+                reference: self.target_led_reference_white_nits,
+                peak: self.target_led_peak_nits,
+            });
+        }
+        validate_capture_float("exposure_ev", self.exposure_ev, -8.0, 8.0)?;
         validate_capture_source(platform, &self.source, self.enabled)?;
         if matches!(platform, CapturePlatform::Unsupported) && self.enabled {
             return Err(CaptureConfigValidationError::UnsupportedPlatform);
@@ -903,6 +1009,7 @@ fn validate_capture_source(
     let platform_name = match platform {
         CapturePlatform::WindowsDesktopDuplication => "Windows Desktop Duplication",
         CapturePlatform::LinuxPipeWire => "Linux PipeWire",
+        CapturePlatform::MacosScreenCaptureKit => "macOS ScreenCaptureKit",
         CapturePlatform::Unsupported => "this platform",
     };
     if source.is_empty() {
@@ -932,7 +1039,24 @@ fn validate_capture_source(
             reason: "portal-managed capture requires source = \"auto\"",
         });
     }
+    if matches!(platform, CapturePlatform::MacosScreenCaptureKit)
+        && !is_valid_macos_capture_source(source)
+    {
+        return Err(CaptureConfigValidationError::Source {
+            platform: platform_name,
+            reason: "expected auto, primary_display, session_scoped, or display:<canonical UUID>",
+        });
+    }
     Ok(())
+}
+
+fn is_valid_macos_capture_source(source: &str) -> bool {
+    matches!(source, "auto" | "primary_display" | "session_scoped")
+        || source.strip_prefix("display:").is_some_and(|value| {
+            value.len() == 36
+                && Uuid::parse_str(value)
+                    .is_ok_and(|uuid| uuid.hyphenated().to_string().eq_ignore_ascii_case(value))
+        })
 }
 
 impl Default for CaptureConfig {
@@ -941,6 +1065,7 @@ impl Default for CaptureConfig {
             enabled: defaults::capture_enabled(),
             source: defaults::capture_source(),
             capture_fps: defaults::capture_fps(),
+            cadence: CaptureCadenceMode::default(),
             grid_cols: defaults::capture_grid_cols(),
             grid_rows: defaults::capture_grid_rows(),
             publication_memory_bytes: None,
@@ -951,6 +1076,11 @@ impl Default for CaptureConfig {
             saturation: defaults::unit_scale(),
             brightness: defaults::unit_scale(),
             gamma: defaults::unit_scale(),
+            target_led_white_x: defaults::capture_target_led_white_x(),
+            target_led_white_y: defaults::capture_target_led_white_y(),
+            target_led_reference_white_nits: defaults::capture_target_led_reference_white_nits(),
+            target_led_peak_nits: defaults::capture_target_led_peak_nits(),
+            exposure_ev: defaults::capture_exposure_ev(),
             restore_token: None,
         }
     }

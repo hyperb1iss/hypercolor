@@ -114,15 +114,36 @@ pub(crate) fn spawn_trusted_local_socket(
     state: Arc<AppState>,
     runtime: &tokio::runtime::Handle,
 ) -> TrustedLocalWebSocket {
+    spawn_local_socket_with_context(
+        state,
+        runtime,
+        crate::api::security::trusted_local_control_context(),
+    )
+}
+
+fn spawn_local_socket_with_context(
+    state: Arc<AppState>,
+    runtime: &tokio::runtime::Handle,
+    auth_context: RequestAuthContext,
+) -> TrustedLocalWebSocket {
     let (socket, transport) = trusted_local_socket_pair();
     let shutdown = transport.shutdown_token();
     drop(runtime.spawn(handle_socket(
         SessionSocket::Local(transport),
         state,
-        crate::api::security::trusted_local_control_context(),
+        auth_context,
         Some(shutdown),
     )));
     socket
+}
+
+#[cfg(test)]
+pub(super) fn spawn_test_local_socket(
+    state: Arc<AppState>,
+    runtime: &tokio::runtime::Handle,
+    auth_context: RequestAuthContext,
+) -> TrustedLocalWebSocket {
+    spawn_local_socket_with_context(state, runtime, auth_context)
 }
 
 enum SessionSocket {
@@ -162,7 +183,7 @@ fn ws_origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         return true;
     };
 
-    if is_loopback_origin(origin) {
+    if is_loopback_origin(origin) || crate::api::security::is_trusted_tauri_origin(origin) {
         return true;
     }
 
@@ -1177,7 +1198,7 @@ pub(super) fn authorize_subscription_topics(
     auth_context: RequestAuthContext,
     selections: &[TopicSelection],
 ) -> Result<(), WsProtocolError> {
-    if auth_context.can_control() {
+    if auth_context.can_protected_control() {
         return Ok(());
     }
 
@@ -1192,7 +1213,7 @@ pub(super) fn authorize_subscription_topics(
         Ok(())
     } else {
         Err(WsProtocolError::forbidden(
-            "Capture and interactive preview subscriptions require a control-tier API key",
+            "Sensitive screen and input subscriptions require a control credential",
             json!({"topics": restricted_topics, "required_tier": "control"}),
         ))
     }
@@ -1833,6 +1854,32 @@ mod origin_tests {
         assert!(!is_loopback_origin(&HeaderValue::from_static(
             "https://evil.example"
         )));
+    }
+
+    #[test]
+    fn exact_bundled_tauri_origins_are_allowed_but_lookalikes_are_rejected() {
+        let state = AppState::new();
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ORIGIN,
+                origin.parse().expect("native origin should parse"),
+            );
+            assert!(ws_origin_allowed(&state, &headers));
+        }
+
+        for origin in ["tauri://attacker.example", "https://tauri.localhost.evil"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ORIGIN,
+                origin.parse().expect("lookalike origin should parse"),
+            );
+            assert!(!ws_origin_allowed(&state, &headers));
+        }
     }
 
     #[test]

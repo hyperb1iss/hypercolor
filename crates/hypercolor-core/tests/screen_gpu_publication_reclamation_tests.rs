@@ -1,4 +1,5 @@
 use std::num::{NonZeroU32, NonZeroU64};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,14 +15,16 @@ use hypercolor_core::input::screen::{
     ScreenCursorCapabilities, ScreenExactResource, ScreenExecutorColorCapabilities,
     ScreenExtentRequest, ScreenGpuSurfacePayload, ScreenInputGraphGeneration,
     ScreenLiveBranchReceipt, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
-    ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceKind,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
-    ScreenWorkerExactLedgerBuilder, SourceScale,
+    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetBindingError,
+    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenNativeTargetResourceError,
+    ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationColorimetry,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
 };
 
 #[path = "support/native_target.rs"]
@@ -115,6 +118,20 @@ fn demand_for_target_extent(
     target: ScreenNativeExecutionTarget,
     requested_extent: ScreenExtentRequest,
 ) -> ResolvedScreenBranchDemand {
+    demand_for_target_profile_extent(
+        source,
+        target,
+        requested_extent,
+        Arc::new(ScreenProcessingProfile::default()),
+    )
+}
+
+fn demand_for_target_profile_extent(
+    source: &ResolvedScreenSource,
+    target: ScreenNativeExecutionTarget,
+    requested_extent: ScreenExtentRequest,
+    profile: Arc<ScreenProcessingProfile>,
+) -> ResolvedScreenBranchDemand {
     let registered = RegisteredScreenBranchDemand::new(
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
@@ -122,7 +139,7 @@ fn demand_for_target_extent(
             ScreenPublicationExecutorRequest::SourceNative(target),
             requested_extent,
             ScreenAspectPolicy::Contain,
-            Arc::new(ScreenProcessingProfile::default()),
+            profile,
         ),
         non_zero(60),
     );
@@ -375,6 +392,7 @@ fn publish_gpu(
     sequence: u64,
 ) -> (Weak<()>, ScreenLiveBranchReceipt) {
     let (surface, owner) = gpu_surface(sequence);
+    let surface = fixture.bind_native_surface(surface);
     let receipt = fixture
         .hub
         .publish(
@@ -427,6 +445,20 @@ impl Fixture {
 
     fn colorimetry(&self) -> ScreenPublicationColorimetry {
         ScreenPublicationColorimetry::new(self.descriptor.physical().color_pipeline().output())
+    }
+
+    fn bind_native_surface(&self, surface: PlatformGpuSurface) -> PlatformGpuSurface {
+        self.target_preparation
+            .as_ref()
+            .expect("fixture retains its admitted native target")
+            .retain_on_surface_with_capture_allocation(
+                surface,
+                self.capture_lifetime
+                    .as_ref()
+                    .expect("fixture retains capture-plan accounting")
+                    .clone(),
+            )
+            .expect("capture and target allocations belong to one worker")
     }
 }
 
@@ -485,7 +517,7 @@ fn gpu_owner_drop_can_reenter_while_other_publishers_take_the_runtime_lock() {
         release: Arc::clone(&release),
     });
     let weak_owner = Arc::downgrade(&owner);
-    let surface = gpu_surface_with_owner(1, owner);
+    let surface = fixture.bind_native_surface(gpu_surface_with_owner(1, owner));
     let receipt = fixture
         .hub
         .publish(
@@ -582,6 +614,7 @@ fn reader_held_gpu_payload_defers_reaping_and_pool_capacity_recovers() {
     assert_eq!(publisher.reap_releasable_gpu_payloads(), 0);
     assert!(first_owner.upgrade().is_some());
     let (pressured_surface, pressured_owner) = gpu_surface(3);
+    let pressured_surface = fixture.bind_native_surface(pressured_surface);
     let pressured = fixture.hub.publish(
         &publisher,
         ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(
@@ -612,6 +645,7 @@ fn abandoned_and_rejected_gpu_staging_releases_native_owners() {
     let fixture = Fixture::new(ScreenPublicationSlotPolicy::default());
     let publisher = fixture.publisher();
     let (abandoned_surface, abandoned_owner) = gpu_surface(1);
+    let abandoned_surface = fixture.bind_native_surface(abandoned_surface);
     let abandoned = fixture
         .hub
         .prepare_publication(
@@ -631,6 +665,7 @@ fn abandoned_and_rejected_gpu_staging_releases_native_owners() {
     let (latest_owner, latest_receipt) = publish_gpu(&fixture, &publisher, 1);
     drop(latest_receipt);
     let (rejected_surface, rejected_owner) = gpu_surface(2);
+    let rejected_surface = fixture.bind_native_surface(rejected_surface);
     let rejected = fixture
         .hub
         .prepare_publication(
@@ -654,6 +689,295 @@ fn abandoned_and_rejected_gpu_staging_releases_native_owners() {
 
 #[derive(Debug)]
 struct RendererTargetPayload;
+
+struct SharedTargetPreparer {
+    exclusive_bytes: u64,
+    shared_bytes: u64,
+}
+
+impl ScreenNativeTargetPreparer for SharedTargetPreparer {
+    fn quote_retained_bytes(
+        &self,
+        _descriptor: &ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        Ok(self.exclusive_bytes)
+    }
+
+    fn quote_retention(
+        &self,
+        _descriptor: &ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeRetentionQuote> {
+        Ok(ScreenNativeRetentionQuote::split(
+            self.exclusive_bytes,
+            self.shared_bytes,
+        ))
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        Ok(ScreenNativeTargetPreparation::with_retention(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+            ScreenNativeRetentionQuote::split(self.exclusive_bytes, self.shared_bytes),
+        ))
+    }
+}
+
+fn smoothing_profile() -> Arc<ScreenProcessingProfile> {
+    Arc::new(ScreenProcessingProfile::new(
+        ScreenProcessingProfileConfig {
+            smoothing: ScreenSmoothingPolicy::Exponential {
+                time_constant: Duration::from_millis(80),
+                scene_cut: ScreenSceneCutPolicy::Disabled,
+            },
+            ..ScreenProcessingProfileConfig::default()
+        },
+    ))
+}
+
+#[test]
+fn equal_native_physical_work_retains_one_shared_allocation() {
+    const EXCLUSIVE_BYTES: u64 = 17;
+    const SHARED_BYTES: u64 = 101;
+
+    let source = source();
+    let target = native_target_with(
+        81,
+        Arc::new(SharedTargetPreparer {
+            exclusive_bytes: EXCLUSIVE_BYTES,
+            shared_bytes: SHARED_BYTES,
+        }),
+    );
+    let first = demand_for_target(&source, target.clone());
+    let second = demand_for_target_profile_extent(
+        &source,
+        target.clone(),
+        ScreenExtentRequest::Native,
+        smoothing_profile(),
+    );
+    assert_ne!(first.descriptor(), second.descriptor());
+    assert_eq!(
+        first.descriptor().physical(),
+        second.descriptor().physical()
+    );
+
+    let ticket = worker_ticket_for([first.clone(), second.clone()]);
+    let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)
+        .expect("shared native ledger metadata prepares");
+    let first_admitted = ledger
+        .prepare_native_target(
+            &target,
+            first.descriptor(),
+            &ScreenNativePreparationPayload::new(
+                first.descriptor(),
+                ledger.ticket().plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+            "native-shared-first",
+            "worker-runtime-total",
+        )
+        .expect("first shared native route prepares");
+    let second_admitted = ledger
+        .prepare_native_target(
+            &target,
+            second.descriptor(),
+            &ScreenNativePreparationPayload::new(
+                second.descriptor(),
+                ledger.ticket().plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+            "native-shared-second",
+            "worker-runtime-total",
+        )
+        .expect("second shared native route reuses physical admission");
+    let shared_name = first_admitted
+        .shared_resource_name()
+        .cloned()
+        .expect("split quote names one shared physical allocation");
+    assert_eq!(second_admitted.shared_resource_name(), Some(&shared_name));
+
+    let reports = ledger
+        .ticket()
+        .required_minimums()
+        .iter()
+        .map(|minimum| (Arc::clone(minimum.name()), minimum.minimum_bytes()))
+        .collect::<Vec<_>>();
+    for (name, bytes) in reports {
+        ledger
+            .report(&name, bytes)
+            .expect("required shared native scope reports");
+    }
+    let (_, lifetimes) = ledger
+        .finish()
+        .expect("shared native ledger finishes")
+        .into_parts();
+    let shared_lifetimes = lifetimes
+        .iter()
+        .filter(|lifetime| lifetime.resource().name() == &shared_name)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(shared_lifetimes.len(), 1);
+    assert_eq!(shared_lifetimes[0].resource().bytes(), SHARED_BYTES);
+
+    for (admitted, name) in [
+        (first_admitted, "native-shared-first"),
+        (second_admitted, "native-shared-second"),
+    ] {
+        let exclusive = lifetimes
+            .iter()
+            .find(|lifetime| lifetime.resource().name().as_ref() == name)
+            .cloned()
+            .expect("branch-exclusive native lifetime exists");
+        let bound = admitted
+            .bind_with_shared(exclusive, Some(shared_lifetimes[0].clone()))
+            .expect("branch binds the shared physical lifetime");
+        assert_eq!(bound.allocation().retained_bytes(), EXCLUSIVE_BYTES);
+        assert_eq!(
+            bound
+                .shared_physical_allocation()
+                .expect("bound route retains shared physical admission")
+                .retained_bytes(),
+            SHARED_BYTES
+        );
+        let (surface, _) = gpu_surface(91);
+        let surface = bound.retain_on_surface(surface);
+        assert_eq!(
+            surface
+                .shared_resource_lifetime()
+                .expect("published surface retains the shared physical lifetime")
+                .resource()
+                .name(),
+            &shared_name
+        );
+    }
+}
+
+struct ConflictingSharedTargetPreparer {
+    quotes: AtomicUsize,
+    first_shared_bytes: u64,
+    second_shared_bytes: u64,
+}
+
+impl ScreenNativeTargetPreparer for ConflictingSharedTargetPreparer {
+    fn quote_retained_bytes(
+        &self,
+        _descriptor: &ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        Ok(17)
+    }
+
+    fn quote_retention(
+        &self,
+        _descriptor: &ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeRetentionQuote> {
+        let shared_bytes = if self.quotes.fetch_add(1, Ordering::Relaxed) == 0 {
+            self.first_shared_bytes
+        } else {
+            self.second_shared_bytes
+        };
+        Ok(ScreenNativeRetentionQuote::split(17, shared_bytes))
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        Ok(ScreenNativeTargetPreparation::with_retention(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+            ScreenNativeRetentionQuote::split(17, self.first_shared_bytes),
+        ))
+    }
+}
+
+fn conflicting_shared_quote_error(
+    first_shared_bytes: u64,
+    second_shared_bytes: u64,
+) -> ScreenWorkerLedgerBuildError {
+    let source = source();
+    let target = native_target_with(
+        82,
+        Arc::new(ConflictingSharedTargetPreparer {
+            quotes: AtomicUsize::new(0),
+            first_shared_bytes,
+            second_shared_bytes,
+        }),
+    );
+    let first = demand_for_target(&source, target.clone());
+    let second = demand_for_target_profile_extent(
+        &source,
+        target.clone(),
+        ScreenExtentRequest::Native,
+        smoothing_profile(),
+    );
+    let ticket = worker_ticket_for([first.clone(), second.clone()]);
+    let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)
+        .expect("conflicting shared quote ledger prepares");
+    ledger
+        .prepare_native_target(
+            &target,
+            first.descriptor(),
+            &ScreenNativePreparationPayload::new(
+                first.descriptor(),
+                ledger.ticket().plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+            "native-conflict-first",
+            "worker-runtime-total",
+        )
+        .expect("first shared quote establishes the physical charge");
+    ledger
+        .prepare_native_target(
+            &target,
+            second.descriptor(),
+            &ScreenNativePreparationPayload::new(
+                second.descriptor(),
+                ledger.ticket().plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+            "native-conflict-second",
+            "worker-runtime-total",
+        )
+        .expect_err("equal physical work cannot change its shared byte quote")
+        .downcast::<ScreenWorkerLedgerBuildError>()
+        .expect("conflicting shared retention returns its typed ledger error")
+}
+
+#[test]
+fn equal_native_physical_work_rejects_conflicting_shared_quotes() {
+    assert!(matches!(
+        conflicting_shared_quote_error(101, 102),
+        ScreenWorkerLedgerBuildError::ConflictingNativeSharedRetention {
+            expected: 101,
+            observed: 102,
+        }
+    ));
+}
+
+#[test]
+fn equal_native_physical_work_rejects_zero_then_shared_quotes() {
+    assert!(matches!(
+        conflicting_shared_quote_error(0, 101),
+        ScreenWorkerLedgerBuildError::ConflictingNativeSharedRetention {
+            expected: 0,
+            observed: 101,
+        }
+    ));
+}
 
 #[test]
 fn native_target_bindings_require_installed_admission_and_exact_identity() {
@@ -876,6 +1200,74 @@ fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirem
     assert_eq!(fixture.hub.pending_retired_bytes(), 0);
     assert!(owner.upgrade().is_none());
     assert!(renderer_payload_weak.upgrade().is_none());
+}
+
+#[test]
+fn native_publications_reject_missing_capture_and_substituted_worker_lifetimes() {
+    let mut fixture = Fixture::new(ScreenPublicationSlotPolicy::default());
+    let publisher = fixture.publisher();
+    let target = fixture
+        .target_preparation
+        .take()
+        .expect("fixture retains its admitted native target");
+    let (surface, _) = gpu_surface(1);
+    let target_only = target.retain_on_surface(surface);
+    let metadata = metadata(&fixture.descriptor, &publisher, 1);
+    assert!(matches!(
+        fixture.hub.publish(
+            &publisher,
+            ScreenBranchPayload::NativeWork(ScreenNativeWorkPayload::new(
+                fixture.colorimetry(),
+                &target_only,
+            )),
+            &metadata,
+        ),
+        Err(ScreenPublicationHubError::NativeCaptureLifetimeMismatch)
+    ));
+    assert!(
+        fixture
+            .hub
+            .lease(&fixture.descriptor)
+            .expect("native branch remains committed")
+            .read()
+            .is_none()
+    );
+
+    let mut substitute = Fixture::new(ScreenPublicationSlotPolicy::default());
+    let substitute_target = substitute
+        .target_preparation
+        .take()
+        .expect("substitute fixture retains its admitted target");
+    let (surface, _) = gpu_surface(2);
+    let substituted = substitute_target
+        .retain_on_surface_with_capture_allocation(
+            surface,
+            substitute
+                .capture_lifetime
+                .as_ref()
+                .expect("substitute fixture retains capture accounting")
+                .clone(),
+        )
+        .expect("substitute target and capture belong together");
+    assert!(matches!(
+        fixture.hub.publish(
+            &publisher,
+            ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(
+                fixture.colorimetry(),
+                &substituted,
+            )),
+            &metadata,
+        ),
+        Err(ScreenPublicationHubError::NativeTargetLifetimeMismatch)
+    ));
+    assert!(
+        fixture
+            .hub
+            .lease(&fixture.descriptor)
+            .expect("native branch remains committed")
+            .read()
+            .is_none()
+    );
 }
 
 #[test]

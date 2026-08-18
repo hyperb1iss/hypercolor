@@ -12,11 +12,13 @@ if TYPE_CHECKING:
     from ..models.effect_health_status import EffectHealthStatus
     from ..models.input_status import InputStatus
     from ..models.latest_frame_status import LatestFrameStatus
+    from ..models.macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
     from ..models.preview_runtime_status import PreviewRuntimeStatus
     from ..models.render_acceleration_status import RenderAccelerationStatus
     from ..models.render_loop_status import RenderLoopStatus
     from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
     from ..models.server_identity import ServerIdentity
+    from ..models.session_performance_status import SessionPerformanceStatus
 
 
 T = TypeVar("T", bound="ApiResponseSystemStatusData")
@@ -57,11 +59,13 @@ class ApiResponseSystemStatusData:
         screen_capture_capacity (ScreenCaptureCapacityStatus): Installed byte fences for transactional screen
             publication admission.
         server (ServerIdentity): Stable identity exposed by each Hypercolor daemon instance.
+        session_performance (SessionPerformanceStatus):
         uptime_seconds (int):
         version (str):
         active_effect (None | str | Unset):
         active_scene (None | str | Unset):
         latest_frame (LatestFrameStatus | None | Unset):
+        macos_daemon_ownership (MacosDaemonOwnershipApiStatus | None | Unset):
     """
 
     active_scene_snapshot_locked: bool
@@ -84,15 +88,20 @@ class ApiResponseSystemStatusData:
     scene_count: int
     screen_capture_capacity: ScreenCaptureCapacityStatus
     server: ServerIdentity
+    session_performance: SessionPerformanceStatus
     uptime_seconds: int
     version: str
     active_effect: None | str | Unset = UNSET
     active_scene: None | str | Unset = UNSET
     latest_frame: LatestFrameStatus | None | Unset = UNSET
+    macos_daemon_ownership: MacosDaemonOwnershipApiStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.latest_frame_status import LatestFrameStatus
+        from ..models.macos_daemon_ownership_api_status import (
+            MacosDaemonOwnershipApiStatus,
+        )
 
         active_scene_snapshot_locked = self.active_scene_snapshot_locked
 
@@ -134,6 +143,8 @@ class ApiResponseSystemStatusData:
 
         server = self.server.to_dict()
 
+        session_performance = self.session_performance.to_dict()
+
         uptime_seconds = self.uptime_seconds
 
         version = self.version
@@ -157,6 +168,14 @@ class ApiResponseSystemStatusData:
             latest_frame = self.latest_frame.to_dict()
         else:
             latest_frame = self.latest_frame
+
+        macos_daemon_ownership: dict[str, Any] | None | Unset
+        if isinstance(self.macos_daemon_ownership, Unset):
+            macos_daemon_ownership = UNSET
+        elif isinstance(self.macos_daemon_ownership, MacosDaemonOwnershipApiStatus):
+            macos_daemon_ownership = self.macos_daemon_ownership.to_dict()
+        else:
+            macos_daemon_ownership = self.macos_daemon_ownership
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -182,6 +201,7 @@ class ApiResponseSystemStatusData:
                 "scene_count": scene_count,
                 "screen_capture_capacity": screen_capture_capacity,
                 "server": server,
+                "session_performance": session_performance,
                 "uptime_seconds": uptime_seconds,
                 "version": version,
             }
@@ -192,6 +212,8 @@ class ApiResponseSystemStatusData:
             field_dict["active_scene"] = active_scene
         if latest_frame is not UNSET:
             field_dict["latest_frame"] = latest_frame
+        if macos_daemon_ownership is not UNSET:
+            field_dict["macos_daemon_ownership"] = macos_daemon_ownership
 
         return field_dict
 
@@ -200,11 +222,15 @@ class ApiResponseSystemStatusData:
         from ..models.effect_health_status import EffectHealthStatus
         from ..models.input_status import InputStatus
         from ..models.latest_frame_status import LatestFrameStatus
+        from ..models.macos_daemon_ownership_api_status import (
+            MacosDaemonOwnershipApiStatus,
+        )
         from ..models.preview_runtime_status import PreviewRuntimeStatus
         from ..models.render_acceleration_status import RenderAccelerationStatus
         from ..models.render_loop_status import RenderLoopStatus
         from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
         from ..models.server_identity import ServerIdentity
+        from ..models.session_performance_status import SessionPerformanceStatus
 
         d = dict(src_dict)
         active_scene_snapshot_locked = d.pop("active_scene_snapshot_locked")
@@ -251,6 +277,10 @@ class ApiResponseSystemStatusData:
 
         server = ServerIdentity.from_dict(d.pop("server"))
 
+        session_performance = SessionPerformanceStatus.from_dict(
+            d.pop("session_performance")
+        )
+
         uptime_seconds = d.pop("uptime_seconds")
 
         version = d.pop("version")
@@ -290,6 +320,29 @@ class ApiResponseSystemStatusData:
 
         latest_frame = _parse_latest_frame(d.pop("latest_frame", UNSET))
 
+        def _parse_macos_daemon_ownership(
+            data: object,
+        ) -> MacosDaemonOwnershipApiStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                macos_daemon_ownership_type_1 = MacosDaemonOwnershipApiStatus.from_dict(
+                    data
+                )
+
+                return macos_daemon_ownership_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(MacosDaemonOwnershipApiStatus | None | Unset, data)
+
+        macos_daemon_ownership = _parse_macos_daemon_ownership(
+            d.pop("macos_daemon_ownership", UNSET)
+        )
+
         api_response_system_status_data = cls(
             active_scene_snapshot_locked=active_scene_snapshot_locked,
             audio_available=audio_available,
@@ -311,11 +364,13 @@ class ApiResponseSystemStatusData:
             scene_count=scene_count,
             screen_capture_capacity=screen_capture_capacity,
             server=server,
+            session_performance=session_performance,
             uptime_seconds=uptime_seconds,
             version=version,
             active_effect=active_effect,
             active_scene=active_scene,
             latest_frame=latest_frame,
+            macos_daemon_ownership=macos_daemon_ownership,
         )
 
         api_response_system_status_data.additional_properties = d
