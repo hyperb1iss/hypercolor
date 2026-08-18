@@ -1212,6 +1212,17 @@ impl MacosScreenCaptureInput {
                         command_rx,
                     )
                 };
+                // The exit channel is only drained by the legacy sampling
+                // path; the exact-publication path never observes it, so an
+                // unlogged error here is a silently dead capture pump.
+                if let Err(error) = &result {
+                    tracing::warn!(
+                        error = format!("{error:#}"),
+                        "macOS screen capture worker exited with error"
+                    );
+                } else {
+                    tracing::debug!("macOS screen capture worker exited cleanly");
+                }
                 let _ = exit_tx.send(result);
             })?;
         Ok(StagedCaptureWorker {
@@ -2400,7 +2411,13 @@ fn publish_frame(
     status_session: &SourceSessionSlot,
     control: &Arc<dyn MacosCaptureControl>,
 ) -> anyhow::Result<()> {
-    let captured_at = control.captured_at(frame.display_time)?;
+    // ScreenCaptureKit's display time is the frame's intended display
+    // vsync, which runs slightly ahead of callback delivery, so the raw
+    // conversion can land in the future. A future capture instant makes
+    // every publication timeline read backwards (published_at precedes
+    // captured_at) and kills the pump; a capture time can never postdate
+    // the moment we hold the frame.
+    let captured_at = control.captured_at(frame.display_time)?.min(Instant::now());
     let fresh_until = captured_at
         .checked_add(Duration::from_nanos(
             2_000_000_000_u64.div_ceil(u64::from(target_fps)),
