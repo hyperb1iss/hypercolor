@@ -1448,6 +1448,18 @@ impl InputManager {
         self.screen_publication_resolution_revision
     }
 
+    /// Whether the committed screen publication plan still matches the
+    /// sources' current resolution state. A source-internal invalidation
+    /// (a capture worker retiring its publication source) advances the
+    /// resolution revision without touching the demand revision or the
+    /// structural graph generation, so the publication loop must probe
+    /// this to notice a committed-but-starved plan and re-plan.
+    #[must_use]
+    pub fn screen_publication_commitment_is_current(&mut self) -> bool {
+        let current = self.screen_publication_resolution_revision();
+        self.committed_screen_publication_resolution_revision == Some(current)
+    }
+
     /// Resolve and start one exact screen-plan preparation transaction.
     ///
     /// Source methods may only enqueue worker-owned work here. Awaiting real
