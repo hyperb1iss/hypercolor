@@ -599,7 +599,20 @@ def _validate_screen_zones_publication(
 
 
 class HypercolorEventStream:
-    """WebSocket connection with channel subscriptions and event handlers."""
+    """WebSocket connection with channel subscriptions and event handlers.
+
+    The events channel carries live changes only and is never replayed.
+    A stream that loses its socket misses every event during the gap, and
+    the daemon does not resend them on reconnect, so refetch whatever you
+    mirror each time the connection opens. Do the same whenever a
+    ``resync_required`` event arrives: the daemon sends it when a
+    subscriber falls far enough behind that events were dropped on a
+    socket that is still open.
+
+    The handshake is deliberately thin for the same reason. It reports how
+    the daemon is running, not what is rendering; read ``GET /api/v1/scene``
+    for the live tree and follow this channel for changes.
+    """
 
     def __init__(self, client: Any) -> None:
         self._url = client.ws_url

@@ -130,7 +130,6 @@ live.
     "paused": false,
     "brightness": 100,
     "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8, "actual": 60.0 },
-    "effect": { "id": "borealis", "name": "Borealis" },
     "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
     "profile": null,
     "layout": null,
@@ -361,7 +360,6 @@ control-tier key.
 ```json
 {
   "type": "zone_layout_preview",
-  "scene_id": "default",
   "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f",
   "layout": {
     "id": "default-zone-layout-preview",
@@ -377,9 +375,10 @@ control-tier key.
 }
 ```
 
-`scene_id` accepts a scene UUID or the literal `default`; `zone_id` must be a
-zone UUID. The preview layout must contain exactly the selected zone's outputs,
-no more, no fewer. For the difference between scenes (whole-rig configs) and
+`zone_id` must be a zone UUID in the **active** scene. Previews only ever apply
+to what is rendering, so there is no scene to select: the daemon owns which one
+that is. The preview layout must contain exactly the selected zone's outputs, no
+more, no fewer. For the difference between scenes (whole-rig configs) and
 zones (canvas partitions), see [the Studio docs](@/studio/_index.md).
 
 ### zone_layout_preview_clear
@@ -390,7 +389,6 @@ control-tier.
 ```json
 {
   "type": "zone_layout_preview_clear",
-  "scene_id": "default",
   "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f"
 }
 ```
@@ -526,8 +524,17 @@ TUI and dashboard surface. The `data` object is a `SystemSnapshot`.
 
 ### backpressure
 
-Sent when the daemon drops count-queued `frames` or `spectrum` data for a consumer
-that cannot keep up. Preview publications use a different policy: one latest
+Every topic declares how it behaves when a subscriber cannot keep up, and the
+manifest states the class per topic:
+
+| Class | Meaning | Topics |
+| --- | --- | --- |
+| `lossless` | Every message is delivered; a slow reader backpressures the producer. Correct where each message is a distinct fact rather than a newer version of one. | `events`, `frame_events`, `input_events` |
+| `latest_wins` | Only the newest value matters, so a slow reader skips what it missed. | `canvas`, `screen_canvas`, `screen_zones`, `web_viewport_canvas`, `zone_preview`, `display_preview`, `interactive_preview` |
+| `drop_with_notice` | A message that will not fit is dropped and the subscriber is told, so it can reduce its own demand. | `frames`, `spectrum`, `metrics`, `device_metrics`, `sensors` |
+
+Sent when the daemon drops data for a `drop_with_notice` consumer that cannot
+keep up. Preview publications use a different policy: one latest
 publication per stream under a connection byte budget. A newer publication
 replaces queued work for the same stream; under cross-stream pressure, the oldest
 queued preview is evicted. Neither path grows daemon memory without a bound.
@@ -548,6 +555,21 @@ Clients can patch the subscription to match the bandwidth they intend to consume
 Daemon metrics expose preview queue bytes plus queued, replaced, evicted, rejected,
 sent-publication, and sent-chunk counters for diagnosing the actual bottleneck.
 
+### Continuity: events are not replayed
+
+The events channel carries live changes only. A client that loses the socket
+misses every event during the gap, and the daemon does not replay them on
+reconnect. Refetch whatever you mirror each time the socket opens — folding a
+connection generation into your fetch epochs is the pattern the web UI uses — and
+do the same whenever a `resync_required` event arrives, which the daemon sends
+when a subscriber falls far enough behind that events were dropped on a socket
+that is still open.
+
+This is why the handshake is deliberately thin. It reports how the daemon is
+running, not what is rendering: the live tree is multi-zone and multi-layer, so
+read [`GET /api/v1/scene`](@/api/rest.md) for content and follow the events
+channel for changes.
+
 ### error
 
 A protocol-level error: malformed JSON, an unknown topic, a missing or invalid
@@ -556,15 +578,17 @@ key, an invalid config value, or a forbidden control-tier subscription.
 ```json
 {
   "type": "error",
-  "code": "invalid_config",
+  "code": "validation_error",
   "message": "Invalid configuration for config.frames.fps: expected 1..=60",
   "details": { "field": "config.frames.fps", "reason": "expected 1..=60" }
 }
 ```
 
-Error codes you may see: `invalid_request` (bad JSON, an empty `topics` array,
+Socket refusals use the same codes the REST envelope does, so there is no second
+table to learn. Error codes you may see: `malformed_request` (bad JSON, an empty
+`topics` array,
 an unknown topic name, a keyed topic named without a key or an unkeyed one named
-with one, or the same subscription named twice in one message), `invalid_config`
+with one, or the same subscription named twice in one message), `validation_error`
 (an invalid config patch, with `details.field` and `details.reason`), and
 `forbidden` (a control-tier subscription or mutation attempted without a control
 key).
@@ -573,7 +597,7 @@ key).
 
 Each configurable topic carries parameters that control throughput and format.
 Send them in the `config` field of that subscription's entry in a `subscribe`
-message. A rejected patch fails the whole request with an `invalid_config`
+message. A rejected patch fails the whole request with a `validation_error`
 error, and every subscription named in it is left exactly as it was.
 
 Each patch is validated by the topic that owns it, so four shapes are refused
@@ -588,7 +612,6 @@ configurable topic means "leave this subscription alone".
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
 | `fps` | integer | `30` | 1..=60 |
-| `format` | string | `"binary"` | `"binary"` or `"json"` |
 | `zones` | array of string | `["all"]` | zone IDs, or `["all"]`; must not be empty |
 
 ### spectrum config
@@ -693,14 +716,14 @@ identity-prefixed layout as interactive previews.
 
 ### frames (0x01)
 
-Per-zone LED colors. Header is 10 bytes, then one block per zone.
+Per-zone LED colors. Header is 11 bytes, then one block per zone.
 
 ```
 Byte(s)  Field
 0        tag = 0x01
 1-4      frame_number (u32 LE)
 5-8      timestamp_ms (u32 LE)
-9        zone_count (u8, max 255)
+9-10     zone_count (u16 LE)
 
 For each zone (repeated zone_count times):
   2      zone_id length (u16 LE)
@@ -709,8 +732,9 @@ For each zone (repeated zone_count times):
   3×M    RGB bytes (M = led_count; R, G, B per LED)
 ```
 
-When `format` is `"json"`, the same data arrives as a structured JSON message
-instead. Binary is strongly preferred for throughput.
+Frames are binary. The JSON encoding this topic used to offer is deleted: it had
+no consumers, and it routed frames down the text queue, which opted the topic
+that most needs a backpressure notice out of receiving one.
 
 ### spectrum (0x02)
 
