@@ -50,6 +50,8 @@ use super::{
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
+#[cfg(any(target_os = "macos", feature = "macos-capture-fixtures"))]
+use crate::input::SourceKind;
 use crate::input::status::SourceSessionSlot;
 #[cfg(target_os = "macos")]
 use crate::input::traits::MacosScreenshotReferenceAction;
@@ -59,7 +61,7 @@ use crate::input::traits::{
 use crate::input::{
     MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
     MacosScreenPlatformStatus, MacosScreenTimingStatus, MacosSelectionState,
-    MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, MacosTimingStatus, SourceKind,
+    MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, MacosTimingStatus,
     SourcePlatformStatus, SourceStatusHandle, SourceStatusReporter,
 };
 
