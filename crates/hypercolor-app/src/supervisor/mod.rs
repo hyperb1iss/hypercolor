@@ -389,17 +389,6 @@ impl SupervisorState {
                 .unwrap_or_else(PoisonError::into_inner)
                 .take();
             let Some(authority) = authority else {
-                // Quit before the child was bound (still starting, or a
-                // reclaim in flight): no retained handle exists, so fall
-                // back to a best-effort SIGTERM by pid. The daemon's own
-                // parent-death watch is the backstop either way.
-                if let Some(pid) = self.child_pid() {
-                    if let Err(error) = hypercolor_macos_owner::request_macos_pid_termination(pid) {
-                        tracing::warn!(pid, %error, "unbound daemon termination failed on app exit");
-                    } else {
-                        tracing::info!(pid, "unbound daemon asked to terminate on app exit");
-                    }
-                }
                 return;
             };
             let mut daemon = authority
@@ -2458,6 +2447,36 @@ mod tests {
         state
             .stop_app_sidecar(&exact)
             .expect("replayed exact stop should be idempotent after the child is cleared");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn app_exit_never_signals_an_unbound_child_pid() {
+        use std::process::{Command, Stdio};
+
+        use super::SupervisorState;
+
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fixture child should spawn");
+        let state = SupervisorState::default();
+        state.replace_child_pid(child.id());
+
+        state.terminate_managed_daemon_for_exit();
+
+        assert!(
+            child
+                .try_wait()
+                .expect("fixture child state should read")
+                .is_none(),
+            "app exit must not signal a pid without a retained child handle"
+        );
+        child.kill().expect("fixture child should stop");
+        child.wait().expect("fixture child should reap");
     }
 }
 
