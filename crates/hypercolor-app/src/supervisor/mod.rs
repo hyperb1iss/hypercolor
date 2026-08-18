@@ -1686,7 +1686,7 @@ async fn reclaim_stale_app_sidecar(current_child_pid: u32) -> bool {
         // recorded daemon is already gone and there is nothing to reclaim.
         return false;
     }
-    if !process_matches_identity(stale_pid, &record.active_identity.executable_path) {
+    if !process_matches_identity(&record.active_identity) {
         tracing::warn!(
             stale_pid,
             "recorded app-sidecar owner does not match the live process; refusing to signal"
@@ -1732,28 +1732,55 @@ async fn reclaim_stale_app_sidecar(current_child_pid: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn process_matches_identity(pid: u32, executable: &Path) -> bool {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+fn process_matches_identity(identity: &hypercolor_macos_owner::MacosOwnerIdentity) -> bool {
+    use core_foundation::{base::TCFType, data::CFData};
+    use security_framework::os::macos::code_signing::{
+        Flags as CodeSigningFlags, GuestAttributes, SecCode,
+    };
 
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-        true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
-    );
-    system
-        .process(Pid::from_u32(pid))
-        .and_then(sysinfo::Process::exe)
-        .is_some_and(|exe| {
-            // The live exe comes from proc_pidpath (resolved) while the
-            // record stores current_exe() (unresolved); canonicalize both
-            // so symlinked installs still match. Resolution failure means
-            // the identity cannot be attested, which declines the reclaim.
-            match (exe.canonicalize(), executable.canonicalize()) {
-                (Ok(live), Ok(recorded)) => live == recorded,
-                _ => false,
-            }
-        })
+    let mut audit_token = [0_u8; 32];
+    let mut words = identity.audit_token_identity.split(':');
+    for index in 0..8 {
+        let Some(word) = words.next() else {
+            return false;
+        };
+        if word.len() != 8 || !word.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        let Ok(value) = u32::from_str_radix(word, 16) else {
+            return false;
+        };
+        if index == 5 && value != identity.pid {
+            return false;
+        }
+        audit_token[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    if words.next().is_some() {
+        return false;
+    }
+
+    let token_data = CFData::from_buffer(&audit_token);
+    let mut attributes = GuestAttributes::new();
+    attributes.set_audit_token(token_data.as_concrete_TypeRef());
+    let Ok(code) = SecCode::copy_guest_with_attribues(None, &attributes, CodeSigningFlags::NONE)
+    else {
+        return false;
+    };
+    let Some(executable) = code
+        .path(CodeSigningFlags::NONE)
+        .ok()
+        .and_then(|url| url.to_path())
+    else {
+        return false;
+    };
+
+    match (
+        executable.canonicalize(),
+        identity.executable_path.canonicalize(),
+    ) {
+        (Ok(live), Ok(recorded)) => live == recorded,
+        _ => false,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2276,6 +2303,44 @@ mod tests {
         assert!(
             !authoritative_probe_fixture(homebrew, MacosDaemonOwner::DirectLaunchd, None).await
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stale_sidecar_reclaim_requires_the_exact_live_audit_token() {
+        use hypercolor_macos_input::current_process_audit_token_identity;
+        use hypercolor_macos_owner::MacosOwnerIdentity;
+
+        let executable = std::env::current_exe().expect("test executable should resolve");
+        let audit_token = current_process_audit_token_identity()
+            .expect("current process audit token should resolve");
+        let exact = MacosOwnerIdentity::new(
+            audit_token.clone(),
+            &executable,
+            "requirement-current",
+            std::process::id(),
+        )
+        .expect("current identity should build");
+        assert!(super::process_matches_identity(&exact));
+
+        let mut words = audit_token
+            .split(':')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        words[7] = format!(
+            "{:08x}",
+            u32::from_str_radix(&words[7], 16)
+                .expect("pid version should parse")
+                .wrapping_add(1)
+        );
+        let stale = MacosOwnerIdentity::new(
+            words.join(":"),
+            executable,
+            "requirement-current",
+            std::process::id(),
+        )
+        .expect("stale identity should build");
+        assert!(!super::process_matches_identity(&stale));
     }
 
     #[cfg(target_os = "macos")]

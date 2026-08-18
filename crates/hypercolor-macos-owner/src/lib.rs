@@ -920,9 +920,9 @@ pub fn request_macos_child_termination(
 
 /// Request graceful termination of a recorded owner process by pid.
 ///
-/// The caller must have verified the live process identity against the
-/// owner record (executable path and guard contention) before calling:
-/// this function delivers `SIGTERM` to whatever currently holds the pid.
+/// The caller must have verified the exact live process identity against the
+/// owner record (including audit token) and observed guard contention before
+/// calling: this function delivers `SIGTERM` to whatever currently holds the pid.
 ///
 /// # Errors
 ///

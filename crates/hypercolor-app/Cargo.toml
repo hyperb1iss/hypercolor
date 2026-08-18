@@ -60,8 +60,10 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+hypercolor-macos-input = { workspace = true }
 objc2 = { workspace = true, features = ["std"] }
-sysinfo = { workspace = true }
+security-framework = "3.7.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }
