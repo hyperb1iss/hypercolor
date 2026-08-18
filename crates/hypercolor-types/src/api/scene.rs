@@ -23,7 +23,7 @@ use crate::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use crate::library::PresetId;
-use crate::scene::{DisplayFaceTarget, SceneId, UnassignedBehavior, ZoneId, ZoneRole};
+use crate::scene::{DisplayFaceTarget, SceneId, SceneKind, UnassignedBehavior, ZoneId, ZoneRole};
 use crate::spatial::SpatialLayout;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 pub struct SceneDocument {
     pub id: SceneId,
     pub name: String,
+    pub kind: SceneKind,
     /// Whether this is the auto-managed default scene, which cannot be
     /// renamed or deleted.
     pub is_default: bool,
@@ -245,18 +246,48 @@ pub struct ApplyEffectRequest {
     pub transition: Option<TransitionType>,
 }
 
+/// One post-commit side-effect outcome (Spec 78 §2.3, §3.2): the
+/// commit stands, the outcome says whether the side effect landed,
+/// and a failure carries its reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SideEffectOutcome {
+    pub applied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl SideEffectOutcome {
+    /// The side effect landed.
+    #[must_use]
+    pub fn applied() -> Self {
+        Self {
+            applied: true,
+            message: None,
+        }
+    }
+
+    /// The side effect failed after the commit; the reason rides in
+    /// the 200.
+    #[must_use]
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self {
+            applied: false,
+            message: Some(message.into()),
+        }
+    }
+}
+
 /// `POST /effects/{id}/apply` — the sugar response: the updated zone
 /// resource carrying the new layer's id, and the applied transition.
 ///
 /// Post-commit side-effect failures (power wake) are reported inside a
 /// 200 per Spec 78 §2.3; repair goes through the side effect's own
-/// route, never a blind re-apply, because apply mints a fresh layer id
-/// and is deliberately not idempotent.
+/// route (`PATCH /output`), never a blind re-apply, because apply
+/// mints a fresh layer id and is deliberately not idempotent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplyEffectResponse {
     pub zone: ZoneResource,
     pub transition: TransitionType,
-    /// `false` when the post-commit power wake failed; the commit
-    /// stands and `PATCH /output` repairs.
-    pub output_woken: bool,
+    /// The post-commit power-wake outcome.
+    pub output: SideEffectOutcome,
 }

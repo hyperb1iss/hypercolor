@@ -9,8 +9,8 @@ use hypercolor_types::api::output::{OutputPatchRequest, OutputResource};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ApplyEffectResponse, AssignMembersRequest, ClearSceneRequest,
     CreateLayerRequest, CreateZoneRequest, PatchControlsRequest, PatchZoneRequest,
-    ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, TransitionType,
-    ZoneMember,
+    ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, SideEffectOutcome,
+    TransitionType, ZoneMember,
 };
 use serde_json::json;
 
@@ -18,6 +18,7 @@ fn representative_document() -> serde_json::Value {
     json!({
         "id": "0198c5b6-1111-7000-8000-000000000001",
         "name": "Desk Wash",
+        "kind": "named",
         "is_default": false,
         "unassigned_behavior": "off",
         "layout_id": null,
@@ -156,12 +157,22 @@ fn apply_response_reports_the_power_outcome_inside_success() {
     let response = ApplyEffectResponse {
         zone: document.zones[0].clone(),
         transition: TransitionType::Cut,
-        output_woken: false,
+        output: SideEffectOutcome::failed("output backend unavailable"),
     };
     let wire = serde_json::to_value(&response).expect("serializes");
     assert_eq!(
-        wire["output_woken"], false,
+        wire["output"]["applied"], false,
         "a post-commit wake failure rides inside the 200 (Spec 78 §2.3)"
+    );
+    assert_eq!(
+        wire["output"]["message"], "output backend unavailable",
+        "the failure carries its reason"
+    );
+    let ok = SideEffectOutcome::applied();
+    let ok_wire = serde_json::to_value(&ok).expect("serializes");
+    assert!(
+        ok_wire.get("message").is_none(),
+        "a landed side effect carries no message"
     );
 }
 

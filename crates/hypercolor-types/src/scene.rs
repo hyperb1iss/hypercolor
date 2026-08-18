@@ -752,6 +752,22 @@ impl Scene {
             errors.append(&mut conflicts);
         }
 
+        if let Some(brightness) = self.activation_brightness
+            && !(brightness.is_finite() && (0.0..=1.0).contains(&brightness))
+        {
+            errors.push(format!(
+                "activation_brightness must be within 0.0..=1.0, got {brightness}"
+            ));
+        }
+
+        // Derived Deserialize on identity types skips their validator;
+        // re-run it here so a malformed persisted reference is loud.
+        if let Some(layout_id) = &self.layout_id
+            && let Err(error) = crate::identity::LayoutId::new(layout_id.as_str())
+        {
+            errors.push(format!("layout_id is not a valid layout id: {error}"));
+        }
+
         let primary_count = self
             .groups
             .iter()

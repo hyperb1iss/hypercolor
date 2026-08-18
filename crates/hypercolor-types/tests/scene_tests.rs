@@ -1044,3 +1044,38 @@ fn automation_rule_toml_round_trip() {
     assert_eq!(restored.name, original.name);
     assert_eq!(restored.cooldown_secs, original.cooldown_secs);
 }
+
+#[test]
+fn validate_fences_the_activation_fields() {
+    let mut scene = sample_scene();
+    scene.activation_brightness = Some(7.0);
+    let errors = scene
+        .validate()
+        .expect_err("out-of-range brightness is loud");
+    assert!(
+        errors.iter().any(|e| e.contains("activation_brightness")),
+        "brightness range is validated: {errors:?}"
+    );
+
+    let mut scene = sample_scene();
+    scene.activation_brightness = Some(f32::NAN);
+    assert!(scene.validate().is_err(), "non-finite brightness is loud");
+
+    let mut scene = sample_scene();
+    scene.layout_id = Some(hypercolor_types::identity::LayoutId::from_persisted(""));
+    let errors = scene.validate().expect_err("malformed layout id is loud");
+    assert!(
+        errors.iter().any(|e| e.contains("layout_id")),
+        "layout id validity is re-checked: {errors:?}"
+    );
+
+    let mut scene = sample_scene();
+    scene.activation_brightness = Some(0.5);
+    scene.layout_id = Some(hypercolor_types::identity::LayoutId::from_persisted(
+        "desk-grid",
+    ));
+    assert!(
+        scene.validate().is_ok(),
+        "valid values pass: in-range brightness, well-formed id"
+    );
+}
