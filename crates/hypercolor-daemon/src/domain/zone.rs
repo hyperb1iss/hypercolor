@@ -266,8 +266,8 @@ pub async fn update_zone(
 
     let structural = command.patch.make_primary == Some(true);
     let mut mutation = state.begin_scene_mutation().await;
+    check_scene_revision(&mutation, command.expected_scene_revision)?;
     if structural {
-        check_scene_revision(&mutation, command.expected_scene_revision)?;
         check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
     }
 

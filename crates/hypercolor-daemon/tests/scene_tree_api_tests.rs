@@ -386,6 +386,26 @@ async fn structural_writes_honor_if_match_and_control_writes_do_not() {
     .await;
     assert_eq!(fresh.status(), StatusCode::CREATED);
 
+    // Patching a zone is structural too, and it was the route most
+    // likely to be missed: nothing about its body says "structural".
+    let stale_zone_patch = send(
+        &app,
+        if_match(
+            json_request(
+                "PATCH",
+                format!("/api/v1/scene/zones/{zone_id}"),
+                json!({ "name": "Renamed" }),
+            ),
+            revision + 99,
+        ),
+    )
+    .await;
+    assert_eq!(
+        stale_zone_patch.status(),
+        StatusCode::PRECONDITION_FAILED,
+        "a zone patch is a structural write (Spec 78 §1.6)"
+    );
+
     // A control write is unguarded by contract: a slider drag would
     // self-invalidate every tick under a precondition, so the header is
     // not consulted even when the caller sends a stale one.
@@ -851,4 +871,235 @@ async fn an_unknown_zone_is_a_not_found_not_a_panic() {
         let body = body_json(response).await;
         assert_eq!(body["error"]["code"], "not_found");
     }
+}
+
+// ── Findings the first adversarial pass surfaced ─────────────────────────
+
+#[tokio::test]
+async fn every_zone_write_echoes_the_advanced_revision() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+
+    let document = read_document(&app).await;
+    let zone_id = primary_zone(&document)["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+    let before = document["data"]["revision"].as_u64().expect("revision");
+
+    let patched = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone_id}"),
+            json!({ "brightness": 0.5 }),
+        ),
+    )
+    .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+    assert_eq!(
+        response_etag(&patched),
+        format!("\"{}\"", before + 1),
+        "a caller learns the new token from the write it just made"
+    );
+}
+
+#[tokio::test]
+async fn a_control_patch_is_validated_against_the_effect_schema() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+
+    let document = read_document(&app).await;
+    let zone_id = primary_zone(&document)["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+    let layer_id = primary_zone(&document)["layers"][0]["id"]
+        .as_str()
+        .expect("layer id")
+        .to_owned();
+
+    let empty = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
+            json!({ "values": {} }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        empty.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a patch that writes nothing must not advance the revision"
+    );
+}
+
+#[tokio::test]
+async fn clearing_the_tree_leaves_display_faces_alone() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+
+    let display_zone_id = {
+        let metadata = {
+            let registry = state.effect_registry.read().await;
+            registry
+                .get(&effect_id)
+                .map(|entry| entry.metadata.clone())
+                .expect("seeded effect")
+        };
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .upsert_display_group(
+                hypercolor_types::device::DeviceId::new(),
+                "Panel",
+                &metadata,
+                HashMap::<String, ControlValue>::new(),
+                sample_layout(vec![sample_output("out-face", None)]),
+            )
+            .expect("face assigns")
+            .id
+    };
+
+    let cleared = send(&app, empty_request("POST", "/api/v1/scene/clear".into())).await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let document = body_json(cleared).await;
+    let face = document["data"]["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .find(|zone| zone["id"] == display_zone_id.to_string().as_str())
+        .expect("the display zone survives");
+    assert!(
+        !face["layers"].as_array().expect("layers").is_empty(),
+        "faces are owned by /displays, so the stop gesture never blanks one (Spec 78 §1.3)"
+    );
+
+    let targeted = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scene/clear".into(),
+            json!({ "zone": display_zone_id.to_string() }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        targeted.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "and naming one explicitly is refused rather than honored"
+    );
+}
+
+#[tokio::test]
+async fn a_layout_mismatch_names_the_mismatch_rather_than_the_zone() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+
+    let document = read_document(&app).await;
+    let zone = primary_zone(&document);
+    let zone_id = zone["id"].as_str().expect("zone id").to_owned();
+    let member = zone["members"][0]["id"]
+        .as_str()
+        .expect("member")
+        .to_owned();
+    let topology = zone["layout"]["placements"][0]["topology"].clone();
+
+    // The same member twice passes a naive length check but is not the
+    // zone's member set.
+    let duplicated = send(
+        &app,
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone_id}/layout"),
+            json!({
+                "placements": [
+                    { "member": member, "position": { "x": 0.1, "y": 0.1 },
+                      "size": { "x": 0.2, "y": 0.1 }, "topology": topology },
+                    { "member": member, "position": { "x": 0.2, "y": 0.2 },
+                      "size": { "x": 0.2, "y": 0.1 }, "topology": topology }
+                ]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(duplicated.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Topology is hardware, not placement.
+    let retopologized = send(
+        &app,
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone_id}/layout"),
+            json!({
+                "placements": [
+                    { "member": member, "position": { "x": 0.1, "y": 0.1 },
+                      "size": { "x": 0.2, "y": 0.1 },
+                      "topology": { "type": "strip", "count": 99, "direction": "left_to_right" } },
+                    { "member": zone["members"][1]["id"], "position": { "x": 0.3, "y": 0.3 },
+                      "size": { "x": 0.2, "y": 0.1 }, "topology": topology }
+                ]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(retopologized.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn omitting_segments_is_refused_on_multi_segment_hardware() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({ "name": "Desk" }),
+        ),
+    )
+    .await;
+    let zone = body_json(created).await;
+    let desk_id = zone["data"]["id"].as_str().expect("zone id").to_owned();
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            format!("/api/v1/scene/zones/{desk_id}/members"),
+            json!({ "device_id": "mock:controller" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "omitting segments means the whole device, which only reads unambiguously on single-segment hardware"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["details"]["segments"], json!(["ch1", "ch2"]));
+}
+
+#[tokio::test]
+async fn reading_the_tree_never_advances_the_revision() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+
+    let first = read_document(&app).await["data"]["revision"]
+        .as_u64()
+        .expect("revision");
+    for _ in 0..3 {
+        let _ = read_document(&app).await;
+    }
+    let last = read_document(&app).await["data"]["revision"]
+        .as_u64()
+        .expect("revision");
+    assert_eq!(first, last, "a safe method must not commit");
 }

@@ -44,9 +44,6 @@ use axum::Json;
 
 /// `GET /api/v1/scene` — the full live document.
 pub async fn get_scene(State(state): State<Arc<AppState>>) -> Response {
-    // Default-face overlays reconcile whenever the live tree is read,
-    // which is the behavior the deleted `/scenes/active` carried.
-    crate::api::displays::sync_active_display_surfaces(&state).await;
     match scene_tree::read_document(state.as_ref()).await {
         Ok(document) => {
             let revision = document.revision;
@@ -81,10 +78,7 @@ pub async fn patch_scene(
 }
 
 /// `POST /api/v1/scene/deactivate` — return to the default scene.
-pub async fn deactivate_scene(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(error) = require_current_revision(state.as_ref(), &headers) {
-        return error.into_response();
-    }
+pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
     if let Err(error) =
         crate::domain::scene::deactivate_scene(state.as_ref(), MutationContext::api()).await
     {
@@ -189,8 +183,9 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
+    let revision = state.scene_commits.revision();
     match scene_tree::read_zone(state.as_ref(), zone_id).await {
-        Ok(resource) => with_revision(ApiResponse::ok(resource), state.scene_commits.revision()),
+        Ok(resource) => with_revision(ApiResponse::ok(resource), revision),
         Err(error) => error.into_response(),
     }
 }
@@ -207,7 +202,7 @@ pub async fn patch_zone(
         Err(error) => return error.into_response(),
     };
 
-    zone_response(
+    zone_written_response(
         crate::domain::zone::update_zone(
             state.as_ref(),
             crate::domain::zone::UpdateZone {
@@ -226,8 +221,7 @@ pub async fn patch_zone(
             },
             MutationContext::api(),
         )
-        .await
-        .map(|written| written.zone),
+        .await,
     )
 }
 
@@ -352,6 +346,7 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
+    let revision = state.scene_commits.revision();
     match scene_tree::read_zone(state.as_ref(), zone_id).await {
         Ok(resource) => {
             let total = resource.layers.len() as u64;
@@ -361,7 +356,7 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
                     total,
                     page: None,
                 }),
-                state.scene_commits.revision(),
+                revision,
             )
         }
         Err(error) => error.into_response(),
@@ -563,9 +558,14 @@ fn written_response(result: Result<ZoneWritten, DomainError>) -> Response {
     }
 }
 
-fn zone_response(result: Result<hypercolor_types::scene::Zone, DomainError>) -> Response {
+fn zone_written_response(
+    result: Result<crate::domain::zone::ZoneWritten, DomainError>,
+) -> Response {
     match result {
-        Ok(zone) => ApiResponse::ok(scene_tree::zone_resource(&zone)),
+        Ok(written) => with_revision(
+            ApiResponse::ok(scene_tree::zone_resource(&written.zone)),
+            written.commit.revision(),
+        ),
         Err(error) => error.into_response(),
     }
 }
@@ -616,25 +616,6 @@ fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainError> {
         .parse::<u64>()
         .map(Some)
         .map_err(|_| DomainError::malformed("If-Match must be the scene revision"))
-}
-
-/// Refuse a scene-level gesture whose caller last saw a different tree.
-///
-/// Used by the routes that carry no body to check against, so the
-/// precondition lands before the service opens its candidate.
-fn require_current_revision(state: &AppState, headers: &HeaderMap) -> Result<(), DomainError> {
-    let Some(expected) = parse_if_match(headers)? else {
-        return Ok(());
-    };
-    let current = state.scene_commits.revision();
-    if expected == current {
-        return Ok(());
-    }
-    Err(DomainError::PreconditionFailed {
-        resource: ResourceKind::Scene,
-        expected,
-        current,
-    })
 }
 
 async fn active_scene_id(

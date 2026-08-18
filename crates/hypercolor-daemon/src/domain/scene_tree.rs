@@ -22,9 +22,11 @@ use hypercolor_types::api::scene::{
     AssignMembersRequest, MemberPlacement, SceneDocument, ZoneLayoutResource, ZoneMember,
     ZoneMemberId, ZoneResource,
 };
-use hypercolor_types::event::{HypercolorEvent, SceneSettingsChangeKind, ZoneChangeKind};
+use hypercolor_types::event::{
+    HypercolorEvent, SceneLibraryChangeKind, SceneSettingsChangeKind, ZoneChangeKind,
+};
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId};
+use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
 use hypercolor_core::scene::{LayerMutationError, OutputPlacement};
@@ -294,7 +296,12 @@ pub async fn patch_scene(
         }
         let mut scene = active_scene(&mutation)?;
         scene.name = name;
-        mutation.update_scene(scene)?;
+        mutation.update_scene(scene.clone())?;
+        mutation.record(HypercolorEvent::SceneLibraryChanged {
+            scene_id,
+            kind: SceneLibraryChangeKind::Updated,
+            name: Some(scene.name),
+        });
     }
 
     if let Some(behavior) = command.unassigned_behavior {
@@ -342,14 +349,23 @@ pub async fn clear_scene(
     let targets: Vec<ZoneId> = match command.zone {
         Some(zone_id) => {
             let scene = active_scene(&mutation)?;
-            if !scene.groups.iter().any(|zone| zone.id == zone_id) {
-                return Err(DomainError::not_found(ResourceKind::Zone, zone_id));
+            let zone = scene
+                .groups
+                .iter()
+                .find(|zone| zone.id == zone_id)
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
+            if zone.role == ZoneRole::Display {
+                return Err(DomainError::validation(
+                    "display zones carry a face, which is cleared through \
+                     DELETE /displays/{id}/face",
+                ));
             }
             vec![zone_id]
         }
         None => active_scene(&mutation)?
             .groups
             .iter()
+            .filter(|zone| zone.role != ZoneRole::Display)
             .map(|zone| zone.id)
             .collect(),
     };
@@ -432,6 +448,15 @@ pub async fn patch_layer_controls(
 ) -> Result<ZoneWritten, DomainError> {
     let _ = meta;
 
+    if command.values.is_empty() && command.clear_bindings.is_empty() {
+        return Err(DomainError::validation(
+            "a control patch must carry values, bindings to clear, or both",
+        ));
+    }
+
+    let values =
+        normalize_against_layer(state, command.zone_id, command.layer_id, command.values).await?;
+
     let mut mutation = state.begin_scene_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
     let zone = mutation
@@ -439,7 +464,7 @@ pub async fn patch_layer_controls(
             scene_id,
             command.zone_id,
             command.layer_id,
-            command.values,
+            values,
             &command.clear_bindings,
             None,
         )
@@ -571,7 +596,7 @@ pub async fn set_zone_layout(
 
     let zone = mutation
         .set_zone_layout(scene_id, zone_id, layout)
-        .map_err(|_| DomainError::not_found(ResourceKind::Zone, zone_id))?;
+        .map_err(|error| zone_layout_error(error, zone_id))?;
 
     let written = finish_zone_mutation(state, mutation, scene_id, zone).await?;
     state.zone_layout_previews.clear(scene_id, zone_id).await;
@@ -610,6 +635,28 @@ fn zone_in_candidate(mutation: &SceneMutation, zone_id: ZoneId) -> Result<Zone, 
         .active_scene()
         .and_then(|scene| scene.groups.iter().find(|zone| zone.id == zone_id).cloned())
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
+}
+
+/// Project a zone-layout refusal onto the canonical error set.
+fn zone_layout_error(
+    error: hypercolor_core::scene::ZoneMutationError,
+    zone_id: ZoneId,
+) -> DomainError {
+    use hypercolor_core::scene::ZoneMutationError;
+    match error {
+        ZoneMutationError::SceneMissing => DomainError::not_found(ResourceKind::Scene, "active"),
+        ZoneMutationError::GroupMissing => DomainError::not_found(ResourceKind::Zone, zone_id),
+        ZoneMutationError::OutputMissing => DomainError::not_found(ResourceKind::Device, "member"),
+        ZoneMutationError::SnapshotLocked => {
+            DomainError::conflict("Snapshot scene cannot be structurally edited")
+        }
+        ZoneMutationError::InvalidRole { .. } => {
+            DomainError::conflict("Zone role does not support this mutation")
+        }
+        ZoneMutationError::LayoutOutputMismatch => DomainError::validation(
+            "layout placements must name exactly the zone's current members, each once",
+        ),
+    }
 }
 
 /// Project a layer-stack refusal onto the canonical error set.
@@ -651,6 +698,60 @@ pub(crate) fn layer_error(
     }
 }
 
+/// Range-check and coerce control values against the effect the target
+/// layer runs, so a junk key or an out-of-range value is refused rather
+/// than persisted into the scene and handed to the renderer.
+///
+/// A layer whose effect the registry does not know keeps the caller's
+/// values as written: the schema is what validates, and without one
+/// there is nothing to validate against.
+async fn normalize_against_layer(
+    state: &AppState,
+    zone_id: ZoneId,
+    layer_id: SceneLayerId,
+    values: HashMap<String, hypercolor_types::effect::ControlValue>,
+) -> Result<HashMap<String, hypercolor_types::effect::ControlValue>, DomainError> {
+    let effect_id = {
+        let manager = state.scene_manager.read().await;
+        let scene = manager
+            .active_scene()
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
+        let zone = scene
+            .groups
+            .iter()
+            .find(|zone| zone.id == zone_id)
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
+        zone.effective_layers()
+            .into_iter()
+            .find(|layer| layer.id == layer_id)
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, layer_id))
+            .map(|layer| match layer.source {
+                hypercolor_types::layer::LayerSource::Effect { effect_id, .. } => Some(effect_id),
+                _ => None,
+            })?
+    };
+
+    let Some(effect_id) = effect_id else {
+        return Ok(values);
+    };
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        registry.get(&effect_id).map(|entry| entry.metadata.clone())
+    };
+    let Some(metadata) = metadata else {
+        return Ok(values);
+    };
+
+    let (normalized, rejected) = crate::api::effects::normalize_control_values(&metadata, &values);
+    if !rejected.is_empty() {
+        return Err(DomainError::validation_details(
+            "one or more control values were rejected",
+            serde_json::json!({ "rejected": rejected }),
+        ));
+    }
+    Ok(normalized)
+}
+
 // ── Member resolution ────────────────────────────────────────────────────
 
 /// Resolve the requested segments against the scene, falling back to
@@ -668,16 +769,29 @@ fn resolve_members(
         .collect();
 
     if request.segments.is_empty() {
-        if !held.is_empty() {
-            return Ok(held.into_iter().cloned().collect());
-        }
-        if !minted.is_empty() {
-            return Ok(minted);
-        }
-        return Err(DomainError::not_found(
-            ResourceKind::Device,
-            &request.device_id,
-        ));
+        let candidates: Vec<Output> = if held.is_empty() {
+            minted
+        } else {
+            held.into_iter().cloned().collect()
+        };
+        return match candidates.len() {
+            0 => Err(DomainError::not_found(
+                ResourceKind::Device,
+                &request.device_id,
+            )),
+            1 => Ok(candidates),
+            // Omitting segments means "the whole device", which is only
+            // unambiguous on single-segment hardware.
+            _ => Err(DomainError::validation_details(
+                "this device has more than one segment; name the segments to assign",
+                serde_json::json!({
+                    "segments": candidates
+                        .iter()
+                        .filter_map(|output| output.zone_name.clone())
+                        .collect::<Vec<_>>(),
+                }),
+            )),
+        };
     }
 
     request
@@ -765,6 +879,12 @@ fn layout_from_placements(
                 serde_json::json!({ "unknown_member": placement.member.0 }),
             ));
         };
+        if placement.topology != output.topology {
+            return Err(DomainError::validation_details(
+                "layout placements cannot change a member's LED topology",
+                serde_json::json!({ "member": placement.member.0 }),
+            ));
+        }
         output.position = placement.position;
         output.size = placement.size;
         output.rotation = placement.rotation;
