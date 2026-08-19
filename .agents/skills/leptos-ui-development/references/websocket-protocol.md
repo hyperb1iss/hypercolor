@@ -80,9 +80,8 @@ The UI receives `BackpressureNotice` messages for `frames`, `spectrum`,
 | `device_disconnected` | Refetch device list (if device was known)         |
 | `device_discovered`   | Refetch device list                               |
 | `config_changed`      | Reload config resources                           |
-| `profile_loaded`      | Refetch profile-backed state                      |
-| `profile_saved`       | Refetch the profile library                       |
-| `profile_deleted`     | Refetch the profile library                       |
+| `active_scene_changed` | Refetch the active scene and output state        |
+| `scene_library_changed` | Refetch the saved scene library                  |
 
 ## Closure Lifetime Management
 

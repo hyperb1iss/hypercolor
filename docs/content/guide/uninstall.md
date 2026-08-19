@@ -306,7 +306,7 @@ rm -rf ~/Library/Logs/hypercolor
 ## Remove configuration and cache
 
 Both install scripts preserve config by default to protect your lighting setup,
-profiles, and scenes. When you are ready to wipe it:
+connection profiles, and scenes. When you are ready to wipe it:
 
 | Platform | Directory | Contents |
 |---|---|---|
@@ -315,7 +315,7 @@ profiles, and scenes. When you are ready to wipe it:
 | Linux | `~/.cache/hypercolor/` | Servo runtime cache, transient state |
 | Windows | `%APPDATA%\hypercolor\` | `hypercolor.toml`, `cli.toml` connection profiles |
 | Windows | `%LOCALAPPDATA%\hypercolor\` | Bundled UI, effects, logs, first-run marker |
-| macOS | `~/Library/Application Support/hypercolor/` | Config, profiles |
+| macOS | `~/Library/Application Support/hypercolor/` | Config, scenes, effects, logs |
 | macOS | `~/Library/Logs/hypercolor/` | Daemon log output |
 
 Linux purge:

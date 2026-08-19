@@ -1,6 +1,6 @@
 +++
 title = "Your first 10 minutes"
-description = "Open the app, see your devices, apply an effect, dial in brightness, and save a profile: from zero to lit in under ten minutes."
+description = "Open the app, see your devices, apply an effect, dial in brightness, and capture a scene: from zero to lit in under ten minutes."
 weight = 80
 +++
 
@@ -153,35 +153,35 @@ In the desktop app, the tray menu's Brightness submenu lets you adjust this with
 
 ---
 
-## Step 4: Save a profile
+## Step 4: Capture a scene
 
-A profile captures the current state (active effect, controls, brightness, scene configuration) so you can restore it later or switch between setups.
-
-```bash
-hypercolor profiles create "Gaming"
-```
-
-To list your saved profiles:
+A scene snapshot captures the current zones, layers, controls, device assignments, display faces, and named layout so you can restore the rig later. Global output brightness remains separate.
 
 ```bash
-hypercolor profiles list
+hypercolor scenes snapshot "Gaming"
 ```
 
-To restore a profile:
+To list your saved scenes:
 
 ```bash
-hypercolor profiles apply "Gaming"
+hypercolor scenes list
 ```
 
-Profiles are fuzzy-matched by name. Add a description to keep them organized:
+To restore a scene:
 
 ```bash
-hypercolor profiles create "Work" --description "Cool whites, low brightness"
+hypercolor scenes activate "Gaming"
 ```
 
-By default the daemon restores your last session on startup (`start_profile = "last"` in your config), so the effect, controls, and brightness you left running come back automatically after a reboot.
+Scenes are fuzzy matched by name. Add a description to keep them organized:
 
-See [Profiles and scenes](@/guide/profiles-and-scenes.md) for the full picture on scenes and automated triggers.
+```bash
+hypercolor scenes snapshot "Work" --description "Cool whites for focus"
+```
+
+By default the daemon restores your last scene on startup (`start_scene = "last"` in your config), so the scene you left active comes back after a reboot.
+
+See [Scenes and snapshots](@/guide/profiles-and-scenes.md) for live and snapshot mutation modes, boot restore, and external automation.
 
 ---
 
@@ -197,7 +197,7 @@ curl -X POST http://localhost:9420/api/v1/simulators/displays \
   -d '{"name": "My Simulator", "width": 160, "height": 32}'
 ```
 
-The simulator appears in `hypercolor devices list` alongside physical hardware. Apply effects to it, adjust brightness, and save profiles exactly as you would with real devices.
+The simulator appears in `hypercolor devices list` alongside physical hardware. Apply effects to it, adjust brightness, and capture scene snapshots exactly as you would with real devices.
 
 To preview the output as a live JPEG frame:
 
@@ -224,7 +224,7 @@ At the end of this walkthrough you should have:
 - At least one device (real or simulated) visible in `hypercolor devices list`
 - An effect running, confirmed by seeing the name in `hypercolor status` or the web UI
 - Brightness at a level you set deliberately
-- A saved profile you can restore with `hypercolor profiles apply`
+- A saved scene you can restore with `hypercolor scenes activate`
 
 If you hit a wall, [Common issues](@/troubleshooting/common-issues.md) covers port conflicts, missing devices, and audio setup. The [TUI](@/guide/tui.md) gives you a live dashboard view of everything in the terminal.
 
@@ -234,6 +234,6 @@ If you hit a wall, [Common issues](@/troubleshooting/common-issues.md) covers po
 
 - [Finding devices](@/guide/finding-devices.md): USB permissions, network discovery, pairing network devices
 - [Audio setup](@/guide/audio-setup.md): configuring an audio loopback source for audio-reactive effects
-- [Profiles and scenes](@/guide/profiles-and-scenes.md): scheduling, triggers, and multi-scene rigs
+- [Scenes and snapshots](@/guide/profiles-and-scenes.md): reusable rig state and external automation
 - [Studio](@/studio/overview.md): the full zone editor for per-LED spatial control
 - [Effects](@/effects/_index.md): the built-in library and every effect authoring path

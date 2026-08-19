@@ -702,6 +702,21 @@ mutation mode, and the engine's default scene transition.
 ```
 {% end %}
 
+{% api_endpoint(method="POST", path="/api/v1/scenes/snapshot") %}
+Capture the complete live scene as a new snapshot-mode scene. The snapshot
+keeps the active scene's zones, members, layers, controls, display faces, and
+current named layout reference. Global output brightness is not captured.
+
+**Request body:**
+
+```json
+{
+  "name": "Current Rig",
+  "description": "Captured after tuning the desk"
+}
+```
+{% end %}
+
 {% api_endpoint(method="GET", path="/api/v1/scene") %}
 Read the complete live scene document. The response always exists and embeds
 every authored zone, each zone's member device segments, and every layer with
@@ -733,7 +748,9 @@ Delete a scene.
 
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/activate") %}
 Activate a scene, applying its effects and controls with the configured
-transition.
+transition. The response reports the post-commit layout and brightness
+outcomes separately, because either side effect may fail after the scene switch
+has committed.
 {% end %}
 
 {% api_endpoint(method="PATCH", path="/api/v1/scene") %}
@@ -854,43 +871,6 @@ Delete a layer.
 Patch an effect layer with `{ "values": {...}, "clear_bindings": [...] }`.
 Control patches never use `If-Match`. A vanished layer returns
 `404 layer_not_found`.
-{% end %}
-
-## Profiles
-
-Profiles save a full state snapshot (effect, controls, brightness, assignments)
-that you can restore later.
-
-{% api_endpoint(method="GET", path="/api/v1/profiles") %}
-List saved profiles.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/profiles") %}
-Create a profile from the current state.
-
-**Request body:**
-
-```json
-{
-  "name": "Gaming"
-}
-```
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/profiles/{id}") %}
-Get one profile's saved state.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/profiles/{id}") %}
-Update a profile.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/profiles/{id}") %}
-Delete a profile.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/profiles/{id}/apply") %}
-Apply a profile, restoring its effect, controls, and assignments.
 {% end %}
 
 ## Layouts

@@ -1,11 +1,11 @@
 +++
 title = "Your first session"
-description = "Hands-on walkthrough from daemon start to a saved, audio-reactive setup: devices, effects, layouts, profiles, scenes, and Studio."
+description = "Hands-on walkthrough from daemon start to a saved, audio-reactive setup: devices, effects, layouts, scenes, and Studio."
 weight = 90
 template = "page.html"
 +++
 
-This tutorial assumes installation is complete and the `hypercolor` binary is in your `PATH`. If you haven't built Hypercolor yet, start with [Installation](@/guide/installation.md). Each section builds on the last. By the end you'll have a running daemon, connected devices, an active effect, a spatial layout, a saved profile, and a scene. That's the point at which Hypercolor is genuinely set up.
+This tutorial assumes installation is complete and the `hypercolor` binary is in your `PATH`. If you haven't built Hypercolor yet, start with [Installation](@/guide/installation.md). Each section builds on the last. By the end you'll have a running daemon, connected devices, an active effect, a spatial layout, and reusable live and snapshot scenes. That's the point at which Hypercolor is genuinely set up.
 
 ## 1. Start the daemon 🌊
 
@@ -328,45 +328,44 @@ You can also inspect the live spectrum in the terminal UI (see the [terminal UI 
 
 For a full guide to configuring audio sources, see [Audio setup](@/guide/audio-setup.md).
 
-## 9. Save a profile
+## 9. Capture a scene snapshot
 
-Once you have an effect and brightness level you like, save the whole state as a named profile:
-
-```bash
-hypercolor profiles create "Gaming"
-```
-
-This captures the active effect, all control values, brightness, device assignments, and spatial layout. Switching profiles is near-instant.
-
-Add a description when you want to annotate what the profile is for:
+Once you have the rig tuned, capture the live scene as a named snapshot:
 
 ```bash
-hypercolor profiles create "Focus" --description "Dim breathing for deep work"
+hypercolor scenes snapshot "Gaming"
 ```
 
-**Switch between profiles:**
+The snapshot preserves zones, layers, control values, device assignments, display faces, and the active named layout. Global output brightness remains separate.
+
+Add a description when you want to annotate what the snapshot is for:
 
 ```bash
-hypercolor profiles list
-hypercolor profiles apply "Gaming"
+hypercolor scenes snapshot "Focus" --description "Breathing effect for deep work"
 ```
 
-Profile switching is immediate. The `--transition` flag is reserved for profile
-crossfades, but only `0` is accepted today.
-
-**Delete a profile** when you no longer need it (requires `--yes` to confirm):
+**Switch between scenes:**
 
 ```bash
-hypercolor profiles delete "Gaming" --yes
+hypercolor scenes list
+hypercolor scenes activate "Gaming"
 ```
 
-**Inspect a profile's contents:**
+Scene activation uses the transition stored in the scene.
+
+**Delete a scene** when you no longer need it (requires `--yes` to confirm):
 
 ```bash
-hypercolor profiles info "Gaming"
+hypercolor scenes delete "Gaming" --yes
 ```
 
-The daemon restores the last active profile on startup by default. See [Configuration](@/guide/configuration.md) for how to change the `start_profile` behavior.
+**Inspect a scene's contents:**
+
+```bash
+hypercolor scenes info "Gaming"
+```
+
+The daemon restores the last active scene on startup by default. See [Configuration](@/guide/configuration.md) for how to change the `start_scene` behavior.
 
 ## 10. Create a scene
 
@@ -418,7 +417,7 @@ hypercolor scenes active
 hypercolor scenes delete "Old Scene" --yes
 ```
 
-For the conceptual difference between profiles and scenes, and how to configure scene groups, zone overrides, and priorities, see [Profiles and scenes](@/guide/profiles-and-scenes.md).
+For live and snapshot mutation modes, boot restore, and external automation, see [Scenes and snapshots](@/guide/profiles-and-scenes.md).
 
 {% callout(type="tip") %}
 Studio is the visual authoring surface for scenes. The Studio workspace lets you build multi-zone scenes with per-zone effects, inspect the composition in a live canvas preview, and manage scene groups without writing JSON. See [Studio scenes](@/studio/scenes.md) and [Studio zones](@/studio/zones.md).
@@ -438,8 +437,7 @@ The UI is organized into panels:
 - **Controls panel**: per-parameter sliders for the active effect; equivalent to `effects patch` but much easier for exploration
 - **Devices panel**: connection status for every discovered device, per-device brightness, and an identify button to flash a test pattern
 - **Layouts editor**: drag-and-drop zone positioning with topology selection (strip, matrix, ring); the canonical way to build spatial layouts
-- **Profiles**: save, apply, and delete named configurations
-- **Scenes**: create and manage scenes
+- **Scenes**: create, snapshot, activate, and delete named configurations
 - **Studio**: the full multi-zone authoring workspace (see below)
 
 The canvas preview shows exactly what the render loop is producing, updated at the daemon's current target FPS.
@@ -484,11 +482,11 @@ Exit with `q` or Ctrl-C.
 
 You now have a fully configured Hypercolor setup. Where to go from here:
 
-- [Profiles and scenes](@/guide/profiles-and-scenes.md): conceptual guide and full CLI/API reference for saved configurations and scene management
+- [Scenes and snapshots](@/guide/profiles-and-scenes.md): conceptual guide and full CLI/API reference for saved configurations
 - [Audio setup](@/guide/audio-setup.md): configure monitor or loopback sources for audio-reactive effects
 - [Studio overview](@/studio/overview.md): multi-zone authoring, scene groups, the visual zone canvas, and the Studio workspace tour
 - [Creating effects](@/effects/creating-effects.md): write custom effects with the TypeScript SDK and see them appear in the effect browser immediately
 - [Display faces](@/effects/display-faces.md): how effects target specific geometry faces on multi-face devices
 - [Hardware: Compatibility matrix](@/hardware/compatibility.md): check driver status for every supported device family
-- [Configuration](@/guide/configuration.md): full config reference covering audio device selection, daemon network settings, the profile and scene JSON schemas, and config hot-reload behavior
+- [Configuration](@/guide/configuration.md): full config reference covering audio device selection, daemon network settings, scene storage, and config hot-reload behavior
 - [API reference](@/api/rest.md): full REST and WebSocket API documentation for scripting and third-party integration

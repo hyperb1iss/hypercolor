@@ -291,7 +291,7 @@ pub(super) fn metadata() -> EffectMetadata {
 ```
 
 {% callout(type="info") %}
-The effect's stable ID comes from `builtin_effect_id("my_effect")`, a deterministic hash of the stem. Saved scene and profile references resolve through that ID, so it must stay stable across daemon restarts. Never swap to a random UUID for a built-in, and never rename the stem without understanding that it orphans saved references.
+The effect's stable ID comes from `builtin_effect_id("my_effect")`, a deterministic hash of the stem. Saved scene references resolve through that ID, so it must stay stable across daemon restarts. Never swap to a random UUID for a built-in, and never rename the stem without understanding that it orphans saved references.
 {% end %}
 
 `EffectCategory` variants are `Ambient`, `Audio`, `Generative`, `Particle`, `Scenic`, `Interactive`, `Fun`, `Source`, `Utility`, and `Display` (full-fidelity HTML faces for LCD surfaces). Pick the one that matches how a user would browse for the effect. Set `audio_reactive: true` when the renderer reads `input.audio`, so the UI and the engine know to surface and feed the audio pipeline.

@@ -61,25 +61,25 @@ The `diagnose` tool returns rich live metrics, including the FPS pair, consecuti
 
 ## setup_automation
 
-Create automated lighting schedules and scenes. The template walks the assistant through trigger selection and profile assignment, ending in a `create_scene` call.
+Prepare reusable scenes for an external automation system. The template helps the assistant inspect existing scenes, define the lighting state a new scene should represent, and create one when needed.
 
 | Argument | Required | Description |
 | --- | --- | --- |
 | `description` | no | A natural-language description of the desired automation, e.g. `dim lights at 10pm`, `warm colors at sunset`. If omitted, the assistant opens an open-ended automation conversation. |
 
-The flow reads `hypercolor://profiles` and `hypercolor://state`, then has the assistant interview you across four points before building anything: when the automation should trigger (time of day, solar event, device connection), what should happen (apply a profile, set an effect, adjust brightness), any conditions (weekdays only, only when a device is connected), and the transition style (instant, slow fade). With those answers it calls `create_scene` to persist the rule.
+The flow reads `hypercolor://scenes` and `hypercolor://state`, then asks what lighting state the scene should represent. It calls `create_scene` when a new reusable scene is needed and explains how an external automation system can call `activate_scene` when its own conditions match.
 
 {% callout(type="warning") %}
-`create_scene` is more constrained than "save the current state." It requires three arguments: a `name`, an existing `profile_id`, and a `trigger` object whose `type` is one of `schedule`, `sunset`, `sunrise`, `device_connect`, `device_disconnect`, `audio_beat`, or `webhook`. The trigger type is recorded, not acted on: the daemon has no scheduler yet, so creating a scene with one does not make it fire. The `profile_id` must reference a profile that already exists, so the template reads `hypercolor://profiles` first. If no suitable profile exists yet, save one before the automation can be created. See [create_scene in the tools reference](@/agents/tools-reference.md) for the full argument list.
+Hypercolor does not schedule or trigger scenes. The `create_scene` tool accepts a name plus optional description, enabled state, and mutation mode. It does not accept trigger or schedule fields. The external system owns those conditions and calls `activate_scene` when they match. See [create_scene in the tools reference](@/agents/tools-reference.md) for the full argument list.
 {% end %}
 
-Remember that scenes are whole-rig configurations bound to a trigger and a profile. They are the engine's automation unit, distinct from zones, which are the flexible canvas partitions inside a single rig.
+Remember that scenes are whole-rig configurations. Zones are the flexible canvas partitions inside a scene, and scheduling belongs to the external automation system.
 
 ## Using prompts from an agent
 
 Prompts are a convenience layer, not a separate API. Everything a prompt does, an agent can do by hand with the underlying tools and resources, so reach for a prompt when you want a known-good flow and call tools directly when you need precise control. The three templates map cleanly onto the most common agent jobs: set a vibe, fix a problem, schedule something.
 
-If you are wiring an assistant up for the first time, the natural path is to enable the server in [MCP setup](@/agents/mcp-setup.md), skim the [tools reference](@/agents/tools-reference.md) to learn the verbs, and let the prompts orchestrate the common cases. For hand-built CLI and MCP playbooks that go beyond the three shipped prompts, the agent-scripting pages in this section walk through end-to-end automation against the daemon.
+If you are wiring an assistant up for the first time, the natural path is to enable the server in [MCP setup](@/agents/mcp-setup.md), skim the [tools reference](@/agents/tools-reference.md) to learn the verbs, and let the prompts orchestrate the common cases. For hand-built CLI and MCP playbooks that go beyond the three shipped prompts, the agent-scripting pages in this section walk through complete automation against the daemon.
 
 {% callout(type="success") %}
 All three prompts open by reading state. That is the single most useful habit to copy when you write your own flows: orient from `hypercolor://state` before you act, and your tool calls land predictably.

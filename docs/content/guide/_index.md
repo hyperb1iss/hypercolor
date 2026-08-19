@@ -56,7 +56,7 @@ This section takes you from zero to a fully configured rig.
 **First steps**
 
 - [First launch](@/guide/first-launch.md): what happens on first run: the welcome wizard, device discovery, autostart
-- [Your first 10 minutes](@/guide/your-first-10-minutes.md): opinionated happy path from opening the app to a saved profile
+- [Your first 10 minutes](@/guide/your-first-10-minutes.md): opinionated happy path from opening the app to a saved scene
 - [Quick start](@/guide/quick-start.md): zero to RGB in five minutes via CLI and web UI
 - [First session](@/guide/first-session.md): longer hands-on walkthrough covering the full feature set
 
@@ -65,7 +65,7 @@ This section takes you from zero to a fully configured rig.
 - [The TUI](@/guide/tui.md): terminal dashboard with LED preview, audio spectrum, and fullscreen mode
 - [Finding devices](@/guide/finding-devices.md): USB discovery, network mDNS, pairing Hue and Nanoleaf, udev permission fixes
 - [Audio setup](@/guide/audio-setup.md): configure an audio loopback source for audio-reactive effects
-- [Profiles and scenes](@/guide/profiles-and-scenes.md): save full rig state in a profile, automate lighting with scenes
+- [Scenes and snapshots](@/guide/profiles-and-scenes.md): save full rig state and connect external automation
 - [Configuration](@/guide/configuration.md): full config reference for `hypercolor.toml`
 - [Desktop app](@/guide/desktop-app.md): the Tauri shell: tray menu, autostart, diagnostics, window controls
 
@@ -138,7 +138,7 @@ The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/p
 
 **CLI**: the `hypercolor` binary talks to the daemon over HTTP. Every action you can take in the UI is available via the CLI. See the [CLI reference](@/api/cli.md).
 
-**MCP server**: 17 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
+**MCP server**: 16 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
 
 ## Getting help
 

@@ -35,7 +35,7 @@ The window hosts the web UI at `http://127.0.0.1:9420` (or whatever `HYPERCOLOR_
 
 {{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
 
-The app's tray icon reflects daemon state: active, paused, or disconnected. The tray menu gives you quick access to effects, profiles, pause/resume, brightness presets, and server switching without opening the full window.
+The app's tray icon reflects daemon state: active, paused, or disconnected. The tray menu gives you quick access to effects, scenes, pause/resume, brightness presets, and server switching without opening the full window.
 
 App flags (forwarded to the running instance via the single-instance plugin):
 
@@ -84,7 +84,7 @@ hypercolor effects activate borealis --speed 80
 hypercolor brightness set 75
 hypercolor scenes list
 hypercolor devices list
-hypercolor profiles apply "night mode"
+hypercolor scenes activate "night mode"
 ```
 
 Global flags let you point the CLI at any daemon on the network:

@@ -1,6 +1,6 @@
 +++
 title = "Resources reference"
-description = "The five hypercolor:// MCP resources: ambient read-only context for state, devices, effects, profiles, and audio, with verified JSON shapes."
+description = "The five hypercolor:// MCP resources: ambient read-only context for state, devices, effects, scenes, and audio, with verified JSON shapes."
 weight = 30
 +++
 
@@ -19,7 +19,7 @@ Every resource returns `application/json`. Each carries a priority hint between 
 | `hypercolor://state` | System State | 0.9 | On every state change |
 | `hypercolor://effects` | Effect Catalog | 0.8 | When effects are added or removed |
 | `hypercolor://devices` | Device Inventory | 0.7 | When devices connect or disconnect |
-| `hypercolor://profiles` | Saved Profiles | 0.6 | When profiles are saved or deleted |
+| `hypercolor://scenes` | Saved Scenes | 0.6 | When scenes are created, changed, or deleted |
 | `hypercolor://audio` | Audio Analysis | 0.4 | ~10 Hz while audio is active |
 
 {% callout(type="tip") %}
@@ -126,35 +126,36 @@ Enumerate every known device with connection and topology detail.
 
 The `summary` block is the quick read: `total` is everything ever discovered, `connected` counts only devices currently renderable, and `total_leds` sums LED counts across the whole rig. Each entry in `devices` carries the full inventory payload (driver, backend, topology, zone assignment); read individual fields from the live resource rather than assuming a fixed schema, since device detail varies by driver family. For connection troubleshooting, see [devices not found](@/troubleshooting/devices-not-found.md).
 
-## hypercolor://profiles
+## hypercolor://scenes
 
-Every saved profile. A profile is a named, persisted lighting setup an agent can restore wholesale through the `set_profile` tool.
+Every reusable scene, including its mutation mode, optional activation side effects, and whether it is currently active.
 
-{% api_endpoint(method="GET", path="hypercolor://profiles") %}
-List saved profiles available to restore.
+{% api_endpoint(method="GET", path="hypercolor://scenes") %}
+List saved scenes available to activate.
 {% end %}
 
 ```json
 {
-  "profiles": [
+  "scenes": [
     {
       "id": "evening-calm",
       "name": "Evening calm",
       "description": "Dim blue ambient for the desk",
-      "brightness": 35,
-      "primary": "aurora",
-      "displays": [],
-      "layout_id": "desk-main"
+      "enabled": true,
+      "mutation_mode": "snapshot",
+      "layout_id": "desk-main",
+      "activation_brightness": 0.35,
+      "active": false
     }
   ],
   "total": 1
 }
 ```
 
-Each profile reports its `id`, `name`, `description`, saved `brightness`, the `primary` effect, any `displays` (HTML faces bound to LCDs), and the associated `layout_id`. To activate one, call the `set_profile` tool with the profile id.
+Each scene reports its `id`, `name`, `description`, `enabled` state, `mutation_mode`, optional `layout_id`, optional `activation_brightness`, and `active` flag. Call `activate_scene` with its name or id to make it live.
 
 {% callout(type="info") %}
-Profiles are whole-rig saved states. Scenes are something different: a scene is an automated configuration triggered by an event such as sunset or a beat. Scenes live in their own [tools](@/agents/tools-reference.md) (`list_scenes`, `activate_scene`, `create_scene`) and reference a profile by id. Do not conflate the two.
+Hypercolor stores reusable lighting state as scenes. Snapshot-mode scenes preserve a captured configuration and block runtime actions from rewriting it. Hypercolor does not schedule scenes itself, so an external automation system calls `activate_scene` when its conditions match.
 {% end %}
 
 ## hypercolor://audio
