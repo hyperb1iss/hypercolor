@@ -62,7 +62,7 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/scenes/:id` — Get a single scene.
 pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let manager = state.scene_manager.read().await;
-    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+    let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
@@ -136,7 +136,7 @@ pub async fn update_scene(
         Ok(revision) => revision,
         Err(error) => return error.into_response(),
     };
-    let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
+    let Some(scene_id) = resolve_stored_scene_id(&*state.scene_manager.read().await, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
@@ -301,6 +301,14 @@ pub(crate) fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Opti
         .iter()
         .find(|scene| scene.name.eq_ignore_ascii_case(id_or_name))
         .map(|scene| scene.id)
+}
+
+fn resolve_stored_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {
+    resolve_scene_id(manager, id_or_name).filter(|scene_id| {
+        manager
+            .get(scene_id)
+            .is_some_and(|scene| scene.kind == SceneKind::Named)
+    })
 }
 
 pub(crate) async fn asset_mime_types(state: &AppState) -> HashMap<AssetId, String> {

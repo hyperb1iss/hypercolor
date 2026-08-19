@@ -9923,6 +9923,73 @@ async fn list_scenes_excludes_default_scene() {
 }
 
 #[tokio::test]
+async fn stored_scene_get_and_put_exclude_the_ephemeral_default() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let before = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scene")
+                .body(Body::empty())
+                .expect("live scene request"),
+        )
+        .await
+        .expect("live scene response");
+    let etag = before
+        .headers()
+        .get(http::header::ETAG)
+        .expect("live scene ETag")
+        .clone();
+    let before = body_json(before).await;
+    let document: SceneDocument =
+        serde_json::from_value(before["data"].clone()).expect("default scene document");
+
+    let get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/default")
+                .body(Body::empty())
+                .expect("stored scene GET"),
+        )
+        .await
+        .expect("stored scene GET response");
+    assert_eq!(get.status(), StatusCode::NOT_FOUND);
+
+    let put = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/scenes/default")
+                .header("content-type", "application/json")
+                .header(http::header::IF_MATCH, etag)
+                .body(Body::from(
+                    serde_json::to_vec(&ReplaceSceneRequest::from(&document))
+                        .expect("default replacement body"),
+                ))
+                .expect("stored scene PUT"),
+        )
+        .await
+        .expect("stored scene PUT response");
+    assert_eq!(put.status(), StatusCode::NOT_FOUND);
+
+    let after = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scene")
+                .body(Body::empty())
+                .expect("live scene request after refusal"),
+        )
+        .await
+        .expect("live scene response after refusal");
+    let after = body_json(after).await;
+    assert_eq!(after["data"], before["data"]);
+}
+
+#[tokio::test]
 async fn delete_default_returns_409_or_422() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
