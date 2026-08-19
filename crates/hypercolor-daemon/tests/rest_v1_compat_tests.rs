@@ -598,6 +598,7 @@ async fn deleted_dead_resource_routes_leave_nothing_behind() {
         ("GET", "/api/v1/effects/screenshots"),
         ("GET", "/api/v1/displays/display-id/preview.jpg"),
         ("POST", "/api/v1/capture/source/pick"),
+        ("POST", "/api/v1/library/playlists/stop"),
         ("GET", "/api/v1/system/sensors/sensor-label"),
     ];
 

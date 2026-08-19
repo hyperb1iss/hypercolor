@@ -1334,8 +1334,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(library::get_active_playlist),
         )
         .route(
-            "/library/playlists/stop",
-            axum::routing::post(library::stop_playlist),
+            "/library/playlists/deactivate",
+            axum::routing::post(library::deactivate_playlist),
         )
         .route(
             "/library/playlists/{id}",

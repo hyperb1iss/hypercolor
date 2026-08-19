@@ -761,10 +761,10 @@ pub const ROUTES: &[RouteSpec] = &[
         "Get active playlist",
     ),
     RouteSpec::post(
-        "/api/v1/library/playlists/stop",
-        "stop_playlist",
+        "/api/v1/library/playlists/deactivate",
+        "deactivate_playlist",
         "library",
-        "Stop playlist",
+        "Deactivate playlist",
     ),
     RouteSpec::get(
         "/api/v1/library/playlists/{id}",
