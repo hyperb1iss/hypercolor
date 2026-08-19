@@ -39,6 +39,8 @@ pub mod claim;
 pub mod decode;
 mod shared;
 
+#[doc(hidden)]
+pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use shared::{
     PendingEvents, RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch,
     RawInputConfig, RawInputError, RawInputEvent, RawInputResult, RawKeyPrefix, SessionState,
@@ -55,8 +57,6 @@ mod probe;
 mod pump;
 #[cfg(target_os = "windows")]
 mod session;
-#[cfg(target_os = "windows")]
-mod worker_retention;
 
 #[cfg(target_os = "windows")]
 pub use probe::interactive_session_state;

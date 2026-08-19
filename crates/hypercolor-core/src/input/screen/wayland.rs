@@ -50,11 +50,11 @@ use crate::input::screen::{
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource, ScreenSourcePickerAction};
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
 };
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -1960,7 +1960,7 @@ impl WaylandScreenCaptureInput {
         let capture_session_generation = Arc::clone(&session_generation);
         let worker_settings = Arc::clone(&settings);
         let worker_latest_snapshot = Arc::clone(&latest_snapshot);
-        let join_handle = spawn_input_worker(
+        let join_handle = spawn_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
             move || {
                 let _ = ready_tx.send(());
@@ -2479,7 +2479,7 @@ impl Drop for WaylandCaptureWorker {
             let _ = join_handle.join();
             return;
         }
-        retain_input_worker(join_handle, "Wayland capture worker");
+        retain_worker(join_handle, "Wayland capture worker");
     }
 }
 
@@ -4689,7 +4689,7 @@ fn run_pipewire_loop(
     let analysis_cancel = Arc::clone(&cancel);
     let analysis_config = config.clone();
     let analysis_demand = demand;
-    let analysis_handle = spawn_input_worker(
+    let analysis_handle = spawn_worker(
         thread::Builder::new().name("hypercolor-screen-analysis".to_owned()),
         move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

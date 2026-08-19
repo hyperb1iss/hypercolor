@@ -54,6 +54,7 @@ hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-platform-fs = { workspace = true }
+hypercolor-worker-retention = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, optional = true }

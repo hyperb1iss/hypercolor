@@ -5097,6 +5097,7 @@ dependencies = [
  "hypercolor-windows-gpu-interop",
  "hypercolor-windows-input",
  "hypercolor-windows-pawnio",
+ "hypercolor-worker-retention",
  "image",
  "libpulse-binding",
  "log",
@@ -5455,6 +5456,7 @@ name = "hypercolor-macos-input"
 version = "0.3.2"
 dependencies = [
  "crossbeam-queue",
+ "hypercolor-worker-retention",
  "mach2 0.5.0",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -5635,6 +5637,7 @@ dependencies = [
 name = "hypercolor-windows-input"
 version = "0.3.2"
 dependencies = [
+ "hypercolor-worker-retention",
  "stats_alloc",
  "thiserror 2.0.18",
  "tracing",
@@ -5656,6 +5659,13 @@ dependencies = [
  "windows-registry",
  "windows-service",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hypercolor-worker-retention"
+version = "0.3.2"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

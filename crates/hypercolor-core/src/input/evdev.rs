@@ -23,7 +23,6 @@ use tracing::{debug, info, trace, warn};
 
 use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
     LegacyWheelProjector, SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle,
     SourceStatusReporter, classify_source_resource_scan,
@@ -31,6 +30,7 @@ use crate::input::{
 use crate::types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
 };
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -340,7 +340,7 @@ impl EvdevHostInput {
         let (stop_tx, stop_rx) = mpsc::channel();
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
 
-        let join_handle = spawn_input_worker(
+        let join_handle = spawn_worker(
             thread::Builder::new().name("hypercolor-evdev-input".to_owned()),
             move || {
                 let mut devices: BTreeMap<PathBuf, OpenDevice> = BTreeMap::new();
@@ -435,7 +435,7 @@ impl Drop for EvdevHostInput {
             let _ = worker.join_handle.join();
             return;
         }
-        retain_input_worker(
+        retain_worker(
             worker.join_handle,
             Arc::<str>::from(format!("evdev input source {}", self.name)),
         );

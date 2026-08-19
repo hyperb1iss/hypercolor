@@ -29,8 +29,8 @@ use hypercolor_types::media::MediaState;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::SourceSessionWriter;
 use super::traits::{InputData, InputSource};
-use super::worker_retention::{retain_input_worker, spawn_input_worker};
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 /// Poll cadence for player discovery, status, and position.
 pub const MEDIA_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -1193,7 +1193,7 @@ impl ArtworkFetcher {
         };
         let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
         let mut worker = Some(
-            spawn_input_worker(
+            spawn_worker(
                 std::thread::Builder::new().name("hypercolor-artwork".to_owned()),
                 move || {
                     let result = operation();
@@ -1211,7 +1211,7 @@ impl ArtworkFetcher {
                     result
                 } else {
                     warn!(worker = context, "artwork job ignored cancellation; quarantining it");
-                    retain_input_worker(
+                    retain_worker(
                         worker.take().expect("running artwork worker remains owned"),
                         context,
                     );
@@ -1930,7 +1930,7 @@ mod worker {
     use tokio::time::MissedTickBehavior;
     use tracing::{debug, warn};
 
-    use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
+    use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
     use super::{
         ArtworkFetcher, ArtworkRequest, MEDIA_POLL_INTERVAL, MEDIA_PROVIDER_TIMEOUT,
@@ -1952,7 +1952,7 @@ mod worker {
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-            let join_handle = spawn_input_worker(
+            let join_handle = spawn_worker(
                 std::thread::Builder::new().name("hypercolor-media".to_owned()),
                 move || {
                     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -2043,7 +2043,7 @@ mod worker {
             let Some(join_handle) = self.join_handle.take() else {
                 return;
             };
-            retain_input_worker(join_handle, "media poller");
+            retain_worker(join_handle, "media poller");
         }
     }
 

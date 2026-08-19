@@ -13,6 +13,8 @@ pub use decode::{
     NX_SUBTYPE_AUX_CONTROL_BUTTONS, decode_button_event, decode_media_key, decode_momentum_phase,
     decode_scroll_phase, event_masks,
 };
+#[doc(hidden)]
+pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use process::current_process_audit_token_identity;
 pub use shared::{
     EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::{RawInputSession, WorkerState, run_initial_step, set_pump_failure};
 use crate::pump::{PumpError, StopSignal};
-use crate::worker_retention::spawn_raw_input_worker;
+use hypercolor_worker_retention::spawn_worker;
 
 fn stalled_session(exit_after: Duration) -> RawInputSession {
     let stop = Arc::new(StopSignal::new());
@@ -13,7 +13,7 @@ fn stalled_session(exit_after: Duration) -> RawInputSession {
     let device_count = Arc::new(AtomicUsize::new(0));
     let state = Arc::new(Mutex::new(WorkerState::Running));
     let (finished_tx, finished) = mpsc::sync_channel(1);
-    let worker = spawn_raw_input_worker(
+    let worker = spawn_worker(
         thread::Builder::new().name("hypercolor-stalled-raw-input-test".to_owned()),
         move || {
             thread::sleep(exit_after);

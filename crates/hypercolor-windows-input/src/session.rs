@@ -28,7 +28,7 @@ use crate::pump::{Pump, StopSignal, WM_HYPERCOLOR_STOP};
 use crate::shared::{
     RawInputBatch, RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState,
 };
-use crate::worker_retention::{retain_raw_input_worker, spawn_raw_input_worker};
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 /// How long `start()` waits for the worker to finish initializing.
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -108,7 +108,7 @@ impl RawInputSession {
         let (ready_tx, ready_rx) = mpsc::sync_channel::<RawInputResult<()>>(1);
         let (finished_tx, finished_rx) = mpsc::sync_channel::<()>(1);
 
-        let worker = spawn_raw_input_worker(
+        let worker = spawn_worker(
             thread::Builder::new().name("hypercolor-raw-input".to_owned()),
             {
                 let stop = Arc::clone(&stop);
@@ -149,7 +149,7 @@ impl RawInputSession {
             }
             Err(_) => {
                 stop.request_stop();
-                retain_raw_input_worker(worker, "readiness timeout");
+                retain_worker(worker, "Raw Input readiness timeout");
                 Err(RawInputError::WorkerReadyTimeout)
             }
         }
@@ -244,13 +244,13 @@ impl Drop for RawInputSession {
             self.stop.request_stop();
             self.nudge();
             if let Some(worker) = self.worker.take() {
-                retain_raw_input_worker(worker, "session drop after stop timeout");
+                retain_worker(worker, "Raw Input session drop after stop timeout");
             }
             return;
         }
         self.stop();
         if let Some(worker) = self.worker.take() {
-            retain_raw_input_worker(worker, "session drop after stop timeout");
+            retain_worker(worker, "Raw Input session drop after stop timeout");
         }
     }
 }

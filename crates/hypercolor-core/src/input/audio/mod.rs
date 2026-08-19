@@ -38,10 +38,10 @@ use libpulse_binding as pulse;
 
 use crate::input::status::SourceStatusPolicy;
 use crate::input::traits::{InputData, InputSource};
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use crate::types::event::TimedInputEvent;
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use beat::{BeatDetector, BeatFrame};
 use features::{
@@ -363,7 +363,7 @@ impl AnalysisWorker {
         let worker_stop = Arc::clone(&stop);
         let analyzer = AudioAnalyzer::with_sample_rate(config, sample_rate_hz);
         let samples = Vec::with_capacity(config.fft_size.saturating_mul(4).max(4_096));
-        let worker = spawn_input_worker(
+        let worker = spawn_worker(
             thread::Builder::new().name("hypercolor-audio-analysis".to_owned()),
             move || {
                 run_analysis_worker(
@@ -434,7 +434,7 @@ impl RecoveryWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_config = config.clone();
-        let worker = spawn_input_worker(
+        let worker = spawn_worker(
             thread::Builder::new().name("hypercolor-audio-recovery".to_owned()),
             move || {
                 let mut attempt = 0_u32;
@@ -493,7 +493,7 @@ impl Drop for RecoveryWorker {
         if worker.is_finished() {
             let _ = worker.join();
         } else {
-            retain_input_worker(worker, "audio recovery worker");
+            retain_worker(worker, "audio recovery worker");
         }
     }
 }
@@ -1896,7 +1896,7 @@ impl Drop for LinuxPulseCapture {
         let Some(worker) = self.worker.take() else {
             return;
         };
-        retain_input_worker(worker, "PulseAudio capture worker");
+        retain_worker(worker, "PulseAudio capture worker");
     }
 }
 
@@ -1986,11 +1986,11 @@ fn retire_capture_runtime(capture: CaptureRuntime) {
 }
 
 fn retire_audio_runtime(runtime: AudioRuntimeRetirement) {
-    match spawn_input_worker(
+    match spawn_worker(
         thread::Builder::new().name("hypercolor-audio-retire".to_owned()),
         move || drop(runtime),
     ) {
-        Ok(worker) => retain_input_worker(worker, "audio capture retirement"),
+        Ok(worker) => retain_worker(worker, "audio capture retirement"),
         Err(error) => tracing::warn!(%error, "Failed to spawn audio capture retirement worker"),
     }
 }
@@ -2010,7 +2010,7 @@ fn build_linux_pulse_capture_stream(
     let worker_failure = Arc::clone(&failure);
     let worker_source = source_name.to_owned();
     let worker_display = display_name.to_owned();
-    let worker = spawn_input_worker(
+    let worker = spawn_worker(
         thread::Builder::new().name("hypercolor-pulse-capture".to_owned()),
         move || {
             run_linux_pulse_capture(

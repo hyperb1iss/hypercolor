@@ -68,11 +68,11 @@ use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
 };
 use crate::input::traits::{InputData, InputSource};
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
 };
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 /// How long a worker waits on DXGI before checking its command channel.
 ///
@@ -830,7 +830,7 @@ impl Drop for CaptureWorker {
             let _ = join_handle.join();
             return;
         }
-        retain_input_worker(join_handle, "Windows screen capture worker");
+        retain_worker(join_handle, "Windows screen capture worker");
     }
 }
 
@@ -1019,7 +1019,7 @@ impl WindowsScreenCaptureInput {
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
 
-        let join_handle = spawn_input_worker(
+        let join_handle = spawn_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
             move || {
                 run_worker(

@@ -14,7 +14,7 @@ use sysinfo::{
     Components, CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, MemoryRefreshKind, RefreshKind, System,
 };
 
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 const DEFAULT_SENSOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SENSOR_STOP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -102,7 +102,7 @@ impl SensorPoller {
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         #[cfg(test)]
         let mut sampler = self.sampler.take();
-        let join_handle = spawn_input_worker(
+        let join_handle = spawn_worker(
             std::thread::Builder::new().name("hypercolor-sensors".to_owned()),
             move || {
                 #[cfg(test)]
@@ -179,7 +179,7 @@ impl SensorPoller {
             return;
         }
         tracing::warn!("sensor poller did not stop before the deadline; retaining its join handle");
-        retain_input_worker(thread.join_handle, "sensor poller");
+        retain_worker(thread.join_handle, "sensor poller");
     }
 
     fn end_publication_session(&self) {

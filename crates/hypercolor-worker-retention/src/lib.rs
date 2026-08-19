@@ -1,4 +1,4 @@
-//! Guaranteed cleanup service for Raw Input workers that outlive bounded shutdown.
+//! Process-wide cleanup for workers that outlive bounded shutdown.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -10,7 +10,7 @@ const REAPER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 struct RetainedWorker {
     worker: JoinHandle<()>,
-    reason: Arc<str>,
+    context: Arc<str>,
 }
 
 #[derive(Default)]
@@ -31,7 +31,7 @@ impl WorkerReaper {
     fn start() -> io::Result<Self> {
         Self::start_with(|queue, reaped_count| {
             thread::Builder::new()
-                .name("hypercolor-raw-input-reaper".to_owned())
+                .name("hypercolor-worker-reaper".to_owned())
                 .spawn(move || reaper_loop(&queue, &reaped_count))
         })
     }
@@ -50,12 +50,12 @@ impl WorkerReaper {
         })
     }
 
-    fn submit(&self, worker: JoinHandle<()>, reason: Arc<str>) {
+    fn submit(&self, worker: JoinHandle<()>, context: Arc<str>) {
         self.queue
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(RetainedWorker { worker, reason });
+            .push(RetainedWorker { worker, context });
         self.queue.wake.notify_one();
     }
 
@@ -123,14 +123,14 @@ fn reap_finished_workers(retained: &mut Vec<RetainedWorker>, reaped_count: &Atom
 fn observe_worker(retained: RetainedWorker) {
     if let Err(panic) = retained.worker.join() {
         tracing::warn!(
-            reason = %retained.reason,
+            worker = %retained.context,
             ?panic,
-            "raw input pump reaper observed a panic"
+            "retained worker reaper observed a panic"
         );
     }
 }
 
-fn worker_reaper() -> io::Result<&'static WorkerReaper> {
+fn retention_service() -> io::Result<&'static WorkerReaper> {
     static REAPER: OnceLock<WorkerReaper> = OnceLock::new();
     static INITIALIZE: Mutex<()> = Mutex::new(());
 
@@ -145,16 +145,38 @@ fn worker_reaper() -> io::Result<&'static WorkerReaper> {
     }
     let reaper = WorkerReaper::start()?;
     let _ = REAPER.set(reaper);
-    REAPER.get().ok_or_else(|| {
-        io::Error::other("Raw Input cleanup service was not retained after initialization")
-    })
+    REAPER
+        .get()
+        .ok_or_else(|| io::Error::other("worker cleanup service was not retained after startup"))
 }
 
-pub(super) fn spawn_raw_input_worker(
+/// Opaque identity for the process-wide cleanup service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct RetentionServiceIdentity(usize);
+
+/// Return the identity of the process-wide cleanup service.
+///
+/// # Errors
+///
+/// Returns the cleanup-service spawn error when it cannot be initialized.
+#[doc(hidden)]
+pub fn retention_service_identity() -> io::Result<RetentionServiceIdentity> {
+    retention_service()
+        .map(|service| RetentionServiceIdentity(std::ptr::from_ref(service) as usize))
+}
+
+/// Spawn a worker only after the process cleanup service is guaranteed live.
+///
+/// # Errors
+///
+/// Returns the cleanup-service or worker-thread spawn error without running
+/// the worker when cleanup capacity cannot be established.
+pub fn spawn_worker(
     builder: thread::Builder,
     worker: impl FnOnce() + Send + 'static,
 ) -> io::Result<JoinHandle<()>> {
-    spawn_worker_after(worker_reaper().map(|_| ()), builder, worker)
+    spawn_worker_after(retention_service().map(|_| ()), builder, worker)
 }
 
 fn spawn_worker_after(
@@ -166,10 +188,16 @@ fn spawn_worker_after(
     builder.spawn(worker)
 }
 
-pub(super) fn retain_raw_input_worker(worker: JoinHandle<()>, reason: impl Into<Arc<str>>) {
-    worker_reaper()
-        .expect("Raw Input cleanup service is initialized before its worker starts")
-        .submit(worker, reason.into());
+/// Transfer a still-running worker into guaranteed process-owned cleanup.
+///
+/// # Panics
+///
+/// Panics only when a caller bypassed [`spawn_worker`] and the process cleanup
+/// service cannot be initialized while accepting the worker.
+pub fn retain_worker(worker: JoinHandle<()>, context: impl Into<Arc<str>>) {
+    retention_service()
+        .expect("cleanup service is initialized before any retained worker starts")
+        .submit(worker, context.into());
 }
 
 #[cfg(test)]

@@ -20,7 +20,6 @@ pub mod sensor;
 mod status;
 mod traits;
 pub mod windows;
-mod worker_retention;
 
 pub use browser::{
     BROWSER_RETIRED_LEGACY_CAPACITY, BrowserConnectionIncarnation, BrowserInputAttachment,
@@ -34,6 +33,8 @@ pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
     InputPublicationRead, InputSourceSlot, InteractionSourceOrigin, InteractionTransientTotals,
 };
+#[doc(hidden)]
+pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use macos::{MacosHostInput, MacosInputFoldDiagnostics};
 #[cfg(feature = "macos-native-fixtures")]
 pub use macos::{MacosHostInputFixture, MacosInputFixtureBackend};
