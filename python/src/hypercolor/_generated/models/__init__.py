@@ -99,6 +99,7 @@ from .b_tree_map_additional_property import BTreeMapAdditionalProperty
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
 from .capture_picker_response import CapturePickerResponse
+from .component_binding import ComponentBinding
 from .component_binding_summary import ComponentBindingSummary
 from .component_canvas_size import ComponentCanvasSize
 from .component_category_type_0 import ComponentCategoryType0
@@ -328,6 +329,7 @@ from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
 from .system_resource import SystemResource
 from .system_status import SystemStatus
+from .update_attachments_request import UpdateAttachmentsRequest
 from .update_device_request import UpdateDeviceRequest
 from .viewport_rect import ViewportRect
 from .wall import Wall
@@ -409,6 +411,7 @@ __all__ = (
     "CaptureAuthorizationResponse",
     "CaptureMonitor",
     "CapturePickerResponse",
+    "ComponentBinding",
     "ComponentBindingSummary",
     "ComponentCanvasSize",
     "ComponentCategoryType0",
@@ -628,6 +631,7 @@ __all__ = (
     "StripDirection",
     "SystemResource",
     "SystemStatus",
+    "UpdateAttachmentsRequest",
     "UpdateDeviceRequest",
     "ViewportRect",
     "Wall",

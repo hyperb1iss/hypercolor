@@ -52,6 +52,7 @@ use crate::api::{capture, config, controls, devices, drivers, effects, envelope,
             envelope::ApiResponse<effects::EffectPresetListResponse>,
             envelope::ApiResponse<hypercolor_types::api::output::OutputResource>,
             devices::UpdateDeviceRequest,
+            devices::UpdateAttachmentsRequest,
             devices::IdentifyRequest,
             devices::DiscoverRequest,
             hypercolor_types::api::output::OutputPatchRequest,
@@ -430,7 +431,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "update_attachments",
         "devices",
         "Update device attachments",
-    ),
+    )
+    .with_request_body("UpdateAttachmentsRequest", true),
     RouteSpec::delete(
         "/api/v1/devices/{id}/attachments",
         "delete_attachments",

@@ -95,6 +95,16 @@ async fn openapi_json_is_served_with_expected_paths() {
         "#/components/schemas/OutputPatchRequest"
     );
     assert!(body["components"]["schemas"]["OutputResource"].is_object());
+    assert_eq!(
+        body["paths"]["/api/v1/devices/{id}/attachments"]["put"]["requestBody"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/UpdateAttachmentsRequest"
+    );
+    assert_eq!(
+        body["paths"]["/api/v1/devices/{id}/attachments"]["put"]["requestBody"]["required"],
+        true
+    );
+    assert!(body["components"]["schemas"]["UpdateAttachmentsRequest"].is_object());
     assert!(body["paths"]["/api/v1/system/audio-devices"]["get"].is_object());
     // The merged routes carry no catalog entry either.
     for retired in [
