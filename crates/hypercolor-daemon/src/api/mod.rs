@@ -24,7 +24,6 @@ pub mod local;
 mod macos_screen_parity;
 pub mod openapi;
 pub mod output;
-pub mod profiles;
 pub mod scene;
 pub mod scenes;
 pub mod security;
@@ -95,7 +94,6 @@ use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
-use crate::profile_store::ProfileStore;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle};
 use crate::runtime_state;
 use crate::scene_store::SceneStore;
@@ -228,9 +226,6 @@ pub struct AppState {
 
     /// Global discovery scan lock flag shared across startup/API entrypoints.
     pub discovery_in_progress: Arc<AtomicBool>,
-
-    /// Persistent lighting profile store.
-    pub profiles: Arc<RwLock<ProfileStore>>,
 
     /// Attachment template registry (built-in plus user templates).
     pub attachment_registry: Arc<RwLock<ComponentRegistry>>,
@@ -420,16 +415,6 @@ impl AppState {
                 );
                 ComponentProfileStore::new(attachment_profiles_path)
             });
-        let profiles_path = data_dir.join("profiles.json");
-        let profiles = ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
-            warn!(
-                path = %profiles_path.display(),
-                %error,
-                cause = %error.root_cause(),
-                "Failed to load profiles; starting with empty store"
-            );
-            ProfileStore::new(profiles_path).expect("profile persistence should initialize")
-        });
         let device_settings_path = data_dir.join("device-settings.json");
         let device_settings =
             DeviceSettingsStore::load(&device_settings_path).unwrap_or_else(|error| {
@@ -615,7 +600,6 @@ impl AppState {
             browser_input,
             interaction_routing,
             discovery_in_progress,
-            profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry,
             attachment_profiles,
             display_preferences,
@@ -664,7 +648,6 @@ impl AppState {
         // through another.
         let data_dir = ConfigManager::data_dir();
         let library_store = Arc::clone(&daemon.library_store);
-        let profiles = Arc::clone(&daemon.profiles);
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
 
@@ -708,7 +691,6 @@ impl AppState {
             browser_input: daemon.browser_input.clone(),
             interaction_routing: daemon.interaction_routing.clone(),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
-            profiles,
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             display_preferences: Arc::clone(&daemon.display_preferences),
@@ -1331,21 +1313,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/scenes/{id}/activate",
             axum::routing::post(scenes::activate_scene),
-        )
-        // ── Profiles ─────────────────────────────────────────────────
-        .route(
-            "/profiles",
-            axum::routing::get(profiles::list_profiles).post(profiles::create_profile),
-        )
-        .route(
-            "/profiles/{id}",
-            axum::routing::get(profiles::get_profile)
-                .put(profiles::update_profile)
-                .delete(profiles::delete_profile),
-        )
-        .route(
-            "/profiles/{id}/apply",
-            axum::routing::post(profiles::apply_profile),
         )
         // ── Layouts ──────────────────────────────────────────────────
         .route(

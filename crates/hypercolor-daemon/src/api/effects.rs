@@ -998,15 +998,6 @@ pub(crate) fn default_control_values(metadata: &EffectMetadata) -> HashMap<Strin
         .collect()
 }
 
-pub(crate) fn resolved_control_values(
-    metadata: &EffectMetadata,
-    group: &Zone,
-) -> HashMap<String, ControlValue> {
-    let mut resolved = default_control_values(metadata);
-    resolved.extend(group.controls.clone());
-    resolved
-}
-
 /// Resolve the full device-output roster as a [`SpatialLayout`] — every
 /// discovered device output with default placement. This is the canonical
 /// source for a fresh `Primary` zone (§5.2): a new scene's Default zone,

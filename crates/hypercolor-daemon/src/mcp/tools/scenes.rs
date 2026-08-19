@@ -247,7 +247,7 @@ pub(super) async fn handle_create_scene_with_state(
                 .map(ToOwned::to_owned),
             enabled: Some(enabled),
             mutation_mode: Some(mutation_mode),
-            metadata: Default::default(),
+            metadata: std::collections::HashMap::default(),
         },
         MutationContext::mcp(),
     )

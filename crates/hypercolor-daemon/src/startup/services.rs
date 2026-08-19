@@ -623,19 +623,6 @@ impl DaemonState {
 
         let library_path = ConfigManager::data_dir().join("library.json");
         let library_store = open_persisted_library_store(&library_path)?;
-        let profiles_path = ConfigManager::data_dir().join("profiles.json");
-        let profiles =
-            crate::profile_store::ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
-                warn!(
-                    path = %profiles_path.display(),
-                    %error,
-                    cause = %error.root_cause(),
-                    "Failed to load profiles; starting with empty store"
-                );
-                crate::profile_store::ProfileStore::new(profiles_path)
-                    .expect("profile persistence should initialize")
-            });
-
         info!("All subsystems initialized");
 
         Ok(Self {
@@ -654,7 +641,6 @@ impl DaemonState {
             _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
-            profiles: Arc::new(RwLock::new(profiles)),
             preview_runtime,
             zone_layout_previews,
             render_loop,

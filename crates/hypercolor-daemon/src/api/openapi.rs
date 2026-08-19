@@ -9,9 +9,7 @@ use utoipa::openapi::{Content, HttpMethod, Ref, Required, Response, Tag};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{
-    capture, config, controls, devices, drivers, effects, envelope, output, profiles, system,
-};
+use crate::api::{capture, config, controls, devices, drivers, effects, envelope, output, system};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -64,7 +62,6 @@ use crate::api::{
             hypercolor_types::api::output::OutputPatchRequest,
             hypercolor_types::api::output::OutputPowerMode,
             hypercolor_types::api::output::OutputResource,
-            profiles::ApplyProfileRequest,
             config::ConfigMutationResponse,
             hypercolor_types::config_registry::ApplyPolicy,
             hypercolor_types::config_registry::ConfigKeySchemaEntry,
@@ -184,7 +181,6 @@ use crate::api::{
         (name = "attachments", description = "Physical attachment templates and bindings"),
         (name = "output", description = "Global output power and brightness"),
         (name = "scenes", description = "Scene CRUD and activation"),
-        (name = "profiles", description = "Saved lighting profile snapshots"),
         (name = "layouts", description = "Spatial layout CRUD and preview"),
         (name = "library", description = "Favorites, presets, and playlists"),
         (name = "capture", description = "Protected host input and screen-capture actions"),
@@ -764,43 +760,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "scenes",
         "Activate scene",
     ),
-    RouteSpec::get(
-        "/api/v1/profiles",
-        "list_profiles",
-        "profiles",
-        "List profiles",
-    ),
-    RouteSpec::post(
-        "/api/v1/profiles",
-        "create_profile",
-        "profiles",
-        "Create profile",
-    ),
-    RouteSpec::get(
-        "/api/v1/profiles/{id}",
-        "get_profile",
-        "profiles",
-        "Get profile",
-    ),
-    RouteSpec::put(
-        "/api/v1/profiles/{id}",
-        "update_profile",
-        "profiles",
-        "Update profile",
-    ),
-    RouteSpec::delete(
-        "/api/v1/profiles/{id}",
-        "delete_profile",
-        "profiles",
-        "Delete profile",
-    ),
-    RouteSpec::post(
-        "/api/v1/profiles/{id}/apply",
-        "apply_profile",
-        "profiles",
-        "Apply profile",
-    )
-    .with_request_body("ApplyProfileRequest", false),
     RouteSpec::get("/api/v1/layouts", "list_layouts", "layouts", "List layouts"),
     RouteSpec::post(
         "/api/v1/layouts",
@@ -1054,7 +1013,6 @@ impl Modify for RouteCatalogAddon {
             "attachments",
             "output",
             "scenes",
-            "profiles",
             "layouts",
             "library",
             "capture",
