@@ -7,8 +7,8 @@ from typing import Any
 import msgspec
 
 
-class DeviceZone(msgspec.Struct, kw_only=True):
-    """One LED zone of a device (hardware topology, not scene render groups)."""
+class DeviceSegment(msgspec.Struct, kw_only=True):
+    """One addressable hardware segment exposed by a device."""
 
     id: str
     name: str
@@ -56,7 +56,7 @@ class Device(msgspec.Struct, kw_only=True):
     status: str
     brightness: int
     total_leds: int
-    zones: list[DeviceZone]
+    segments: list[DeviceSegment]
     legacy_backend: str | None = msgspec.field(default=None, name="backend")
     origin: DeviceOrigin | None = None
     presentation: DevicePresentation | None = None

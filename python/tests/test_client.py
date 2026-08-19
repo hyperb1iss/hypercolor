@@ -137,7 +137,7 @@ async def test_get_devices(client: HypercolorClient) -> None:
                             "brightness": 88,
                             "firmware_version": None,
                             "total_leds": 104,
-                            "zones": [
+                            "segments": [
                                 {
                                     "id": "main",
                                     "name": "Main",
@@ -201,7 +201,7 @@ async def test_get_devices_accepts_origin_connection_shape(
                                 "hostname": "wled-studio.local",
                             },
                             "total_leds": 275,
-                            "zones": [
+                            "segments": [
                                 {
                                     "id": "zone_0",
                                     "name": "Main",
@@ -269,7 +269,7 @@ async def test_get_device_quotes_generated_path_parameters(client: HypercolorCli
                     "brightness": 88,
                     "firmware_version": None,
                     "total_leds": 104,
-                    "zones": [
+                    "segments": [
                         {
                             "id": "main",
                             "name": "Main",

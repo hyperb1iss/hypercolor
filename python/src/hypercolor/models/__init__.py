@@ -23,7 +23,7 @@ from .common import (
     TransitionSpec,
 )
 from .control import ControlActionResult, ControlApplyResult, ControlSurface
-from .device import Device, DeviceUpdate, DeviceZone
+from .device import Device, DeviceSegment, DeviceUpdate
 from .display import DisplayFaceAssignment, DisplaySummary
 from .driver import (
     Driver,
@@ -85,8 +85,8 @@ __all__ = [
     "ControlDefinition",
     "ControlSurface",
     "Device",
+    "DeviceSegment",
     "DeviceUpdate",
-    "DeviceZone",
     "DiscoverResult",
     "DisplayFaceAssignment",
     "DisplaySummary",

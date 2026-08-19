@@ -49,7 +49,7 @@ def test_device_model_decodes() -> None:
         "brightness": 92,
         "firmware_version": "1.2.3",
         "total_leds": 104,
-        "zones": [
+        "segments": [
             {
                 "id": "main",
                 "name": "Main",
@@ -65,7 +65,7 @@ def test_device_model_decodes() -> None:
 
     assert device.name == "Keyboard"
     assert device.connection_label == "USB HID"
-    assert device.zones[0].topology == "matrix"
+    assert device.segments[0].topology == "matrix"
     assert device.enabled is True
 
 
@@ -94,7 +94,7 @@ def test_device_model_decodes_current_daemon_shape() -> None:
             "hostname": "wled-studio.local",
         },
         "total_leds": 275,
-        "zones": [
+        "segments": [
             {
                 "id": "zone_0",
                 "name": "Main",
