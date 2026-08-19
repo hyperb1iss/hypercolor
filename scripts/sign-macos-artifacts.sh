@@ -100,7 +100,7 @@ validate_manifest() {
     count=$((count + 1))
   done < "${MANIFEST}"
 
-  [[ "${count}" -eq 7 ]] || die "expected 7 signing manifest entries, found ${count}"
+  [[ "${count}" -eq 6 ]] || die "expected 6 signing manifest entries, found ${count}"
   manifest_has app 'Contents/MacOS/Hypercolor' 'tech.hyperbliss.hypercolor' \
     || die "manifest is missing the app identity"
   manifest_has app 'Contents/MacOS/hypercolor-daemon-{target}' 'tech.hyperbliss.hypercolor.sidecar' \
@@ -111,8 +111,6 @@ validate_manifest() {
     || die "manifest is missing the standalone CLI identity"
   manifest_has standalone 'bin/hypercolor-app' 'tech.hyperbliss.hypercolor.app-host' \
     || die "manifest is missing the standalone app host identity"
-  manifest_has standalone 'bin/hypercolor-tray' 'tech.hyperbliss.hypercolor.tray' \
-    || die "manifest is missing the standalone tray identity"
   cmp -s "${ROOT_DIR}/${APP_ENTITLEMENTS}" "${ROOT_DIR}/${DAEMON_ENTITLEMENTS}" \
     || die "daemon entitlements diverge from the app profile"
 }

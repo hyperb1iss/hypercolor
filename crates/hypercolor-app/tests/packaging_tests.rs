@@ -611,7 +611,6 @@ fn macos_signing_manifest_assigns_every_stable_identity() {
         "tech.hyperbliss.hypercolor.daemon",
         "tech.hyperbliss.hypercolor.cli",
         "tech.hyperbliss.hypercolor.app-host",
-        "tech.hyperbliss.hypercolor.tray",
     ] {
         assert!(MACOS_SIGNING_MANIFEST.contains(identifier));
     }

@@ -345,10 +345,6 @@ fn macos_daemon_signing_contract_is_exact() {
                 "crates/hypercolor-app/entitlements.plist",
             ),
         ),
-        (
-            ("standalone", "bin/hypercolor-tray"),
-            ("tech.hyperbliss.hypercolor.tray", "none"),
-        ),
     ]);
     assert_eq!(signing_manifest_entries(&manifest), expected_manifest);
 

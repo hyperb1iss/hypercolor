@@ -286,7 +286,7 @@ install_release_payload() {
     stop_service_if_running
 
     local bin
-    for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
+    for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tui hypercolor-open; do
         if [[ -f "${RELEASE_DIR}/bin/${bin}" ]]; then
             install -Dm755 "${RELEASE_DIR}/bin/${bin}" "${INSTALL_DIR}/${bin}"
         fi
@@ -667,7 +667,6 @@ do_uninstall() {
     rm -f "${INSTALL_DIR}/hypercolor"
     rm -f "${INSTALL_DIR}/hypercolor-daemon"
     rm -f "${INSTALL_DIR}/hypercolor-app"
-    rm -f "${INSTALL_DIR}/hypercolor-tray"
     rm -f "${INSTALL_DIR}/hypercolor-tui"
     rm -f "${INSTALL_DIR}/hypercolor-open"
     success "Removed binaries from ${INSTALL_DIR}"

@@ -143,7 +143,6 @@ required_bins=(
   hypercolor-daemon
   hypercolor
   hypercolor-app
-  hypercolor-tray
   hypercolor-tui
   hypercolor-open
 )
@@ -177,7 +176,6 @@ expected_bins = {
     "hypercolor-daemon",
     "hypercolor",
     "hypercolor-app",
-    "hypercolor-tray",
     "hypercolor-tui",
     "hypercolor-open",
 }

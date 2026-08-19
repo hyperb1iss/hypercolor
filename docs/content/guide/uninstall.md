@@ -142,7 +142,6 @@ rm -f ~/.config/systemd/user/hypercolor.service
 rm -f ~/.local/bin/hypercolor \
        ~/.local/bin/hypercolor-daemon \
        ~/.local/bin/hypercolor-app \
-       ~/.local/bin/hypercolor-tray \
        ~/.local/bin/hypercolor-tui \
        ~/.local/bin/hypercolor-open
 ```
@@ -289,7 +288,6 @@ The launchd label is `tech.hyperbliss.hypercolor`. Logs are written to
 rm -f ~/.local/bin/hypercolor \
        ~/.local/bin/hypercolor-daemon \
        ~/.local/bin/hypercolor-app \
-       ~/.local/bin/hypercolor-tray \
        ~/.local/bin/hypercolor-tui \
        ~/.local/bin/hypercolor-open
 ```

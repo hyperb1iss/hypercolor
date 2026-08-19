@@ -2148,7 +2148,6 @@ is:
 | standalone `hypercolor-daemon`         | `tech.hyperbliss.hypercolor.daemon`   | `packaging/macos/daemon.entitlements.plist` |
 | standalone `hypercolor`                | `tech.hyperbliss.hypercolor.cli`      | none                                        |
 | standalone `hypercolor-app`            | `tech.hyperbliss.hypercolor.app-host` | `crates/hypercolor-app/entitlements.plist`  |
-| standalone `hypercolor-tray`           | `tech.hyperbliss.hypercolor.tray`     | none                                        |
 
 The sidecar and standalone daemon identifiers are intentionally distinct, so
 packaged and direct launchd grants cannot satisfy each other's TCC checks. Intel

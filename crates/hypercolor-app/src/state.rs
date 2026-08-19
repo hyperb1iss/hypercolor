@@ -224,7 +224,7 @@ pub enum TrayCommand {
     SwitchServer(usize),
     /// Refresh the list of discoverable daemons.
     RefreshServers,
-    /// Quit the tray applet.
+    /// Quit the desktop app.
     Quit,
 }
 

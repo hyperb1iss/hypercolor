@@ -25,7 +25,6 @@ env:
     --workspace
     --exclude hypercolor-daemon
     --exclude hypercolor-app
-    --exclude hypercolor-tray
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
   CARGO_INCREMENTAL: "0"

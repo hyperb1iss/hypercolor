@@ -420,15 +420,6 @@ cli *args='':
 cli *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
 
-# Run the system tray applet
-[unix]
-tray *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tray -- {{ args }}
-
-[windows]
-tray *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-tray -- {{ args }}
-
 # Build UI + effects so tauri.conf.json's workspace-relative resource paths exist.
 # Both targets are incremental, so no-op rebuilds are cheap and we never bundle stale artifacts.
 app-assets:

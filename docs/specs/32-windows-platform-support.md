@@ -1,6 +1,6 @@
 # 32 — Windows Platform Support
 
-> Full Windows support for Hypercolor: USB peripherals, SMBus motherboard/GPU/DRAM RGB, audio-reactive input, session awareness, and native service lifecycle — shipping as both a tray applet and an optional Windows Service.
+> Full Windows support for Hypercolor: USB peripherals, SMBus motherboard/GPU/DRAM RGB, audio-reactive input, session awareness, and native service lifecycle, shipping through the unified desktop app or an optional Windows Service.
 
 **Status:** Active implementation
 **Author:** Nova
@@ -48,7 +48,7 @@ Hypercolor's architecture is already well-factored for multi-platform support. T
 | Keyboard input     | `evdev`                         | `device_query` (already in deps) | **Small**   |
 | SMBus / I2C        | `i2cdev` (`/dev/i2c-*`)         | PawnIO + NvAPI + ADL             | **Hard**    |
 | Session monitoring | D-Bus logind + screensaver      | Win32 power/session events       | **Medium**  |
-| Service lifecycle  | systemd + launchd               | Windows Service API or tray-only | **Medium**  |
+| Service lifecycle  | systemd + launchd               | Windows Service API or desktop app | **Medium**  |
 
 **~65% of the codebase compiles on Windows today** with no changes. The work is filling in platform-conditional branches that already have `#[cfg]` gates.
 
@@ -64,7 +64,7 @@ Hypercolor's architecture is already well-factored for multi-platform support. T
 - **REST + WebSocket API** — Tokio + axum, fully cross-platform
 - **Leptos UI** — WASM, runs in any browser
 - **HIDAPI transport** — `hidapi` crate wraps platform backends
-- **Tray applet** — `hypercolor-tray` already has `#[cfg(target_os = "windows")]` arms using `windows-sys`
+- **Desktop tray**: `hypercolor-app` owns the native Windows tray and daemon supervision
 - **Protocol layer** — All protocol impls (Razer, Corsair, ASUS USB, etc.) are transport-agnostic
 - **Wire-format structs** — `zerocopy` is pure Rust, no platform deps
 
@@ -166,7 +166,7 @@ Verify this is already gated or add the gate.
 
 ### 4.5 CLI
 
-- Service commands: add `#[cfg(target_os = "windows")]` arm that errors with "use tray applet or install as Windows Service" (full service support in Phase 4)
+- Service commands: add a `#[cfg(target_os = "windows")]` arm that directs users to the desktop app or Windows Service installation (full service support in Phase 4)
 - All other CLI commands are API clients — work unchanged
 
 ### Deliverable
@@ -370,7 +370,7 @@ Uses the `windows` crate for Win32 API access. Spawns a hidden message-only wind
 
 **Two modes on Windows:**
 
-1. **Tray applet mode** (default) — Hypercolor runs as a tray application started at login. Uses `hypercolor-tray` (already has Windows support). Registered via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+1. **Desktop app mode** (default): `hypercolor-app` starts at login, owns the tray, and supervises the daemon. It is registered through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 
 2. **Windows Service mode** (optional) — For headless/server setups. Uses the `windows-service` crate. Registered via `sc.exe` or the installer.
 
@@ -379,13 +379,13 @@ Uses the `windows` crate for Win32 API access. Spawns a hidden message-only wind
 ```rust
 #[cfg(target_os = "windows")]
 ServiceCommand::Start => {
-    // Check if running as service or start tray app
+    // Check if running as a service or start the desktop app
 }
 ```
 
 ### 7.3 Autostart
 
-- Tray mode: Registry key `HKCU\...\Run\Hypercolor`
+- Desktop app mode: Registry key `HKCU\...\Run\Hypercolor`
 - Service mode: `sc.exe create hypercolor` with auto-start
 
 ### Deliverable
@@ -403,7 +403,7 @@ Hypercolor survives sleep/wake cycles, pauses effects on lock, and starts automa
 1. Install binaries to `%PROGRAMFILES%\Hypercolor\`
 2. Include pinned PawnIO payloads and install them only after explicit user consent
 3. Install web UI assets to `%LOCALAPPDATA%\Hypercolor\ui\`
-4. Register tray applet autostart
+4. Register desktop app autostart
 5. Create Start Menu shortcuts
 6. Optional: register as Windows Service
 

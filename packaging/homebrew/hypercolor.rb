@@ -52,7 +52,6 @@ class Hypercolor < Formula
       hypercolor-daemon
       hypercolor
       hypercolor-app
-      hypercolor-tray
       hypercolor-tui
       hypercolor-open
     ].each do |b|
