@@ -1,17 +1,10 @@
-"""Zone (render group) models — independent rendering pipelines within a scene.
-
-A zone owns an effect (or layer stack), a spatial layout claiming device
-outputs, and per-zone brightness. Zone structure mutations are guarded by
-the scene's ``zones_revision`` via ``If-Match`` preconditions.
-"""
+"""Live scene-zone resource models."""
 
 from __future__ import annotations
 
 from typing import Any
 
 import msgspec
-
-from .spatial import SpatialLayout
 
 
 class DisplayTarget(msgspec.Struct, kw_only=True):
@@ -41,25 +34,28 @@ class SceneLayer(msgspec.Struct, kw_only=True):
     enabled: bool = True
 
 
+class ZoneMember(msgspec.Struct, kw_only=True):
+    """One device segment assigned to a live zone."""
+
+    id: str
+    device_id: str
+    name: str
+    segment: str | None = None
+
+
 class Zone(msgspec.Struct, kw_only=True):
-    """An independent rendering pipeline within a scene."""
+    """One authored zone embedded in a live scene document."""
 
     id: str
     name: str
-    layout: SpatialLayout
-    description: str | None = None
-    effect_id: str | None = None
-    controls: dict[str, Any] = msgspec.field(default_factory=dict)
-    control_bindings: dict[str, Any] = msgspec.field(default_factory=dict)
-    preset_id: str | None = None
-    layers: list[SceneLayer] = msgspec.field(default_factory=list)
-    brightness: float = 1.0
+    role: str = "custom"
     enabled: bool = True
+    brightness: float = 1.0
     color: str | None = None
     display_target: DisplayTarget | None = None
-    role: str = "custom"
-    controls_version: int = 0
-    layers_version: int = 0
+    members: list[ZoneMember] = msgspec.field(default_factory=list)
+    layout: dict[str, Any] | None = None
+    layers: list[SceneLayer] = msgspec.field(default_factory=list)
 
     @property
     def is_primary(self) -> bool:
@@ -72,32 +68,3 @@ class Zone(msgspec.Struct, kw_only=True):
         """Whether this zone drives a display face."""
 
         return self.role == "display"
-
-
-class ZoneListResult(msgspec.Struct, kw_only=True):
-    """Zone set of a scene plus the revision guarding its structure."""
-
-    items: list[Zone]
-    zones_revision: int
-
-
-class ZoneResult(msgspec.Struct, kw_only=True):
-    """One zone after a create/get/update."""
-
-    zone: Zone
-    zones_revision: int
-
-
-class ZoneDeleteResult(msgspec.Struct, kw_only=True):
-    """Result of deleting a zone."""
-
-    zone_id: str
-    deleted: bool
-    zones_revision: int
-
-
-class UnassignedBehaviorResult(msgspec.Struct, kw_only=True):
-    """Scene policy for device outputs claimed by no zone."""
-
-    unassigned_behavior: str | dict[str, Any]
-    zones_revision: int

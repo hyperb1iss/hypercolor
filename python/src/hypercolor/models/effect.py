@@ -7,7 +7,22 @@ from typing import Any
 
 import msgspec
 
-from .common import NamedRef, TransitionSpec
+from .zone import Zone
+
+
+class SideEffectOutcome(msgspec.Struct, kw_only=True):
+    """Outcome of a post-commit side effect."""
+
+    applied: bool
+    message: str | None = None
+
+
+class ApplyEffectResponse(msgspec.Struct, kw_only=True):
+    """Canonical effect-apply response with the written zone resource."""
+
+    zone: Zone
+    transition: dict[str, Any]
+    output: SideEffectOutcome
 
 
 class ControlDefinition(msgspec.Struct, kw_only=True):
@@ -32,7 +47,6 @@ class EffectPresetSummary(msgspec.Struct, kw_only=True):
     description: str | None = None
     controls: dict[str, Any] = msgspec.field(default_factory=dict)
     is_default: bool = False
-    controls: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
 class EffectPresetOrigin(StrEnum):
@@ -79,39 +93,9 @@ class Effect(EffectSummary):
     active_control_values: dict[str, Any] | None = None
 
 
-class ActiveEffect(msgspec.Struct, kw_only=True):
-    """The currently active effect and its live control values."""
-
-    id: str
-    name: str
-    state: str
-    controls: list[ControlDefinition] = msgspec.field(default_factory=list)
-    control_values: dict[str, Any] = msgspec.field(default_factory=dict)
-    active_preset_id: str | None = None
-    active_preset_modified: bool = False
-    cover_image_url: str | None = None
-
-
 class EffectCoverImage(msgspec.Struct, kw_only=True):
     """Binary cover image payload for an effect."""
 
     data: bytes
     content_type: str
     url: str
-
-
-class ApplyEffectResult(msgspec.Struct, kw_only=True):
-    """Response from applying an effect."""
-
-    effect: NamedRef
-    applied_controls: dict[str, Any] = msgspec.field(default_factory=dict)
-    layout: dict[str, Any] | None = None
-    transition: TransitionSpec | None = None
-
-
-class ControlUpdateResult(msgspec.Struct, kw_only=True):
-    """Response from updating current effect controls."""
-
-    effect: str
-    applied: dict[str, Any] = msgspec.field(default_factory=dict)
-    rejected: list[str] = msgspec.field(default_factory=list)

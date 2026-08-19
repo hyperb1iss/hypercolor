@@ -32,7 +32,7 @@ test.describe("REST API", () => {
     }
   });
 
-  test("effects endpoints can apply, update, reset, rescan, and stop", async ({
+  test("effects can apply, patch controls, rescan, and clear", async ({
     playwright,
   }) => {
     const api = await createApi(playwright);
@@ -48,22 +48,28 @@ test.describe("REST API", () => {
       expect(detail.id).toBe(runnableEffect.id);
 
       await readEnvelope(await api.post(`/api/v1/effects/${runnableEffect.id}/apply`));
-      const active = await readEnvelope(await api.get("/api/v1/effects/active"));
-      expect(active.id).toBe(runnableEffect.id);
+      const scene = await readEnvelope(await api.get("/api/v1/scene"));
+      const zone = scene.zones.find((candidate) =>
+        candidate.layers.some((layer) => layer.source.effect_id === runnableEffect.id),
+      );
+      const layer = zone?.layers.find(
+        (candidate) => candidate.source.effect_id === runnableEffect.id,
+      );
+      expect(zone).toBeTruthy();
+      expect(layer).toBeTruthy();
 
-      const controls = firstControlPayload(active);
+      const controls = firstControlPayload(detail);
       expect(
         (
-          await api.patch("/api/v1/effects/active/controls", {
+          await api.patch(`/api/v1/scene/zones/${zone.id}/layers/${layer.id}/controls`, {
             data: {
-              controls,
+              values: controls,
             },
           })
         ).ok(),
       ).toBeTruthy();
 
-      expect((await api.post("/api/v1/effects/active/reset")).ok()).toBeTruthy();
-      expect((await api.post("/api/v1/effects/stop")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/scene/clear")).ok()).toBeTruthy();
 
       const status = await readEnvelope(await api.get("/api/v1/status"));
       expect(status.active_effect).toBeNull();
@@ -139,7 +145,7 @@ test.describe("REST API", () => {
 
       expect((await api.post(`/api/v1/scenes/${sceneId}/activate`)).ok()).toBeTruthy();
 
-      const activeScene = await readEnvelope(await api.get("/api/v1/scenes/active"));
+      const activeScene = await readEnvelope(await api.get("/api/v1/scene"));
       expect(activeScene.id).toBe(sceneId);
 
       const updatedScene = await readEnvelope(
@@ -152,7 +158,7 @@ test.describe("REST API", () => {
       );
       expect(updatedScene.name).toBe(updatedSceneName);
 
-      expect((await api.post("/api/v1/scenes/deactivate")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/scene/deactivate")).ok()).toBeTruthy();
     } finally {
       if (sceneId) {
         await api.delete(`/api/v1/scenes/${sceneId}`);
@@ -238,7 +244,11 @@ test.describe("REST API", () => {
       presetId = preset.id;
       expect(preset.name).toBe(presetName);
 
-      expect((await api.post(`/api/v1/library/presets/${presetId}/apply`)).ok()).toBeTruthy();
+      expect(
+        (
+          await api.post(`/api/v1/effects/${audioPulse.id}/presets/${presetId}/apply`)
+        ).ok(),
+      ).toBeTruthy();
 
       const updatedPreset = await readEnvelope(
         await api.put(`/api/v1/library/presets/${presetId}`, {
@@ -315,7 +325,7 @@ test.describe("REST API", () => {
         await api.delete(`/api/v1/library/presets/${presetId}`);
       }
       await api.post("/api/v1/library/playlists/stop");
-      await api.post("/api/v1/effects/stop");
+      await api.post("/api/v1/scene/clear");
       await api.dispose();
     }
   });

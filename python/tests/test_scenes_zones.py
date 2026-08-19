@@ -1,9 +1,8 @@
-"""Tests for the scene and zone (render group) client surface."""
+"""Tests for the canonical live scene-tree client surface."""
 
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import httpx
 import msgspec
@@ -15,52 +14,44 @@ from hypercolor.exceptions import HypercolorPreconditionError
 
 SCENE_ID = "0193d2c0-0000-7000-8000-00000000aaaa"
 ZONE_ID = "0193d2c0-0000-7000-8000-000000000001"
+LAYER_ID = "0193d2c0-0000-7000-8000-000000000002"
 
-ZONE_LAYOUT: dict[str, Any] = {
-    "id": f"zone-{ZONE_ID}",
-    "name": "Desk",
-    "description": None,
-    "canvas_width": 320,
-    "canvas_height": 200,
-    "zones": [
-        {
-            "id": "out-strimer",
-            "name": "ATX Strimer",
-            "device_id": "usb:controller-1",
-            "zone_name": "atx",
-            "position": {"x": 0.5, "y": 0.5},
-            "size": {"x": 0.4, "y": 0.2},
-            "rotation": 0.0,
-            "scale": 1.0,
-            "display_order": 0,
-            "orientation": "horizontal",
-            "topology": {"type": "strip", "count": 24, "direction": "left_to_right"},
-            "sampling_mode": None,
-            "edge_behavior": None,
-            "shape": None,
-            "shape_preset": None,
-        }
-    ],
-    "default_sampling_mode": {"type": "bilinear"},
-    "default_edge_behavior": "clamp",
-    "spaces": None,
-    "version": 1,
-}
-
-ZONE_PAYLOAD: dict[str, Any] = {
+ZONE = {
     "id": ZONE_ID,
     "name": "Desk",
-    "description": None,
-    "effect_id": "aurora",
-    "controls": {"speed": 50},
-    "preset_id": None,
+    "role": "primary",
+    "enabled": True,
+    "brightness": 0.8,
+    "color": "#e135ff",
+    "display_target": None,
+    "members": [
+        {
+            "id": "out-strimer",
+            "device_id": "usb:controller-1",
+            "segment": "atx",
+            "name": "ATX Strimer",
+        }
+    ],
+    "layout": {
+        "placements": [
+            {
+                "member": "out-strimer",
+                "position": {"x": 0.5, "y": 0.5},
+                "size": {"x": 0.4, "y": 0.2},
+                "rotation": 0.0,
+                "scale": 1.0,
+                "orientation": "horizontal",
+                "topology": {"type": "strip", "count": 24, "direction": "left_to_right"},
+            }
+        ]
+    },
     "layers": [
         {
-            "id": ZONE_ID,
+            "id": LAYER_ID,
             "source": {
                 "type": "effect",
                 "effect_id": "aurora",
-                "controls": {"speed": 50},
+                "controls": {"speed": {"integer": 50}},
                 "control_bindings": {},
                 "preset_id": None,
             },
@@ -71,13 +62,17 @@ ZONE_PAYLOAD: dict[str, Any] = {
             "enabled": True,
         }
     ],
-    "layout": ZONE_LAYOUT,
-    "brightness": 0.8,
-    "enabled": True,
-    "color": "#e135ff",
-    "role": "primary",
-    "controls_version": 3,
-    "layers_version": 1,
+}
+
+LIVE_SCENE = {
+    "id": SCENE_ID,
+    "name": "Battlestation",
+    "kind": "named",
+    "is_default": False,
+    "unassigned_behavior": "off",
+    "layout_id": None,
+    "revision": 12,
+    "zones": [ZONE],
 }
 
 
@@ -87,8 +82,8 @@ def _envelope(data: object) -> bytes:
             "data": data,
             "meta": {
                 "api_version": "1.0",
-                "request_id": "req_zones",
-                "timestamp": "2026-06-11T00:00:00Z",
+                "request_id": "req_scene",
+                "timestamp": "2026-08-19T00:00:00Z",
             },
         }
     )
@@ -126,163 +121,119 @@ async def test_get_scenes_decodes_mutation_mode(client: HypercolorClient) -> Non
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_get_active_scene_decodes_zones(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/scenes/active").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "id": SCENE_ID,
-                    "name": "Battlestation",
-                    "description": None,
-                    "enabled": True,
-                    "priority": 50,
-                    "kind": "named",
-                    "mutation_mode": "live",
-                    "zones": [ZONE_PAYLOAD],
-                    "zones_revision": 12,
-                    "unassigned_behavior": "off",
-                }
-            ),
-        )
+async def test_get_live_scene_uses_canonical_singleton(client: HypercolorClient) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/scene").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
     )
 
-    scene = await client.get_active_scene()
+    scene = await client.get_live_scene()
 
-    assert scene is not None
-
-    assert scene.zones_revision == 12
-    assert len(scene.zones) == 1
-    zone = scene.zones[0]
-    assert zone.is_primary
-    assert zone.effect_id == "aurora"
-    assert zone.brightness == 0.8
-    assert zone.layout.zones[0].led_count == 24
-    assert scene.primary_zone is zone
-    assert scene.zone(ZONE_ID) is zone
+    assert scene.revision == 12
+    assert scene.zones[0].layers[0].id == LAYER_ID
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_get_active_scene_decodes_fallback_behavior(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/scenes/active").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "id": SCENE_ID,
-                    "name": "Battlestation",
-                    "zones": [],
-                    "zones_revision": 0,
-                    "unassigned_behavior": {"fallback": ZONE_ID},
-                }
-            ),
-        )
+async def test_patch_live_scene_uses_one_revision_token(client: HypercolorClient) -> None:
+    route = respx.patch("http://hyperia.test:9420/api/v1/scene").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
     )
 
-    scene = await client.get_active_scene()
+    await client.patch_live_scene(
+        unassigned_behavior={"fallback": ZONE_ID},
+        if_match=11,
+    )
 
-    assert scene is not None
-
-    assert scene.unassigned_behavior == {"fallback": ZONE_ID}
+    request = route.calls[0].request
+    assert request.headers["if-match"] == '"11"'
+    assert json.loads(request.content) == {"unassigned_behavior": {"fallback": ZONE_ID}}
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_create_scene_sends_body(client: HypercolorClient) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/scenes").mock(
-        return_value=httpx.Response(
-            201,
-            content=_envelope(
-                {
-                    "id": SCENE_ID,
-                    "name": "Night Mode",
-                    "description": "Dimmed",
-                    "enabled": True,
-                    "priority": 50,
-                    "mutation_mode": "live",
-                }
-            ),
-        )
+async def test_deactivate_scene_uses_live_tree_route(client: HypercolorClient) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/scene/deactivate").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
     )
 
-    scene = await client.create_scene("Night Mode", description="Dimmed")
+    scene = await client.deactivate_scene()
 
-    assert json.loads(route.calls[0].request.content) == {
-        "name": "Night Mode",
-        "description": "Dimmed",
-    }
-    assert scene.name == "Night Mode"
+    assert route.called
+    assert scene.id == SCENE_ID
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_deactivate_scene(client: HypercolorClient) -> None:
-    respx.post("http://hyperia.test:9420/api/v1/scenes/deactivate").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "deactivated": True,
-                    "previous_scene": {
-                        "id": SCENE_ID,
-                        "name": "Battlestation",
-                        "enabled": True,
-                        "priority": 50,
-                        "mutation_mode": "live",
-                    },
-                    "scene": None,
-                }
-            ),
-        )
+async def test_clear_scene_can_target_one_zone(client: HypercolorClient) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/scene/clear").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
     )
 
-    result = await client.deactivate_scene()
-
-    assert result.deactivated is True
-    assert result.previous_scene is not None
-    assert result.previous_scene.name == "Battlestation"
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_zones(client: HypercolorClient) -> None:
-    respx.get(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope({"items": [ZONE_PAYLOAD], "zones_revision": 12}),
-        )
-    )
-
-    result = await client.get_zones(SCENE_ID)
-
-    assert result.zones_revision == 12
-    assert result.items[0].name == "Desk"
-    assert result.items[0].layers[0].source["effect_id"] == "aurora"
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_create_zone_sends_if_match(client: HypercolorClient) -> None:
-    route = respx.post(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones").mock(
-        return_value=httpx.Response(
-            201,
-            content=_envelope({"zone": ZONE_PAYLOAD, "zones_revision": 13}),
-        )
-    )
-
-    result = await client.create_zone(SCENE_ID, "Desk", color="#e135ff", if_match=12)
+    scene = await client.clear_scene(zone=ZONE_ID, if_match=12)
 
     request = route.calls[0].request
     assert request.headers["if-match"] == '"12"'
-    assert json.loads(request.content) == {"name": "Desk", "color": "#e135ff"}
-    assert result.zones_revision == 13
+    assert json.loads(request.content) == {"zone": ZONE_ID}
+    assert scene.revision == 12
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_clear_scene_omits_body_when_clearing_every_zone(
+    client: HypercolorClient,
+) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/scene/clear").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
+    )
+
+    await client.clear_scene()
+
+    request = route.calls[0].request
+    assert request.content == b""
+    assert "content-type" not in request.headers
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_zone_uses_live_tree_identity(client: HypercolorClient) -> None:
+    route = respx.get(f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(ZONE))
+    )
+
+    zone = await client.get_zone(ZONE_ID)
+
+    assert route.called
+    assert zone.members[0].id == "out-strimer"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_create_zone_uses_live_tree_route(client: HypercolorClient) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/scene/zones").mock(
+        return_value=httpx.Response(201, content=_envelope(ZONE))
+    )
+
+    zone = await client.create_zone(
+        "Desk",
+        role="custom",
+        color="#e135ff",
+        if_match=12,
+    )
+
+    request = route.calls[0].request
+    assert request.headers["if-match"] == '"12"'
+    assert json.loads(request.content) == {
+        "name": "Desk",
+        "role": "custom",
+        "color": "#e135ff",
+    }
+    assert zone.id == ZONE_ID
 
 
 @respx.mock
 @pytest.mark.asyncio
 async def test_stale_revision_raises_precondition_error(client: HypercolorClient) -> None:
-    respx.post(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones").mock(
+    respx.post("http://hyperia.test:9420/api/v1/scene/zones").mock(
         return_value=httpx.Response(
             412,
             headers={"ETag": '"14"'},
@@ -290,13 +241,13 @@ async def test_stale_revision_raises_precondition_error(client: HypercolorClient
                 {
                     "error": {
                         "code": "precondition_failed",
-                        "message": "version mismatch: expected 13, current 14",
-                        "details": {"expected": 13, "current": 14},
+                        "message": "version mismatch: expected 12, current 14",
+                        "details": {"expected": 12, "current": 14},
                     },
                     "meta": {
                         "api_version": "1.0",
                         "request_id": "req_stale",
-                        "timestamp": "2026-06-11T00:00:00Z",
+                        "timestamp": "2026-08-19T00:00:00Z",
                     },
                 }
             ),
@@ -304,100 +255,96 @@ async def test_stale_revision_raises_precondition_error(client: HypercolorClient
     )
 
     with pytest.raises(HypercolorPreconditionError) as excinfo:
-        await client.create_zone(SCENE_ID, "Desk", if_match=12)
+        await client.create_zone("Desk", if_match=12)
 
-    assert excinfo.value.status_code == 412
     assert excinfo.value.current_revision == 14
 
 
 @respx.mock
 @pytest.mark.asyncio
 async def test_update_zone_distinguishes_clear_from_unset(client: HypercolorClient) -> None:
-    route = respx.patch(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones/{ZONE_ID}").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope({"zone": ZONE_PAYLOAD, "zones_revision": 13}),
-        )
+    route = respx.patch(f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(ZONE))
     )
 
-    await client.update_zone(SCENE_ID, ZONE_ID, brightness=0.5, color=None, if_match=12)
+    await client.update_zone(ZONE_ID, brightness=0.5, color=None, if_match=12)
 
-    body = json.loads(route.calls[0].request.content)
-    assert body == {"brightness": 0.5, "color": None}
-    assert "description" not in body
+    assert json.loads(route.calls[0].request.content) == {
+        "brightness": 0.5,
+        "color": None,
+    }
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_delete_zone(client: HypercolorClient) -> None:
-    respx.delete(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones/{ZONE_ID}").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope({"zone_id": ZONE_ID, "deleted": True, "zones_revision": 14}),
-        )
+async def test_delete_zone_uses_live_tree_route(client: HypercolorClient) -> None:
+    route = respx.delete(f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
     )
 
-    result = await client.delete_zone(SCENE_ID, ZONE_ID, if_match=13)
+    scene = await client.delete_zone(ZONE_ID, if_match=13)
 
-    assert result.deleted is True
-    assert result.zones_revision == 14
+    assert route.calls[0].request.headers["if-match"] == '"13"'
+    assert scene.revision == 12
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_assign_devices_normalizes_ids(client: HypercolorClient) -> None:
-    route = respx.post(
-        f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/zones/{ZONE_ID}/devices"
-    ).mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope({"items": [ZONE_PAYLOAD], "zones_revision": 15}),
-        )
+async def test_assign_members_uses_device_and_segments(client: HypercolorClient) -> None:
+    route = respx.post(f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}/members").mock(
+        return_value=httpx.Response(200, content=_envelope(ZONE))
     )
 
-    new_output = dict(ZONE_LAYOUT["zones"][0])
-    result = await client.assign_devices(
-        SCENE_ID, ZONE_ID, ["out-existing", new_output], if_match=14
+    zone = await client.assign_members(
+        ZONE_ID,
+        "usb:controller-1",
+        segments=["atx"],
+        if_match=14,
     )
 
-    body = json.loads(route.calls[0].request.content)
-    assert body["device_zones"][0] == {"id": "out-existing"}
-    assert body["device_zones"][1]["device_id"] == "usb:controller-1"
-    assert result.zones_revision == 15
+    assert json.loads(route.calls[0].request.content) == {
+        "device_id": "usb:controller-1",
+        "segments": ["atx"],
+    }
+    assert zone.members[0].segment == "atx"
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_set_unassigned_behavior_accepts_fallback(client: HypercolorClient) -> None:
-    route = respx.patch(
-        f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}/unassigned-behavior"
-    ).mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {"unassigned_behavior": {"fallback": ZONE_ID}, "zones_revision": 16}
-            ),
-        )
+async def test_unassign_member_addresses_membership_id(client: HypercolorClient) -> None:
+    route = respx.delete(
+        f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}/members/out-strimer"
+    ).mock(return_value=httpx.Response(200, content=_envelope(ZONE)))
+
+    await client.unassign_member(ZONE_ID, "out-strimer", if_match=15)
+
+    assert route.calls[0].request.headers["if-match"] == '"15"'
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_set_zone_layout_uses_compact_placements(client: HypercolorClient) -> None:
+    route = respx.put(f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}/layout").mock(
+        return_value=httpx.Response(200, content=_envelope(ZONE))
+    )
+    layout = ZONE["layout"]
+    assert isinstance(layout, dict)
+
+    zone = await client.set_zone_layout(ZONE_ID, layout, if_match=16)
+
+    assert json.loads(route.calls[0].request.content) == layout
+    assert zone.layout == layout
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_set_unassigned_behavior_patches_live_scene(client: HypercolorClient) -> None:
+    route = respx.patch("http://hyperia.test:9420/api/v1/scene").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
     )
 
-    result = await client.set_unassigned_behavior(SCENE_ID, {"fallback": ZONE_ID}, if_match=15)
+    await client.set_unassigned_behavior({"fallback": ZONE_ID}, if_match=17)
 
     assert json.loads(route.calls[0].request.content) == {
         "unassigned_behavior": {"fallback": ZONE_ID}
     }
-    assert result.zones_revision == 16
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_layout_decodes_spatial_layout(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/layouts/active").mock(
-        return_value=httpx.Response(200, content=_envelope(ZONE_LAYOUT))
-    )
-
-    layout = await client.get_active_layout()
-
-    assert layout is not None
-    assert layout.canvas_width == 320
-    assert layout.zones[0].zone_name == "atx"
-    assert layout.zones[0].led_count == 24

@@ -68,8 +68,12 @@ test("servo stack renders a bundled HTML effect through Servo", async ({ playwri
       const beforeFrames = renderedServoFrames(before);
 
       await readEnvelope(await api.post(`/api/v1/effects/${htmlEffect.id}/apply`));
-      const active = await readEnvelope(await api.get("/api/v1/effects/active"));
-      expect(active.id).toBe(htmlEffect.id);
+      const scene = await readEnvelope(await api.get("/api/v1/scene"));
+      expect(
+        scene.zones.some((zone) =>
+          zone.layers.some((layer) => layer.source.effect_id === htmlEffect.id),
+        ),
+      ).toBe(true);
 
       const after = await inbox.waitFor((message) => {
         if (message.type !== "metrics") {
@@ -90,7 +94,7 @@ test("servo stack renders a bundled HTML effect through Servo", async ({ playwri
       socket.close();
     }
   } finally {
-    await api.post("/api/v1/effects/stop");
+    await api.post("/api/v1/scene/clear");
     await api.dispose();
   }
 });

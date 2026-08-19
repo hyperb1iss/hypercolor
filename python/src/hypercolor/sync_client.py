@@ -21,9 +21,7 @@ from .models.control import ControlActionResult, ControlApplyResult, ControlSurf
 from .models.device import Device
 from .models.driver import Driver
 from .models.effect import (
-    ActiveEffect,
-    ApplyEffectResult,
-    ControlUpdateResult,
+    ApplyEffectResponse,
     Effect,
     EffectCoverImage,
     EffectPreset,
@@ -31,15 +29,9 @@ from .models.effect import (
 )
 from .models.layout import Layout, LayoutSummary
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
-from .models.scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
-from .models.spatial import SpatialLayout
+from .models.scene import ActivateSceneResult, Scene, SceneDocument
 from .models.system import HealthStatus, OutputState, SystemState
-from .models.zone import (
-    UnassignedBehaviorResult,
-    ZoneDeleteResult,
-    ZoneListResult,
-    ZoneResult,
-)
+from .models.zone import Zone
 
 
 class SyncHypercolorClient:
@@ -152,37 +144,30 @@ class SyncHypercolorClient:
     def get_effect_presets(self, effect_id: str) -> list[EffectPreset]:
         return self._run(self._client.get_effect_presets(effect_id))
 
-    def get_active_effect(self) -> ActiveEffect | None:
-        return self._run(self._client.get_active_effect())
-
     def effect_cover_image_url(self, effect_id: str) -> str:
         return self._client.effect_cover_image_url(effect_id)
 
-    def active_effect_cover_image_url(self) -> str:
-        return self._client.active_effect_cover_image_url()
-
     def get_effect_cover_image(self, effect_id: str) -> EffectCoverImage:
         return self._run(self._client.get_effect_cover_image(effect_id))
-
-    def get_active_effect_cover_image(self) -> EffectCoverImage | None:
-        return self._run(self._client.get_active_effect_cover_image())
 
     def apply_effect(
         self,
         effect_id: str,
         *,
         controls: Mapping[str, Any] | None = None,
-        transition: TransitionSpec | Mapping[str, Any] | None = None,
+        transition: str | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
-        zone_id: str | None = None,
-    ) -> ApplyEffectResult:
+        zone: str | None = None,
+        if_match: int | None = None,
+    ) -> ApplyEffectResponse:
         return self._run(
             self._client.apply_effect(
                 effect_id,
                 controls=controls,
                 transition=transition,
                 preset_id=preset_id,
-                zone_id=zone_id,
+                zone=zone,
+                if_match=if_match,
             )
         )
 
@@ -191,35 +176,38 @@ class SyncHypercolorClient:
         effect_id: str,
         preset_id: str,
         *,
-        zone_id: str | None = None,
-    ) -> ApplyEffectResult:
+        controls: Mapping[str, Any] | None = None,
+        transition: str | Mapping[str, Any] | None = None,
+        zone: str | None = None,
+        if_match: int | None = None,
+    ) -> ApplyEffectResponse:
         return self._run(
             self._client.apply_effect_preset(
                 effect_id,
                 preset_id,
-                zone_id=zone_id,
+                controls=controls,
+                transition=transition,
+                zone=zone,
+                if_match=if_match,
             )
         )
 
-    def update_effect_controls(
+    def patch_layer_controls(
         self,
-        effect_id: str,
-        controls: Mapping[str, Any],
+        zone: str,
+        layer: str,
+        values: Mapping[str, Any],
         *,
-        if_match: int | None = None,
-    ) -> ControlUpdateResult:
+        clear_bindings: list[str] | None = None,
+    ) -> Zone:
         return self._run(
-            self._client.update_effect_controls(effect_id, controls, if_match=if_match)
+            self._client.patch_layer_controls(
+                zone,
+                layer,
+                values,
+                clear_bindings=clear_bindings,
+            )
         )
-
-    def reset_controls(self, *, zone_id: str | None = None) -> MutationResult:
-        return self._run(self._client.reset_controls(zone_id=zone_id))
-
-    def update_controls(
-        self,
-        controls: Mapping[str, Any],
-    ) -> ControlUpdateResult:
-        return self._run(self._client.update_controls(controls))
 
     def get_control_surfaces(
         self,
@@ -267,9 +255,6 @@ class SyncHypercolorClient:
     ) -> ControlActionResult:
         return self._run(self._client.invoke_control_action(surface_id, action_id, input))
 
-    def stop_effect(self) -> MutationResult:
-        return self._run(self._client.stop_effect())
-
     def get_layouts(self) -> list[LayoutSummary]:
         return self._run(self._client.get_layouts())
 
@@ -299,8 +284,31 @@ class SyncHypercolorClient:
     def get_scene(self, scene_id: str) -> Scene:
         return self._run(self._client.get_scene(scene_id))
 
-    def get_active_scene(self) -> ActiveScene | None:
-        return self._run(self._client.get_active_scene())
+    def get_live_scene(self) -> SceneDocument:
+        return self._run(self._client.get_live_scene())
+
+    def patch_live_scene(
+        self,
+        *,
+        name: str | None = None,
+        unassigned_behavior: str | Mapping[str, Any] | None = None,
+        if_match: int | None = None,
+    ) -> SceneDocument:
+        return self._run(
+            self._client.patch_live_scene(
+                name=name,
+                unassigned_behavior=unassigned_behavior,
+                if_match=if_match,
+            )
+        )
+
+    def clear_scene(
+        self,
+        *,
+        zone: str | None = None,
+        if_match: int | None = None,
+    ) -> SceneDocument:
+        return self._run(self._client.clear_scene(zone=zone, if_match=if_match))
 
     def create_scene(
         self,
@@ -341,107 +349,100 @@ class SyncHypercolorClient:
     def activate_scene(self, scene_id: str) -> ActivateSceneResult:
         return self._run(self._client.activate_scene(scene_id))
 
-    def deactivate_scene(self) -> DeactivateSceneResult:
+    def deactivate_scene(self) -> SceneDocument:
         return self._run(self._client.deactivate_scene())
 
-    def get_zones(self, scene_id: str) -> ZoneListResult:
-        return self._run(self._client.get_zones(scene_id))
-
-    def get_zone(self, scene_id: str, zone_id: str) -> ZoneResult:
-        return self._run(self._client.get_zone(scene_id, zone_id))
+    def get_zone(self, zone: str) -> Zone:
+        return self._run(self._client.get_zone(zone))
 
     def create_zone(
         self,
-        scene_id: str,
         name: str,
         *,
+        role: str | None = None,
         color: str | None = None,
         if_match: int | None = None,
-    ) -> ZoneResult:
-        return self._run(self._client.create_zone(scene_id, name, color=color, if_match=if_match))
+    ) -> Zone:
+        return self._run(
+            self._client.create_zone(
+                name,
+                role=role,
+                color=color,
+                if_match=if_match,
+            )
+        )
 
     def update_zone(
         self,
-        scene_id: str,
-        zone_id: str,
+        zone: str,
         *,
         name: str | None = None,
-        description: str | None | _Unset = _UNSET_SENTINEL,
         color: str | None | _Unset = _UNSET_SENTINEL,
         brightness: float | None = None,
         enabled: bool | None = None,
-        make_primary: bool | None = None,
         if_match: int | None = None,
-    ) -> ZoneResult:
+    ) -> Zone:
         return self._run(
             self._client.update_zone(
-                scene_id,
-                zone_id,
+                zone,
                 name=name,
-                description=description,
                 color=color,
                 brightness=brightness,
                 enabled=enabled,
-                make_primary=make_primary,
                 if_match=if_match,
             )
         )
 
     def delete_zone(
         self,
-        scene_id: str,
-        zone_id: str,
+        zone: str,
         *,
         if_match: int | None = None,
-    ) -> ZoneDeleteResult:
-        return self._run(self._client.delete_zone(scene_id, zone_id, if_match=if_match))
+    ) -> SceneDocument:
+        return self._run(self._client.delete_zone(zone, if_match=if_match))
 
-    def assign_devices(
+    def assign_members(
         self,
-        scene_id: str,
-        zone_id: str,
-        device_zones: list[str | Mapping[str, Any]],
+        zone: str,
+        device_id: str,
         *,
+        segments: list[str] | None = None,
         if_match: int | None = None,
-    ) -> ZoneListResult:
+    ) -> Zone:
         return self._run(
-            self._client.assign_devices(scene_id, zone_id, device_zones, if_match=if_match)
+            self._client.assign_members(
+                zone,
+                device_id,
+                segments=segments,
+                if_match=if_match,
+            )
         )
 
-    def unassign_device(
+    def unassign_member(
         self,
-        scene_id: str,
-        zone_id: str,
-        device_zone_id: str,
+        zone: str,
+        member: str,
         *,
         if_match: int | None = None,
-    ) -> ZoneListResult:
-        return self._run(
-            self._client.unassign_device(scene_id, zone_id, device_zone_id, if_match=if_match)
-        )
+    ) -> Zone:
+        return self._run(self._client.unassign_member(zone, member, if_match=if_match))
 
     def set_zone_layout(
         self,
-        scene_id: str,
-        zone_id: str,
-        layout: SpatialLayout | Mapping[str, Any],
+        zone: str,
+        layout: Mapping[str, Any],
         *,
         if_match: int | None = None,
-    ) -> ZoneResult:
-        return self._run(
-            self._client.set_zone_layout(scene_id, zone_id, layout, if_match=if_match)
-        )
+    ) -> Zone:
+        return self._run(self._client.set_zone_layout(zone, layout, if_match=if_match))
 
     def set_unassigned_behavior(
         self,
-        scene_id: str,
         behavior: str | Mapping[str, Any],
         *,
         if_match: int | None = None,
-    ) -> UnassignedBehaviorResult:
-        return self._run(
-            self._client.set_unassigned_behavior(scene_id, behavior, if_match=if_match)
-        )
+    ) -> SceneDocument:
+        return self._run(self._client.set_unassigned_behavior(behavior, if_match=if_match))
 
     def get_brightness(self) -> float:
         return self._run(self._client.get_brightness())

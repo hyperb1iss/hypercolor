@@ -27,23 +27,17 @@ class Scene(msgspec.Struct, kw_only=True):
         return self.mutation_mode == "snapshot"
 
 
-class ActiveScene(msgspec.Struct, kw_only=True):
-    """The active scene with its full render-group (zone) set.
-
-    ``zones_revision`` is the monotonic structure counter carried as the
-    ``If-Match`` precondition for every zone mutation.
-    """
+class SceneDocument(msgspec.Struct, kw_only=True):
+    """The complete live scene tree returned by ``GET /api/v1/scene``."""
 
     id: str
     name: str
-    description: str | None = None
-    enabled: bool = True
-    priority: int = 0
     kind: str = "named"
-    mutation_mode: str = "live"
-    zones: list[Zone] = msgspec.field(default_factory=list)
-    zones_revision: int = 0
+    is_default: bool = False
     unassigned_behavior: str | dict[str, Any] = "off"
+    layout_id: str | None = None
+    revision: int = 0
+    zones: list[Zone] = msgspec.field(default_factory=list)
 
     @property
     def primary_zone(self) -> Zone | None:
@@ -62,11 +56,3 @@ class ActivateSceneResult(msgspec.Struct, kw_only=True):
 
     scene: NamedRef
     activated: bool
-
-
-class DeactivateSceneResult(msgspec.Struct, kw_only=True):
-    """Response from returning to the synthesized default scene."""
-
-    deactivated: bool
-    previous_scene: Scene | None = None
-    scene: Scene | None = None

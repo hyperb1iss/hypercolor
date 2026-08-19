@@ -29,7 +29,7 @@ from .ws_protocol import (
 type JsonObject = dict[str, Any]
 type EventHandler = Callable[[Any], Any]
 
-_PREVIEW_TRANSPORT_PREFIX = "preview_transport_v1:"
+_PREVIEW_TRANSPORT_PREFIX = "preview_transport_v2:"
 _PREVIEW_CHUNK_HEADER_LEN = 55
 _PREVIEW_CANCEL_HEADER_LEN = 14
 _PREVIEW_TRANSPORT_CAPABILITY = next(
@@ -74,6 +74,21 @@ class EventMessage:
     event: str
     timestamp: str
     data: JsonObject
+
+
+@dataclass(slots=True)
+class SubscribedMessage:
+    """Acknowledgment of the connection's complete live subscription set."""
+
+    topics: list[ActiveSubscription]
+    preview_transport: str
+
+
+@dataclass(slots=True)
+class UnsubscribedMessage:
+    """Acknowledgment of the connection's remaining live subscriptions."""
+
+    topics: list[ActiveSubscription]
 
 
 @dataclass(slots=True)
@@ -204,6 +219,7 @@ class BinaryMessage:
 
 @dataclass(slots=True)
 class _PartialPreviewPublication:
+    stream: tuple[int, int, bytes]
     publication_id: int
     metadata: tuple[int, int, int, int, int, int, int]
     total_encoded_bytes: int
@@ -215,7 +231,8 @@ class _PartialPreviewPublication:
 
 
 @dataclass(frozen=True, slots=True)
-class _ScreenZoneChunk:
+class _PreviewChunk:
+    stream: tuple[int, int, bytes]
     publication_id: int
     metadata: tuple[int, int, int, int, int, int, int]
     total_encoded_bytes: int
@@ -225,7 +242,136 @@ class _ScreenZoneChunk:
     payload: memoryview
 
 
-def _parse_screen_zone_chunk(payload: bytes) -> _ScreenZoneChunk:
+@dataclass(slots=True)
+class _PreviewStreamState:
+    high_water_publication_id: int
+    partial: _PartialPreviewPublication | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletedPreviewPublication:
+    stream: tuple[int, int, bytes]
+    metadata: tuple[int, int, int, int, int, int, int]
+    encoded: bytearray
+
+
+def _validate_preview_identity(identity: bytes, subject: str) -> None:
+    if not identity:
+        msg = f"{subject} cannot be empty"
+        raise ValueError(msg)
+    if len(identity) > 128:
+        msg = f"{subject} exceeds 128 bytes"
+        raise ValueError(msg)
+    try:
+        decoded = identity.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        msg = f"{subject} is not valid UTF-8"
+        raise ValueError(msg) from exc
+    if any(unicodedata.category(character) == "Cc" for character in decoded):
+        msg = f"{subject} contains a control character"
+        raise ValueError(msg)
+
+
+def _parse_preview_stream(
+    stream_kind: int, channel_tag: int, identity: bytes
+) -> tuple[int, int, bytes]:
+    if stream_kind == 0 and channel_tag in PREVIEW_TOPIC_TAGS and not identity:
+        return stream_kind, channel_tag, identity
+    if (
+        stream_kind == 1
+        and channel_tag == BINARY_MESSAGE_TAGS["zone_preview"]
+        and len(identity) == 32
+    ):
+        return stream_kind, channel_tag, identity
+    if stream_kind == 2 and channel_tag == BINARY_MESSAGE_TAGS["interactive_preview"]:
+        _validate_preview_identity(identity, "Interactive preview id")
+        return stream_kind, channel_tag, identity
+    if stream_kind == 3 and channel_tag == BINARY_MESSAGE_TAGS["screen_zones"] and not identity:
+        return stream_kind, channel_tag, identity
+    if stream_kind == 4 and channel_tag == BINARY_MESSAGE_TAGS["display_preview"]:
+        _validate_preview_identity(identity, "Display preview device id")
+        return stream_kind, channel_tag, identity
+    msg = "Preview transport stream identity is invalid"
+    raise ValueError(msg)
+
+
+def _preview_publication_header_len(
+    stream: tuple[int, int, bytes], width: int, height: int
+) -> int:
+    stream_kind, _channel, identity = stream
+    wide = width > 0xFFFF or height > 0xFFFF
+    if stream_kind == 0:
+        return 19 if wide else 14
+    if stream_kind == 1:
+        return 50 if wide else 46
+    if stream_kind in (2, 4):
+        return (19 if wide else 15) + len(identity)
+    return 41 if wide else 19
+
+
+def _validate_preview_chunk_layout(
+    total_encoded_bytes: int,
+    chunk_offset: int,
+    chunk_index: int,
+    chunk_count: int,
+    chunk_payload_bytes: int,
+) -> None:
+    end = chunk_offset + chunk_payload_bytes
+    if (
+        total_encoded_bytes == 0
+        or total_encoded_bytes > _PREVIEW_TRANSPORT_LIMITS["encoded"]
+        or chunk_count == 0
+        or chunk_count > total_encoded_bytes
+        or chunk_index >= chunk_count
+        or end > total_encoded_bytes
+        or (chunk_index + 1 == chunk_count and end != total_encoded_bytes)
+        or (chunk_index + 1 < chunk_count and end >= total_encoded_bytes)
+    ):
+        msg = "Preview chunk layout exceeds negotiated bounds"
+        raise ValueError(msg)
+
+
+def _validate_preview_publication_admission(
+    stream: tuple[int, int, bytes],
+    pixel_format: int,
+    width: int,
+    height: int,
+    total_encoded_bytes: int,
+) -> None:
+    if pixel_format not in CANVAS_FORMAT_TAGS:
+        msg = "Preview chunk has an unknown pixel format"
+        raise ValueError(msg)
+    if width == 0 or height == 0:
+        msg = "Preview chunk has invalid zero geometry"
+        raise ValueError(msg)
+    stream_kind = stream[0]
+    if stream_kind == 3:
+        if pixel_format != 0:
+            msg = "Screen-zone preview chunks must use RGB"
+            raise ValueError(msg)
+        minimum_decoded = max(0, total_encoded_bytes - 41)
+        if minimum_decoded > _PREVIEW_TRANSPORT_LIMITS["decoded"]:
+            msg = "Preview publication exceeds the decoded byte ledger"
+            raise ValueError(msg)
+        return
+
+    decoded_bytes = width * height * 4
+    if decoded_bytes > _PREVIEW_TRANSPORT_LIMITS["decoded"]:
+        msg = "Preview publication exceeds the decoded byte ledger"
+        raise ValueError(msg)
+    header_len = _preview_publication_header_len(stream, width, height)
+    bytes_per_pixel = {0: 3, 1: 4}.get(pixel_format)
+    if bytes_per_pixel is not None:
+        expected = header_len + width * height * bytes_per_pixel
+        if total_encoded_bytes != expected:
+            msg = "Raw preview publication length does not match its geometry"
+            raise ValueError(msg)
+    elif total_encoded_bytes <= header_len:
+        msg = "JPEG preview publication has an empty payload"
+        raise ValueError(msg)
+
+
+def _parse_preview_chunk(payload: bytes) -> _PreviewChunk:
     if len(payload) > _PREVIEW_TRANSPORT_LIMITS["message"]:
         msg = "Preview chunk exceeds the negotiated message-byte limit"
         raise ValueError(msg)
@@ -257,31 +403,25 @@ def _parse_screen_zone_chunk(payload: bytes) -> _ScreenZoneChunk:
         msg = "Preview chunk has a truncated identity or empty payload"
         raise ValueError(msg)
     payload_view = memoryview(payload)
-    identity = payload_view[_PREVIEW_CHUNK_HEADER_LEN:payload_offset]
-    if (
-        stream_kind != 3
-        or channel_tag != BINARY_MESSAGE_TAGS["screen_zones"]
-        or pixel_format != 0
-        or identity
-    ):
-        msg = "Preview chunk is not a screen-zone RGB publication"
-        raise ValueError(msg)
+    identity = bytes(payload_view[_PREVIEW_CHUNK_HEADER_LEN:payload_offset])
+    stream = _parse_preview_stream(stream_kind, channel_tag, identity)
     chunk_payload = payload_view[payload_offset:]
-    end = chunk_offset + len(chunk_payload)
-    if (
-        total_encoded_bytes == 0
-        or total_encoded_bytes > _PREVIEW_TRANSPORT_LIMITS["encoded"]
-        or chunk_count == 0
-        or chunk_count > _PREVIEW_TRANSPORT_LIMITS["chunks"]
-        or chunk_count > total_encoded_bytes
-        or chunk_index >= chunk_count
-        or end > total_encoded_bytes
-        or (chunk_index + 1 == chunk_count and end != total_encoded_bytes)
-        or (chunk_index + 1 < chunk_count and end >= total_encoded_bytes)
-    ):
-        msg = "Preview chunk layout exceeds negotiated bounds"
-        raise ValueError(msg)
-    return _ScreenZoneChunk(
+    _validate_preview_chunk_layout(
+        total_encoded_bytes,
+        chunk_offset,
+        chunk_index,
+        chunk_count,
+        len(chunk_payload),
+    )
+    _validate_preview_publication_admission(
+        stream,
+        pixel_format,
+        width,
+        height,
+        total_encoded_bytes,
+    )
+    return _PreviewChunk(
+        stream=stream,
         publication_id=publication_id,
         metadata=(
             stream_kind,
@@ -300,13 +440,21 @@ def _parse_screen_zone_chunk(payload: bytes) -> _ScreenZoneChunk:
     )
 
 
-class _ScreenZonesChunkReassembler:
+def _parse_screen_zone_chunk(payload: bytes) -> _PreviewChunk:
+    chunk = _parse_preview_chunk(payload)
+    if chunk.stream[0] != 3:
+        msg = "Preview chunk is not a screen-zone RGB publication"
+        raise ValueError(msg)
+    return chunk
+
+
+class _PreviewChunkReassembler:
     def __init__(self) -> None:
-        self._partial: _PartialPreviewPublication | None = None
-        self._high_water_publication_id: int | None = None
+        self._streams: dict[tuple[int, int, bytes], _PreviewStreamState] = {}
         self._reserved_bytes = 0
         self._inbound_frame_bytes = 0
         self._decoded_bytes = 0
+        self._completed_stream: tuple[int, int, bytes] | None = None
 
     @property
     def reserved_bytes(self) -> int:
@@ -327,17 +475,22 @@ class _ScreenZonesChunkReassembler:
 
     @property
     def has_partial(self) -> bool:
-        return self._partial is not None
+        return any(state.partial is not None for state in self._streams.values())
 
     def expire_partial(self) -> None:
-        self._partial = None
+        for state in self._streams.values():
+            state.partial = None
         self._reserved_bytes = 0
         self._inbound_frame_bytes = 0
         self._decoded_bytes = 0
+        self._completed_stream = None
 
     def reset(self) -> None:
-        self.expire_partial()
-        self._high_water_publication_id = None
+        self._streams.clear()
+        self._reserved_bytes = 0
+        self._inbound_frame_bytes = 0
+        self._decoded_bytes = 0
+        self._completed_stream = None
 
     def begin_inbound_frame(self, frame_bytes: int) -> None:
         self._inbound_frame_bytes = frame_bytes
@@ -345,72 +498,82 @@ class _ScreenZonesChunkReassembler:
     def finish_inbound_frame(self) -> None:
         self._inbound_frame_bytes = 0
         self._decoded_bytes = 0
-        if self._partial is not None and self._partial.completed:
-            self._partial = None
-            self._reserved_bytes = 0
+        if self._completed_stream is not None:
+            state = self._streams.get(self._completed_stream)
+            if state is not None and state.partial is not None and state.partial.completed:
+                self._reserved_bytes -= state.partial.total_encoded_bytes
+                state.partial = None
+            self._completed_stream = None
 
     def _expire_idle(self) -> None:
-        partial = self._partial
-        if partial is None:
-            return
         idle_seconds = _PREVIEW_TRANSPORT_LIMITS["idle_ms"] / 1000
-        if time.monotonic() - partial.last_activity >= idle_seconds:
-            self.expire_partial()
+        now = time.monotonic()
+        for state in self._streams.values():
+            partial = state.partial
+            if partial is not None and now - partial.last_activity >= idle_seconds:
+                self._reserved_bytes -= partial.total_encoded_bytes
+                state.partial = None
 
-    def _reject(self, message: str, publication_id: int | None = None) -> Never:
-        if self._partial is not None and self._partial.publication_id == publication_id:
-            self._partial = None
-            self._reserved_bytes = 0
+    def _reject(
+        self,
+        message: str,
+        stream: tuple[int, int, bytes] | None = None,
+        publication_id: int | None = None,
+    ) -> Never:
+        state = self._streams.get(stream) if stream is not None else None
+        if (
+            state is not None
+            and state.partial is not None
+            and state.partial.publication_id == publication_id
+        ):
+            self._reserved_bytes -= state.partial.total_encoded_bytes
+            state.partial = None
             self._decoded_bytes = 0
         raise ValueError(message)
 
-    def push(self, payload: bytes) -> bytearray | None:
+    def push(self, payload: bytes) -> _CompletedPreviewPublication | None:
         self._expire_idle()
-        publication_id = struct.unpack_from("<Q", payload, 7)[0] if len(payload) >= 15 else None
-        starts_new = publication_id is not None and self._retire_superseded(publication_id)
-        try:
-            chunk = _parse_screen_zone_chunk(payload)
-        except ValueError as exc:
-            self._reject(str(exc), publication_id)
+        chunk = _parse_preview_chunk(payload)
+        state = self._streams.get(chunk.stream)
+        if state is not None and (
+            chunk.publication_id < state.high_water_publication_id
+            or (chunk.publication_id == state.high_water_publication_id and state.partial is None)
+        ):
+            msg = "Preview chunk duplicates a completed or cancelled publication"
+            raise ValueError(msg)
+        starts_new = state is None or chunk.publication_id > state.high_water_publication_id
         partial = self._start_publication(chunk) if starts_new else self._publication_for(chunk)
         return self._append_chunk(partial, chunk)
 
-    def _retire_superseded(self, publication_id: int) -> bool:
-        if (
-            self._high_water_publication_id is not None
-            and publication_id <= self._high_water_publication_id
-        ):
-            return False
-        self._partial = None
-        self._reserved_bytes = 0
-        self._decoded_bytes = 0
-        self._high_water_publication_id = publication_id
-        return True
-
-    def _publication_for(self, chunk: _ScreenZoneChunk) -> _PartialPreviewPublication:
-        partial = self._partial
-        if (
-            self._high_water_publication_id is not None
-            and chunk.publication_id < self._high_water_publication_id
-        ):
-            msg = "Preview chunk belongs to a stale publication"
-            raise ValueError(msg)
+    def _publication_for(self, chunk: _PreviewChunk) -> _PartialPreviewPublication:
+        state = self._streams.get(chunk.stream)
+        partial = state.partial if state is not None else None
         if partial is None:
             msg = "Preview chunk duplicates a completed or cancelled publication"
             raise ValueError(msg)
         return partial
 
-    def _start_publication(self, chunk: _ScreenZoneChunk) -> _PartialPreviewPublication:
+    def _start_publication(self, chunk: _PreviewChunk) -> _PartialPreviewPublication:
         if chunk.chunk_index != 0 or chunk.chunk_offset != 0:
             msg = "Preview publication did not start with chunk zero"
             raise ValueError(msg)
+        prior_state = self._streams.get(chunk.stream)
+        replaced_bytes = (
+            prior_state.partial.total_encoded_bytes
+            if prior_state is not None and prior_state.partial is not None
+            else 0
+        )
         if (
-            chunk.total_encoded_bytes + self._inbound_frame_bytes
+            self._reserved_bytes
+            - replaced_bytes
+            + chunk.total_encoded_bytes
+            + self._inbound_frame_bytes
             > _PREVIEW_TRANSPORT_LIMITS["connection"]
         ):
             msg = "Preview publication exceeds the connection byte ledger"
             raise ValueError(msg)
         partial = _PartialPreviewPublication(
+            stream=chunk.stream,
             publication_id=chunk.publication_id,
             metadata=chunk.metadata,
             total_encoded_bytes=chunk.total_encoded_bytes,
@@ -420,43 +583,56 @@ class _ScreenZonesChunkReassembler:
             last_activity=time.monotonic(),
             completed=False,
         )
-        self._partial = partial
-        self._high_water_publication_id = chunk.publication_id
-        self._reserved_bytes = chunk.total_encoded_bytes
+        self._streams[chunk.stream] = _PreviewStreamState(
+            high_water_publication_id=chunk.publication_id,
+            partial=partial,
+        )
+        self._reserved_bytes = self._reserved_bytes - replaced_bytes + chunk.total_encoded_bytes
         return partial
 
     def _append_chunk(
         self,
         partial: _PartialPreviewPublication,
-        chunk: _ScreenZoneChunk,
-    ) -> bytearray | None:
+        chunk: _PreviewChunk,
+    ) -> _CompletedPreviewPublication | None:
         if partial.metadata != chunk.metadata or (
             partial.total_encoded_bytes != chunk.total_encoded_bytes
             or partial.chunk_count != chunk.chunk_count
         ):
             self._reject(
                 "Preview chunk metadata changed within a publication",
+                chunk.stream,
                 chunk.publication_id,
             )
         if chunk.chunk_index < partial.next_chunk_index:
-            self._reject("Preview chunk duplicates already received data", chunk.publication_id)
+            self._reject(
+                "Preview chunk duplicates already received data",
+                chunk.stream,
+                chunk.publication_id,
+            )
         if chunk.chunk_index != partial.next_chunk_index or chunk.chunk_offset != len(
             partial.encoded
         ):
-            self._reject("Preview chunks are not contiguous", chunk.publication_id)
+            self._reject(
+                "Preview chunks are not contiguous",
+                chunk.stream,
+                chunk.publication_id,
+            )
         if (
-            partial.total_encoded_bytes + self._inbound_frame_bytes
+            self._reserved_bytes + self._inbound_frame_bytes
             > _PREVIEW_TRANSPORT_LIMITS["connection"]
         ):
             self._reject(
                 "Preview publication exceeds the connection byte ledger",
+                chunk.stream,
                 chunk.publication_id,
             )
         try:
             partial.encoded.extend(chunk.payload)
         except MemoryError as exc:
-            self._partial = None
-            self._reserved_bytes = 0
+            state = self._streams[chunk.stream]
+            state.partial = None
+            self._reserved_bytes -= partial.total_encoded_bytes
             msg = "Preview publication buffer allocation failed"
             raise ValueError(msg) from exc
         partial.next_chunk_index += 1
@@ -466,31 +642,41 @@ class _ScreenZonesChunkReassembler:
         if len(partial.encoded) != partial.total_encoded_bytes:
             self._reject(
                 "Preview chunks do not cover the declared publication length",
+                chunk.stream,
                 chunk.publication_id,
             )
         return self._finish_publication(partial)
 
-    def _finish_publication(self, partial: _PartialPreviewPublication) -> bytearray:
-        completed = partial.encoded
-        try:
-            header_len = _validate_screen_zones_publication(completed, partial.metadata)
-        except ValueError as exc:
-            self._reject(str(exc), partial.publication_id)
-        decoded_bytes = partial.total_encoded_bytes - header_len
+    def _finish_publication(
+        self, partial: _PartialPreviewPublication
+    ) -> _CompletedPreviewPublication:
+        stream_kind = partial.stream[0]
+        if stream_kind == 3:
+            header_len = _screen_zones_header_len(partial.encoded)
+            decoded_bytes = partial.total_encoded_bytes - header_len
+        else:
+            decoded_bytes = partial.metadata[5] * partial.metadata[6] * 4
         if decoded_bytes > _PREVIEW_TRANSPORT_LIMITS["decoded"]:
             self._reject(
-                "Completed screen-zone publication exceeds the decoded byte ledger",
+                "Completed preview publication exceeds the decoded byte ledger",
+                partial.stream,
                 partial.publication_id,
             )
-        peak_bytes = partial.total_encoded_bytes + decoded_bytes + self._inbound_frame_bytes
+        peak_bytes = self._reserved_bytes + decoded_bytes + self._inbound_frame_bytes
         if peak_bytes > _PREVIEW_TRANSPORT_LIMITS["connection"]:
             self._reject(
-                "Completed screen-zone publication exceeds the connection byte ledger",
+                "Completed preview publication exceeds the connection byte ledger",
+                partial.stream,
                 partial.publication_id,
             )
         self._decoded_bytes = decoded_bytes
         partial.completed = True
-        return completed
+        self._completed_stream = partial.stream
+        return _CompletedPreviewPublication(
+            stream=partial.stream,
+            metadata=partial.metadata,
+            encoded=partial.encoded,
+        )
 
     def cancel(self, payload: bytes) -> None:
         self._expire_idle()
@@ -507,24 +693,28 @@ class _ScreenZonesChunkReassembler:
             msg = "Preview cancellation identity length is invalid"
             raise ValueError(msg)
         identity = payload[_PREVIEW_CANCEL_HEADER_LEN:]
-        if stream_kind != 3 or channel_tag != BINARY_MESSAGE_TAGS["screen_zones"] or identity:
-            msg = "Preview cancellation is not for the screen-zone stream"
-            raise ValueError(msg)
-        if (
-            self._high_water_publication_id is not None
-            and publication_id < self._high_water_publication_id
-        ):
+        stream = _parse_preview_stream(stream_kind, channel_tag, identity)
+        state = self._streams.get(stream)
+        if state is None:
+            self._streams[stream] = _PreviewStreamState(publication_id, None)
             return
-        self._high_water_publication_id = publication_id
-        if self._partial is not None and self._partial.publication_id <= publication_id:
-            self._partial = None
-            self._reserved_bytes = 0
+        if publication_id < state.high_water_publication_id:
+            return
+        state.high_water_publication_id = publication_id
+        if state.partial is not None and state.partial.publication_id <= publication_id:
+            self._reserved_bytes -= state.partial.total_encoded_bytes
+            state.partial = None
             self._decoded_bytes = 0
+
+
+_ScreenZonesChunkReassembler = _PreviewChunkReassembler
 
 
 type WsMessage = (
     HelloMessage
     | EventMessage
+    | SubscribedMessage
+    | UnsubscribedMessage
     | MetricsMessage
     | CommandResponse
     | FrameData
@@ -549,24 +739,6 @@ type _BinaryWsMessage = (
 )
 
 
-def _is_screen_zone_preview_chunk(payload: bytes) -> bool:
-    return (
-        len(payload) >= _PREVIEW_CHUNK_HEADER_LEN
-        and payload[2] == 3
-        and payload[3] == BINARY_MESSAGE_TAGS["screen_zones"]
-        and payload[5:7] == b"\x00\x00"
-    )
-
-
-def _is_screen_zone_preview_cancel(payload: bytes) -> bool:
-    return (
-        len(payload) >= _PREVIEW_CANCEL_HEADER_LEN
-        and payload[2] == 3
-        and payload[3] == BINARY_MESSAGE_TAGS["screen_zones"]
-        and payload[4:6] == b"\x00\x00"
-    )
-
-
 def _screen_zones_header_len(payload: bytes | bytearray) -> int:
     tag = payload[0]
     if tag == BINARY_MESSAGE_TAGS["screen_zones"]:
@@ -579,35 +751,18 @@ def _screen_zones_header_len(payload: bytes | bytearray) -> int:
     raise ValueError(msg)
 
 
-def _validate_screen_zones_publication(
-    payload: bytes | bytearray,
-    metadata: tuple[int, int, int, int, int, int, int],
-) -> int:
-    header_len = _screen_zones_header_len(payload)
-    if len(payload) < header_len:
-        msg = "Reassembled screen-zone publication has a truncated inner header"
-        raise ValueError(msg)
-    frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
-    if payload[0] == BINARY_MESSAGE_TAGS["screen_zones"]:
-        source_width, source_height = struct.unpack_from("<HH", payload, 9)
-    else:
-        source_width, source_height = struct.unpack_from("<II", payload, 9)
-    if (frame_number, timestamp_ms, source_width, source_height) != metadata[3:]:
-        msg = "Reassembled screen-zone publication metadata changed"
-        raise ValueError(msg)
-    return header_len
-
-
 class HypercolorEventStream:
     """WebSocket connection with channel subscriptions and event handlers.
 
     The events channel carries live changes only and is never replayed.
     A stream that loses its socket misses every event during the gap, and
     the daemon does not resend them on reconnect, so refetch whatever you
-    mirror each time the connection opens. Do the same whenever a
-    ``resync_required`` event arrives: the daemon sends it when a
-    subscriber falls far enough behind that events were dropped on a
-    socket that is still open.
+    mirror each time the connection opens. Subscribe first and wait for
+    the returned :class:`SubscribedMessage` before that REST refetch. The
+    acknowledgment closes the gap between the REST snapshot and admission
+    to the live event stream. Do the same whenever a ``resync_required``
+    event arrives: the daemon sends it when a subscriber falls far enough
+    behind that events were dropped on a socket that is still open.
 
     The handshake is deliberately thin for the same reason. It reports how
     the daemon is running, not what is rendering; read ``GET /api/v1/scene``
@@ -630,6 +785,8 @@ class HypercolorEventStream:
         self._send_lock = asyncio.Lock()
         self._screen_zones_reassembler = _ScreenZonesChunkReassembler()
         self._screen_zones_expiry: asyncio.TimerHandle | None = None
+        self._preview_transport_offered = False
+        self._router_activity_started = False
         self.hello: HelloMessage | None = None
 
     async def __aenter__(self) -> HypercolorEventStream:
@@ -672,13 +829,13 @@ class HypercolorEventStream:
         *topics: str,
         key: str | None = None,
         config: Mapping[str, Any] | None = None,
-    ) -> None:
+    ) -> SubscribedMessage:
         """Subscribe to one or more topics.
 
         A keyed topic (``display_preview``, ``interactive_preview``) takes
         its key here, so a call names one keyed subscription at a time.
         """
-        await self.subscribe_many(
+        return await self.subscribe_many(
             [
                 {
                     "topic": topic,
@@ -689,16 +846,23 @@ class HypercolorEventStream:
             ]
         )
 
-    async def subscribe_many(self, topics: list[Mapping[str, Any]]) -> None:
-        """Subscribe to several topics, each with its own key and config."""
+    async def subscribe_many(self, topics: list[Mapping[str, Any]]) -> SubscribedMessage:
+        """Subscribe atomically and wait until the daemon admits the set."""
         payload: JsonObject = {
             "type": "subscribe",
             "topics": [dict(topic) for topic in topics],
-            "preview_transport": _PREVIEW_TRANSPORT_CAPABILITY,
         }
+        offer_transport = not self._preview_transport_offered and not self._router_activity_started
+        if offer_transport:
+            payload["preview_transport"] = _PREVIEW_TRANSPORT_CAPABILITY
         await self._send_json(payload)
+        if offer_transport:
+            self._preview_transport_offered = True
+        acknowledgment = await self._wait_for_subscription_ack(SubscribedMessage)
+        assert isinstance(acknowledgment, SubscribedMessage)
+        return acknowledgment
 
-    async def unsubscribe(self, *topics: str, key: str | None = None) -> None:
+    async def unsubscribe(self, *topics: str, key: str | None = None) -> UnsubscribedMessage:
         """Unsubscribe from one or more topics."""
         await self._send_json(
             {
@@ -709,6 +873,20 @@ class HypercolorEventStream:
                 ],
             }
         )
+        acknowledgment = await self._wait_for_subscription_ack(UnsubscribedMessage)
+        assert isinstance(acknowledgment, UnsubscribedMessage)
+        return acknowledgment
+
+    async def _wait_for_subscription_ack(
+        self, expected: type[SubscribedMessage] | type[UnsubscribedMessage]
+    ) -> SubscribedMessage | UnsubscribedMessage:
+        while True:
+            message = await self.receive()
+            if isinstance(message, expected):
+                return message
+            if isinstance(message, EventMessage) and message.event == "error":
+                detail = message.data.get("message", "subscription request was rejected")
+                raise RuntimeError(str(detail))
 
     async def open_interactive_preview(
         self,
@@ -719,13 +897,13 @@ class HypercolorEventStream:
         height: int,
         format: str = "jpeg",
         target: str = "active_scene",
-    ) -> None:
+    ) -> SubscribedMessage:
         """Open or reconfigure one interactive preview.
 
         Opening is a keyed subscribe: the preview id is the key, and the
         daemon opens the render lane when the subscription is admitted.
         """
-        await self.subscribe(
+        return await self.subscribe(
             "interactive_preview",
             key=preview_id,
             config={
@@ -737,9 +915,9 @@ class HypercolorEventStream:
             },
         )
 
-    async def close_interactive_preview(self, preview_id: str) -> None:
+    async def close_interactive_preview(self, preview_id: str) -> UnsubscribedMessage:
         """Close one interactive preview by retiring its subscription."""
-        await self.unsubscribe("interactive_preview", key=preview_id)
+        return await self.unsubscribe("interactive_preview", key=preview_id)
 
     async def inject_preview_input(
         self,
@@ -825,6 +1003,7 @@ class HypercolorEventStream:
         }
         async with self._send_lock:
             await connection.send(_encode_text(payload))
+        self._router_activity_started = True
 
         while not future.done():
             await self.receive()
@@ -858,6 +1037,7 @@ class HypercolorEventStream:
         connection = self._require_connection()
         async with self._send_lock:
             await connection.send(_encode_text(payload))
+        self._router_activity_started = True
 
     def _require_connection(self) -> ClientConnection:
         if self._connection is None:
@@ -886,6 +1066,9 @@ class HypercolorEventStream:
                 timestamp=str(payload["timestamp"]),
                 data=_expect_dict(payload.get("data")),
             )
+        subscription_message = _decode_subscription_message(payload, message_type)
+        if subscription_message is not None:
+            return subscription_message
         if message_type == "metrics":
             return MetricsMessage(
                 timestamp=str(payload["timestamp"]),
@@ -914,7 +1097,10 @@ class HypercolorEventStream:
             return HypercolorEventStream._parse_led_frame(payload)
         if message_type == BINARY_MESSAGE_TAGS["spectrum"]:
             return HypercolorEventStream._parse_spectrum(payload)
-        if message_type in PREVIEW_TOPIC_TAGS:
+        if (
+            message_type in PREVIEW_TOPIC_TAGS
+            or message_type == BINARY_MESSAGE_TAGS["wide_preview"]
+        ):
             return HypercolorEventStream._parse_canvas(payload)
         return HypercolorEventStream._parse_special_binary(message_type, payload)
 
@@ -928,21 +1114,19 @@ class HypercolorEventStream:
         return self._decode_binary(payload)
 
     def _decode_preview_chunk(self, payload: bytes) -> _BinaryWsMessage:
-        if not _is_screen_zone_preview_chunk(payload):
-            return BinaryMessage(tag=payload[0], payload=payload)
         self._screen_zones_reassembler.begin_inbound_frame(len(payload))
         try:
             completed = self._screen_zones_reassembler.push(payload)
             if completed is None:
                 return BinaryMessage(tag=payload[0], payload=payload)
-            return self._parse_screen_zones(completed)
+            message = self._decode_binary(bytes(completed.encoded))
+            self._validate_completed_preview(message, completed)
+            return message
         finally:
             self._screen_zones_reassembler.finish_inbound_frame()
             self._refresh_screen_zone_expiry()
 
     def _decode_preview_cancel(self, payload: bytes) -> BinaryMessage:
-        if not _is_screen_zone_preview_cancel(payload):
-            return BinaryMessage(tag=payload[0], payload=payload)
         self._screen_zones_reassembler.begin_inbound_frame(len(payload))
         try:
             self._screen_zones_reassembler.cancel(payload)
@@ -976,11 +1160,19 @@ class HypercolorEventStream:
             self._screen_zones_expiry.cancel()
             self._screen_zones_expiry = None
         self._screen_zones_reassembler.reset()
+        self._preview_transport_offered = False
+        self._router_activity_started = False
 
     @staticmethod
     def _parse_special_binary(message_type: int, payload: bytes) -> _BinaryWsMessage:
-        if message_type == BINARY_MESSAGE_TAGS["zone_preview"]:
-            return HypercolorEventStream._parse_zone_preview(payload)
+        if message_type in (
+            BINARY_MESSAGE_TAGS["zone_preview"],
+            BINARY_MESSAGE_TAGS["wide_zone_preview"],
+        ):
+            return HypercolorEventStream._parse_zone_preview(
+                payload,
+                wide=message_type == BINARY_MESSAGE_TAGS["wide_zone_preview"],
+            )
         if message_type in (
             BINARY_MESSAGE_TAGS["screen_zones"],
             BINARY_MESSAGE_TAGS["wide_screen_zones"],
@@ -1004,6 +1196,57 @@ class HypercolorEventStream:
                 wide=message_type == BINARY_MESSAGE_TAGS["wide_display_preview"],
             )
         return BinaryMessage(tag=message_type, payload=payload)
+
+    @staticmethod
+    def _validate_completed_preview(
+        message: _BinaryWsMessage,
+        completed: _CompletedPreviewPublication,
+    ) -> None:
+        stream_kind, channel_tag, identity = completed.stream
+        _, _, pixel_format, frame_number, timestamp_ms, width, height = completed.metadata
+        image_format = CANVAS_FORMAT_TAGS[pixel_format]
+        common = (
+            getattr(message, "frame_number", None) == frame_number
+            and getattr(message, "timestamp_ms", None) == timestamp_ms
+        )
+        if isinstance(message, ScreenZonesData):
+            matches = (
+                stream_kind == 3
+                and common
+                and message.source_width == width
+                and message.source_height == height
+                and image_format == "rgb"
+            )
+        else:
+            matches = (
+                common
+                and getattr(message, "width", None) == width
+                and getattr(message, "height", None) == height
+                and getattr(message, "format", None) == image_format
+            )
+            if isinstance(message, CanvasData):
+                matches = (
+                    matches
+                    and stream_kind == 0
+                    and PREVIEW_TOPIC_TAGS.get(channel_tag) == message.channel
+                    and not identity
+                )
+            elif isinstance(message, ZonePreviewData):
+                matches = (
+                    matches
+                    and stream_kind == 1
+                    and uuid.UUID(message.scene_id).bytes == identity[:16]
+                    and uuid.UUID(message.zone_id).bytes == identity[16:]
+                )
+            elif isinstance(message, InteractivePreviewData):
+                matches = matches and stream_kind == 2 and message.preview_id.encode() == identity
+            elif isinstance(message, DisplayPreviewData):
+                matches = matches and stream_kind == 4 and message.device_id.encode() == identity
+            else:
+                matches = False
+        if not matches:
+            msg = "Reassembled preview publication metadata changed"
+            raise ValueError(msg)
 
     async def _dispatch_json(self, message: WsMessage) -> None:
         if isinstance(message, CommandResponse):
@@ -1085,14 +1328,33 @@ class HypercolorEventStream:
 
     @staticmethod
     def _parse_canvas(payload: bytes) -> CanvasData:
-        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
-        width, height = struct.unpack_from("<HH", payload, 9)
-        format_byte = payload[13]
+        wide = payload[0] == BINARY_MESSAGE_TAGS["wide_preview"]
+        header_len = 19 if wide else 14
+        if len(payload) < header_len:
+            msg = f"Canvas frame is shorter than its {header_len}-byte header"
+            raise ValueError(msg)
+        metadata_offset = 1 if wide else 0
+        channel_tag = payload[metadata_offset]
+        if channel_tag not in PREVIEW_TOPIC_TAGS:
+            msg = f"Unknown Hypercolor canvas channel: {channel_tag:#x}"
+            raise ValueError(msg)
+        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1 + metadata_offset)
+        if wide:
+            width, height = struct.unpack_from("<II", payload, 10)
+        else:
+            width, height = struct.unpack_from("<HH", payload, 9)
+        format_byte = payload[header_len - 1]
         image_format = CANVAS_FORMAT_TAGS.get(format_byte)
         if image_format is None:
             msg = f"Unknown Hypercolor canvas format: {format_byte:#x}"
             raise RuntimeError(msg)
-        pixels = payload[14:]
+        pixels = HypercolorEventStream._validated_preview_payload(
+            payload[header_len:],
+            width,
+            height,
+            image_format,
+            "Canvas",
+        )
         return CanvasData(
             frame_number=frame_number,
             timestamp_ms=timestamp_ms,
@@ -1100,15 +1362,27 @@ class HypercolorEventStream:
             height=height,
             format=image_format,
             pixels=pixels,
-            channel=PREVIEW_TOPIC_TAGS[payload[0]],
+            channel=PREVIEW_TOPIC_TAGS[channel_tag],
         )
 
     @staticmethod
-    def _parse_zone_preview(payload: bytes) -> ZonePreviewData:
+    def _parse_zone_preview(payload: bytes, *, wide: bool = False) -> ZonePreviewData:
+        header_len = 50 if wide else 46
+        if len(payload) < header_len:
+            msg = f"Zone preview frame is shorter than its {header_len}-byte header"
+            raise ValueError(msg)
         frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
         scene_id = uuid.UUID(bytes=payload[9:25])
         zone_id = uuid.UUID(bytes=payload[25:41])
-        width, height = struct.unpack_from("<HH", payload, 41)
+        if wide:
+            width, height = struct.unpack_from("<II", payload, 41)
+        else:
+            width, height = struct.unpack_from("<HH", payload, 41)
+        format_byte = payload[header_len - 1]
+        image_format = CANVAS_FORMAT_TAGS.get(format_byte)
+        if image_format is None:
+            msg = f"Unknown zone preview format: {format_byte:#x}"
+            raise ValueError(msg)
         return ZonePreviewData(
             scene_id=str(scene_id),
             zone_id=str(zone_id),
@@ -1116,8 +1390,14 @@ class HypercolorEventStream:
             timestamp_ms=timestamp_ms,
             width=width,
             height=height,
-            format=CANVAS_FORMAT_TAGS.get(payload[45], "rgb"),
-            pixels=payload[46:],
+            format=image_format,
+            pixels=HypercolorEventStream._validated_preview_payload(
+                payload[header_len:],
+                width,
+                height,
+                image_format,
+                "Zone preview",
+            ),
         )
 
     @staticmethod
@@ -1193,16 +1473,13 @@ class HypercolorEventStream:
         if any(unicodedata.category(character) == "Cc" for character in preview_id):
             msg = f"{subject} contains a control character"
             raise ValueError(msg)
-        image = payload[payload_offset:]
-        bytes_per_pixel = {"rgb": 3, "rgba": 4}.get(image_format)
-        if bytes_per_pixel is not None:
-            expected = width * height * bytes_per_pixel
-            if len(image) < expected:
-                msg = (
-                    f"{subject} payload is too short: expected {expected} bytes, got {len(image)}"
-                )
-                raise ValueError(msg)
-            image = image[:expected]
+        image = HypercolorEventStream._validated_preview_payload(
+            payload[payload_offset:],
+            width,
+            height,
+            image_format,
+            subject,
+        )
         return InteractivePreviewData(
             preview_id=preview_id,
             frame_number=frame_number,
@@ -1212,6 +1489,32 @@ class HypercolorEventStream:
             format=image_format,
             pixels=image,
         )
+
+    @staticmethod
+    def _validated_preview_payload(
+        image: bytes,
+        width: int,
+        height: int,
+        image_format: str,
+        subject: str,
+    ) -> bytes:
+        if width == 0 or height == 0:
+            msg = f"{subject} has invalid zero geometry"
+            raise ValueError(msg)
+        bytes_per_pixel = {"rgb": 3, "rgba": 4}.get(image_format)
+        if bytes_per_pixel is None:
+            if not image:
+                msg = f"{subject} JPEG payload cannot be empty"
+                raise ValueError(msg)
+            return image
+        expected = width * height * bytes_per_pixel
+        if len(image) < expected:
+            msg = f"{subject} payload is too short: expected {expected} bytes, got {len(image)}"
+            raise ValueError(msg)
+        if len(image) > expected:
+            msg = f"{subject} payload must be {expected} bytes, got {len(image)}"
+            raise ValueError(msg)
+        return image
 
     @staticmethod
     def _parse_screen_zones(payload: bytes | bytearray) -> ScreenZonesData:
@@ -1304,6 +1607,21 @@ def _expect_list_of_str(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _decode_subscription_message(
+    payload: JsonObject, message_type: Any
+) -> SubscribedMessage | UnsubscribedMessage | None:
+    if message_type == "subscribed":
+        return SubscribedMessage(
+            topics=_parse_subscriptions(payload.get("topics")),
+            preview_transport=str(payload["preview_transport"]),
+        )
+    if message_type == "unsubscribed":
+        return UnsubscribedMessage(
+            topics=_parse_subscriptions(payload.get("topics")),
+        )
+    return None
 
 
 def _parse_subscriptions(value: Any) -> list[ActiveSubscription]:

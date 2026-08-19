@@ -190,14 +190,43 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
             expected_prefix = b"/api/v1/effects/aurora%2Fmain/presets/"
             assert request.url.raw_path.startswith(expected_prefix)
             if request.url.raw_path.endswith(b"/saved-bright/apply"):
-                assert json.loads(request.content) == {"zone_id": "zone-left"}
+                assert json.loads(request.content) == {"zone": "zone-left"}
+                assert request.headers["if-match"] == '"17"'
             else:
                 assert request.url.raw_path.endswith(b"/bundled-calm/apply")
                 assert request.content == b""
+                assert "if-match" not in request.headers
             data = {
-                "effect": {"id": "aurora/main", "name": "Aurora"},
-                "applied_controls": {},
-                "transition": {"type": "cut", "duration_ms": 0},
+                "zone": {
+                    "id": "0193d2c0-0000-7000-8000-000000000001",
+                    "name": "Primary",
+                    "role": "primary",
+                    "enabled": True,
+                    "brightness": 1.0,
+                    "color": None,
+                    "display_target": None,
+                    "members": [],
+                    "layout": None,
+                    "layers": [
+                        {
+                            "id": "0193d2c0-0000-7000-8000-000000000002",
+                            "source": {
+                                "type": "effect",
+                                "effect_id": "aurora/main",
+                                "controls": {},
+                                "control_bindings": {},
+                                "preset_id": None,
+                            },
+                            "blend": "replace",
+                            "opacity": 1.0,
+                            "transform": {},
+                            "adjust": {},
+                            "enabled": True,
+                        }
+                    ],
+                },
+                "transition": {"type": "cut"},
+                "output": {"applied": True},
             }
         return httpx.Response(
             200,
@@ -219,7 +248,8 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
         result = client.apply_effect_preset(
             "aurora/main",
             "saved-bright",
-            zone_id="zone-left",
+            zone="zone-left",
+            if_match=17,
         )
         ungrouped_result = client.apply_effect_preset("aurora/main", "bundled-calm")
     finally:
@@ -227,5 +257,5 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
 
     assert presets[0].origin is EffectPresetOrigin.SAVED
     assert presets[0].editable is True
-    assert result.effect.id == "aurora/main"
-    assert ungrouped_result.effect.id == "aurora/main"
+    assert result.zone.layers[0].source["effect_id"] == "aurora/main"
+    assert ungrouped_result.zone.layers[0].source["effect_id"] == "aurora/main"

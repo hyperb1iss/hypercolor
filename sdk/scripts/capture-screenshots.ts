@@ -3,7 +3,7 @@
  * Effect screenshot capture tool.
  *
  * Walks the daemon's effect catalog, applies each effect (and up to 3 presets),
- * pulls frames from the canvas WebSocket channel at native resolution, ranks
+ * pulls bounded frames from the canvas WebSocket channel, ranks
  * them by an HSV quality heuristic, and saves the top 3 as PNGs under
  * effects/screenshots/drafts/<slug>/<variant>/rank-{1,2,3}.png.
  *
@@ -27,6 +27,10 @@ const DEFAULT_WARMUP_MS = 4000
 const DEFAULT_CAPTURE_MS = 6000
 const DEFAULT_KEEP = 3
 const MAX_PRESETS_PER_EFFECT = 3
+const CAPTURE_WIDTH = 640
+const CAPTURE_HEIGHT = 360
+const PREVIEW_TRANSPORT_V1 =
+    'preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096'
 
 /**
  * Effect slugs we skip entirely — utility/diagnostic tools, not visual effects.
@@ -297,7 +301,7 @@ async function applyEffect(
 }
 
 async function stopEffect(daemon: string): Promise<void> {
-    await restPost(daemon, '/api/v1/effects/stop')
+    await restPost(daemon, '/api/v1/scene/clear')
 }
 
 // ── WebSocket frame collection ────────────────────────────────────────────
@@ -313,7 +317,10 @@ function parseCanvasFrame(buffer: ArrayBuffer): FrameHeader | null {
     const format = formatByte === 1 ? 'rgba' : formatByte === 0 ? 'rgb' : null
     if (!format) return null
     if (width === 0 || height === 0) return null
-    return { format, height, payload: bytes.subarray(14), width }
+    const payload = bytes.subarray(14)
+    const bytesPerPixel = format === 'rgba' ? 4 : 3
+    if (payload.length !== width * height * bytesPerPixel) return null
+    return { format, height, payload, width }
 }
 
 function rgbToRgba(payload: Uint8Array, width: number, height: number): Uint8Array {
@@ -338,11 +345,13 @@ function collectFrames(daemon: string, frameCount: number, captureMs: number): P
         let startedAt = 0
         let latestFrame: FrameHeader | null = null
         let finished = false
+        let timeout: ReturnType<typeof setTimeout> | null = null
 
         const finish = (reason: 'ok' | 'timeout' | 'error', err?: Error) => {
             if (finished) return
             finished = true
             if (captureInterval) clearInterval(captureInterval)
+            if (timeout) clearTimeout(timeout)
             try {
                 ws.close()
             } catch {
@@ -372,18 +381,39 @@ function collectFrames(daemon: string, frameCount: number, captureMs: number): P
         ws.addEventListener('open', () => {
             ws.send(
                 JSON.stringify({
-                    topics: [{ config: { format: 'rgba', fps: 30, height: 0, width: 0 }, topic: 'canvas' }],
+                    preview_transport: PREVIEW_TRANSPORT_V1,
+                    topics: [
+                        {
+                            config: {
+                                format: 'rgba',
+                                fps: 30,
+                                height: CAPTURE_HEIGHT,
+                                width: CAPTURE_WIDTH,
+                            },
+                            topic: 'canvas',
+                        },
+                    ],
                     type: 'subscribe',
                 }),
             )
-            startedAt = Date.now()
-            const interval = Math.max(1, Math.floor(captureMs / frameCount))
-            captureInterval = setInterval(takeSample, interval)
-            setTimeout(() => finish('timeout'), captureMs + 2000)
+            timeout = setTimeout(() => finish('error', new Error('canvas subscription acknowledgment timed out')), 5000)
         })
 
         ws.addEventListener('message', (event) => {
-            if (!(event.data instanceof ArrayBuffer)) return
+            if (typeof event.data === 'string') {
+                const message = JSON.parse(event.data) as { message?: string; type?: string }
+                if (message.type === 'error') {
+                    finish('error', new Error(message.message ?? 'canvas subscription rejected'))
+                } else if (message.type === 'subscribed' && captureInterval === null) {
+                    if (timeout) clearTimeout(timeout)
+                    startedAt = Date.now()
+                    const interval = Math.max(1, Math.floor(captureMs / frameCount))
+                    captureInterval = setInterval(takeSample, interval)
+                    timeout = setTimeout(() => finish('timeout'), captureMs + 2000)
+                }
+                return
+            }
+            if (!(event.data instanceof ArrayBuffer) || captureInterval === null) return
             const parsed = parseCanvasFrame(event.data)
             if (parsed) latestFrame = parsed
         })

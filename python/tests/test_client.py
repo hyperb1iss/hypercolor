@@ -13,12 +13,10 @@ from hypercolor.client import HypercolorClient, _normalize_payload
 from hypercolor.exceptions import (
     HypercolorConnectionError,
     HypercolorNotFoundError,
-    HypercolorValidationError,
 )
 from hypercolor.models.control import ControlSurface
 from hypercolor.models.driver import Driver
 from hypercolor.models.effect import (
-    ActiveEffect,
     ControlDefinition,
     Effect,
     EffectPresetOrigin,
@@ -86,6 +84,37 @@ def _control_surface(
         "values": values or {},
         "availability": {},
         "action_availability": {},
+    }
+
+
+def _applied_zone(effect_id: str = "aurora") -> dict[str, object]:
+    return {
+        "id": "0193d2c0-0000-7000-8000-000000000001",
+        "name": "Primary",
+        "role": "primary",
+        "enabled": True,
+        "brightness": 1.0,
+        "color": None,
+        "display_target": None,
+        "members": [],
+        "layout": None,
+        "layers": [
+            {
+                "id": "0193d2c0-0000-7000-8000-000000000002",
+                "source": {
+                    "type": "effect",
+                    "effect_id": effect_id,
+                    "controls": {"effectSpeed": {"integer": 70}},
+                    "control_bindings": {},
+                    "preset_id": None,
+                },
+                "blend": "replace",
+                "opacity": 1.0,
+                "transform": {},
+                "adjust": {},
+                "enabled": True,
+            }
+        ],
     }
 
 
@@ -325,142 +354,11 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_get_active_effect_returns_none_on_404(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
-        return_value=httpx.Response(
-            404,
-            content=msgspec.json.encode(
-                {
-                    "error": {
-                        "code": "not_found",
-                        "message": "No effect is active",
-                        "details": {},
-                    },
-                    "meta": {
-                        "api_version": "1.0",
-                        "request_id": "req_404",
-                        "timestamp": "2026-03-08T00:00:00Z",
-                    },
-                }
-            ),
-        )
-    )
-
-    assert await client.get_active_effect() is None
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_returns_none_on_idle_payload(
-    client: HypercolorClient,
-) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "id": None,
-                    "name": None,
-                    "state": "idle",
-                    "controls": [],
-                    "control_values": {},
-                }
-            ),
-        )
-    )
-
-    assert await client.get_active_effect() is None
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_decodes_live_state(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "id": "aurora",
-                    "name": "Aurora",
-                    "state": "running",
-                    "controls": [
-                        {
-                            "id": "speed",
-                            "name": "Speed",
-                            "control_type": "slider",
-                            "min": 0,
-                            "max": 100,
-                            "step": 1,
-                            "default_value": {"integer": 40},
-                        }
-                    ],
-                    "control_values": {"speed": {"integer": 72}},
-                    "active_preset_id": "preset_night",
-                    "active_preset_modified": True,
-                    "cover_image_url": "/api/v1/effects/aurora/cover",
-                }
-            ),
-        )
-    )
-
-    effect = await client.get_active_effect()
-
-    assert isinstance(effect, ActiveEffect)
-    assert effect.state == "running"
-    assert effect.control_values["speed"] == 72
-    assert effect.active_preset_id == "preset_night"
-    assert effect.active_preset_modified is True
-    assert effect.controls[0].label == "Speed"
-    assert effect.controls[0].type == "number"
-    assert effect.controls[0].default == 40
-    assert effect.cover_image_url == "/api/v1/effects/aurora/cover"
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_active_effect_cover_image_url_is_absolute(client: HypercolorClient) -> None:
-    assert (
-        client.active_effect_cover_image_url()
-        == "http://hyperia.test:9420/api/v1/effects/active/cover"
-    )
+async def test_effect_cover_image_url_is_absolute(client: HypercolorClient) -> None:
     assert (
         client.effect_cover_image_url("aurora/main")
         == "http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/cover"
     )
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_cover_image_returns_binary_payload(
-    client: HypercolorClient,
-) -> None:
-    image = b"RIFFhypercolor-webp"
-    respx.get("http://hyperia.test:9420/api/v1/effects/active/cover").mock(
-        return_value=httpx.Response(
-            200,
-            content=image,
-            headers={"content-type": "image/webp"},
-        )
-    )
-
-    cover = await client.get_active_effect_cover_image()
-
-    assert cover is not None
-    assert cover.data == image
-    assert cover.content_type == "image/webp"
-    assert cover.url == "http://hyperia.test:9420/api/v1/effects/active/cover"
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_cover_image_returns_none_on_404(
-    client: HypercolorClient,
-) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active/cover").mock(
-        return_value=httpx.Response(404, content=_error("No effect is active")),
-    )
-
-    assert await client.get_active_effect_cover_image() is None
 
 
 @respx.mock
@@ -471,27 +369,29 @@ async def test_apply_effect(client: HypercolorClient) -> None:
             200,
             content=_envelope(
                 {
-                    "effect": {"id": "aurora/main", "name": "Aurora"},
-                    "applied_controls": {"effectSpeed": 70},
-                    "layout": {
-                        "associated_layout_id": "desk",
-                        "resolved": True,
-                        "applied": True,
-                    },
-                    "transition": {"type": "cut", "duration_ms": 0},
+                    "zone": _applied_zone("aurora/main"),
+                    "transition": {"type": "cut"},
+                    "output": {"applied": True},
                 }
             ),
         )
     )
 
-    result = await client.apply_effect("aurora/main", controls={"effectSpeed": 70})
+    result = await client.apply_effect(
+        "aurora/main",
+        controls={"effectSpeed": 70},
+        transition="cut",
+        if_match=7,
+    )
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {"controls": {"effectSpeed": 70}}
-    assert result.effect.name == "Aurora"
-    assert result.applied_controls["effectSpeed"] == 70
-    assert result.layout is not None
-    assert result.layout["associated_layout_id"] == "desk"
+    assert json.loads(route.calls[0].request.content) == {
+        "controls": {"effectSpeed": {"integer": 70}},
+        "transition": {"type": "cut"},
+    }
+    assert route.calls[0].request.headers["if-match"] == '"7"'
+    assert result.zone.layers[0].source["effect_id"] == "aurora/main"
+    assert result.output.applied is True
 
 
 @respx.mock
@@ -502,10 +402,9 @@ async def test_apply_effect_omits_empty_body(client: HypercolorClient) -> None:
             200,
             content=_envelope(
                 {
-                    "effect": {"id": "aurora", "name": "Aurora"},
-                    "applied_controls": {},
-                    "layout": {"resolved": False, "applied": False},
-                    "transition": {"type": "cut", "duration_ms": 0},
+                    "zone": _applied_zone(),
+                    "transition": {"type": "cut"},
+                    "output": {"applied": True},
                 }
             ),
         )
@@ -516,7 +415,7 @@ async def test_apply_effect_omits_empty_body(client: HypercolorClient) -> None:
     assert route.called
     assert route.calls[0].request.content == b""
     assert "content-type" not in route.calls[0].request.headers
-    assert result.effect.id == "aurora"
+    assert result.zone.layers[0].source["effect_id"] == "aurora"
 
 
 @respx.mock
@@ -563,9 +462,9 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
             200,
             content=_envelope(
                 {
-                    "effect": {"id": "aurora/main", "name": "Aurora"},
-                    "applied_controls": {"speed": 0.4},
-                    "transition": {"type": "cut", "duration_ms": 0},
+                    "zone": _applied_zone("aurora/main"),
+                    "transition": {"type": "cut"},
+                    "output": {"applied": True},
                 }
             ),
         )
@@ -575,7 +474,8 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     result = await client.apply_effect_preset(
         "aurora/main",
         "bundled-calm",
-        zone_id="zone-left",
+        zone="zone-left",
+        if_match=9,
     )
 
     assert list_route.called
@@ -583,8 +483,9 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
     assert presets[0].editable is False
     assert presets[1].origin is EffectPresetOrigin.SAVED
     assert presets[1].editable is True
-    assert json.loads(apply_route.calls[0].request.content) == {"zone_id": "zone-left"}
-    assert result.effect.id == "aurora/main"
+    assert json.loads(apply_route.calls[0].request.content) == {"zone": "zone-left"}
+    assert apply_route.calls[0].request.headers["if-match"] == '"9"'
+    assert result.zone.layers[0].source["effect_id"] == "aurora/main"
 
 
 @respx.mock
@@ -683,22 +584,6 @@ async def test_discover_devices_omits_empty_body(client: HypercolorClient) -> No
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_stop_effect_uses_generated_route(client: HypercolorClient) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/effects/stop").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope({"stopped": True}),
-        )
-    )
-
-    result = await client.stop_effect()
-
-    assert route.called
-    assert result.stopped is True
-
-
-@respx.mock
-@pytest.mark.asyncio
 async def test_pause_and_resume_preserve_effect_state(client: HypercolorClient) -> None:
     route = respx.patch("http://hyperia.test:9420/api/v1/output").mock(
         side_effect=[
@@ -790,52 +675,34 @@ async def test_get_effect_raises_not_found(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_update_controls_wraps_controls_payload(client: HypercolorClient) -> None:
-    route = respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
+async def test_patch_layer_controls_addresses_real_layer(client: HypercolorClient) -> None:
+    zone = "0193d2c0-0000-7000-8000-000000000001"
+    layer = "0193d2c0-0000-7000-8000-000000000002"
+    route = respx.patch(
+        f"http://hyperia.test:9420/api/v1/scene/zones/{zone}/layers/{layer}/controls"
+    ).mock(
         return_value=httpx.Response(
             200,
-            content=_envelope(
-                {
-                    "effect": "Aurora",
-                    "applied": {"speed": 80},
-                    "rejected": [],
-                }
-            ),
+            content=_envelope(_applied_zone()),
         )
     )
 
-    result = await client.update_controls({"speed": 80})
+    result = await client.patch_layer_controls(
+        zone,
+        layer,
+        {"speed": 80, "tint": "#8040ff"},
+        clear_bindings=["speed"],
+    )
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {"controls": {"speed": 80}}
-    assert result.applied["speed"] == 80
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_update_controls_raises_validation_error(client: HypercolorClient) -> None:
-    respx.patch("http://hyperia.test:9420/api/v1/effects/active/controls").mock(
-        return_value=httpx.Response(
-            422,
-            content=msgspec.json.encode(
-                {
-                    "error": {
-                        "code": "validation_error",
-                        "message": "Bad control value",
-                        "details": {"control": "effectSpeed"},
-                    },
-                    "meta": {
-                        "api_version": "1.0",
-                        "request_id": "req_bad",
-                        "timestamp": "2026-03-08T00:00:00Z",
-                    },
-                }
-            ),
-        )
-    )
-
-    with pytest.raises(HypercolorValidationError):
-        await client.update_controls({"effectSpeed": 200})
+    assert json.loads(route.calls[0].request.content) == {
+        "values": {
+            "speed": {"integer": 80},
+            "tint": {"color": [128 / 255, 64 / 255, 1.0, 1.0]},
+        },
+        "clear_bindings": ["speed"],
+    }
+    assert result.layers[0].id
 
 
 @respx.mock
@@ -1135,20 +1002,6 @@ async def test_library_helpers(client: HypercolorClient) -> None:
             ),
         )
     )
-    respx.post("http://hyperia.test:9420/api/v1/library/presets/preset-b/apply").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "preset": {"id": "preset-b", "name": "Aurora Bright"},
-                    "effect": {"id": "aurora", "name": "Aurora"},
-                    "applied_controls": {"speed": 64},
-                    "rejected_controls": [],
-                    "warnings": [],
-                }
-            ),
-        )
-    )
     respx.delete("http://hyperia.test:9420/api/v1/library/presets/preset-b").mock(
         return_value=httpx.Response(200, content=_envelope({"id": "preset-b", "deleted": True}))
     )
@@ -1161,7 +1014,6 @@ async def test_library_helpers(client: HypercolorClient) -> None:
         controls={"speed": 64},
         tags=["bright"],
     )
-    applied = await client.apply_preset("preset-b")
     deleted = await client.delete_preset("preset-b")
 
     assert presets[0].name == "Aurora Soft"
@@ -1173,7 +1025,6 @@ async def test_library_helpers(client: HypercolorClient) -> None:
         "tags": ["bright"],
     }
     assert created.id == "preset-b"
-    assert applied.effect.id == "aurora"
     assert deleted == {"id": "preset-b", "deleted": True}
 
 

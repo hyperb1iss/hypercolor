@@ -34,38 +34,32 @@ from .driver import (
     TransportKind,
 )
 from .effect import (
-    ActiveEffect,
-    ApplyEffectResult,
+    ApplyEffectResponse,
     ControlDefinition,
-    ControlUpdateResult,
     Effect,
     EffectCoverImage,
     EffectPreset,
     EffectPresetOrigin,
     EffectSummary,
+    SideEffectOutcome,
 )
 from .layout import Layout, LayoutSummary
 from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
 from .profile import ApplyProfileResult, Profile, ProfileSummary
-from .scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
+from .scene import ActivateSceneResult, Scene, SceneDocument
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
 from .system import HealthStatus, OutputState, RenderLoopStatus, ServerIdentity, SystemState
 from .zone import (
     DisplayTarget,
     SceneLayer,
-    UnassignedBehaviorResult,
     Zone,
-    ZoneDeleteResult,
-    ZoneListResult,
-    ZoneResult,
+    ZoneMember,
 )
 
 __all__ = [
     "ActivateSceneResult",
-    "ActiveEffect",
-    "ActiveScene",
     "ApiErrorBody",
-    "ApplyEffectResult",
+    "ApplyEffectResponse",
     "ApplyProfileResult",
     "AttachmentTemplate",
     "AudioDeviceInfo",
@@ -77,8 +71,6 @@ __all__ = [
     "ControlApplyResult",
     "ControlDefinition",
     "ControlSurface",
-    "ControlUpdateResult",
-    "DeactivateSceneResult",
     "Device",
     "DeviceUpdate",
     "DeviceZone",
@@ -119,16 +111,15 @@ __all__ = [
     "ProfileSummary",
     "RenderLoopStatus",
     "Scene",
+    "SceneDocument",
     "SceneLayer",
     "ServerIdentity",
+    "SideEffectOutcome",
     "SpatialLayout",
     "SpectrumSnapshot",
     "SystemState",
     "TransitionSpec",
     "TransportKind",
-    "UnassignedBehaviorResult",
     "Zone",
-    "ZoneDeleteResult",
-    "ZoneListResult",
-    "ZoneResult",
+    "ZoneMember",
 ]
