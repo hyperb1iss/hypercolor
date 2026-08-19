@@ -1534,27 +1534,27 @@ async fn system_returns_identity_and_status_with_envelope() {
         "request_id should start with req_"
     );
     assert_eq!(
-        json["data"]["config_path"],
+        json["data"]["status"]["config_path"],
         serde_json::json!(default_config_path())
     );
     assert!(
-        json["data"]["data_dir"]
+        json["data"]["status"]["data_dir"]
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "data_dir should be a non-empty string"
     );
     assert!(
-        json["data"]["cache_dir"]
+        json["data"]["status"]["cache_dir"]
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "cache_dir should be a non-empty string"
     );
     assert!(
-        json["data"]["audio_available"].is_boolean(),
+        json["data"]["status"]["audio_available"].is_boolean(),
         "audio_available should be a bool"
     );
     assert_eq!(
-        json["data"]["capture_available"],
+        json["data"]["status"]["capture_available"],
         serde_json::json!(
             cfg!(target_os = "windows")
                 || (cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some())
