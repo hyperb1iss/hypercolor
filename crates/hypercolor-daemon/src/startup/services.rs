@@ -259,10 +259,47 @@ impl DaemonState {
             version: 1,
         };
 
+        // ── Layout Store ─────────────────────────────────────────────
+        let layouts_path = ConfigManager::data_dir().join("layouts.json");
+        let mut persisted_layouts = match crate::layout_store::load(&layouts_path) {
+            Ok(entries) => entries,
+            Err(error) => {
+                warn!(
+                    path = %layouts_path.display(),
+                    %error,
+                    "Failed to load persisted layouts; starting with empty store"
+                );
+                HashMap::new()
+            }
+        };
+        if crate::layout_store::ensure_default_layout(&mut persisted_layouts, &default_layout) {
+            if let Err(error) = crate::layout_store::save(&layouts_path, &persisted_layouts) {
+                warn!(
+                    path = %layouts_path.display(),
+                    %error,
+                    "Failed to persist inserted default layout"
+                );
+            } else {
+                info!(
+                    path = %layouts_path.display(),
+                    "Inserted missing default layout into persisted layout store"
+                );
+            }
+        }
+
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
-        let scene_store_inner = match SceneStore::load(&scenes_path) {
+        let profiles_path = ConfigManager::data_dir().join("profiles.json");
+        let mut scene_store_inner = match SceneStore::load(&scenes_path) {
             Ok(store) => store,
+            Err(error) if profiles_path.exists() => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to load scenes before importing {}",
+                        profiles_path.display()
+                    )
+                });
+            }
             Err(error) => {
                 warn!(
                     path = %scenes_path.display(),
@@ -274,6 +311,19 @@ impl DaemonState {
                     .context("failed to prepare empty scene persistence")?
             }
         };
+        match crate::profile_import::import_profiles(
+            &profiles_path,
+            &mut scene_store_inner,
+            &persisted_layouts,
+            &default_layout,
+        )
+        .context("failed to import legacy profiles")?
+        {
+            crate::profile_import::ProfileImportOutcome::NoSource => {}
+            crate::profile_import::ProfileImportOutcome::Imported { profiles, backup } => {
+                info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
+            }
+        }
         let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store_inner.list().cloned() {
             if let Err(error) = scene_manager_inner.create(scene) {
@@ -477,33 +527,6 @@ impl DaemonState {
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         info!("Simulated display store ready");
 
-        // ── Layout Store ─────────────────────────────────────────────
-        let layouts_path = ConfigManager::data_dir().join("layouts.json");
-        let mut persisted_layouts = match crate::layout_store::load(&layouts_path) {
-            Ok(entries) => entries,
-            Err(error) => {
-                warn!(
-                    path = %layouts_path.display(),
-                    %error,
-                    "Failed to load persisted layouts; starting with empty store"
-                );
-                HashMap::new()
-            }
-        };
-        if crate::layout_store::ensure_default_layout(&mut persisted_layouts, &default_layout) {
-            if let Err(error) = crate::layout_store::save(&layouts_path, &persisted_layouts) {
-                warn!(
-                    path = %layouts_path.display(),
-                    %error,
-                    "Failed to persist inserted default layout"
-                );
-            } else {
-                info!(
-                    path = %layouts_path.display(),
-                    "Inserted missing default layout into persisted layout store"
-                );
-            }
-        }
         let layout_count = persisted_layouts.len();
         let layouts = Arc::new(RwLock::new(persisted_layouts));
         info!(
