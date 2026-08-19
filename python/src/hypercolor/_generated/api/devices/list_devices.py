@@ -18,6 +18,7 @@ def _get_kwargs(
     backend_id: str | Unset = UNSET,
     driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
+    include: str | Unset = UNSET,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
@@ -33,6 +34,8 @@ def _get_kwargs(
     params["driver"] = driver
 
     params["q"] = q
+
+    params["include"] = include
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -84,6 +87,7 @@ def sync_detailed(
     backend_id: str | Unset = UNSET,
     driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
+    include: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ApiResponseDeviceListResponse]:
     """`GET /api/v1/devices` — List all tracked devices.
 
@@ -94,6 +98,7 @@ def sync_detailed(
         backend_id (str | Unset):
         driver (str | Unset):
         q (str | Unset):
+        include (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -110,6 +115,7 @@ def sync_detailed(
         backend_id=backend_id,
         driver=driver,
         q=q,
+        include=include,
     )
 
     response = client.get_httpx_client().request(
@@ -128,6 +134,7 @@ def sync(
     backend_id: str | Unset = UNSET,
     driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
+    include: str | Unset = UNSET,
 ) -> ApiErrorBody | ApiResponseDeviceListResponse | None:
     """`GET /api/v1/devices` — List all tracked devices.
 
@@ -138,6 +145,7 @@ def sync(
         backend_id (str | Unset):
         driver (str | Unset):
         q (str | Unset):
+        include (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -155,6 +163,7 @@ def sync(
         backend_id=backend_id,
         driver=driver,
         q=q,
+        include=include,
     ).parsed
 
 
@@ -167,6 +176,7 @@ async def asyncio_detailed(
     backend_id: str | Unset = UNSET,
     driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
+    include: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ApiResponseDeviceListResponse]:
     """`GET /api/v1/devices` — List all tracked devices.
 
@@ -177,6 +187,7 @@ async def asyncio_detailed(
         backend_id (str | Unset):
         driver (str | Unset):
         q (str | Unset):
+        include (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -193,6 +204,7 @@ async def asyncio_detailed(
         backend_id=backend_id,
         driver=driver,
         q=q,
+        include=include,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -209,6 +221,7 @@ async def asyncio(
     backend_id: str | Unset = UNSET,
     driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
+    include: str | Unset = UNSET,
 ) -> ApiErrorBody | ApiResponseDeviceListResponse | None:
     """`GET /api/v1/devices` — List all tracked devices.
 
@@ -219,6 +232,7 @@ async def asyncio(
         backend_id (str | Unset):
         driver (str | Unset):
         q (str | Unset):
+        include (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -237,5 +251,6 @@ async def asyncio(
             backend_id=backend_id,
             driver=driver,
             q=q,
+            include=include,
         )
     ).parsed

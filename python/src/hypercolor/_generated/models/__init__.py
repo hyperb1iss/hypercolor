@@ -41,10 +41,6 @@ from .api_response_control_surface_list_response import (
 from .api_response_control_surface_list_response_data import (
     ApiResponseControlSurfaceListResponseData,
 )
-from .api_response_device_bindings_response import ApiResponseDeviceBindingsResponse
-from .api_response_device_bindings_response_data import (
-    ApiResponseDeviceBindingsResponseData,
-)
 from .api_response_device_list_response import ApiResponseDeviceListResponse
 from .api_response_device_list_response_data import ApiResponseDeviceListResponseData
 from .api_response_device_summary import ApiResponseDeviceSummary
@@ -69,14 +65,8 @@ from .api_response_effect_preset_list_response_data import (
 )
 from .api_response_output_resource import ApiResponseOutputResource
 from .api_response_output_resource_data import ApiResponseOutputResourceData
-from .api_response_rebind_device_response import ApiResponseRebindDeviceResponse
-from .api_response_rebind_device_response_data import (
-    ApiResponseRebindDeviceResponseData,
-)
-from .api_response_server_info import ApiResponseServerInfo
-from .api_response_server_info_data import ApiResponseServerInfoData
-from .api_response_system_status import ApiResponseSystemStatus
-from .api_response_system_status_data import ApiResponseSystemStatusData
+from .api_response_system_resource import ApiResponseSystemResource
+from .api_response_system_resource_data import ApiResponseSystemResourceData
 from .api_response_vec_capture_monitor import ApiResponseVecCaptureMonitor
 from .api_response_vec_capture_monitor_data_item import (
     ApiResponseVecCaptureMonitorDataItem,
@@ -109,6 +99,21 @@ from .b_tree_map_additional_property import BTreeMapAdditionalProperty
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
 from .capture_picker_response import CapturePickerResponse
+from .component_binding_summary import ComponentBindingSummary
+from .component_canvas_size import ComponentCanvasSize
+from .component_category_type_0 import ComponentCategoryType0
+from .component_category_type_1 import ComponentCategoryType1
+from .component_category_type_2 import ComponentCategoryType2
+from .component_category_type_3 import ComponentCategoryType3
+from .component_category_type_4 import ComponentCategoryType4
+from .component_category_type_5 import ComponentCategoryType5
+from .component_category_type_6 import ComponentCategoryType6
+from .component_category_type_7 import ComponentCategoryType7
+from .component_category_type_8 import ComponentCategoryType8
+from .component_category_type_9 import ComponentCategoryType9
+from .component_category_type_10 import ComponentCategoryType10
+from .component_slot import ComponentSlot
+from .component_suggested_zone import ComponentSuggestedZone
 from .config_key_schema_entry import ConfigKeySchemaEntry
 from .config_mutation_response import ConfigMutationResponse
 from .control_access import ControlAccess
@@ -173,6 +178,7 @@ from .corner import Corner
 from .device_auth_state import DeviceAuthState
 from .device_auth_summary import DeviceAuthSummary
 from .device_class_hint import DeviceClassHint
+from .device_components_response import DeviceComponentsResponse
 from .device_connection_summary import DeviceConnectionSummary
 from .device_list_response import DeviceListResponse
 from .device_origin import DeviceOrigin
@@ -282,8 +288,6 @@ from .preview_demand_status import PreviewDemandStatus
 from .preview_runtime_status import PreviewRuntimeStatus
 from .preview_source import PreviewSource
 from .protected_source_grant_owner import ProtectedSourceGrantOwner
-from .rebind_candidate_summary import RebindCandidateSummary
-from .rebind_device_request import RebindDeviceRequest
 from .redaction import Redaction
 from .rejected_control_change import RejectedControlChange
 from .rejected_control_change_attempted_value import RejectedControlChangeAttemptedValue
@@ -303,14 +307,27 @@ from .sampling_mode_type_2_type import SamplingModeType2Type
 from .sampling_mode_type_3 import SamplingModeType3
 from .sampling_mode_type_3_type import SamplingModeType3Type
 from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
+from .segment_summary import SegmentSummary
+from .segment_topology_summary_type_0 import SegmentTopologySummaryType0
+from .segment_topology_summary_type_0_type import SegmentTopologySummaryType0Type
+from .segment_topology_summary_type_1 import SegmentTopologySummaryType1
+from .segment_topology_summary_type_1_type import SegmentTopologySummaryType1Type
+from .segment_topology_summary_type_2 import SegmentTopologySummaryType2
+from .segment_topology_summary_type_2_type import SegmentTopologySummaryType2Type
+from .segment_topology_summary_type_3 import SegmentTopologySummaryType3
+from .segment_topology_summary_type_3_type import SegmentTopologySummaryType3Type
+from .segment_topology_summary_type_4 import SegmentTopologySummaryType4
+from .segment_topology_summary_type_4_type import SegmentTopologySummaryType4Type
+from .segment_topology_summary_type_5 import SegmentTopologySummaryType5
+from .segment_topology_summary_type_5_type import SegmentTopologySummaryType5Type
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
 from .session_performance_status import SessionPerformanceStatus
 from .space_definition import SpaceDefinition
 from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
+from .system_resource import SystemResource
 from .system_status import SystemStatus
-from .unresolved_binding_summary import UnresolvedBindingSummary
 from .update_device_request import UpdateDeviceRequest
 from .viewport_rect import ViewportRect
 from .wall import Wall
@@ -323,19 +340,6 @@ from .zone_shape_type_2 import ZoneShapeType2
 from .zone_shape_type_2_shape_type import ZoneShapeType2ShapeType
 from .zone_shape_type_3 import ZoneShapeType3
 from .zone_shape_type_3_shape_type import ZoneShapeType3ShapeType
-from .zone_summary import ZoneSummary
-from .zone_topology_summary_type_0 import ZoneTopologySummaryType0
-from .zone_topology_summary_type_0_type import ZoneTopologySummaryType0Type
-from .zone_topology_summary_type_1 import ZoneTopologySummaryType1
-from .zone_topology_summary_type_1_type import ZoneTopologySummaryType1Type
-from .zone_topology_summary_type_2 import ZoneTopologySummaryType2
-from .zone_topology_summary_type_2_type import ZoneTopologySummaryType2Type
-from .zone_topology_summary_type_3 import ZoneTopologySummaryType3
-from .zone_topology_summary_type_3_type import ZoneTopologySummaryType3Type
-from .zone_topology_summary_type_4 import ZoneTopologySummaryType4
-from .zone_topology_summary_type_4_type import ZoneTopologySummaryType4Type
-from .zone_topology_summary_type_5 import ZoneTopologySummaryType5
-from .zone_topology_summary_type_5_type import ZoneTopologySummaryType5Type
 
 __all__ = (
     "ActionConfirmation",
@@ -357,8 +361,6 @@ __all__ = (
     "ApiResponseControlSurfaceDocumentDataValues",
     "ApiResponseControlSurfaceListResponse",
     "ApiResponseControlSurfaceListResponseData",
-    "ApiResponseDeviceBindingsResponse",
-    "ApiResponseDeviceBindingsResponseData",
     "ApiResponseDeviceListResponse",
     "ApiResponseDeviceListResponseData",
     "ApiResponseDeviceSummary",
@@ -375,12 +377,8 @@ __all__ = (
     "ApiResponseEffectPresetListResponseData",
     "ApiResponseOutputResource",
     "ApiResponseOutputResourceData",
-    "ApiResponseRebindDeviceResponse",
-    "ApiResponseRebindDeviceResponseData",
-    "ApiResponseServerInfo",
-    "ApiResponseServerInfoData",
-    "ApiResponseSystemStatus",
-    "ApiResponseSystemStatusData",
+    "ApiResponseSystemResource",
+    "ApiResponseSystemResourceData",
     "ApiResponseVecCaptureMonitor",
     "ApiResponseVecCaptureMonitorDataItem",
     "AppliedControlChange",
@@ -411,6 +409,21 @@ __all__ = (
     "CaptureAuthorizationResponse",
     "CaptureMonitor",
     "CapturePickerResponse",
+    "ComponentBindingSummary",
+    "ComponentCanvasSize",
+    "ComponentCategoryType0",
+    "ComponentCategoryType1",
+    "ComponentCategoryType10",
+    "ComponentCategoryType2",
+    "ComponentCategoryType3",
+    "ComponentCategoryType4",
+    "ComponentCategoryType5",
+    "ComponentCategoryType6",
+    "ComponentCategoryType7",
+    "ComponentCategoryType8",
+    "ComponentCategoryType9",
+    "ComponentSlot",
+    "ComponentSuggestedZone",
     "ConfigKeySchemaEntry",
     "ConfigMutationResponse",
     "ControlAccess",
@@ -469,6 +482,7 @@ __all__ = (
     "DeviceAuthState",
     "DeviceAuthSummary",
     "DeviceClassHint",
+    "DeviceComponentsResponse",
     "DeviceConnectionSummary",
     "DeviceListResponse",
     "DeviceOrigin",
@@ -574,8 +588,6 @@ __all__ = (
     "PreviewRuntimeStatus",
     "PreviewSource",
     "ProtectedSourceGrantOwner",
-    "RebindCandidateSummary",
-    "RebindDeviceRequest",
     "Redaction",
     "RejectedControlChange",
     "RejectedControlChangeAttemptedValue",
@@ -595,14 +607,27 @@ __all__ = (
     "SamplingModeType3",
     "SamplingModeType3Type",
     "ScreenCaptureCapacityStatus",
+    "SegmentSummary",
+    "SegmentTopologySummaryType0",
+    "SegmentTopologySummaryType0Type",
+    "SegmentTopologySummaryType1",
+    "SegmentTopologySummaryType1Type",
+    "SegmentTopologySummaryType2",
+    "SegmentTopologySummaryType2Type",
+    "SegmentTopologySummaryType3",
+    "SegmentTopologySummaryType3Type",
+    "SegmentTopologySummaryType4",
+    "SegmentTopologySummaryType4Type",
+    "SegmentTopologySummaryType5",
+    "SegmentTopologySummaryType5Type",
     "ServerIdentity",
     "ServerInfo",
     "SessionPerformanceStatus",
     "SpaceDefinition",
     "SpatialLayout",
     "StripDirection",
+    "SystemResource",
     "SystemStatus",
-    "UnresolvedBindingSummary",
     "UpdateDeviceRequest",
     "ViewportRect",
     "Wall",
@@ -615,17 +640,4 @@ __all__ = (
     "ZoneShapeType2ShapeType",
     "ZoneShapeType3",
     "ZoneShapeType3ShapeType",
-    "ZoneSummary",
-    "ZoneTopologySummaryType0",
-    "ZoneTopologySummaryType0Type",
-    "ZoneTopologySummaryType1",
-    "ZoneTopologySummaryType1Type",
-    "ZoneTopologySummaryType2",
-    "ZoneTopologySummaryType2Type",
-    "ZoneTopologySummaryType3",
-    "ZoneTopologySummaryType3Type",
-    "ZoneTopologySummaryType4",
-    "ZoneTopologySummaryType4Type",
-    "ZoneTopologySummaryType5",
-    "ZoneTopologySummaryType5Type",
 )

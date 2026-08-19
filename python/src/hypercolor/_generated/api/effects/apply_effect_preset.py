@@ -11,14 +11,14 @@ from ...types import Response
 
 def _get_kwargs(
     id: str,
-    preset_id: str,
+    preset: str,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/api/v1/effects/{id}/presets/{preset_id}/apply".format(
+        "url": "/api/v1/effects/{id}/presets/{preset}/apply".format(
             id=quote(str(id), safe=""),
-            preset_id=quote(str(preset_id), safe=""),
+            preset=quote(str(preset), safe=""),
         ),
     }
 
@@ -68,7 +68,7 @@ def _build_response(
 
 def sync_detailed(
     id: str,
-    preset_id: str,
+    preset: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
@@ -76,7 +76,7 @@ def sync_detailed(
 
     Args:
         id (str):
-        preset_id (str):
+        preset (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -88,7 +88,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        preset_id=preset_id,
+        preset=preset,
     )
 
     response = client.get_httpx_client().request(
@@ -100,7 +100,7 @@ def sync_detailed(
 
 async def asyncio_detailed(
     id: str,
-    preset_id: str,
+    preset: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
@@ -108,7 +108,7 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        preset_id (str):
+        preset (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,7 +120,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        preset_id=preset_id,
+        preset=preset,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)

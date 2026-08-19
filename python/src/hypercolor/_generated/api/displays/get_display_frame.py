@@ -11,14 +11,12 @@ from ...types import Response
 
 def _get_kwargs(
     id: str,
-    slot: str,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
-        "method": "post",
-        "url": "/api/v1/devices/{id}/attachments/{slot}/identify".format(
+        "method": "get",
+        "url": "/api/v1/displays/{id}/frame".format(
             id=quote(str(id), safe=""),
-            slot=quote(str(slot), safe=""),
         ),
     }
 
@@ -68,15 +66,13 @@ def _build_response(
 
 def sync_detailed(
     id: str,
-    slot: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Identify one attachment
+    """Get display preview image
 
     Args:
         id (str):
-        slot (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -88,7 +84,6 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        slot=slot,
     )
 
     response = client.get_httpx_client().request(
@@ -100,15 +95,13 @@ def sync_detailed(
 
 async def asyncio_detailed(
     id: str,
-    slot: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Identify one attachment
+    """Get display preview image
 
     Args:
         id (str):
-        slot (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,7 +113,6 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        slot=slot,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)

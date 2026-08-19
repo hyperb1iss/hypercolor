@@ -11,7 +11,7 @@ from ...types import Response
 
 
 def _get_kwargs(
-    surface_id: str,
+    id: str,
     *,
     body: ApplyControlChangesRequest,
 ) -> dict[str, Any]:
@@ -19,8 +19,8 @@ def _get_kwargs(
 
     _kwargs: dict[str, Any] = {
         "method": "patch",
-        "url": "/api/v1/control-surfaces/{surface_id}/values".format(
-            surface_id=quote(str(surface_id), safe=""),
+        "url": "/api/v1/control-surfaces/{id}/values".format(
+            id=quote(str(id), safe=""),
         ),
     }
 
@@ -74,7 +74,7 @@ def _build_response(
 
 
 def sync_detailed(
-    surface_id: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
     body: ApplyControlChangesRequest,
@@ -82,7 +82,7 @@ def sync_detailed(
     """Apply control surface values
 
     Args:
-        surface_id (str):
+        id (str):
         body (ApplyControlChangesRequest): Request to apply one or more control changes.
 
     Raises:
@@ -94,7 +94,7 @@ def sync_detailed(
     """
 
     kwargs = _get_kwargs(
-        surface_id=surface_id,
+        id=id,
         body=body,
     )
 
@@ -106,7 +106,7 @@ def sync_detailed(
 
 
 async def asyncio_detailed(
-    surface_id: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
     body: ApplyControlChangesRequest,
@@ -114,7 +114,7 @@ async def asyncio_detailed(
     """Apply control surface values
 
     Args:
-        surface_id (str):
+        id (str):
         body (ApplyControlChangesRequest): Request to apply one or more control changes.
 
     Raises:
@@ -126,7 +126,7 @@ async def asyncio_detailed(
     """
 
     kwargs = _get_kwargs(
-        surface_id=surface_id,
+        id=id,
         body=body,
     )
 

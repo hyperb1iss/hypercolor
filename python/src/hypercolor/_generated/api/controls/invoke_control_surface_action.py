@@ -11,8 +11,8 @@ from ...types import Response
 
 
 def _get_kwargs(
-    surface_id: str,
-    action_id: str,
+    id: str,
+    action: str,
     *,
     body: InvokeControlActionRequest,
 ) -> dict[str, Any]:
@@ -20,9 +20,9 @@ def _get_kwargs(
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/api/v1/control-surfaces/{surface_id}/actions/{action_id}".format(
-            surface_id=quote(str(surface_id), safe=""),
-            action_id=quote(str(action_id), safe=""),
+        "url": "/api/v1/control-surfaces/{id}/actions/{action}".format(
+            id=quote(str(id), safe=""),
+            action=quote(str(action), safe=""),
         ),
     }
 
@@ -76,8 +76,8 @@ def _build_response(
 
 
 def sync_detailed(
-    surface_id: str,
-    action_id: str,
+    id: str,
+    action: str,
     *,
     client: AuthenticatedClient | Client,
     body: InvokeControlActionRequest,
@@ -85,8 +85,8 @@ def sync_detailed(
     """Invoke control surface action
 
     Args:
-        surface_id (str):
-        action_id (str):
+        id (str):
+        action (str):
         body (InvokeControlActionRequest): Request body for
             `POST /api/v1/control-surfaces/{surface_id}/actions/{action_id}`.
 
@@ -99,8 +99,8 @@ def sync_detailed(
     """
 
     kwargs = _get_kwargs(
-        surface_id=surface_id,
-        action_id=action_id,
+        id=id,
+        action=action,
         body=body,
     )
 
@@ -112,8 +112,8 @@ def sync_detailed(
 
 
 async def asyncio_detailed(
-    surface_id: str,
-    action_id: str,
+    id: str,
+    action: str,
     *,
     client: AuthenticatedClient | Client,
     body: InvokeControlActionRequest,
@@ -121,8 +121,8 @@ async def asyncio_detailed(
     """Invoke control surface action
 
     Args:
-        surface_id (str):
-        action_id (str):
+        id (str):
+        action (str):
         body (InvokeControlActionRequest): Request body for
             `POST /api/v1/control-surfaces/{surface_id}/actions/{action_id}`.
 
@@ -135,8 +135,8 @@ async def asyncio_detailed(
     """
 
     kwargs = _get_kwargs(
-        surface_id=surface_id,
-        action_id=action_id,
+        id=id,
+        action=action,
         body=body,
     )
 

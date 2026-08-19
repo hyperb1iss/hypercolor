@@ -10,13 +10,13 @@ from ...types import Response
 
 
 def _get_kwargs(
-    surface_id: str,
+    id: str,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "get",
-        "url": "/api/v1/control-surfaces/{surface_id}".format(
-            surface_id=quote(str(surface_id), safe=""),
+        "url": "/api/v1/control-surfaces/{id}".format(
+            id=quote(str(id), safe=""),
         ),
     }
 
@@ -65,14 +65,14 @@ def _build_response(
 
 
 def sync_detailed(
-    surface_id: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
     """Get control surface
 
     Args:
-        surface_id (str):
+        id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -83,7 +83,7 @@ def sync_detailed(
     """
 
     kwargs = _get_kwargs(
-        surface_id=surface_id,
+        id=id,
     )
 
     response = client.get_httpx_client().request(
@@ -94,14 +94,14 @@ def sync_detailed(
 
 
 async def asyncio_detailed(
-    surface_id: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
     """Get control surface
 
     Args:
-        surface_id (str):
+        id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -112,7 +112,7 @@ async def asyncio_detailed(
     """
 
     kwargs = _get_kwargs(
-        surface_id=surface_id,
+        id=id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)

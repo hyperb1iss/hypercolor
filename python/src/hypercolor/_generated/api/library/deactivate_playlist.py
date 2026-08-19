@@ -1,6 +1,5 @@
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
@@ -9,17 +8,11 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response
 
 
-def _get_kwargs(
-    id: str,
-    slot: str,
-) -> dict[str, Any]:
+def _get_kwargs() -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/api/v1/devices/{id}/attachments/{slot}/identify".format(
-            id=quote(str(id), safe=""),
-            slot=quote(str(slot), safe=""),
-        ),
+        "url": "/api/v1/library/playlists/deactivate",
     }
 
     return _kwargs
@@ -67,16 +60,10 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
-    slot: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Identify one attachment
-
-    Args:
-        id (str):
-        slot (str):
+    """Deactivate playlist
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -86,10 +73,7 @@ def sync_detailed(
         Response[Any]
     """
 
-    kwargs = _get_kwargs(
-        id=id,
-        slot=slot,
-    )
+    kwargs = _get_kwargs()
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -99,16 +83,10 @@ def sync_detailed(
 
 
 async def asyncio_detailed(
-    id: str,
-    slot: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
-    """Identify one attachment
-
-    Args:
-        id (str):
-        slot (str):
+    """Deactivate playlist
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -118,10 +96,7 @@ async def asyncio_detailed(
         Response[Any]
     """
 
-    kwargs = _get_kwargs(
-        id=id,
-        slot=slot,
-    )
+    kwargs = _get_kwargs()
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
