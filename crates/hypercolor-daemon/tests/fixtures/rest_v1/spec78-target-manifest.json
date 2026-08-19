@@ -1,6 +1,6 @@
 {
-  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8)",
-  "_regenerate": "parse the appendix table; this file is target data for the wave-78.5 convergence test, not a live assertion",
+  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8), amended by the Spec 76/77 protected-authorization contract",
+  "_regenerate": "parse the appendix table, then preserve the input and capture authorization actions required by Specs 76 and 77",
   "_scope": "the /api/v1 surface (JSON routes plus the /ws upgrade, matched by path only) and /health; document routes excluded",
   "paths": [
     {
@@ -25,6 +25,12 @@
       "path": "/api/v1/system/audio-devices",
       "methods": [
         "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/input/authorize",
+      "methods": [
+        "POST"
       ]
     },
     {
@@ -504,6 +510,12 @@
       "path": "/api/v1/capture/monitors",
       "methods": [
         "GET"
+      ]
+    },
+    {
+      "path": "/api/v1/capture/authorize",
+      "methods": [
+        "POST"
       ]
     },
     {
