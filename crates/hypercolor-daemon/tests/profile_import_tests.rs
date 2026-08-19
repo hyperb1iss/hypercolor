@@ -193,6 +193,35 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
 }
 
 #[test]
+fn import_accepts_minimal_legacy_profile_and_retires_the_source() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let scenes_path = tempdir.path().join("scenes.json");
+    let profiles_path = tempdir.path().join("profiles.json");
+    let default_layout = sample_layout("default");
+    write_profiles(
+        &profiles_path,
+        [("legacy", json!({ "id": "profile-a", "name": "Desk" }))],
+    );
+    let mut store = SceneStore::new(scenes_path).expect("scene store");
+
+    let outcome = import_profiles(&profiles_path, &mut store, &HashMap::new(), &default_layout)
+        .expect("minimal legacy profile should import");
+
+    let ProfileImportOutcome::Imported { profiles, backup } = outcome else {
+        panic!("profile source should import");
+    };
+    assert_eq!(profiles, 1);
+    assert!(!profiles_path.exists());
+    assert!(backup.exists());
+    let scene = store
+        .list()
+        .find(|scene| scene.name == "Desk")
+        .expect("minimal profile should become a named scene");
+    assert!(scene.description.is_none());
+    assert!(scene.groups.is_empty());
+}
+
+#[test]
 fn import_is_deterministic_and_crash_replay_preserves_destination_name() {
     let tempdir = TempDir::new().expect("tempdir");
     let scenes_path = tempdir.path().join("scenes.json");

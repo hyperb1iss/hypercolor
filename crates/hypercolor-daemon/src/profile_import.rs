@@ -33,8 +33,8 @@ pub enum ProfileImportOutcome {
     Imported { profiles: usize, backup: PathBuf },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct LegacyProfile {
     id: String,
     name: String,
