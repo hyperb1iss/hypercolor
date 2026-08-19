@@ -903,13 +903,28 @@ Implementation:
 - Make each backend a pure ordered producer of neutral raw edges, repeat
   evidence, device identity, motion, scroll, topology generation, and
   state gaps.
+- Keep repeat evidence separate from the final folded state. Backends may
+  report explicit repeat, explicit non-repeat, or unknown repeat evidence.
+  macOS modifier reports carry neutral aggregate-state evidence so the shared
+  fold, rather than the platform backend, resolves left and right held state.
+- Keep device-catalog generation distinct from pointer coordinate-space
+  generation. Device changes update resource identity; coordinate-space
+  changes reset absolute-motion baselines without inventing device churn.
+- Any bounded queue before the fold must turn loss into an ordered,
+  source-scoped state gap before later input. Final folded-event eviction may
+  remain count-only because the fold has already preserved held state.
 - Move Linux evdev discovery, device ownership, and raw event acquisition
   out of core and into `hypercolor-linux-input`. Core must not retain a
   target-gated evdev module after the fold lands.
 - Move held state, repeat classification, release synthesis, epochs, and
   snapshots into one fold with no mutable platform hooks.
 - Unify the interaction consumer catalog now duplicated by pipeline and
-  preview routing.
+  preview routing. Each consumer keeps its own router, cursors, provenance,
+  and synthesized releases while sharing one catalog implementation and one
+  availability fingerprint.
+- Keep exact browser children and the compatibility aggregate outside the
+  host fold. Browser connection lifetime is not an operating-system device
+  lifetime, and the compatibility aggregate remains diagnostic-only.
 
 Verify:
 
