@@ -17,7 +17,9 @@ pub async fn fetch_output() -> Result<OutputResource, String> {
 
 /// Apply a partial output patch.
 pub async fn patch_output(body: &OutputPatchRequest) -> Result<OutputResource, String> {
-    client::patch_json(OUTPUT_PATH, body).await.map_err(Into::into)
+    client::patch_json(OUTPUT_PATH, body)
+        .await
+        .map_err(Into::into)
 }
 
 /// Pause output while preserving the live scene, effects, and controls.

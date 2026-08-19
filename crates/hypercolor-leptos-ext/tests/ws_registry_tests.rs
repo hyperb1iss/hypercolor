@@ -186,6 +186,11 @@ fn only_the_preview_topics_take_a_key() {
         .map(|topic| topic.as_str())
         .collect();
     assert_eq!(keyed, vec!["display_preview", "interactive_preview"]);
+    assert_eq!(TopicId::DisplayPreview.vtable().key_name, Some("device_id"));
+    assert_eq!(
+        TopicId::InteractivePreview.vtable().key_name,
+        Some("preview_id")
+    );
 }
 
 #[test]
@@ -276,7 +281,7 @@ fn configless_topics_refuse_config_in_both_phases() {
 
 #[test]
 fn unknown_config_fields_are_rejected_rather_than_dropped() {
-    let stale = json!({"fps": 30, "format": "binary", "zones": ["all"], "gone": true});
+    let stale = json!({"fps": 30, "zones": ["all"], "gone": true});
     let error = (TopicId::Frames.vtable().apply_patch_json)(&stale, &json!({"fps": 10}))
         .expect_err("a stale config field must fail loudly");
     assert_eq!(error.field, "config");

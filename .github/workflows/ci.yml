@@ -931,6 +931,9 @@ jobs:
         working-directory: .
         run: cargo run -q -p hypercolor-daemon --bin hypercolor-ws-manifest -- --check
 
+      - name: Verify generated WebSocket constants are current
+        run: uv run python scripts/generate_ws_protocol.py --check
+
   # ── Python Package ───────────────────────────────────────────────
   python-build:
     name: Python Package

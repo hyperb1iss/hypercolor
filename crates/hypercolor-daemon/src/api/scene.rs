@@ -586,7 +586,7 @@ fn layer_stack_response(
 
 /// Attach the one wire version so every answer tells the caller what to
 /// send back on its next guarded write.
-fn with_revision(response: Response, revision: u64) -> Response {
+pub(crate) fn with_revision(response: Response, revision: u64) -> Response {
     let mut response = response;
     if let Ok(value) = HeaderValue::from_str(&format!("\"{revision}\"")) {
         response.headers_mut().insert(header::ETAG, value);
@@ -598,7 +598,7 @@ fn with_revision(response: Response, revision: u64) -> Response {
 ///
 /// `*` means "any current state", which is what a caller sends when it
 /// wants the write to land regardless, so it reads as no precondition.
-fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainError> {
+pub(crate) fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainError> {
     let Some(value) = headers.get(header::IF_MATCH) else {
         return Ok(None);
     };

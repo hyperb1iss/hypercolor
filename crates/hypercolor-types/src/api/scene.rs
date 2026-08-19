@@ -16,6 +16,7 @@
 //! (Spec 78 §7.2, after wave 78.5) rather than as orphan schemas now.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use crate::effect::ControlValue;
 use crate::identity::LayoutId;
@@ -23,7 +24,10 @@ use crate::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use crate::library::PresetId;
-use crate::scene::{DisplayFaceTarget, SceneId, SceneKind, UnassignedBehavior, ZoneId, ZoneRole};
+use crate::scene::{
+    DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
+    UnassignedBehavior, ZoneId, ZoneRole,
+};
 use crate::spatial::{LedTopology, NormalizedPosition, Orientation};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +39,8 @@ use serde::{Deserialize, Serialize};
 pub struct SceneDocument {
     pub id: SceneId,
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub kind: SceneKind,
     /// Whether this is the auto-managed default scene, which cannot be
     /// renamed or deleted.
@@ -46,6 +52,15 @@ pub struct SceneDocument {
     /// kept and skipped with a warning event.
     #[serde(default)]
     pub layout_id: Option<LayoutId>,
+    #[serde(default)]
+    pub activation_brightness: Option<f32>,
+    pub transition: TransitionSpec,
+    pub priority: ScenePriority,
+    pub enabled: bool,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub mutation_mode: SceneMutationMode,
     /// The commit generation. Served as `ETag`; the one wire version
     /// token (Spec 78 §1.6).
     pub revision: u64,
@@ -58,6 +73,8 @@ pub struct SceneDocument {
 pub struct ZoneResource {
     pub id: ZoneId,
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub role: ZoneRole,
     pub enabled: bool,

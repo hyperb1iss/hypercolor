@@ -78,6 +78,9 @@ impl PatchError {
 
 /// A topic's subscription key. Unkeyed topics use `()`.
 pub trait TopicKey: Sized + Clone + PartialEq {
+    /// Machine-readable name of the selector field, or `None` when the
+    /// topic is unkeyed.
+    const WIRE_NAME: Option<&'static str>;
     /// The wire form carried beside the topic name; `None` for
     /// unkeyed topics.
     fn to_wire(&self) -> Option<String>;
@@ -86,6 +89,8 @@ pub trait TopicKey: Sized + Clone + PartialEq {
 }
 
 impl TopicKey for () {
+    const WIRE_NAME: Option<&'static str> = None;
+
     fn to_wire(&self) -> Option<String> {
         None
     }
@@ -231,10 +236,14 @@ pub struct TopicVTable {
     pub backpressure: BackpressureClass,
     /// Whether the topic takes a key.
     pub keyed: bool,
+    /// Machine-readable name of the key carried by selectors.
+    pub key_name: Option<&'static str>,
     /// Whether the topic takes config (false = configless).
     pub configurable: bool,
     /// The default config as JSON (`null` for configless topics).
     pub default_config_json: fn() -> serde_json::Value,
+    /// Compiled validation bounds for the config fields.
+    pub config_schema_json: fn() -> serde_json::Value,
     /// Validate a wire key for this topic, returning the CANONICAL
     /// wire form (`None` for unkeyed topics) so callers store what the
     /// key type parsed, not what the client happened to send.
@@ -294,11 +303,12 @@ pub const fn tags_disjoint(tag_sets: &[&[u8]]) -> bool {
 ///     registry Topics;
 ///     reserved [0x0b, 0x0f, 0x10];
 ///     topic Events => "events" {
-///         key: unkeyed, config: (), patch: NoPatch,
+///         key: unkeyed, config: (), patch: NoPatch, schema: no_schema,
 ///         tags: [], control: false,
 ///     }
 ///     topic DisplayPreview => "display_preview" {
 ///         key: DeviceKey, config: DisplayPreviewConfig, patch: DisplayPreviewPatch,
+///         schema: display_preview_schema,
 ///         tags: [0x07], control: false,
 ///     }
 /// }
@@ -309,7 +319,7 @@ macro_rules! define_ws_topics {
         registry $registry:ident;
         reserved [ $( $reserved:literal ),* $(,)? ];
         $( topic $topic:ident => $name:literal {
-            key: $key:tt, config: $config:ty, patch: $patch:ty,
+            key: $key:tt, config: $config:ty, patch: $patch:ty, schema: $schema:path,
             tags: [ $( $tag:literal ),* ], control: $control:literal,
             backpressure: $backpressure:ident $(,)?
         } )+
@@ -382,6 +392,7 @@ macro_rules! define_ws_topics {
                                 requires_control: <$topic as $crate::ws::topic::WsTopic>::REQUIRES_CONTROL,
                                 backpressure: <$topic as $crate::ws::topic::WsTopic>::BACKPRESSURE,
                                 keyed: $crate::define_ws_topics!(@keyed $key),
+                                key_name: <<$topic as $crate::ws::topic::WsTopic>::Key as $crate::ws::topic::TopicKey>::WIRE_NAME,
                                 // `()` serializes to null — configless by
                                 // construction. A config whose DEFAULT fails to
                                 // serialize is a defective topic definition;
@@ -393,6 +404,7 @@ macro_rules! define_ws_topics {
                                 default_config_json: || $crate::ws::topic::serde_json::to_value(
                                     <<$topic as $crate::ws::topic::WsTopic>::Config as Default>::default()
                                 ).expect("topic default config must serialize to JSON"),
+                                config_schema_json: $schema,
                                 validate_key: |key| {
                                     <<$topic as $crate::ws::topic::WsTopic>::Key as $crate::ws::topic::TopicKey>::from_wire(key)
                                         .map(|parsed| $crate::ws::topic::TopicKey::to_wire(&parsed))

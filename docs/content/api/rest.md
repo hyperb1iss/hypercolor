@@ -735,11 +735,22 @@ The currently active scene.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}") %}
-One scene's configuration.
+Read one stored scene as a complete document, including its zones, members,
+layouts, and layer stacks. The response carries the document's `revision` and
+the same value as an `ETag` header.
 {% end %}
 
 {% api_endpoint(method="PUT", path="/api/v1/scenes/{id}") %}
-Update a scene.
+Replace one stored scene in full. Read the current document first, remove the
+server-owned `revision` and `is_default` fields, apply the intended edits, and
+send the result with the previous revision in `If-Match`.
+
+The route id is authoritative. If the body includes `id`, it must match the
+route or the daemon returns `422 Unprocessable Entity`. Existing zone and
+layer ids must already belong to this scene. Omit either id only when creating
+that resource, and the daemon mints it. Omitted optional fields are cleared,
+so partial update bodies are not accepted. A stale `If-Match` returns `412
+Precondition Failed` with the current revision.
 {% end %}
 
 {% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}") %}

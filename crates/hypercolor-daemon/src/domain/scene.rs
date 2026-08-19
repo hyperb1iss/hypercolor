@@ -10,20 +10,24 @@
 //!
 //! [`commit_scene`] is where the candidate becomes real. It takes the
 //! scene write lock, compares the candidate's base revision against the
-//! live one, installs the candidate, admits the snapshot bytes, and
-//! releases the lock — all without an await inside the guard. Only then
+//! live one, retires transient previews for resources crossing the
+//! mutation boundary, installs the candidate, admits the snapshot bytes,
+//! and releases the lock. Only then
 //! does it persist and publish. `Err` therefore means one thing and one
 //! thing only: the mutation was rejected *before* admission. Everything
 //! that can happen after admission is a [`CommitDurability`] on the
 //! returned [`SceneCommit`], because after admission the retry
 //! supervisor owns the bytes and the mutation is going to land.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use hypercolor_core::scene::{
     ControlsVersionMismatch, LayerMutationError, OutputPlacement, SceneGroupLayerInsert,
     SceneManager, ZoneMetaPatch, ZoneMutationError, default_primary_group,
+};
+use hypercolor_types::api::scenes::{
+    ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest,
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
@@ -38,7 +42,7 @@ use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, EasingFunction, Scene, SceneId, SceneKind,
     SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
 };
-use hypercolor_types::spatial::{Output, SpatialLayout};
+use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
 use crate::api::AppState;
 use crate::api::scenes::MediaAdmissionViolationDetails;
@@ -60,6 +64,8 @@ pub struct SceneMutation {
     base_revision: SceneRevision,
     events: Vec<HypercolorEvent>,
     persists_scene_content: bool,
+    preview_scenes_to_clear: HashSet<SceneId>,
+    preview_zones_to_clear: HashSet<(SceneId, ZoneId)>,
 }
 
 /// Which scene a mutation addresses.
@@ -121,6 +127,14 @@ impl SceneMutation {
     /// publish out of admission order.
     pub fn record(&mut self, event: HypercolorEvent) {
         self.events.push(event);
+    }
+
+    pub fn retire_scene_previews(&mut self, scene_id: SceneId) {
+        self.preview_scenes_to_clear.insert(scene_id);
+    }
+
+    pub fn retire_zone_preview(&mut self, scene_id: SceneId, zone_id: ZoneId) {
+        self.preview_zones_to_clear.insert((scene_id, zone_id));
     }
 
     /// The active scene's id, refusing scenes that forbid runtime
@@ -724,6 +738,8 @@ impl AppState {
             base_revision,
             events: Vec::new(),
             persists_scene_content: false,
+            preview_scenes_to_clear: HashSet::new(),
+            preview_zones_to_clear: HashSet::new(),
         }
     }
 }
@@ -760,6 +776,8 @@ pub async fn commit_scene(
         base_revision,
         events,
         persists_scene_content,
+        preview_scenes_to_clear,
+        preview_zones_to_clear,
     } = mutation;
 
     // Only a mutation that changes persisted scene content needs the
@@ -793,14 +811,10 @@ pub async fn commit_scene(
             ));
         }
 
-        let previous = std::mem::replace(&mut *manager, candidate);
         let pending = if let Some(coordinator) = coordinator.as_ref() {
-            match coordinator.reserve_save(manager.list().into_iter().cloned()) {
+            match coordinator.reserve_save(candidate.list().into_iter().cloned()) {
                 Ok(pending) => Some(pending),
                 Err(error) => {
-                    // Serialization failed, so nothing was admitted and
-                    // the candidate never happened.
-                    *manager = previous;
                     return Err(DomainError::Internal(anyhow::anyhow!(
                         "Failed to persist scene: {error}"
                     )));
@@ -809,6 +823,15 @@ pub async fn commit_scene(
         } else {
             None
         };
+
+        state
+            .zone_layout_previews
+            .clear_at_scene_commit(
+                &preview_scenes_to_clear.into_iter().collect::<Vec<_>>(),
+                &preview_zones_to_clear.into_iter().collect::<Vec<_>>(),
+            )
+            .await;
+        *manager = candidate;
 
         // The generation is assigned under the same guard that installed
         // the candidate, so admission order and revision order agree.
@@ -1053,6 +1076,9 @@ pub async fn activate_scene(
     if previous_scene_id != current_scene.as_ref().map(|scene| scene.id)
         && let Some(current) = current_scene.as_ref()
     {
+        if let Some(previous_scene_id) = previous_scene_id {
+            mutation.retire_scene_previews(previous_scene_id);
+        }
         mutation.record(active_scene_changed_event(
             previous_scene_id,
             current,
@@ -1114,6 +1140,17 @@ pub struct UpdateScene {
     /// Whether runtime actions may rewrite it. `None` keeps the
     /// current value.
     pub mutation_mode: Option<SceneMutationMode>,
+}
+
+/// Replace one stored scene with the complete client-authored document.
+#[derive(Debug, Clone)]
+pub struct ReplaceScene {
+    /// Scene resolved from the route path.
+    pub scene_id: SceneId,
+    /// Complete replacement document without server-owned fields.
+    pub document: ReplaceSceneRequest,
+    /// Optional scene commit generation from `If-Match`.
+    pub expected_revision: Option<u64>,
 }
 
 /// The outcome of a scene library mutation.
@@ -1246,6 +1283,314 @@ pub async fn update_scene(
     })
 }
 
+/// Replace every client-authored field of one stored scene.
+///
+/// Supplied zone and layer identities must already belong to the scene.
+/// Omitting either identity mints a fresh one. The one scene commit
+/// generation fences the entire replacement.
+///
+/// # Errors
+///
+/// [`DomainError::NotFound`] for an unknown scene,
+/// [`DomainError::Validation`] for invalid or foreign identities,
+/// [`DomainError::PreconditionFailed`] for a stale revision, and
+/// [`DomainError::Conflict`] when a concurrent mutation lands first.
+pub async fn replace_scene(
+    state: &AppState,
+    command: ReplaceScene,
+    meta: MutationContext,
+) -> Result<SceneWritten, DomainError> {
+    let _ = meta;
+
+    if command.document.id.is_some_and(|id| id != command.scene_id) {
+        return Err(DomainError::validation_field(
+            "id",
+            "scene id must match the route path",
+        ));
+    }
+
+    let default_layout = crate::api::effects::resolve_full_scope_layout(state).await;
+    let mut mutation = state.begin_scene_mutation().await;
+    crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
+    let existing = mutation
+        .scenes()
+        .get(&command.scene_id)
+        .cloned()
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, command.scene_id))?;
+
+    if command.document.kind != existing.kind {
+        return Err(DomainError::validation_field(
+            "kind",
+            "scene kind cannot be changed",
+        ));
+    }
+    if command.scene_id.is_default() && command.document.name != existing.name {
+        return Err(DomainError::validation_field(
+            "name",
+            "default scene cannot be renamed",
+        ));
+    }
+
+    validate_replacement_identities(&existing, &command.document)?;
+    let groups = replacement_zones(&existing, &default_layout, command.document.zones)?;
+    let updated = Scene {
+        id: existing.id,
+        name: command.document.name,
+        description: command.document.description,
+        scope: SceneScope::Full,
+        zone_assignments: Vec::new(),
+        groups,
+        groups_revision: existing.groups_revision.saturating_add(1),
+        transition: command.document.transition,
+        priority: command.document.priority,
+        enabled: command.document.enabled,
+        metadata: command.document.metadata,
+        unassigned_behavior: command.document.unassigned_behavior,
+        layout_id: command.document.layout_id,
+        activation_brightness: command.document.activation_brightness,
+        kind: existing.kind,
+        mutation_mode: command.document.mutation_mode,
+    };
+
+    if let Err(errors) = updated.validate() {
+        return Err(DomainError::validation(errors.join("; ")));
+    }
+    mutation.update_scene(updated.clone())?;
+    crate::domain::layer::validate_candidate_media_admission(state, &mutation, updated.id).await?;
+    mutation.retire_scene_previews(updated.id);
+    mutation.record(HypercolorEvent::SceneLibraryChanged {
+        scene_id: updated.id,
+        kind: SceneLibraryChangeKind::Updated,
+        name: Some(updated.name.clone()),
+    });
+    let commit = commit_scene(state, mutation).await?;
+    crate::api::save_runtime_session_snapshot(state).await;
+    crate::api::sync_connectivity(state).await;
+
+    Ok(SceneWritten {
+        scene: updated,
+        commit,
+    })
+}
+
+fn validate_replacement_identities(
+    existing: &Scene,
+    document: &ReplaceSceneRequest,
+) -> Result<(), DomainError> {
+    let zone_ids = existing
+        .groups
+        .iter()
+        .map(|zone| zone.id)
+        .collect::<HashSet<_>>();
+    let layer_ids = existing
+        .groups
+        .iter()
+        .flat_map(Zone::effective_layers)
+        .map(|layer| layer.id)
+        .collect::<HashSet<_>>();
+    let mut requested_zones = HashSet::new();
+    let mut requested_layers = HashSet::new();
+
+    for zone in &document.zones {
+        if let Some(zone_id) = zone.id {
+            if !zone_ids.contains(&zone_id) {
+                return Err(DomainError::validation_details(
+                    "supplied zone id does not belong to this scene",
+                    serde_json::json!({ "zone_id": zone_id }),
+                ));
+            }
+            if !requested_zones.insert(zone_id) {
+                return Err(DomainError::validation_details(
+                    "zone ids must be unique",
+                    serde_json::json!({ "zone_id": zone_id }),
+                ));
+            }
+        }
+        for layer in &zone.layers {
+            if let Some(layer_id) = layer.id {
+                if !layer_ids.contains(&layer_id) {
+                    return Err(DomainError::validation_details(
+                        "supplied layer id does not belong to this scene",
+                        serde_json::json!({ "layer_id": layer_id }),
+                    ));
+                }
+                if !requested_layers.insert(layer_id) {
+                    return Err(DomainError::validation_details(
+                        "layer ids must be unique",
+                        serde_json::json!({ "layer_id": layer_id }),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn replacement_zones(
+    existing: &Scene,
+    default_layout: &SpatialLayout,
+    zones: Vec<ReplaceZoneRequest>,
+) -> Result<Vec<Zone>, DomainError> {
+    zones
+        .into_iter()
+        .map(|zone| {
+            let zone_id = zone.id.unwrap_or_default();
+            let stored = existing
+                .groups
+                .iter()
+                .find(|candidate| candidate.id == zone_id);
+            let layout = replacement_zone_layout(stored, default_layout, &zone)?;
+            let layers = zone
+                .layers
+                .into_iter()
+                .map(replacement_layer)
+                .collect::<Vec<_>>();
+            let legacy = layers.iter().find_map(|layer| match &layer.source {
+                hypercolor_types::layer::LayerSource::Effect {
+                    effect_id,
+                    controls,
+                    control_bindings,
+                    preset_id,
+                } => Some((
+                    Some(*effect_id),
+                    controls.clone(),
+                    control_bindings.clone(),
+                    *preset_id,
+                )),
+                _ => None,
+            });
+            let (effect_id, controls, control_bindings, preset_id) = legacy.unwrap_or_default();
+            Ok(Zone {
+                id: zone_id,
+                name: zone.name,
+                description: zone.description,
+                effect_id,
+                controls,
+                control_bindings,
+                preset_id,
+                layers,
+                layout,
+                brightness: zone.brightness,
+                enabled: zone.enabled,
+                color: zone.color,
+                display_target: zone.display_target,
+                role: zone.role,
+                controls_version: stored
+                    .map_or(0, |stored| stored.controls_version.saturating_add(1)),
+                layers_version: stored.map_or(0, |stored| stored.layers_version.saturating_add(1)),
+            })
+        })
+        .collect()
+}
+
+fn replacement_layer(request: ReplaceSceneLayerRequest) -> SceneLayer {
+    SceneLayer {
+        id: request.id.unwrap_or_default(),
+        name: request.name,
+        source: request.source,
+        blend: request.blend,
+        opacity: request.opacity,
+        transform: request.transform,
+        adjust: request.adjust,
+        bindings: request.bindings,
+        enabled: request.enabled,
+    }
+}
+
+fn replacement_zone_layout(
+    stored_zone: Option<&Zone>,
+    default_layout: &SpatialLayout,
+    request: &ReplaceZoneRequest,
+) -> Result<SpatialLayout, DomainError> {
+    let mut layout = stored_zone
+        .map(|zone| zone.layout.clone())
+        .unwrap_or_else(|| default_layout.clone());
+    let placements = request
+        .layout
+        .as_ref()
+        .map_or(&[][..], |layout| layout.placements.as_slice());
+    let members = request
+        .members
+        .iter()
+        .map(|member| (member.id.0.as_str(), member))
+        .collect::<HashMap<_, _>>();
+    if members.len() != request.members.len() || placements.len() != request.members.len() {
+        return Err(DomainError::validation(
+            "layout placements must name exactly the zone members, each once",
+        ));
+    }
+
+    let stored_outputs = stored_zone
+        .map(|zone| zone.layout.zones.as_slice())
+        .unwrap_or_default();
+    let mut outputs = Vec::with_capacity(placements.len());
+    let mut placed = HashSet::new();
+    for placement in placements {
+        let member_id = placement.member.0.as_str();
+        let Some(member) = members.get(member_id) else {
+            return Err(DomainError::validation_details(
+                "layout placement names an unknown zone member",
+                serde_json::json!({ "member": member_id }),
+            ));
+        };
+        if !placed.insert(member_id) {
+            return Err(DomainError::validation_details(
+                "layout placements must name each zone member once",
+                serde_json::json!({ "member": member_id }),
+            ));
+        }
+        let mut output = stored_outputs
+            .iter()
+            .find(|output| output.id == member_id)
+            .cloned()
+            .unwrap_or_else(|| Output {
+                id: member.id.0.clone(),
+                name: member.name.clone(),
+                device_id: member.device_id.clone(),
+                zone_name: member.segment.clone(),
+                position: placement.position,
+                size: placement.size,
+                rotation: placement.rotation,
+                scale: placement.scale,
+                display_order: 0,
+                orientation: placement.orientation,
+                topology: placement.topology.clone(),
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: None,
+                shape_preset: None,
+                attachment: None,
+                brightness: None,
+            });
+        output.id.clone_from(&member.id.0);
+        output.name.clone_from(&member.name);
+        output.device_id.clone_from(&member.device_id);
+        output.zone_name.clone_from(&member.segment);
+        output.position = placement.position;
+        output.size = placement.size;
+        output.rotation = placement.rotation;
+        output.scale = placement.scale;
+        output.orientation = placement.orientation;
+        output.topology.clone_from(&placement.topology);
+        output.led_positions = hypercolor_core::spatial::generate_positions(&output.topology);
+        outputs.push(output);
+    }
+    if placed.len() != members.len() {
+        return Err(DomainError::validation(
+            "layout placements must name exactly the zone members, each once",
+        ));
+    }
+
+    layout.zones = outputs;
+    if stored_zone.is_none() {
+        layout.default_sampling_mode = SamplingMode::Bilinear;
+        layout.default_edge_behavior = EdgeBehavior::Clamp;
+    }
+    Ok(layout)
+}
+
 /// Remove a scene from the library, deactivating it first when it is
 /// the current one.
 ///
@@ -1285,6 +1630,7 @@ pub async fn delete_scene(
         kind: SceneLibraryChangeKind::Deleted,
         name: None,
     });
+    mutation.retire_scene_previews(scene_id);
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
 
@@ -1316,6 +1662,9 @@ pub async fn deactivate_scene(
     if previous_scene.as_ref().map(|scene| scene.id) != current_scene.as_ref().map(|scene| scene.id)
         && let Some(current) = current_scene.as_ref()
     {
+        if let Some(previous_scene) = previous_scene.as_ref() {
+            mutation.retire_scene_previews(previous_scene.id);
+        }
         mutation.record(active_scene_changed_event(
             previous_scene.as_ref().map(|scene| scene.id),
             current,

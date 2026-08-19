@@ -1,6 +1,6 @@
 //! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -34,9 +34,10 @@ use super::interactive_preview::{
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
-    MacosDaemonOwnershipEventHint, PerformanceMetrics, PreviewBinaryDecoder, PreviewBinaryMessage,
-    PreviewFrameChannel, SceneEventHint, ScreenZonesFrame, handle_json_message,
-    interactive_preview_supported, is_resync_required,
+    MacosDaemonOwnershipEventHint, OutputPowerReconciler, PerformanceMetrics, PreviewBinaryDecoder,
+    PreviewBinaryMessage, PreviewFrameChannel, SceneEventHint, ScreenZonesFrame,
+    handle_json_message, interactive_preview_supported, is_resync_required,
+    reset_layer_health_cache,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -210,6 +211,7 @@ impl WsManager {
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (output_paused, set_output_paused) = signal(false);
+        let output_power_reconciler = StoredValue::new(OutputPowerReconciler::default());
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
         let (last_extension_event, set_last_extension_event) = signal(None::<ExtensionEventHint>);
         let (last_input_source_status_event, set_last_input_source_status_event) =
@@ -285,6 +287,10 @@ impl WsManager {
             set_interactive_preview_lifecycles.set(HashMap::new());
             set_preview_transport_cap.set(preview_page_cap.get_untracked());
             set_last_backpressure_at_ms.set(None);
+            set_layer_health.update(reset_layer_health_cache);
+            output_power_reconciler.update_value(|reconciler| {
+                reconciler.begin();
+            });
 
             // Reset frame-tracking state so FPS doesn't glitch after reconnect
             last_frame_number.set_value(None);
@@ -312,12 +318,12 @@ impl WsManager {
             ws_handle.set_value(Some(ws.clone()));
             let preview_decoder = Rc::new(RefCell::new(PreviewBinaryDecoder::default()));
             let preview_expiry_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
+            let awaiting_initial_subscription = Rc::new(Cell::new(true));
 
             // onopen — subscribe to events, metrics, and host sensors
             let ws_clone = ws.clone();
             let on_open = move |_| {
                 set_connection_state.set(ConnectionState::Connected);
-                set_connection_generation.update(|generation| *generation += 1);
                 reconnect_attempts.set_value(0);
                 clear_reconnect_timer(reconnect_timeout);
 
@@ -362,6 +368,10 @@ impl WsManager {
                 interactive_preview_tracker.update_value(InteractivePreviewLifecycleTracker::clear);
                 set_interactive_preview_lifecycles.set(HashMap::new());
                 set_sensors.set(None);
+                set_layer_health.update(reset_layer_health_cache);
+                output_power_reconciler.update_value(|reconciler| {
+                    reconciler.begin();
+                });
                 schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
             };
 
@@ -377,6 +387,7 @@ impl WsManager {
             // onmessage — handle both JSON and binary frames
             let message_preview_decoder = Rc::clone(&preview_decoder);
             let message_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
+            let message_awaiting_initial_subscription = Rc::clone(&awaiting_initial_subscription);
             let message_ws = ws.clone();
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
@@ -473,6 +484,11 @@ impl WsManager {
                 if let Some(text) = event.data().as_string()
                     && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
                 {
+                    if msg.get("type").and_then(serde_json::Value::as_str) == Some("subscribed")
+                        && message_awaiting_initial_subscription.replace(false)
+                    {
+                        set_connection_generation.update(|generation| *generation += 1);
+                    }
                     if is_resync_required(&msg) {
                         let _ = message_ws.close();
                         return;
@@ -513,6 +529,7 @@ impl WsManager {
                         &msg,
                         &set_active_effect,
                         &set_output_paused,
+                        output_power_reconciler,
                         metrics,
                         &set_metrics,
                         &set_device_metrics,

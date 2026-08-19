@@ -227,6 +227,14 @@ pub enum DomainError {
         /// Why it cannot serve.
         reason: String,
     },
+    /// A daemon capability is not available in the current runtime.
+    #[error("{message}")]
+    ServiceUnavailable {
+        /// Human-readable description.
+        message: String,
+        /// Caller-actionable structured context.
+        details: Option<serde_json::Value>,
+    },
     /// Unexpected internal failure. Renders generically on the wire;
     /// the full chain goes to tracing.
     #[error(transparent)]
@@ -334,6 +342,18 @@ impl DomainError {
         }
     }
 
+    /// A daemon capability that is absent in the current runtime.
+    #[must_use]
+    pub fn service_unavailable_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self::ServiceUnavailable {
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
     /// Stable machine-readable code (snake_case) for the canonical
     /// error envelope.
     #[must_use]
@@ -351,6 +371,7 @@ impl DomainError {
             Self::RateLimited { .. } => "rate_limited",
             Self::PreconditionFailed { .. } => "precondition_failed",
             Self::DeviceUnavailable { .. } => "device_unavailable",
+            Self::ServiceUnavailable { .. } => "service_unavailable",
             Self::Internal(_) => "internal_error",
         }
     }
@@ -370,14 +391,17 @@ impl DomainError {
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::PreconditionFailed { .. } => StatusCode::PRECONDITION_FAILED,
             Self::DeviceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ServiceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
-    fn detail(&self) -> ApiErrorDetail {
+    pub(crate) fn detail(&self) -> ApiErrorDetail {
         let details = match self {
             Self::Validation { field, details, .. } => merge_field(details.clone(), field.as_ref()),
-            Self::Conflict { details, .. } | Self::Forbidden { details, .. } => details.clone(),
+            Self::Conflict { details, .. }
+            | Self::Forbidden { details, .. }
+            | Self::ServiceUnavailable { details, .. } => details.clone(),
             Self::ControlBound { keys } => Some(json!({ "bound": keys })),
             Self::PreconditionFailed {
                 expected, current, ..
@@ -473,7 +497,8 @@ impl From<DomainError> for ToolError {
             | DomainError::Unauthorized { message }
             | DomainError::Forbidden { message, .. }
             | DomainError::UnsupportedMediaType { message }
-            | DomainError::RateLimited { message, .. } => ToolError::Conflict(message),
+            | DomainError::RateLimited { message, .. }
+            | DomainError::ServiceUnavailable { message, .. } => ToolError::Conflict(message),
             DomainError::PayloadTooLarge { limit_bytes } => ToolError::InvalidParam {
                 param: "payload".to_owned(),
                 reason: format!("exceeds the {limit_bytes} byte limit"),

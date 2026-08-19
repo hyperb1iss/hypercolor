@@ -308,6 +308,7 @@ pub async fn delete_zone(
     mutation
         .delete_zone(scene_id, command.zone_id)
         .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
+    mutation.retire_zone_preview(scene_id, command.zone_id);
     let groups_revision = groups_revision(&mutation, scene_id);
     mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Removed));
 
@@ -424,10 +425,10 @@ pub async fn set_zone_layout(
     let mut mutation = state.begin_scene_mutation().await;
     check_scene_revision(&mutation, command.expected_scene_revision)?;
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
-
     let zone = mutation
         .set_zone_layout(command.scene_id, command.zone_id, command.layout)
         .map_err(|error| zone_error(error, command.scene_id, Some(command.zone_id), None))?;
+    mutation.retire_zone_preview(command.scene_id, command.zone_id);
     let groups_revision = groups_revision(&mutation, command.scene_id);
     mutation.record(zone_changed_event(
         command.scene_id,

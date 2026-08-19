@@ -84,10 +84,17 @@ pub fn scene_document(scene: &Scene, revision: u64) -> SceneDocument {
     SceneDocument {
         id: scene.id,
         name: scene.name.clone(),
+        description: scene.description.clone(),
         kind: scene.kind,
         is_default: scene.id.is_default(),
         unassigned_behavior: scene.unassigned_behavior.clone(),
         layout_id: scene.layout_id.clone(),
+        activation_brightness: scene.activation_brightness,
+        transition: scene.transition.clone(),
+        priority: scene.priority,
+        enabled: scene.enabled,
+        metadata: scene.metadata.clone(),
+        mutation_mode: scene.mutation_mode,
         revision,
         zones: scene.groups.iter().map(zone_resource).collect(),
     }
@@ -103,6 +110,7 @@ pub fn zone_resource(zone: &Zone) -> ZoneResource {
     ZoneResource {
         id: zone.id,
         name: zone.name.clone(),
+        description: zone.description.clone(),
         role: zone.role,
         enabled: zone.enabled,
         brightness: zone.brightness,
@@ -371,7 +379,8 @@ pub async fn clear_scene(
             .collect(),
     };
 
-    for zone_id in targets {
+    for &zone_id in &targets {
+        mutation.retire_zone_preview(scene_id, zone_id);
         if let Some(zone) = mutation.clear_zone_effect(zone_id) {
             mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
         }
@@ -609,13 +618,12 @@ pub async fn set_zone_layout(
         .layout
         .clone();
     let layout = layout_from_placements(&stored, placements)?;
-
     let zone = mutation
         .set_zone_layout(scene_id, zone_id, layout)
         .map_err(|error| zone_layout_error(error, zone_id))?;
+    mutation.retire_zone_preview(scene_id, zone_id);
 
     let written = finish_zone_mutation(state, mutation, scene_id, zone).await?;
-    state.zone_layout_previews.clear(scene_id, zone_id).await;
     Ok(written)
 }
 

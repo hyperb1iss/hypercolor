@@ -133,11 +133,10 @@ pub async fn set_power(state: &AppState, requested: OutputPowerMode) {
 /// has to round-trip: a caller that reads `running` and then patches
 /// `running` must not be silently clearing a stop.
 ///
-/// [`OutputPowerState::reported_paused`] answers a different question
-/// ("did the user latch a pause?") and keeps returning `false` for a
-/// stop, because a stop publishes no `Paused` event. The WS hello and
-/// the MCP status surfaces read that one. §3 of the REST matrix names
-/// the split and the wave that collapses it.
+/// [`OutputPowerState::reported_paused`] is the same projection used by
+/// the WS hello and MCP status surfaces. A stop publishes no `Paused`
+/// event, so clients reconcile the power snapshot after an
+/// `EffectStopped` lifecycle event.
 ///
 /// [`OutputPowerState::reported_paused`]: crate::session::OutputPowerState::reported_paused
 fn observed_power(power: OutputPowerState) -> OutputPowerMode {

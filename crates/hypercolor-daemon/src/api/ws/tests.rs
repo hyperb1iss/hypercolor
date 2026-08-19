@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
@@ -24,7 +25,7 @@ use hypercolor_leptos_ext::ws::registry::{
 };
 use hypercolor_leptos_ext::ws::topic::{TopicSelector, TopicSubscription};
 use hypercolor_leptos_ext::ws::{
-    DisplayPreviewFrame as WireDisplayPreviewFrame,
+    DisplayPreviewFrame as WireDisplayPreviewFrame, HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION,
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FRAME_TAG,
     PREVIEW_MIN_MESSAGE_BYTES, PreviewChunkFrame, PreviewFrame as WirePreviewFrame,
     PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId,
@@ -37,7 +38,9 @@ use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{
-    FrameData, FrameTiming, HypercolorEvent, SpectrumData, TimedInputEvent, ZoneColors,
+    FrameData, FrameTiming, HypercolorEvent, MacosDaemonHandoverPhaseEvent,
+    MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent, MacosDaemonOwnerRecoveryRequiredEvent,
+    SpectrumData, TimedInputEvent, ZoneColors,
 };
 use hypercolor_types::scene::{SceneId, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -55,9 +58,10 @@ use super::cache::{
     WS_ZONE_PREVIEW_HEADER_LEN, cached_display_preview_payload, cached_frame_payload,
     cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
     encode_canvas_preview_binary, encode_frame_binary, encode_frame_binary_selected,
-    encode_spectrum_binary, put_bytes_lru, reset_canvas_jpeg_body_cache_for_tests,
-    reset_canvas_raw_body_cache_for_tests, reset_display_preview_payload_cache_for_tests,
-    reset_preview_jpeg_encoders_for_tests, try_encode_cached_zone_preview_binary_scaled,
+    encode_spectrum_binary, led_frame_codec_manifest, put_bytes_lru,
+    reset_canvas_jpeg_body_cache_for_tests, reset_canvas_raw_body_cache_for_tests,
+    reset_display_preview_payload_cache_for_tests, reset_preview_jpeg_encoders_for_tests,
+    try_encode_cached_zone_preview_binary_scaled,
 };
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
@@ -69,24 +73,87 @@ use super::preview_encode::{
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, ClientMessage, FrameZoneSelection,
     InputButtonStateWire, MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_SCROLL_Q16_16,
-    MAX_INPUT_WHEEL_DELTA, MAX_PREVIEW_PUBLICATION_BYTES, ServerMessage, SubscriptionState,
-    TopicSelection, deserialize_finite_coordinate, event_message_parts, parse_selectors,
-    parse_subscriptions, should_relay_event, to_snake_case, validate_interactive_preview_id,
+    MAX_INPUT_WHEEL_DELTA, ServerMessage, SubscriptionState, TopicSelection, WsProtocolError,
+    deserialize_finite_coordinate, event_message_parts, json_payload_manifest, parse_selectors,
+    parse_subscriptions, should_relay_event, validate_interactive_preview_id,
     validate_interactive_preview_shape, ws_capabilities,
 };
+
+fn assert_manifested_json_payload(schema: &str, data: &serde_json::Value) {
+    let manifest = json_payload_manifest();
+    let schema = &manifest[schema];
+    let required = schema["required_fields"]
+        .as_array()
+        .expect("required fields are an array")
+        .iter()
+        .map(|field| field.as_str().expect("field name is a string"))
+        .collect::<BTreeSet<_>>();
+    let allowed = required
+        .iter()
+        .copied()
+        .chain(
+            schema["optional_fields"]
+                .as_object()
+                .expect("optional fields are an object")
+                .keys()
+                .map(String::as_str),
+        )
+        .collect::<BTreeSet<_>>();
+    let actual = data
+        .as_object()
+        .expect("payload data is an object")
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    assert!(required.is_subset(&actual), "{schema:?} required fields");
+    assert!(actual.is_subset(&allowed), "{schema:?} unknown fields");
+}
+
+#[test]
+fn websocket_native_errors_project_canonical_domain_codes() {
+    let malformed = WsProtocolError::invalid_request("bad request");
+    assert_eq!(
+        malformed.code,
+        crate::domain::DomainError::malformed("bad request").code()
+    );
+
+    let forbidden = WsProtocolError::forbidden("denied", serde_json::json!({}));
+    assert_eq!(
+        forbidden.code,
+        crate::domain::DomainError::forbidden("denied").code()
+    );
+
+    let validation = WsProtocolError::invalid_config("fps", "must be positive");
+    assert_eq!(
+        validation.code,
+        crate::domain::DomainError::validation("bad config").code()
+    );
+}
 use super::relays::{
     PreviewCursorQueue, PreviewOutboundError, PreviewOutboundItem, PreviewOutboundLimits,
     PreviewOutboundReceiver, PreviewOutboundSender, PreviewPublication, PreviewPublishOutcome,
     PreviewSendCursor, build_device_metrics_message, build_metrics_message,
     preview_outbound_channel, preview_outbound_channel_with_limits, publish_subscriptions,
     relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
-    relay_sensors, relay_spectrum, sync_preview_receiver, try_enqueue_json,
+    relay_screen_zones, relay_sensors, relay_spectrum, relay_zone_preview, sync_preview_receiver,
+    try_enqueue_json,
 };
 use super::session::{
-    BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics,
+    BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics, build_hello_state,
     commit_preview_transport, negotiate_preview_transport, spawn_test_local_socket,
     stage_preview_transport, validated_zone_layout_preview,
 };
+
+#[tokio::test]
+async fn hello_reports_a_destructive_stop_as_not_running_and_paused() {
+    let state = AppState::new();
+    state.render_loop.write().await.start();
+    crate::session::set_output_stopped(&state.power_state, &state.event_bus);
+
+    let hello = build_hello_state(&state).await;
+    assert!(!hello.running);
+    assert!(hello.paused);
+}
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -1529,6 +1596,58 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
 }
 
 #[tokio::test]
+async fn relay_sensors_coalesces_to_latest_snapshot_while_output_is_full() {
+    let state = Arc::new(AppState::new());
+    let mut initial = SystemSnapshot::empty();
+    initial.polled_at_ms = 1_000;
+    let (sensor_tx, sensor_rx) = watch::channel(Arc::new(initial));
+    state
+        .input_manager
+        .lock()
+        .await
+        .set_sensor_snapshot_receiver(sensor_rx);
+
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+    json_tx
+        .try_send("occupied".into())
+        .expect("queue accepts its first message");
+
+    let relay_handle = tokio::spawn(relay_sensors(Arc::clone(&state), json_tx, subscriptions_rx));
+    let subscriptions = initial_subscriptions
+        .subscribed_unkeyed(&["sensors"], serde_json::Value::Null)
+        .expect("sensors subscribe applies");
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+    for polled_at_ms in [2_000, 3_000, 4_000] {
+        let mut snapshot = SystemSnapshot::empty();
+        snapshot.polled_at_ms = polled_at_ms;
+        sensor_tx.send_replace(Arc::new(snapshot));
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        json_rx
+            .recv()
+            .await
+            .expect("occupied payload remains")
+            .as_str(),
+        "occupied"
+    );
+    let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
+        .await
+        .expect("sensors relay should resume after capacity returns")
+        .expect("sensors relay should emit the coalesced snapshot");
+    let payload: serde_json::Value =
+        serde_json::from_str(message.as_str()).expect("sensors payload should parse");
+    assert_eq!(payload["type"], "sensors");
+    assert_eq!(payload["data"]["polled_at_ms"], 4_000);
+
+    relay_handle.abort();
+}
+
+#[tokio::test]
 async fn relay_frames_wakes_when_subscription_changes() {
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -1892,7 +2011,7 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
             display_preview_test_frame(4, 700),
             None,
         ),
-        Err(PreviewOutboundError::ConnectionBudgetExceeded { maximum: 2048, .. })
+        Err(PreviewOutboundError::ConnectionBusy { .. })
     ));
 
     let (stream_sender, _stream_receiver) = preview_outbound_channel();
@@ -1964,6 +2083,157 @@ async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
         .next_message()
         .expect("direct preview encoding")
         .expect("direct preview message")
+}
+
+#[tokio::test]
+async fn relay_screen_zones_paces_each_connection_and_sends_the_latest_frame() {
+    let state = Arc::new(AppState::new());
+    let subscriptions = SubscriptionState::default()
+        .subscribed_unkeyed(
+            &["screen_zones"],
+            serde_json::json!({"screen_zones": {"fps": 10}}),
+        )
+        .expect("screen zones subscribe applies");
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (preview_tx, preview_rx) = preview_outbound_channel();
+    let relay_handle = tokio::spawn(relay_screen_zones(
+        Arc::clone(&state.preview_runtime),
+        subscriptions_rx,
+        preview_tx,
+    ));
+
+    let initial = receive_direct_preview(&preview_rx).await;
+    let initial = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&initial)
+        .expect("initial screen zones frame decodes");
+    assert_eq!(initial.frame_number, 0);
+
+    for frame_number in [1, 2] {
+        state.event_bus.screen_zones_sender().send_replace(
+            hypercolor_core::bus::ScreenZonesFrame {
+                frame_number,
+                timestamp_ms: frame_number,
+                source_width: 1,
+                source_height: 1,
+                grid_cols: 1,
+                grid_rows: 1,
+                letterbox: [0; 4],
+                colors: vec![[
+                    u8::try_from(frame_number).expect("small frame number"),
+                    2,
+                    3,
+                ]]
+                .into(),
+            },
+        );
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), preview_rx.recv())
+            .await
+            .is_err(),
+        "the connection's 10 fps cadence must not inherit a faster producer cadence"
+    );
+    let latest = receive_direct_preview(&preview_rx).await;
+    let latest = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&latest)
+        .expect("paced screen zones frame decodes");
+    assert_eq!(latest.frame_number, 2);
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
+}
+
+#[tokio::test]
+async fn relay_zone_preview_cancels_streams_retired_by_scene_changes() {
+    let state = Arc::new(AppState::new());
+    let subscriptions = SubscriptionState::default()
+        .subscribed_unkeyed(
+            &["zone_preview"],
+            serde_json::json!({"zone_preview": {"fps": 60}}),
+        )
+        .expect("zone preview subscribe applies");
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (preview_tx, preview_rx) = preview_outbound_channel();
+    let relay_handle = tokio::spawn(relay_zone_preview(
+        Arc::clone(&state.preview_runtime),
+        preview_tx,
+        subscriptions_rx,
+    ));
+
+    let scene_a = SceneId::new();
+    let scene_b = SceneId::new();
+    let zone_a = ZoneId::new();
+    let zone_b = ZoneId::new();
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
+    state
+        .event_bus
+        .zone_preview_sender()
+        .send_replace(vec![ZonePreviewFrame {
+            scene_id: scene_a,
+            zone_id: zone_a,
+            frame: CanvasFrame::from_canvas(&canvas, 1, 1),
+        }]);
+
+    let first = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            if let PreviewOutboundItem::Publication(publication) = preview_rx.recv().await {
+                break publication;
+            }
+        }
+    })
+    .await
+    .expect("first scene zone preview should publish");
+    assert_eq!(
+        first.stream(),
+        &PreviewStreamId::Zone {
+            scene_id: *scene_a.0.as_bytes(),
+            zone_id: *zone_a.0.as_bytes(),
+        }
+    );
+
+    state
+        .event_bus
+        .zone_preview_sender()
+        .send_replace(vec![ZonePreviewFrame {
+            scene_id: scene_b,
+            zone_id: zone_b,
+            frame: CanvasFrame::from_canvas(&canvas, 2, 2),
+        }]);
+
+    let retired_stream = PreviewStreamId::Zone {
+        scene_id: *scene_a.0.as_bytes(),
+        zone_id: *zone_a.0.as_bytes(),
+    };
+    let active_stream = PreviewStreamId::Zone {
+        scene_id: *scene_b.0.as_bytes(),
+        zone_id: *zone_b.0.as_bytes(),
+    };
+    let (cancellation, second) = tokio::time::timeout(Duration::from_millis(250), async {
+        let mut cancellation = None;
+        let mut second = None;
+        while cancellation.is_none() || second.is_none() {
+            match preview_rx.recv().await {
+                PreviewOutboundItem::Cancellation(message) => cancellation = Some(message),
+                PreviewOutboundItem::Publication(publication) => second = Some(publication),
+            }
+        }
+        (
+            cancellation.expect("cancellation present"),
+            second.expect("replacement present"),
+        )
+    })
+    .await
+    .expect("scene switch should cancel the retired stream and publish the active one");
+    assert_eq!(cancellation.stream, retired_stream);
+    assert_eq!(second.stream(), &active_stream);
+    assert!(!preview_rx.is_current(&first));
+    assert!(preview_rx.is_current(&second));
+
+    preview_rx.complete(&first);
+    preview_rx.complete(&second);
+    relay_handle.abort();
+    let _ = relay_handle.await;
 }
 
 fn try_receive_preview_publication(
@@ -2260,8 +2530,8 @@ fn preview_router_replaces_same_stream_with_latest() {
     assert!(receiver.try_recv().is_none());
 }
 
-#[test]
-fn preview_router_evicts_oldest_stream_to_honor_byte_budget() {
+#[tokio::test]
+async fn preview_router_retries_the_latest_stream_after_capacity_frees() {
     let canvas = preview_test_frame(PreviewFrameChannel::Canvas, 1, 64);
     let screen = preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 64);
     let publication_bytes = canvas.len().max(screen.len());
@@ -2277,16 +2547,28 @@ fn preview_router_evicts_oldest_stream_to_honor_byte_budget() {
             None,
         )
         .expect("canvas preview publication");
-    sender
-        .publish(
+    let waiting_sender = sender.clone();
+    let waiting = tokio::spawn(async move {
+        super::relays::publish_preview(
+            &waiting_sender,
             PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
             screen,
-            None,
+            "screen_canvas",
         )
-        .expect("screen preview publication");
+        .await
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !waiting.is_finished(),
+        "a second stream waits instead of evicting an unsent latest value"
+    );
 
-    let publication =
-        try_receive_preview_publication(&receiver).expect("remaining preview publication");
+    let canvas = try_receive_preview_publication(&receiver).expect("canvas preview publication");
+    receiver.complete(&canvas);
+    assert!(waiting.await.expect("waiting publication task"));
+
+    let publication = try_receive_preview_publication(&receiver)
+        .expect("screen preview publishes after capacity frees");
     let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
         .expect("remaining preview cursor");
     let encoded = cursor
@@ -2340,6 +2622,16 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     );
 
     display_frames.write().await.remove(device_id);
+    let cancellation = tokio::time::timeout(Duration::from_millis(250), preview_rx.recv())
+        .await
+        .expect("display removal should retire the wire stream");
+    let PreviewOutboundItem::Cancellation(cancellation) = cancellation else {
+        panic!("display removal should emit a cancellation");
+    };
+    assert_eq!(
+        cancellation.stream,
+        PreviewStreamId::Display(device_id.to_string())
+    );
     tokio::time::timeout(Duration::from_millis(250), async {
         loop {
             let runtime = display_frames.read().await;
@@ -2364,10 +2656,19 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
 }
 
 #[tokio::test]
-async fn relay_display_preview_does_not_subscribe_unknown_device() {
+async fn relay_display_preview_attaches_when_an_unknown_device_connects() {
     let state = Arc::new(AppState::new());
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
-    let unknown_device_id = DeviceId::new();
+    let config = crate::simulators::SimulatedDisplayConfig {
+        id: DeviceId::new(),
+        name: "Late WS Preview Display".to_owned(),
+        width: 240,
+        height: 160,
+        circular: false,
+        enabled: true,
+    }
+    .normalized();
+    let unknown_device_id = config.id;
     let subscriptions = SubscriptionState::default()
         .subscribed(vec![TopicSubscription::keyed(
             "display_preview",
@@ -2391,6 +2692,28 @@ async fn relay_display_preview_does_not_subscribe_unknown_device() {
         tokio::time::timeout(Duration::from_millis(50), preview_rx.recv())
             .await
             .is_err()
+    );
+
+    let device_id = state.device_registry.add(config.device_info()).await;
+    let tracked = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("connected display is registered");
+    let led_count = tracked.info.total_led_count();
+    state.event_bus.publish(HypercolorEvent::DeviceConnected {
+        device_id: device_id.to_string(),
+        name: tracked.info.name.clone(),
+        origin: tracked.info.origin.clone(),
+        led_count,
+        zones: Vec::new(),
+    });
+    wait_for_display_preview_subscribers(&display_frames, 1).await;
+    publish_display_preview_snapshot(&display_frames, device_id, 1).await;
+    let frame = receive_direct_preview(&preview_rx).await;
+    assert_eq!(
+        decoded_display_preview(&frame).device_id,
+        device_id.to_string()
     );
 
     relay_handle.abort();
@@ -2661,20 +2984,30 @@ fn zone_layout_preview_client_messages_deserialize() {
         _ => panic!("expected zone_layout_preview_clear variant"),
     }
 
-    // A client that still sends a scene id gets it ignored rather than
-    // honored: previews apply to the live tree, so the daemon owns
-    // which scene that is (Spec 78 §1.5).
-    let with_scene: ClientMessage = serde_json::from_value(serde_json::json!({
-        "type": "zone_layout_preview_clear",
-        "scene_id": SceneId::new().to_string(),
-        "zone_id": zone_id
-    }))
-    .expect("a stale scene id is ignored, not fatal");
-    match with_scene {
-        ClientMessage::ZoneLayoutPreviewClear {
-            zone_id: parsed_zone_id,
-        } => assert_eq!(parsed_zone_id, zone_id),
-        _ => panic!("expected zone_layout_preview_clear variant"),
+    for stale in [
+        serde_json::json!({
+            "type": "zone_layout_preview_clear",
+            "scene_id": SceneId::new().to_string(),
+            "zone_id": zone_id
+        }),
+        serde_json::json!({
+            "type": "zone_layout_preview",
+            "scene_id": SceneId::new().to_string(),
+            "zone_id": zone_id,
+            "layout": {
+                "id": "zone-layout",
+                "name": "Zone Layout",
+                "canvas_width": 320,
+                "canvas_height": 200,
+                "zones": [],
+                "default_sampling_mode": {"type": "bilinear"},
+                "default_edge_behavior": "clamp",
+                "version": 1
+            }
+        }),
+    ] {
+        serde_json::from_value::<ClientMessage>(stale)
+            .expect_err("the deleted scene selector must fail loudly");
     }
 }
 
@@ -2820,24 +3153,19 @@ fn topic_config_defaults_are_stable() {
 }
 
 #[test]
-fn config_for_a_configless_topic_is_refused_the_same_way_in_both_phases() {
-    // A stanza with fields fails while deserializing the patch; an
-    // explicit null deserializes and fails on apply. Both are the same
-    // client mistake, so the client sees one answer.
-    for stanza in [serde_json::Value::Null, serde_json::json!({"fps": 10})] {
-        let error = SubscriptionState::default()
-            .subscribed_unkeyed(&["sensors"], serde_json::json!({"sensors": stanza}))
-            .expect_err("sensors takes no config");
+fn non_null_config_for_a_configless_topic_is_refused() {
+    let error = SubscriptionState::default()
+        .subscribed_unkeyed(&["sensors"], serde_json::json!({"sensors": {"fps": 10}}))
+        .expect_err("sensors takes no config");
 
-        assert_eq!(error.code, "validation_error");
-        assert_eq!(
-            error.details,
-            Some(serde_json::json!({
-                "field": "config.sensors",
-                "reason": "topic accepts no config"
-            }))
-        );
-    }
+    assert_eq!(error.code, "validation_error");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "field": "config.sensors",
+            "reason": "topic accepts no config"
+        }))
+    );
 }
 
 #[test]
@@ -3088,12 +3416,6 @@ fn staging_a_preview_transport_does_not_adopt_it() {
 }
 
 #[test]
-fn snake_case_conversion_handles_camel_case() {
-    assert_eq!(to_snake_case("DeviceDiscovered"), "device_discovered");
-    assert_eq!(to_snake_case("Paused"), "paused");
-}
-
-#[test]
 fn event_message_parts_unwraps_payload() {
     let event = HypercolorEvent::DeviceDiscoveryStarted {
         targets: vec!["fixture-driver".to_owned()],
@@ -3328,6 +3650,8 @@ fn input_event_websocket_payload_conforms_to_shared_timed_schema() {
     let (name, data) = event_message_parts(&sample_input_event());
     let decoded = TimedInputEventPayload::decode(&data).expect("decode shared input payload");
 
+    assert_manifested_json_payload("timed_input_event_v1", &data);
+
     assert_eq!(name, "input_event_received");
     assert_eq!(decoded.at_ms, 700);
     assert_eq!(decoded.seq, 41);
@@ -3336,6 +3660,28 @@ fn input_event_websocket_payload_conforms_to_shared_timed_schema() {
     assert_eq!(decoded.event["source_id"], "host:/dev/input/event3");
     assert_eq!(decoded.event["key"], "a");
     assert_eq!(decoded.event["state"], "repeated");
+}
+
+#[test]
+fn macos_ownership_payload_manifest_matches_the_event_serializer() {
+    let event = HypercolorEvent::MacosDaemonOwnershipChanged {
+        active_owner: MacosDaemonOwnerEvent::AppSidecar,
+        owner_epoch: 0x0807_0605_0403_0201,
+        conflict: Some(MacosDaemonOwnerConflictEvent {
+            active: MacosDaemonOwnerEvent::AppSidecar,
+            contender: MacosDaemonOwnerEvent::Standalone,
+            observed_at_ms: 0x1817_1615_1413_1211,
+        }),
+        recovery_required: Some(MacosDaemonOwnerRecoveryRequiredEvent {
+            requested_owner: MacosDaemonOwnerEvent::LaunchdService,
+            prior_owner: MacosDaemonOwnerEvent::AppSidecar,
+            phase: MacosDaemonHandoverPhaseEvent::RollbackPending,
+        }),
+    };
+    let (name, data) = event_message_parts(&event);
+
+    assert_eq!(name, "macos_daemon_ownership_changed");
+    assert_manifested_json_payload("macos_daemon_ownership_changed_v1", &data);
 }
 
 #[tokio::test]
@@ -3378,31 +3724,40 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
 }
 
 #[tokio::test]
-async fn lagged_event_relay_emits_reliable_resync_hint() {
-    let bus = HypercolorBus::new();
-    let event_rx = bus.subscribe_all();
-    for _ in 0..300 {
-        bus.publish(HypercolorEvent::Paused);
+async fn every_lagged_event_topic_emits_a_resync_hint() {
+    for topic in ["events", "frame_events", "input_events"] {
+        let bus = HypercolorBus::new();
+        let event_rx = bus.subscribe_all();
+        for _ in 0..300 {
+            bus.publish(HypercolorEvent::Paused);
+        }
+        let mut subscriptions = SubscriptionState::default();
+        if topic != "events" {
+            subscriptions = subscriptions
+                .unsubscribed_unkeyed(&["events"])
+                .subscribed_unkeyed(&[topic], serde_json::Value::Null)
+                .expect("event topic subscribe applies");
+        }
+        let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+        let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+        let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
+
+        let json = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
+            .await
+            .expect("lagged event relay should respond")
+            .expect("lagged event relay should remain open");
+        let wire: serde_json::Value = serde_json::from_str(json.as_str()).expect("relay JSON");
+        assert_eq!(wire["event"], "resync_required", "topic {topic}");
+        assert!(
+            wire["data"]["dropped_events"]
+                .as_u64()
+                .is_some_and(|count| count > 0),
+            "topic {topic}"
+        );
+
+        relay_handle.abort();
+        let _ = relay_handle.await;
     }
-    let subscriptions = SubscriptionState::default();
-    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
-    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
-    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
-
-    let json = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
-        .await
-        .expect("lagged event relay should respond")
-        .expect("lagged event relay should remain open");
-    let wire: serde_json::Value = serde_json::from_str(json.as_str()).expect("relay JSON");
-    assert_eq!(wire["event"], "resync_required");
-    assert!(
-        wire["data"]["dropped_events"]
-            .as_u64()
-            .is_some_and(|count| count > 0)
-    );
-
-    relay_handle.abort();
-    let _ = relay_handle.await;
 }
 
 #[tokio::test]
@@ -3422,6 +3777,7 @@ async fn worker_failure_relay_invalidates_input_status_immediately() {
     let initial: serde_json::Value =
         serde_json::from_str(initial.as_str()).expect("initial relay JSON");
     assert_eq!(initial["event"], "input_source_status_changed");
+    assert_manifested_json_payload("input_source_status_changed_v1", &initial["data"]);
     assert_eq!(initial["data"]["source_id"], "status-event-test");
 
     let worker = session_slot
@@ -4134,7 +4490,7 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
     // deliberately ordered: "alpha" is resized before "omega" refuses.
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
-    let (mut session, _outbound, _frames) = browser_preview_session(handle, routing, executor);
+    let (mut session, outbound, frames) = browser_preview_session(handle, routing, executor);
 
     let original = interactive_preview_config();
     subscribe_interactive_preview(&mut session, "alpha", original)
@@ -4143,6 +4499,28 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
     let publication = session
         .publication_id("alpha")
         .expect("the first preview publishes");
+    let wire = WireInteractivePreviewFrame {
+        preview_id: "alpha".to_owned(),
+        frame_number: 7,
+        timestamp_ms: 11,
+        width: 1,
+        height: 1,
+        format: WirePreviewPixelFormat::Rgba,
+        payload: Bytes::from_static(&[1, 2, 3, 255]),
+    }
+    .encode()
+    .expect("addressed frame should encode");
+    outbound
+        .publish(
+            PreviewStreamId::Interactive("alpha".to_owned()),
+            wire,
+            Some(publication),
+        )
+        .expect("existing preview frame should enter the router");
+    let in_flight = frames
+        .try_recv()
+        .expect("existing preview publication should be ready");
+    assert!(matches!(&in_flight, PreviewOutboundItem::Publication(_)));
 
     let mut resized = original;
     resized.width = 320;
@@ -4173,6 +4551,46 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
         Some(original),
         "the surviving preview is back at the shape it had"
     );
+    assert!(
+        frames.try_recv().is_none(),
+        "a refused reconcile must not queue a wire cancellation"
+    );
+    if let PreviewOutboundItem::Publication(publication) = &in_flight {
+        frames.complete(publication);
+    }
+}
+
+#[tokio::test]
+async fn interactive_preview_transport_commits_before_its_relay_resumes() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut session, outbound, frames) = browser_preview_session(handle, routing, executor);
+    let peer = PreviewTransportCapability::default().legacy_v1();
+    let mut capability = PreviewTransportCapability::default();
+    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
+    let staged = stage_preview_transport(&peer.encode(), &outbound, &cursors)
+        .expect("initial transport should stage");
+    let subscriptions = SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("interactive_preview", "main").with_config(
+                serde_json::to_value(interactive_preview_config()).expect("config serializes"),
+            ),
+        ])
+        .expect("interactive preview subscribe applies");
+
+    session
+        .reconcile_with_commit(&subscriptions, || {
+            assert!(
+                frames.try_recv().is_none(),
+                "the interactive relay stays quiescent until transport commit"
+            );
+            commit_preview_transport(staged, &outbound, &mut cursors, &mut capability).map(|_| ())
+        })
+        .await
+        .expect("transport and preview commit together");
+
+    assert_eq!(capability, peer);
+    assert!(session.publication_id("main").is_some());
 }
 
 #[tokio::test]
@@ -4493,7 +4911,7 @@ async fn an_interactive_preview_subscribe_without_an_executor_creates_no_input_a
         subscribe_interactive_preview(&mut session, "unavailable", interactive_preview_config())
             .await
             .expect_err("subscribing must fail when no render executor exists");
-    assert_eq!(error.code, "unavailable");
+    assert_eq!(error.code, "service_unavailable");
     assert_eq!(
         error
             .details
@@ -4564,13 +4982,64 @@ fn websocket_manifest_matches_protocol_constants() {
         })
         .collect::<Vec<_>>();
     assert_eq!(manifest_capabilities, ws_capabilities());
+    assert_eq!(manifest["version"], HYPERCOLOR_WS_VERSION);
+    assert_eq!(manifest["subprotocol"], HYPERCOLOR_WS_PROTOCOL);
+    let default_subscriptions = SubscriptionState::default()
+        .live_subscriptions()
+        .map(|subscription| subscription.topic.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        manifest["default_subscriptions"],
+        serde_json::json!(default_subscriptions)
+    );
+    let preview_defaults = PreviewTransportCapability::default();
     assert_eq!(
         manifest["preview_transport"]["max_publication_decoded_bytes"],
-        MAX_PREVIEW_PUBLICATION_BYTES
+        preview_defaults.max_decoded_publication_bytes
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_publication_encoded_bytes"],
+        preview_defaults.max_encoded_publication_bytes
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_connection_bytes"],
+        preview_defaults.max_connection_bytes
     );
     assert_eq!(
         manifest["preview_transport"]["max_message_bytes"],
-        super::protocol::MAX_WS_MESSAGE_BYTES
+        preview_defaults.max_message_bytes
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_chunk_count"],
+        preview_defaults.max_chunk_count
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_reassembly_state_bytes"],
+        preview_defaults.max_reassembly_state_bytes
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_tombstone_bytes"],
+        preview_defaults.max_tombstone_bytes
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_sender_state_bytes"],
+        preview_defaults.max_sender_state_bytes
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_cursor_state_bytes"],
+        preview_defaults.max_cursor_state_bytes
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_reassembly_streams"],
+        preview_defaults.max_streams
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_reassembly_tombstones"],
+        preview_defaults.max_tombstones
+    );
+    assert_eq!(
+        manifest["preview_transport"]["partial_idle_ms"],
+        preview_defaults.max_idle_ms
     );
     assert_eq!(
         manifest["preview_transport"]["min_message_bytes"],
@@ -5120,9 +5589,43 @@ fn frame_binary_encoder_writes_header_and_payload() {
         u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
         1234
     );
-    // The zone count is a u16: a u8 dropped every zone past 255 on a
-    // large rig without saying so (Spec 78 §7.1).
     assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 1);
+}
+
+#[test]
+fn led_frame_manifest_layout_matches_the_production_encoder() {
+    assert_eq!(
+        led_frame_codec_manifest()["layout"],
+        serde_json::json!([
+            ["u8", "tag"],
+            ["u32_le", "frame_number"],
+            ["u32_le", "timestamp_ms"],
+            ["u16_le", "zone_count"],
+            ["repeated_zone", "zones"],
+        ])
+    );
+    let frame = FrameData {
+        frame_number: 0x0403_0201,
+        timestamp_ms: 0x0807_0605,
+        zones: vec![
+            ZoneColors {
+                zone_id: "a".to_owned(),
+                colors: vec![[0x11, 0x22, 0x33]],
+            },
+            ZoneColors {
+                zone_id: "bc".to_owned(),
+                colors: vec![[0x44, 0x55, 0x66], [0x77, 0x88, 0x99]],
+            },
+        ],
+    };
+
+    assert_eq!(
+        encode_frame_binary(&frame),
+        [
+            0x01, 1, 2, 3, 4, 5, 6, 7, 8, 2, 0, 1, 0, b'a', 1, 0, 0x11, 0x22, 0x33, 2, 0, b'b',
+            b'c', 2, 0, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+        ]
+    );
 }
 
 #[test]
@@ -5174,6 +5677,24 @@ fn the_frame_zone_count_survives_past_the_old_u8_ceiling() {
         300,
         "a u8 count silently truncated this to 44"
     );
+}
+
+#[test]
+fn frame_binary_encoder_truncates_payload_at_the_u16_zone_limit() {
+    let zone = ZoneColors {
+        zone_id: "z".to_owned(),
+        colors: Vec::new(),
+    };
+    let frame = FrameData {
+        frame_number: 1,
+        timestamp_ms: 2,
+        zones: vec![zone; usize::from(u16::MAX) + 1],
+    };
+
+    let encoded = encode_frame_binary(&frame);
+
+    assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), u16::MAX);
+    assert_eq!(encoded.len(), 11 + usize::from(u16::MAX) * 5);
 }
 
 #[test]

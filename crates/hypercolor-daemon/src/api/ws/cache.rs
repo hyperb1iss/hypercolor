@@ -407,10 +407,21 @@ fn encode_filtered_frame_binary(
     out
 }
 
-/// Tag `0x01`'s header: tag, frame number, timestamp, and a `u16` zone
-/// count. The count was a `u8`, which silently dropped every zone past
-/// 255 on a large rig (Spec 78 §7.1).
+/// Tag `0x01`'s header: tag, frame number, timestamp, and a `u16` zone count.
 const FRAME_HEADER_LEN: usize = 11;
+
+pub(super) fn led_frame_codec_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "header_len": FRAME_HEADER_LEN,
+        "layout": [
+            ["u8", "tag"],
+            ["u32_le", "frame_number"],
+            ["u32_le", "timestamp_ms"],
+            ["u16_le", "zone_count"],
+            ["repeated_zone", "zones"],
+        ],
+    })
+}
 
 /// The most zones one frame can carry, bounded by the count field.
 const MAX_FRAME_ZONE_COUNT: usize = u16::MAX as usize;

@@ -706,7 +706,7 @@ Connection: Upgrade
 Sec-WebSocket-Protocol: hypercolor-v1
 ```
 
-On connection, the server sends a `hello` message with the current state:
+On connection, the server sends a thin `hello` message with runtime state:
 
 ```json
 {
@@ -716,15 +716,21 @@ On connection, the server sends a `hello` message with the current state:
     "running": true,
     "paused": false,
     "brightness": 85,
-    "fps": { "target": 60, "actual": 59.7 },
-    "effect": { "id": "aurora", "name": "Aurora" },
+    "fps": { "target": 60, "capacity": 59.7, "delivered": 59.2, "actual": 59.7 },
+    "scene": { "id": "...", "name": "Aurora", "snapshot_locked": false },
     "profile": { "id": "chill", "name": "Chill Mode" },
+    "layout": null,
     "device_count": 5,
     "total_leds": 842
   },
-  "capabilities": ["frames", "spectrum", "events", "commands"]
+  "capabilities": ["events", "frames", "spectrum", "canvas", "...", "commands", "preview_transport_v2;..."]
 }
 ```
+
+The handshake does not duplicate the multi-zone scene tree. Clients establish
+their subscriptions, wait for the initial `subscribed` acknowledgment, then
+fetch `GET /api/v1/scene`. Reconnects repeat that barrier because events are not
+replayed across a socket gap.
 
 ### 3.2 Subscription Model
 
@@ -733,37 +739,40 @@ Clients subscribe to specific channels to control bandwidth. By default, only `e
 ```json
 {
   "type": "subscribe",
-  "channels": ["frames", "spectrum", "events"],
-  "config": {
-    "frames": {
-      "fps": 30,
-      "format": "binary",
-      "zones": ["all"]
-    },
-    "spectrum": {
-      "fps": 30,
-      "bins": 64
-    }
-  }
+  "topics": [
+    { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
+    { "topic": "spectrum", "config": { "fps": 30, "bins": 64 } },
+    { "topic": "events" }
+  ]
 }
 ```
 
 **Available channels:**
 
-| Channel    | Data Type | Default FPS | Description                                          |
-| ---------- | --------- | ----------- | ---------------------------------------------------- |
-| `frames`   | Binary    | 30          | LED color data for all zones                         |
-| `spectrum` | Binary    | 30          | Audio FFT spectrum data                              |
-| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes)      |
-| `canvas`   | Binary    | 15          | Raw legacy 320 by 200 canvas pixels (for UI preview) |
-| `metrics`  | JSON      | 1           | Performance metrics (FPS, latency, memory)           |
+| Channel | Data Type | Default cadence | Description |
+| --- | --- | --- | --- |
+| `events` | JSON | Push | Discrete system events |
+| `frame_events` | JSON | Push | Per-frame render events |
+| `frames` | Binary | 30 FPS | LED color data by zone |
+| `spectrum` | Binary | 30 FPS | Audio spectrum and levels |
+| `canvas` | Binary | 15 FPS | Composed render canvas at negotiated dimensions |
+| `screen_canvas` | Binary | 15 FPS | Screen capture canvas |
+| `screen_zones` | Binary | 15 FPS | Screen ambilight zone grid |
+| `web_viewport_canvas` | Binary | 15 FPS | HTML effect viewport |
+| `zone_preview` | Binary | 15 FPS | Active scene zone previews |
+| `metrics` | JSON | 1000 ms | Render performance telemetry |
+| `device_metrics` | JSON | 1000 ms | Device output telemetry |
+| `sensors` | JSON | Latest value | Host sensor snapshot |
+| `display_preview` | Binary | 15 FPS | Keyed device display preview |
+| `interactive_preview` | Binary | 30 FPS | Keyed interactive render lane |
+| `input_events` | JSON | Push | Timed input events |
 
 Unsubscribe:
 
 ```json
 {
   "type": "unsubscribe",
-  "channels": ["canvas"]
+  "topics": [{ "topic": "canvas" }]
 }
 ```
 
@@ -777,7 +786,7 @@ LED frame data uses a compact binary format to minimize bandwidth. A binary WebS
 Byte 0:     0x01 (frame type)
 Bytes 1-4:  frame_number (u32 LE)
 Bytes 5-8:  timestamp_ms (u32 LE) — millis since daemon start
-Byte 9:     zone_count (u8)
+Bytes 9-10: zone_count (u16 LE)
 
 For each zone:
   Bytes 0-1:  zone_id_length (u16 LE)
@@ -786,7 +795,7 @@ For each zone:
   Bytes N+3-...: RGB triplets (led_count * 3 bytes)
 ```
 
-For a typical setup with 842 LEDs across 5 zones, a frame message is approximately `9 + (5 * ~16) + (842 * 3) = 2,615 bytes` per frame. At 30fps, that's **~78 KB/s** — negligible.
+For a typical setup with 842 LEDs across 5 zones, a frame message is approximately `11 + (5 * ~16) + (842 * 3) = 2,617 bytes` per frame. At 30fps, that is **~78 KB/s**, which is negligible.
 
 **Spectrum message (type `0x02`):**
 
@@ -805,19 +814,14 @@ Bytes 27-...: bins (bin_count * f32 LE)
 
 With 64 bins: `27 + 256 = 283 bytes` per message. At 30fps: **~8.5 KB/s**.
 
-**Canvas message (type `0x03`):**
+**Canvas messages:**
 
-```
-Byte 0:     0x03 (canvas type)
-Bytes 1-4:  frame_number (u32 LE)
-Bytes 5-8:  timestamp_ms (u32 LE)
-Bytes 9-10: width (u16 LE) — 320
-Bytes 11-12: height (u16 LE) — 200
-Byte 13:    format (u8) — 0=RGB, 1=RGBA
-Bytes 14-...: pixel data (width * height * 3 or 4)
-```
-
-Full canvas at RGB: `14 + 192,000 = 192,014 bytes`. At 15fps: **~2.8 MB/s**. Only subscribe when the spatial editor is open.
+Canvas dimensions and cadence are configurable. Preview transport v2 selects
+the legacy, wide, chunk, or cancellation envelope required by each
+publication. The generated layouts and limits are authoritative in
+[`protocol/websocket-v1.json`](../../protocol/websocket-v1.json). The public
+decoder guide is
+[`docs/content/api/websocket-binary-frames.md`](../content/api/websocket-binary-frames.md).
 
 ### 3.4 JSON Event Messages
 
@@ -826,11 +830,13 @@ Event messages use a consistent envelope:
 ```json
 {
   "type": "event",
-  "event": "effect_changed",
+  "event": "effect_started",
   "timestamp": "2026-03-01T12:00:00.123Z",
   "data": {
-    "previous": { "id": "rainbow", "name": "Rainbow" },
-    "current": { "id": "aurora", "name": "Aurora" }
+    "effect": { "id": "aurora", "name": "Aurora", "engine": "native" },
+    "previous": { "id": "rainbow", "name": "Rainbow", "engine": "native" },
+    "zone_id": "018f5f8f-20f8-7e69-a6a0-5c0fc23e7481",
+    "zone_name": "Desk"
   }
 }
 ```
@@ -868,7 +874,11 @@ This avoids the overhead of establishing separate HTTP connections for UI intera
 
 ### 3.6 Reconnection & State Recovery
 
-When a WebSocket reconnects, the server sends a fresh `hello` message with the current state. There is no message replay — the `hello` provides a complete state snapshot. For frame data, the client simply resumes receiving from the current frame.
+When a WebSocket reconnects, the server sends a thin `hello` message with
+runtime state only. There is no event replay and the handshake does not carry
+the live scene tree. The client re-subscribes, waits for the first `subscribed`
+acknowledgment, then refetches the REST resources it mirrors. For frame data,
+the client resumes receiving from the current frame.
 
 **Reconnection strategy (client-side):**
 
@@ -877,7 +887,7 @@ Attempt 1: immediate
 Attempt 2: 500ms delay
 Attempt 3: 1s delay
 Attempt 4+: exponential backoff, max 30s
-On reconnect: re-send subscribe message, rebuild state from hello
+On reconnect: re-send subscribe message, wait for subscribed, refetch REST state
 ```
 
 ### 3.7 Compression
@@ -1698,38 +1708,32 @@ The CLI uses the same response envelope as other REST clients.
 
 ### 6.4 Streaming (Watch Mode)
 
-For live monitoring, the CLI can subscribe to the event stream:
+For live monitoring, a client subscribes to the event stream:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "subscribe",
-  "params": {
-    "channels": ["events"],
-    "filter": ["effect_changed", "device_connected", "device_disconnected"]
+  "type": "subscribe",
+  "topics": [{ "topic": "events" }]
+}
+```
+
+The daemon sends event messages for live changes after the subscription is
+active:
+
+```json
+{
+  "type": "event",
+  "event": "effect_started",
+  "timestamp": "2026-03-01T12:00:00Z",
+  "data": {
+    "effect": { "id": "aurora", "name": "Aurora", "engine": "native" },
+    "zone_id": "018f5f8f-20f8-7e69-a6a0-5c0fc23e7481"
   }
 }
 ```
 
-The daemon sends JSON-RPC notifications (no `id` field) for each matching event:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "event",
-  "params": {
-    "type": "effect_changed",
-    "timestamp": "2026-03-01T12:00:00Z",
-    "data": {
-      "previous": { "id": "rainbow", "name": "Rainbow" },
-      "current": { "id": "aurora", "name": "Aurora" }
-    }
-  }
-}
-```
-
-This powers `hypercolor watch` — a live terminal dashboard of system events.
+The event stream is live-only. After the first `subscribed` acknowledgment on
+every connection, clients refetch the REST resources they mirror.
 
 ### 6.5 Shell Completion Data
 
@@ -2109,12 +2113,6 @@ pub enum HypercolorEvent {
         layout_id: String,
     },
 
-    // === Input Events ===
-    InputSourceChanged {
-        input_id: String,
-        input_type: String,
-        enabled: bool,
-    },
     AudioBeat {
         confidence: f32,
         bpm: Option<f32>,
@@ -2653,18 +2651,10 @@ The spec includes a `x-sunset-date` extension on deprecated operations.
 
 ### WebSocket Message Types
 
-| Direction | Type          | Format | Description               |
-| --------- | ------------- | ------ | ------------------------- |
-| S→C       | `hello`       | JSON   | Initial state on connect  |
-| C→S       | `subscribe`   | JSON   | Subscribe to channels     |
-| C→S       | `unsubscribe` | JSON   | Unsubscribe from channels |
-| S→C       | `0x01`        | Binary | LED frame data            |
-| S→C       | `0x02`        | Binary | Audio spectrum data       |
-| S→C       | `0x03`        | Binary | Canvas pixel data         |
-| S→C       | `event`       | JSON   | System event notification |
-| S→C       | `metrics`     | JSON   | Performance metrics       |
-| C→S       | `command`     | JSON   | REST-equivalent command   |
-| S→C       | `response`    | JSON   | Command response          |
+The complete JSON vocabulary, binary tags, topic ownership, layouts, limits,
+and default subscriptions are generated in
+[`protocol/websocket-v1.json`](../../protocol/websocket-v1.json). The public
+protocol guide is [`docs/content/api/websocket.md`](../content/api/websocket.md).
 
 ### MCP Tool Summary
 

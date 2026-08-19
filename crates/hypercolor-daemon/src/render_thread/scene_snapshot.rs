@@ -693,6 +693,7 @@ mod tests {
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
     use crate::session::OutputPowerState;
+    use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
     use hypercolor_types::display::DisplayPixelFormat;
 
     use super::{
@@ -1081,7 +1082,12 @@ mod tests {
         };
         state
             .zone_layout_previews
-            .set(scene_id, group_id, preview_layout.clone())
+            .set(
+                ZoneLayoutPreviewOwner::new(),
+                scene_id,
+                group_id,
+                preview_layout.clone(),
+            )
             .await;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();

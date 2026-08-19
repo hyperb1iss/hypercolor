@@ -1,10 +1,12 @@
 //! Scene API client — `/api/v1/scenes/*` routes.
 
 use super::client;
+use gloo_net::http::Method;
 
 // Wire contracts are shared with the daemon (hypercolor-types::api::scenes).
+pub use hypercolor_types::api::scene::SceneDocument;
 pub use hypercolor_types::api::scenes::{
-    ActiveSceneResponse, CreateSceneRequest, SceneListResponse, SceneSummary, UpdateSceneRequest,
+    ActiveSceneResponse, CreateSceneRequest, ReplaceSceneRequest, SceneListResponse, SceneSummary,
 };
 
 pub async fn fetch_active_scene() -> Result<Option<ActiveSceneResponse>, String> {
@@ -38,22 +40,25 @@ pub async fn create_scene(name: &str) -> Result<SceneSummary, String> {
         .map_err(Into::into)
 }
 
-/// Rename a scene. `description` is sent back verbatim because the
-/// daemon's PUT replaces it wholesale — omitting it would clear the field.
-pub async fn rename_scene(
-    scene_id: &str,
-    name: &str,
-    description: Option<&str>,
-) -> Result<(), String> {
-    let request = UpdateSceneRequest {
-        name: name.to_owned(),
-        description: description.map(ToOwned::to_owned),
-        ..UpdateSceneRequest::default()
-    };
-    client::put_json::<_, serde_json::Value>(&format!("/api/v1/scenes/{scene_id}"), &request)
-        .await
-        .map(|_| ())
-        .map_err(Into::into)
+/// Rename a scene through the guarded whole-document replacement route.
+pub async fn rename_scene(scene_id: &str, name: &str) -> Result<(), String> {
+    let url = format!("/api/v1/scenes/{scene_id}");
+    let mut document = client::fetch_json::<SceneDocument>(&url).await?;
+    document.name = name.to_owned();
+    let request = ReplaceSceneRequest::from(&document);
+    match client::send_json_versioned::<_, SceneDocument>(
+        Method::PUT,
+        &url,
+        Some(&request),
+        Some(document.revision),
+    )
+    .await?
+    {
+        client::MutationOutcome::Applied(_) => Ok(()),
+        client::MutationOutcome::Stale { current } => Err(format!(
+            "Scene changed while it was being renamed; reload revision {current}"
+        )),
+    }
 }
 
 /// Delete a scene.

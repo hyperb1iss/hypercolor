@@ -143,16 +143,29 @@ fn effect_layer_source(effect_id: &str, prefs: Option<&EffectPreferences>) -> Op
     })
 }
 
+pub(super) struct ActiveEffectApiSnapshot {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) controls: Vec<ControlDefinition>,
+    pub(super) control_values: HashMap<String, ControlValue>,
+    pub(super) active_preset_id: Option<String>,
+    pub(super) active_preset_modified: bool,
+    pub(super) is_playing: bool,
+}
+
 pub(super) fn apply_active_effect_snapshot(
     ctx: &EffectsContext,
-    id: String,
-    name: String,
-    controls: Vec<ControlDefinition>,
-    control_values: HashMap<String, ControlValue>,
-    active_preset_id: Option<String>,
-    active_preset_modified: bool,
-    is_playing: bool,
+    snapshot: ActiveEffectApiSnapshot,
 ) {
+    let ActiveEffectApiSnapshot {
+        id,
+        name,
+        controls,
+        control_values,
+        active_preset_id,
+        active_preset_modified,
+        is_playing,
+    } = snapshot;
     let category = ctx
         .effect_summary(&id)
         .map(|effect| effect.category)

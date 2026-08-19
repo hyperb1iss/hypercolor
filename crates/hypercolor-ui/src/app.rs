@@ -49,9 +49,9 @@ use crate::ws::{
 mod effect_state;
 
 use effect_state::{
-    apply_active_effect_snapshot, apply_active_scene_snapshot, apply_effect_to_current_led_zones,
-    capture_active_effect_state, clear_active_scene_state, effect_error_toast_message,
-    preferences_restore_inline, restore_active_effect_state,
+    ActiveEffectApiSnapshot, apply_active_effect_snapshot, apply_active_scene_snapshot,
+    apply_effect_to_current_led_zones, capture_active_effect_state, clear_active_scene_state,
+    effect_error_toast_message, preferences_restore_inline, restore_active_effect_state,
 };
 
 /// Global WebSocket state provided via Leptos context.
@@ -248,13 +248,15 @@ impl EffectsContext {
                     let is_playing = active.state != "paused";
                     apply_active_effect_snapshot(
                         &ctx,
-                        active.id.clone(),
-                        active.name,
-                        active.controls,
-                        active.control_values,
-                        active.active_preset_id,
-                        active.active_preset_modified,
-                        is_playing,
+                        ActiveEffectApiSnapshot {
+                            id: active.id,
+                            name: active.name,
+                            controls: active.controls,
+                            control_values: active.control_values,
+                            active_preset_id: active.active_preset_id,
+                            active_preset_modified: active.active_preset_modified,
+                            is_playing,
+                        },
                     );
                 }
                 Ok(None) => ctx.set_is_playing.set(false),
@@ -804,13 +806,15 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             let is_playing = active.state != "paused";
             apply_active_effect_snapshot(
                 &effects_ctx,
-                active.id,
-                active.name,
-                active.controls,
-                active.control_values,
-                active.active_preset_id,
-                active.active_preset_modified,
-                is_playing,
+                ActiveEffectApiSnapshot {
+                    id: active.id,
+                    name: active.name,
+                    controls: active.controls,
+                    control_values: active.control_values,
+                    active_preset_id: active.active_preset_id,
+                    active_preset_modified: active.active_preset_modified,
+                    is_playing,
+                },
             );
         } else if let Some(Ok(None)) = active_resource.get() {
             effects_ctx.set_is_playing.set(false);

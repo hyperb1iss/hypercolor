@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
@@ -29,8 +30,8 @@ const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 // web UI and the TUI.
 pub use hypercolor_types::api::scenes::{
     ActivateSceneResponse, ActivatedSceneRef, ActiveSceneResponse, CreateSceneRequest,
-    DeactivateSceneResponse, DeleteSceneResponse, SceneListResponse, SceneSummary,
-    UpdateSceneRequest,
+    DeactivateSceneResponse, DeleteSceneResponse, ReplaceSceneRequest, SceneListResponse,
+    SceneSummary,
 };
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -69,7 +70,11 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    ApiResponse::ok(scene_summary(scene))
+    let revision = state.scene_commits.revision();
+    crate::api::scene::with_revision(
+        ApiResponse::ok(crate::domain::scene_tree::scene_document(scene, revision)),
+        revision,
+    )
 }
 
 /// `GET /api/v1/scenes/active` — Get the currently active scene, including Default.
@@ -120,24 +125,27 @@ pub async fn create_scene(
     ApiResponse::created(scene_summary(&created.scene))
 }
 
-/// `PUT /api/v1/scenes/:id` — Update a scene.
+/// `PUT /api/v1/scenes/:id` — Replace a complete stored scene document.
 pub async fn update_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateSceneRequest>,
+    headers: HeaderMap,
+    Json(body): Json<ReplaceSceneRequest>,
 ) -> Response {
+    let expected_revision = match crate::api::scene::parse_if_match(&headers) {
+        Ok(revision) => revision,
+        Err(error) => return error.into_response(),
+    };
     let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    let updated = match crate::domain::scene::update_scene(
+    let updated = match crate::domain::scene::replace_scene(
         state.as_ref(),
-        crate::domain::scene::UpdateScene {
+        crate::domain::scene::ReplaceScene {
             scene_id,
-            name: body.name,
-            description: body.description,
-            enabled: body.enabled,
-            mutation_mode: body.mutation_mode,
+            document: body,
+            expected_revision,
         },
         crate::domain::MutationContext::api(),
     )
@@ -152,7 +160,14 @@ pub async fn update_scene(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(scene_summary(&updated.scene))
+    let revision = updated.commit.revision();
+    crate::api::scene::with_revision(
+        ApiResponse::ok(crate::domain::scene_tree::scene_document(
+            &updated.scene,
+            revision,
+        )),
+        revision,
+    )
 }
 
 /// `DELETE /api/v1/scenes/:id` — Delete a scene.

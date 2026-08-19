@@ -324,7 +324,7 @@ A few of the fifteen; the full list lives in `protocol/websocket-v1.json`.
 | Topic             | Key       | Default      | Description                     | Config Options                                |
 | ----------------- | --------- | ------------ | ------------------------------- | --------------------------------------------- |
 | `events`          | —         | subscribed   | System events and state changes | none                                          |
-| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `format` (binary/json), `zones` |
+| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `zones`                         |
 | `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)         |
 | `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)             |
 | `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)                     |
@@ -339,7 +339,7 @@ that subscription's config patch.
 {
   "type": "subscribe",
   "topics": [
-    { "topic": "frames", "config": { "fps": 30, "format": "binary", "zones": ["all"] } },
+    { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
     { "topic": "metrics", "config": { "interval_ms": 500 } }
   ]
 }
@@ -379,7 +379,7 @@ that subscription's config patch.
     "paused": false,
     "brightness": 80,
     "fps": { "target": 60, "actual": 59.8 },
-    "effect": { "id": "borealis-01", "name": "Borealis" },
+    "scene": { "id": "scene-01", "name": "Main", "snapshot_locked": false },
     "profile": { "id": "default", "name": "Default" },
     "layout": { "id": "main", "name": "Main Setup" },
     "device_count": 5,
@@ -447,7 +447,7 @@ that subscription's config patch.
   "type": "backpressure",
   "dropped_frames": 12,
   "topic": "frames",
-  "recommendation": "Reduce fps or enable selective frame filtering",
+  "recommendation": "reduce_fps",
   "suggested_fps": 15
 }
 ```
@@ -457,7 +457,7 @@ that subscription's config patch.
 ```json
 {
   "type": "error",
-  "code": "invalid_config",
+  "code": "validation_error",
   "message": "Invalid configuration for config.frames.fps: expected 1..=60",
   "details": { "field": "config.frames.fps", "reason": "expected 1..=60" }
 }
@@ -1030,7 +1030,7 @@ RUST_LOG=hypercolor_core::device::usb_backend=debug just daemon 2>&1 | grep -i "
 curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
 
 # 2. Monitor frame data via WebSocket
-echo '{"type":"subscribe","topics":[{"topic":"frames","config":{"fps":1,"format":"json"}}]}' | \
+echo '{"type":"subscribe","topics":[{"topic":"frames","config":{"fps":1,"zones":["all"]}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 
 # 3. Trace the render pipeline stages

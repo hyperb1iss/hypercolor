@@ -84,18 +84,6 @@ pub fn SceneSelector() -> impl IntoView {
             .and_then(Result::ok)
             .is_some_and(|list| list.iter().any(|scene| scene.id == id))
     });
-    // The active scene's description, echoed back verbatim on rename: the
-    // daemon's PUT replaces the field wholesale, so omitting it clears it.
-    let active_description = Signal::derive(move || {
-        let id = active_id.get()?;
-        scenes
-            .get()
-            .and_then(Result::ok)?
-            .into_iter()
-            .find(|scene| scene.id == id)
-            .and_then(|scene| scene.description)
-    });
-
     let activate = Callback::new(move |id: String| {
         if active_id.get_untracked().as_deref() == Some(id.as_str()) {
             return;
@@ -146,9 +134,8 @@ pub fn SceneSelector() -> impl IntoView {
         if name.is_empty() || active_name.get_untracked().as_deref() == Some(name.as_str()) {
             return;
         }
-        let description = active_description.get_untracked();
         spawn_local(async move {
-            match api::rename_scene(&id, &name, description.as_deref()).await {
+            match api::rename_scene(&id, &name).await {
                 Ok(()) => {
                     refresh_scene.run(());
                     refetch_scenes();

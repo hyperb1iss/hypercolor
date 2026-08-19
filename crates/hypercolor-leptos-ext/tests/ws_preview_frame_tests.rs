@@ -7,17 +7,143 @@ use hypercolor_leptos_ext::ws::{
     DISPLAY_PREVIEW_ID_MAX_BYTES, DisplayPreviewFrame, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
     EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
     INTERACTIVE_PREVIEW_FRAME_TAG, INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame,
-    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG,
-    PREVIEW_FRAME_HEADER_LEN, PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError,
-    PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
-    PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability, PreviewTransportVersion,
-    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
-    WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
-    WIDE_SCREEN_ZONES_FRAME_HEADER_LEN, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
-    ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
+    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CANCEL_SCHEMA, PREVIEW_CHUNK_FIXED_HEADER_LEN,
+    PREVIEW_CHUNK_FRAME_TAG, PREVIEW_CHUNK_SCHEMA, PREVIEW_FRAME_HEADER_LEN,
+    PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError, PreviewChunkFrame,
+    PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
+    PreviewPixelFormat, PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
+    PreviewTransportCapability, PreviewTransportVersion, SCREEN_ZONES_FRAME_HEADER_LEN,
+    SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame, SpectrumFrame, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
+    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, codec_binary_messages, codec_frame_layouts,
     split_preview_publication, split_preview_publication_with_capability,
 };
+
+#[derive(Debug, PartialEq)]
+enum ManifestFieldValue {
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    F32(f32),
+    Uuid([u8; 16]),
+    Utf8(String),
+    Bytes(Vec<u8>),
+    F32List(Vec<f32>),
+    RgbList(Vec<[u8; 3]>),
+}
+
+fn assert_manifest_layout(
+    layout_name: &str,
+    encoded: &[u8],
+    expected: &[(&str, ManifestFieldValue)],
+) {
+    let mut layouts = codec_frame_layouts();
+    layouts.extend(codec_binary_messages());
+    let layout = layouts[layout_name]["layout"]
+        .as_array()
+        .expect("codec layout is an array");
+    assert_eq!(layout.len(), expected.len(), "{layout_name} field count");
+
+    let mut offset = 0;
+    for (descriptor, (expected_name, expected_value)) in layout.iter().zip(expected) {
+        let descriptor = descriptor.as_array().expect("field descriptor is an array");
+        let encoding = descriptor[0].as_str().expect("field encoding is a string");
+        let field_name = descriptor[1].as_str().expect("field name is a string");
+        assert_eq!(
+            field_name, *expected_name,
+            "{layout_name} field at {offset}"
+        );
+
+        let actual = match (encoding, expected_value) {
+            ("u8", ManifestFieldValue::U8(_)) => {
+                let value = encoded[offset];
+                offset += 1;
+                ManifestFieldValue::U8(value)
+            }
+            ("u16_le", ManifestFieldValue::U16(_)) => {
+                let value = u16::from_le_bytes(
+                    encoded[offset..offset + 2]
+                        .try_into()
+                        .expect("u16 field is complete"),
+                );
+                offset += 2;
+                ManifestFieldValue::U16(value)
+            }
+            ("u32_le", ManifestFieldValue::U32(_)) => {
+                let value = u32::from_le_bytes(
+                    encoded[offset..offset + 4]
+                        .try_into()
+                        .expect("u32 field is complete"),
+                );
+                offset += 4;
+                ManifestFieldValue::U32(value)
+            }
+            ("u64_le", ManifestFieldValue::U64(_)) => {
+                let value = u64::from_le_bytes(
+                    encoded[offset..offset + 8]
+                        .try_into()
+                        .expect("u64 field is complete"),
+                );
+                offset += 8;
+                ManifestFieldValue::U64(value)
+            }
+            ("f32_le", ManifestFieldValue::F32(_)) => {
+                let value = f32::from_le_bytes(
+                    encoded[offset..offset + 4]
+                        .try_into()
+                        .expect("f32 field is complete"),
+                );
+                offset += 4;
+                ManifestFieldValue::F32(value)
+            }
+            ("uuid", ManifestFieldValue::Uuid(_)) => {
+                let value = encoded[offset..offset + 16]
+                    .try_into()
+                    .expect("UUID field is complete");
+                offset += 16;
+                ManifestFieldValue::Uuid(value)
+            }
+            ("utf8", ManifestFieldValue::Utf8(value)) => {
+                let length = value.len();
+                let actual = String::from_utf8(encoded[offset..offset + length].to_vec())
+                    .expect("UTF-8 field is valid");
+                offset += length;
+                ManifestFieldValue::Utf8(actual)
+            }
+            ("bytes", ManifestFieldValue::Bytes(value)) => {
+                let length = value.len();
+                let actual = encoded[offset..offset + length].to_vec();
+                offset += length;
+                ManifestFieldValue::Bytes(actual)
+            }
+            ("repeated_f32_le", ManifestFieldValue::F32List(value)) => {
+                let actual = encoded[offset..offset + value.len() * 4]
+                    .chunks_exact(4)
+                    .map(|chunk| {
+                        f32::from_le_bytes(chunk.try_into().expect("f32 list item is complete"))
+                    })
+                    .collect();
+                offset += value.len() * 4;
+                ManifestFieldValue::F32List(actual)
+            }
+            ("repeated_u8_rgb", ManifestFieldValue::RgbList(value)) => {
+                let actual = encoded[offset..offset + value.len() * 3]
+                    .chunks_exact(3)
+                    .map(|chunk| <[u8; 3]>::try_from(chunk).expect("RGB list item is complete"))
+                    .collect();
+                offset += value.len() * 3;
+                ManifestFieldValue::RgbList(actual)
+            }
+            _ => panic!(
+                "{layout_name}.{field_name} declares {encoding}, incompatible with {expected_value:?}"
+            ),
+        };
+        assert_eq!(actual, *expected_value, "{layout_name}.{field_name}");
+    }
+    assert_eq!(offset, encoded.len(), "{layout_name} encoded length");
+}
 
 fn jpeg_payload(width: u32, height: u32, len: usize) -> Bytes {
     let width = u16::try_from(width).expect("JPEG fixture width fits u16");
@@ -38,6 +164,512 @@ fn jpeg_payload(width: u32, height: u32, len: usize) -> Bytes {
     assert!(len >= payload.len());
     payload.resize(len, 0);
     Bytes::from(payload)
+}
+
+#[test]
+fn codec_manifest_layouts_match_production_encoders_field_by_field() {
+    let preview_payload = vec![0xA1, 0xB2, 0xC3];
+    let preview = PreviewFrame {
+        channel: PreviewFrameChannel::Canvas,
+        frame_number: 0x0403_0201,
+        timestamp_ms: 0x0807_0605,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(preview_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "preview_frame",
+        &preview,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(PreviewFrameChannel::Canvas.tag()),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x0403_0201)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x0807_0605)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(preview_payload)),
+        ],
+    );
+
+    let wide_payload = vec![0x5A; 70_001 * 3];
+    let wide_preview = PreviewFrame {
+        channel: PreviewFrameChannel::WebViewportCanvas,
+        frame_number: 0x1413_1211,
+        timestamp_ms: 0x1817_1615,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "wide_preview_frame",
+        &wide_preview,
+        &[
+            ("tag", ManifestFieldValue::U8(WIDE_PREVIEW_FRAME_TAG)),
+            (
+                "channel_tag",
+                ManifestFieldValue::U8(PreviewFrameChannel::WebViewportCanvas.tag()),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x1413_1211)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x1817_1615)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(wide_payload)),
+        ],
+    );
+
+    let scene_id = [0x31; 16];
+    let zone_id = [0x42; 16];
+    let zone_payload = vec![0x51, 0x62, 0x73, 0x84];
+    let zone = ZonePreviewFrame {
+        scene_id,
+        zone_id,
+        frame_number: 0x2423_2221,
+        timestamp_ms: 0x2827_2625,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from(zone_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "zone_preview_frame",
+        &zone,
+        &[
+            ("tag", ManifestFieldValue::U8(ZONE_PREVIEW_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x2423_2221)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x2827_2625)),
+            ("scene_id", ManifestFieldValue::Uuid(scene_id)),
+            ("zone_id", ManifestFieldValue::Uuid(zone_id)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgba.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(zone_payload)),
+        ],
+    );
+
+    let wide_zone_payload = vec![0x6B; 70_001 * 3];
+    let wide_zone = ZonePreviewFrame {
+        scene_id,
+        zone_id,
+        frame_number: 0x3433_3231,
+        timestamp_ms: 0x3837_3635,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_zone_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "wide_zone_preview_frame",
+        &wide_zone,
+        &[
+            ("tag", ManifestFieldValue::U8(WIDE_ZONE_PREVIEW_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x3433_3231)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x3837_3635)),
+            ("scene_id", ManifestFieldValue::Uuid(scene_id)),
+            ("zone_id", ManifestFieldValue::Uuid(zone_id)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(wide_zone_payload)),
+        ],
+    );
+
+    let interactive_id = "preview-layout".to_owned();
+    let interactive_payload = vec![0x17, 0x28, 0x39];
+    let interactive = InteractivePreviewFrame {
+        preview_id: interactive_id.clone(),
+        frame_number: 0x4443_4241,
+        timestamp_ms: 0x4847_4645,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(interactive_payload.clone()),
+    }
+    .encode()
+    .expect("interactive frame encodes");
+    assert_manifest_layout(
+        "interactive_preview_frame",
+        &interactive,
+        &[
+            ("tag", ManifestFieldValue::U8(INTERACTIVE_PREVIEW_FRAME_TAG)),
+            (
+                "preview_id_len",
+                ManifestFieldValue::U8(u8::try_from(interactive_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x4443_4241)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x4847_4645)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            (
+                "preview_id",
+                ManifestFieldValue::Utf8(interactive_id.clone()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(interactive_payload)),
+        ],
+    );
+
+    let wide_interactive_payload = vec![0x29; 70_001 * 3];
+    let wide_interactive = InteractivePreviewFrame {
+        preview_id: interactive_id.clone(),
+        frame_number: 0x5453_5251,
+        timestamp_ms: 0x5857_5655,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_interactive_payload.clone()),
+    }
+    .encode()
+    .expect("wide interactive frame encodes");
+    assert_manifest_layout(
+        "wide_interactive_preview_frame",
+        &wide_interactive,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(WIDE_INTERACTIVE_PREVIEW_FRAME_TAG),
+            ),
+            (
+                "preview_id_len",
+                ManifestFieldValue::U8(u8::try_from(interactive_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x5453_5251)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x5857_5655)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("preview_id", ManifestFieldValue::Utf8(interactive_id)),
+            (
+                "payload",
+                ManifestFieldValue::Bytes(wide_interactive_payload),
+            ),
+        ],
+    );
+
+    let device_id = "display-layout".to_owned();
+    let display_payload = vec![0x3A, 0x4B, 0x5C, 0x6D];
+    let display = DisplayPreviewFrame {
+        device_id: device_id.clone(),
+        frame_number: 0x6463_6261,
+        timestamp_ms: 0x6867_6665,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from(display_payload.clone()),
+    }
+    .encode()
+    .expect("display frame encodes");
+    assert_manifest_layout(
+        "display_preview_frame",
+        &display,
+        &[
+            ("tag", ManifestFieldValue::U8(DISPLAY_PREVIEW_FRAME_TAG)),
+            (
+                "device_id_len",
+                ManifestFieldValue::U8(u8::try_from(device_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x6463_6261)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x6867_6665)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgba.tag()),
+            ),
+            ("device_id", ManifestFieldValue::Utf8(device_id.clone())),
+            ("payload", ManifestFieldValue::Bytes(display_payload)),
+        ],
+    );
+
+    let wide_display_payload = vec![0x7E; 70_001 * 3];
+    let wide_display = DisplayPreviewFrame {
+        device_id: device_id.clone(),
+        frame_number: 0x7473_7271,
+        timestamp_ms: 0x7877_7675,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_display_payload.clone()),
+    }
+    .encode()
+    .expect("wide display frame encodes");
+    assert_manifest_layout(
+        "wide_display_preview_frame",
+        &wide_display,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(WIDE_DISPLAY_PREVIEW_FRAME_TAG),
+            ),
+            (
+                "device_id_len",
+                ManifestFieldValue::U8(u8::try_from(device_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x7473_7271)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x7877_7675)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("device_id", ManifestFieldValue::Utf8(device_id)),
+            ("payload", ManifestFieldValue::Bytes(wide_display_payload)),
+        ],
+    );
+
+    let screen_colors = vec![[0x10, 0x20, 0x30], [0x40, 0x50, 0x60]];
+    let screen = ScreenZonesFrame {
+        frame_number: 0x8483_8281,
+        timestamp_ms: 0x8887_8685,
+        source_width: 0x1211,
+        source_height: 0x1413,
+        grid_cols: 2,
+        grid_rows: 1,
+        letterbox: [3, 4, 5, 6],
+        payload: Bytes::from(screen_colors.iter().flatten().copied().collect::<Vec<_>>()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "screen_zones_frame",
+        &screen,
+        &[
+            ("tag", ManifestFieldValue::U8(SCREEN_ZONES_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x8483_8281)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x8887_8685)),
+            ("source_width", ManifestFieldValue::U16(0x1211)),
+            ("source_height", ManifestFieldValue::U16(0x1413)),
+            ("grid_cols", ManifestFieldValue::U8(2)),
+            ("grid_rows", ManifestFieldValue::U8(1)),
+            ("letterbox_top", ManifestFieldValue::U8(3)),
+            ("letterbox_bottom", ManifestFieldValue::U8(4)),
+            ("letterbox_left", ManifestFieldValue::U8(5)),
+            ("letterbox_right", ManifestFieldValue::U8(6)),
+            (
+                "zone_colors",
+                ManifestFieldValue::RgbList(screen_colors.clone()),
+            ),
+        ],
+    );
+
+    let wide_screen = ScreenZonesFrame {
+        frame_number: 0x9493_9291,
+        timestamp_ms: 0x9897_9695,
+        source_width: 70_001,
+        source_height: 70_002,
+        grid_cols: 2,
+        grid_rows: 1,
+        letterbox: [7, 8, 9, 10],
+        payload: Bytes::from(screen_colors.iter().flatten().copied().collect::<Vec<_>>()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "wide_screen_zones_frame",
+        &wide_screen,
+        &[
+            ("tag", ManifestFieldValue::U8(WIDE_SCREEN_ZONES_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x9493_9291)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x9897_9695)),
+            ("source_width", ManifestFieldValue::U32(70_001)),
+            ("source_height", ManifestFieldValue::U32(70_002)),
+            ("grid_cols", ManifestFieldValue::U8(2)),
+            ("grid_rows", ManifestFieldValue::U8(1)),
+            ("letterbox_top", ManifestFieldValue::U8(7)),
+            ("letterbox_bottom", ManifestFieldValue::U8(8)),
+            ("letterbox_left", ManifestFieldValue::U8(9)),
+            ("letterbox_right", ManifestFieldValue::U8(10)),
+            (
+                "zone_colors",
+                ManifestFieldValue::RgbList(screen_colors.clone()),
+            ),
+        ],
+    );
+
+    let extended_colors = vec![[0x21, 0x32, 0x43]; 256];
+    let extended_screen = ScreenZonesFrame {
+        frame_number: 0xA4A3_A2A1,
+        timestamp_ms: 0xA8A7_A6A5,
+        source_width: 0x2423,
+        source_height: 0x2625,
+        grid_cols: 256,
+        grid_rows: 1,
+        letterbox: [257, 258, 259, 260],
+        payload: Bytes::from(
+            extended_colors
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
+        ),
+    }
+    .encode();
+    assert_manifest_layout(
+        "extended_screen_zones_frame",
+        &extended_screen,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(EXTENDED_SCREEN_ZONES_FRAME_TAG),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0xA4A3_A2A1)),
+            ("timestamp_ms", ManifestFieldValue::U32(0xA8A7_A6A5)),
+            ("source_width", ManifestFieldValue::U32(0x2423)),
+            ("source_height", ManifestFieldValue::U32(0x2625)),
+            ("grid_cols", ManifestFieldValue::U32(256)),
+            ("grid_rows", ManifestFieldValue::U32(1)),
+            ("letterbox_top", ManifestFieldValue::U32(257)),
+            ("letterbox_bottom", ManifestFieldValue::U32(258)),
+            ("letterbox_left", ManifestFieldValue::U32(259)),
+            ("letterbox_right", ManifestFieldValue::U32(260)),
+            ("zone_colors", ManifestFieldValue::RgbList(extended_colors)),
+        ],
+    );
+
+    let chunk_payload = vec![0x81, 0x92, 0xA3, 0xB4];
+    let chunk = PreviewChunkFrame {
+        metadata: PreviewPublicationMetadata {
+            stream: PreviewStreamId::Interactive("chunk-layout".to_owned()),
+            publication_id: 0x0807_0605_0403_0201,
+            frame_number: 0xB4B3_B2B1,
+            timestamp_ms: 0xB8B7_B6B5,
+            width: 0xC4C3_C2C1,
+            height: 0xC8C7_C6C5,
+            format: PreviewPixelFormat::Jpeg,
+        },
+        total_encoded_bytes: 9,
+        chunk_offset: 5,
+        chunk_index: 1,
+        chunk_count: 2,
+        payload: Bytes::from(chunk_payload.clone()),
+    };
+    let chunk_identity = b"chunk-layout".to_vec();
+    let chunk = chunk.try_encode().expect("preview chunk encodes");
+    assert_manifest_layout(
+        "preview_chunk_frame",
+        &chunk,
+        &[
+            ("tag", ManifestFieldValue::U8(PREVIEW_CHUNK_FRAME_TAG)),
+            ("schema", ManifestFieldValue::U8(PREVIEW_CHUNK_SCHEMA)),
+            ("stream_kind", ManifestFieldValue::U8(2)),
+            (
+                "channel_tag",
+                ManifestFieldValue::U8(INTERACTIVE_PREVIEW_FRAME_TAG),
+            ),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Jpeg.tag()),
+            ),
+            (
+                "stream_identity_len",
+                ManifestFieldValue::U16(
+                    u16::try_from(chunk_identity.len()).expect("identity fits u16"),
+                ),
+            ),
+            (
+                "publication_id",
+                ManifestFieldValue::U64(0x0807_0605_0403_0201),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0xB4B3_B2B1)),
+            ("timestamp_ms", ManifestFieldValue::U32(0xB8B7_B6B5)),
+            ("width", ManifestFieldValue::U32(0xC4C3_C2C1)),
+            ("height", ManifestFieldValue::U32(0xC8C7_C6C5)),
+            ("total_encoded_bytes", ManifestFieldValue::U64(9)),
+            ("chunk_offset", ManifestFieldValue::U64(5)),
+            ("chunk_index", ManifestFieldValue::U32(1)),
+            ("chunk_count", ManifestFieldValue::U32(2)),
+            ("stream_identity", ManifestFieldValue::Bytes(chunk_identity)),
+            ("chunk_payload", ManifestFieldValue::Bytes(chunk_payload)),
+        ],
+    );
+
+    let cancel_identity = [scene_id, zone_id].concat();
+    let cancel = PreviewCancelFrame {
+        stream: PreviewStreamId::Zone { scene_id, zone_id },
+        publication_id: 0x1817_1615_1413_1211,
+    }
+    .try_encode()
+    .expect("preview cancellation encodes");
+    assert_manifest_layout(
+        "preview_cancel_frame",
+        &cancel,
+        &[
+            ("tag", ManifestFieldValue::U8(PREVIEW_CANCEL_FRAME_TAG)),
+            ("schema", ManifestFieldValue::U8(PREVIEW_CANCEL_SCHEMA)),
+            ("stream_kind", ManifestFieldValue::U8(1)),
+            (
+                "channel_tag",
+                ManifestFieldValue::U8(ZONE_PREVIEW_FRAME_TAG),
+            ),
+            ("stream_identity_len", ManifestFieldValue::U16(32)),
+            (
+                "publication_id",
+                ManifestFieldValue::U64(0x1817_1615_1413_1211),
+            ),
+            (
+                "stream_identity",
+                ManifestFieldValue::Bytes(cancel_identity),
+            ),
+        ],
+    );
+
+    let spectrum_bins = vec![0.125, 0.25, 0.5];
+    let spectrum = SpectrumFrame {
+        timestamp_ms: 0xD4D3_D2D1,
+        level: 0.625,
+        bass: 0.375,
+        mid: 0.75,
+        treble: 0.875,
+        beat: true,
+        beat_confidence: 0.9375,
+        bins: spectrum_bins.clone(),
+    }
+    .encode();
+    assert_manifest_layout(
+        "spectrum",
+        &spectrum,
+        &[
+            ("tag", ManifestFieldValue::U8(0x02)),
+            ("timestamp_ms", ManifestFieldValue::U32(0xD4D3_D2D1)),
+            (
+                "bin_count",
+                ManifestFieldValue::U8(u8::try_from(spectrum_bins.len()).expect("bin count fits")),
+            ),
+            ("level", ManifestFieldValue::F32(0.625)),
+            ("bass", ManifestFieldValue::F32(0.375)),
+            ("mid", ManifestFieldValue::F32(0.75)),
+            ("treble", ManifestFieldValue::F32(0.875)),
+            ("beat", ManifestFieldValue::U8(1)),
+            ("beat_confidence", ManifestFieldValue::F32(0.9375)),
+            ("bins", ManifestFieldValue::F32List(spectrum_bins)),
+        ],
+    );
 }
 
 fn assert_one_byte_chunks_reassemble(

@@ -28,6 +28,7 @@ use hypercolor_daemon::domain::zone::{
     unassign_output, update_zone,
 };
 use hypercolor_daemon::domain::{DomainError, MutationContext};
+use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 // ── Harness ──────────────────────────────────────────────────────────────
 
@@ -345,6 +346,16 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     )
     .await
     .expect("zone should be created");
+    let preview_layout = state.spatial_engine.read().await.layout().as_ref().clone();
+    state
+        .zone_layout_previews
+        .set(
+            ZoneLayoutPreviewOwner::new(),
+            scene_id,
+            created.zone.id,
+            preview_layout,
+        )
+        .await;
     let mut events = state.event_bus.subscribe_all();
 
     let removed = delete_zone(
@@ -365,6 +376,14 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     let scene = manager.get(&scene_id).expect("scene should still exist");
     assert!(!scene.groups.iter().any(|zone| zone.id == created.zone.id));
     drop(manager);
+    assert!(
+        state
+            .zone_layout_previews
+            .scene_overrides(scene_id)
+            .await
+            .is_empty(),
+        "deleting a zone must retire its transient layout preview"
+    );
 
     let seen = drain_events(&mut events);
     assert!(

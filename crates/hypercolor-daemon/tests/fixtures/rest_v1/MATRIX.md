@@ -88,6 +88,7 @@ when it does:
 | `rate_limited` | 429 | `RateLimited` | `{limit, window_seconds, retry_after}` |
 | `internal_error` | 500 | `Internal` | none |
 | `device_unavailable` | 503 | `DeviceUnavailable` | none |
+| `service_unavailable` | 503 | `ServiceUnavailable` | optional, caller-supplied |
 
 `device_unavailable` is the one row no route emits today. The variant is
 contract (Spec 76 §2.1) and the MCP projection consumes it, but every device
@@ -235,29 +236,17 @@ Retired paths answer 404, with one pinned exception: a POST to
 GET-only `/api/v1/effects/{id}` sibling and answers `405`. That is still a
 deletion, and the 405 is what would catch someone re-adding a handler.
 
-**Two spellings of "paused", on purpose.** `GET /api/v1/output` reports
-`power: "paused"` after a destructive stop, because the resource answers
-whether output is running and the read has to round-trip: a client that reads
-`running` and then patches `running` must not be silently clearing a stop. The
-status surfaces answer the other question. `OutputPowerState::reported_paused`
-(`src/session.rs:86`) means "the user latched a pause", a stop publishes no
-`Paused` event (`session.rs` test `destructive_stop_does_not_publish_a_pause_event`),
-and so the WS `hello` payload, MCP `get_status`, and `hypercolor://state` all
-report `paused: false` for a stopped output.
-
-Both readings are deliberately pinned, and the tests look contradictory unless
-you know which question each one answers:
+**One effective output state.** A destructive stop reads as stopped everywhere.
+`GET /api/v1/output` reports `power: "paused"`; WS `hello`, MCP `get_status`,
+and `hypercolor://state` report `running: false, paused: true`. A stop does not
+need to publish a synthetic `Paused` event because every snapshot surface reads
+the same effective power state directly.
 
 | Surface | Stopped reads as | Pinned by |
 | --- | --- | --- |
 | `GET /output` | `power: "paused"` | `api_tests.rs::a_stopped_output_reads_as_paused_and_patches_back_to_running`, `domain/output.rs::every_dark_state_observes_as_paused` |
-| WS `hello` | `paused: false` | `api/ws/session.rs::hello_does_not_report_destructive_stop_as_pause` |
-| MCP `get_status`, `hypercolor://state` | `paused: false` | `mcp_tests.rs::mcp_status_surfaces_report_effective_session_pause` |
-
-Collapsing the two onto one word means deciding whether a destructive stop
-publishes `Paused`, which moves the event vocabulary. Spec 78 §7.1 assigns the
-hello payload and the event vocabulary to wave 78.3; the reconciliation lands
-there rather than splitting across waves.
+| WS `hello` | `running: false, paused: true` | `api/ws/tests.rs::hello_reports_a_destructive_stop_as_not_running_and_paused` |
+| MCP `get_status`, `hypercolor://state` | `running: false, paused: true` | `mcp_tests.rs::mcp_status_surfaces_report_effective_session_pause` |
 
 | Method | Path | Request | Success body | Notes |
 | --- | --- | --- | --- | --- |

@@ -58,6 +58,8 @@ use hypercolor_daemon::session::{
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
 use hypercolor_network::DriverModuleRegistry;
+use hypercolor_types::api::scene::SceneDocument;
+use hypercolor_types::api::scenes::{ReplaceSceneLayerRequest, ReplaceSceneRequest};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
@@ -87,7 +89,7 @@ use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
     SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
-    Zone, ZoneRole,
+    Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
@@ -7025,11 +7027,9 @@ async fn stop_active_clears_primary_effect_id_but_keeps_scene() {
 /// stop leaves outputs dark, so the resource reads `paused`, and
 /// patching `running` clears the stop rather than being a no-op.
 ///
-/// The status surfaces answer differently on purpose. `reported_paused`
-/// (`session.rs:86`) means "the user latched a pause", and a stop
-/// publishes no `Paused` event, so the WS hello and the MCP status keep
-/// reporting `paused: false` here. Both readings are pinned; §3 of the
-/// REST matrix names the split.
+/// WS hello and MCP use the same projection. A stop publishes no
+/// `Paused` event, so clients reconcile the authoritative status after
+/// the lifecycle event.
 #[tokio::test]
 async fn a_stopped_output_reads_as_paused_and_patches_back_to_running() {
     let state = Arc::new(isolated_state());
@@ -9485,8 +9485,18 @@ async fn scene_crud_lifecycle() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let get_etag = response
+        .headers()
+        .get(http::header::ETAG)
+        .expect("stored scene GET should carry an ETag")
+        .clone();
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Test Scene");
+    assert_eq!(json["data"]["description"], "A test scene");
+    assert_eq!(json["data"]["kind"], "named");
+    assert_eq!(json["data"]["zones"][0]["role"], "primary");
+    let mut document: SceneDocument =
+        serde_json::from_value(json["data"].clone()).expect("scene document should decode");
 
     // List scenes
     let app = test_app_with_state(Arc::clone(&state));
@@ -9506,14 +9516,18 @@ async fn scene_crud_lifecycle() {
 
     // Update scene
     let app = test_app_with_state(Arc::clone(&state));
+    document.name = "Updated Scene".to_owned();
+    document.description = Some("Updated description".to_owned());
+    let replacement = ReplaceSceneRequest::from(&document);
     let response = app
         .oneshot(
             Request::builder()
                 .method("PUT")
                 .uri(format!("/api/v1/scenes/{scene_id}"))
                 .header("content-type", "application/json")
+                .header(http::header::IF_MATCH, get_etag)
                 .body(Body::from(
-                    r#"{"name": "Updated Scene", "description": "Updated description"}"#,
+                    serde_json::to_vec(&replacement).expect("replacement should encode"),
                 ))
                 .expect("failed to build request"),
         )
@@ -9523,6 +9537,7 @@ async fn scene_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Updated Scene");
+    assert_eq!(json["data"]["description"], "Updated description");
     let persisted: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(&scenes_path).expect("scene store should be written after update"),
     )
@@ -9605,6 +9620,179 @@ async fn scene_crud_lifecycle() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn stored_scene_replace_is_whole_document_versioned_and_identity_safe() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Original","description":"old"}"#))
+                .expect("create request"),
+        )
+        .await
+        .expect("create response");
+    let created = body_json(created).await;
+    let scene_id = created["data"]["id"].as_str().expect("scene id");
+
+    let fetched = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .body(Body::empty())
+                .expect("get request"),
+        )
+        .await
+        .expect("get response");
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let etag = fetched
+        .headers()
+        .get(http::header::ETAG)
+        .expect("stored scene ETag")
+        .clone();
+    let fetched = body_json(fetched).await;
+    let document: SceneDocument =
+        serde_json::from_value(fetched["data"].clone()).expect("full scene document");
+    let old_zone_id = document.zones[0].id;
+    let mut replacement = ReplaceSceneRequest::from(&document);
+    replacement.name = "Replacement".to_owned();
+    replacement.description = None;
+    replacement.activation_brightness = Some(0.42);
+    replacement.priority = ScenePriority::ALERT;
+    replacement.enabled = false;
+    replacement
+        .metadata
+        .insert("origin".to_owned(), "whole-document-test".to_owned());
+    replacement.zones[0].id = None;
+    replacement.zones[0].layers.push(ReplaceSceneLayerRequest {
+        id: None,
+        name: Some("Minted fill".to_owned()),
+        source: LayerSource::ColorFill {
+            rgba: [0.1, 0.2, 0.3, 1.0],
+        },
+        blend: LayerBlendMode::Replace,
+        opacity: 0.75,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    });
+
+    let replaced = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .header(http::header::IF_MATCH, etag.clone())
+                .body(Body::from(
+                    serde_json::to_vec(&replacement).expect("replacement body"),
+                ))
+                .expect("replace request"),
+        )
+        .await
+        .expect("replace response");
+    assert_eq!(replaced.status(), StatusCode::OK);
+    assert_ne!(
+        replaced.headers().get(http::header::ETAG),
+        Some(&etag),
+        "successful replacement advances the scene revision"
+    );
+    let replaced = body_json(replaced).await;
+    let document: SceneDocument =
+        serde_json::from_value(replaced["data"].clone()).expect("replacement document");
+    assert_eq!(document.id.to_string(), scene_id);
+    assert_eq!(document.name, "Replacement");
+    assert_eq!(document.description, None);
+    assert_eq!(document.activation_brightness, Some(0.42));
+    assert_eq!(document.priority, ScenePriority::ALERT);
+    assert!(!document.enabled);
+    assert_eq!(
+        document.metadata.get("origin").map(String::as_str),
+        Some("whole-document-test")
+    );
+    assert_ne!(document.zones[0].id, old_zone_id);
+    assert_eq!(document.zones[0].layers.len(), 1);
+    let minted_zone_id = document.zones[0].id;
+
+    let stale = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .header(http::header::IF_MATCH, etag)
+                .body(Body::from(
+                    serde_json::to_vec(&replacement).expect("stale body"),
+                ))
+                .expect("stale request"),
+        )
+        .await
+        .expect("stale response");
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+
+    let mut mismatch = ReplaceSceneRequest::from(&document);
+    mismatch.id = Some(SceneId::new());
+    let mismatch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&mismatch).expect("mismatch body"),
+                ))
+                .expect("mismatch request"),
+        )
+        .await
+        .expect("mismatch response");
+    assert_eq!(mismatch.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut foreign_zone = ReplaceSceneRequest::from(&document);
+    foreign_zone.zones[0].id = Some(ZoneId::new());
+    let foreign_zone = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&foreign_zone).expect("foreign zone body"),
+                ))
+                .expect("foreign zone request"),
+        )
+        .await
+        .expect("foreign zone response");
+    assert_eq!(foreign_zone.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut foreign_layer = ReplaceSceneRequest::from(&document);
+    foreign_layer.zones[0].id = Some(minted_zone_id);
+    foreign_layer.zones[0].layers[0].id = Some(SceneLayerId::new());
+    let foreign_layer = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&foreign_layer).expect("foreign layer body"),
+                ))
+                .expect("foreign layer request"),
+        )
+        .await
+        .expect("foreign layer response");
+    assert_eq!(foreign_layer.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

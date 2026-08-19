@@ -356,21 +356,21 @@ channel catalog and binary-frame conventions.
 ### Pushing a preview
 
 The editor throttles pushes to one every `75ms` (`PREVIEW_PUSH_INTERVAL_MS`) and
-sends a text frame tagged `zone_layout_preview` carrying the scene id, the zone
-id, and the full in-progress `SpatialLayout`:
+sends a text frame tagged `zone_layout_preview` carrying the zone id and the
+full in-progress `SpatialLayout`:
 
 ```json
 {
   "type": "zone_layout_preview",
-  "scene_id": "desk-rig",
   "zone_id": "4f1c0e2a-...",
   "layout": { "canvas_width": 640, "canvas_height": 480, "zones": [ ... ] }
 }
 ```
 
 On the wire, `ClientMessage` is internally tagged (`#[serde(tag = "type")]`,
-snake_case), so the `type` discriminator selects the variant. The daemon applies
-the preview as an override for that one zone only.
+snake_case), so the `type` discriminator selects the variant. The daemon resolves
+the active scene and applies the preview as an override for that one zone only.
+A stale caller-selected `scene_id` field is rejected instead of being ignored.
 
 ### Clearing a preview
 
@@ -380,14 +380,14 @@ override with a companion message:
 ```json
 {
   "type": "zone_layout_preview_clear",
-  "scene_id": "desk-rig",
   "zone_id": "4f1c0e2a-..."
 }
 ```
 
 A socket disconnect mid-drag auto-clears the override daemon-side, so a dropped
 connection never leaves a zone stuck on a half-placed preview. After a successful
-save, `update_zone_layout` clears the preview for that zone explicitly.
+save, the committed layout write retires the preview it replaced without
+deleting a newer drag that arrived after the commit.
 
 ### The binary preview frame
 

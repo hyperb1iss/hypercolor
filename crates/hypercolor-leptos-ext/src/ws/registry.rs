@@ -30,10 +30,74 @@
 //! unsubscribing closes it, which is why it is a control-tier topic.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use super::preview::{DISPLAY_PREVIEW_ID_MAX_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES};
 use super::topic::{KeyError, NoPatch, PatchError, TopicKey, TopicPatch};
 use crate::define_ws_topics;
+
+const STANDARD_FPS_MIN: u32 = 1;
+const STANDARD_FPS_MAX: u32 = 60;
+const DISPLAY_PREVIEW_FPS_MAX: u32 = 30;
+const SPECTRUM_BIN_COUNTS: [u16; 5] = [8, 16, 32, 64, 128];
+
+fn no_config_schema() -> Value {
+    Value::Null
+}
+
+fn frames_config_schema() -> Value {
+    json!({
+        "fps": {"min": STANDARD_FPS_MIN, "max": STANDARD_FPS_MAX},
+        "zones": {"min_items": 1},
+    })
+}
+
+fn spectrum_config_schema() -> Value {
+    json!({
+        "fps": {"min": STANDARD_FPS_MIN, "max": STANDARD_FPS_MAX},
+        "bins": {"values": SPECTRUM_BIN_COUNTS},
+    })
+}
+
+fn screen_zones_config_schema() -> Value {
+    json!({
+        "fps": {"min": STANDARD_FPS_MIN, "max": STANDARD_FPS_MAX},
+    })
+}
+
+fn canvas_config_schema() -> Value {
+    json!({
+        "fps": {"min": STANDARD_FPS_MIN, "max": STANDARD_FPS_MAX},
+        "format": {"values": ["rgb", "rgba", "jpeg"]},
+        "width": {"min": 0},
+        "height": {"min": 0},
+    })
+}
+
+fn metrics_config_schema() -> Value {
+    json!({
+        "interval_ms": {
+            "min": METRICS_INTERVAL_MS_MIN,
+            "max": METRICS_INTERVAL_MS_MAX,
+        },
+    })
+}
+
+fn display_preview_config_schema() -> Value {
+    json!({
+        "fps": {"min": STANDARD_FPS_MIN, "max": DISPLAY_PREVIEW_FPS_MAX},
+    })
+}
+
+fn interactive_preview_config_schema() -> Value {
+    json!({
+        "target": {"values": ["active_scene"]},
+        "fps": {"min": STANDARD_FPS_MIN, "max": STANDARD_FPS_MAX},
+        "width": {"min": 1},
+        "height": {"min": 1},
+        "format": {"values": ["rgb", "rgba", "jpeg"]},
+    })
+}
 
 /// The `display_preview` subscription key: the device whose display
 /// surface this subscription follows. One connection holds as many
@@ -58,6 +122,8 @@ impl DeviceKey {
 }
 
 impl TopicKey for DeviceKey {
+    const WIRE_NAME: Option<&'static str> = Some("device_id");
+
     fn to_wire(&self) -> Option<String> {
         Some(self.0.clone())
     }
@@ -93,6 +159,8 @@ impl PreviewKey {
 }
 
 impl TopicKey for PreviewKey {
+    const WIRE_NAME: Option<&'static str> = Some("preview_id");
+
     fn to_wire(&self) -> Option<String> {
         Some(self.0.clone())
     }
@@ -168,7 +236,13 @@ pub struct FramesConfigPatch {
 impl TopicPatch<FramesConfig> for FramesConfigPatch {
     fn apply(&self, config: &mut FramesConfig) -> Result<(), PatchError> {
         if let Some(fps) = self.fps {
-            validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
+            validate_range(
+                fps,
+                STANDARD_FPS_MIN,
+                STANDARD_FPS_MAX,
+                "fps",
+                "expected 1..=60",
+            )?;
             config.fps = fps;
         }
         if let Some(zones) = self.zones.clone() {
@@ -212,11 +286,17 @@ pub struct SpectrumConfigPatch {
 impl TopicPatch<SpectrumConfig> for SpectrumConfigPatch {
     fn apply(&self, config: &mut SpectrumConfig) -> Result<(), PatchError> {
         if let Some(fps) = self.fps {
-            validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
+            validate_range(
+                fps,
+                STANDARD_FPS_MIN,
+                STANDARD_FPS_MAX,
+                "fps",
+                "expected 1..=60",
+            )?;
             config.fps = fps;
         }
         if let Some(bins) = self.bins {
-            if ![8, 16, 32, 64, 128].contains(&bins) {
+            if !SPECTRUM_BIN_COUNTS.contains(&bins) {
                 return Err(PatchError::new(
                     "bins",
                     "expected one of [8, 16, 32, 64, 128]",
@@ -261,7 +341,13 @@ pub struct ScreenZonesConfigPatch {
 impl TopicPatch<ScreenZonesConfig> for ScreenZonesConfigPatch {
     fn apply(&self, config: &mut ScreenZonesConfig) -> Result<(), PatchError> {
         if let Some(fps) = self.fps {
-            validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
+            validate_range(
+                fps,
+                STANDARD_FPS_MIN,
+                STANDARD_FPS_MAX,
+                "fps",
+                "expected 1..=60",
+            )?;
             config.fps = fps;
         }
         Ok(())
@@ -317,7 +403,13 @@ pub struct CanvasConfigPatch {
 impl TopicPatch<CanvasConfig> for CanvasConfigPatch {
     fn apply(&self, config: &mut CanvasConfig) -> Result<(), PatchError> {
         if let Some(fps) = self.fps {
-            validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
+            validate_range(
+                fps,
+                STANDARD_FPS_MIN,
+                STANDARD_FPS_MAX,
+                "fps",
+                "expected 1..=60",
+            )?;
             config.fps = fps;
         }
         if let Some(format) = self.format {
@@ -332,6 +424,11 @@ impl TopicPatch<CanvasConfig> for CanvasConfigPatch {
         Ok(())
     }
 }
+
+/// Per-subscription configuration for the periodic telemetry topics.
+pub const METRICS_INTERVAL_MS_MIN: u32 = 100;
+/// Largest supported telemetry snapshot period.
+pub const METRICS_INTERVAL_MS_MAX: u32 = 10_000;
 
 /// Per-subscription configuration for the periodic telemetry topics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -361,8 +458,8 @@ impl TopicPatch<MetricsConfig> for MetricsConfigPatch {
         if let Some(interval_ms) = self.interval_ms {
             validate_range(
                 interval_ms,
-                100,
-                10_000,
+                METRICS_INTERVAL_MS_MIN,
+                METRICS_INTERVAL_MS_MAX,
                 "interval_ms",
                 "expected 100..=10000",
             )?;
@@ -401,7 +498,13 @@ pub struct DisplayPreviewConfigPatch {
 impl TopicPatch<DisplayPreviewConfig> for DisplayPreviewConfigPatch {
     fn apply(&self, config: &mut DisplayPreviewConfig) -> Result<(), PatchError> {
         if let Some(fps) = self.fps {
-            validate_range(fps, 1, 30, "fps", "expected 1..=30")?;
+            validate_range(
+                fps,
+                STANDARD_FPS_MIN,
+                DISPLAY_PREVIEW_FPS_MAX,
+                "fps",
+                "expected 1..=30",
+            )?;
             config.fps = fps;
         }
         Ok(())
@@ -481,7 +584,13 @@ impl TopicPatch<InteractivePreviewConfig> for InteractivePreviewConfigPatch {
             config.target = target;
         }
         if let Some(fps) = self.fps {
-            validate_range(fps, 1, 60, "fps", "expected 1..=60")?;
+            validate_range(
+                fps,
+                STANDARD_FPS_MIN,
+                STANDARD_FPS_MAX,
+                "fps",
+                "expected 1..=60",
+            )?;
             config.fps = fps;
         }
         if let Some(width) = self.width {
@@ -528,76 +637,87 @@ define_ws_topics! {
 
     topic Frames => "frames" {
         key: unkeyed, config: FramesConfig, patch: FramesConfigPatch,
+        schema: frames_config_schema,
         tags: [0x01], control: false,
         backpressure: DropWithNotice,
     }
     topic Spectrum => "spectrum" {
         key: unkeyed, config: SpectrumConfig, patch: SpectrumConfigPatch,
+        schema: spectrum_config_schema,
         tags: [0x02], control: false,
         backpressure: DropWithNotice,
     }
     topic Events => "events" {
-        key: unkeyed, config: (), patch: NoPatch,
+        key: unkeyed, config: (), patch: NoPatch, schema: no_config_schema,
         tags: [], control: false,
         backpressure: Lossless,
     }
     topic FrameEvents => "frame_events" {
-        key: unkeyed, config: (), patch: NoPatch,
+        key: unkeyed, config: (), patch: NoPatch, schema: no_config_schema,
         tags: [], control: false,
         backpressure: Lossless,
     }
     topic Canvas => "canvas" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
+        schema: canvas_config_schema,
         tags: [0x03], control: false,
         backpressure: LatestWins,
     }
     topic ScreenCanvas => "screen_canvas" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
+        schema: canvas_config_schema,
         tags: [0x05], control: true,
         backpressure: LatestWins,
     }
     topic ScreenZones => "screen_zones" {
         key: unkeyed, config: ScreenZonesConfig, patch: ScreenZonesConfigPatch,
+        schema: screen_zones_config_schema,
         tags: [0x09, 0x0e, 0x11], control: true,
         backpressure: LatestWins,
     }
     topic WebViewportCanvas => "web_viewport_canvas" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
+        schema: canvas_config_schema,
         tags: [0x06], control: false,
         backpressure: LatestWins,
     }
     topic ZonePreview => "zone_preview" {
         key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
+        schema: canvas_config_schema,
         tags: [0x08, 0x0c], control: false,
         backpressure: LatestWins,
     }
     topic Metrics => "metrics" {
         key: unkeyed, config: MetricsConfig, patch: MetricsConfigPatch,
+        schema: metrics_config_schema,
         tags: [], control: false,
         backpressure: DropWithNotice,
     }
     topic DeviceMetrics => "device_metrics" {
         key: unkeyed, config: MetricsConfig, patch: MetricsConfigPatch,
+        schema: metrics_config_schema,
         tags: [], control: false,
         backpressure: DropWithNotice,
     }
     topic Sensors => "sensors" {
-        key: unkeyed, config: (), patch: NoPatch,
+        key: unkeyed, config: (), patch: NoPatch, schema: no_config_schema,
         tags: [], control: false,
-        backpressure: DropWithNotice,
+        backpressure: LatestWins,
     }
     topic DisplayPreview => "display_preview" {
         key: DeviceKey, config: DisplayPreviewConfig, patch: DisplayPreviewConfigPatch,
+        schema: display_preview_config_schema,
         tags: [0x07, 0x12], control: false,
         backpressure: LatestWins,
     }
     topic InteractivePreview => "interactive_preview" {
         key: PreviewKey, config: InteractivePreviewConfig, patch: InteractivePreviewConfigPatch,
+        schema: interactive_preview_config_schema,
         tags: [0x0a, 0x0d], control: true,
         backpressure: LatestWins,
     }
     topic InputEvents => "input_events" {
-        key: unkeyed, config: (), patch: NoPatch,
+        key: unkeyed, config: (), patch: NoPatch, schema: no_config_schema,
         tags: [], control: true,
         backpressure: Lossless,
     }
