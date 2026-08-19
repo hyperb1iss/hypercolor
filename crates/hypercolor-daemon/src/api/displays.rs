@@ -88,7 +88,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
 /// `If-Modified-Since` (derived from the capture timestamp) so polling clients
 /// can re-fetch cheaply during idle periods. Returns `404` when the display has
 /// not yet produced a frame.
-pub async fn get_display_preview(
+pub async fn get_display_frame(
     State(state): State<Arc<AppState>>,
     Path(device): Path<String>,
     headers: HeaderMap,
@@ -102,7 +102,7 @@ pub async fn get_display_preview(
         return DomainError::not_found(ResourceKind::DisplayPreview, device_id).into_response();
     };
 
-    let etag = format_display_preview_etag(device_id, frame.frame_number);
+    let etag = format_display_frame_etag(device_id, frame.frame_number);
     let last_modified = http_date(frame.captured_at);
 
     if client_cache_is_current(&headers, &etag, frame.captured_at) {
@@ -121,7 +121,7 @@ pub async fn get_display_preview(
         return not_modified;
     }
 
-    display_preview_response(&etag, &last_modified, &frame)
+    display_frame_response(&etag, &last_modified, &frame)
 }
 
 /// `GET /api/v1/displays/{id}/face` — current face assignment for a display.
@@ -646,7 +646,7 @@ pub async fn patch_display_face_controls(
     })
 }
 
-fn display_preview_response(
+fn display_frame_response(
     etag: &str,
     last_modified: &str,
     frame: &DisplayFrameSnapshot,
@@ -683,7 +683,7 @@ fn display_preview_response(
     response
 }
 
-fn format_display_preview_etag(device_id: DeviceId, frame_number: u64) -> String {
+fn format_display_frame_etag(device_id: DeviceId, frame_number: u64) -> String {
     format!("\"{device_id}-{frame_number}\"")
 }
 

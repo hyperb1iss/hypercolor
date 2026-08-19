@@ -320,7 +320,7 @@ pub(crate) async fn authorize_screen_recording(
     ),
     tag = "capture"
 )]
-pub(crate) async fn pick_capture_source(
+pub(crate) async fn set_capture_source(
     State(state): State<Arc<AppState>>,
     Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
