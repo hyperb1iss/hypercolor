@@ -67,7 +67,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DriverTransportKind, ZoneInfo,
+    DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
@@ -1486,13 +1486,13 @@ async fn spa_fallback_serves_index_html_for_client_routes() {
 }
 
 #[tokio::test]
-async fn status_returns_200_with_envelope() {
+async fn system_returns_identity_and_status_with_envelope() {
     let app = test_app();
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1503,20 +1503,22 @@ async fn status_returns_200_with_envelope() {
 
     let json = body_json(response).await;
     assert!(
-        json["data"]["running"]
+        json["data"]["status"]["running"]
             .as_bool()
             .expect("running should be bool")
     );
     assert!(
-        json["data"]["global_brightness"].as_u64().is_some(),
+        json["data"]["status"]["global_brightness"]
+            .as_u64()
+            .is_some(),
         "global_brightness should be an integer percentage"
     );
     assert!(
-        json["data"]["active_scene"].is_string(),
+        json["data"]["status"]["active_scene"].is_string(),
         "active_scene should be a string"
     );
     assert!(
-        json["data"]["active_scene_snapshot_locked"].is_boolean(),
+        json["data"]["status"]["active_scene_snapshot_locked"].is_boolean(),
         "active_scene_snapshot_locked should be a bool"
     );
     assert!(json["meta"]["api_version"].is_string());
@@ -1584,14 +1586,14 @@ async fn status_reports_stale_source_health_without_captured_contents() {
     let response = test_app_with_state(state)
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
     let json = body_json(response).await;
-    let input = &json["data"]["input"];
+    let input = &json["data"]["status"]["input"];
     let stale = input["sources"]
         .as_array()
         .expect("sources should be an array")
@@ -1684,7 +1686,7 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
         Duration::from_secs(1),
         app.clone().oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         ),
@@ -1694,26 +1696,26 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .expect("status request should succeed");
     let json = body_json(response).await;
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["admission_enforced"],
+        json["data"]["status"]["screen_capture_capacity"]["admission_enforced"],
         true
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
         2_000_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
         1_500_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_available_bytes"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_available_bytes"],
         1_500_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
+        json["data"]["status"]["screen_capture_capacity"]["steady_total_byte_budget"],
         1_000_000
     );
-    let failed = json["data"]["input"]["sources"]
+    let failed = json["data"]["status"]["input"]["sources"]
         .as_array()
         .expect("sources should be an array")
         .iter()
@@ -1792,7 +1794,7 @@ async fn status_reports_stopped_render_loop_as_not_running() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1801,8 +1803,8 @@ async fn status_reports_stopped_render_loop_as_not_running() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["running"], serde_json::json!(false));
-    assert_eq!(json["data"]["render_loop"]["state"], "stopped");
+    assert_eq!(json["data"]["status"]["running"], serde_json::json!(false));
+    assert_eq!(json["data"]["status"]["render_loop"]["state"], "stopped");
 }
 
 #[tokio::test]
@@ -1819,7 +1821,7 @@ async fn status_prefers_live_config_manager_path() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1830,7 +1832,7 @@ async fn status_prefers_live_config_manager_path() {
 
     let json = body_json(response).await;
     assert_eq!(
-        json["data"]["config_path"],
+        json["data"]["status"]["config_path"],
         serde_json::json!(custom_config_path.display().to_string())
     );
 }
@@ -1874,7 +1876,7 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
     let status_response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1882,7 +1884,7 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         .expect("failed to execute request");
     assert_eq!(status_response.status(), StatusCode::OK);
     let status_json = body_json(status_response).await;
-    assert_eq!(status_json["data"]["global_brightness"], 42);
+    assert_eq!(status_json["data"]["status"]["global_brightness"], 42);
 
     let device_settings_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
         .expect("device settings file should exist");
@@ -3809,7 +3811,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -3842,7 +3844,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
         model: Some("LCD".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "LCD".to_owned(),
             led_count: 320 * 320,
             topology: DeviceTopologyHint::Display {
@@ -3886,7 +3888,7 @@ async fn insert_test_hue_bridge_device(
         model: Some("Bridge".to_owned()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Bridge".to_owned(),
             led_count: 1,
             topology: DeviceTopologyHint::Point,
@@ -3933,7 +3935,7 @@ async fn insert_test_nanoleaf_device(
         model: Some("Shapes".to_owned()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Panel".to_owned(),
             led_count: 12,
             topology: DeviceTopologyHint::Matrix { rows: 3, cols: 4 },
@@ -3973,7 +3975,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
             .with_protocol_id("asus/aura-smbus"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "GPU".to_owned(),
             led_count: 24,
             topology: DeviceTopologyHint::Strip,
@@ -5683,7 +5685,7 @@ async fn list_devices_includes_structured_segment_topology_hints() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Panel".to_owned(),
             led_count: 96,
             topology: DeviceTopologyHint::Matrix { rows: 6, cols: 16 },
@@ -10330,7 +10332,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -11755,7 +11757,7 @@ async fn list_devices_includes_connection_summary_when_available() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -11821,7 +11823,7 @@ async fn list_devices_preserves_custom_connection_transport_id() {
             "external-hub",
             DriverTransportKind::Custom("openlinkhub".to_owned()),
         ),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 24,
             topology: DeviceTopologyHint::Strip,
@@ -12285,7 +12287,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,

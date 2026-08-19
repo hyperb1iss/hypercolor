@@ -61,11 +61,11 @@ async fn status_advertises_multi_zone_backend_capabilities() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let app = test_app_with_state(Arc::clone(&state));
 
-    let response = send(&app, empty_request("GET", "/api/v1/status")).await;
+    let response = send(&app, empty_request("GET", "/api/v1/system")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let capabilities = json["data"]["capabilities"]
+    let capabilities = json["data"]["status"]["capabilities"]
         .as_array()
         .expect("capabilities should be an array")
         .iter()

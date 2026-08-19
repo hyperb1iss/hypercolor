@@ -59,7 +59,7 @@ async fn loopback_origin_receives_cors_headers() {
     let response = test_app()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .header(header::ORIGIN, "http://localhost:9430")
                 .body(Body::empty())
                 .expect("failed to build request"),
@@ -85,7 +85,7 @@ async fn exact_bundled_tauri_origins_receive_cors_headers() {
         let response = test_app()
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/system")
                     .header(header::ORIGIN, origin)
                     .body(Body::empty())
                     .expect("failed to build request"),
@@ -104,7 +104,7 @@ async fn exact_bundled_tauri_origins_receive_cors_headers() {
         let response = test_app()
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/system")
                     .header(header::ORIGIN, origin)
                     .body(Body::empty())
                     .expect("failed to build request"),
@@ -125,7 +125,7 @@ async fn public_origin_does_not_receive_cors_headers() {
     let response = test_app()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .header(header::ORIGIN, "https://evil.example")
                 .body(Body::empty())
                 .expect("failed to build request"),
@@ -150,7 +150,7 @@ async fn configured_public_origin_is_ignored_without_api_auth() {
     let response = test_app_with_config(config)
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .header(header::ORIGIN, "https://studio.example")
                 .body(Body::empty())
                 .expect("failed to build request"),
