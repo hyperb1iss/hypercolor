@@ -79,7 +79,6 @@ impl DaemonClient {
             fps_actual: status.render_loop.actual_fps,
             scene_name: status.active_scene,
             scene_snapshot_locked: status.active_scene_snapshot_locked,
-            profile_name: None,
             device_count,
             total_leds: 0,
         })

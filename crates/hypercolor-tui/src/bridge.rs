@@ -247,7 +247,7 @@ async fn refresh_for_event(
             refresh_scenes(client, action_tx).await;
             refresh_active_scene(client, action_tx).await;
         }
-        name if name.starts_with("profile_") || name == "session_changed" => {
+        "session_changed" => {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
         }
         "control_surface_changed" => {
@@ -378,7 +378,6 @@ fn merge_metrics_into_daemon_state(
         fps_actual: 0.0,
         scene_name: None,
         scene_snapshot_locked: false,
-        profile_name: None,
         device_count: 0,
         total_leds: 0,
     });
@@ -429,7 +428,6 @@ fn merge_active_scene_into_daemon_state(
         fps_actual: 0.0,
         scene_name: None,
         scene_snapshot_locked: false,
-        profile_name: None,
         device_count: 0,
         total_leds: 0,
     });

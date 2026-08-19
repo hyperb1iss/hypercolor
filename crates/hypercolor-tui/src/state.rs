@@ -126,7 +126,6 @@ pub struct DaemonState {
     pub scene_name: Option<String>,
     #[serde(default)]
     pub scene_snapshot_locked: bool,
-    pub profile_name: Option<String>,
     pub device_count: u32,
     pub total_leds: u32,
 }

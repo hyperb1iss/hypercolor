@@ -1,7 +1,6 @@
 //! Status bar — the bottom chrome row.
 //!
-//! Renders a single line: current effect name, device count, LED count
-//! (left-aligned) and the active profile name (right-aligned).
+//! Renders a single line with current effect, device count, and LED count.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
