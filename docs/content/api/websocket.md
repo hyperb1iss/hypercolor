@@ -340,9 +340,32 @@ result body:
   "type": "response",
   "id": "cmd-001",
   "status": 200,
-  "data": { "effect": { "id": "borealis", "name": "Borealis" } }
+  "data": {
+    "zone": {
+      "id": "018f5f8f-20f8-7e69-a6a0-5c0fc23e7481",
+      "name": "Desk",
+      "role": "primary",
+      "enabled": true,
+      "brightness": 1.0,
+      "color": null,
+      "display_target": null,
+      "members": [],
+      "layout": null,
+      "layers": [
+        {
+          "id": "019b2eb9-4083-7e5a-b6f1-82a2e735b798",
+          "source": { "type": "effect", "effect_id": "borealis" }
+        }
+      ]
+    },
+    "transition": { "type": "cut" },
+    "output": { "applied": true }
+  }
 }
 ```
+
+Successful commands unwrap the REST response envelope, so `data` is the
+canonical apply result itself: `{ zone, transition, output }`.
 
 On error, `status` reflects the HTTP status and `error` is populated instead of
 `data`. Write commands over a read-only key are rejected the same way the REST

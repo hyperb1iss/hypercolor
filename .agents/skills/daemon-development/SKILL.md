@@ -59,10 +59,10 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 
 | Prefix                          | Purpose                                                  |
 | ------------------------------- | -------------------------------------------------------- |
-| `/effects`                      | List, detail, apply, stop, rescan                        |
-| `/effects/active`               | Active effect state                                      |
-| `/effects/active/controls`      | Live control PATCH + reset                               |
-| `/effects/{id}/apply`           | Apply an effect by ID                                    |
+| `/effects`                      | Effect catalog, detail, apply, install, rescan            |
+| `/effects/{id}/apply`           | Replace one live zone stack with an effect                |
+| `/scene`                        | Read or patch the complete live scene document            |
+| `/scene/zones`                  | Live zone, member, layout, layer, and control mutations   |
 | `/devices`                      | Connected devices, discover, identify, pair, attachments |
 | `/devices/{id}/logical-devices` | Per-device logical segmentation                          |
 | `/logical-devices`              | Global logical device CRUD                               |
@@ -183,7 +183,7 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 ## Configuration
 
 - **Config file**: TOML (`config.toml`), loaded by `ConfigManager` which wraps `ArcSwap<HypercolorConfig>` for lock-free reads
-- **Data storage**: `~/.local/share/hypercolor/` (9 JSON data files: `profiles.json`, `layouts.json`, `library.json`, `device-settings.json`, `attachment-profiles.json`, `layout-auto-exclusions.json`, `logical-devices.json`, `effect-layouts.json`, `runtime-state.json`)
+- **Data storage**: `~/.local/share/hypercolor/` (9 JSON data files: `profiles.json`, `scenes.json`, `layouts.json`, `library.json`, `device-settings.json`, `attachment-profiles.json`, `layout-auto-exclusions.json`, `logical-devices.json`, `runtime-state.json`)
 - **Hot-reload**: `ConfigManager` uses `Arc<ArcSwap<HypercolorConfig>>` for atomic pointer swap on config change
 - **Encrypted**: Credentials stored via `CredentialStore` using AES-256-GCM encryption (file-backed, not keyring)
 

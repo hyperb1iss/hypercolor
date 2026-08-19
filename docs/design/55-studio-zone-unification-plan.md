@@ -6,8 +6,13 @@
 > and lock naming — user-facing strings and internal Rust types alike —
 > across the whole codebase.
 
-**Status:** Locked pending owner sign-off — revised through two Codex
-(gpt-5.5, high reasoning) adversarial passes
+> **Status:** Superseded historical plan. Spec 78 replaces its REST and
+> WebSocket guidance with the live `/scene` tree and whole-document saved
+> scenes under `/scenes`. Nested saved-scene zone and layer routes below are
+> preserved only as context and must not guide implementation.
+
+**Review state:** Revised through two Codex (gpt-5.5, high reasoning)
+adversarial passes before supersession
 **Author:** Nova
 **Date:** 2026-05-19
 **Crates:** `hypercolor-ui`, `hypercolor-daemon`, `hypercolor-core`,

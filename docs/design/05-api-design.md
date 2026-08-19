@@ -227,8 +227,6 @@ An effect is a visual program (HTML/Canvas, WGSL shader, or native Rust) that re
 GET    /api/v1/effects                      # List all effects
 GET    /api/v1/effects/:id                  # Get effect details + controls schema
 POST   /api/v1/effects/:id/apply            # Apply effect (start rendering)
-GET    /api/v1/effects/active              # Get currently active effect
-PATCH  /api/v1/effects/active/controls     # Update control values on the active effect
 GET    /api/v1/effects/:id/presets          # List presets for an effect
 POST   /api/v1/effects/:id/presets          # Save current control values as a preset
 PATCH  /api/v1/effects/:id/presets/:name    # Update a preset
@@ -237,6 +235,12 @@ POST   /api/v1/effects/:id/presets/:name/apply  # Apply a preset
 POST   /api/v1/effects/next                 # Next in history
 POST   /api/v1/effects/previous             # Previous in history
 POST   /api/v1/effects/shuffle              # Random effect
+
+GET    /api/v1/scene                        # Read the complete live scene tree
+PATCH  /api/v1/scene                        # Update live scene settings
+POST   /api/v1/scene/clear                  # Clear live authored content
+PATCH  /api/v1/scene/zones/{zone}/layers/{layer}/controls
+                                             # Patch one real layer
 ```
 
 **Effect object:**
@@ -329,15 +333,17 @@ Content-Type: application/json
 }
 ```
 
-**Update controls on the active effect:**
+**Update controls on an addressed live layer:**
 
 ```http
-PATCH /api/v1/effects/active/controls
+PATCH /api/v1/scene/zones/018f5f8f-20f8-7e69-a6a0-5c0fc23e7481/layers/019b2eb9-4083-7e5a-b6f1-82a2e735b798/controls
 Content-Type: application/json
 
 {
-  "effectSpeed": 85,
-  "amount": 30
+  "values": {
+    "effectSpeed": { "float": 85.0 },
+    "amount": { "float": 30.0 }
+  }
 }
 ```
 
@@ -727,14 +733,15 @@ On connection, the server sends a thin `hello` message with runtime state:
     "device_count": 5,
     "total_leds": 842
   },
-  "capabilities": ["events", "frames", "spectrum", "canvas", "...", "commands", "preview_transport_v2;..."]
+  "capabilities": ["events", "frames", "spectrum", "canvas", "...", "commands", "preview_transport_v2:..."]
 }
 ```
 
-The handshake does not duplicate the multi-zone scene tree. Clients establish
-their subscriptions, wait for the initial `subscribed` acknowledgment, then
-fetch `GET /api/v1/scene`. Reconnects repeat that barrier because events are not
-replayed across a socket gap.
+The handshake does not duplicate the multi-zone scene tree. Clients send their
+initial subscription set and treat the first `subscribed` acknowledgment as
+the bootstrap admission barrier. Only then do they fetch every authoritative
+REST resource they mirror, including `GET /api/v1/scene`. Reconnects repeat the
+same barrier because events are not replayed across a socket gap.
 
 ### 3.2 Subscription Model
 
@@ -1536,11 +1543,11 @@ All interfaces emit signals for state changes:
 
 | Signal               | Interface | Signature | Description                         |
 | -------------------- | --------- | --------- | ----------------------------------- |
-| `EffectChanged`      | Effects   | `(ss)`    | (effect_id, effect_name)            |
+| `EffectStarted`      | Effects   | `(sss)`   | (zone_id, effect_id, effect_name)   |
 | `ControlChanged`     | Effects   | `(sv)`    | (control_id, new_value)             |
 | `DeviceConnected`    | Devices   | `(ssu)`   | (device_id, device_name, led_count) |
 | `DeviceDisconnected` | Devices   | `(s)`     | (device_id)                         |
-| `ProfileApplied`     | Profiles  | `(ss)`    | (profile_id, profile_name)          |
+| `ProfileLoaded`      | Profiles  | `(ss)`    | (profile_id, profile_name)          |
 | `BrightnessChanged`  | Daemon    | `(u)`     | (new_brightness)                    |
 | `PausedChanged`      | Daemon    | `(b)`     | (is_paused)                         |
 | `Error`              | Daemon    | `(ss)`    | (error_code, message)               |
@@ -1586,7 +1593,7 @@ impl HypercolorDbus {
 
 - Read `CurrentEffectName` and `Brightness` for panel indicator
 - Popup with effect list (from `ListEffects`) and brightness slider
-- Subscribe to `EffectChanged` signal for live updates
+- Subscribe to `EffectStarted` signal for live updates
 - Keyboard shortcut → `ApplyProfile("gaming")` or `ShuffleEffect()`
 
 **KDE Plasma Widget:**
@@ -2040,116 +2047,25 @@ Client libraries planned for: Python, TypeScript/Node, Rust (via `hypercolor-cor
 
 ### 8.1 Event Taxonomy
 
-Every state change in Hypercolor produces an event on the internal `tokio::broadcast` bus. API surfaces such as WebSocket, D-Bus signals, and MQTT deliver the same events.
+`hypercolor_types::event::HypercolorEvent` is the single event vocabulary.
+Internal variants use PascalCase; the WebSocket relay derives snake_case names
+from them instead of maintaining a second list.
 
-```rust
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", content = "data")]
-pub enum HypercolorEvent {
-    // === Effect Events ===
-    EffectChanged {
-        previous: Option<EffectRef>,
-        current: EffectRef,
-        trigger: ChangeTrigger,    // "user", "profile", "scene", "api", "cli"
-    },
-    EffectControlChanged {
-        effect_id: String,
-        control_id: String,
-        old_value: ControlValue,
-        new_value: ControlValue,
-    },
+| Family | Canonical events |
+| --- | --- |
+| Effect | `EffectStarted`, `EffectStopped`, `EffectControlChanged`, `EffectRegistryUpdated`, `EffectError`, `EffectDegraded` |
+| Live scene | `ZoneChanged`, `LayerStackChanged`, `LayerHealthChanged`, `SceneSettingsChanged`, `ActiveSceneChanged` |
+| Saved scenes | `SceneLibraryChanged`, `SceneActivated`, `SceneEnabled`, `SceneTransitionStarted`, `SceneTransitionComplete` |
+| Device | `DeviceDiscovered`, `DeviceConnected`, `DeviceDisconnected`, `DeviceError`, `DeviceSettingsChanged`, discovery lifecycle events |
+| Profile | `ProfileLoaded`, `ProfileSaved`, `ProfileDeleted` |
+| Audio and input | `AudioSourceChanged`, `BeatDetected`, `AudioLevelUpdate`, `InputEventReceived`, capture lifecycle events |
+| System | `FrameRendered`, `FpsChanged`, `BrightnessChanged`, `Paused`, `Resumed`, daemon lifecycle events, `Error` |
+| Integration | `SessionChanged`, `ControlSurfaceChanged`, `AssetChanged`, `WebhookReceived`, `ExtensionStateChanged` |
 
-    // === Device Events ===
-    DeviceConnected {
-        device_id: String,
-        name: String,
-        origin: DeviceOrigin,
-        led_count: u32,
-    },
-    DeviceDisconnected {
-        device_id: String,
-        reason: DisconnectReason,  // "removed", "error", "timeout", "shutdown"
-    },
-    DeviceDiscoveryStarted {
-        targets: Vec<String>,
-    },
-    DeviceDiscoveryCompleted {
-        found: Vec<DeviceRef>,
-        duration_ms: u64,
-    },
-    DeviceError {
-        device_id: String,
-        error: String,
-        recoverable: bool,
-    },
-
-    // === Profile Events ===
-    ProfileApplied {
-        profile_id: String,
-        profile_name: String,
-        trigger: ChangeTrigger,
-    },
-    ProfileSaved {
-        profile_id: String,
-        profile_name: String,
-    },
-    ProfileDeleted {
-        profile_id: String,
-    },
-
-    // === Scene Events ===
-    SceneTriggered {
-        scene_id: String,
-        scene_name: String,
-        trigger_type: String,
-    },
-    SceneEnabled {
-        scene_id: String,
-        enabled: bool,
-    },
-
-    // === Layout Events ===
-    LayoutChanged {
-        previous: Option<String>,
-        current: String,
-    },
-    LayoutUpdated {
-        layout_id: String,
-    },
-
-    AudioBeat {
-        confidence: f32,
-        bpm: Option<f32>,
-    },
-
-    // === System Events ===
-    BrightnessChanged {
-        old: u8,
-        new: u8,
-    },
-    FpsChanged {
-        target: u32,
-    },
-    Paused,
-    Resumed,
-    DaemonStarted {
-        version: String,
-        device_count: u32,
-    },
-    DaemonShutdown {
-        reason: String,
-    },
-    Error {
-        code: String,
-        message: String,
-        severity: Severity,  // "warning", "error", "critical"
-    },
-    WebhookReceived {
-        webhook_id: String,
-        source: String,
-    },
-}
-```
+Effect lifecycle events carry `zone_id` and `zone_name` when the publisher has
+zone context. `EffectControlChanged` always carries `zone_id` and `layer_id`.
+Live tree structural events carry the scene document's single `revision` where
+clients need a concurrency token.
 
 ### 8.2 Event Priority & Ordering
 
@@ -2159,10 +2075,12 @@ Events are delivered in causal order within a single category. Cross-category or
 | ------------ | -------------------------------------------------------- | ----------------------------------------- |
 | **Critical** | `DaemonShutdown`, `Error(critical)`                      | Guaranteed delivery, sent before shutdown |
 | **High**     | `DeviceConnected`, `DeviceDisconnected`, `DeviceError`   | Delivered within 1ms                      |
-| **Normal**   | `EffectChanged`, `ProfileApplied`, `BrightnessChanged`   | Delivered within 5ms                      |
-| **Low**      | `AudioBeat`, `DeviceDiscoveryCompleted`, `LayoutUpdated` | Best-effort, may be coalesced             |
+| **Normal**   | `EffectStarted`, `ProfileLoaded`, `BrightnessChanged`    | Delivered within 5ms                      |
+| **Low**      | `BeatDetected`, `DeviceDiscoveryCompleted`, `LayoutUpdated` | Best-effort, may be coalesced           |
 
-The `tokio::broadcast` channel has a buffer of 256 events. If a slow subscriber falls behind, it receives a `Lagged(n)` error and can request a state snapshot to recover.
+The `tokio::broadcast` channel has a buffer of 256 events. A slow WebSocket
+subscriber receives `resync_required` after lag and must refetch every REST
+resource it mirrors.
 
 ### 8.3 Event Filtering
 
@@ -2189,16 +2107,17 @@ Each subscriber can filter events. This is especially important for CLI watch mo
 }
 ```
 
-### 8.4 Event Replay for Late Joiners
+### 8.4 Continuity for Late Joiners
 
-The event bus does not maintain a replay log — events are fire-and-forget. Late joiners receive:
+The event bus does not maintain a replay log. The WebSocket installs its
+default events receiver before taking the thin `hello` snapshot, but `hello`
+does not contain the authoritative live scene tree or every mirrored resource.
 
-1. A complete **state snapshot** (equivalent to `GET /state`) on connection
-2. All events from the moment of subscription forward
-
-This is intentional. LED lighting is a real-time system where the current state matters more than history. The state snapshot provides everything a new subscriber needs.
-
-For audit/debug purposes, the daemon can optionally log events to a ring buffer file (`--event-log /tmp/hypercolor-events.jsonl`, last 10,000 events).
+On every connection, a client sends its subscription set, waits for the first
+`subscribed` acknowledgment, and then refetches every REST resource it mirrors.
+The same recovery applies after `resync_required`. Events received after the
+barrier keep those resources fresh; events missed before it are recovered by
+the REST reads.
 
 ---
 
@@ -2620,8 +2539,10 @@ The spec includes a `x-sunset-date` extension on deprecated operations.
 | `GET`    | `/effects`                         | List effects       |
 | `GET`    | `/effects/:id`                     | Effect details     |
 | `POST`   | `/effects/:id/apply`               | Apply effect       |
-| `GET`    | `/effects/active`                 | Current effect     |
-| `PATCH`  | `/effects/active/controls`        | Update controls    |
+| `GET`    | `/scene`                          | Live scene tree    |
+| `PATCH`  | `/scene`                          | Scene settings     |
+| `POST`   | `/scene/clear`                    | Clear live content |
+| `PATCH`  | `/scene/zones/{zone}/layers/{layer}/controls` | Update layer controls |
 | `GET`    | `/effects/:id/presets`             | List presets       |
 | `POST`   | `/effects/:id/presets`             | Save preset        |
 | `POST`   | `/effects/:id/presets/:name/apply` | Apply preset       |
