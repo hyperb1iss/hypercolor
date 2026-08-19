@@ -16,10 +16,24 @@ use hypercolor_leptos_ext::ws::topic::{
 };
 use serde::{Deserialize, Serialize};
 
+fn no_config_schema() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+fn frames_config_schema() -> serde_json::Value {
+    serde_json::json!({"fps": {"min": 1, "max": 60}, "zones": {}})
+}
+
+fn preview_config_schema() -> serde_json::Value {
+    serde_json::json!({"fps": {"min": 1, "max": 30}})
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceKey(String);
 
 impl TopicKey for DeviceKey {
+    const WIRE_NAME: Option<&'static str> = Some("device_id");
+
     fn to_wire(&self) -> Option<String> {
         Some(self.0.clone())
     }
@@ -117,20 +131,26 @@ define_ws_topics! {
     registry Topic;
     reserved [0x0F, 0x10];
     topic Events => "events" {
-        key: unkeyed, config: (), patch: NoPatch,
+        key: unkeyed, config: (), patch: NoPatch, schema: no_config_schema,
         tags: [], control: false,
+        backpressure: Lossless,
     }
     topic Frames => "frames" {
         key: unkeyed, config: FramesConfig, patch: FramesPatch,
+        schema: frames_config_schema,
         tags: [0x01], control: false,
+        backpressure: DropWithNotice,
     }
     topic ScreenZones => "screen_zones" {
-        key: unkeyed, config: (), patch: NoPatch,
+        key: unkeyed, config: (), patch: NoPatch, schema: no_config_schema,
         tags: [0x09, 0x0E, 0x11], control: true,
+        backpressure: LatestWins,
     }
     topic DisplayPreview => "display_preview" {
         key: DeviceKey, config: PreviewConfig, patch: PreviewPatch,
-        tags: [0x07, 0x0B], control: false,
+        schema: preview_config_schema,
+        tags: [0x07, 0x12], control: false,
+        backpressure: LatestWins,
     }
 }
 
@@ -144,6 +164,27 @@ fn names_round_trip_and_order_is_declaration_order() {
     assert_eq!(Topic::parse("no_such_topic"), None);
     assert!(Topic::ScreenZones.requires_control());
     assert!(!Topic::Frames.requires_control());
+}
+
+#[test]
+fn every_topic_declares_how_it_behaves_under_a_slow_reader() {
+    use hypercolor_leptos_ext::ws::topic::BackpressureClass;
+
+    // The class is mandatory by construction: the macro will not accept
+    // an entry without one, so the manifest can always state it.
+    assert_eq!(
+        Topic::Events.vtable().backpressure,
+        BackpressureClass::Lossless
+    );
+    assert_eq!(
+        Topic::Frames.vtable().backpressure,
+        BackpressureClass::DropWithNotice
+    );
+    assert_eq!(
+        Topic::DisplayPreview.vtable().backpressure,
+        BackpressureClass::LatestWins
+    );
+    assert_eq!(BackpressureClass::LatestWins.as_str(), "latest_wins");
 }
 
 #[test]
@@ -164,6 +205,7 @@ fn topic_set_membership_behaves() {
 fn vtable_reports_shape_facts() {
     let events = Topic::Events.vtable();
     assert!(!events.keyed);
+    assert_eq!(events.key_name, None);
     assert!(!events.configurable);
     assert!((events.default_config_json)().is_null());
 
@@ -175,7 +217,8 @@ fn vtable_reports_shape_facts() {
 
     let display = Topic::DisplayPreview.vtable();
     assert!(display.keyed);
-    assert_eq!(display.owned_tags, [0x07, 0x0B]);
+    assert_eq!(display.key_name, Some("device_id"));
+    assert_eq!(display.owned_tags, [0x07, 0x12]);
 }
 
 #[test]

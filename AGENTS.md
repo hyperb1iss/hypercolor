@@ -279,8 +279,11 @@ the full SilkCircuit emoji philosophy.
 The daemon exposes REST + WebSocket on `:9420` (Axum):
 
 - `GET /api/v1/effects`: List all effects
-- `POST /api/v1/effects/{id}/apply`: Apply effect to devices
-- `PATCH /api/v1/effects/active/controls`: Update live controls
+- `POST /api/v1/effects/{id}/apply`: Apply an effect to a scene zone
+- `GET/PATCH /api/v1/scene`: Read or update the live scene
+- `POST /api/v1/scene/deactivate`: Return to the default scene
+- `POST /api/v1/scene/clear`: Clear one zone or the whole live scene
+- `PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`: Update live controls
 - `GET /api/v1/devices`: Connected devices
 - `GET/POST/DELETE /api/v1/library/favorites`: Favorites CRUD
 - `GET/POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate`: Scene management

@@ -334,9 +334,13 @@ fn decode_json_metrics_with_data_envelope() {
 }
 
 #[test]
-fn decode_json_ack_returns_none() {
-    let json = r#"{"type": "subscribed"}"#;
-    assert!(ws::decode_json(json).is_none());
+fn decode_json_exposes_typed_subscription_acknowledgment() {
+    let json = r#"{"type":"subscribed","topics":[{"topic":"events"}],"preview_transport":"preview_transport_v1"}"#;
+    let Some(WsMessage::Subscribed(acknowledgment)) = ws::decode_json(json) else {
+        panic!("expected subscribed acknowledgment");
+    };
+    assert_eq!(acknowledgment.topics.len(), 1);
+    assert_eq!(acknowledgment.preview_transport, "preview_transport_v1");
 }
 
 #[test]

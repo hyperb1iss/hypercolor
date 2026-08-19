@@ -87,13 +87,14 @@ impl AppState {
                 paused,
                 brightness,
                 device_count,
-                effect,
             } => {
+                // The handshake says nothing about content: the live
+                // tree is multi-zone, so what is rendering arrives from
+                // the effect lifecycle events instead (Spec 78 §7.1).
                 self.running = running;
                 self.paused = paused;
                 self.brightness = brightness;
                 self.device_count = device_count;
-                self.current_effect = effect;
             }
         }
     }
@@ -168,7 +169,6 @@ pub enum StateUpdate {
         paused: bool,
         brightness: u8,
         device_count: usize,
-        effect: Option<EffectInfo>,
     },
 }
 
@@ -268,14 +268,6 @@ pub struct WsHelloState {
     pub paused: bool,
     pub brightness: u8,
     pub device_count: usize,
-    pub effect: Option<WsNameRef>,
-}
-
-/// Name/ID reference used in WebSocket messages.
-#[derive(Debug, Deserialize)]
-pub struct WsNameRef {
-    pub id: String,
-    pub name: String,
 }
 
 /// A generic WebSocket event message from the daemon.
@@ -294,6 +286,21 @@ impl WsEventMessage {
     pub fn requires_full_resync(&self) -> bool {
         self.msg_type == "event" && self.event == "resync_required"
     }
+
+    #[must_use]
+    pub fn is_destructive_effect_stop(&self) -> bool {
+        self.msg_type == "event"
+            && self.event == "effect_stopped"
+            && self.data.get("reason").and_then(serde_json::Value::as_str) == Some("stopped")
+    }
+
+    #[must_use]
+    pub fn targets_zone(&self, zone_id: &hypercolor_types::scene::ZoneId) -> bool {
+        self.data
+            .get("zone_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == zone_id.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -301,7 +308,7 @@ mod app_state_tests {
     use super::{AppState, EffectInfo, StateUpdate};
 
     #[test]
-    fn websocket_snapshot_clears_stale_pause_and_effect_state() {
+    fn websocket_snapshot_preserves_content_state() {
         let mut state = AppState {
             running: true,
             paused: true,
@@ -317,14 +324,19 @@ mod app_state_tests {
             paused: false,
             brightness: 64,
             device_count: 3,
-            effect: None,
         });
 
         assert!(state.running);
         assert!(!state.paused);
         assert_eq!(state.brightness, 64);
         assert_eq!(state.device_count, 3);
-        assert!(state.current_effect.is_none());
+        assert_eq!(
+            state
+                .current_effect
+                .as_ref()
+                .map(|effect| effect.id.as_str()),
+            Some("old")
+        );
     }
 
     #[test]
@@ -358,5 +370,42 @@ mod tests {
         .expect("should parse resync event");
 
         assert!(message.requires_full_resync());
+    }
+
+    #[test]
+    fn only_explicit_stops_are_destructive_lifecycle_events() {
+        for (reason, destructive) in [("stopped", true), ("error", false), ("replaced", false)] {
+            let message: WsEventMessage = serde_json::from_value(serde_json::json!({
+                "type": "event",
+                "event": "effect_stopped",
+                "data": {
+                    "reason": reason,
+                    "zone_id": "019c0000-0000-7000-8000-000000000001"
+                }
+            }))
+            .expect("should parse stop event");
+
+            assert_eq!(message.is_destructive_effect_stop(), destructive);
+        }
+    }
+
+    #[test]
+    fn lifecycle_events_only_target_the_canonical_primary_zone() {
+        let primary = hypercolor_types::scene::ZoneId::new();
+        let secondary = hypercolor_types::scene::ZoneId::new();
+        let display = hypercolor_types::scene::ZoneId::new();
+        let message: WsEventMessage = serde_json::from_value(serde_json::json!({
+            "type": "event",
+            "event": "effect_started",
+            "data": {
+                "zone_id": primary.to_string(),
+                "layer_id": hypercolor_types::layer::SceneLayerId::new().to_string()
+            }
+        }))
+        .expect("should parse lifecycle event");
+
+        assert!(message.targets_zone(&primary));
+        assert!(!message.targets_zone(&secondary));
+        assert!(!message.targets_zone(&display));
     }
 }

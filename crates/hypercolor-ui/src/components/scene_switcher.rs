@@ -38,7 +38,7 @@ pub struct SceneRow {
 /// The saved scene currently active, if any. The ephemeral default
 /// reports `None` — it is represented by the Default row instead.
 #[must_use]
-pub fn active_saved_scene_id(active: Option<&api::ActiveSceneResponse>) -> Option<&str> {
+pub fn active_saved_scene_id(active: Option<&api::LiveSceneView>) -> Option<&str> {
     active
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .map(|scene| scene.id.as_str())
@@ -47,7 +47,7 @@ pub fn active_saved_scene_id(active: Option<&api::ActiveSceneResponse>) -> Optio
 /// Label switcher triggers show for the active scene: the saved scene's
 /// name, or "Default" while the ephemeral default is running.
 #[must_use]
-pub fn active_scene_label(active: Option<&api::ActiveSceneResponse>) -> String {
+pub fn active_scene_label(active: Option<&api::LiveSceneView>) -> String {
     active
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .map_or_else(|| "Default".to_owned(), |scene| scene.name.clone())
@@ -56,7 +56,7 @@ pub fn active_scene_label(active: Option<&api::ActiveSceneResponse>) -> String {
 /// Whether the active scene is snapshot-locked (the lock glyph on
 /// triggers). The ephemeral default is never locked.
 #[must_use]
-pub fn active_scene_locked(active: Option<&api::ActiveSceneResponse>) -> bool {
+pub fn active_scene_locked(active: Option<&api::LiveSceneView>) -> bool {
     active.is_some_and(|scene| {
         scene.kind != SceneKind::Ephemeral && scene.mutation_mode == SceneMutationMode::Snapshot
     })
@@ -70,7 +70,7 @@ pub fn active_scene_locked(active: Option<&api::ActiveSceneResponse>) -> bool {
 #[must_use]
 pub fn scene_rows(
     scenes: &[api::SceneSummary],
-    active: Option<&api::ActiveSceneResponse>,
+    active: Option<&api::LiveSceneView>,
 ) -> Vec<SceneRow> {
     let active_id = active_saved_scene_id(active);
     let mut rows = Vec::with_capacity(scenes.len() + 1);

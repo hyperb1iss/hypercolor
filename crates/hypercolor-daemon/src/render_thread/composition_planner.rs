@@ -232,6 +232,7 @@ mod tests {
 
     use hypercolor_core::types::canvas::{Canvas, Rgba};
     use hypercolor_types::effect::EffectId;
+    use hypercolor_types::layer::{SceneLayer, SceneLayerId};
     use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -251,15 +252,22 @@ mod tests {
     }
 
     fn sample_group() -> Zone {
+        let effect_id = EffectId::from(Uuid::now_v7());
         Zone {
             id: ZoneId::new(),
             name: "Desk".into(),
             description: None,
-            effect_id: Some(EffectId::from(Uuid::now_v7())),
+            effect_id: Some(effect_id),
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
-            layers: Vec::new(),
+            layers: vec![SceneLayer::from_effect(
+                SceneLayerId::new(),
+                effect_id,
+                HashMap::new(),
+                HashMap::new(),
+                None,
+            )],
             layout: SpatialLayout {
                 id: "desk".into(),
                 name: "Desk".into(),

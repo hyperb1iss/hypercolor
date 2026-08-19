@@ -23,8 +23,9 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, ZoneRole,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, ZoneId, ZoneRole,
 };
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
 use hypercolor_daemon::api::AppState;
@@ -34,7 +35,9 @@ use hypercolor_daemon::domain::scene::{
     ActivateScene, CreateScene, UpdateScene, activate_scene, commit_scene, create_scene,
     deactivate_scene, delete_scene, update_scene,
 };
+use hypercolor_daemon::domain::scene_tree::{ClearScene, clear_scene};
 use hypercolor_daemon::domain::{DomainError, MutationContext};
+use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 // ── Harness ──────────────────────────────────────────────────────────────
 
@@ -64,6 +67,47 @@ fn test_effect_metadata(name: &str) -> EffectMetadata {
         },
         license: None,
     }
+}
+
+#[tokio::test]
+async fn clearing_a_zone_retires_its_transient_layout_preview() {
+    let (state, _tempdir) = isolated_state();
+    let (zone_id, layout) = {
+        let manager = state.scene_manager.read().await;
+        let zone = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .expect("default scene should have a primary zone");
+        (zone.id, zone.layout.clone())
+    };
+    state
+        .zone_layout_previews
+        .set(
+            ZoneLayoutPreviewOwner::new(),
+            SceneId::DEFAULT,
+            zone_id,
+            layout,
+        )
+        .await;
+
+    clear_scene(
+        &state,
+        ClearScene {
+            zone: Some(zone_id),
+            expected_revision: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("zone clear should commit");
+
+    assert!(
+        state
+            .zone_layout_previews
+            .scene_overrides(SceneId::DEFAULT)
+            .await
+            .is_empty()
+    );
 }
 
 async fn insert_effect(state: &AppState, metadata: &EffectMetadata) {
@@ -98,6 +142,21 @@ fn named_scene(name: &str) -> Scene {
         activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
+    }
+}
+
+fn preview_layout() -> SpatialLayout {
+    SpatialLayout {
+        id: "preview".to_owned(),
+        name: "preview".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
     }
 }
 
@@ -139,7 +198,9 @@ fn apply_command(effect: &EffectMetadata) -> ApplyEffect {
         controls: HashMap::new(),
         preset_id: None,
         target_zone: None,
+        expected_revision: None,
         transition: RequestedTransition::cut(),
+        wake_output: true,
     }
 }
 
@@ -359,6 +420,140 @@ async fn activate_scene_honors_a_transition_override() {
         .active_transition()
         .expect("a non-zero override should start a transition");
     assert_eq!(transition.spec.duration_ms, 2_500);
+}
+
+#[tokio::test]
+async fn activating_another_scene_retires_transient_layout_previews() {
+    let (state, _tempdir) = isolated_state();
+    let first = named_scene("evening");
+    let second = named_scene("night");
+    let (first_id, second_id) = (first.id, second.id);
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager.create(first).expect("scene should be created");
+        manager.create(second).expect("scene should be created");
+    }
+
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: first_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("first activation should succeed");
+
+    let zone_id = ZoneId::new();
+    state
+        .zone_layout_previews
+        .set(
+            ZoneLayoutPreviewOwner::new(),
+            first_id,
+            zone_id,
+            preview_layout(),
+        )
+        .await;
+
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: second_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("second activation should succeed");
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: first_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("first scene should reactivate");
+
+    assert!(
+        state
+            .zone_layout_previews
+            .scene_overrides(first_id)
+            .await
+            .is_empty(),
+        "reactivating a scene must not revive transient previews from its previous activation"
+    );
+}
+
+#[tokio::test]
+async fn activation_retires_a_preview_set_after_the_candidate_snapshot() {
+    let (state, _tempdir) = isolated_state();
+    let first = named_scene("first");
+    let second = named_scene("second");
+    let (first_id, second_id) = (first.id, second.id);
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .create(first)
+            .expect("first scene should be created");
+        manager
+            .create(second)
+            .expect("second scene should be created");
+        manager
+            .activate(&first_id, None)
+            .expect("first scene should activate");
+    }
+
+    let mut mutation = state.begin_scene_mutation().await;
+    mutation
+        .activate(second_id, None)
+        .expect("candidate should activate second scene");
+    mutation.retire_scene_previews(first_id);
+
+    let zone_id = ZoneId::new();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let setter_state = Arc::clone(&state);
+    let setter = tokio::spawn(async move {
+        let scene_guard = setter_state.scene_manager.read().await;
+        let _ = entered_tx.send(());
+        let _ = release_rx.await;
+        setter_state
+            .zone_layout_previews
+            .set(
+                ZoneLayoutPreviewOwner::new(),
+                first_id,
+                zone_id,
+                preview_layout(),
+            )
+            .await;
+        drop(scene_guard);
+    });
+    entered_rx
+        .await
+        .expect("setter should hold the scene read lock");
+
+    let commit_state = Arc::clone(&state);
+    let commit = tokio::spawn(async move { commit_scene(&commit_state, mutation).await });
+    tokio::task::yield_now().await;
+    assert!(!commit.is_finished(), "commit waits for the preview setter");
+    let _ = release_tx.send(());
+    setter.await.expect("preview setter should finish");
+    commit
+        .await
+        .expect("commit task should finish")
+        .expect("scene activation should commit");
+
+    assert!(
+        state
+            .zone_layout_previews
+            .scene_overrides(first_id)
+            .await
+            .is_empty(),
+        "the activation boundary retires every preview from the departed scene"
+    );
 }
 
 #[tokio::test]
@@ -778,6 +973,15 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
     )
     .await
     .expect("scene should activate");
+    state
+        .zone_layout_previews
+        .set(
+            ZoneLayoutPreviewOwner::new(),
+            created.scene.id,
+            ZoneId::new(),
+            preview_layout(),
+        )
+        .await;
     let mut events = state.event_bus.subscribe_all();
 
     let deleted = delete_scene(&state, created.scene.id, MutationContext::api())
@@ -795,6 +999,14 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
     let manager = state.scene_manager.read().await;
     assert!(manager.get(&created.scene.id).is_none());
     drop(manager);
+    assert!(
+        state
+            .zone_layout_previews
+            .scene_overrides(created.scene.id)
+            .await
+            .is_empty(),
+        "deleting a scene must retire its transient layout previews"
+    );
 
     let seen = drain_events(&mut events);
     assert!(

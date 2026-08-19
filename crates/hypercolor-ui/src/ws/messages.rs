@@ -48,12 +48,12 @@ impl std::fmt::Display for ConnectionState {
     }
 }
 
-pub const EFFECT_STARTED_EVENTS: &[&str] =
-    &["effect_started", "effect_activated", "effect_changed"];
-pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivated"];
+pub const EFFECT_STARTED_EVENTS: &[&str] = &["effect_started"];
+pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped"];
 pub const EFFECT_ERROR_EVENTS: &[&str] = &["effect_error"];
 pub const SCENE_EVENTS: &[&str] = &[
     "active_scene_changed",
+    "effect_control_changed",
     "zone_changed",
     "scene_library_changed",
     "scene_settings_changed",
@@ -431,7 +431,8 @@ pub struct BackpressureNotice {
     pub dropped_frames: u32,
     pub topic: String,
     pub recommendation: String,
-    pub suggested_fps: u32,
+    pub suggested_fps: Option<u32>,
+    pub suggested_interval_ms: Option<u32>,
 }
 
 /// Lightweight device event hint used to decide whether the devices list
@@ -445,6 +446,7 @@ pub struct DeviceEventHint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneEventHint {
+    pub generation: u64,
     pub event_type: String,
     pub scene_id: Option<String>,
     /// Zone (render group) the event names, for zone-tagged events like
@@ -458,6 +460,18 @@ pub struct SceneEventHint {
     pub zone_change_kind: Option<ZoneChangeKind>,
     /// How the saved-scene library changed, for `scene_library_changed`.
     pub library_change_kind: Option<SceneLibraryChangeKind>,
+}
+
+pub fn sequence_scene_event_hint(
+    previous: Option<&SceneEventHint>,
+    mut next: SceneEventHint,
+) -> SceneEventHint {
+    next.generation = previous.map_or(1, |hint| hint.generation.wrapping_add(1));
+    next
+}
+
+pub fn reset_layer_health_cache(layer_health: &mut HashMap<String, LayerHealth>) {
+    layer_health.clear();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,7 +551,8 @@ struct BackpressureMessage {
     dropped_frames: u32,
     topic: String,
     recommendation: String,
-    suggested_fps: u32,
+    suggested_fps: Option<u32>,
+    suggested_interval_ms: Option<u32>,
 }
 
 // ── Audio Level ─────────────────────────────────────────────────────────────
@@ -869,14 +884,48 @@ pub fn is_resync_required(message: &serde_json::Value) -> bool {
         && message.get("event").and_then(serde_json::Value::as_str) == Some("resync_required")
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OutputPowerReconciler {
+    generation: u64,
+}
+
+impl OutputPowerReconciler {
+    pub fn begin(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn accepts(self, generation: u64) -> bool {
+        self.generation == generation
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitialSubscriptionAdmission {
+    Pending,
+    Admitted,
+    Rejected,
+}
+
+#[must_use]
+pub fn initial_subscription_admission(message: &serde_json::Value) -> InitialSubscriptionAdmission {
+    match message.get("type").and_then(serde_json::Value::as_str) {
+        Some("subscribed") => InitialSubscriptionAdmission::Admitted,
+        Some("error") => InitialSubscriptionAdmission::Rejected,
+        _ => InitialSubscriptionAdmission::Pending,
+    }
+}
+
 // ── JSON Message Handler ────────────────────────────────────────────────────
 
 /// Handle incoming JSON events from the daemon.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_json_message(
     msg: &serde_json::Value,
-    set_active: &WriteSignal<Option<String>>,
+    _set_active: &WriteSignal<Option<String>>,
     set_output_paused: &WriteSignal<bool>,
+    output_power_reconciler: StoredValue<OutputPowerReconciler>,
     metrics: ReadSignal<Option<PerformanceMetrics>>,
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_device_metrics: &WriteSignal<Option<DeviceMetricsSnapshot>>,
@@ -902,9 +951,11 @@ pub(super) fn handle_json_message(
 
     match msg_type {
         "hello" => {
-            // Extract active effect from hello state
+            // The handshake carries no effect: the live tree is
+            // multi-zone, so what renders comes from /scene and the
+            // effect lifecycle events (Spec 78 §7.1).
             if let Some(state) = msg.get("state") {
-                set_active.set(extract_active_effect_name(state));
+                invalidate_output_power_reconciliation(output_power_reconciler);
                 set_output_paused.set(
                     state
                         .get("paused")
@@ -995,10 +1046,11 @@ pub(super) fn handle_json_message(
             if let Ok(message) = BackpressureMessage::deserialize(msg) {
                 if message.topic == "canvas"
                     && message.recommendation == "reduce_fps"
-                    && message.suggested_fps > 0
+                    && message.suggested_fps.is_some_and(|fps| fps > 0)
                 {
+                    let suggested_fps = message.suggested_fps.unwrap_or_default();
                     set_preview_transport_cap
-                        .update(|current| *current = (*current).min(message.suggested_fps));
+                        .update(|current| *current = (*current).min(suggested_fps));
                     set_last_backpressure_at_ms.set(Some(now_ms()));
                 }
                 let notice = BackpressureNotice {
@@ -1006,6 +1058,7 @@ pub(super) fn handle_json_message(
                     topic: message.topic,
                     recommendation: message.recommendation,
                     suggested_fps: message.suggested_fps,
+                    suggested_interval_ms: message.suggested_interval_ms,
                 };
                 if backpressure_notice.get_untracked().as_ref() != Some(&notice) {
                     set_backpressure_notice.set(Some(notice));
@@ -1014,15 +1067,17 @@ pub(super) fn handle_json_message(
         }
         "event" => {
             if let Some(event_type) = msg.get("event").and_then(|e| e.as_str()) {
-                if EFFECT_STARTED_EVENTS.contains(&event_type) {
-                    set_active.set(extract_effect_name_from_event(
-                        msg.get("data").unwrap_or(&serde_json::Value::Null),
-                    ));
-                } else if EFFECT_STOPPED_EVENTS.contains(&event_type) {
-                    set_active.set(None);
+                if EFFECT_STARTED_EVENTS.contains(&event_type)
+                    || EFFECT_STOPPED_EVENTS.contains(&event_type)
+                {
+                    let effect_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    update_scene_event_hint(set_last_scene_event, event_type, effect_data);
+                    reconcile_output_power(*set_output_paused, output_power_reconciler);
                 } else if event_type == "paused" {
+                    invalidate_output_power_reconciliation(output_power_reconciler);
                     set_output_paused.set(true);
                 } else if event_type == "resumed" {
+                    invalidate_output_power_reconciliation(output_power_reconciler);
                     set_output_paused.set(false);
                 } else if event_type == "audio_level_update" {
                     if let Some(data) = msg.get("data") {
@@ -1037,8 +1092,7 @@ pub(super) fn handle_json_message(
                     }
                 } else if SCENE_EVENTS.contains(&event_type) {
                     let scene_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
-                    set_last_scene_event
-                        .set(Some(extract_scene_event_hint(event_type, scene_data)));
+                    update_scene_event_hint(set_last_scene_event, event_type, scene_data);
                 } else if EFFECT_ERROR_EVENTS.contains(&event_type) {
                     let effect_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_effect_error.set(extract_effect_error_hint(event_type, effect_data));
@@ -1085,6 +1139,31 @@ pub(super) fn handle_json_message(
         }
         _ => {}
     }
+}
+
+fn invalidate_output_power_reconciliation(reconciler: StoredValue<OutputPowerReconciler>) {
+    reconciler.update_value(|reconciler| {
+        reconciler.begin();
+    });
+}
+
+fn reconcile_output_power(
+    set_output_paused: WriteSignal<bool>,
+    reconciler: StoredValue<OutputPowerReconciler>,
+) {
+    let mut state = reconciler.get_value();
+    let generation = state.begin();
+    reconciler.set_value(state);
+    leptos::task::spawn_local(async move {
+        if let Ok(output) = crate::api::output::fetch_output().await
+            && reconciler.get_value().accepts(generation)
+        {
+            set_output_paused.set(matches!(
+                output.power,
+                hypercolor_types::api::output::OutputPowerMode::Paused
+            ));
+        }
+    });
 }
 
 pub fn extract_input_source_status_event_hint(
@@ -1229,6 +1308,7 @@ pub fn extract_scene_event_hint(
         .flatten();
 
     SceneEventHint {
+        generation: 0,
         event_type: event_type.to_owned(),
         scene_id: scene_data
             .get("current")
@@ -1277,6 +1357,17 @@ pub fn extract_scene_event_hint(
     }
 }
 
+fn update_scene_event_hint(
+    set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
+    event_type: &str,
+    data: &serde_json::Value,
+) {
+    let next = extract_scene_event_hint(event_type, data);
+    set_last_scene_event.update(|previous| {
+        *previous = Some(sequence_scene_event_hint(previous.as_ref(), next));
+    });
+}
+
 pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
     match hint.event_type.as_str() {
         // Library CRUD and scene-settings tweaks never change what's
@@ -1285,30 +1376,6 @@ pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
         "zone_changed" => hint.zone_role != Some(ZoneRole::Display),
         _ => true,
     }
-}
-
-fn extract_active_effect_name(state: &serde_json::Value) -> Option<String> {
-    let active = state.get("effect").or_else(|| state.get("active_effect"))?;
-    active
-        .get("name")
-        .or_else(|| active.get("effect_name"))
-        .and_then(serde_json::Value::as_str)
-        .map(String::from)
-        .or_else(|| active.as_str().map(String::from))
-}
-
-fn extract_effect_name_from_event(data: &serde_json::Value) -> Option<String> {
-    data.get("name")
-        .or_else(|| data.get("effect_name"))
-        .or_else(|| data.get("effect").and_then(|effect| effect.get("name")))
-        .or_else(|| data.get("current").and_then(|effect| effect.get("name")))
-        .and_then(serde_json::Value::as_str)
-        .map(String::from)
-        .or_else(|| {
-            data.get("effect")
-                .and_then(serde_json::Value::as_str)
-                .map(String::from)
-        })
 }
 
 fn extract_device_event_hint(

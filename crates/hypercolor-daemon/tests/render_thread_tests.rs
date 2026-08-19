@@ -39,6 +39,7 @@ use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent, ZoneColors,
 };
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::session::OffOutputBehavior;
@@ -291,6 +292,13 @@ fn primary_group(
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
 ) -> Zone {
+    let layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls.clone(),
+        HashMap::new(),
+        None,
+    )];
     Zone {
         id: ZoneId::new(),
         name: "Primary".into(),
@@ -299,7 +307,7 @@ fn primary_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers,
         layout,
         brightness: 1.0,
         enabled: true,
@@ -317,6 +325,13 @@ fn custom_group(
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
 ) -> Zone {
+    let layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls.clone(),
+        HashMap::new(),
+        None,
+    )];
     Zone {
         id: ZoneId::new(),
         name: name.into(),
@@ -325,7 +340,7 @@ fn custom_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers,
         layout,
         brightness: 1.0,
         enabled: true,
@@ -344,6 +359,13 @@ fn display_group(
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
 ) -> Zone {
+    let layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls.clone(),
+        HashMap::new(),
+        None,
+    )];
     Zone {
         id: group_id,
         name: "Display".into(),
@@ -352,7 +374,7 @@ fn display_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers,
         layout,
         brightness: 1.0,
         enabled: true,
@@ -1485,11 +1507,12 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
 async fn output_sleep_keeps_reactive_input_capture_live() {
     let mut state = make_render_state(
         active_builtin_effect("audio_pulse", HashMap::new()),
-        SpatialEngine::new(test_layout(Vec::new())),
+        SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     state.power_state = power_state;
+    let frame_rx = state.event_bus.frame_receiver();
 
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     {
@@ -1509,6 +1532,10 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
     }
     let mut render_thread = RenderThread::spawn(state.clone());
     wait_for_audio_capture_transition(&transitions, true).await;
+    wait_until("initial populated output frame", || {
+        !frame_rx.borrow().zones.is_empty()
+    })
+    .await;
 
     power_tx.send_replace(OutputPowerState {
         session_sleeping: true,
@@ -1516,7 +1543,10 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
         off_output_behavior: OffOutputBehavior::Release,
         ..OutputPowerState::default()
     });
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_until("release sleep to clear output", || {
+        frame_rx.borrow().zones.is_empty()
+    })
+    .await;
     assert_eq!(
         *transitions.lock().expect("transition log should lock"),
         [false, true],

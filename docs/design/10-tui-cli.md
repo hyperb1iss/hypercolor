@@ -479,7 +479,7 @@ For development and troubleshooting. Shows the internals.
 │  D   │ │                                    │  │                                          │ │
 │  E   │ │  Render    16.4ms  ▓▓▓▓▓▓▓░░░░     │  │  14:32:01.482  DeviceConnected           │ │
 │  C   │ │  Sample     0.3ms  ▓░░░░░░░░░░     │  │               WLED Living Room           │ │
-│  V   │ │  Push       1.2ms  ▓░░░░░░░░░░     │  │  14:32:01.344  EffectChanged              │ │
+│  V   │ │  Push       1.2ms  ▓░░░░░░░░░░     │  │  14:32:01.344  EffectStarted              │ │
 │  P   │ │  Total     17.9ms  ▓▓▓▓▓▓▓▓░░░     │  │               Rainbow Wave                │ │
 │  S   │ │  Budget    16.7ms  ────────────     │  │  14:31:58.102  ProfileLoaded              │ │
 │ [B]  │ │  Headroom  -1.2ms  over budget!     │  │               Evening                     │ │
@@ -498,10 +498,10 @@ For development and troubleshooting. Shows the internals.
 │      │ └────────────────────────────────────┘  └──────────────────────────────────────────┘ │
 │      │                                                                                      │
 │      │ ┌─ IPC Traffic ─────────────────────────────────────────────────────────────────────┐│
-│      │ │ → SET_EFFECT {"name":"Rainbow Wave","params":{"speed":65}}                        ││
-│      │ │ ← OK {"effect":"Rainbow Wave","active":true}                                      ││
-│      │ │ → GET_STATE                                                                       ││
-│      │ │ ← STATE {"fps":60.0,"effect":"Rainbow Wave","devices":4,"leds":1356}              ││
+│      │ │ → POST /api/v1/effects/<id>/apply {"controls":{"speed":{"float":65.0}}}          ││
+│      │ │ ← 200 {"zone":{"id":"...","layers":[{"id":"..."}]},"outcome":"applied"}       ││
+│      │ │ → GET /api/v1/scene                                                               ││
+│      │ │ ← 200 {"revision":42,"zones":[{"role":"primary","layers":[...]}]}                ││
 │      │ └───────────────────────────────────────────────────────────────────────────────────┘│
 ├──────┴────────────────┬──────────────────────────────────────────────────────────────────────┤
 │ ▂▃▅▇█▇▅▃▂▁▁▂▃▅▆▇█▇▆▅ │ ♪ PipeWire │ Render: 17.9ms (over budget)                           │
@@ -1050,14 +1050,14 @@ hypercolor watch --filter device
 hypercolor watch --format csv --fps 10
 
 # Pipe to jq for processing
-hypercolor watch --format json | jq 'select(.type == "effect_changed") | .effect'
+hypercolor watch --format json | jq 'select(.type == "effect_started") | .data.effect'
 ```
 
 Output format for `--format json`:
 
 ```jsonl
 {"ts":"2026-03-01T20:32:01.482Z","type":"device_connected","device":"WLED Living Room","leds":120}
-{"ts":"2026-03-01T20:32:01.500Z","type":"effect_changed","effect":"Rainbow Wave","params":{"speed":65}}
+{"ts":"2026-03-01T20:32:01.500Z","type":"effect_started","data":{"zone_id":"...","layer_id":"...","effect":{"id":"...","name":"Rainbow Wave"}}}
 {"ts":"2026-03-01T20:32:01.516Z","type":"frame","fps":60.0,"devices":4,"leds":1356}
 ```
 
@@ -1494,11 +1494,11 @@ TUI/CLI communicate with the daemon over HTTP REST and WebSocket on `:9420`. The
 
 ```
 REST request:   POST /api/v1/effects/rainbow-wave/apply
-REST response:  { "data": { "effect": "Rainbow Wave", "active": true }, "meta": { ... } }
+REST response:  { "data": { "zone": { "id": "...", "layers": [...] }, "outcome": "applied" }, "meta": { ... } }
 
 WS stream:  { "type": "frame",    "data": { "fps": 60.0, "leds": [...] } }
 WS stream:  { "type": "spectrum", "data": { "bins": [...], "level": 0.72, "beat": true } }
-WS stream:  { "type": "event",    "data": { "kind": "device_connected", "device": "WLED Strip" } }
+WS stream:  { "type": "event", "event": "device_connected", "timestamp": "...", "data": { ... } }
 ```
 
 WebSocket messages are server-pushed after the client connects. All responses follow the standard envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.

@@ -11,7 +11,7 @@
 //! - **Surface identity** — `active_scene` + `selected_group_id` name the
 //!   `(scene id, group id)` pair every mutation is addressed to. The panel
 //!   never displays the ids.
-//! - **`layers_version`** — read from `layers_resource`; threaded as the
+//! - **Scene revision** — read from `layers_resource`; threaded as the
 //!   `If-Match` precondition on every mutation. A stale write is reported
 //!   and the stack refetched, never silently lost.
 //! - **Add-layer picker** — Add-layer opens [`picker::AddLayerPicker`],
@@ -54,7 +54,7 @@ use source::{
 /// mount contract.
 #[component]
 pub fn LayerPanel(
-    #[prop(into)] active_scene: Signal<Option<api::ActiveSceneResponse>>,
+    #[prop(into)] active_scene: Signal<Option<api::LiveSceneView>>,
     selected_group_id: ReadSignal<Option<String>>,
     set_selected_group_id: WriteSignal<Option<String>>,
     /// Surface name supplied by a host that owns surface selection
@@ -97,11 +97,11 @@ pub fn LayerPanel(
             })
             .unwrap_or_default()
     });
-    let layers_version = Signal::derive(move || {
+    let scene_revision = Signal::derive(move || {
         layers_resource
             .get()
             .and_then(Result::ok)
-            .map(|stack| stack.layers_version)
+            .map(|stack| stack.revision)
     });
 
     // Per-layer runtime health streams in over the WebSocket, independent
@@ -157,7 +157,7 @@ pub fn LayerPanel(
             toasts::toast_error("No target surfaces for that scope");
             return;
         }
-        let expected_version = layers_version.get_untracked();
+        let expected_revision = scene_revision.get_untracked();
         let existing_layer_count = layers_resource
             .get_untracked()
             .and_then(Result::ok)
@@ -166,27 +166,27 @@ pub fn LayerPanel(
         let request = api::CreateLayerRequest {
             name: draft.name,
             source: draft.source,
-            blend,
-            opacity: 1.0,
-            transform: LayerTransform::default(),
-            adjust: LayerAdjust::default(),
-            bindings: Vec::new(),
-            enabled: true,
+            blend: Some(blend),
+            opacity: Some(1.0),
+            transform: Some(LayerTransform::default()),
+            adjust: Some(LayerAdjust::default()),
+            bindings: None,
+            enabled: None,
         };
         leptos::task::spawn_local(async move {
             let mut applied = 0_usize;
             let mut failed = 0_usize;
-            for target in &targets {
-                // `If-Match` guards the surface on screen; bulk targets are
-                // not being watched, so they add unconditionally.
-                let version = if *target == group_id {
-                    expected_version
-                } else {
-                    None
-                };
-                match api::create_layer(&scene.id, target, &request, version).await {
-                    Ok(api::LayerStackOutcome::Applied(_)) => applied += 1,
-                    Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => failed += 1,
+            let mut revision = expected_revision;
+            for (index, target) in targets.iter().enumerate() {
+                match api::create_layer(target, &request, revision).await {
+                    Ok(api::LayerStackOutcome::Applied(stack)) => {
+                        applied += 1;
+                        revision = Some(stack.revision);
+                    }
+                    Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => {
+                        failed += targets.len() - index;
+                        break;
+                    }
                 }
             }
             on_layers_mutated.run(());
@@ -275,7 +275,7 @@ pub fn LayerPanel(
                             };
                             let scene_id = active_scene.get().map(|scene| scene.id).unwrap_or_default();
                             let group_id = selected_group_id.get().unwrap_or_default();
-                            let version = stack.layers_version;
+                            let revision = stack.revision;
                             let total = stack.items.len();
                             let mut rows = stack
                                 .items
@@ -306,13 +306,12 @@ pub fn LayerPanel(
                                         });
                                         view! {
                                             <LayerRow
-                                                scene_id=scene_id.clone()
                                                 group_id=group_id.clone()
                                                 layer=layer
                                                 stack_index=stack_index
                                                 total_layers=total
                                                 stack=stack.items.clone()
-                                                layers_version=version
+                                                revision=revision
                                                 media_names=names.clone()
                                                 effect_names=effect_name_map.clone()
                                                 health=row_health
@@ -358,24 +357,15 @@ fn LayerLoadingSkeleton() -> impl IntoView {
 
 /// Push a single-field layer update, guarded by the `If-Match` precondition.
 fn update_layer(
-    scene_id: String,
     group_id: String,
     layer: SceneLayer,
-    layers_version: u64,
+    revision: u64,
     on_layers_mutated: Callback<()>,
 ) {
     let layer_id = layer.id.to_string();
     let request = api::update_request_from_layer(&layer);
     leptos::task::spawn_local(async move {
-        match api::update_layer(
-            &scene_id,
-            &group_id,
-            &layer_id,
-            &request,
-            Some(layers_version),
-        )
-        .await
-        {
+        match api::update_layer(&group_id, &layer_id, &request, Some(revision)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());
@@ -388,14 +378,13 @@ fn update_layer(
 
 /// Remove a layer, guarded by the `If-Match` precondition.
 fn delete_layer(
-    scene_id: String,
     group_id: String,
     layer_id: String,
-    layers_version: u64,
+    revision: u64,
     on_layers_mutated: Callback<()>,
 ) {
     leptos::task::spawn_local(async move {
-        match api::delete_layer(&scene_id, &group_id, &layer_id, Some(layers_version)).await {
+        match api::delete_layer(&group_id, &layer_id, Some(revision)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => {
                 on_layers_mutated.run(());
                 toasts::toast_success("Layer removed");
@@ -411,12 +400,11 @@ fn delete_layer(
 
 /// Swap a layer with its neighbor, guarded by the `If-Match` precondition.
 fn reorder_layer(
-    scene_id: String,
     group_id: String,
     stack: Vec<SceneLayer>,
     index: usize,
     delta: isize,
-    layers_version: u64,
+    revision: u64,
     on_layers_mutated: Callback<()>,
 ) {
     let Some(target) = index.checked_add_signed(delta) else {
@@ -429,7 +417,7 @@ fn reorder_layer(
     let mut layer_ids = stack.iter().map(|layer| layer.id).collect::<Vec<_>>();
     layer_ids.swap(index, target);
     leptos::task::spawn_local(async move {
-        match api::reorder_layers(&scene_id, &group_id, layer_ids, Some(layers_version)).await {
+        match api::reorder_layers(&group_id, layer_ids, Some(revision)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());

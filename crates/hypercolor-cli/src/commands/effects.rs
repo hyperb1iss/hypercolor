@@ -2,12 +2,16 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use hypercolor_types::api::effects::{
-    ApplyEffectRequest, ResetControlsRequest, SetEffectLayoutRequest, TransitionRequest,
-    UpdateActiveControlsRequest,
-};
+use std::collections::BTreeMap;
+
+use hypercolor_types::api::effects::EffectDetailResponse;
 use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
-use serde_json::Value;
+use hypercolor_types::api::scene::{
+    ApplyEffectRequest, ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest,
+};
+use hypercolor_types::effect::ControlValue;
+use hypercolor_types::layer::{LayerSource, SceneLayer};
+use hypercolor_types::scene::{ZoneId, ZoneRole};
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -40,8 +44,6 @@ pub enum EffectCommand {
     Reset,
     /// Rescan the effect library for new or changed effects.
     Rescan,
-    /// Manage effect-to-layout associations.
-    Layout(EffectLayoutArgs),
 }
 
 /// Arguments for `effects list`.
@@ -81,10 +83,6 @@ pub struct EffectActivateArgs {
     /// Intensity control shorthand (0-100).
     #[arg(long)]
     pub intensity: Option<u32>,
-
-    /// Crossfade transition duration in milliseconds.
-    #[arg(long, default_value = "0")]
-    pub transition: u32,
 }
 
 /// Arguments for `effects info`.
@@ -100,47 +98,6 @@ pub struct EffectPatchArgs {
     /// Control parameters to update (repeatable, format: key=value).
     #[arg(long, short, value_parser = parse_key_value, required = true)]
     pub param: Vec<(String, String)>,
-}
-
-/// Arguments for `effects layout`.
-#[derive(Debug, Args)]
-pub struct EffectLayoutArgs {
-    #[command(subcommand)]
-    pub command: EffectLayoutCommand,
-}
-
-/// Effect layout subcommands.
-#[derive(Debug, Subcommand)]
-pub enum EffectLayoutCommand {
-    /// Show the layout associated with an effect.
-    Show(EffectLayoutShowArgs),
-    /// Associate an effect with a specific layout.
-    Set(EffectLayoutSetArgs),
-    /// Remove the layout association from an effect.
-    Clear(EffectLayoutClearArgs),
-}
-
-/// Arguments for `effects layout show`.
-#[derive(Debug, Args)]
-pub struct EffectLayoutShowArgs {
-    /// Effect name or ID.
-    pub effect: String,
-}
-
-/// Arguments for `effects layout set`.
-#[derive(Debug, Args)]
-pub struct EffectLayoutSetArgs {
-    /// Effect name or ID.
-    pub effect: String,
-    /// Layout ID to associate.
-    pub layout: String,
-}
-
-/// Arguments for `effects layout clear`.
-#[derive(Debug, Args)]
-pub struct EffectLayoutClearArgs {
-    /// Effect name or ID.
-    pub effect: String,
 }
 
 /// Parse a `key=value` string.
@@ -174,7 +131,6 @@ pub async fn execute(args: &EffectsArgs, client: &DaemonClient, ctx: &OutputCont
         EffectCommand::Patch(patch_args) => execute_patch(patch_args, client, ctx).await,
         EffectCommand::Reset => execute_reset(client, ctx).await,
         EffectCommand::Rescan => execute_rescan(client, ctx).await,
-        EffectCommand::Layout(layout_args) => execute_layout(layout_args, client, ctx).await,
     }
 }
 
@@ -248,32 +204,29 @@ async fn execute_activate(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let mut controls = serde_json::Map::new();
+    let mut controls = BTreeMap::new();
     for (key, value) in &args.param {
-        controls.insert(key.clone(), parse_control_value(value));
+        controls.insert(
+            key.clone(),
+            control_value_from_json(parse_control_value(value))?,
+        );
     }
     if let Some(speed) = args.speed {
-        controls.insert("speed".to_string(), serde_json::Value::from(speed));
+        controls.insert(
+            "speed".to_string(),
+            ControlValue::Integer(i32::try_from(speed)?),
+        );
     }
     if let Some(intensity) = args.intensity {
-        controls.insert("intensity".to_string(), serde_json::Value::from(intensity));
+        controls.insert(
+            "intensity".to_string(),
+            ControlValue::Integer(i32::try_from(intensity)?),
+        );
     }
 
     let body = ApplyEffectRequest {
-        controls: Some(Value::Object(controls)),
-        transition: Some(TransitionRequest {
-            transition_type: Some(
-                if args.transition == 0 {
-                    "cut"
-                } else {
-                    "crossfade"
-                }
-                .to_owned(),
-            ),
-            duration_ms: Some(u64::from(args.transition)),
-        }),
-        preset_id: None,
-        zone_id: None,
+        controls: (!controls.is_empty()).then_some(controls),
+        ..ApplyEffectRequest::default()
     };
 
     // The daemon's apply endpoint uses effect IDs in the path.
@@ -284,12 +237,7 @@ async fn execute_activate(
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let name = response
-                .get("effect")
-                .and_then(|e| e.get("name"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(&args.effect);
-            ctx.success(&format!("Effect set: {name}"));
+            ctx.success(&format!("Effect set: {}", args.effect));
         }
     }
 
@@ -297,7 +245,9 @@ async fn execute_activate(
 }
 
 async fn execute_stop(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.post("/effects/stop", &serde_json::json!({})).await?;
+    let response = client
+        .post("/scene/clear", &ClearSceneRequest::default())
+        .await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -380,15 +330,25 @@ async fn execute_patch(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let mut controls = serde_json::Map::new();
+    let mut values = BTreeMap::new();
     for (key, value) in &args.param {
-        controls.insert(key.clone(), parse_control_value(value));
+        values.insert(
+            key.clone(),
+            control_value_from_json(parse_control_value(value))?,
+        );
     }
 
-    let body = UpdateActiveControlsRequest {
-        controls: Some(Value::Object(controls)),
-    };
-    let response = client.patch("/effects/active/controls", &body).await?;
+    let (zone, layer, _, _) = active_effect_layer(client).await?;
+    let path = format!("/scene/zones/{zone}/layers/{}/controls", layer.id);
+    let response = client
+        .patch(
+            &path,
+            &PatchControlsRequest {
+                values,
+                clear_bindings: Vec::new(),
+            },
+        )
+        .await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -402,8 +362,41 @@ async fn execute_patch(
 }
 
 async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let (zone, layer, effect_id, _) = active_effect_layer(client).await?;
+    let detail: EffectDetailResponse =
+        serde_json::from_value(client.get(&format!("/effects/{effect_id}")).await?)?;
+    let values: std::collections::HashMap<_, _> = detail
+        .controls
+        .into_iter()
+        .map(|control| (control.control_id().to_owned(), control.default_value))
+        .collect();
+    let LayerSource::Effect {
+        effect_id,
+        control_bindings,
+        ..
+    } = &layer.source
+    else {
+        anyhow::bail!("The active zone has no effect layer");
+    };
     let response = client
-        .post("/effects/active/reset", &ResetControlsRequest::default())
+        .put(
+            &format!("/scene/zones/{zone}/layers/{}", layer.id),
+            &ReplaceLayerRequest {
+                source: LayerSource::Effect {
+                    effect_id: *effect_id,
+                    controls: values,
+                    control_bindings: control_bindings.clone(),
+                    preset_id: None,
+                },
+                name: layer.name.clone(),
+                blend: Some(layer.blend),
+                opacity: Some(layer.opacity),
+                transform: Some(layer.transform),
+                adjust: Some(layer.adjust),
+                bindings: Some(layer.bindings.clone()),
+                enabled: Some(layer.enabled),
+            },
+        )
         .await?;
 
     match ctx.format {
@@ -435,56 +428,55 @@ async fn execute_rescan(client: &DaemonClient, ctx: &OutputContext) -> Result<()
     Ok(())
 }
 
-async fn execute_layout(
-    args: &EffectLayoutArgs,
+async fn active_effect_layer(
     client: &DaemonClient,
-    ctx: &OutputContext,
-) -> Result<()> {
-    match &args.command {
-        EffectLayoutCommand::Show(show_args) => {
-            let path = format!("/effects/{}/layout", urlencoded(&show_args.effect));
-            let response = client.get(&path).await?;
+) -> Result<(ZoneId, SceneLayer, String, Vec<String>)> {
+    let scene: hypercolor_types::api::scene::SceneDocument =
+        serde_json::from_value(client.get("/scene").await?)?;
+    let zone = scene
+        .zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .or_else(|| scene.zones.first())
+        .ok_or_else(|| anyhow::anyhow!("The active scene has no zones"))?;
+    let layer = zone
+        .layers
+        .iter()
+        .rev()
+        .find_map(|layer| match &layer.source {
+            LayerSource::Effect {
+                effect_id,
+                control_bindings,
+                ..
+            } => Some((
+                layer.clone(),
+                effect_id.to_string(),
+                control_bindings.keys().cloned().collect(),
+            )),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("The active zone has no effect layer"))?;
+    Ok((zone.id, layer.0, layer.1, layer.2))
+}
 
-            match ctx.format {
-                OutputFormat::Json => ctx.print_json(&response)?,
-                OutputFormat::Plain | OutputFormat::Table => {
-                    let layout_id = extract_str(&response, "layout_id");
-                    ctx.info(&format!("{}: layout = {layout_id}", show_args.effect));
-                }
-            }
-        }
-        EffectLayoutCommand::Set(set_args) => {
-            let path = format!("/effects/{}/layout", urlencoded(&set_args.effect));
-            let body = SetEffectLayoutRequest {
-                layout_id: set_args.layout.clone(),
-            };
-            let response = client.put(&path, &body).await?;
-
-            match ctx.format {
-                OutputFormat::Json => ctx.print_json(&response)?,
-                OutputFormat::Plain | OutputFormat::Table => {
-                    ctx.success(&format!(
-                        "Effect {:?} linked to layout {:?}",
-                        set_args.effect, set_args.layout
-                    ));
-                }
-            }
-        }
-        EffectLayoutCommand::Clear(clear_args) => {
-            let path = format!("/effects/{}/layout", urlencoded(&clear_args.effect));
-            let response = client.delete(&path).await?;
-
-            match ctx.format {
-                OutputFormat::Json => ctx.print_json(&response)?,
-                OutputFormat::Plain | OutputFormat::Table => {
-                    ctx.success(&format!(
-                        "Layout association cleared for {:?}",
-                        clear_args.effect
-                    ));
-                }
-            }
-        }
+fn control_value_from_json(value: serde_json::Value) -> Result<ControlValue> {
+    if let Some(value) = value.as_i64() {
+        return Ok(ControlValue::Integer(i32::try_from(value)?));
     }
-
-    Ok(())
+    if value.is_number() {
+        return Ok(ControlValue::Float(serde_json::from_value(value)?));
+    }
+    if let Some(value) = value.as_bool() {
+        return Ok(ControlValue::Boolean(value));
+    }
+    if let Some(value) = value.as_str() {
+        return Ok(ControlValue::Text(value.to_owned()));
+    }
+    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
+        return Ok(ControlValue::Color(color));
+    }
+    if let Ok(rect) = serde_json::from_value(value) {
+        return Ok(ControlValue::Rect(rect));
+    }
+    anyhow::bail!("Unsupported effect control value")
 }

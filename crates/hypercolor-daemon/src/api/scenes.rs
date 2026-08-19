@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
@@ -28,9 +29,8 @@ const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 // Wire contracts live in hypercolor-types::api::scenes — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::scenes::{
-    ActivateSceneResponse, ActivatedSceneRef, ActiveSceneResponse, CreateSceneRequest,
-    DeactivateSceneResponse, DeleteSceneResponse, SceneListResponse, SceneSummary,
-    UpdateSceneRequest,
+    ActivateSceneResponse, ActivatedSceneRef, CreateSceneRequest, DeleteSceneResponse,
+    ReplaceSceneRequest, SceneListResponse, SceneSummary,
 };
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/scenes/:id` — Get a single scene.
 pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let manager = state.scene_manager.read().await;
-    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+    let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
@@ -69,30 +69,11 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    ApiResponse::ok(scene_summary(scene))
-}
-
-/// `GET /api/v1/scenes/active` — Get the currently active scene, including Default.
-pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
-    crate::api::displays::sync_active_display_surfaces(&state).await;
-
-    let manager = state.scene_manager.read().await;
-    let Some(scene) = manager.active_scene() else {
-        return DomainError::not_found(ResourceKind::Scene, "active").into_response();
-    };
-
-    ApiResponse::ok(ActiveSceneResponse {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-        kind: scene.kind,
-        mutation_mode: scene.mutation_mode,
-        zones: scene.groups.clone(),
-        zones_revision: scene.groups_revision,
-        unassigned_behavior: scene.unassigned_behavior.clone(),
-    })
+    let revision = state.scene_commits.revision();
+    crate::api::scene::with_revision(
+        ApiResponse::ok(crate::domain::scene_tree::scene_document(scene, revision)),
+        revision,
+    )
 }
 
 /// `POST /api/v1/scenes` — Create a new scene.
@@ -120,24 +101,27 @@ pub async fn create_scene(
     ApiResponse::created(scene_summary(&created.scene))
 }
 
-/// `PUT /api/v1/scenes/:id` — Update a scene.
+/// `PUT /api/v1/scenes/:id` — Replace a complete stored scene document.
 pub async fn update_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateSceneRequest>,
+    headers: HeaderMap,
+    Json(body): Json<ReplaceSceneRequest>,
 ) -> Response {
-    let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
+    let expected_revision = match crate::api::scene::parse_if_match(&headers) {
+        Ok(revision) => revision,
+        Err(error) => return error.into_response(),
+    };
+    let Some(scene_id) = resolve_stored_scene_id(&*state.scene_manager.read().await, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    let updated = match crate::domain::scene::update_scene(
+    let updated = match crate::domain::scene::replace_scene(
         state.as_ref(),
-        crate::domain::scene::UpdateScene {
+        crate::domain::scene::ReplaceScene {
             scene_id,
-            name: body.name,
-            description: body.description,
-            enabled: body.enabled,
-            mutation_mode: body.mutation_mode,
+            document: body,
+            expected_revision,
         },
         crate::domain::MutationContext::api(),
     )
@@ -152,7 +136,14 @@ pub async fn update_scene(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(scene_summary(&updated.scene))
+    let revision = updated.commit.revision();
+    crate::api::scene::with_revision(
+        ApiResponse::ok(crate::domain::scene_tree::scene_document(
+            &updated.scene,
+            revision,
+        )),
+        revision,
+    )
 }
 
 /// `DELETE /api/v1/scenes/:id` — Delete a scene.
@@ -241,25 +232,6 @@ pub async fn activate_scene(
     })
 }
 
-/// `POST /api/v1/scenes/deactivate` — Return to the synthesized default scene.
-pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
-    let deactivated = match crate::domain::scene::deactivate_scene(
-        state.as_ref(),
-        crate::domain::MutationContext::api(),
-    )
-    .await
-    {
-        Ok(deactivated) => deactivated,
-        Err(error) => return error.into_response(),
-    };
-
-    ApiResponse::ok(DeactivateSceneResponse {
-        deactivated: true,
-        previous_scene: deactivated.previous_scene.as_ref().map(scene_summary),
-        scene: deactivated.current_scene.as_ref().map(scene_summary),
-    })
-}
-
 /// The scene summary every scene-library response carries.
 fn scene_summary(scene: &Scene) -> SceneSummary {
     SceneSummary {
@@ -286,6 +258,14 @@ pub(crate) fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Opti
         .iter()
         .find(|scene| scene.name.eq_ignore_ascii_case(id_or_name))
         .map(|scene| scene.id)
+}
+
+fn resolve_stored_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {
+    resolve_scene_id(manager, id_or_name).filter(|scene_id| {
+        manager
+            .get(scene_id)
+            .is_some_and(|scene| scene.kind == SceneKind::Named)
+    })
 }
 
 pub(crate) async fn asset_mime_types(state: &AppState) -> HashMap<AssetId, String> {

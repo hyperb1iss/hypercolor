@@ -693,6 +693,7 @@ mod tests {
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
     use crate::session::OutputPowerState;
+    use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
     use hypercolor_types::display::DisplayPixelFormat;
 
     use super::{
@@ -827,7 +828,13 @@ mod tests {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
-            layers: Vec::new(),
+            layers: vec![SceneLayer::from_effect(
+                SceneLayerId::new(),
+                effect_id,
+                HashMap::new(),
+                HashMap::new(),
+                None,
+            )],
             layout: sample_layout(),
             brightness: 1.0,
             enabled: true,
@@ -1081,7 +1088,12 @@ mod tests {
         };
         state
             .zone_layout_previews
-            .set(scene_id, group_id, preview_layout.clone())
+            .set(
+                ZoneLayoutPreviewOwner::new(),
+                scene_id,
+                group_id,
+                preview_layout.clone(),
+            )
             .await;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();

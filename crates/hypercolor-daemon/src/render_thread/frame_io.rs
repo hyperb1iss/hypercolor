@@ -410,11 +410,25 @@ fn publish_zone_previews(
     timestamp_ms: u32,
     publication_full_frame_copy: &mut FullFrameCopyMetrics,
 ) {
+    let zone_preview_receivers = state.event_bus.zone_preview_receiver_count();
     let Some(scene_id) = scene_id else {
+        clear_zone_previews(
+            state,
+            publication_cadence,
+            elapsed_ms,
+            frame_number,
+            timestamp_ms,
+        );
         return;
     };
-    let zone_preview_receivers = state.event_bus.zone_preview_receiver_count();
     if zone_preview_receivers == 0 {
+        clear_zone_previews(
+            state,
+            publication_cadence,
+            elapsed_ms,
+            frame_number,
+            timestamp_ms,
+        );
         return;
     }
     if !publication_cadence.zone_preview_due(
@@ -435,6 +449,13 @@ fn publish_zone_previews(
         publication_full_frame_copy,
     );
     if zone_previews.is_empty() {
+        clear_zone_previews(
+            state,
+            publication_cadence,
+            elapsed_ms,
+            frame_number,
+            timestamp_ms,
+        );
         return;
     }
 
@@ -453,6 +474,23 @@ fn publish_zone_previews(
         zone_previews.len(),
     );
     let _ = state.event_bus.zone_preview_sender().send(zone_previews);
+}
+
+fn clear_zone_previews(
+    state: &RenderThreadState,
+    publication_cadence: &mut PublicationCadenceState,
+    elapsed_ms: u64,
+    frame_number: u32,
+    timestamp_ms: u32,
+) {
+    if state.event_bus.zone_preview_sender().borrow().is_empty() {
+        return;
+    }
+    publication_cadence.record_zone_preview_publication(elapsed_ms);
+    state
+        .preview_runtime
+        .record_zone_preview_publication(frame_number, timestamp_ms, 0);
+    let _ = state.event_bus.zone_preview_sender().send(Vec::new());
 }
 
 fn collect_zone_previews(

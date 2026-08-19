@@ -88,8 +88,6 @@ fn daemon_state_serde_roundtrip() {
         brightness: 75,
         fps_target: 30.0,
         fps_actual: 29.5,
-        effect_name: Some("Aurora".to_string()),
-        effect_id: Some("aurora-1".to_string()),
         scene_name: Some("Focus".to_string()),
         scene_snapshot_locked: true,
         profile_name: Some("Gaming".to_string()),
@@ -101,7 +99,6 @@ fn daemon_state_serde_roundtrip() {
     assert!(parsed.running);
     assert_eq!(parsed.brightness, 75);
     assert_eq!(parsed.device_count, 3);
-    assert_eq!(parsed.effect_name.as_deref(), Some("Aurora"));
     assert_eq!(parsed.scene_name.as_deref(), Some("Focus"));
     assert!(parsed.scene_snapshot_locked);
 }
@@ -288,14 +285,13 @@ fn zone(id: &str, name: &str, is_primary: bool) -> ZoneSummary {
     ZoneSummary {
         id: id.to_string(),
         name: name.to_string(),
+        layer_id: None,
         effect_id: None,
         brightness: 1.0,
         enabled: true,
         is_primary,
         color: None,
         controls: HashMap::new(),
-        controls_version: 0,
-        layers_version: 0,
     }
 }
 
@@ -306,7 +302,7 @@ fn scene_with(zones: Vec<ZoneSummary>) -> ActiveScene {
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
         snapshot_locked: false,
-        zones_revision: 1,
+        revision: 1,
         zones,
     }
 }

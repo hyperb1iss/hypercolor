@@ -147,12 +147,11 @@ pub async fn create_zone(
     let created = crate::domain::zone::create_zone(
         state.as_ref(),
         crate::domain::zone::CreateZone {
-            scene: SceneTarget::Active,
+            target: SceneTarget::Active,
             name: body.name,
             color: body.color,
             fallback_canvas: canvas,
-            expected_revision: None,
-            expected_scene_revision: expected,
+            expected_revision: expected,
         },
         MutationContext::api(),
     )
@@ -180,9 +179,8 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    let revision = state.scene_commits.revision();
     match scene_tree::read_zone(state.as_ref(), zone_id).await {
-        Ok(resource) => with_revision(ApiResponse::ok(resource), revision),
+        Ok((resource, revision)) => with_revision(ApiResponse::ok(resource), revision),
         Err(error) => error.into_response(),
     }
 }
@@ -203,7 +201,7 @@ pub async fn patch_zone(
         crate::domain::zone::update_zone(
             state.as_ref(),
             crate::domain::zone::UpdateZone {
-                scene: SceneTarget::Active,
+                target: SceneTarget::Active,
                 zone_id,
                 patch: hypercolor_core::scene::ZoneMetaPatch {
                     name: body.name,
@@ -213,8 +211,7 @@ pub async fn patch_zone(
                     enabled: body.enabled,
                     make_primary: None,
                 },
-                expected_revision: None,
-                expected_scene_revision: expected,
+                expected_revision: expected,
             },
             MutationContext::api(),
         )
@@ -236,10 +233,9 @@ pub async fn delete_zone(
     if let Err(error) = crate::domain::zone::delete_zone(
         state.as_ref(),
         crate::domain::zone::DeleteZone {
-            scene: SceneTarget::Active,
+            target: SceneTarget::Active,
             zone_id,
-            expected_revision: None,
-            expected_scene_revision: expected,
+            expected_revision: expected,
         },
         MutationContext::api(),
     )
@@ -343,9 +339,8 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    let revision = state.scene_commits.revision();
     match scene_tree::read_zone(state.as_ref(), zone_id).await {
-        Ok(resource) => {
+        Ok((resource, revision)) => {
             let total = resource.layers.len() as u64;
             with_revision(
                 ApiResponse::ok(ListResponse {
@@ -375,13 +370,11 @@ pub async fn create_layer(
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
-
     let inserted = crate::domain::layer::insert_layer(
         state.as_ref(),
         SceneTarget::Active,
         zone_id,
         layer,
-        None,
         None,
         expected,
         MutationContext::api(),
@@ -423,7 +416,6 @@ pub async fn reorder_layers(
             SceneTarget::Active,
             zone_id,
             body.order,
-            None,
             expected,
             MutationContext::api(),
         )
@@ -458,7 +450,6 @@ pub async fn replace_layer(
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
-
     written_response(
         scene_tree::replace_layer(
             state.as_ref(),
@@ -495,7 +486,6 @@ pub async fn delete_layer(
             SceneTarget::Active,
             zone_id,
             layer_id,
-            None,
             expected,
             MutationContext::api(),
         )
@@ -586,7 +576,7 @@ fn layer_stack_response(
 
 /// Attach the one wire version so every answer tells the caller what to
 /// send back on its next guarded write.
-fn with_revision(response: Response, revision: u64) -> Response {
+pub(crate) fn with_revision(response: Response, revision: u64) -> Response {
     let mut response = response;
     if let Ok(value) = HeaderValue::from_str(&format!("\"{revision}\"")) {
         response.headers_mut().insert(header::ETAG, value);
@@ -598,7 +588,7 @@ fn with_revision(response: Response, revision: u64) -> Response {
 ///
 /// `*` means "any current state", which is what a caller sends when it
 /// wants the write to land regardless, so it reads as no precondition.
-fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainError> {
+pub(crate) fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainError> {
     let Some(value) = headers.get(header::IF_MATCH) else {
         return Ok(None);
     };
@@ -615,7 +605,8 @@ fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainError> {
         .map_err(|_| DomainError::malformed("If-Match must be the scene revision"))
 }
 
-/// Parse the transport-owned pieces of a zone-scoped mutation.
+/// The two transport details every zone-scoped mutation parses before
+/// the domain resolves the active scene from its commit candidate.
 fn zone_request(zone: &str, headers: &HeaderMap) -> Result<(ZoneId, Option<u64>), DomainError> {
     let zone_id = parse_zone_id(zone)?;
     let expected = parse_if_match(headers)?;
@@ -653,8 +644,8 @@ async fn build_layer(
         opacity: request.opacity.unwrap_or(1.0),
         transform: request.transform.unwrap_or_default(),
         adjust: request.adjust.unwrap_or_default(),
-        bindings: Vec::new(),
-        enabled: true,
+        bindings: request.bindings.unwrap_or_default(),
+        enabled: request.enabled.unwrap_or(true),
     }
     .normalized();
     layer.validate().map_err(|errors| {

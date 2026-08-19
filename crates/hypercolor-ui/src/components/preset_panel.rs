@@ -93,15 +93,22 @@ pub fn PresetToolbar(
     /// The active preset ID from the engine (restored on effect switch).
     #[prop(into, optional)]
     active_preset_id_signal: Option<Signal<Option<String>>>,
-    /// Whether live state has diverged from the selected preset.
-    #[prop(into)]
-    active_preset_modified_signal: Signal<bool>,
 ) -> impl IntoView {
     let (presets, set_presets) = signal(Vec::<api::EffectPresetSummary>::new());
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
     let fetch_generation = StoredValue::new(0_u64);
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
+    let active_preset_modified = Signal::derive(move || {
+        let Some(selected_id) = selected_id.get() else {
+            return false;
+        };
+        presets
+            .get()
+            .iter()
+            .find(|preset| preset.id == selected_id)
+            .is_some_and(|preset| preset_controls_modified(&preset.controls, &control_values.get()))
+    });
 
     // Fetch the effect-scoped preset stack whenever effect_id actually changes.
     //
@@ -355,7 +362,7 @@ pub fn PresetToolbar(
                                 <PresetSelectorRow
                                     presets=presets
                                     selected_id=selected_id
-                                    active_preset_modified=active_preset_modified_signal
+                                    active_preset_modified=active_preset_modified
                                     has_editable_selection=has_editable_selection
                                     accent_rgb=accent_rgb
                                     on_select=Callback::new(on_select_value)
@@ -771,6 +778,13 @@ fn preset_display_label(
     }
 }
 
+fn preset_controls_modified(
+    preset: &HashMap<String, ControlValue>,
+    live: &HashMap<String, ControlValue>,
+) -> bool {
+    preset != live
+}
+
 /// A single item in the custom dropdown. Painted with its preset's own
 /// swatch colour via the `--item-rgb` custom property on `.preset-option`.
 #[component]
@@ -854,7 +868,11 @@ fn PresetDropdownDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::preset_display_label;
+    use std::collections::HashMap;
+
+    use hypercolor_types::effect::ControlValue;
+
+    use super::{preset_controls_modified, preset_display_label};
 
     #[test]
     fn selected_preset_label_keeps_provenance_when_modified() {
@@ -867,5 +885,14 @@ mod tests {
             "Preset unavailable (Modified)"
         );
         assert_eq!(preset_display_label(None, None, false), "Default");
+    }
+
+    #[test]
+    fn preset_modification_compares_live_layer_controls() {
+        let preset = HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]);
+        assert!(!preset_controls_modified(&preset, &preset));
+
+        let live = HashMap::from([("speed".to_owned(), ControlValue::Float(0.75))]);
+        assert!(preset_controls_modified(&preset, &live));
     }
 }

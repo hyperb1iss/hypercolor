@@ -302,13 +302,15 @@ async fn mcp_status_surfaces_report_effective_session_pause() {
         .await
         .expect("stopped status should succeed");
     assert_eq!(stopped_status["running"], false);
-    assert_eq!(stopped_status["paused"], false);
+    // Paused is the exact complement of running on every surface now, so
+    // MCP no longer contradicts GET /output about a stop (Spec 78 §7.1).
+    assert_eq!(stopped_status["paused"], true);
 
     let stopped_resource = read_resource_with_state("hypercolor://state", &state)
         .await
         .expect("stopped state resource should exist");
     assert_eq!(stopped_resource["running"], false);
-    assert_eq!(stopped_resource["paused"], false);
+    assert_eq!(stopped_resource["paused"], true);
 }
 
 async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {

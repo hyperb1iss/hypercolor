@@ -848,11 +848,9 @@ mod tests {
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
-    use hypercolor_types::layer::SceneLayerId;
     #[cfg(feature = "servo")]
-    use hypercolor_types::layer::{
-        LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
-    };
+    use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
+    use hypercolor_types::layer::{SceneLayer, SceneLayerId};
     use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -1041,7 +1039,13 @@ mod tests {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
-            layers: Vec::new(),
+            layers: vec![SceneLayer::from_effect(
+                SceneLayerId::new(),
+                effect_id,
+                HashMap::new(),
+                HashMap::new(),
+                None,
+            )],
             layout: sample_layout(),
             brightness: 1.0,
             enabled: true,

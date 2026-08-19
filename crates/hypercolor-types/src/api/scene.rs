@@ -16,14 +16,19 @@
 //! (Spec 78 §7.2, after wave 78.5) rather than as orphan schemas now.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use crate::effect::ControlValue;
 use crate::identity::LayoutId;
 use crate::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
+    SceneLayerId,
 };
 use crate::library::PresetId;
-use crate::scene::{DisplayFaceTarget, SceneId, SceneKind, UnassignedBehavior, ZoneId, ZoneRole};
+use crate::scene::{
+    DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
+    UnassignedBehavior, ZoneId, ZoneRole,
+};
 use crate::spatial::{LedTopology, NormalizedPosition, Orientation};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +40,8 @@ use serde::{Deserialize, Serialize};
 pub struct SceneDocument {
     pub id: SceneId,
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub kind: SceneKind,
     /// Whether this is the auto-managed default scene, which cannot be
     /// renamed or deleted.
@@ -46,6 +53,18 @@ pub struct SceneDocument {
     /// kept and skipped with a warning event.
     #[serde(default)]
     pub layout_id: Option<LayoutId>,
+    #[serde(default)]
+    pub activation_brightness: Option<f32>,
+    #[serde(default = "default_scene_transition")]
+    pub transition: TransitionSpec,
+    #[serde(default)]
+    pub priority: ScenePriority,
+    #[serde(default = "default_scene_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub mutation_mode: SceneMutationMode,
     /// The commit generation. Served as `ETag`; the one wire version
     /// token (Spec 78 §1.6).
     pub revision: u64,
@@ -53,11 +72,25 @@ pub struct SceneDocument {
     pub zones: Vec<ZoneResource>,
 }
 
+fn default_scene_transition() -> TransitionSpec {
+    TransitionSpec {
+        duration_ms: 1000,
+        easing: crate::scene::EasingFunction::Linear,
+        color_interpolation: crate::scene::ColorInterpolation::Oklab,
+    }
+}
+
+const fn default_scene_enabled() -> bool {
+    true
+}
+
 /// One authored zone inside the live document (Spec 78 §1.3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ZoneResource {
     pub id: ZoneId,
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub role: ZoneRole,
     pub enabled: bool,
@@ -159,7 +192,7 @@ pub struct ScenePatchRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClearSceneRequest {
-    /// Clear one zone's stack; omitted clears every zone's.
+    /// Clear one non-display zone's stack; omitted clears every non-display zone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<ZoneId>,
 }
@@ -250,6 +283,10 @@ pub struct CreateLayerRequest {
     pub transform: Option<LayerTransform>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adjust: Option<LayerAdjust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bindings: Option<Vec<LayerBinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 /// `PUT /scene/zones/{zone}/layers/{layer}` — whole-layer replace.

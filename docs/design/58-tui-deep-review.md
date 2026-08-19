@@ -4,6 +4,11 @@
 **Scope:** `crates/hypercolor-tui/` (~15.8k lines), cross-checked against `hypercolor-types` and the daemon API.
 **Method:** Three parallel review passes (multi-zone/scene gaps, performance, architecture + input modes), findings verified against source before recording. Companion to doc 57 (frontend deep review) — the daemon capability map there (§1.1) applies here unchanged.
 
+> **Status:** Superseded historical review. Spec 78 replaces the singleton
+> effect state and nested saved-scene routes discussed below with the live
+> `/scene` tree. Treat route names, event names, version fields, and file-line
+> references in this review as a point-in-time record, not current guidance.
+
 ---
 
 ## 1. Multi-Zone Scene Support

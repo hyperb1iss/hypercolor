@@ -11,6 +11,46 @@ Every factory returns a `ControlSpec` that both `canvas()` and `effect()` consum
 
 For the authoring path these controls plug into, see [TypeScript canvas effects](@/effects/typescript-effects.md). For where they show up to a user, see [Effects and controls in the studio](@/studio/effects-and-controls.md).
 
+## Updating a live effect
+
+Live control values belong to a specific layer in the active scene. Read
+`GET /api/v1/scene`, select the effect layer you intend to change, and use the
+real zone and layer ids embedded in that document. Never derive a layer id from
+the zone id.
+
+```bash
+scene=$(curl -s http://localhost:9420/api/v1/scene)
+zone_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].id')
+layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
+
+curl -X PATCH \
+  "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
+  -H 'Content-Type: application/json' \
+  -d '{"values":{"speed":{"float":45.0},"palette":{"enum":"Aurora"}}}'
+```
+
+The control patch never uses `If-Match`. Values commit in arrival order, while
+layer identity prevents a stale patch from changing a replacement effect. An
+effect apply or whole-layer replacement mints a fresh `SceneLayerId`; a later
+patch to the old id returns `404 layer_not_found`. An apply response also
+returns the updated zone resource, so a client can take the new layer id from
+that response without another scene read.
+
+When a control has an active input binding, a manual value returns
+`409 control_bound`. Clear the binding and set the value atomically with the
+shared patch shape:
+
+```json
+{
+  "values": { "speed": { "float": 45.0 } },
+  "clear_bindings": ["speed"]
+}
+```
+
+The CLI hides the lookup step. `hypercolor effects patch --param speed=45`
+reads the live scene, resolves the current effect layer, and sends the same
+canonical layer-control patch.
+
 ## Control types at a glance
 
 There are nine control types. The discriminated union lives in `controls/specs.ts`; this table is its public face. Pick the factory in the right-hand column, or reach for the inferred shorthand where one exists.

@@ -1,5 +1,7 @@
 //! REST client for the Hypercolor daemon HTTP API.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use hypercolor_types::api::controls::InvokeControlActionRequest;
@@ -7,17 +9,16 @@ use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
 use hypercolor_types::api::effects::{
-    ActiveEffectResponse as ApiActiveEffectResponse, ApplyEffectRequest,
-    EffectListResponse as ApiEffectListResponse, EffectSummary as ApiEffectSummary,
-    ResetControlsRequest, UpdateActiveControlsRequest,
+    EffectDetailResponse, EffectListResponse as ApiEffectListResponse,
+    EffectSummary as ApiEffectSummary,
 };
 use hypercolor_types::api::envelope::ApiErrorBody;
-use hypercolor_types::api::layers::PatchLayerControlsRequest;
 use hypercolor_types::api::library::{AddFavoriteRequest, FavoriteListResponse};
-use hypercolor_types::api::scenes::{
-    ActiveSceneResponse as ApiActiveSceneResponse, SceneListResponse as ApiSceneListResponse,
+use hypercolor_types::api::scene::{
+    ApplyEffectRequest, PatchControlsRequest, PatchZoneRequest, ReplaceLayerRequest, SceneDocument,
+    ZoneResource,
 };
-use hypercolor_types::api::zones::UpdateZoneRequest;
+use hypercolor_types::api::scenes::SceneListResponse as ApiSceneListResponse;
 use hypercolor_types::controls::{
     ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
     ControlSurfaceDocument, ControlValueMap,
@@ -26,7 +27,9 @@ use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
     ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
 };
-use hypercolor_types::scene::{SceneKind, SceneMutationMode, Zone, ZoneRole};
+use hypercolor_types::layer::{LayerSource, SceneLayer};
+use hypercolor_types::scene::{SceneMutationMode, ZoneRole};
+use hypercolor_types::viewport::ViewportRect;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -64,12 +67,7 @@ impl DaemonClient {
 
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
-        let (status, active_effect) = tokio::join!(
-            self.get_data::<SystemStatusResponse>("/status"),
-            self.get_active_effect()
-        );
-        let status = status?;
-        let active_effect = active_effect.ok();
+        let status = self.get_data::<SystemStatusResponse>("/status").await?;
 
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let device_count = status.device_count as u32;
@@ -79,11 +77,6 @@ impl DaemonClient {
             brightness: status.global_brightness,
             fps_target: status.render_loop.target_fps,
             fps_actual: status.render_loop.actual_fps,
-            effect_name: active_effect
-                .as_ref()
-                .and_then(|effect| effect.name.clone())
-                .or(status.active_effect),
-            effect_id: active_effect.and_then(|effect| effect.id),
             scene_name: status.active_scene,
             scene_snapshot_locked: status.active_scene_snapshot_locked,
             profile_name: None,
@@ -233,9 +226,26 @@ impl DaemonClient {
             self.base_url,
             path_segment(effect_id)
         );
+        let controls = controls
+            .and_then(serde_json::Value::as_object)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|(name, value)| {
+                        api_control_value_from_json(value)
+                            .map(|value| (name.clone(), value))
+                            .with_context(|| format!("Unsupported control value for {name}"))
+                    })
+                    .collect::<Result<_>>()
+            })
+            .transpose()?;
+        let zone = zone_id
+            .map(|zone_id| serde_json::from_value(serde_json::Value::String(zone_id.to_owned())))
+            .transpose()
+            .with_context(|| "Target zone must be a UUID")?;
         let body = ApplyEffectRequest {
-            controls: controls.cloned(),
-            zone_id: zone_id.map(ToOwned::to_owned),
+            controls,
+            zone,
             ..ApplyEffectRequest::default()
         };
         let response = self
@@ -257,11 +267,16 @@ impl DaemonClient {
         Ok(response.items)
     }
 
-    /// Fetch the active scene with its zones, or `None` when no scene is active.
+    /// Fetch the live scene tree and its saved-scene mutation policy.
     pub async fn get_active_scene(&self) -> Result<Option<ActiveScene>> {
-        let response: Option<ApiActiveSceneResponse> =
-            self.get_optional_data("/scenes/active").await?;
-        Ok(response.map(map_active_scene))
+        let document: SceneDocument = self.get_data("/scene").await?;
+        let mutation_mode = self
+            .get_scenes()
+            .await?
+            .into_iter()
+            .find(|scene| scene.id == document.id.to_string())
+            .map_or(SceneMutationMode::Live, |scene| scene.mutation_mode);
+        Ok(Some(map_active_scene(document, mutation_mode)))
     }
 
     /// Activate a saved scene by ID.
@@ -281,7 +296,7 @@ impl DaemonClient {
 
     /// Deactivate the active scene, returning to the ephemeral default.
     pub async fn deactivate_scene(&self) -> Result<()> {
-        let url = format!("{}/api/v1/scenes/deactivate", self.base_url);
+        let url = format!("{}/api/v1/scene/deactivate", self.base_url);
         let response = self
             .auth_request(self.http.post(&url))
             .send()
@@ -291,29 +306,27 @@ impl DaemonClient {
     }
 
     /// Update zone metadata (enabled, brightness). Guarded by the scene's
-    /// `zones_revision` via `If-Match`; the daemon answers 412 when stale.
+    /// scene `revision` via `If-Match`; the daemon answers 412 when stale.
     pub async fn update_zone(
         &self,
-        scene_id: &str,
         zone_id: &str,
-        zones_revision: u64,
+        revision: u64,
         enabled: Option<bool>,
         brightness: Option<f32>,
     ) -> Result<()> {
         let url = format!(
-            "{}/api/v1/scenes/{}/zones/{}",
+            "{}/api/v1/scene/zones/{}",
             self.base_url,
-            path_segment(scene_id),
             path_segment(zone_id)
         );
-        let body = UpdateZoneRequest {
+        let body = PatchZoneRequest {
             enabled,
             brightness,
-            ..UpdateZoneRequest::default()
+            ..PatchZoneRequest::default()
         };
         let response = self
             .auth_request(self.http.patch(&url))
-            .header(reqwest::header::IF_MATCH, zones_revision.to_string())
+            .header(reqwest::header::IF_MATCH, revision.to_string())
             .json(&body)
             .send()
             .await
@@ -321,29 +334,34 @@ impl DaemonClient {
         ensure_success(response, &format!("Zone update failed for {zone_id}")).await
     }
 
-    /// Patch effect controls on a zone through its legacy layer — the
-    /// zone-scoped equivalent of `PATCH /effects/active/controls`. The
-    /// layer id is the zone id (see `Zone::legacy_layer_id`).
-    ///
-    /// Deliberately sends no `If-Match`: live control edits are
-    /// last-write-wins (each successful patch bumps `layers_version`, so a
-    /// guarded slider drag would 412 on every tick after the first).
+    /// Patch effect controls through the real layer identity read from `/scene`.
     pub async fn patch_zone_controls(
         &self,
-        scene_id: &str,
         zone_id: &str,
+        layer_id: &str,
         controls: &serde_json::Value,
     ) -> Result<()> {
         let zone = path_segment(zone_id);
+        let layer = path_segment(layer_id);
         let url = format!(
-            "{}/api/v1/scenes/{}/zones/{zone}/layers/{zone}/controls",
-            self.base_url,
-            path_segment(scene_id),
+            "{}/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+            self.base_url
         );
+        let values = controls
+            .as_object()
+            .context("Control patch must be an object")?
+            .iter()
+            .map(|(name, value)| {
+                api_control_value_from_json(value)
+                    .map(|value| (name.clone(), value))
+                    .with_context(|| format!("Unsupported control value for {name}"))
+            })
+            .collect::<Result<_>>()?;
         let response = self
             .auth_request(self.http.patch(&url))
-            .json(&PatchLayerControlsRequest {
-                controls: Some(controls.clone()),
+            .json(&PatchControlsRequest {
+                values,
+                clear_bindings: Vec::new(),
             })
             .send()
             .await
@@ -377,33 +395,102 @@ impl DaemonClient {
 
     /// Update a control value on the active effect.
     pub async fn update_control(&self, control_id: &str, value: &serde_json::Value) -> Result<()> {
-        let url = format!("{}/api/v1/effects/active/controls", self.base_url);
-        let response = self
-            .auth_request(self.http.patch(&url))
-            .json(&UpdateActiveControlsRequest {
-                controls: Some(serde_json::json!({ control_id: value })),
-            })
-            .send()
-            .await
-            .with_context(|| "Failed to update control")?;
-        ensure_success(response, &format!("Failed to update control {control_id}")).await
+        let (zone_id, layer, _, _) = self.effect_layer_target(None).await?;
+        self.patch_zone_controls(
+            &zone_id,
+            &layer.id.to_string(),
+            &serde_json::json!({ control_id: value }),
+        )
+        .await
     }
 
-    /// Reset the active effect's controls to their defaults. A
-    /// `zone_id` scopes the reset to that zone's effect; `None`
-    /// resets the primary zone (legacy behavior).
+    /// Reset one real effect layer to catalog defaults.
     pub async fn reset_controls(&self, zone_id: Option<&str>) -> Result<()> {
-        let url = format!("{}/api/v1/effects/active/reset", self.base_url);
-        let body = ResetControlsRequest {
-            zone_id: zone_id.map(ToOwned::to_owned),
+        let (zone_id, layer, effect_id, _) = self.effect_layer_target(zone_id).await?;
+        let detail: EffectDetailResponse = self
+            .get_data(&format!("/effects/{}", path_segment(&effect_id)))
+            .await?;
+        let values: std::collections::HashMap<_, _> = detail
+            .controls
+            .into_iter()
+            .map(|control| (control.control_id().to_owned(), control.default_value))
+            .collect();
+        let LayerSource::Effect {
+            effect_id,
+            control_bindings,
+            ..
+        } = &layer.source
+        else {
+            anyhow::bail!("The target zone has no effect layer");
         };
+        let url = format!(
+            "{}/api/v1/scene/zones/{}/layers/{}",
+            self.base_url,
+            path_segment(&zone_id),
+            layer.id
+        );
         let response = self
-            .auth_request(self.http.post(&url))
-            .json(&body)
+            .auth_request(self.http.put(&url))
+            .json(&ReplaceLayerRequest {
+                source: LayerSource::Effect {
+                    effect_id: *effect_id,
+                    controls: values,
+                    control_bindings: control_bindings.clone(),
+                    preset_id: None,
+                },
+                name: layer.name.clone(),
+                blend: Some(layer.blend),
+                opacity: Some(layer.opacity),
+                transform: Some(layer.transform),
+                adjust: Some(layer.adjust),
+                bindings: Some(layer.bindings.clone()),
+                enabled: Some(layer.enabled),
+            })
             .send()
             .await
             .context("Failed to reset controls")?;
         ensure_success(response, "Failed to reset controls").await
+    }
+
+    async fn effect_layer_target(
+        &self,
+        zone_id: Option<&str>,
+    ) -> Result<(String, SceneLayer, String, Vec<String>)> {
+        let document: SceneDocument = self.get_data("/scene").await?;
+        let zone = zone_id.map_or_else(
+            || {
+                document
+                    .zones
+                    .iter()
+                    .find(|zone| zone.role == ZoneRole::Primary)
+                    .or_else(|| document.zones.first())
+            },
+            |zone_id| {
+                document
+                    .zones
+                    .iter()
+                    .find(|zone| zone.id.to_string() == zone_id)
+            },
+        );
+        let zone = zone.context("The active scene has no target zone")?;
+        let layer = zone
+            .layers
+            .iter()
+            .rev()
+            .find_map(|layer| match &layer.source {
+                LayerSource::Effect {
+                    effect_id,
+                    control_bindings,
+                    ..
+                } => Some((
+                    layer.clone(),
+                    effect_id.to_string(),
+                    control_bindings.keys().cloned().collect(),
+                )),
+                _ => None,
+            })
+            .context("The target zone has no effect layer")?;
+        Ok((zone.id.to_string(), layer.0, layer.1, layer.2))
     }
 
     // ── Internal helpers ────────────────────────────────────
@@ -475,10 +562,6 @@ impl DaemonClient {
         response_data(response).await
     }
 
-    async fn get_active_effect(&self) -> Result<ApiActiveEffectResponse> {
-        self.get_data("/effects/active").await
-    }
-
     fn auth_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(api_key) = &self.api_key {
             request.bearer_auth(api_key)
@@ -506,7 +589,6 @@ struct SystemStatusResponse {
     running: bool,
     global_brightness: u8,
     device_count: usize,
-    active_effect: Option<String>,
     active_scene: Option<String>,
     #[serde(default)]
     active_scene_snapshot_locked: bool,
@@ -608,6 +690,32 @@ fn map_control_value(value: &ApiControlValue) -> ControlValue {
     }
 }
 
+fn api_control_value_from_json(value: &serde_json::Value) -> Option<ApiControlValue> {
+    if let Ok(value) = serde_json::from_value(value.clone()) {
+        return Some(value);
+    }
+    if let Some(value) = value.as_i64() {
+        return i32::try_from(value).ok().map(ApiControlValue::Integer);
+    }
+    if value.is_number() {
+        return serde_json::from_value::<f32>(value.clone())
+            .ok()
+            .map(ApiControlValue::Float);
+    }
+    if let Some(value) = value.as_bool() {
+        return Some(ApiControlValue::Boolean(value));
+    }
+    if let Some(value) = value.as_str() {
+        return Some(ApiControlValue::Text(value.to_owned()));
+    }
+    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
+        return Some(ApiControlValue::Color(color));
+    }
+    serde_json::from_value::<ViewportRect>(value.clone())
+        .ok()
+        .map(ApiControlValue::Rect)
+}
+
 fn map_preset_template(template: &ApiPresetTemplate) -> PresetTemplate {
     PresetTemplate {
         id: template.id.to_string(),
@@ -621,35 +729,45 @@ fn map_preset_template(template: &ApiPresetTemplate) -> PresetTemplate {
     }
 }
 
-fn map_active_scene(response: ApiActiveSceneResponse) -> ActiveScene {
+fn map_active_scene(response: SceneDocument, mutation_mode: SceneMutationMode) -> ActiveScene {
     ActiveScene {
-        snapshot_locked: response.kind == SceneKind::Named
-            && response.mutation_mode == SceneMutationMode::Snapshot,
-        id: response.id,
+        snapshot_locked: mutation_mode == SceneMutationMode::Snapshot,
+        id: response.id.to_string(),
         name: response.name,
         kind: response.kind,
-        mutation_mode: response.mutation_mode,
-        zones_revision: response.zones_revision,
+        mutation_mode,
+        revision: response.revision,
         zones: response.zones.iter().map(map_zone_summary).collect(),
     }
 }
 
-fn map_zone_summary(zone: &Zone) -> ZoneSummary {
+fn map_zone_summary(zone: &ZoneResource) -> ZoneSummary {
+    let effect_layer = zone.layers.iter().rev().find_map(|layer| {
+        let LayerSource::Effect {
+            effect_id,
+            controls,
+            ..
+        } = &layer.source
+        else {
+            return None;
+        };
+        Some((layer.id.to_string(), effect_id.to_string(), controls))
+    });
     ZoneSummary {
         id: zone.id.to_string(),
         name: zone.name.clone(),
-        effect_id: zone.effect_id.as_ref().map(ToString::to_string),
+        layer_id: effect_layer.as_ref().map(|(id, _, _)| id.clone()),
+        effect_id: effect_layer.as_ref().map(|(_, id, _)| id.clone()),
         brightness: zone.brightness,
         enabled: zone.enabled,
         is_primary: zone.role == ZoneRole::Primary,
         color: zone.color.clone(),
-        controls: zone
-            .controls
-            .iter()
-            .map(|(name, value)| (name.clone(), map_control_value(value)))
-            .collect(),
-        controls_version: zone.controls_version,
-        layers_version: zone.layers_version,
+        controls: effect_layer.map_or_else(HashMap::new, |(_, _, controls)| {
+            controls
+                .iter()
+                .map(|(name, value)| (name.clone(), map_control_value(value)))
+                .collect()
+        }),
     }
 }
 

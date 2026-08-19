@@ -142,6 +142,14 @@ python-generate *args='':
 python-generate-check:
     cd python && uv run python scripts/generate_openapi_client.py --check
 
+# Regenerate the WebSocket protocol manifest from the topic registry
+ws-manifest:
+    ./scripts/cargo-cache-build.sh cargo run -q -p hypercolor-daemon --bin hypercolor-ws-manifest
+
+# Verify the WebSocket protocol manifest matches the topic registry
+ws-manifest-check:
+    ./scripts/cargo-cache-build.sh cargo run -q -p hypercolor-daemon --bin hypercolor-ws-manifest -- --check
+
 # Generate Python WebSocket protocol constants
 python-ws-protocol-generate:
     cd python && uv run python scripts/generate_ws_protocol.py

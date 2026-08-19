@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use axum::extract::{Path, Query, State};
 use axum::http::Uri;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use tokio::sync::{Mutex, oneshot};
 
@@ -68,7 +68,7 @@ async fn spawn_server(
 }
 
 #[tokio::test]
-async fn effects_activate_serializes_scalar_params_and_default_cut_transition() -> Result<()> {
+async fn effects_activate_serializes_scalar_params() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route("/api/v1/effects/{effect}/apply", post(capture_effect_apply))
@@ -100,16 +100,124 @@ async fn effects_activate_serializes_scalar_params_and_default_cut_transition() 
         .await
         .clone()
         .context("server did not capture effect apply request body")?;
-    assert_eq!(body["controls"]["speed"], serde_json::json!(12.5));
-    assert_eq!(body["controls"]["enabled"], serde_json::json!(true));
-    assert_eq!(body["controls"]["label"], serde_json::json!("aurora"));
     assert_eq!(
-        body["transition"],
-        serde_json::json!({
-            "type": "cut",
-            "duration_ms": 0,
-        })
+        body["controls"]["speed"],
+        serde_json::json!({ "float": 12.5 })
     );
+    assert_eq!(
+        body["controls"]["enabled"],
+        serde_json::json!({ "boolean": true })
+    );
+    assert_eq!(
+        body["controls"]["label"],
+        serde_json::json!({ "text": "aurora" })
+    );
+    assert!(body.get("transition").is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn effects_reset_replaces_the_real_layer_without_reapplying() -> Result<()> {
+    const SCENE_ID: &str = "0198c5b6-1111-7000-8000-000000000001";
+    const ZONE_ID: &str = "0198c5b6-1111-7000-8000-000000000002";
+    const LAYER_ID: &str = "0198c5b6-1111-7000-8000-000000000003";
+    const EFFECT_ID: &str = "0198c5b6-1111-7000-8000-000000000004";
+
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/scene",
+            get(|| async {
+                Json(serde_json::json!({
+                    "data": {
+                        "id": SCENE_ID,
+                        "name": "Desk",
+                        "kind": "named",
+                        "is_default": false,
+                        "unassigned_behavior": "off",
+                        "layout_id": null,
+                        "revision": 4,
+                        "zones": [{
+                            "id": ZONE_ID,
+                            "name": "Primary",
+                            "role": "primary",
+                            "enabled": true,
+                            "brightness": 1.0,
+                            "members": [],
+                            "layout": null,
+                            "layers": [{
+                                "id": LAYER_ID,
+                                "source": {
+                                    "type": "effect",
+                                    "effect_id": EFFECT_ID,
+                                    "controls": { "speed": { "float": 0.9 } }
+                                },
+                                "blend": "replace",
+                                "opacity": 1.0
+                            }]
+                        }]
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/effects/{id}",
+            get(|Path(id): Path<String>| async move {
+                assert_eq!(id, EFFECT_ID);
+                Json(serde_json::json!({
+                    "data": {
+                        "id": EFFECT_ID,
+                        "name": "Rainbow",
+                        "description": "test",
+                        "author": "test",
+                        "category": "ambient",
+                        "source": "native",
+                        "runnable": true,
+                        "tags": [],
+                        "version": "1",
+                        "audio_reactive": false,
+                        "controls": []
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/scene/zones/{zone}/layers/{layer}",
+            put(
+                |State((captured_uri, captured_body)): State<SharedRequest>,
+                 uri: Uri,
+                 Json(body): Json<serde_json::Value>| async move {
+                    *captured_uri.lock().await = Some(uri.to_string());
+                    *captured_body.lock().await = Some(body);
+                    Json(serde_json::json!({ "data": {} }))
+                },
+            ),
+        )
+        .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(port, &["effects", "reset"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some(
+            "/api/v1/scene/zones/0198c5b6-1111-7000-8000-000000000002/layers/0198c5b6-1111-7000-8000-000000000003"
+        )
+    );
+    let body = captured_body
+        .lock()
+        .await
+        .clone()
+        .context("server did not capture layer replacement")?;
+    assert_eq!(body["source"]["effect_id"], EFFECT_ID);
+    assert_eq!(body["source"]["controls"], serde_json::json!({}));
+    assert!(body["source"].get("preset_id").is_none());
 
     Ok(())
 }
@@ -597,7 +705,7 @@ async fn scenes_activate_sends_transition_ms_body() -> Result<()> {
 async fn scenes_deactivate_sends_empty_object_body() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
-        .route("/api/v1/scenes/deactivate", post(capture_scene_deactivate))
+        .route("/api/v1/scene/deactivate", post(capture_scene_deactivate))
         .with_state(Arc::clone(&captured_body));
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 
@@ -625,10 +733,22 @@ async fn capture_effect_apply(
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
         "data": {
-            "effect": {
-                "id": effect,
-                "name": "Demo Effect",
+            "zone": {
+                "id": "00000000-0000-0000-0000-000000000010",
+                "name": "Primary",
+                "enabled": true,
+                "brightness": 1.0,
+                "members": [],
+                "layers": [{
+                    "id": "00000000-0000-0000-0000-000000000011",
+                    "source": {
+                        "type": "effect",
+                        "effect_id": effect,
+                    },
+                }],
             },
+            "transition": { "type": "cut" },
+            "output": { "applied": true },
         },
     }))
 }

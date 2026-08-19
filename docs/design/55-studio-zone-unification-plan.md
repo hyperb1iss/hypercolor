@@ -6,8 +6,13 @@
 > and lock naming — user-facing strings and internal Rust types alike —
 > across the whole codebase.
 
-**Status:** Locked pending owner sign-off — revised through two Codex
-(gpt-5.5, high reasoning) adversarial passes
+> **Status:** Superseded historical plan. Spec 78 replaces its REST and
+> WebSocket guidance with the live `/scene` tree and whole-document saved
+> scenes under `/scenes`. Nested saved-scene zone and layer routes below are
+> preserved only as context and must not guide implementation.
+
+**Review state:** Revised through two Codex (gpt-5.5, high reasoning)
+adversarial passes before supersession
 **Author:** Nova
 **Date:** 2026-05-19
 **Crates:** `hypercolor-ui`, `hypercolor-daemon`, `hypercolor-core`,
@@ -283,8 +288,8 @@ gains `update_zone_layout(scene_id, zone_id, layout)` enforcing all of
 the above, with a test that a request mutating `device_id` or the
 output-id set is rejected or ignored.
 
-**Live drag preview (Codex CRITICAL finding).** The canvas needs a
-live, non-persisting preview while a device is dragged. It **cannot**
+**Live drag preview.** The canvas needs a live, non-persisting preview
+while a device is dragged. It **cannot**
 reuse `/layouts/active/preview`: that path mutates the *global*
 `SpatialEngine`, calls `sync_primary_group_layout`, and queues global
 `ReplaceLayout`/`ResizeCanvas` — it is not zone-scoped and not
@@ -298,14 +303,15 @@ override is a per-zone slot, not a new engine.
 The transport is **locked to the inbound WS protocol**, not a REST
 route: a drag fires many updates per second, and the daemon already
 has a client-to-server `ClientMessage` enum (`api/ws/protocol.rs`)
-decoded in `api/ws/session.rs`. B1 adds two variants —
-`ZoneLayoutPreview { scene_id, zone_id, layout }` sets the per-zone
-override, `ZoneLayoutPreviewClear { scene_id, zone_id }` drops it.
+decoded in `api/ws/session.rs`. B1 adds two variants:
+`ZoneLayoutPreview { zone_id, layout }` sets the per-zone override, and
+`ZoneLayoutPreviewClear { zone_id }` drops it. Both target the active scene;
+stale callers that send `scene_id` are rejected.
 Commit is the ordinary `PUT .../zones/{zone_id}/layout`, which persists
 and clears the override; cancel is a clear message; a socket
 disconnect mid-drag auto-clears every override that session held, so a
 dropped connection never strands a zone on a transient layout. A REST
-`.../layout/preview` route is explicitly rejected — a per-mouse-move
+`.../layout/preview` route is explicitly rejected because a per-mouse-move
 HTTP request is the wrong shape for a hot path.
 
 A new capability, `zone-layout-edit`, is advertised once these are live.

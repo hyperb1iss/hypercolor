@@ -159,7 +159,7 @@ fn router_counts_in_flight_publications_against_connection_budget() {
             screen.clone(),
             None,
         ),
-        Err(PreviewOutboundError::ConnectionBudgetExceeded { .. })
+        Err(PreviewOutboundError::ConnectionBusy { .. })
     ));
 
     receiver.complete(&in_flight);
@@ -240,7 +240,7 @@ fn cancellation_aborts_cursor_after_its_first_chunk() {
 }
 
 #[test]
-fn router_eviction_emits_cancellation_before_replacement_stream() {
+fn router_never_evicts_a_sibling_stream_to_admit_new_work() {
     let canvas = passive_frame(PreviewFrameChannel::Canvas, 1, 64);
     let screen = passive_frame(PreviewFrameChannel::ScreenCanvas, 2, 64);
     let publication_bytes = canvas.len().max(screen.len());
@@ -252,24 +252,28 @@ fn router_eviction_emits_cancellation_before_replacement_stream() {
     sender
         .publish(canvas_stream.clone(), canvas, None)
         .expect("canvas queues");
+    assert!(matches!(
+        sender.publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
+            screen.clone(),
+            None,
+        ),
+        Err(PreviewOutboundError::ConnectionBusy { .. })
+    ));
+    let canvas_publication = next_publication(&receiver);
+    assert_eq!(
+        canvas_publication.stream(),
+        &canvas_stream,
+        "capacity pressure must not evict another stream's latest value"
+    );
+    receiver.complete(&canvas_publication);
     sender
         .publish(
             PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
             screen,
             None,
         )
-        .expect("screen evicts canvas");
-
-    let PreviewOutboundItem::Cancellation(cancellation) =
-        receiver.try_recv().expect("eviction cancellation")
-    else {
-        panic!("expected cancellation before remaining publication");
-    };
-    assert_eq!(cancellation.stream, canvas_stream);
-    assert_eq!(
-        next_publication(&receiver).stream(),
-        &PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas)
-    );
+        .expect("screen queues after capacity is released");
 }
 
 #[test]
@@ -502,8 +506,11 @@ fn router_allocation_failure_is_reported_without_panicking() {
 }
 
 #[test]
-fn cursor_rejects_more_than_advertised_chunk_count() {
-    let capability = PreviewTransportCapability::default();
+fn cursor_rejects_more_than_the_v1_advertised_chunk_count() {
+    // A fixed chunk ceiling is a v1 property: v2 bounds a publication by
+    // its encoded byte budget instead, so this pins the negotiated-down
+    // transport explicitly rather than whichever one is the default.
+    let capability = PreviewTransportCapability::default().legacy_v1();
     let publication = PreviewPublication {
         metadata: PreviewPublicationMetadata {
             stream: PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
@@ -525,7 +532,13 @@ fn cursor_rejects_more_than_advertised_chunk_count() {
     };
 
     assert!(matches!(
-        PreviewSendCursor::new(publication, PREVIEW_CHUNK_FIXED_HEADER_LEN + 1),
+        PreviewSendCursor::with_capability(
+            publication,
+            PreviewTransportCapability {
+                max_message_bytes: PREVIEW_CHUNK_FIXED_HEADER_LEN + 1,
+                ..capability
+            }
+        ),
         Err(PreviewOutboundError::ChunkEncoding(_))
     ));
 }
@@ -697,11 +710,13 @@ fn hello_capabilities_advertise_shared_preview_transport_limits() {
         Some(v2)
     );
 
+    // A fresh channel starts on the advertised default, which is v2; a
+    // v1 client negotiates back down on subscribe (Spec 78 §7.1).
     let (sender, _receiver) = super::preview_outbound_channel();
     let state = sender
         .shared
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(state.capability, v1);
+    assert_eq!(state.capability, v2);
 }

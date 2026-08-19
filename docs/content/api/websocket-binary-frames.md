@@ -76,6 +76,19 @@ magic numbers, taken straight from the source constants.
 | `0x11` | Extended screen zones | single byte | `EXTENDED_SCREEN_ZONES_FRAME_TAG` |
 | `0x12` | Wide display preview | tag + identity length | `WIDE_DISPLAY_PREVIEW_FRAME_TAG` |
 
+The LED color frame at `0x01` has an 11-byte fixed header:
+
+```text
+Byte(s)  Field
+0        tag = 0x01
+1-4      frame_number (u32 LE)
+5-8      timestamp_ms (u32 LE)
+9-10     zone_count (u16 LE)
+```
+
+Each zone then carries a `u16 LE` UTF-8 id length, the id bytes, a `u16 LE`
+LED count, and `led_count * 3` RGB bytes.
+
 {% callout(type="info") %}
 `0x04` is intentionally unused in the current tag set. Treat any unknown tag as a
 frame you should skip rather than reject the connection; the tag space is

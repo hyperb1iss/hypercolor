@@ -8,7 +8,6 @@ use std::time::Duration;
 use axum::body::Body;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
-use hypercolor_daemon::effect_layouts;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
 use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
@@ -119,29 +118,6 @@ fn concurrent_distinct_payloads_commit_only_the_newest_generation() {
     assert_eq!(
         fs::read_to_string(&path).expect("read newest payload"),
         "generation=15"
-    );
-}
-
-#[test]
-fn effect_layout_save_rejects_an_overtaken_snapshot() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("effect-layouts.json");
-    let older = HashMap::from([("effect".to_owned(), "older".to_owned())]);
-    let newer = HashMap::from([("effect".to_owned(), "newer".to_owned())]);
-    let older_save = effect_layouts::reserve_save(&path, &older).expect("reserve older snapshot");
-    let newer_save = effect_layouts::reserve_save(&path, &newer).expect("reserve newer snapshot");
-
-    assert_eq!(
-        effect_layouts::save_reserved(newer_save).expect("save newer snapshot"),
-        AtomicWriteOutcome::Written
-    );
-    assert_eq!(
-        effect_layouts::save_reserved(older_save).expect("reject older snapshot"),
-        AtomicWriteOutcome::Superseded
-    );
-    assert_eq!(
-        effect_layouts::load(&path).expect("reload effect layouts"),
-        newer
     );
 }
 
@@ -670,7 +646,7 @@ fn writer_construction_failure_occurs_before_candidate_mutation() {
     let mut candidate = live.clone();
     candidate.insert("effect".to_owned(), "rejected".to_owned());
 
-    let error = effect_layouts::writer(&blocked_parent.join("links.json"))
+    let error = AtomicFileWriter::new(&blocked_parent.join("state.json"))
         .expect_err("writer construction should fail");
 
     assert!(matches!(error, PersistenceError::CreateDirectory { .. }));

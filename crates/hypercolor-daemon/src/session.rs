@@ -82,13 +82,18 @@ impl OutputPowerState {
         self.output_override == OutputOverride::Paused
     }
 
+    /// Whether output reads as paused on every observing surface.
+    ///
+    /// The exact complement of running: a latched pause, a destructive
+    /// stop, and a session sleep all leave outputs dark, so all three
+    /// answer `true` (Spec 78 §7.1). A stop still publishes no `Paused`
+    /// event — `EffectStopped` already announces that gesture, and
+    /// minting a pause for it would make the two indistinguishable on
+    /// the event stream — so clients converge on the next snapshot read
+    /// rather than on a delta.
     #[must_use]
     pub fn reported_paused(self) -> bool {
-        match self.output_override {
-            OutputOverride::Paused => true,
-            OutputOverride::Stopped => false,
-            OutputOverride::None => self.session_sleeping,
-        }
+        self.sleeping()
     }
 
     #[must_use]
@@ -697,8 +702,12 @@ mod tests {
         assert_eq!(power_tx.borrow().session_brightness, 1.0);
     }
 
+    /// A stop leaves output dark, so every surface reads it as paused —
+    /// but it publishes no `Paused` event, because `EffectStopped`
+    /// already announces that gesture and minting a pause for it would
+    /// make the two indistinguishable on the stream (Spec 78 §7.1).
     #[test]
-    fn destructive_stop_does_not_publish_a_pause_event() {
+    fn destructive_stop_reads_as_paused_without_publishing_a_pause_event() {
         let (power_tx, _) = watch::channel(OutputPowerState::default());
         let event_bus = HypercolorBus::new();
         let mut events = event_bus.subscribe_all();
@@ -711,7 +720,7 @@ mod tests {
             power_tx.borrow().output_override,
             super::OutputOverride::Stopped
         );
-        assert!(!power_tx.borrow().reported_paused());
+        assert!(power_tx.borrow().reported_paused());
         assert!(matches!(
             events.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)

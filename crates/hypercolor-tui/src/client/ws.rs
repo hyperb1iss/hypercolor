@@ -21,6 +21,13 @@ use crate::state::{CanvasFrame, SpectrumSnapshot};
 
 const TUI_CANVAS_FPS: u8 = 60;
 const TUI_MAX_PREVIEW_STREAMS: usize = 8;
+const SUBSCRIPTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SubscribedAck {
+    pub topics: Vec<serde_json::Value>,
+    pub preview_transport: String,
+}
 
 /// Messages decoded from the WebSocket stream.
 #[derive(Debug)]
@@ -33,6 +40,8 @@ pub enum WsMessage {
     Spectrum(SpectrumSnapshot),
     /// A JSON event from the events channel.
     Event(serde_json::Value),
+    /// The daemon admitted the complete requested subscription set.
+    Subscribed(SubscribedAck),
     /// A metrics snapshot.
     Metrics(serde_json::Value),
     /// Connection closed.
@@ -74,6 +83,14 @@ pub async fn connect(
         .context("Failed to send subscribe message")?;
 
     let mut binary_decoder = WsBinaryDecoder::new();
+    let (hello, acknowledgment) =
+        wait_for_subscription_ack(&mut read, &mut binary_decoder, SUBSCRIPTION_TIMEOUT).await?;
+    tx.send(WsMessage::Subscribed(acknowledgment))
+        .context("TUI bridge closed before subscription admission")?;
+    if let Some(hello) = hello {
+        tx.send(WsMessage::Hello(hello))
+            .context("TUI bridge closed before hello delivery")?;
+    }
 
     // Read loop
     loop {
@@ -122,6 +139,54 @@ pub async fn connect(
 
     let _ = tx.send(WsMessage::Closed);
     Ok(())
+}
+
+async fn wait_for_subscription_ack<S>(
+    read: &mut S,
+    binary_decoder: &mut WsBinaryDecoder,
+    timeout: std::time::Duration,
+) -> Result<(Option<serde_json::Value>, SubscribedAck)>
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    tokio::time::timeout(timeout, async {
+        let mut hello = None;
+        loop {
+            match read.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    match value.get("type").and_then(serde_json::Value::as_str) {
+                        Some("hello") => {
+                            binary_decoder.apply_hello_capabilities(&value);
+                            hello = Some(value);
+                        }
+                        Some("subscribed") => {
+                            let acknowledgment = serde_json::from_value(value)
+                                .context("Malformed subscription acknowledgment")?;
+                            return Ok((hello, acknowledgment));
+                        }
+                        Some("error") => {
+                            let detail = value
+                                .get("message")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("subscription rejected");
+                            anyhow::bail!("Daemon rejected WebSocket subscription: {detail}");
+                        }
+                        _ => {}
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None => {
+                    anyhow::bail!("WebSocket closed before subscription acknowledgment");
+                }
+                Some(Err(error)) => return Err(error.into()),
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("WebSocket subscription acknowledgment timed out"))?
 }
 
 fn build_ws_url(host: &str, port: u16, api_key: Option<&str>) -> String {
@@ -351,10 +416,11 @@ pub fn decode_json(text: &str) -> Option<WsMessage> {
         "hello" => Some(WsMessage::Hello(value)),
         "event" => Some(WsMessage::Event(value)),
         "metrics" => Some(WsMessage::Metrics(value)),
-        "subscribed" | "unsubscribed" | "ack" => {
-            tracing::debug!("WS ack: {msg_type}");
-            None
-        }
+        "subscribed" => serde_json::from_value(value)
+            .map(WsMessage::Subscribed)
+            .map_err(|error| tracing::debug!(%error, "Malformed subscribed acknowledgment"))
+            .ok(),
+        "unsubscribed" | "ack" => None,
         "backpressure" => {
             tracing::warn!("WS backpressure: {value}");
             None
@@ -368,7 +434,12 @@ pub fn decode_json(text: &str) -> Option<WsMessage> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_ws_url;
+    use std::time::Duration;
+
+    use futures_util::stream;
+    use tokio_tungstenite::tungstenite::{Error, Message};
+
+    use super::{WsBinaryDecoder, build_ws_url, wait_for_subscription_ack};
 
     #[test]
     fn websocket_url_includes_percent_encoded_api_key() {
@@ -384,5 +455,31 @@ mod tests {
             build_ws_url("localhost", 9420, None),
             "ws://localhost:9420/api/v1/ws"
         );
+    }
+
+    #[tokio::test]
+    async fn subscription_rejection_fails_connection_admission() {
+        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
+            r#"{"type":"error","message":"forbidden"}"#.into(),
+        ))]);
+        let mut decoder = WsBinaryDecoder::new();
+
+        let error = wait_for_subscription_ack(&mut messages, &mut decoder, Duration::from_secs(1))
+            .await
+            .expect_err("subscription rejection must fail admission");
+
+        assert!(error.to_string().contains("forbidden"));
+    }
+
+    #[tokio::test]
+    async fn subscription_timeout_fails_connection_admission() {
+        let mut messages = stream::pending::<Result<Message, Error>>();
+        let mut decoder = WsBinaryDecoder::new();
+
+        let error = wait_for_subscription_ack(&mut messages, &mut decoder, Duration::ZERO)
+            .await
+            .expect_err("missing acknowledgment must fail admission");
+
+        assert!(error.to_string().contains("timed out"));
     }
 }

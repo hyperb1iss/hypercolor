@@ -15,12 +15,14 @@ use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
-use hypercolor_leptos_ext::ws::PreviewTransportCapability;
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasConfig, CanvasFormat, InteractivePreviewConfig, InteractivePreviewTarget, SpectrumConfig,
-    TopicId,
+    CanvasConfig, CanvasFormat, InteractivePreviewConfig, InteractivePreviewTarget,
+    ScreenZonesConfig, SpectrumConfig, TopicId,
 };
 use hypercolor_leptos_ext::ws::topic::ActiveSubscription;
+use hypercolor_leptos_ext::ws::{
+    HYPERCOLOR_WS_VERSION, PreviewStreamId, PreviewTransportCapability,
+};
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
@@ -49,8 +51,8 @@ use super::cache::{
 use super::command::dispatch_command;
 use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
-    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, NameRef,
-    SceneRef, ServerMessage, SubscriptionState, TopicSelection, WsProtocolError, parse_selectors,
+    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, SceneRef,
+    ServerMessage, SubscriptionState, TopicSelection, WsProtocolError, parse_selectors,
     parse_subscriptions, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
@@ -60,12 +62,10 @@ use super::relays::{
 };
 use super::topics::{RelayContext, spawn_relays};
 use crate::api::AppState;
-use crate::api::effects::active_primary_effect;
 use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
-use crate::api::scenes;
 use crate::api::security::RequestAuthContext;
 use crate::interaction_routing::{
     AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl,
@@ -81,8 +81,8 @@ use crate::render_thread::{
     InputPublicationDemandRegistration, InputScreenBranchDemand,
 };
 use crate::session::current_global_brightness;
+use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
 
-const WS_PROTOCOL_VERSION: &str = "1.0";
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -283,35 +283,12 @@ async fn handle_socket(
         screen_grid_rows,
     );
 
-    // Send hello message.
-    let hello = {
-        ServerMessage::Hello {
-            version: WS_PROTOCOL_VERSION.to_owned(),
-            server: state.server_identity.clone(),
-            state: build_hello_state(&state).await,
-            capabilities: ws_capabilities(),
-            subscriptions: subscriptions.projection(),
-        }
-    };
-    if send_json(&mut socket, &hello).await.is_err() {
-        return;
-    }
-
-    // JSON and small binary telemetry stay count-bounded. Preview surfaces use
-    // a keyed, byte-accounted latest-value router below.
+    // Attach every relay before snapshotting the handshake. The event relay's
+    // receiver is therefore live before hello reads state, and queued events
+    // remain behind the directly written hello on the wire.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(WS_BUFFER_SIZE);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(WS_BUFFER_SIZE);
     let (preview_tx, preview_rx) = preview_outbound_channel();
-    let mut browser_previews = BrowserPreviewSession::new(
-        state.browser_input.clone(),
-        state.interaction_routing.clone(),
-        state.preview_runtime.interactive_executor(),
-        preview_tx.clone(),
-    );
-
-    // Spawn every registered relay task — each watches immutable
-    // subscription snapshots, and the registry decides which topics a
-    // task serves.
     let relay_handles = spawn_relays(&RelayContext {
         state: Arc::clone(&state),
         json_tx: json_tx.clone(),
@@ -320,12 +297,36 @@ async fn handle_socket(
         subscriptions: subscriptions_rx.clone(),
     });
 
+    let hello = {
+        ServerMessage::Hello {
+            version: HYPERCOLOR_WS_VERSION.to_owned(),
+            server: state.server_identity.clone(),
+            state: build_hello_state(&state).await,
+            capabilities: ws_capabilities(),
+            subscriptions: subscriptions.projection(),
+        }
+    };
+    if send_json(&mut socket, &hello).await.is_err() {
+        abort_and_join_relays(relay_handles).await;
+        return;
+    }
+
+    let mut browser_previews = BrowserPreviewSession::new(
+        state.browser_input.clone(),
+        state.interaction_routing.clone(),
+        state.preview_runtime.interactive_executor(),
+        preview_tx.clone(),
+    );
+
     let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
+    let zone_layout_preview_owner = ZoneLayoutPreviewOwner::new();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    let mut preview_capability = PreviewTransportCapability::default().legacy_v1();
+    // The advertised default is v2; a v1 client negotiates back down
+    // on subscribe (Spec 78 §7.1).
+    let mut preview_capability = PreviewTransportCapability::default();
     let mut preview_cursors = PreviewCursorQueue::with_capability(preview_capability);
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
@@ -485,6 +486,7 @@ async fn handle_socket(
                             &mut subscriptions,
                             &subscriptions_tx,
                             &mut input_demand_leases,
+                            zone_layout_preview_owner,
                             &mut zone_layout_preview_keys,
                             &mut browser_previews,
                             &preview_tx,
@@ -524,7 +526,7 @@ async fn handle_socket(
     drop(input_demand_leases);
     state
         .zone_layout_previews
-        .clear_many(zone_layout_preview_keys)
+        .clear_owned_many(zone_layout_preview_owner, zone_layout_preview_keys)
         .await;
     debug!("WebSocket client disconnected");
 }
@@ -591,12 +593,22 @@ impl WsInputDemandLeases {
         subscriptions: &SubscriptionState,
     ) -> Result<ProjectedInputDemand, WsProtocolError> {
         let screen_canvas = subscriptions.config_of::<CanvasConfig>(TopicId::ScreenCanvas, None);
+        let screen_zones = subscriptions.config_of::<ScreenZonesConfig>(TopicId::ScreenZones, None);
         let screen_active = subscriptions.contains(TopicId::ScreenCanvas)
             || subscriptions.contains(TopicId::ScreenZones);
         let (screen_demand, screen_requested_extent) = if screen_active {
-            let requested_hz = NonZeroU32::new(screen_canvas.fps).ok_or_else(|| {
+            // Each screen topic paces itself from its own config, so a
+            // subscriber is never refused for a field it does not own
+            // (Spec 78 §7.1).
+            let canvas_hz = NonZeroU32::new(screen_canvas.fps).ok_or_else(|| {
                 WsProtocolError::invalid_config(
                     "config.screen_canvas.fps",
+                    "expected a non-zero cadence",
+                )
+            })?;
+            let zones_hz = NonZeroU32::new(screen_zones.fps).ok_or_else(|| {
+                WsProtocolError::invalid_config(
+                    "config.screen_zones.fps",
                     "expected a non-zero cadence",
                 )
             })?;
@@ -634,7 +646,7 @@ impl WsInputDemandLeases {
                 branches.push(screen_branch_demand(
                     ScreenPublicationKind::Surface,
                     extent_request,
-                    requested_hz,
+                    canvas_hz,
                     canvas_extent,
                 ));
                 requested_extent = Some(canvas_extent);
@@ -651,7 +663,7 @@ impl WsInputDemandLeases {
                         rows: self.screen_grid_rows,
                     },
                     extent_request,
-                    requested_hz,
+                    zones_hz,
                     self.screen_base_extent,
                 ));
                 requested_extent.get_or_insert(self.screen_base_extent);
@@ -806,7 +818,7 @@ struct BrowserPreviewBinding {
     config: InteractivePreviewConfig,
     lane: InteractivePreviewLaneLease,
     relay_cancel: CancellationToken,
-    relay: JoinHandle<()>,
+    relay: Option<JoinHandle<()>>,
 }
 
 impl BrowserPreviewSession {
@@ -838,8 +850,32 @@ impl BrowserPreviewSession {
         &mut self,
         subscriptions: &SubscriptionState,
     ) -> Result<(), WsProtocolError> {
+        self.reconcile_with_commit(subscriptions, || Ok(())).await
+    }
+
+    pub(super) async fn reconcile_with_commit<F>(
+        &mut self,
+        subscriptions: &SubscriptionState,
+        commit: F,
+    ) -> Result<(), WsProtocolError>
+    where
+        F: FnOnce() -> Result<(), WsProtocolError>,
+    {
         let desired =
             subscriptions.keyed_configs::<InteractivePreviewConfig>(TopicId::InteractivePreview);
+
+        let changed_existing = desired
+            .iter()
+            .filter_map(|(preview_id, config)| {
+                self.previews
+                    .get(preview_id)
+                    .filter(|binding| binding.config != *config)
+                    .map(|_| preview_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for preview_id in &changed_existing {
+            self.suspend_relay(preview_id).await;
+        }
 
         let mut applied: Vec<AppliedPreviewChange> = Vec::new();
         for (preview_id, config) in &desired {
@@ -849,6 +885,7 @@ impl BrowserPreviewSession {
             }
             if let Err(error) = self.open(preview_id.clone(), *config).await {
                 self.undo(applied).await;
+                self.resume_relays(&changed_existing);
                 return Err(error);
             }
             applied.push(match previous {
@@ -861,6 +898,35 @@ impl BrowserPreviewSession {
                 },
             });
         }
+
+        let reshaped_streams = applied
+            .iter()
+            .filter_map(|change| match change {
+                AppliedPreviewChange::Reshaped { preview_id, .. } => {
+                    Some(PreviewStreamId::Interactive(preview_id.clone()))
+                }
+                AppliedPreviewChange::Opened { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = self.outbound.cancel_many(&reshaped_streams) {
+            self.undo(applied).await;
+            self.resume_relays(&changed_existing);
+            return Err(WsProtocolError::invalid_request(error.to_string()));
+        }
+        if let Err(error) = commit() {
+            self.undo(applied).await;
+            self.resume_relays(&changed_existing);
+            return Err(error);
+        }
+
+        let changed = applied
+            .iter()
+            .map(|change| match change {
+                AppliedPreviewChange::Opened { preview_id }
+                | AppliedPreviewChange::Reshaped { preview_id, .. } => preview_id.clone(),
+            })
+            .collect::<Vec<_>>();
+        self.resume_relays(&changed);
 
         let stale: Vec<String> = self
             .previews
@@ -885,7 +951,7 @@ impl BrowserPreviewSession {
         for change in applied.into_iter().rev() {
             match change {
                 AppliedPreviewChange::Opened { preview_id } => {
-                    let _ = self.close(preview_id).await;
+                    self.close_unpublished(preview_id).await;
                 }
                 AppliedPreviewChange::Reshaped {
                     preview_id,
@@ -920,11 +986,6 @@ impl BrowserPreviewSession {
         config: InteractivePreviewConfig,
     ) -> Result<(), WsProtocolError> {
         validate_interactive_preview_shape(config.width, config.height, config.format)?;
-        self.outbound
-            .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
-                preview_id.clone(),
-            ))
-            .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
         if let Some(binding) = self.previews.get_mut(&preview_id) {
             binding
                 .lane
@@ -935,10 +996,11 @@ impl BrowserPreviewSession {
             return Ok(());
         }
 
-        let executor = self.executor.clone().ok_or_else(|| WsProtocolError {
-            code: "unavailable",
-            message: "Interactive preview rendering is unavailable".to_owned(),
-            details: None,
+        let executor = self.executor.clone().ok_or_else(|| {
+            WsProtocolError::from(crate::domain::DomainError::service_unavailable_details(
+                "Interactive preview rendering is unavailable",
+                json!({"capability": "interactive_preview"}),
+            ))
         })?;
         let key =
             BrowserInputChildKey::new(self.connection, BrowserPreviewId::new(preview_id.clone()));
@@ -956,29 +1018,58 @@ impl BrowserPreviewSession {
                 return Err(interactive_preview_error(error));
             }
         };
-        let spec_generation = lane.spec_generation_receiver();
-        let encode_workers = lane.encode_workers();
-        let relay_cancel = CancellationToken::new();
-        let relay = spawn_interactive_preview_relay(
-            preview_id.clone(),
-            attachment.publication_id(),
-            lane.frame_receiver(),
-            spec_generation,
-            encode_workers,
-            self.outbound.clone(),
-            relay_cancel.clone(),
-        );
         self.previews.insert(
             preview_id,
             BrowserPreviewBinding {
                 attachment,
                 config,
                 lane,
-                relay_cancel,
-                relay,
+                relay_cancel: CancellationToken::new(),
+                relay: None,
             },
         );
         Ok(())
+    }
+
+    async fn suspend_relay(&mut self, preview_id: &str) {
+        let relay = self.previews.get_mut(preview_id).and_then(|binding| {
+            binding.relay_cancel.cancel();
+            binding.relay.take()
+        });
+        if let Some(relay) = relay {
+            let _ = relay.await;
+        }
+    }
+
+    fn resume_relays(&mut self, preview_ids: &[String]) {
+        for preview_id in preview_ids {
+            let Some(binding) = self.previews.get_mut(preview_id) else {
+                continue;
+            };
+            if binding.relay.is_some() {
+                continue;
+            }
+            let relay_cancel = CancellationToken::new();
+            binding.relay = Some(spawn_interactive_preview_relay(
+                preview_id.clone(),
+                binding.attachment.publication_id(),
+                binding.lane.frame_receiver(),
+                binding.lane.spec_generation_receiver(),
+                binding.lane.encode_workers(),
+                self.outbound.clone(),
+                relay_cancel.clone(),
+            ));
+            binding.relay_cancel = relay_cancel;
+        }
+    }
+
+    async fn close_unpublished(&mut self, preview_id: String) {
+        if let Some(binding) = self.previews.remove(&preview_id) {
+            binding.relay_cancel.cancel();
+            close_preview_binding_and_wait(&self.interaction_routing, binding).await;
+        }
+        self.outbound
+            .discard_unsent(&PreviewStreamId::Interactive(preview_id));
     }
 
     async fn close(&mut self, preview_id: String) -> bool {
@@ -1119,7 +1210,9 @@ fn begin_preview_binding_cleanup(
         drop(runtime.spawn(finish_preview_binding_cleanup(binding)));
     } else {
         let mut lane = binding.lane;
-        binding.relay.abort();
+        if let Some(relay) = binding.relay {
+            relay.abort();
+        }
         let _ = lane.close();
     }
 }
@@ -1141,7 +1234,9 @@ async fn finish_preview_binding_cleanup(binding: BrowserPreviewBinding) {
         config: _,
         relay_cancel: _,
     } = binding;
-    let _ = relay.await;
+    if let Some(relay) = relay {
+        let _ = relay.await;
+    }
     let _ = lane.close_and_wait().await;
 }
 
@@ -1186,11 +1281,11 @@ fn authoritative_claim_error(preview_id: &str, error: AuthoritativeClaimError) -
         AuthoritativeClaimError::PreviewInactive => WsProtocolError::invalid_request(format!(
             "Interactive preview '{preview_id}' is not active on this connection"
         )),
-        AuthoritativeClaimError::Conflict => WsProtocolError {
-            code: "conflict",
-            message: "Another interactive preview owns authoritative browser input".to_owned(),
-            details: Some(json!({"preview_id": preview_id})),
-        },
+        AuthoritativeClaimError::Conflict => crate::domain::DomainError::conflict_details(
+            "Another interactive preview owns authoritative browser input",
+            json!({"preview_id": preview_id}),
+        )
+        .into(),
     }
 }
 
@@ -1313,6 +1408,7 @@ async fn handle_client_message(
     subscriptions: &mut SubscriptionState,
     subscriptions_tx: &watch::Sender<SubscriptionState>,
     input_demand_leases: &mut WsInputDemandLeases,
+    zone_layout_preview_owner: ZoneLayoutPreviewOwner,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     browser_previews: &mut BrowserPreviewSession,
     preview_outbound: &PreviewOutboundSender,
@@ -1394,21 +1490,21 @@ async fn handle_client_message(
             // it opened. Adopting the transport goes second because it
             // refuses without having changed anything, so a refusal there
             // only has to undo the lanes.
-            if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
-                let _ = send_json(socket, &error.into_message()).await;
-                return;
-            }
-            if let Some(staged) = staged_transport
-                && let Err(error) = commit_preview_transport(
-                    staged,
-                    preview_outbound,
-                    preview_cursors,
-                    preview_capability,
-                )
-            {
-                if let Err(undo) = browser_previews.reconcile(subscriptions).await {
-                    warn!(%undo.message, "Failed to release preview lanes after a refused subscribe");
+            let transport_commit = || {
+                if let Some(staged) = staged_transport {
+                    commit_preview_transport(
+                        staged,
+                        preview_outbound,
+                        preview_cursors,
+                        preview_capability,
+                    )?;
                 }
+                Ok(())
+            };
+            if let Err(error) = browser_previews
+                .reconcile_with_commit(&next_subscriptions, transport_commit)
+                .await
+            {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
@@ -1469,11 +1565,7 @@ async fn handle_client_message(
             let response = dispatch_command(state, auth_context, id, method, path, body).await;
             let _ = send_json(socket, &response).await;
         }
-        ClientMessage::ZoneLayoutPreview {
-            scene_id,
-            zone_id,
-            layout,
-        } => {
+        ClientMessage::ZoneLayoutPreview { zone_id, layout } => {
             if let Err(error) = ensure_control_tier(auth_context) {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
@@ -1481,8 +1573,8 @@ async fn handle_client_message(
 
             if let Err(error) = handle_zone_layout_preview(
                 state,
+                zone_layout_preview_owner,
                 zone_layout_preview_keys,
-                scene_id,
                 zone_id,
                 layout,
             )
@@ -1491,7 +1583,7 @@ async fn handle_client_message(
                 let _ = send_json(socket, &error.into_message()).await;
             }
         }
-        ClientMessage::ZoneLayoutPreviewClear { scene_id, zone_id } => {
+        ClientMessage::ZoneLayoutPreviewClear { zone_id } => {
             if let Err(error) = ensure_control_tier(auth_context) {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
@@ -1499,8 +1591,8 @@ async fn handle_client_message(
 
             if let Err(error) = handle_zone_layout_preview_clear(
                 state,
+                zone_layout_preview_owner,
                 zone_layout_preview_keys,
-                &scene_id,
                 &zone_id,
             )
             .await
@@ -1545,44 +1637,55 @@ fn ensure_control_tier(auth_context: RequestAuthContext) -> Result<(), WsProtoco
     }
 }
 
+/// Stage a drag preview against the live tree.
+///
+/// The caller names a zone and nothing else: previews only ever apply
+/// to what is rendering, so the scene comes from the daemon rather
+/// than from the request (Spec 78 §1.5).
 async fn handle_zone_layout_preview(
     state: &Arc<AppState>,
+    owner: ZoneLayoutPreviewOwner,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
-    scene_id_raw: String,
     zone_id_raw: String,
     layout: SpatialLayout,
 ) -> Result<(), WsProtocolError> {
     let zone_id = parse_zone_preview_id(&zone_id_raw)?;
-    let (scene_id, layout) = {
-        let manager = state.scene_manager.read().await;
-        let scene_id = scenes::resolve_scene_id(&manager, &scene_id_raw).ok_or_else(|| {
-            WsProtocolError::invalid_request(format!("Scene not found: {scene_id_raw}"))
-        })?;
-        let scene = manager.get(&scene_id).ok_or_else(|| {
-            WsProtocolError::invalid_request(format!("Scene not found: {scene_id_raw}"))
-        })?;
-        let layout = validated_zone_layout_preview(scene, zone_id, layout)?;
-        (scene_id, layout)
-    };
+    let manager = state.scene_manager.read().await;
+    let scene = manager
+        .active_scene()
+        .ok_or_else(|| WsProtocolError::invalid_request("No active scene"))?;
+    let scene_id = scene.id;
+    let layout = validated_zone_layout_preview(scene, zone_id, layout)?;
 
+    // Keep the scene read guard until insertion. A concurrent scene or
+    // zone deletion must commit after this write so its cleanup cannot
+    // run first and leave a newly stranded preview behind.
     state
         .zone_layout_previews
-        .set(scene_id, zone_id, layout)
+        .set(owner, scene_id, zone_id, layout)
         .await;
+    drop(manager);
     zone_layout_preview_keys.insert((scene_id, zone_id));
     Ok(())
 }
 
 async fn handle_zone_layout_preview_clear(
     state: &Arc<AppState>,
+    owner: ZoneLayoutPreviewOwner,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
-    scene_id_raw: &str,
     zone_id_raw: &str,
 ) -> Result<(), WsProtocolError> {
-    let scene_id = parse_scene_preview_id(scene_id_raw)?;
     let zone_id = parse_zone_preview_id(zone_id_raw)?;
-    state.zone_layout_previews.clear(scene_id, zone_id).await;
-    zone_layout_preview_keys.remove(&(scene_id, zone_id));
+    let matching_keys = zone_layout_preview_keys
+        .iter()
+        .filter(|(_, candidate_zone_id)| *candidate_zone_id == zone_id)
+        .copied()
+        .collect::<Vec<_>>();
+    state
+        .zone_layout_previews
+        .clear_owned_many(owner, matching_keys.iter().copied())
+        .await;
+    zone_layout_preview_keys.retain(|(_, candidate_zone_id)| *candidate_zone_id != zone_id);
     Ok(())
 }
 
@@ -1659,22 +1762,13 @@ pub(super) fn validated_zone_layout_preview(
     Ok(preview)
 }
 
-fn parse_scene_preview_id(raw: &str) -> Result<SceneId, WsProtocolError> {
-    match raw {
-        "default" => Ok(SceneId::DEFAULT),
-        _ => Uuid::parse_str(raw).map(SceneId).map_err(|_| {
-            WsProtocolError::invalid_request("scene_id must be a valid UUID or 'default'")
-        }),
-    }
-}
-
 fn parse_zone_preview_id(raw: &str) -> Result<ZoneId, WsProtocolError> {
     Uuid::parse_str(raw)
         .map(ZoneId)
         .map_err(|_| WsProtocolError::invalid_request("zone_id must be a valid UUID"))
 }
 
-async fn build_hello_state(state: &AppState) -> HelloState {
+pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
     let render_snapshot = state.render_loop.read().await.stats();
     let target_fps = render_snapshot.tier.fps();
     let capacity_fps = paced_fps(render_snapshot.avg_frame_time.as_secs_f64(), target_fps);
@@ -1685,18 +1779,6 @@ async fn build_hello_state(state: &AppState) -> HelloState {
             0.0
         };
 
-    let (active_effect, active_preset_id) =
-        active_primary_effect(state)
-            .await
-            .map_or((None, None), |(group, metadata)| {
-                (
-                    Some(NameRef {
-                        id: metadata.id.to_string(),
-                        name: metadata.name,
-                    }),
-                    group.preset_id.map(|preset_id| preset_id.to_string()),
-                )
-            });
     let active_scene = {
         let scene_manager = state.scene_manager.read().await;
         scene_manager.active_scene().map(|scene| SceneRef {
@@ -1712,9 +1794,10 @@ async fn build_hello_state(state: &AppState) -> HelloState {
         acc.saturating_add(led_count)
     });
 
+    let power_state = *state.power_state.borrow();
     HelloState {
-        running: render_snapshot.state != hypercolor_core::engine::RenderLoopState::Stopped,
-        paused: state.power_state.borrow().reported_paused(),
+        running: !power_state.sleeping(),
+        paused: power_state.reported_paused(),
         brightness: brightness_percent(current_global_brightness(&state.power_state)),
         fps: HelloFps {
             target: target_fps,
@@ -1722,8 +1805,6 @@ async fn build_hello_state(state: &AppState) -> HelloState {
             delivered: (delivered_fps * 10.0).round() / 10.0,
             actual: (capacity_fps * 10.0).round() / 10.0,
         },
-        effect: active_effect,
-        active_preset_id,
         scene: active_scene,
         profile: None,
         layout: None,
@@ -1790,7 +1871,7 @@ mod hello_state_tests {
     }
 
     #[tokio::test]
-    async fn hello_does_not_report_destructive_stop_as_pause() {
+    async fn hello_reports_a_destructive_stop_as_paused() {
         let state = AppState::new();
         state
             .power_state
@@ -1798,8 +1879,207 @@ mod hello_state_tests {
 
         let hello = build_hello_state(&state).await;
 
-        assert!(!hello.paused);
-        assert!(hello.effect.is_none());
+        // Paused is the exact complement of running on every surface,
+        // so the handshake agrees with GET /output about a stop rather
+        // than contradicting it (Spec 78 §7.1).
+        assert!(hello.paused);
+    }
+
+    #[tokio::test]
+    async fn hello_says_nothing_about_what_is_rendering() {
+        let state = AppState::new();
+        let hello =
+            serde_json::to_value(build_hello_state(&state).await).expect("hello state serializes");
+
+        for singleton in ["effect", "active_preset_id"] {
+            assert!(
+                hello.get(singleton).is_none(),
+                "{singleton} is the pre-multi-zone vocabulary; clients read /scene instead"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod zone_layout_preview_race_tests {
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use hypercolor_types::scene::{SceneId, SceneKind};
+    use tokio::sync::oneshot;
+
+    use super::{ZoneLayoutPreviewOwner, handle_zone_layout_preview};
+    use crate::api::AppState;
+    use crate::domain::MutationContext;
+    use crate::domain::scene::{ActivateScene, activate_scene};
+    use crate::domain::zone::{CreateZone, DeleteZone, create_zone, delete_zone};
+
+    async fn block_preview_writes(
+        state: &Arc<AppState>,
+    ) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let store = Arc::clone(&state.zone_layout_previews);
+        let blocker = tokio::spawn(async move {
+            store.block_writes_for_test(entered_tx, release_rx).await;
+        });
+        entered_rx.await.expect("preview write lock should engage");
+        (release_tx, blocker)
+    }
+
+    async fn wait_for_preview_scene_read(state: &AppState) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if state.scene_manager.try_write().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("preview setter should acquire the scene read guard");
+    }
+
+    #[tokio::test]
+    async fn scene_switch_cleanup_cannot_run_before_a_preview_insert() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
+        let (zone_id, layout, next_scene_id) = {
+            let mut manager = state.scene_manager.write().await;
+            let active = manager.active_scene().expect("default scene").clone();
+            let (zone_id, layout) = {
+                let zone = active.primary_group().expect("default primary zone");
+                (zone.id, zone.layout.clone())
+            };
+            let mut next = active;
+            next.id = SceneId::new();
+            next.name = "next".to_owned();
+            next.kind = SceneKind::Named;
+            let next_scene_id = next.id;
+            manager.create(next).expect("next scene should be created");
+            (zone_id, layout, next_scene_id)
+        };
+
+        let (release, blocker) = block_preview_writes(&state).await;
+        let setter_state = Arc::clone(&state);
+        let setter = tokio::spawn(async move {
+            let mut keys = HashSet::new();
+            handle_zone_layout_preview(
+                &setter_state,
+                ZoneLayoutPreviewOwner::new(),
+                &mut keys,
+                zone_id.to_string(),
+                layout,
+            )
+            .await
+        });
+        wait_for_preview_scene_read(&state).await;
+
+        let activation_state = Arc::clone(&state);
+        let activation = tokio::spawn(async move {
+            activate_scene(
+                &activation_state,
+                ActivateScene {
+                    scene_id: next_scene_id,
+                    transition: None,
+                },
+                MutationContext::api(),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!activation.is_finished());
+
+        release.send(()).expect("release preview write lock");
+        blocker.await.expect("preview blocker task");
+        setter
+            .await
+            .expect("preview setter task")
+            .expect("preview setter result");
+        activation
+            .await
+            .expect("activation task")
+            .expect("activation result");
+
+        assert!(
+            state
+                .zone_layout_previews
+                .scene_overrides(SceneId::DEFAULT)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn zone_delete_cleanup_cannot_run_before_a_preview_insert() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
+        let created = create_zone(
+            &state,
+            CreateZone {
+                target: SceneId::DEFAULT.into(),
+                name: "temporary".to_owned(),
+                color: None,
+                fallback_canvas: (640, 480),
+                expected_revision: None,
+            },
+            MutationContext::api(),
+        )
+        .await
+        .expect("custom zone should be created");
+
+        let (release, blocker) = block_preview_writes(&state).await;
+        let setter_state = Arc::clone(&state);
+        let zone_id = created.zone.id;
+        let layout = created.zone.layout.clone();
+        let setter = tokio::spawn(async move {
+            let mut keys = HashSet::new();
+            handle_zone_layout_preview(
+                &setter_state,
+                ZoneLayoutPreviewOwner::new(),
+                &mut keys,
+                zone_id.to_string(),
+                layout,
+            )
+            .await
+        });
+        wait_for_preview_scene_read(&state).await;
+
+        let delete_state = Arc::clone(&state);
+        let deletion = tokio::spawn(async move {
+            delete_zone(
+                &delete_state,
+                DeleteZone {
+                    target: SceneId::DEFAULT.into(),
+                    zone_id,
+                    expected_revision: None,
+                },
+                MutationContext::api(),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!deletion.is_finished());
+
+        release.send(()).expect("release preview write lock");
+        blocker.await.expect("preview blocker task");
+        setter
+            .await
+            .expect("preview setter task")
+            .expect("preview setter result");
+        deletion
+            .await
+            .expect("zone deletion task")
+            .expect("zone deletion result");
+
+        assert!(
+            state
+                .zone_layout_previews
+                .scene_overrides(SceneId::DEFAULT)
+                .await
+                .is_empty()
+        );
     }
 }
 

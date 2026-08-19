@@ -189,7 +189,7 @@ async fn execute_create(
 }
 
 async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/scenes/active").await?;
+    let response = client.get("/scene").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -204,27 +204,6 @@ async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()
             ctx.info(&format!(
                 "Kind           {}",
                 extract_str(&response, "kind")
-            ));
-            ctx.info(&format!(
-                "Mutation Mode  {}",
-                extract_str(&response, "mutation_mode")
-            ));
-            let priority = response
-                .get("priority")
-                .and_then(serde_json::Value::as_u64)
-                .map_or_else(|| "?".to_string(), |value| value.to_string());
-            ctx.info(&format!("Priority       {priority}"));
-            ctx.info(&format!(
-                "Enabled        {}",
-                if response
-                    .get("enabled")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    "yes"
-                } else {
-                    "no"
-                }
             ));
             let zones = response
                 .get("zones")
@@ -261,7 +240,7 @@ async fn execute_activate(
 
 async fn execute_deactivate(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     let response = client
-        .post("/scenes/deactivate", &serde_json::json!({}))
+        .post("/scene/deactivate", &serde_json::json!({}))
         .await?;
 
     match ctx.format {

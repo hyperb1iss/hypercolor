@@ -78,6 +78,9 @@ impl PatchError {
 
 /// A topic's subscription key. Unkeyed topics use `()`.
 pub trait TopicKey: Sized + Clone + PartialEq {
+    /// Machine-readable name of the selector field, or `None` when the
+    /// topic is unkeyed.
+    const WIRE_NAME: Option<&'static str>;
     /// The wire form carried beside the topic name; `None` for
     /// unkeyed topics.
     fn to_wire(&self) -> Option<String>;
@@ -86,6 +89,8 @@ pub trait TopicKey: Sized + Clone + PartialEq {
 }
 
 impl TopicKey for () {
+    const WIRE_NAME: Option<&'static str> = None;
+
     fn to_wire(&self) -> Option<String> {
         None
     }
@@ -154,6 +159,8 @@ pub trait WsTopic {
     const OWNED_TAGS: &'static [u8];
     /// Whether subscribing requires the control tier.
     const REQUIRES_CONTROL: bool;
+    /// What happens to this topic's messages under a slow reader.
+    const BACKPRESSURE: BackpressureClass;
     /// Subscription key type; `()` for unkeyed.
     type Key: TopicKey;
     /// Per-subscription config; `()` for configless.
@@ -184,6 +191,38 @@ where
     Ok(candidate)
 }
 
+/// How a topic behaves when its subscriber cannot keep up.
+///
+/// Declared per topic rather than emerging from whichever send call a
+/// relay happened to reach for, so the manifest can state it and a
+/// client can plan for it (Spec 78 §7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackpressureClass {
+    /// Every message is delivered; a slow reader backpressures the
+    /// producer. Correct where each message is a distinct fact rather
+    /// than a newer version of one.
+    Lossless,
+    /// Only the newest value matters, so a slow reader skips whatever
+    /// it missed. Correct for frames and previews.
+    LatestWins,
+    /// A message that will not fit is dropped and the subscriber is
+    /// told, so it can reduce its own demand.
+    DropWithNotice,
+}
+
+impl BackpressureClass {
+    /// The wire spelling used in the protocol manifest.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lossless => "lossless",
+            Self::LatestWins => "latest_wins",
+            Self::DropWithNotice => "drop_with_notice",
+        }
+    }
+}
+
 /// Type-erased per-topic operations for wire-boundary dispatch — one
 /// table replaces the hand-unrolled per-channel match chains.
 pub struct TopicVTable {
@@ -193,12 +232,18 @@ pub struct TopicVTable {
     pub owned_tags: &'static [u8],
     /// Control-tier gate.
     pub requires_control: bool,
+    /// What happens to this topic's messages under a slow reader.
+    pub backpressure: BackpressureClass,
     /// Whether the topic takes a key.
     pub keyed: bool,
+    /// Machine-readable name of the key carried by selectors.
+    pub key_name: Option<&'static str>,
     /// Whether the topic takes config (false = configless).
     pub configurable: bool,
     /// The default config as JSON (`null` for configless topics).
     pub default_config_json: fn() -> serde_json::Value,
+    /// Compiled validation bounds for the config fields.
+    pub config_schema_json: fn() -> serde_json::Value,
     /// Validate a wire key for this topic, returning the CANONICAL
     /// wire form (`None` for unkeyed topics) so callers store what the
     /// key type parsed, not what the client happened to send.
@@ -258,12 +303,13 @@ pub const fn tags_disjoint(tag_sets: &[&[u8]]) -> bool {
 ///     registry Topics;
 ///     reserved [0x0b, 0x0f, 0x10];
 ///     topic Events => "events" {
-///         key: unkeyed, config: (), patch: NoPatch,
-///         tags: [], control: false,
+///         key: unkeyed, config: (), patch: NoPatch, schema: no_schema,
+///         tags: [], control: false, backpressure: Lossless,
 ///     }
 ///     topic DisplayPreview => "display_preview" {
 ///         key: DeviceKey, config: DisplayPreviewConfig, patch: DisplayPreviewPatch,
-///         tags: [0x07], control: false,
+///         schema: display_preview_schema,
+///         tags: [0x07], control: false, backpressure: LatestWins,
 ///     }
 /// }
 /// ```
@@ -273,8 +319,9 @@ macro_rules! define_ws_topics {
         registry $registry:ident;
         reserved [ $( $reserved:literal ),* $(,)? ];
         $( topic $topic:ident => $name:literal {
-            key: $key:tt, config: $config:ty, patch: $patch:ty,
-            tags: [ $( $tag:literal ),* ], control: $control:literal $(,)?
+            key: $key:tt, config: $config:ty, patch: $patch:ty, schema: $schema:path,
+            tags: [ $( $tag:literal ),* ], control: $control:literal,
+            backpressure: $backpressure:ident $(,)?
         } )+
     ) => {
         $(
@@ -286,6 +333,8 @@ macro_rules! define_ws_topics {
                 const NAME: &'static str = $name;
                 const OWNED_TAGS: &'static [u8] = &[ $( $tag ),* ];
                 const REQUIRES_CONTROL: bool = $control;
+                const BACKPRESSURE: $crate::ws::topic::BackpressureClass =
+                    $crate::ws::topic::BackpressureClass::$backpressure;
                 type Key = $crate::define_ws_topics!(@key_type $key);
                 type Config = $config;
                 type Patch = $patch;
@@ -341,7 +390,9 @@ macro_rules! define_ws_topics {
                                 name: $name,
                                 owned_tags: <$topic as $crate::ws::topic::WsTopic>::OWNED_TAGS,
                                 requires_control: <$topic as $crate::ws::topic::WsTopic>::REQUIRES_CONTROL,
+                                backpressure: <$topic as $crate::ws::topic::WsTopic>::BACKPRESSURE,
                                 keyed: $crate::define_ws_topics!(@keyed $key),
+                                key_name: <<$topic as $crate::ws::topic::WsTopic>::Key as $crate::ws::topic::TopicKey>::WIRE_NAME,
                                 // `()` serializes to null — configless by
                                 // construction. A config whose DEFAULT fails to
                                 // serialize is a defective topic definition;
@@ -353,6 +404,7 @@ macro_rules! define_ws_topics {
                                 default_config_json: || $crate::ws::topic::serde_json::to_value(
                                     <<$topic as $crate::ws::topic::WsTopic>::Config as Default>::default()
                                 ).expect("topic default config must serialize to JSON"),
+                                config_schema_json: $schema,
                                 validate_key: |key| {
                                     <<$topic as $crate::ws::topic::WsTopic>::Key as $crate::ws::topic::TopicKey>::from_wire(key)
                                         .map(|parsed| $crate::ws::topic::TopicKey::to_wire(&parsed))

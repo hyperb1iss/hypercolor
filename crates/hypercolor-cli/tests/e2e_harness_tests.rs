@@ -282,10 +282,14 @@ async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
         }
 
         let activation = run_hyper_json(port, &["effects", "activate", "audio_pulse"]).await?;
-        if activation["effect"]["name"] != serde_json::json!("Audio Pulse") {
+        let applied_effect_layer = activation["zone"]["layers"]
+            .as_array()
+            .and_then(|layers| layers.last())
+            .is_some_and(|layer| layer["source"]["type"] == serde_json::json!("effect"));
+        if !applied_effect_layer {
             bail!(
-                "expected active effect name Audio Pulse, got {}",
-                activation["effect"]["name"]
+                "expected apply response to carry the new effect layer, got {}",
+                activation["zone"]
             );
         }
 
@@ -298,8 +302,16 @@ async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
         }
 
         let stop = run_hyper_json(port, &["effects", "stop"]).await?;
-        if stop["stopped"] != serde_json::json!(true) {
-            bail!("expected stopped=true, got {}", stop["stopped"]);
+        let cleared = stop["zones"].as_array().is_some_and(|zones| {
+            zones.iter().all(|zone| {
+                zone["role"] == serde_json::json!("display")
+                    || zone["layers"]
+                        .as_array()
+                        .is_some_and(std::vec::Vec::is_empty)
+            })
+        });
+        if !cleared {
+            bail!("expected stop to return a cleared scene, got {stop}");
         }
 
         Ok(())

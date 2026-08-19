@@ -1,0 +1,63 @@
+{
+  "_generated": "Authored prose input to the WebSocket protocol manifest. The generator (just ws-manifest) merges these descriptions with topic validation metadata from the Rust registry and binary layouts from the compiled codecs. Topic names, wire layouts, config bounds, cadences, control gates, keys, backpressure classes, capabilities, and the event vocabulary must be edited in Rust.",
+  "topics": {
+    "frames": {
+      "description": "LED color data for subscribed zones."
+    },
+    "spectrum": {
+      "description": "Audio FFT spectrum and beat data."
+    },
+    "events": {
+      "description": "Discrete daemon and render lifecycle events."
+    },
+    "frame_events": {
+      "description": "Raw per-frame render timing events for diagnostics."
+    },
+    "canvas": {
+      "description": "Composited preview canvas."
+    },
+    "screen_canvas": {
+      "description": "Captured screen-source preview canvas."
+    },
+    "screen_zones": {
+      "description": "Ambilight zone grid extracted from screen capture: smoothed, color-tuned per-sector RGB colors plus letterbox state."
+    },
+    "web_viewport_canvas": {
+      "description": "Browser viewport effect preview canvas."
+    },
+    "zone_preview": {
+      "description": "Per-zone preview frame stream."
+    },
+    "metrics": {
+      "description": "Render pipeline performance metrics."
+    },
+    "device_metrics": {
+      "description": "Per-device output telemetry."
+    },
+    "sensors": {
+      "description": "Latest host CPU, GPU, memory, and component sensor snapshot."
+    },
+    "display_preview": {
+      "description": "Per-display JPEG preview frame stream, keyed by device."
+    },
+    "interactive_preview": {
+      "description": "Interactive scene preview lane keyed by a client-chosen preview id. Subscribing opens the lane; unsubscribing closes it."
+    },
+    "input_events": {
+      "payload_schema": "timed_input_event_v1",
+      "description": "Host input events (key and pointer edges) for automation clients. Control-authorized subscription only; never part of the default events relay."
+    }
+  },
+  "preview_transport": {
+    "dimension_type": "u32",
+    "passive_zero_dimension": "auto",
+    "interactive_zero_dimension": "invalid",
+    "negotiation": {
+      "client_subscribe_field": "preview_transport",
+      "server_subscribed_field": "preview_transport",
+      "encoding": "preview_transport_v2 capability string with preview_transport_v1 fallback",
+      "rule": "fieldwise minimum before preview activation",
+      "legacy_client_policy": "server defaults"
+    }
+  }
+}

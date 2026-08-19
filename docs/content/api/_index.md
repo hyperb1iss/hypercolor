@@ -36,18 +36,18 @@ Everything the daemon serves lives at one of three places:
 - `/health`: top-level, not under `/api/v1`
 - `/mcp`: the MCP server, top-level, mounted only when MCP is enabled
 
-The REST router groups its routes by domain. The full set, enumerated straight
-from the daemon's `build_router()`, is assets, attachments, capture, controls,
-control-surfaces (`control_values`), devices, drivers, displays, layers, layouts,
-profiles, scenes, scene zones (`scenes_zones`), settings, simulators, system,
-diagnose, access log, preview, and the WebSocket upgrade at `/api/v1/ws`. The
-[REST reference](@/api/rest.md) documents every one.
+The REST router groups routes by resource domain: assets, attachments, capture,
+control surfaces, devices, drivers, displays, effects, layouts, library,
+profiles, scenes, simulators, system, diagnostics, output, and the WebSocket
+upgrade at `/api/v1/ws`. Live render state has one root at `/api/v1/scene`.
+The [REST reference](@/api/rest.md) documents the complete surface.
 
 {% callout(type="info") %}
-**Zones live under scenes.** There is no top-level `/api/v1/zones` collection.
-Scenes are whole-rig configurations; zones are flexible canvas partitions inside
-a scene, addressed at `/api/v1/scenes/{id}/zones/...`. Scene and zone semantics
-are explained in the [Studio docs](@/studio/_index.md).
+**Fine-grained edits target the live scene.** There is no top-level
+`/api/v1/zones` collection and no nested mutation tree under stored scenes.
+Read `/api/v1/scene`, then address its zones, members, and real layer ids below
+`/api/v1/scene/zones/...`. Scene and zone semantics are explained in the
+[Studio docs](@/studio/_index.md).
 {% end %}
 
 ## The response envelope

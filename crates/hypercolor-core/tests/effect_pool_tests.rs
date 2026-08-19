@@ -7,7 +7,7 @@ use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
-use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
@@ -77,7 +77,13 @@ fn render_group(id: ZoneId, effect_id: EffectId) -> Zone {
         controls: HashMap::new(),
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        )],
         layout: sample_layout(),
         brightness: 1.0,
         enabled: true,
@@ -99,6 +105,38 @@ fn effect_layer(effect_id: EffectId, color: [f32; 4]) -> SceneLayer {
     )
 }
 
+fn set_effect_control(group: &mut Zone, name: &str, value: ControlValue) {
+    group.controls.insert(name.to_owned(), value.clone());
+    let controls = group
+        .layers
+        .iter_mut()
+        .find_map(|layer| match &mut layer.source {
+            LayerSource::Effect { controls, .. } => Some(controls),
+            _ => None,
+        });
+    controls
+        .expect("fixture should store an effect layer")
+        .insert(name.to_owned(), value);
+}
+
+fn set_effect_control_binding(group: &mut Zone, name: &str, binding: ControlBinding) {
+    group
+        .control_bindings
+        .insert(name.to_owned(), binding.clone());
+    let bindings = group
+        .layers
+        .iter_mut()
+        .find_map(|layer| match &mut layer.source {
+            LayerSource::Effect {
+                control_bindings, ..
+            } => Some(control_bindings),
+            _ => None,
+        });
+    bindings
+        .expect("fixture should store an effect layer")
+        .insert(name.to_owned(), binding);
+}
+
 fn top_left(canvas: &Canvas) -> Rgba {
     canvas.get_pixel(0, 0)
 }
@@ -109,9 +147,11 @@ fn effect_pool_reconciles_and_renders_group_controls() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let group_id = ZoneId::new();
     let mut group = render_group(group_id, solid_id);
-    group
-        .controls
-        .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    set_effect_control(
+        &mut group,
+        "color",
+        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+    );
 
     let mut pool = EffectPool::new();
     pool.reconcile(&[group.clone()], &registry, &HashMap::new())
@@ -208,13 +248,17 @@ fn changed_controls_replace_slot_only_when_prepared_pool_commits() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut live_group = render_group(ZoneId::new(), solid_id);
-    live_group
-        .controls
-        .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    set_effect_control(
+        &mut live_group,
+        "color",
+        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+    );
     let mut candidate_group = live_group.clone();
-    candidate_group
-        .controls
-        .insert("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+    set_effect_control(
+        &mut candidate_group,
+        "color",
+        ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+    );
     let mut pool = EffectPool::new();
     pool.reconcile(
         std::slice::from_ref(&live_group),
@@ -266,9 +310,11 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
     let rainbow_id = builtin_effect_id(&registry, "rainbow");
     let group_id = ZoneId::new();
     let mut solid_group = render_group(group_id, solid_id);
-    solid_group
-        .controls
-        .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    set_effect_control(
+        &mut solid_group,
+        "color",
+        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+    );
 
     let mut pool = EffectPool::new();
     pool.reconcile(
@@ -326,9 +372,11 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
         .expect("rainbow effect should be registered");
     let group_id = ZoneId::new();
     let mut group = render_group(group_id, solid_id);
-    group
-        .controls
-        .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    set_effect_control(
+        &mut group,
+        "color",
+        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+    );
 
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
@@ -434,8 +482,9 @@ fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
         .and_then(|entry| entry.metadata.controls.first())
         .map(|control| control.control_id().to_owned())
         .expect("rainbow should expose at least one control");
-    group.control_bindings.insert(
-        bound_control_id,
+    set_effect_control_binding(
+        &mut group,
+        &bound_control_id,
         ControlBinding {
             sensor: "cpu_temp".into(),
             sensor_min: 0.0,

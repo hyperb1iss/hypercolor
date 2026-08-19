@@ -614,13 +614,70 @@ impl SpectrumData {
     }
 }
 
+/// Event names the daemon can publish that are not `HypercolorEvent`
+/// variants (Spec 78 §7.1).
+///
+/// Two exist. `resync_required` is minted by the events relay when a
+/// subscriber falls far enough behind that the broadcast channel drops
+/// messages, telling it to refetch rather than trust its deltas.
+/// `input_source_status_changed` is the wire name an input-status
+/// `ExtensionStateChanged` takes; it carries the longer spelling so it
+/// cannot be confused with an input source being reconfigured.
+pub const SYNTHETIC_EVENT_NAMES: &[&str] = &["resync_required", "input_source_status_changed"];
+
+/// Every event name the daemon can put on the events channel.
+///
+/// Emitted from [`HypercolorEvent`] plus [`SYNTHETIC_EVENT_NAMES`], so
+/// the protocol manifest's vocabulary cannot drift from the enum and
+/// cannot list a name nothing produces.
+#[must_use]
+pub fn event_vocabulary() -> Vec<String> {
+    use strum::VariantNames as _;
+
+    let mut names: Vec<String> = HypercolorEventKind::VARIANTS
+        .iter()
+        .map(|variant| pascal_to_snake_case(variant))
+        .chain(SYNTHETIC_EVENT_NAMES.iter().map(|name| (*name).to_owned()))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+/// The variant-name-to-wire-name projection the WS envelope performs.
+#[must_use]
+pub fn pascal_to_snake_case(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut previous_was_lower_or_digit = false;
+
+    for ch in input.chars() {
+        if ch.is_ascii_uppercase() {
+            if previous_was_lower_or_digit {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+            previous_was_lower_or_digit = false;
+        } else {
+            out.push(ch);
+            previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        }
+    }
+
+    out
+}
+
 // ── Event Taxonomy ──────────────────────────────────────────────────────
 
 /// Every discrete state change in Hypercolor.
 ///
 /// Serialized as externally tagged: `{ "type": "EffectStarted", "data": { ... } }`.
 /// The `timestamp` field is added by the bus infrastructure, not by the event producer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, strum::EnumDiscriminants)]
+#[strum_discriminants(
+    name(HypercolorEventKind),
+    derive(strum::VariantNames, strum::IntoStaticStr),
+    vis(pub)
+)]
 #[serde(tag = "type", content = "data")]
 pub enum HypercolorEvent {
     // ── Device Events ───────────────────────────────────────────────
@@ -741,12 +798,20 @@ pub enum HypercolorEvent {
         zone_name: Option<String>,
     },
 
-    /// A control value on the active effect was updated.
+    /// A control value on one layer was updated.
+    ///
+    /// Carries the zone and layer it happened in (Spec 78 §7.1), so a
+    /// client updates the control it is showing instead of refetching
+    /// the whole scene to find out where the change landed.
     EffectControlChanged {
         effect_id: String,
         control_id: String,
         old_value: EventControlValue,
         new_value: EventControlValue,
+        /// Zone whose stack holds the patched layer.
+        zone_id: ZoneId,
+        /// The patched layer.
+        layer_id: SceneLayerId,
         trigger: ChangeTrigger,
     },
 
@@ -829,7 +894,7 @@ pub enum HypercolorEvent {
     LayerStackChanged {
         scene_id: SceneId,
         zone_id: ZoneId,
-        layers_version: u64,
+        revision: u64,
         kind: LayerStackChangeKind,
     },
 
@@ -844,7 +909,7 @@ pub enum HypercolorEvent {
     /// Scene-level settings changed without activating a different scene.
     SceneSettingsChanged {
         scene_id: SceneId,
-        zones_revision: u64,
+        revision: u64,
         kind: SceneSettingsChangeKind,
     },
 
@@ -1086,13 +1151,6 @@ pub enum HypercolorEvent {
     /// A webhook was received from an external integration.
     WebhookReceived { webhook_id: String, source: String },
 
-    /// An input source was added, removed, or reconfigured.
-    InputSourceChanged {
-        input_id: String,
-        input_type: String,
-        enabled: bool,
-    },
-
     /// A daemon extension's owned state changed.
     ///
     /// The engine relays these without interpreting them: `source` names
@@ -1215,8 +1273,7 @@ impl HypercolorEvent {
 
             Self::CaptureStarted { .. }
             | Self::CaptureStopped { .. }
-            | Self::InputEventReceived { .. }
-            | Self::InputSourceChanged { .. } => EventCategory::Input,
+            | Self::InputEventReceived { .. } => EventCategory::Input,
 
             Self::WebhookReceived { .. } | Self::ExtensionStateChanged { .. } => {
                 EventCategory::Integration

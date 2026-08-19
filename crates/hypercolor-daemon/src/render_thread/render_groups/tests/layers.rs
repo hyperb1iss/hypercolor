@@ -1,4 +1,5 @@
 use super::*;
+use hypercolor_types::layer::SceneLayerId;
 
 fn static_surface(frame: &ProducerFrame) -> &PublishedSurface {
     match frame {
@@ -92,21 +93,20 @@ fn static_layer_surface_cache_stays_bounded() {
 }
 
 #[test]
-fn legacy_single_effect_group_can_passthrough_layer_compositor() {
-    let group = sample_group(4, 4);
+fn unmaterialized_legacy_effect_does_not_forge_a_layer_identity() {
+    let mut group = sample_group(4, 4);
+    group.layers.clear();
 
-    let layer = passthrough_effect_layer(&group)
-        .expect("legacy single-effect group should bypass layer composition");
-
-    assert_eq!(layer.id, group.legacy_layer_id());
+    assert!(passthrough_effect_layer(&group).is_none());
 }
 
 #[test]
 fn materialized_single_effect_layer_can_passthrough_layer_compositor() {
     let mut group = sample_group(4, 4);
     let effect_id = group.effect_id.expect("sample group should have an effect");
+    let layer_id = SceneLayerId::new();
     group.layers = vec![SceneLayer::from_effect(
-        group.legacy_layer_id(),
+        layer_id,
         effect_id,
         HashMap::new(),
         HashMap::new(),
@@ -116,7 +116,7 @@ fn materialized_single_effect_layer_can_passthrough_layer_compositor() {
     let layer = passthrough_effect_layer(&group)
         .expect("neutral materialized effect layer should bypass layer composition");
 
-    assert_eq!(layer.id, group.legacy_layer_id());
+    assert_eq!(layer.id, layer_id);
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn stacked_layers_use_layer_compositor() {
     let mut group = sample_group(4, 4);
     let effect_id = group.effect_id.expect("sample group should have an effect");
     let effect_layer = SceneLayer::from_effect(
-        group.legacy_layer_id(),
+        SceneLayerId::new(),
         effect_id,
         HashMap::new(),
         HashMap::new(),
@@ -153,7 +153,7 @@ fn adjusted_effect_layer_uses_layer_compositor() {
     let mut group = sample_group(4, 4);
     let effect_id = group.effect_id.expect("sample group should have an effect");
     let mut layer = SceneLayer::from_effect(
-        group.legacy_layer_id(),
+        SceneLayerId::new(),
         effect_id,
         HashMap::new(),
         HashMap::new(),
@@ -380,11 +380,11 @@ fn stream_media_layer_reports_loading_until_first_frame() {
     assert!(matches!(
         runtime.drain_layer_runtime_events().as_slice(),
         [HypercolorEvent::LayerHealthChanged {
-            group_id,
+            zone_id,
             layer_id: event_layer_id,
             health: LayerHealth::Loading,
             ..
-        }] if *group_id == group.id && *event_layer_id == layer_id
+        }] if *zone_id == group.id && *event_layer_id == layer_id
     ));
 }
 

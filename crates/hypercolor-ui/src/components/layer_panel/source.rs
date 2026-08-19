@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback};
-use hypercolor_types::scene::{Zone, ZoneRole};
+use hypercolor_types::scene::ZoneRole;
+
+use crate::api::LiveZoneView;
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
 
@@ -159,7 +161,7 @@ pub fn effect_picker_matches_query(name: &str, category: &str, query: &str) -> b
 /// nothing to scope to, and a scope that would target nothing is dropped
 /// (§6.6), so a result shorter than two means "show no selector".
 #[must_use]
-pub fn available_add_layer_scopes(groups: &[Zone]) -> Vec<AddLayerScope> {
+pub fn available_add_layer_scopes(groups: &[LiveZoneView]) -> Vec<AddLayerScope> {
     if groups.len() < 2 {
         return Vec::new();
     }
@@ -182,7 +184,7 @@ pub fn available_add_layer_scopes(groups: &[Zone]) -> Vec<AddLayerScope> {
 #[must_use]
 pub fn resolve_add_layer_targets(
     scope: AddLayerScope,
-    groups: &[Zone],
+    groups: &[LiveZoneView],
     selected_group_id: &str,
 ) -> Vec<String> {
     match scope {

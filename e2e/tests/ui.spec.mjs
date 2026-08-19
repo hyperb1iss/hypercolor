@@ -28,12 +28,15 @@ test("effects page can activate an effect through the live UI", async ({ page, p
 
     await expect
       .poll(async () => {
-        const active = await readEnvelope(await api.get("/api/v1/effects/active"));
-        return active.name;
+        const scene = await readEnvelope(await api.get("/api/v1/scene"));
+        const active = scene.zones
+          .flatMap((zone) => zone.layers)
+          .find((layer) => layer.source.effect_id === runnableEffect.id);
+        return active?.source.effect_id;
       })
-      .toBe(runnableEffect.name);
+      .toBe(runnableEffect.id);
   } finally {
-    await api.post("/api/v1/effects/stop");
+    await api.post("/api/v1/scene/clear");
     await api.dispose();
   }
 });

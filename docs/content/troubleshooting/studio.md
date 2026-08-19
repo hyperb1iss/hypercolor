@@ -1,146 +1,177 @@
 +++
 title = "Studio issues"
-description = "Stale-zone and save-rejected conflicts: optimistic concurrency, zone-revision mismatches, and Studio vs /layout."
+description = "Scene revision conflicts, live-tree recovery, zone layouts, layer identity, and Studio rendering issues."
 weight = 40
 +++
 
-Studio writes are guarded by optimistic concurrency: every zone, layer, and layout mutation sends a revision token with the request, and the daemon rejects the write with HTTP 412 if anything changed the scene between when the UI loaded it and when the save arrived. The Studio UI handles this automatically: a toast fires, the scene reloads, and you retry. This page explains when that happens, what triggers it, and how to recover from the cases the UI cannot resolve automatically.
+Studio edits the always-present live tree under `/api/v1/scene`. Structural
+writes may carry the scene document's `revision` in `If-Match`; the daemon
+returns HTTP 412 when that revision is stale. Control values follow a different
+rule: they never use `If-Match` and instead address a real layer id from the
+live document.
 
 {{ img(path="img/ui/studio.webp", alt="Studio workspace with zone tree and layout canvas") }}
 
-## Save rejected: "Scene changed elsewhere — reloaded, try again"
+## Save rejected: "Scene changed elsewhere, reloaded, try again"
 
-This toast means the daemon returned a `412 Precondition Failed` on the zone layout save. The daemon replied with a `precondition_failed` error carrying the authoritative revision in `error.details.current`; the UI cleared the live preview, reloaded the scene, and showed the toast.
+The daemon returned `412 Precondition Failed` because the `If-Match` value no
+longer matched the live scene's `revision`. The response carries the
+authoritative value in `error.details.current`. Studio reloads `GET /scene` so
+you can reapply the edit without overwriting another client's change.
 
-**Why it happens.** Every zone mutation (create, rename, delete, assign device, remove device, change unassigned behavior) increments the scene's `zones_revision`. The UI sends the revision it loaded as an `If-Match` header. If the revision on the server no longer matches, the write is rejected. This is not a bug; it prevents two simultaneous edits from silently clobbering each other.
-
-**What to do.** Wait for the scene to reload (it happens automatically after the toast), then repeat the action. The conflict was transient. If the same rejection loops more than twice, a background process (another browser tab, a CLI call, an MCP agent) is actively modifying the scene. Identify and stop it before continuing. The daemon's access-log middleware writes every request to the daemon log, so if you run the daemon with debug logging (`just daemon`) you can watch which client keeps issuing zone mutations:
+If the rejection repeats, another browser tab, CLI command, or MCP agent is
+actively changing the scene. Run the daemon with debug logging and watch the
+live-tree routes:
 
 ```bash
-# Watch the daemon log for zone-mutation traffic
-journalctl --user -u hypercolor -f | grep '/zones'
+journalctl --user -u hypercolor -f | grep '/scene'
 ```
 
-**In the zone layout canvas specifically.** The zone canvas save path (`PUT /api/v1/scenes/{id}/zones/{zone_id}/layout`) sends the active `zones_revision` as a precondition. A stale revision produces `ZoneOutcome::Stale` in the client, which triggers the "reloaded, try again" toast. The layout you had in the canvas is discarded on reload; redo the placement adjustments and save again.
+A missing `If-Match` is an unconditional structural write. Send a revision when
+you need conflict detection, and update it from each successful response's
+`ETag` before issuing the next guarded mutation.
 
-{% callout(type="tip") %}
-The zone canvas only accepts placement changes through the layout PUT. Adding or removing a device from a zone always goes through the device assignment endpoints. If you see a `422 Unprocessable Entity` (not a 412), you are hitting the output-set mismatch guard: the layout you are saving contains a different set of device outputs than the zone currently owns. Go back to device assignment, add the device there, then re-open the canvas.
-{% end %}
+## A control change returns `layer_not_found`
 
-## All LEDs show the same color (no spatial gradient)
+The layer was replaced after the client read the scene. Whole-layer
+replacement and effect apply both mint a fresh layer id, so the old identity
+cannot absorb a late control write.
 
-The effect is running but every LED gets the same flat color instead of a position-mapped gradient. This is almost always a zone layout problem: the device outputs exist in the zone but have no spatial positions on the canvas, so the sampler maps them all to the same canvas coordinate.
+Read `GET /scene` again, locate the current effect layer, and retry against its
+real id:
 
-**Check 1: open the zone canvas.** In Studio, select the zone from the left tree. The Stage shows the spatial layout editor with device blocks on the canvas. If all blocks are stacked at the origin (top-left) or none are visible at all, the layout has no placed positions.
+```bash
+scene=$(curl -s http://localhost:9420/api/v1/scene)
+zone_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].id')
+layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
 
-Drag each device block to a meaningful position that reflects its physical location: left side of the desk, bottom of the case, right monitor. The live preview updates as you drag. Save when done.
+curl -s -X PATCH \
+  "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
+  -H 'Content-Type: application/json' \
+  -d '{"values":{"speed":{"float":45.0}}}'
+```
 
-**Check 2: verify the layout is applied.** After saving, check that the effect now shows a gradient. If it still shows flat, the effect may not be spatially-driven. Open the effect controls and look for `mapping_mode` or similar: some effects have an explicit `Static` / `Spatial` mode. Set it to spatial.
+Do not add `If-Match` to that control request. Layer identity is its stale-write
+fence.
 
-**Check 3: the effect itself is not spatial.** Breathing, Color Zones, and a handful of palette-only effects do not sample the canvas spatially; they apply a uniform color or a per-zone palette that is independent of position. Switch to an effect like Borealis, Color Wave, or Gradient to confirm the layout is working, then switch back to your preferred effect.
+## A control change returns `control_bound`
+
+The named control has an active input binding. A manual value would be replaced
+by the next sensor update, so the daemon rejects it. Clear the binding and set
+the value atomically:
+
+```json
+{
+  "values": { "speed": { "float": 45.0 } },
+  "clear_bindings": ["speed"]
+}
+```
+
+## All LEDs show the same color
+
+The effect is running, but every LED receives one flat sample. Check the zone's
+member placements in Studio. If blocks overlap at the origin, or have no useful
+spatial separation, the sampler reads nearly the same canvas location for every
+output.
+
+Move each member to its physical position, then save. Some effects intentionally
+render one color per zone. Switch to a spatial effect such as Borealis, Color
+Wave, or Gradient to distinguish an effect choice from a placement problem.
 
 ## Zone went stale mid-edit
 
-You are editing a zone and the tree or Stage refreshes unexpectedly, discarding your in-progress changes. This happens when an incoming WebSocket scene event marks the local state as stale and triggers a reload.
+An incoming scene event invalidated Studio's local projection. Common causes
+include activating another scene, changing membership from another client, or
+reconnecting after a daemon restart. Studio refetches the live document because
+events are hints, not a replayable source of truth.
 
-**Common causes:**
-
-- You or another client activated a different scene (scene switches replace the zone set entirely).
-- A CLI call or MCP tool modified zone membership while you were composing.
-- The daemon restarted mid-session and re-broadcasted the current scene state.
-
-**Recovery.** After the reload, the scene reflects the daemon's authoritative state. Re-apply the changes you lost. If the stale state keeps recurring, check whether a scheduled agent or service is calling zone mutation endpoints on a timer. The daemon log (run with `just daemon` for debug logging) shows every mutating request, so tail it and watch for writes you did not make:
+If refreshes repeat, inspect mutation traffic:
 
 ```bash
-# Tail the daemon log for scene/zone mutations from other clients
-journalctl --user -u hypercolor -f | grep -E '(POST|PATCH|PUT|DELETE).*/scenes/'
+journalctl --user -u hypercolor -f \
+  | grep -E '(POST|PATCH|PUT|DELETE).*/scene'
 ```
 
 ## "Snapshot scene cannot be structurally edited"
 
-This conflict error appears when you try to create, delete, or reassign zones in a scene that is in snapshot mode. Snapshot scenes are read-only for structural mutations: zone rename, enable/disable, and brightness still work, but you cannot add zones, delete zones, or move devices between zones.
+A stored snapshot scene refuses structural live mutations by design. Activate
+an editable scene or replace the stored scene document through
+`PUT /scenes/{id}`. The live route does not create a second editable copy behind
+the snapshot.
 
-To edit the structure, create a new scene, make your changes there, and activate it. Or duplicate the snapshot scene (if that option is available in your build) to get an editable copy.
+## Changes vanish after a daemon restart
 
-## Zones not persisting after daemon restart
-
-Zone changes are persisted to disk as part of every successful zone mutation: the save path in the daemon calls `save_scene_store_snapshot` and `persist_runtime_session` before returning the response. If zone changes survive a reload in the same session but vanish after a daemon restart, one of these is true:
-
-1. The save returned an error (5xx) that the UI dismissed silently. Check the daemon log for `Failed to persist zones` around the time of the mutation.
-2. You are running the daemon without a writable config directory. Verify the scene store path is accessible:
+Successful scene mutations persist through the scene commit path. If a change
+survives an in-session reload but disappears after restart, check for a 5xx at
+the original write and confirm the daemon's config directory is writable:
 
 ```bash
-# Default config path on Linux
 ls -la ~/.config/hypercolor/
 ```
 
-3. The daemon is starting from a `--config` path that does not match where the store was written. Check `hypercolor service status` or the daemon startup log for the config path in use.
+Also verify that the daemon is starting with the same config path that received
+the write. `hypercolor service status` and the startup log show the active path.
 
-## Studio shows a different layout than /layout
+## Studio shows a different layout than `/layout`
 
-Studio and the `/layout` page edit different objects. Studio's canvas edits the **selected zone's own layout**: it saves through `PUT /api/v1/scenes/{id}/zones/{zone_id}/layout` and is specific to that scene and zone. The `/layout` page edits the **standalone layouts library** (`PUT /api/v1/layouts/{id}`), which is a separate, scene-independent collection of named layout templates.
+The two views edit related but distinct resources. Studio writes a zone's
+member placement override through
+`PUT /api/v1/scene/zones/{zone}/layout`. The `/layout` page manages the named
+layout collection under `/api/v1/layouts`.
 
-Changes made in `/layout` do not automatically flow into Studio's zone canvas. If you built a device arrangement in `/layout` and want to use it in a zone, you need to re-create it in the zone canvas (or, via the API, copy the zone entries into the zone's layout and save through the zone PUT).
-
-{% callout(type="info") %}
-The standalone `/layout` page and library are on a retirement path. Studio's zone canvas is the canonical way to arrange devices spatially. New work belongs in Studio, not in the library.
-{% end %}
+A scene can deliberately reference a named layout through `scene.layout_id`.
+The daemon does not infer that link from the current effect. Effect-layout
+associations no longer exist.
 
 ## Zone canvas edits are not visible in the live render
 
-You moved device blocks in the zone canvas but the lighting output is not changing position-wise. Possible causes:
+Studio pushes an in-memory `zone_layout_preview` WebSocket command while you
+drag. The command is keyed by `zone_id` and always targets the active scene. A
+disconnected socket cannot deliver it, so check the WebSocket indicator first.
 
-**The live preview was not pushed.** The canvas sends position changes to the daemon over the WebSocket as a `zone_layout_preview` message while you drag, throttled to 75 ms intervals. This preview is in-memory on the daemon and does not touch the persisted layout or the global spatial engine. If the WebSocket connection dropped mid-drag, the daemon never received the preview positions.
+The preview is temporary. Saving writes the member placements through the live
+zone layout route and clears the preview. Reverting, unmounting, or disconnecting
+also clears it.
 
-Check the WebSocket connection indicator in the web UI. If it shows disconnected, reconnect (reload the page) and retry. The drag preview will resume on the next drag.
+## Layer ordering looks reversed
 
-**The layout was not saved.** The drag preview is temporary. It is cleared as soon as you save or revert, and it does not survive a page reload. The Save button in the zone canvas bar glows when there are unsaved changes. Save after positioning to persist the layout through the zone API and have it take effect in the render engine.
+The stored stack is bottom to top, while Studio presents the visual top layer
+first. Composition starts with the bottom layer and blends each layer above it.
+If the top layer is not visible, inspect its blend mode and opacity before
+changing the order.
 
-**The effect sampling mode.** See "All LEDs show the same color" above; some effects ignore position.
+## Zone enable or brightness changes do not land
 
-## Layer ordering is reversed from what I expect
+Both fields are patched at `/api/v1/scene/zones/{zone}`. The route accepts the
+same optional scene `If-Match` as other structural writes. A stale header
+returns 412; a request without the header applies unconditionally. Check the
+daemon log for the exact response instead of retrying a stale revision.
 
-The layer stack is authored bottom-to-top internally, but the UI displays it top-to-bottom (most recent / topmost layer at the top of the list). The "Top" marker shows at the top of the list, "Bottom" at the bottom. Blend modes are applied from bottom to top: the bottom layer is the base, each layer above blends into it using its blend mode.
+## Unassigned devices do not turn off
 
-If an effect at the top of the list is not visible, check its blend mode. The default blend for an effect added to a non-empty stack is Screen; Screen on a very dark base may appear invisible. Switch to Alpha or Replace to see it.
+The live scene's `unassigned_behavior` controls device segments that are not
+members of any zone. Patch it through `PATCH /api/v1/scene`. Studio exposes the
+same setting in the Unassigned row for multi-zone scenes.
 
-## Zone enable/disable not taking effect
+## Debug a revision conflict directly
 
-A zone that is disabled (`enabled: false`) still exists in the scene but its outputs receive no colors from the render loop; they hold last colors or go dark depending on the zone's shutdown behavior. The enabled toggle is a zone metadata field and goes through the zone PATCH endpoint at `/api/v1/scenes/{id}/zones/{zone_id}`. Metadata edits like enable/disable, rename, color, and brightness are not structural, so they do not enforce the `zones_revision` precondition; only a structural change (promoting a zone to primary) does. If the toggle fails silently, check the daemon log for a 5xx on the PATCH.
-
-## Unassigned devices are not turning off between zones
-
-The unassigned-lights policy controls what happens to device outputs that are not assigned to any zone in the current scene. The options are:
-
-- **Turn off**: outputs go dark.
-- **Hold last colors**: outputs freeze at whatever color they last received.
-- **Follow zone**: outputs mirror a specific zone.
-
-If unassigned devices are staying lit when you expect them to turn off, the policy is set to Hold or Follow. Open Studio, select the Unassigned entry in the zone tree (it appears only in scenes with more than one LED zone), and change the policy. The change takes effect immediately.
-
-{% callout(type="info") %}
-The Unassigned entry is only visible in genuinely multi-zone scenes. In a single-zone scene, all devices belong to the default zone and there is no Unassigned bucket.
-{% end %}
-
-## REST API: debugging zone conflicts directly
-
-If you are scripting zone mutations or building an MCP workflow and hitting 412s, the daemon returns the current `zones_revision` in both the response body and the `ETag` header of any failed precondition response:
+Read the live scene and its `ETag`, then use that one revision on a structural
+write:
 
 ```bash
-# Fetch the active scene to get its id and current zones_revision
-curl -s http://localhost:9420/api/v1/scenes/active | jq '{id: .data.id, rev: .data.zones_revision}'
+curl -s -D /tmp/hypercolor-scene-headers \
+  http://localhost:9420/api/v1/scene \
+  | jq '{id: .data.id, revision: .data.revision}'
 
-# Send a structural mutation with the correct revision. The zone
-# subroutes resolve the scene by id or name, not by the literal
-# "active", so use the id from the call above (or "default").
-curl -s -X POST http://localhost:9420/api/v1/scenes/<scene_id>/zones \
+curl -s -X POST http://localhost:9420/api/v1/scene/zones \
   -H 'Content-Type: application/json' \
   -H 'If-Match: "42"' \
-  -d '{"name": "Desk"}'
+  -d '{"name":"Desk"}'
 ```
 
-The `If-Match` precondition is enforced for structural mutations: creating, deleting, or reassigning zones, promoting a zone to primary, and the zone layout PUT. Pure metadata edits (rename, color, brightness, enable/disable) skip the check, so an `If-Match` header on those is accepted but not validated.
+A successful mutation returns the new `ETag`. A stale write returns
+`precondition_failed` with `error.details.current`. There are no separate zone,
+layer, or control version tokens.
 
-A successful mutation returns a new `zones_revision` in the response body and an updated `ETag` header. Chain sequential mutations by reading the new revision from each response rather than refetching the scene.
-
-For more detail on the zone API contract, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).
+For the complete contract, see
+[Zone API and concurrency](@/studio/zone-api-and-concurrency.md).

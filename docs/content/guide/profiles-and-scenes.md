@@ -225,9 +225,12 @@ The daemon exposes full CRUD for both resources. All profile endpoints are under
 Profile endpoints: `GET /profiles`, `GET /profiles/:id`, `POST /profiles`,
 `PUT /profiles/:id`, `DELETE /profiles/:id`, `POST /profiles/:id/apply`.
 
-Scene endpoints: `GET /scenes`, `GET /scenes/:id`, `GET /scenes/active`,
-`POST /scenes`, `PUT /scenes/:id`, `DELETE /scenes/:id`,
-`POST /scenes/:id/activate`, `POST /scenes/deactivate`.
+Stored scene endpoints: `GET /scenes`, `GET /scenes/:id`, `POST /scenes`,
+`PUT /scenes/:id`, `DELETE /scenes/:id`, and
+`POST /scenes/:id/activate`. The always-present live scene is `GET /scene`;
+`POST /scene/deactivate` returns to the default scene and
+`POST /scene/clear` empties one non-display zone's layer stack or every
+non-display stack. Display faces remain owned by the display API.
 
 Names and IDs are interchangeable in path parameters; the daemon fuzzy-matches
 by name when a UUID is not provided. See the [REST API reference](@/api/rest.md)

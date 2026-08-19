@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
+use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
+use hypercolor_ui::api::LiveZoneView;
 use hypercolor_ui::pages::studio::device_grouping::{
     DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
@@ -48,8 +49,8 @@ fn meta(layout_device_id: &str, name: &str, total_leds: u32) -> DeviceMeta {
     }
 }
 
-fn group_with(zones: Vec<Output>) -> Zone {
-    Zone {
+fn group_with(zones: Vec<Output>) -> LiveZoneView {
+    LiveZoneView {
         id: ZoneId::new(),
         name: "Zone".to_owned(),
         description: None,
@@ -75,8 +76,6 @@ fn group_with(zones: Vec<Output>) -> Zone {
         color: None,
         display_target: None,
         role: ZoneRole::Primary,
-        controls_version: 0,
-        layers_version: 0,
     }
 }
 

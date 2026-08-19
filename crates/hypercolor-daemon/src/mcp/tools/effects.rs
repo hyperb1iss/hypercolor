@@ -213,7 +213,9 @@ pub(super) async fn handle_set_effect_with_state(
             controls: normalized_controls.clone(),
             preset_id: None,
             target_zone: None,
+            expected_revision: None,
             transition: RequestedTransition::cut(),
+            wake_output: true,
         },
         MutationContext::mcp(),
     )
@@ -236,8 +238,7 @@ pub(super) async fn handle_set_effect_with_state(
         "applied_controls": normalized_controls,
         "rejected_controls": rejected_controls,
         "transition_ms": applied.transition.duration_ms,
-        "warnings": [],
-        "layout": applied.applied_layout
+        "warnings": []
     }))
 }
 
@@ -386,14 +387,16 @@ pub(super) async fn handle_set_color_with_state(
         .map_err(|error| ToolError::Conflict(error.to_string()))?;
     }
 
-    let applied = apply_effect(
+    apply_effect(
         state,
         ApplyEffect {
             effect: solid_effect.clone(),
             controls: controls.clone(),
             preset_id: None,
             target_zone: None,
+            expected_revision: None,
             transition: RequestedTransition::of_duration(transition_ms),
+            wake_output: true,
         },
         MutationContext::mcp(),
     )
@@ -413,7 +416,6 @@ pub(super) async fn handle_set_color_with_state(
         "applied": true,
         "applied_controls": controls,
         "device_count": device_count,
-        "warnings": [],
-        "layout": applied.applied_layout
+        "warnings": []
     }))
 }

@@ -45,13 +45,14 @@ Constructors: `ApiResponse::ok(data)` (200), `ApiResponse::created(data)` (201),
 
 ## Control Update Flow
 
-`PATCH /api/v1/effects/active/controls` with control key-value pairs:
+`PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls` with a
+`PatchControlsRequest`:
 
-1. Parse `ControlValue` from JSON
-2. Lock `EffectEngine`
-3. `engine.set_control_checked(name, value)` → validates against definition
-4. Returns previous value on success (for undo)
-5. Next `tick()` call uses new value
+1. Parse typed `ControlValue` entries from `values`.
+2. Resolve the real zone and layer IDs from the live scene document.
+3. Validate the control values and binding clears before the commit.
+4. Commit through the scene transaction path without `If-Match`.
+5. Publish `EffectControlChanged` with both zone and layer identity.
 
 ## Error Handling
 

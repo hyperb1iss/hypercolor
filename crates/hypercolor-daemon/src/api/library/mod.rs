@@ -8,37 +8,15 @@ pub use favorites::*;
 pub use playlists::*;
 pub use presets::*;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
-use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
 
 use crate::api::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::library::LibraryStoreError;
-
-// ── Shared Types ────────────────────────────────────────────────────────
-
-pub(crate) struct ActivationResult {
-    pub applied: HashMap<String, ControlValue>,
-    pub rejected: Vec<String>,
-    pub warnings: Vec<String>,
-}
-
-pub(crate) enum ActivateEffectError {
-    Conflict(String),
-    Activation(String),
-}
-
-impl std::fmt::Display for ActivateEffectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Conflict(error) | Self::Activation(error) => f.write_str(error),
-        }
-    }
-}
 
 // ── Shared Helpers ──────────────────────────────────────────────────────
 
@@ -65,50 +43,6 @@ pub(crate) async fn metadata_for_effect_id(
         return Err(format!("effect not found: {effect_id}"));
     };
     Ok(entry.metadata.clone())
-}
-
-pub(crate) async fn activate_effect_with_controls(
-    state: &Arc<AppState>,
-    metadata: &EffectMetadata,
-    controls: &HashMap<String, ControlValue>,
-) -> Result<ActivationResult, ActivateEffectError> {
-    let (controls, rejected) = crate::api::effects::normalize_control_values(metadata, controls);
-    let layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
-
-    // Library activation loads the effect without announcing an effect
-    // switch — the caller publishes its own preset/playlist events — so
-    // it commits its own mutation rather than routing through
-    // `domain::effect::apply_effect`.
-    let mut mutation = state.begin_scene_mutation().await;
-    mutation
-        .active_scene_for_runtime_mutation("applying an effect")
-        .map_err(|error| ActivateEffectError::Conflict(error.to_string()))?;
-    mutation
-        .upsert_primary_zone(metadata, controls.clone(), None, layout)
-        .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
-    let commit = crate::domain::scene::commit_scene(state.as_ref(), mutation)
-        .await
-        .map_err(|error| match error {
-            // A competing scene commit is a state conflict, not an
-            // activation failure, and this path already has a shape for
-            // one.
-            DomainError::Conflict { .. } => ActivateEffectError::Conflict(error.to_string()),
-            other => ActivateEffectError::Activation(other.to_string()),
-        })?;
-    if let Some(error) = commit.retry_error() {
-        // Admitted and converging, not failed.
-        tracing::warn!(%error, "Scene write has not proven durable yet; retry remains active");
-    }
-    crate::api::persist_runtime_session(state).await;
-
-    Ok(ActivationResult {
-        applied: controls,
-        rejected,
-        warnings: Vec::new(),
-    })
 }
 
 pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> Response {

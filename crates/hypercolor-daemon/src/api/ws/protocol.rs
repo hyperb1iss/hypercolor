@@ -28,6 +28,7 @@ use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::device_metrics::DeviceMetricsSnapshot;
+use crate::domain::DomainError;
 
 // ── Subscription Types ───────────────────────────────────────────────────
 
@@ -125,9 +126,8 @@ impl SubscriptionState {
     }
 
     /// One subscription's config, live or dormant, or the topic's default
-    /// when the client has never configured that key. Dormant counts
-    /// because the engine reads across subscriptions: a `screen_zones`-only
-    /// client still borrows the `screen_canvas` cadence.
+    /// when the client has never configured that key. Dormant counts so a
+    /// client keeps its own settings across unsubscribe and resubscribe.
     pub(super) fn config_of<C>(&self, topic: TopicId, key: Option<&str>) -> C
     where
         C: serde::de::DeserializeOwned + Default,
@@ -390,9 +390,7 @@ impl SubscriptionState {
 
 /// Project a rejected patch onto the wire's error vocabulary.
 ///
-/// A configless topic refuses config in two phases — a stanza with
-/// fields fails to deserialize, an explicit `null` fails to apply — and
-/// both are the same client mistake, so both get the same response.
+/// A configless topic refuses any non-null config stanza.
 /// Field-level rejections name the field under its topic; whole-value
 /// rejections name the topic alone.
 fn config_patch_error(topic: TopicId, error: &PatchError) -> WsProtocolError {
@@ -483,7 +481,7 @@ pub(super) fn validate_passive_preview_shape(
 /// Hard transport ceiling for one complete WebSocket message or frame.
 pub(crate) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum decoded surface bytes admitted for one preview publication.
-pub(super) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
+pub(crate) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES;
 /// Maximum number of edges accepted in one browser-input batch.
 pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
@@ -494,10 +492,22 @@ pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
 /// Largest accepted exact browser scroll delta on either axis.
 pub(super) const MAX_INPUT_SCROLL_Q16_16: i64 = (120_i64 * 100) << 16;
 
-/// Client-to-server subscription messages.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum ClientMessage {
+macro_rules! define_client_messages {
+    ($($(#[$meta:meta])* $variant:ident $body:tt),+ $(,)?) => {
+        /// Client-to-server subscription messages.
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+        pub(super) enum ClientMessage {
+            $($(#[$meta])* $variant $body),+
+        }
+
+        pub(super) fn client_message_vocabulary() -> Vec<String> {
+            vec![$(hypercolor_types::event::pascal_to_snake_case(stringify!($variant))),+]
+        }
+    };
+}
+
+define_client_messages! {
     /// Subscribe to one or more topics.
     ///
     /// Each entry names a topic, its key when the topic is keyed, and an
@@ -521,13 +531,16 @@ pub(super) enum ClientMessage {
         body: Option<serde_json::Value>,
     },
     /// Transient per-zone layout preview for Studio drag interactions.
+    ///
+    /// Active-scene-only and zone-keyed: fine-grained mutation is
+    /// live-tree-only across every transport, so there is no scene to
+    /// select (Spec 78 §1.5).
     ZoneLayoutPreview {
-        scene_id: String,
         zone_id: String,
         layout: SpatialLayout,
     },
     /// Clear one transient per-zone layout preview.
-    ZoneLayoutPreviewClear { scene_id: String, zone_id: String },
+    ZoneLayoutPreviewClear { zone_id: String },
     /// Inject browser-preview input edges into one active preview.
     InputInject {
         #[serde(deserialize_with = "deserialize_interactive_preview_id")]
@@ -897,10 +910,22 @@ where
     }
 }
 
-/// Server-to-client acknowledgment messages.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum ServerMessage {
+macro_rules! define_server_messages {
+    ($($(#[$meta:meta])* $variant:ident $body:tt),+ $(,)?) => {
+        /// Server-to-client acknowledgment messages.
+        #[derive(Debug, Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        pub(super) enum ServerMessage {
+            $($(#[$meta])* $variant $body),+
+        }
+
+        pub(super) fn server_message_vocabulary() -> Vec<String> {
+            vec![$(hypercolor_types::event::pascal_to_snake_case(stringify!($variant))),+]
+        }
+    };
+}
+
+define_server_messages! {
     /// Initial hello with state snapshot.
     Hello {
         version: String,
@@ -958,7 +983,10 @@ pub(super) enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         key: Option<String>,
         recommendation: String,
-        suggested_fps: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggested_fps: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggested_interval_ms: Option<u32>,
     },
     /// Protocol-level request error.
     Error {
@@ -978,14 +1006,73 @@ pub(super) enum ServerMessage {
     },
 }
 
+pub(super) fn json_payload_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "timed_input_event_v1": {
+            "schema_version": 1,
+            "event": "input_event_received",
+            "required_fields": ["event"],
+            "optional_fields": {
+                "at_ms": 0,
+                "seq": 0,
+                "physical_code": null,
+                "repeat_count": 1
+            },
+            "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+            "topic": "input_events"
+        },
+        "input_source_status_changed_v1": {
+            "schema_version": 1,
+            "event": "input_source_status_changed",
+            "required_fields": [
+                "source_id",
+                "kind",
+                "backend",
+                "configured",
+                "consented",
+                "demanded",
+                "active_consumer_count",
+                "state",
+                "freshness",
+                "source_graph_generation",
+                "session_generation",
+                "resource_count",
+                "denied_resource_count",
+                "retired"
+            ],
+            "optional_fields": {
+                "lifecycle_issue_code": null,
+                "freshness_issue_code": null
+            },
+            "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents.",
+            "topic": "events"
+        },
+        "macos_daemon_ownership_changed_v1": {
+            "schema_version": 1,
+            "topic": "events",
+            "event": "macos_daemon_ownership_changed",
+            "required_fields": ["active_owner", "owner_epoch"],
+            "optional_fields": {
+                "conflict": null,
+                "recovery_required": null
+            },
+            "description": "Authoritative macOS daemon topology snapshot. The event reports ownership state only and cannot request an owner change."
+        }
+    })
+}
+
+/// The handshake snapshot.
+///
+/// Deliberately says nothing about what is rendering: the live tree is
+/// multi-zone and multi-layer, so a single `effect` name could only
+/// ever describe one corner of it. Clients read `/scene` for content
+/// and follow the events channel for changes (Spec 78 §7.1).
 #[derive(Debug, Serialize)]
 pub(super) struct HelloState {
     pub(super) running: bool,
     pub(super) paused: bool,
     pub(super) brightness: u8,
     pub(super) fps: HelloFps,
-    pub(super) effect: Option<NameRef>,
-    pub(super) active_preset_id: Option<String>,
     pub(super) scene: Option<SceneRef>,
     pub(super) profile: Option<NameRef>,
     pub(super) layout: Option<NameRef>,
@@ -1435,6 +1522,12 @@ pub(super) struct MetricsWebsocket {
     pub(super) preview_queue_bytes: usize,
 }
 
+/// A WS command refusal, rendered with the same code vocabulary REST
+/// serves (Spec 78 §7.1).
+///
+/// The parallel WS-only code set is deleted: a client that already
+/// knows `malformed_request`, `validation_error`, and `forbidden` from
+/// the REST envelope reads a socket refusal without a second table.
 #[derive(Debug)]
 pub(super) struct WsProtocolError {
     pub(super) code: &'static str,
@@ -1444,29 +1537,21 @@ pub(super) struct WsProtocolError {
 
 impl WsProtocolError {
     pub(super) fn invalid_request(message: impl Into<String>) -> Self {
-        Self {
-            code: "invalid_request",
-            message: message.into(),
-            details: None,
-        }
+        DomainError::malformed(message).into()
     }
 
     pub(super) fn forbidden(message: impl Into<String>, details: serde_json::Value) -> Self {
-        Self {
-            code: "forbidden",
-            message: message.into(),
-            details: Some(details),
-        }
+        DomainError::forbidden_details(message, details).into()
     }
 
     pub(super) fn invalid_config(field: impl Into<String>, reason: impl Into<String>) -> Self {
         let field = field.into();
         let reason = reason.into();
-        Self {
-            code: "invalid_config",
-            message: format!("Invalid configuration for {field}: {reason}"),
-            details: Some(json!({"field": field, "reason": reason})),
-        }
+        DomainError::validation_details(
+            format!("Invalid configuration for {field}: {reason}"),
+            json!({"field": field, "reason": reason}),
+        )
+        .into()
     }
 
     pub(super) fn invalid_config_resource(
@@ -1476,17 +1561,17 @@ impl WsProtocolError {
         reason: String,
     ) -> Self {
         let field = field.into();
-        Self {
-            code: "invalid_config",
-            message: format!("Invalid configuration for {field}: {reason}"),
-            details: Some(json!({
+        DomainError::validation_details(
+            format!("Invalid configuration for {field}: {reason}"),
+            json!({
                 "field": field,
                 "reason": reason,
                 "width": width,
                 "height": height,
                 "max_publication_bytes": MAX_PREVIEW_PUBLICATION_BYTES,
-            })),
-        }
+            }),
+        )
+        .into()
     }
 
     pub(super) fn into_message(self) -> ServerMessage {
@@ -1494,6 +1579,18 @@ impl WsProtocolError {
             code: self.code.to_owned(),
             message: self.message,
             details: self.details,
+        }
+    }
+}
+
+impl From<DomainError> for WsProtocolError {
+    fn from(error: DomainError) -> Self {
+        let code = error.code();
+        let detail = error.detail();
+        Self {
+            code,
+            message: detail.message,
+            details: detail.details,
         }
     }
 }
@@ -1573,7 +1670,7 @@ pub(super) fn parse_selectors(
         .collect()
 }
 
-pub(super) fn ws_capabilities() -> Vec<String> {
+pub(crate) fn ws_capabilities() -> Vec<String> {
     let mut capabilities: Vec<String> = TopicId::ALL
         .iter()
         .map(|topic| topic.as_str().to_owned())
@@ -1610,7 +1707,7 @@ pub(super) fn event_message_parts(
         .and_then(serde_json::Value::as_str);
 
     let event_name = if let Some(event_type) = event_type {
-        to_snake_case(event_type)
+        hypercolor_types::event::pascal_to_snake_case(event_type)
     } else {
         format!("{:?}", event.category()).to_lowercase()
     };
@@ -1619,26 +1716,6 @@ pub(super) fn event_message_parts(
         .unwrap_or_else(|| json!({}));
 
     (event_name, event_data)
-}
-
-pub(super) fn to_snake_case(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut previous_was_lower_or_digit = false;
-
-    for ch in input.chars() {
-        if ch.is_ascii_uppercase() {
-            if previous_was_lower_or_digit {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-            previous_was_lower_or_digit = false;
-        } else {
-            out.push(ch);
-            previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
-        }
-    }
-
-    out
 }
 
 pub(super) fn should_relay_event(

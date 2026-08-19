@@ -77,6 +77,7 @@ chmod +x "$SANDBOX/bin/read-stdin"
 cat >"$SANDBOX/bin/read-loop" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+[ -z "${READ_LOOP_READY:-}" ] || : >"$READ_LOOP_READY"
 printf 'loop-ready\n'
 while IFS= read -r value; do
   printf 'loop:%s\n' "$value"
@@ -257,11 +258,15 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
     exit 1
   fi
 
-  pty_command="env HYPERCOLOR_CACHE_DIR=$SANDBOX/job-cache HYPERCOLOR_NO_SCCACHE=1 CARGO_TARGET_DIR=$SANDBOX/job-target PATH=$SANDBOX/bin:$PATH $WRAPPER read-loop"
+  pty_command="env HYPERCOLOR_CACHE_DIR=$SANDBOX/job-cache HYPERCOLOR_NO_SCCACHE=1 CARGO_TARGET_DIR=$SANDBOX/job-target READ_LOOP_READY=$SANDBOX/read-loop.ready PATH=$SANDBOX/bin:$PATH $WRAPPER read-loop"
   pty_status=0
   {
     printf '%s\n' "$pty_command"
-    sleep 0.3
+    for _ in {1..300}; do
+      [ -e "$SANDBOX/read-loop.ready" ] && break
+      sleep 0.01
+    done
+    test -e "$SANDBOX/read-loop.ready"
     printf '\032'
     sleep 0.3
     printf 'jobs\n'

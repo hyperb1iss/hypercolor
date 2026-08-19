@@ -119,14 +119,10 @@ impl DashboardView {
             .is_some_and(ActiveScene::multi_zone)
     }
 
-    /// Get the currently active effect, if any. In a multi-zone scene this
-    /// is the targeted zone's effect; otherwise the daemon's singular one.
+    /// The effect the focused zone runs, falling back to the primary
+    /// zone — which is exactly what the deleted singleton described.
     fn active_effect(&self) -> Option<&EffectSummary> {
-        let id = if self.multi_zone() {
-            self.target_zone()?.effect_id.as_deref()?
-        } else {
-            self.daemon_state.as_ref()?.effect_id.as_deref()?
-        };
+        let id = self.target_zone()?.effect_id.as_deref()?;
         self.effects.iter().find(|e| e.id == id)
     }
 

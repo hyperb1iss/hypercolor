@@ -3,14 +3,14 @@
 # tag: 0x01 (led_frame (daemon-local literal))
 # encoder: hypercolor_daemon::api::ws::wire::encode_frame_binary_selected
 # input: 2 zones ("left" 2 leds, "right" 1 led), selection = all
-# total-bytes: 36
-# stored-bytes: 36
+# total-bytes: 37
+# stored-bytes: 37
 #
 # Regenerating any byte below is a wire-format change. See README.md.
 01                                              # tag (led frame)
 78 56 34 12                                     # frame_number u32le
 4e 61 bc 00                                     # timestamp_ms u32le
-02                                              # zone_count u8
+02 00                                           # zone_count u16le
 04 00                                           # zone[0] id length u16le
 6c 65 66 74                                     # zone[0] id utf8 "left"
 02 00                                           # zone[0] led_count u16le

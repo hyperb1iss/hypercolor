@@ -4,6 +4,11 @@
 **Scope:** `crates/hypercolor-ui/` (~52k lines), cross-checked against `hypercolor-types` and the daemon API.
 **Method:** Five parallel review passes — multi-zone scene support, scene selection, performance, Luminary aesthetics/interaction, architecture judo.
 
+> **Status:** Superseded historical review. Spec 78 replaces the singleton
+> effect state and nested saved-scene routes discussed below with the live
+> `/scene` tree. Treat route names, event names, version fields, and file-line
+> references in this review as a point-in-time record, not current guidance.
+
 This document is the full findings record. The executive summary and sequencing live at the end (§6).
 
 ---

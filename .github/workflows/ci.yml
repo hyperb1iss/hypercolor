@@ -927,6 +927,13 @@ jobs:
       - name: Verify generated client is current
         run: uv run python scripts/generate_openapi_client.py --check
 
+      - name: Verify WebSocket protocol manifest is current
+        working-directory: .
+        run: cargo run -q -p hypercolor-daemon --bin hypercolor-ws-manifest -- --check
+
+      - name: Verify generated WebSocket constants are current
+        run: uv run python scripts/generate_ws_protocol.py --check
+
   # ── Python Package ───────────────────────────────────────────────
   python-build:
     name: Python Package

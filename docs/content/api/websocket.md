@@ -130,7 +130,6 @@ live.
     "paused": false,
     "brightness": 100,
     "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8, "actual": 60.0 },
-    "effect": { "id": "borealis", "name": "Borealis" },
     "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
     "profile": null,
     "layout": null,
@@ -192,8 +191,8 @@ ask which version negotiated the stream it is reading.
 `subscriptions` shows
 what is already live, only `events` by default.
 
-The `effect`, `scene`, `profile`, and `layout` fields are nullable: each is
-`null` when nothing is active. The `scene` reference additionally carries
+The `scene`, `profile`, and `layout` fields are nullable: each is `null` when
+nothing is active. The `scene` reference additionally carries
 `snapshot_locked`, which is true while a scene blocks runtime mutation.
 
 ## Topics
@@ -257,7 +256,7 @@ on the first subscription so both peers enforce the same physical budgets. Send
   "type": "subscribe",
   "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
   "topics": [
-    { "topic": "frames", "config": { "fps": 30, "format": "binary", "zones": ["all"] } },
+    { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
     { "topic": "metrics", "config": { "interval_ms": 1000 } },
     { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
   ]
@@ -277,7 +276,7 @@ takes no config reports none:
   "type": "subscribed",
   "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
   "topics": [
-    { "topic": "frames", "config": { "fps": 30, "format": "binary", "zones": ["all"] } },
+    { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
     { "topic": "events" },
     { "topic": "metrics", "config": { "interval_ms": 1000 } },
     { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
@@ -329,7 +328,7 @@ client-assigned and echoed back so concurrent commands can be correlated.
   "id": "cmd-001",
   "method": "POST",
   "path": "/api/v1/effects/borealis/apply",
-  "body": { "controls": { "speed": 7 } }
+  "body": { "controls": { "speed": { "float": 7.0 } } }
 }
 ```
 
@@ -341,9 +340,32 @@ result body:
   "type": "response",
   "id": "cmd-001",
   "status": 200,
-  "data": { "effect": { "id": "borealis", "name": "Borealis" } }
+  "data": {
+    "zone": {
+      "id": "018f5f8f-20f8-7e69-a6a0-5c0fc23e7481",
+      "name": "Desk",
+      "role": "primary",
+      "enabled": true,
+      "brightness": 1.0,
+      "color": null,
+      "display_target": null,
+      "members": [],
+      "layout": null,
+      "layers": [
+        {
+          "id": "019b2eb9-4083-7e5a-b6f1-82a2e735b798",
+          "source": { "type": "effect", "effect_id": "borealis" }
+        }
+      ]
+    },
+    "transition": { "type": "cut" },
+    "output": { "applied": true }
+  }
 }
 ```
+
+Successful commands unwrap the REST response envelope, so `data` is the
+canonical apply result itself: `{ zone, transition, output }`.
 
 On error, `status` reflects the HTTP status and `error` is populated instead of
 `data`. Write commands over a read-only key are rejected the same way the REST
@@ -361,7 +383,6 @@ control-tier key.
 ```json
 {
   "type": "zone_layout_preview",
-  "scene_id": "default",
   "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f",
   "layout": {
     "id": "default-zone-layout-preview",
@@ -377,9 +398,10 @@ control-tier key.
 }
 ```
 
-`scene_id` accepts a scene UUID or the literal `default`; `zone_id` must be a
-zone UUID. The preview layout must contain exactly the selected zone's outputs,
-no more, no fewer. For the difference between scenes (whole-rig configs) and
+`zone_id` must be a zone UUID in the **active** scene. Previews only ever apply
+to what is rendering, so there is no scene to select: the daemon owns which one
+that is. The preview layout must contain exactly the selected zone's outputs, no
+more, no fewer. For the difference between scenes (whole-rig configs) and
 zones (canvas partitions), see [the Studio docs](@/studio/_index.md).
 
 ### zone_layout_preview_clear
@@ -390,7 +412,6 @@ control-tier.
 ```json
 {
   "type": "zone_layout_preview_clear",
-  "scene_id": "default",
   "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f"
 }
 ```
@@ -466,18 +487,28 @@ want raw per-frame timing.
   "type": "event",
   "event": "effect_started",
   "timestamp": "2026-06-24T18:03:11.482Z",
-  "data": { "effect_id": "borealis", "effect_name": "Borealis" }
+  "data": {
+    "effect": { "id": "borealis", "name": "Borealis", "engine": "native" },
+    "trigger": "api",
+    "previous": null,
+    "transition": null,
+    "zone_id": "018f5f8f-20f8-7e69-a6a0-5c0fc23e7481",
+    "zone_name": "Desk"
+  }
 }
 ```
 
 Common event names include `effect_started`, `effect_stopped`,
 `effect_control_changed`, `zone_changed`, `device_connected`,
 `device_disconnected`, `active_scene_changed`, `beat_detected`, and
-`profile_applied`.
+`profile_loaded`. Profile library mutations emit `profile_saved` and
+`profile_deleted`.
 
-Events that name a scene zone spell it `zone_id`, `zone_name`, and
-`zones_revision`. Saved scenes on disk still store the concept as `groups`; the
-wire has not used that spelling since spec 76's naming flip.
+Zone-addressed events use `zone_id`. Lifecycle events also carry `zone_name`;
+`zone_changed` carries `scene_id`, `role`, and `kind`; and
+`scene_settings_changed` carries the live scene document's single `revision`.
+Saved scenes on disk still
+store the concept as `groups`, while the public wire uses zone vocabulary.
 
 ### metrics
 
@@ -526,11 +557,21 @@ TUI and dashboard surface. The `data` object is a `SystemSnapshot`.
 
 ### backpressure
 
-Sent when the daemon drops count-queued `frames` or `spectrum` data for a consumer
-that cannot keep up. Preview publications use a different policy: one latest
+Every topic declares how it behaves when a subscriber cannot keep up, and the
+manifest states the class per topic:
+
+| Class | Meaning | Topics |
+| --- | --- | --- |
+| `lossless` | The connection queue uses an awaited send. If the upstream broadcast bus itself lags, the daemon emits `resync_required` instead of hiding the discontinuity. | `events`, `frame_events`, `input_events` |
+| `latest_wins` | Only the newest value matters, so a slow reader skips what it missed. | `canvas`, `screen_canvas`, `screen_zones`, `web_viewport_canvas`, `zone_preview`, `display_preview`, `interactive_preview`, `sensors` |
+| `drop_with_notice` | A message that will not fit is dropped and the subscriber is told, so it can reduce its own demand. | `frames`, `spectrum`, `metrics`, `device_metrics` |
+
+Sent when the daemon drops data for a `drop_with_notice` consumer that cannot
+keep up. Preview publications use a different policy: one latest
 publication per stream under a connection byte budget. A newer publication
-replaces queued work for the same stream; under cross-stream pressure, the oldest
-queued preview is evicted. Neither path grows daemon memory without a bound.
+replaces queued work for the same stream. A different stream waits for retained
+bytes to leave the socket before its latest publication is admitted. Neither
+path grows daemon memory without a bound or strands a terminal latest value.
 
 The notice names the topic it dropped, and a keyed topic also names the key.
 
@@ -539,14 +580,33 @@ The notice names the topic it dropped, and a keyed topic also names the key.
   "type": "backpressure",
   "dropped_frames": 12,
   "topic": "frames",
-  "recommendation": "Reduce fps or zone count to keep up with the stream",
+  "recommendation": "reduce_fps",
   "suggested_fps": 15
 }
 ```
 
 Clients can patch the subscription to match the bandwidth they intend to consume.
-Daemon metrics expose preview queue bytes plus queued, replaced, evicted, rejected,
+`frames` and `spectrum` use `reduce_fps` with `suggested_fps`. `metrics` and
+`device_metrics` use `increase_interval_ms` with `suggested_interval_ms`.
+Daemon metrics expose preview queue bytes plus queued, replaced, rejected,
 sent-publication, and sent-chunk counters for diagnosing the actual bottleneck.
+
+### Continuity: events are not replayed
+
+The events channel carries live changes only. A client that loses the socket
+misses every event during the gap, and the daemon does not replay them on
+reconnect. Subscribe first, wait for the initial `subscribed` acknowledgment,
+then refetch every resource you mirror. Repeat that barrier on reconnect. The
+daemon installs the default events receiver before it snapshots `hello`, so
+changes after the handshake snapshot are already queued. Refetch again whenever
+a `resync_required` event arrives, which the daemon sends
+when a subscriber falls far enough behind that events were dropped on a socket
+that is still open.
+
+This is why the handshake is deliberately thin. It reports how the daemon is
+running, not what is rendering: the live tree is multi-zone and multi-layer, so
+read [`GET /api/v1/scene`](@/api/rest.md) for content and follow the events
+channel for changes.
 
 ### error
 
@@ -556,30 +616,33 @@ key, an invalid config value, or a forbidden control-tier subscription.
 ```json
 {
   "type": "error",
-  "code": "invalid_config",
+  "code": "validation_error",
   "message": "Invalid configuration for config.frames.fps: expected 1..=60",
   "details": { "field": "config.frames.fps", "reason": "expected 1..=60" }
 }
 ```
 
-Error codes you may see: `invalid_request` (bad JSON, an empty `topics` array,
+Socket refusals use the same codes the REST envelope does, so there is no second
+table to learn. Error codes you may see: `malformed_request` (bad JSON, an empty
+`topics` array,
 an unknown topic name, a keyed topic named without a key or an unkeyed one named
-with one, or the same subscription named twice in one message), `invalid_config`
-(an invalid config patch, with `details.field` and `details.reason`), and
-`forbidden` (a control-tier subscription or mutation attempted without a control
-key).
+with one, or the same subscription named twice in one message), `validation_error`
+(an invalid config patch, with `details.field` and `details.reason`), `forbidden`
+(a control-tier subscription or mutation attempted without a control key),
+`conflict` (a preview ownership or live-state conflict), and
+`service_unavailable` (a requested runtime capability is unavailable).
 
 ## Topic configuration
 
 Each configurable topic carries parameters that control throughput and format.
 Send them in the `config` field of that subscription's entry in a `subscribe`
-message. A rejected patch fails the whole request with an `invalid_config`
+message. A rejected patch fails the whole request with a `validation_error`
 error, and every subscription named in it is left exactly as it was.
 
 Each patch is validated by the topic that owns it, so four shapes are refused
 rather than ignored: a value outside the documented range, a field the topic
 does not define, a patch sent for a topic that takes no config (`events`,
-`frame_events`, `screen_zones`, `sensors`, `input_events`), and the same
+`frame_events`, `sensors`, `input_events`), and the same
 subscription named twice in one `topics` array. A `null` config on a
 configurable topic means "leave this subscription alone".
 
@@ -588,7 +651,6 @@ configurable topic means "leave this subscription alone".
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
 | `fps` | integer | `30` | 1..=60 |
-| `format` | string | `"binary"` | `"binary"` or `"json"` |
 | `zones` | array of string | `["all"]` | zone IDs, or `["all"]`; must not be empty |
 
 ### spectrum config
@@ -628,6 +690,12 @@ The maximum accepted preview surface is currently 512 MiB at four bytes per pixe
 | --- | --- | --- | --- |
 | `interval_ms` | integer | `1000` | 100..=10000 |
 
+### screen_zones config
+
+| Field | Type | Default | Range / values |
+| --- | --- | --- | --- |
+| `fps` | integer | `15` | 1..=60 |
+
 ### display_preview config
 
 Keyed by device id, so the display a subscription follows is its key rather than
@@ -653,8 +721,8 @@ the requested shape, so zero dimensions are refused rather than resolved.
 | `height` | integer | `480` | unsigned 32-bit, non-zero |
 | `format` | string | `"jpeg"` | `"rgb"`, `"rgba"`, or `"jpeg"` |
 
-`screen_zones` has no client-tunable config; it relays the daemon's
-screen-capture grid as produced.
+`screen_zones` applies this cadence per connection even when another preview
+subscriber drives the shared capture source at a higher rate.
 
 ## Binary frame formats
 
@@ -665,7 +733,7 @@ integers are little-endian.
 
 | Tag | Topic | Header length |
 | --- | --- | --- |
-| `0x01` | `frames` | 10 bytes |
+| `0x01` | `frames` | 11 bytes |
 | `0x02` | `spectrum` | 27 bytes |
 | `0x03` | `canvas` | 14 bytes |
 | `0x05` | `screen_canvas` | 14 bytes |
@@ -693,14 +761,14 @@ identity-prefixed layout as interactive previews.
 
 ### frames (0x01)
 
-Per-zone LED colors. Header is 10 bytes, then one block per zone.
+Per-zone LED colors. Header is 11 bytes, then one block per zone.
 
 ```
 Byte(s)  Field
 0        tag = 0x01
 1-4      frame_number (u32 LE)
 5-8      timestamp_ms (u32 LE)
-9        zone_count (u8, max 255)
+9-10     zone_count (u16 LE)
 
 For each zone (repeated zone_count times):
   2      zone_id length (u16 LE)
@@ -709,8 +777,9 @@ For each zone (repeated zone_count times):
   3×M    RGB bytes (M = led_count; R, G, B per LED)
 ```
 
-When `format` is `"json"`, the same data arrives as a structured JSON message
-instead. Binary is strongly preferred for throughput.
+Frames are binary. The JSON encoding this topic used to offer is deleted: it had
+no consumers, and it routed frames down the text queue, which opted the topic
+that most needs a backpressure notice out of receiving one.
 
 ### spectrum (0x02)
 
@@ -900,7 +969,7 @@ ws.onmessage = (event) => {
     ws.send(JSON.stringify({
       type: "subscribe",
       topics: [
-        { topic: "frames", config: { fps: 30, format: "binary", zones: ["all"] } },
+        { topic: "frames", config: { fps: 30, zones: ["all"] } },
       ],
     }));
   }
@@ -920,18 +989,24 @@ ws.onmessage = (event) => {
 - Multiple concurrent connections are supported; each has its own independent
   subscription set.
 
-A resilient client wraps the socket in a reconnect loop with backoff, and on
-every (re)connect waits for `hello` before re-issuing its subscriptions:
+A resilient client wraps the socket in a reconnect loop with backoff. On every
+connection it waits for `hello`, re-issues its subscriptions, then refetches
+authoritative REST state after the first `subscribed` acknowledgment:
 
 ```javascript
 function connect() {
   const ws = new WebSocket("ws://localhost:9420/api/v1/ws", "hypercolor-v1");
   ws.binaryType = "arraybuffer";
+  let awaitingBootstrap = true;
 
   ws.onmessage = (event) => {
     if (typeof event.data === "string") {
       const msg = JSON.parse(event.data);
       if (msg.type === "hello") resubscribe(ws);
+      if (msg.type === "subscribed" && awaitingBootstrap) {
+        awaitingBootstrap = false;
+        refetchMirroredResources();
+      }
     }
   };
 

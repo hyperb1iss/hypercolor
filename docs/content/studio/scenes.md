@@ -71,7 +71,7 @@ Open the actions menu and choose **Rename**, edit the name inline, and press Ent
 Rename acts on the **active** scene, so it is offered only when the active scene is a real, saved one. It is never offered for the ephemeral default.
 
 {% callout(type="warning") %}
-A rename preserves the scene's description. The UI echoes the existing description back to the daemon on every rename, because the update replaces the scene's fields wholesale, and omitting the description would clear it.
+Renaming uses the same whole-document replacement contract as every stored-scene edit. The UI first reads the complete scene, changes only its name, then sends the document back with its revision as `If-Match`. If another client changes the scene before the rename lands, the daemon rejects the stale write instead of overwriting it.
 {% end %}
 
 ## Delete a scene

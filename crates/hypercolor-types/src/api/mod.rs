@@ -29,7 +29,6 @@ pub mod diagnose;
 pub mod displays;
 pub mod effects;
 pub mod envelope;
-pub mod layers;
 pub mod layouts;
 pub mod library;
 pub mod output;
@@ -37,6 +36,5 @@ pub mod profiles;
 pub mod scene;
 pub mod scenes;
 pub mod simulators;
-pub mod zones;
 
 pub use common::Pagination;

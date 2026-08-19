@@ -1,7 +1,7 @@
 //! A single layer card — the unit of the layer inspector.
 //!
 //! The card leads with the layer's identity, then its compositing
-//! controls (enable, blend, opacity), then the source's own controls —
+//! controls (blend and opacity), then the source's own controls —
 //! an effect's parameters or a media clip's playback — and finally the
 //! transform/color disclosure. With one layer in the stack the reorder
 //! affordances are suppressed: a single layer has nowhere to move.
@@ -14,7 +14,7 @@ use hypercolor_types::layer::{LayerSource, SceneLayer};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use super::controls::{EffectControlsSection, LayerToggleTrack, MediaPlaybackSection};
+use super::controls::{EffectControlsSection, MediaPlaybackSection};
 use super::source::{blend_options, blend_value, fit_options, fit_value, parse_blend, parse_fit};
 use super::{delete_layer, reorder_layer, update_layer};
 use crate::components::silk_select::SilkSelect;
@@ -61,13 +61,12 @@ fn layer_title(
 /// the source's own controls, and a transform/color disclosure.
 #[component]
 pub fn LayerRow(
-    scene_id: String,
     group_id: String,
     layer: SceneLayer,
     stack_index: usize,
     total_layers: usize,
     stack: Vec<SceneLayer>,
-    layers_version: u64,
+    revision: u64,
     media_names: HashMap<String, String>,
     effect_names: HashMap<String, String>,
     #[prop(into)] health: Signal<Option<LayerHealth>>,
@@ -82,7 +81,6 @@ pub fn LayerRow(
     let show_reorder = total_layers > 1;
     let can_move_up = stack_index + 1 < total_layers;
     let can_move_down = stack_index > 0;
-    let enabled = layer.enabled;
     let opacity = layer.opacity;
     let blend = layer.blend;
     let fit = layer.transform.fit;
@@ -92,7 +90,6 @@ pub fn LayerRow(
     let scale_x = layer.transform.scale[0];
     let scale_y = layer.transform.scale[1];
 
-    let enabled_layer = layer.clone();
     let blend_layer = layer.clone();
     let opacity_layer = layer.clone();
     let fit_layer = layer.clone();
@@ -108,22 +105,6 @@ pub fn LayerRow(
 
     let chip_style = format!("background: rgba({accent_rgb}, 0.14)");
     let icon_style = format!("color: rgb({accent_rgb})");
-
-    let toggle_enabled = {
-        let scene_id = scene_id.clone();
-        let group_id = group_id.clone();
-        move |_| {
-            let mut next = enabled_layer.clone();
-            next.enabled = !next.enabled;
-            update_layer(
-                scene_id.clone(),
-                group_id.clone(),
-                next,
-                layers_version,
-                on_layers_mutated,
-            );
-        }
-    };
 
     view! {
         <article class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 transition-colors duration-150 hover:border-edge-subtle">
@@ -149,9 +130,7 @@ pub fn LayerRow(
                 <div class="flex shrink-0 items-center gap-1">
                     {show_reorder
                         .then(|| {
-                            let scene_up = scene_id.clone();
                             let group_up = group_id.clone();
-                            let scene_down = scene_id.clone();
                             let group_down = group_id.clone();
                             let up_stack = move_up_stack.clone();
                             let down_stack = move_down_stack.clone();
@@ -162,12 +141,11 @@ pub fn LayerRow(
                                     disabled=!can_move_up
                                     title="Move layer up"
                                     on:click=move |_| reorder_layer(
-                                        scene_up.clone(),
                                         group_up.clone(),
                                         up_stack.clone(),
                                         stack_index,
                                         1,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     )
                                 >
@@ -179,12 +157,11 @@ pub fn LayerRow(
                                     disabled=!can_move_down
                                     title="Move layer down"
                                     on:click=move |_| reorder_layer(
-                                        scene_down.clone(),
                                         group_down.clone(),
                                         down_stack.clone(),
                                         stack_index,
                                         -1,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     )
                                 >
@@ -197,14 +174,12 @@ pub fn LayerRow(
                         class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-status-error btn-press"
                         title="Delete layer"
                         on:click={
-                            let scene_id = scene_id.clone();
                             let group_id = group_id.clone();
                             let layer_id = layer_id.clone();
                             move |_| delete_layer(
-                                scene_id.clone(),
                                 group_id.clone(),
                                 layer_id.clone(),
-                                layers_version,
+                                revision,
                                 on_layers_mutated,
                             )
                         }
@@ -215,31 +190,20 @@ pub fn LayerRow(
             </div>
 
             <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
-                // ── Enable + blend ────────────────────────────────────
-                <div class="flex items-center gap-2">
-                    <button
-                        type="button"
-                        class="flex items-center gap-2 rounded-lg border border-edge-subtle/55 bg-surface-overlay/35 px-2.5 py-1.5 text-xs font-medium text-fg-secondary transition-colors duration-200 hover:border-accent-muted/50"
-                        on:click=toggle_enabled
-                    >
-                        <LayerToggleTrack on=enabled />
-                        {if enabled { "On" } else { "Off" }}
-                    </button>
-                    <div class="min-w-0 flex-1">
+                // ── Blend ─────────────────────────────────────────────
+                <div class="min-w-0">
                         <SilkSelect
                             value=Signal::derive(move || blend_value(blend).to_owned())
                             options=Signal::derive(blend_options)
                             on_change=Callback::new({
-                                let scene_id = scene_id.clone();
                                 let group_id = group_id.clone();
                                 move |value: String| {
                                     let mut next = blend_layer.clone();
                                     next.blend = parse_blend(&value);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }
@@ -248,7 +212,6 @@ pub fn LayerRow(
                             class="w-full border border-edge-subtle bg-surface-overlay/45 px-2.5 py-1.5 text-xs text-fg-primary"
                             label_class="font-medium"
                         />
-                    </div>
                 </div>
 
                 // ── Opacity — same slider chrome as the Effects controls ──
@@ -267,17 +230,15 @@ pub fn LayerRow(
                         class="slider-silk min-w-0 flex-1 cursor-pointer"
                         prop:value=format!("{opacity:.2}")
                         on:change={
-                            let scene_id = scene_id.clone();
                             let group_id = group_id.clone();
                             move |event| {
                                 if let Some(value) = Change::from_event(event).value::<f32>() {
                                     let mut next = opacity_layer.clone();
                                     next.opacity = value.clamp(0.0, 1.0);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }
@@ -298,10 +259,8 @@ pub fn LayerRow(
                         view! {
                             <div class="border-t border-edge-subtle/40 pt-3">
                                 <EffectControlsSection
-                                    scene_id=scene_id.clone()
                                     group_id=group_id.clone()
                                     layer=effect_layer.clone()
-                                    layers_version=layers_version
                                 />
                             </div>
                         }
@@ -311,10 +270,9 @@ pub fn LayerRow(
                         view! {
                             <div class="border-t border-edge-subtle/40 pt-3">
                                 <MediaPlaybackSection
-                                    scene_id=scene_id.clone()
                                     group_id=group_id.clone()
                                     layer=media_layer.clone()
-                                    layers_version=layers_version
+                                    revision=revision
                                     on_layers_mutated=on_layers_mutated
                                 />
                             </div>
@@ -332,16 +290,14 @@ pub fn LayerRow(
                             value=Signal::derive(move || fit_value(fit).to_owned())
                             options=Signal::derive(fit_options)
                             on_change=Callback::new({
-                                let scene_id = scene_id.clone();
                                 let group_id = group_id.clone();
                                 move |value: String| {
                                     let mut next = fit_layer.clone();
                                     next.transform.fit = parse_fit(&value);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }
@@ -357,16 +313,14 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let scene_id = scene_id.clone();
                                 let group_id = group_id.clone();
                                 move |value: f32| {
                                     let mut next = brightness_layer.clone();
                                     next.adjust.brightness = value.clamp(0.0, 4.0);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }
@@ -379,16 +333,14 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let scene_id = scene_id.clone();
                                 let group_id = group_id.clone();
                                 move |value: f32| {
                                     let mut next = saturation_layer.clone();
                                     next.adjust.saturation = value.clamp(0.0, 4.0);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }
@@ -401,16 +353,14 @@ pub fn LayerRow(
                             max=1.0
                             step=0.01
                             on_change=Callback::new({
-                                let scene_id = scene_id.clone();
                                 let group_id = group_id.clone();
                                 move |value: f32| {
                                     let mut next = tint_layer.clone();
                                     next.adjust.tint_strength = value.clamp(0.0, 1.0);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }
@@ -423,16 +373,14 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let scene_id = scene_id.clone();
                                 let group_id = group_id.clone();
                                 move |value: f32| {
                                     let mut next = scale_x_layer.clone();
                                     next.transform.scale[0] = value.clamp(0.1, 4.0);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }
@@ -445,16 +393,14 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let scene_id = scene_id.clone();
                                 let group_id = group_id.clone();
                                 move |value: f32| {
                                     let mut next = scale_y_layer.clone();
                                     next.transform.scale[1] = value.clamp(0.1, 4.0);
                                     update_layer(
-                                        scene_id.clone(),
                                         group_id.clone(),
                                         next,
-                                        layers_version,
+                                        revision,
                                         on_layers_mutated,
                                     );
                                 }

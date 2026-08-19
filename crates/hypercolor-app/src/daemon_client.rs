@@ -11,6 +11,8 @@ use futures_util::{SinkExt, StreamExt};
 use hypercolor_core::config::paths;
 use hypercolor_core::device::discover_servers;
 use hypercolor_types::api::output::{OutputPowerMode, OutputResource};
+use hypercolor_types::api::scene::SceneDocument;
+use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -26,6 +28,7 @@ use crate::state::{
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_HOST: &str = "localhost";
 const DEFAULT_PORT: u16 = 9420;
 
@@ -93,6 +96,18 @@ impl DaemonClient {
 
     /// Attempt to connect to the daemon and watch for events.
     async fn connect_and_watch(&mut self) -> anyhow::Result<bool> {
+        let (ws_stream, _) = connect_async(&self.ws_url).await?;
+        let (mut ws_write, mut ws_read) = ws_stream.split();
+
+        let subscribe_msg = serde_json::json!({
+            "type": "subscribe",
+            "topics": [{ "topic": "events" }]
+        });
+        ws_write
+            .send(Message::Text(subscribe_msg.to_string().into()))
+            .await?;
+        wait_for_subscription_ack(&mut ws_read, SUBSCRIPTION_TIMEOUT).await?;
+
         let state = self.fetch_initial_state().await?;
         if let (Some(expected_id), Some(server)) = (&self.active_server_id, &state.server_identity)
             && expected_id != &server.instance_id
@@ -109,17 +124,6 @@ impl DaemonClient {
                 .map(|server| server.instance_id.clone());
         }
         let _ = self.tx.send(DaemonMessage::Connected(state));
-
-        let (ws_stream, _) = connect_async(&self.ws_url).await?;
-        let (mut ws_write, mut ws_read) = ws_stream.split();
-
-        let subscribe_msg = serde_json::json!({
-            "type": "subscribe",
-            "topics": [{ "topic": "events" }]
-        });
-        ws_write
-            .send(Message::Text(subscribe_msg.to_string().into()))
-            .await?;
 
         info!("Connected to daemon WebSocket");
 
@@ -282,6 +286,35 @@ impl DaemonClient {
             .ok_or_else(|| anyhow::anyhow!("Missing data in output response"))
     }
 
+    async fn fetch_primary_zone_id(&self) -> anyhow::Result<Option<ZoneId>> {
+        let url = format!("{}/api/v1/scene", self.base_url);
+        let response: ApiEnvelope<SceneDocument> = self
+            .auth_request(self.http.get(&url))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let scene = response
+            .data
+            .ok_or_else(|| anyhow::anyhow!("Missing data in scene response"))?;
+        Ok(scene
+            .zones
+            .into_iter()
+            .find(|zone| zone.role == ZoneRole::Primary)
+            .map(|zone| zone.id))
+    }
+
+    async fn event_targets_primary_zone(&self, message: &WsEventMessage) -> bool {
+        match self.fetch_primary_zone_id().await {
+            Ok(Some(zone_id)) => message.targets_zone(&zone_id),
+            Ok(None) => false,
+            Err(error) => {
+                debug!("Failed to resolve primary zone for lifecycle event: {error}");
+                false
+            }
+        }
+    }
+
     /// Parse a WebSocket text message and send a state update if relevant.
     async fn handle_ws_message(&self, text: &str) -> anyhow::Result<()> {
         let Ok(msg) = serde_json::from_str::<WsEventMessage>(text) else {
@@ -300,10 +333,6 @@ impl DaemonClient {
                     paused: state.paused,
                     brightness: state.brightness,
                     device_count: state.device_count,
-                    effect: state.effect.map(|effect| EffectInfo {
-                        id: effect.id,
-                        name: effect.name,
-                    }),
                 }));
             return Ok(());
         }
@@ -349,7 +378,7 @@ impl DaemonClient {
                     },
                 }
             }
-            "effect_started" => {
+            "effect_started" if self.event_targets_primary_zone(&msg).await => {
                 let effect_data = &msg.data["effect"];
                 let id = effect_data["id"].as_str().unwrap_or_default().to_owned();
                 let name = effect_data["name"].as_str().unwrap_or_default().to_owned();
@@ -358,7 +387,14 @@ impl DaemonClient {
                 }
                 Some(StateUpdate::EffectChanged { id, name })
             }
-            "effect_stopped" => Some(StateUpdate::EffectStopped),
+            "effect_started" => None,
+            "effect_stopped"
+                if msg.is_destructive_effect_stop()
+                    && self.event_targets_primary_zone(&msg).await =>
+            {
+                Some(StateUpdate::EffectStopped)
+            }
+            "effect_stopped" => None,
             "brightness_changed" => {
                 let new_value = msg.data["new_value"].as_u64().unwrap_or(0);
                 #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
@@ -403,12 +439,12 @@ impl DaemonClient {
                 false
             }
             TrayCommand::StopEffect => {
-                let url = format!("{}/api/v1/effects/stop", self.base_url);
+                let url = format!("{}/api/v1/scene/clear", self.base_url);
                 if let Err(error) = self
-                    .send_command(self.auth_request(self.http.post(&url)), "stop effect")
+                    .send_command(self.auth_request(self.http.post(&url)), "clear scene")
                     .await
                 {
-                    error!("Failed to stop effect: {error}");
+                    error!("Failed to clear scene: {error}");
                 }
                 false
             }
@@ -551,6 +587,94 @@ impl DaemonClient {
             Some(body) => Err(anyhow::anyhow!("{action} returned HTTP {status}: {body}")),
             None => Err(anyhow::anyhow!("{action} returned HTTP {status}")),
         }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SubscriptionAdmission {
+    Subscribed,
+    Error {
+        message: Option<String>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+async fn wait_for_subscription_ack<S>(read: &mut S, timeout: Duration) -> anyhow::Result<()>
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    tokio::time::timeout(timeout, async {
+        loop {
+            match read.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let Ok(message) = serde_json::from_str::<SubscriptionAdmission>(&text) else {
+                        continue;
+                    };
+                    match message {
+                        SubscriptionAdmission::Subscribed => return Ok(()),
+                        SubscriptionAdmission::Error { message } => {
+                            let detail = message.as_deref().unwrap_or("subscription rejected");
+                            anyhow::bail!("daemon rejected event subscription: {detail}");
+                        }
+                        SubscriptionAdmission::Other => {}
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None => {
+                    anyhow::bail!("WebSocket closed before subscription acknowledgment");
+                }
+                Some(Err(error)) => return Err(error.into()),
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("event subscription acknowledgment timed out"))?
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use std::time::Duration;
+
+    use futures_util::stream;
+    use tokio_tungstenite::tungstenite::{Error, Message};
+
+    use super::wait_for_subscription_ack;
+
+    #[tokio::test]
+    async fn subscription_rejection_fails_connection_admission() {
+        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
+            r#"{"type":"error","message":"forbidden"}"#.into(),
+        ))]);
+
+        let error = wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
+            .await
+            .expect_err("subscription rejection must fail admission");
+
+        assert!(error.to_string().contains("forbidden"));
+    }
+
+    #[tokio::test]
+    async fn subscribed_ack_admits_authoritative_rest_reconciliation() {
+        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
+            r#"{"type":"subscribed","topics":[{"topic":"events"}]}"#.into(),
+        ))]);
+
+        wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
+            .await
+            .expect("typed acknowledgment should admit REST reconciliation");
+    }
+
+    #[tokio::test]
+    async fn subscription_timeout_fails_connection_admission() {
+        let mut messages = stream::pending::<Result<Message, Error>>();
+
+        let error = wait_for_subscription_ack(&mut messages, Duration::ZERO)
+            .await
+            .expect_err("missing acknowledgment must fail admission");
+
+        assert!(error.to_string().contains("timed out"));
     }
 }
 

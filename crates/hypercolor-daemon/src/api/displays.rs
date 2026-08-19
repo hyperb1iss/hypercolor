@@ -12,6 +12,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, Display
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::effect::{EffectCategory, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tracing::warn;
@@ -79,41 +80,6 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
 
     displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     ApiResponse::ok(displays)
-}
-
-pub(crate) async fn sync_active_display_surfaces(state: &Arc<AppState>) -> bool {
-    // Keep default-face overlays aligned with the preference store whenever
-    // surfaces are reconciled (scene activation, display listing, reconnect).
-    sync_display_preference_overlays(state).await;
-
-    let mut displays = state
-        .device_registry
-        .list()
-        .await
-        .into_iter()
-        .filter_map(|tracked| {
-            let surface = display_surface_info(&tracked.info)?;
-            let layout = display_face_layout(tracked.info.id, tracked.info.name.as_str(), surface);
-            Some((tracked.info.id, tracked.info.name, layout))
-        })
-        .collect::<Vec<_>>();
-    displays.sort_by(|left, right| {
-        left.1
-            .cmp(&right.1)
-            .then(left.0.to_string().cmp(&right.0.to_string()))
-    });
-
-    if displays.is_empty() {
-        return false;
-    }
-
-    match crate::domain::display::sync_display_surfaces(state.as_ref(), displays).await {
-        Ok(changed) => changed,
-        Err(error) => {
-            warn!(%error, "Failed to sync display surfaces");
-            false
-        }
-    }
 }
 
 /// `GET /api/v1/displays/{id}/preview.jpg` — latest composited frame for a display.
@@ -837,7 +803,13 @@ fn build_default_display_zone(
         controls: preference.controls.clone(),
         control_bindings: std::collections::HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            preference.controls.clone(),
+            std::collections::HashMap::new(),
+            None,
+        )],
         layout,
         brightness: 1.0,
         enabled: true,

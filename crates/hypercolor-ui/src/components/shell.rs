@@ -136,7 +136,7 @@ pub fn Shell(children: Children) -> impl IntoView {
 /// saved scene (Enter activates it; a no-op when already active).
 #[derive(Clone, PartialEq)]
 enum PaletteEntry {
-    Effect(crate::api::EffectSummary),
+    Effect(Box<crate::api::EffectSummary>),
     Scene {
         id: String,
         name: String,
@@ -189,6 +189,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                 .map(|entry| entry.effect)
                 .filter(|effect| effect.runnable)
                 .take(10)
+                .map(Box::new)
                 .map(PaletteEntry::Effect)
                 .collect();
         }
@@ -200,7 +201,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                     && (entry.matches_search(&q)
                         || entry.effect.category.to_lowercase().contains(&q))
             })
-            .map(|entry| PaletteEntry::Effect(entry.effect))
+            .map(|entry| PaletteEntry::Effect(Box::new(entry.effect)))
             .take(10)
             .collect::<Vec<_>>();
 

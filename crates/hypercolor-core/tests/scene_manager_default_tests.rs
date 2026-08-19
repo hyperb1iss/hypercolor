@@ -156,6 +156,10 @@ fn upsert_primary_group_creates_when_absent() {
     assert_eq!(group.effect_id, Some(effect.id));
     assert_eq!(group.controls, controls);
     assert_eq!(group.layout.id, "layout-zone_primary");
+    let [layer] = group.layers.as_slice() else {
+        panic!("a new primary zone should persist one effect layer");
+    };
+    assert_ne!(layer.id.as_uuid(), group.id.0);
     assert_eq!(
         manager
             .active_scene()
@@ -461,11 +465,12 @@ fn clear_display_group_assignment_preserves_screen_surface() {
 }
 
 #[test]
-fn legacy_display_face_effect_is_effective_beside_media_layers() {
+fn default_display_face_materializes_a_real_layer_beside_media() {
     let device_id = DeviceId::new();
     let effect = sample_effect("Clock");
+    let group_id = ZoneId::new();
     let group = Zone {
-        id: ZoneId::new(),
+        id: group_id,
         name: "Pump LCD".to_owned(),
         description: None,
         effect_id: Some(effect.id),
@@ -483,7 +488,12 @@ fn legacy_display_face_effect_is_effective_beside_media_layers() {
         layers_version: 2,
     };
 
-    let layers = group.effective_layers();
+    let mut manager = SceneManager::with_default();
+    manager.set_default_display_group(group);
+    let layers = manager
+        .default_display_group_for(device_id)
+        .expect("display group should install")
+        .effective_layers();
 
     assert_eq!(layers.len(), 2);
     let LayerSource::Effect {
@@ -495,6 +505,7 @@ fn legacy_display_face_effect_is_effective_beside_media_layers() {
         panic!("legacy face should appear before media layers");
     };
     assert_eq!(*effect_id, effect.id);
+    assert_ne!(layers[0].id.as_uuid(), group_id.0);
     assert_eq!(controls.get("speed"), Some(&ControlValue::Float(0.5)));
     assert!(matches!(layers[1].source, LayerSource::Media { .. }));
 }

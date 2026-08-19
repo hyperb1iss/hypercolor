@@ -21,10 +21,7 @@ use crate::api::envelope::ApiResponse;
 use crate::domain::{DomainError, ResourceKind};
 use crate::playlist_runtime::ActivePlaylistRuntime;
 
-use super::{
-    activate_effect_with_controls, metadata_for_effect_id, resolve_preset_id,
-    store_error_to_response, unix_epoch_ms,
-};
+use super::{metadata_for_effect_id, resolve_preset_id, store_error_to_response, unix_epoch_ms};
 
 // Wire contracts live in hypercolor-types::api::library — shared with
 // the web UI and the TUI.
@@ -432,56 +429,46 @@ async fn clear_runtime_if_generation_matches(state: &Arc<AppState>, generation: 
 }
 
 async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> Result<(), String> {
-    match &item.target {
+    let (metadata, requested_controls, preset_id) = match &item.target {
         PlaylistItemTarget::Effect { effect_id } => {
             let metadata = metadata_for_effect_id(state, *effect_id).await?;
-            let controls = HashMap::new();
-            let activation = activate_effect_with_controls(state, &metadata, &controls)
-                .await
-                .map_err(|error| error.to_string())?;
-            if !activation.rejected.is_empty() {
-                warn!(
-                    effect_id = %metadata.id,
-                    effect = %metadata.name,
-                    rejected = ?activation.rejected,
-                    "Rejected controls while activating playlist effect item"
-                );
-            }
-            if !activation.warnings.is_empty() {
-                warn!(
-                    effect_id = %metadata.id,
-                    effect = %metadata.name,
-                    warnings = ?activation.warnings,
-                    "Effect activation emitted warnings while activating playlist effect item"
-                );
-            }
+            (metadata, HashMap::new(), None)
         }
         PlaylistItemTarget::Preset { preset_id } => {
             let Some(preset) = state.library_store.get_preset(*preset_id).await else {
                 return Err(format!("playlist references missing preset: {preset_id}"));
             };
             let metadata = metadata_for_effect_id(state, preset.effect_id).await?;
-            let activation = activate_effect_with_controls(state, &metadata, &preset.controls)
-                .await
-                .map_err(|error| error.to_string())?;
-            if !activation.rejected.is_empty() {
-                warn!(
-                    preset_id = %preset.id,
-                    preset = %preset.name,
-                    rejected = ?activation.rejected,
-                    "Rejected controls while activating playlist preset item"
-                );
-            }
-            if !activation.warnings.is_empty() {
-                warn!(
-                    preset_id = %preset.id,
-                    preset = %preset.name,
-                    warnings = ?activation.warnings,
-                    "Effect activation emitted warnings while activating playlist preset item"
-                );
-            }
+            (metadata, preset.controls, Some(preset.id))
         }
+    };
+
+    let (controls, rejected) =
+        crate::api::effects::normalize_control_values(&metadata, &requested_controls);
+    if !rejected.is_empty() {
+        warn!(
+            effect_id = %metadata.id,
+            effect = %metadata.name,
+            ?rejected,
+            "Rejected controls while advancing playlist"
+        );
     }
+
+    crate::domain::effect::apply_effect(
+        state,
+        crate::domain::effect::ApplyEffect {
+            effect: metadata,
+            controls,
+            preset_id,
+            target_zone: None,
+            expected_revision: None,
+            transition: crate::domain::effect::RequestedTransition::cut(),
+            wake_output: false,
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok(())
 }

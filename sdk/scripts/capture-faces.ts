@@ -213,6 +213,33 @@ function sleep(ms: number): Promise<void> {
     return new Promise((res) => setTimeout(res, ms))
 }
 
+function sendAndWaitForAck(
+    ws: WebSocket,
+    payload: object,
+    acknowledgmentType: 'subscribed' | 'unsubscribed',
+): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            ws.removeEventListener('message', onMessage)
+            reject(new Error(`${acknowledgmentType} acknowledgment timed out`))
+        }, 5000)
+        const onMessage = (event: MessageEvent) => {
+            if (typeof event.data !== 'string') return
+            const message = JSON.parse(event.data) as { message?: string; type?: string }
+            if (message.type !== acknowledgmentType && message.type !== 'error') return
+            clearTimeout(timeout)
+            ws.removeEventListener('message', onMessage)
+            if (message.type === 'error') {
+                reject(new Error(message.message ?? 'display preview subscription rejected'))
+            } else {
+                resolve()
+            }
+        }
+        ws.addEventListener('message', onMessage)
+        ws.send(JSON.stringify(payload))
+    })
+}
+
 async function main(): Promise<void> {
     const opts = parseArgs(process.argv.slice(2))
 
@@ -260,21 +287,25 @@ async function main(): Promise<void> {
     // adds a subscription rather than retargeting the first. Each capture
     // drops the previous key so only one display streams at a time.
     let followed: string | undefined
-    const follow = (deviceId: string) => {
+    const follow = async (deviceId: string): Promise<void> => {
         if (followed === deviceId) return
         if (followed !== undefined) {
-            ws.send(
-                JSON.stringify({
+            await sendAndWaitForAck(
+                ws,
+                {
                     topics: [{ key: followed, topic: 'display_preview' }],
                     type: 'unsubscribe',
-                }),
+                },
+                'unsubscribed',
             )
         }
-        ws.send(
-            JSON.stringify({
+        await sendAndWaitForAck(
+            ws,
+            {
                 topics: [{ config: { fps: 15 }, key: deviceId, topic: 'display_preview' }],
                 type: 'subscribe',
-            }),
+            },
+            'subscribed',
         )
         followed = deviceId
     }
@@ -288,7 +319,7 @@ async function main(): Promise<void> {
             for (const sim of simulators) {
                 try {
                     await assignFace(opts.daemon, sim.deviceId, face.id, {}, 'replace', 1.0)
-                    follow(sim.deviceId)
+                    await follow(sim.deviceId)
                     await sleep(opts.warmupMs)
                     const jpeg = await snapPreview(opts.daemon, sim.deviceId)
                     if (!jpeg) {

@@ -220,18 +220,27 @@ hypercolor effects reset
 
 ### Via REST
 
-Changes apply on the next rendered frame:
+Read the live scene first. The document carries the real zone and layer ids that
+control writes address:
 
 ```bash
-curl -X PATCH http://localhost:9420/api/v1/effects/active/controls \
+scene=$(curl -s http://localhost:9420/api/v1/scene)
+zone_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].id')
+layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
+
+curl -X PATCH \
+  "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 3}}'
+  -d '{"values": {"speed": {"float": 3.0}}}'
 ```
 
-To see what parameters the active effect exposes:
+The control patch deliberately has no `If-Match` header. A replaced layer gets
+a fresh id, so a stale write returns `404 layer_not_found` instead of changing
+the new effect. To inspect the current values:
 
 ```bash
-curl http://localhost:9420/api/v1/effects/active | jq '.data.controls'
+curl -s http://localhost:9420/api/v1/scene \
+  | jq '.data.zones[].layers[] | select(.source.type == "effect") | .source.controls'
 ```
 
 The web UI's controls panel lets you adjust these with sliders, which is easier for exploration. The REST PATCH and `effects patch` are the right paths for scripting or keyboard macros.

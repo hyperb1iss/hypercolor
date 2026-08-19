@@ -228,12 +228,6 @@ pub struct DaemonState {
     /// Latest composited display frames captured per device for preview surfaces.
     pub display_frames: Arc<RwLock<crate::display_frames::DisplayFrameRuntime>>,
 
-    /// Persisted effect -> layout association map.
-    pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,
-
-    /// Persistent JSON file for effect -> layout associations.
-    pub effect_layout_links_path: PathBuf,
-
     /// Persistent JSON file for spatial layouts.
     pub layouts_path: PathBuf,
 

@@ -7,7 +7,7 @@ from typing import Any
 import msgspec
 
 from .common import NamedRef
-from .zone import Zone
+from .zone import ReplaceZoneRequest, Zone
 
 
 class Scene(msgspec.Struct, kw_only=True):
@@ -27,23 +27,30 @@ class Scene(msgspec.Struct, kw_only=True):
         return self.mutation_mode == "snapshot"
 
 
-class ActiveScene(msgspec.Struct, kw_only=True):
-    """The active scene with its full render-group (zone) set.
-
-    ``zones_revision`` is the monotonic structure counter carried as the
-    ``If-Match`` precondition for every zone mutation.
-    """
+class SceneDocument(msgspec.Struct, kw_only=True):
+    """A complete scene tree returned by live and stored-scene reads."""
 
     id: str
     name: str
     description: str | None = None
-    enabled: bool = True
-    priority: int = 0
     kind: str = "named"
-    mutation_mode: str = "live"
-    zones: list[Zone] = msgspec.field(default_factory=list)
-    zones_revision: int = 0
+    is_default: bool = False
     unassigned_behavior: str | dict[str, Any] = "off"
+    layout_id: str | None = None
+    activation_brightness: float | None = None
+    transition: dict[str, Any] = msgspec.field(
+        default_factory=lambda: {
+            "duration_ms": 1000,
+            "easing": "Linear",
+            "color_interpolation": "Oklab",
+        }
+    )
+    priority: int = 50
+    enabled: bool = True
+    metadata: dict[str, str] = msgspec.field(default_factory=dict)
+    mutation_mode: str = "live"
+    revision: int = 0
+    zones: list[Zone] = msgspec.field(default_factory=list)
 
     @property
     def primary_zone(self) -> Zone | None:
@@ -57,16 +64,46 @@ class ActiveScene(msgspec.Struct, kw_only=True):
         return next((zone for zone in self.zones if zone.id == zone_id), None)
 
 
+class ReplaceSceneRequest(msgspec.Struct, kw_only=True):
+    """Whole-document body accepted by ``PUT /api/v1/scenes/{id}``."""
+
+    name: str
+    kind: str
+    transition: dict[str, Any]
+    priority: int
+    enabled: bool
+    id: str | None = None
+    description: str | None = None
+    unassigned_behavior: str | dict[str, Any] = "off"
+    layout_id: str | None = None
+    activation_brightness: float | None = None
+    metadata: dict[str, str] = msgspec.field(default_factory=dict)
+    mutation_mode: str = "live"
+    zones: list[ReplaceZoneRequest] = msgspec.field(default_factory=list)
+
+    @classmethod
+    def from_document(cls, document: SceneDocument) -> ReplaceSceneRequest:
+        """Strip response-only fields from a complete scene document."""
+
+        return cls(
+            id=document.id,
+            name=document.name,
+            description=document.description,
+            kind=document.kind,
+            unassigned_behavior=document.unassigned_behavior,
+            layout_id=document.layout_id,
+            activation_brightness=document.activation_brightness,
+            transition=document.transition,
+            priority=document.priority,
+            enabled=document.enabled,
+            metadata=document.metadata,
+            mutation_mode=document.mutation_mode,
+            zones=[ReplaceZoneRequest.from_zone(zone) for zone in document.zones],
+        )
+
+
 class ActivateSceneResult(msgspec.Struct, kw_only=True):
     """Response from manually triggering a scene."""
 
     scene: NamedRef
     activated: bool
-
-
-class DeactivateSceneResult(msgspec.Struct, kw_only=True):
-    """Response from returning to the synthesized default scene."""
-
-    deactivated: bool
-    previous_scene: Scene | None = None
-    scene: Scene | None = None

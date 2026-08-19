@@ -16,7 +16,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{LinearRgba, Rgba};
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::layer::MediaPlayback;
+use hypercolor_types::layer::{MediaPlayback, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, ZoneRole};
 #[cfg(feature = "wgpu")]
 use hypercolor_types::spatial::Corner;
@@ -236,15 +236,16 @@ fn abandoned_prepared_group_resources_preserve_the_installed_generation() {
 }
 
 fn sample_group(width: u32, height: u32) -> Zone {
+    let effect_id = EffectId::from(Uuid::now_v7());
     Zone {
         id: ZoneId::new(),
         name: "Preview Group".into(),
         description: None,
-        effect_id: Some(EffectId::from(Uuid::now_v7())),
+        effect_id: Some(effect_id),
         controls: HashMap::new(),
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers: vec![effect_layer(effect_id, HashMap::new())],
         layout: SpatialLayout {
             id: "preview-group".into(),
             name: "Preview Group".into(),
@@ -265,6 +266,26 @@ fn sample_group(width: u32, height: u32) -> Zone {
         controls_version: 0,
         layers_version: 0,
     }
+}
+
+fn effect_layer(effect_id: EffectId, controls: HashMap<String, ControlValue>) -> SceneLayer {
+    SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls,
+        HashMap::new(),
+        None,
+    )
+}
+
+fn set_effect_group(
+    group: &mut Zone,
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+) {
+    group.effect_id = Some(effect_id);
+    group.controls = controls.clone();
+    group.layers = vec![effect_layer(effect_id, controls)];
 }
 
 fn make_color_fill_group(group: &mut Zone) {

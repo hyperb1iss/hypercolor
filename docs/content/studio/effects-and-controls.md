@@ -54,7 +54,10 @@ Effect-control edits go through a partial, *debounced* patch that updates only t
 
 ### Concurrent edits stay consistent
 
-Each patch carries the zone's current `layers_version` as a precondition. If another client, the CLI, or an agent changed the same layer stack while your edit was in flight, the daemon replies that your version is stale. The control session quietly rebases onto the daemon's fresh version and retries your batch once, merging in any edits you made while the first attempt was on the wire. Newer values always win, so a retry never resurrects a control position you have already moved past.
+Control patches are unguarded and apply in commit order against the real layer
+id. A whole-layer replacement retires that id, so a late control patch cannot
+land on the replacement. The control session keeps local edits coalesced while
+requests are in flight, and newer values always win.
 
 This is the same shared control-patch session that powers display-face controls and the standalone effect panel, so the behavior is identical everywhere you tune live controls.
 

@@ -1,463 +1,394 @@
 +++
 title = "Zone API & concurrency"
-description = "Zone, scene, layer, and layout REST routes plus the optimistic-concurrency machinery and the per-zone WebSocket preview protocol."
+description = "The live scene tree, real zone and layer identity, one revision token, and the per-zone WebSocket preview protocol."
 weight = 120
 +++
 
-Studio composes a scene by issuing scoped REST mutations against the daemon's
-zone, scene, layer, and layout routes, and every structural mutation is guarded
-by an optimistic-concurrency token. A zone or scene write carries the active
-scene's `zones_revision`; a layer write carries the target zone's
-`layers_version`. The token rides as an `If-Match` precondition, the daemon
-replies `412 Precondition Failed` with the authoritative current value when it
-no longer matches, and the client surfaces that as a `Stale` outcome it can
-rebase and retry rather than clobber a concurrent edit. Live drag-to-reposition
-preview is a separate, transient path: it travels over the inbound WebSocket as
-a `zone_layout_preview` message, never through REST, and never touches the
-global spatial engine.
+Studio edits one live resource tree. `GET /api/v1/scene` returns the active
+scene, its zones, each zone's member device segments, and every authored layer.
+Fine-grained writes stay under that same root. Stored scenes remain a collection
+under `/api/v1/scenes`, but they do not expose a second nested zone API.
+
+The live document also carries the only concurrency token on the REST wire:
+`revision`. Structural writes may guard themselves with `If-Match`. Control
+values are unguarded and target a real layer id from the document. A replaced
+layer has a new id, so a stale control write cannot reach the replacement.
 
 This page is the developer reference for those contracts. For the user-facing
-walkthrough of the same surfaces, see [Zones](@/studio/zones.md),
-[Layers](@/studio/layers.md), and [Layouts](@/studio/layouts.md). The shared
-REST envelope and error shapes live in the [REST API](@/api/rest.md) reference.
+model, see [Zones](@/studio/zones.md), [Layers](@/studio/layers.md), and
+[Layouts](@/studio/layouts.md). The shared response and error envelopes live in
+the [REST API](@/api/rest.md) reference.
 
 {% callout(type="info") %}
-**Vocabulary.** A scene is a whole-rig config; a zone is a flexible partition of
-the canvas. The daemon's Rust type for a zone is `Zone` and its handlers live in
-`scenes_zones.rs` and `layers.rs`. A device output placed on a zone's canvas is
-an `Output`. Never call a zone a "room."
+**Vocabulary.** A scene is a whole-rig configuration. A zone is a flexible
+partition of its canvas. A member is one device segment assignment inside a
+zone. A layer is one authored source in that zone's stack.
 {% end %}
 
 ## Route map 🎯
 
-All routes are mounted under `/api/v1`. Scene-scoped paths accept either the
-scene UUID or its name as `{id}`; the daemon resolves the name to an id.
+All routes below are mounted under `/api/v1`.
 
-### Scenes
+### Stored scenes
 
-{% api_endpoint(method="GET", path="/api/v1/scenes") %}
-List user-created scenes. The ephemeral Default scene is omitted from the list.
+Stored scenes use collection and whole-document operations:
+
+```text
+GET    /scenes
+POST   /scenes
+GET    /scenes/{id}
+PUT    /scenes/{id}
+DELETE /scenes/{id}
+POST   /scenes/{id}/activate
+```
+
+`POST /scenes` seeds a Default zone server-side. Activating a stored scene
+makes it the resource returned by `GET /scene`. To edit stored scene structure,
+activate it and edit the live tree, or replace the stored scene document with
+`PUT /scenes/{id}`.
+
+### Live scene
+
+{% api_endpoint(method="GET", path="/api/v1/scene") %}
+Return the complete live scene document. An active scene always exists, so this
+route always returns `200`. The JSON `revision` is also served as `ETag`.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes") %}
-Create a scene. The new scene is seeded with a default zone (`ZoneRole::Primary`)
-holding the current device selection.
+{% api_endpoint(method="PATCH", path="/api/v1/scene") %}
+Patch `name` or `unassigned_behavior`. The default scene cannot be renamed.
+This structural write optionally accepts `If-Match`.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/active") %}
-Get the active scene, including the Default scene when it is active.
+{% api_endpoint(method="POST", path="/api/v1/scene/deactivate") %}
+Return to the Default scene and receive the new live document.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}") %}
-Get a single scene by id or name.
+{% api_endpoint(method="POST", path="/api/v1/scene/clear") %}
+Clear every non-display zone's layer stack. Pass
+`{ "zone": "<zone_uuid>" }` to clear one non-display stack. Display zones stay
+owned by the display API, and a targeted display clear is rejected. This is the
+canonical stop gesture and optionally accepts `If-Match`.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}") %}
-Replace the scene's `name` and `description`.
+### Zones and members
+
+{% api_endpoint(method="POST", path="/api/v1/scene/zones") %}
+Create a custom zone. Primary and display zones are created by their owning
+engine flows.
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}") %}
-Delete a scene. The Default scene cannot be deleted.
+{% api_endpoint(method="GET", path="/api/v1/scene/zones/{zone}") %}
+Read one live zone resource.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/activate") %}
-Activate a scene.
+{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}") %}
+Patch the zone's name, enabled state, brightness, or color.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/deactivate") %}
-Deactivate the active scene and fall back to Default.
+{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}") %}
+Delete a custom zone.
 {% end %}
 
-`POST /scenes` seeds the new scene with a Default zone server-side, so a freshly
-created scene already partitions the whole rig. `PUT /scenes/{id}` replaces the
-scene's `name` and `description` wholesale, which is why the client always sends
-`description` back verbatim on a rename to avoid clearing it. `GET /scenes` omits
-the ephemeral Default scene; only user-created scenes appear in the list.
-
-### Zones
-
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
-List the scene's zones with the current `zones_revision`.
+{% api_endpoint(method="POST", path="/api/v1/scene/zones/{zone}/members") %}
+Assign device segments with `{ "device_id": "...", "segments": [...] }`.
+The response carries minted member ids.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
-Create a zone. `If-Match` enforces `zones_revision`.
+{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}/members/{member}") %}
+Remove one membership by its member id. Segment names are not resource ids.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Get a single zone.
+{% api_endpoint(method="PUT", path="/api/v1/scene/zones/{zone}/layout") %}
+Write a compact zone layout containing member placements. Every placement names
+a member id from the live zone document.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Patch a zone's name, color, brightness, enabled, or `make_primary`. The
-precondition is enforced only for the structural `make_primary` edit.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Delete a zone. `If-Match` enforces `zones_revision`.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layout") %}
-Reposition the outputs the zone already owns. Placement-only; see below.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/devices") %}
-Assign outputs into the zone, by id or as a new `Output`.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}") %}
-Remove an output from the zone.
-{% end %}
-
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/unassigned-behavior") %}
-Set the scene-level policy for outputs not assigned to a zone.
-{% end %}
+All mutating routes in this section are structural. Each may carry the scene
+document's current `revision` in `If-Match`.
 
 ### Layers
 
-Layers are scoped to a zone through the same `/zones/{zone_id}` prefix that
-serves zone CRUD. The layer stack carries its own version, `layers_version`,
-independent of `zones_revision`.
-
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
-List the zone's layer stack with its current `layers_version`.
+{% api_endpoint(method="GET", path="/api/v1/scene/zones/{zone}/layers") %}
+List the zone's authored layer stack from bottom to top.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
-Add a layer. `If-Match` enforces `layers_version`. An optional `index` query
-sets the insertion position.
+{% api_endpoint(method="POST", path="/api/v1/scene/zones/{zone}/layers") %}
+Append a layer. The server mints its `SceneLayerId`.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
-Replace a layer. `If-Match` enforces `layers_version`.
+{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}/layers/order") %}
+Reorder the stack with every current layer id exactly once, bottom to top.
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
-Remove a layer. `If-Match` enforces `layers_version`.
+{% api_endpoint(method="PUT", path="/api/v1/scene/zones/{zone}/layers/{layer}") %}
+Replace a whole layer. Every successful replacement mints a fresh id, including
+a replacement with the same effect and controls.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/order") %}
-Reorder the stack with an exact permutation of layer ids.
+{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}/layers/{layer}") %}
+Delete a layer.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls") %}
-Patch an effect layer's live controls.
+{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}/layers/{layer}/controls") %}
+Patch effect controls with the shared shape:
+
+```json
+{
+  "values": {
+    "speed": { "float": 45.0 },
+    "palette": { "enum": "Midnight" }
+  },
+  "clear_bindings": ["speed"]
+}
+```
+
+This value write never takes `If-Match`. If the layer was replaced, the old id
+returns `404 layer_not_found`. A value targeting a bound control returns
+`409 control_bound` unless the same request names that key in `clear_bindings`.
+Binding removal and the new values commit atomically.
 {% end %}
 
-There is also a batch route that fans a single media layer across several zones
-in one call, each target carrying its own placement and its own
-`expected_layers_version`:
+Layer create, replace, delete, and reorder are structural writes and may carry
+`If-Match`. The control route is the only in-place layer value mutation.
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/layers/broadcast-media") %}
-Fan one media layer across multiple zones, each target versioned independently.
-{% end %}
+### Layout library
 
-### Layouts
+The `/layouts` collection manages named spatial layouts. A live scene may point
+at one through `scene.layout_id`, while a zone may hold its own placement
+override through `PUT /scene/zones/{zone}/layout`.
 
-The `/layouts` routes manage the standalone layout library, which is separate
-from a zone's own `Zone.layout`. Studio edits the zone's layout through
-`PUT /scenes/{id}/zones/{zone_id}/layout`, not these routes. The library is
-soak-gated for retirement; treat it as legacy and prefer the per-zone path.
+```text
+GET    /layouts
+POST   /layouts
+GET    /layouts/active
+PUT    /layouts/active/preview
+GET    /layouts/{id}
+PUT    /layouts/{id}
+DELETE /layouts/{id}
+POST   /layouts/{id}/apply
+```
 
-{% api_endpoint(method="GET", path="/api/v1/layouts") %}
-List saved layouts.
-{% end %}
+Effects do not have layout associations. The old effect-layout API and its
+store are removed; `scene.layout_id` is the deliberate successor.
 
-{% api_endpoint(method="POST", path="/api/v1/layouts") %}
-Create a layout.
-{% end %}
+## The live document and real identity
 
-{% api_endpoint(method="GET", path="/api/v1/layouts/active") %}
-Get the active layout.
-{% end %}
+The live tree embeds the ids a client needs for every follow-up:
 
-{% api_endpoint(method="GET", path="/api/v1/layouts/{id}") %}
-Get a single layout.
-{% end %}
+```json
+{
+  "data": {
+    "id": "832c4b7f-9f4d-49d2-b37a-674c76bc2a80",
+    "name": "Desk rig",
+    "kind": "named",
+    "is_default": false,
+    "unassigned_behavior": "off",
+    "layout_id": null,
+    "revision": 42,
+    "zones": [
+      {
+        "id": "84b20af9-0700-4b82-8488-88314b87fb5c",
+        "name": "Primary",
+        "role": "primary",
+        "enabled": true,
+        "brightness": 1.0,
+        "color": null,
+        "display_target": null,
+        "members": [
+          {
+            "id": "keyboard-left",
+            "device_id": "razer:huntsman-v3",
+            "segment": "left",
+            "name": "Keyboard left"
+          }
+        ],
+        "layers": [
+          {
+            "id": "d6cf26a0-2c54-47e1-9eab-65dd8c4021fe",
+            "source": {
+              "type": "effect",
+              "effect_id": "0198c5b6-1111-7000-8000-000000000004",
+              "controls": { "speed": { "float": 45.0 } }
+            },
+            "blend": "replace",
+            "opacity": 1.0
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
-{% api_endpoint(method="PUT", path="/api/v1/layouts/{id}") %}
-Replace a layout.
-{% end %}
+Clients never derive a layer id from the zone id. They read the id from
+`GET /scene` or from an effect-apply response. Layer create and apply mint an
+id. Whole-layer `PUT` replaces that identity with a new one. Control patches
+and reorder operations keep existing ids.
 
-{% api_endpoint(method="DELETE", path="/api/v1/layouts/{id}") %}
-Delete a layout.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/layouts/{id}/apply") %}
-Apply a saved layout.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/layouts/active/preview") %}
-Preview a layout against the active layout without persisting it.
-{% end %}
+Persisted scene layer and zone ids survive activation, deactivation, restart,
+and snapshot. Ids in the auto-managed Default scene are stable only for the
+current daemon run, so a client must not persist them.
 
 ## Optimistic concurrency
 
-Studio is a multi-client surface. The same scene can be edited from another
-browser, the TUI, or the CLI, so a blind write would risk overwriting an edit
-the client never saw. Every structural mutation instead names the version it
-believes it is editing, and the daemon refuses the write if reality has moved on.
+### One token: `revision`
 
-### The token: `zones_revision` and `layers_version`
-
-Each scene carries a monotonic `zones_revision`. Any change to the set of zones
-or their structure (create, delete, make-primary, device assignment, zone layout
-placement, unassigned-behavior) bumps it. Each zone separately carries a
-`layers_version` that bumps on any layer-stack change (add, update, remove,
-reorder, controls patch).
-
-Both numbers ride out in two places on every successful response: in the JSON
-body (`zones_revision` / `layers_version`) and in the HTTP `ETag` header,
-quoted, for example `ETag: "7"`. The client may read either.
-
-### The precondition: `If-Match`
-
-To guard a mutation, send the version you are editing as an `If-Match` header.
-The daemon accepts the quoted form, the bare integer, or `*` (which is treated as
-"no precondition"). The header is parsed by `parse_if_match_zones_revision` for
-zone and scene routes and `parse_if_match_layers_version` for layer routes. A
-non-integer that is not `*` is a `400 Bad Request`.
+The live scene's `revision` is the commit generation. A successful read or
+mutation returns it in the resource and quotes it in the response header:
 
 ```http
-PATCH /api/v1/scenes/desk-rig/zones/4f1c.../  HTTP/1.1
-If-Match: "7"
-Content-Type: application/json
-
-{ "name": "Desk", "color": "#7c5cff" }
+ETag: "42"
 ```
 
-When the precondition still matches, the mutation applies, persists, and the
-daemon publishes a change event on the bus so every connected client converges.
-When it does not match, the daemon replies `412 Precondition Failed` with the
-standard error envelope, carrying both versions in `details` and repeating the
-authoritative one in an `ETag`:
+No resource-specific version counters exist on the REST wire. Internal
+bookkeeping may use more detail, but clients coordinate through the one
+document revision.
+
+### Structural writes use optional `If-Match`
+
+Send the last revision when overwriting a stale structure would be harmful:
+
+```http
+PATCH /api/v1/scene/zones/84b20af9-0700-4b82-8488-88314b87fb5c HTTP/1.1
+If-Match: "42"
+Content-Type: application/json
+
+{ "name": "Desk halo", "color": "#7c5cff" }
+```
+
+The daemon accepts a quoted integer, a bare integer, or `*`. Omitting the
+header, or sending `*`, applies without a precondition. A stale integer returns
+the canonical `412 Precondition Failed` envelope:
 
 ```json
 {
   "error": {
     "code": "precondition_failed",
-    "message": "version mismatch: expected 8, current 9",
-    "details": { "expected": 8, "current": 9 }
+    "message": "scene revision does not match",
+    "details": { "current": 43 }
   },
-  "meta": { "api_version": "1.0", "request_id": "req_…", "timestamp": "…" }
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_...",
+    "timestamp": "..."
+  }
 }
 ```
 
-Layer and effect-control routes render identically. Which counter a 412 is about
-is a property of the route you called, not of the body, so rebase off
-`error.details.current` (or the `ETag`, which carries the same value).
+Structural writes include scene metadata, zone create, patch, and delete, zone
+layout replacement, member assignment and removal, layer create, replace,
+delete, and reorder, scene clear, stored-scene replacement, and both effect
+apply forms. After a `412`, read `/scene`, rebase the intended edit, and retry
+with the new revision.
 
-{% callout(type="warning") %}
-`If-Match` is optional on the wire: a request with no `If-Match` header skips
-the precondition entirely and applies unconditionally. Studio always sends one
-for structural edits. Send `*` only when you deliberately want a last-writer-wins
-overwrite.
-{% end %}
+### Control values never use `If-Match`
 
-### The client outcome: `MutationOutcome::Stale`
+A slider would invalidate its own revision on every frame if control writes
+were guarded. The control route therefore commits values in arrival order. Its
+real layer id is the stale-write fence: a layer replacement removes the old id,
+and later writes to it return `404`.
 
-The web UI client wraps every versioned mutation in `send_json_versioned`, which
-classifies the reply into `MutationOutcome<T>`:
+## Zone layout is member placement
 
-```rust
-pub enum MutationOutcome<T> {
-    Applied(T),
-    Stale { current: u64 },
-}
-```
+`PUT /scene/zones/{zone}/layout` writes the zone-scoped placement override. The
+request is compact: each placement names a member and supplies normalized
+position, size, rotation, scale, optional orientation, and topology. Membership
+itself changes only through the member routes.
 
-A `2xx` becomes `Applied(payload)`; a `412` becomes `Stale { current }`, reading
-`error.details.current` from the response body. The zone client aliases this as
-`ZoneOutcome<T>`. A `Stale` is explicitly **not** a failure to log and forget:
-the caller refetches the active scene (or the layer stack), rebases its edit on
-the authoritative `current`, and retries, so a concurrent edit from another
-client is never silently clobbered.
-
-```rust
-match api::zones::update_zone(&scene_id, &zone_id, &request, Some(revision)).await? {
-    ZoneOutcome::Applied(zone) => apply_locally(zone),
-    ZoneOutcome::Stale { current } => {
-        // refetch the scene, rebase on `current`, retry
-    }
-}
-```
-
-The daemon's matching error type for the layer stack is
-`LayerMutationError::Stale { expected, current }`, which projects onto
-`DomainError::PreconditionFailed` and so renders the same `412`. On the zone
-side, `check_groups_revision` performs the comparison and raises that same error
-before any mutation runs.
-
-### What gets versioned
-
-| Route family | Precondition | Notes |
-| --- | --- | --- |
-| `POST/DELETE /zones/...` | `zones_revision` | Create and delete enforce the precondition. |
-| `PATCH /zones/{id}` | `zones_revision` | Enforced only when the edit is structural (`make_primary`); name/color/brightness/enabled patches skip it. |
-| `PUT /zones/{id}/layout` | `zones_revision` | Placement-only; see below. |
-| `POST/DELETE /zones/{id}/devices...` | `zones_revision` | Reassigning or removing an output. |
-| `PATCH /unassigned-behavior` | `zones_revision` | Scene-level policy. |
-| `POST/PUT/DELETE/PATCH /zones/{id}/layers...` | `layers_version` | Per-zone stack version. |
-| `POST /layers/broadcast-media` | per-target `expected_layers_version` | Each fan-out target versions independently; a target may pass `null` to apply unconditionally. |
-
-{% callout(type="tip") %}
-Bulk add-layer that fans across multiple zones sends `If-Match` only for the zone
-currently on screen; the additional fan-out targets apply unconditionally
-(`null` version). That keeps a multi-zone broadcast from failing because of an
-unrelated concurrent edit in a zone the user is not looking at.
-{% end %}
-
-## Zone layout is a placement merge, not a replace
-
-`PUT /scenes/{id}/zones/{zone_id}/layout` updates only the placement of the
-outputs a zone already owns. The request body is a full `SpatialLayout`, but the
-daemon requires its output-id set to match the zone's current outputs exactly. It
-may reposition those outputs, reorder them, and retune the canvas dimensions, but
-it preserves the server-side identity and topology fields. Adding or dropping an
-output is rejected here with `422` and a `LayoutOutputMismatch` validation error:
-
-```json
-{
-  "error": {
-    "code": "validation_error",
-    "message": "Zone layout must carry exactly the zone's current outputs; add or remove outputs through the device endpoints"
-  },
-  "meta": { "api_version": "1.0", "request_id": "req_…", "timestamp": "…" }
-}
-```
-
-Adds and drops route through the device sub-routes instead:
-`POST /zones/{zone_id}/devices` moves an existing output into the zone (referenced
-by id) or places a brand-new one (carrying a full `Output`), and
-`DELETE /zones/{zone_id}/devices/{device_zone_id}` removes one. Both return the new
-`zones_revision` so a sequence of assignments can chain without a refetch.
-
-In the web UI, `ZoneLayoutProvider` reads the active scene's `zones_revision`,
-sends it as the save's `If-Match`, and treats a `ZoneOutcome::Stale` as a signal
-to reload before saving again rather than overwriting.
+The `member` field is the identity returned in the zone's `members` list. A
+device-scoped segment name is not unique across devices and cannot identify a
+membership on its own.
 
 ## Per-zone WebSocket preview
 
-While the user drags an output on the Studio Stage, the editor pushes a transient
-preview so the live render reflects the in-progress placement before any save.
-This is **not** a REST route and it does **not** mutate the persisted scene or the
-global `SpatialEngine`. It is a `ClientMessage` sent over the inbound WebSocket.
+While the user drags a member on the Studio Stage, the editor pushes a
+transient preview so the live render reflects the in-progress placement. The
+preview is not a REST mutation, does not persist the scene, and does not change
+the global spatial layout.
 
 {% callout(type="warning") %}
-The drag-preview push (the `zone_layout_preview` text message described here) is
-distinct from the `zone_preview` binary frame channel that streams the rendered
-per-zone preview image back to the client. The push is the client telling the
-daemon "render this placement"; the binary frame is the daemon streaming the
-resulting pixels. The binary wire format is owned by
-`hypercolor-leptos-ext::ws`; see the [WebSocket API](@/api/websocket.md) for the
-channel catalog and binary-frame conventions.
+The `zone_layout_preview` text command is distinct from the `zone_preview`
+binary channel. The command sends an in-progress placement to the daemon. The
+binary channel streams rendered preview pixels back to subscribers.
 {% end %}
 
-### Pushing a preview
+### Pushing and clearing a preview
 
-The editor throttles pushes to one every `75ms` (`PREVIEW_PUSH_INTERVAL_MS`) and
-sends a text frame tagged `zone_layout_preview` carrying the scene id, the zone
-id, and the full in-progress `SpatialLayout`:
+The editor throttles pushes to one every `75ms` (`PREVIEW_PUSH_INTERVAL_MS`).
+The inbound command is active-scene-only and keyed by zone id:
 
 ```json
 {
   "type": "zone_layout_preview",
-  "scene_id": "desk-rig",
-  "zone_id": "4f1c0e2a-...",
-  "layout": { "canvas_width": 640, "canvas_height": 480, "zones": [ ... ] }
+  "zone_id": "84b20af9-0700-4b82-8488-88314b87fb5c",
+  "layout": {
+    "canvas_width": 640,
+    "canvas_height": 480,
+    "zones": []
+  }
 }
 ```
 
-On the wire, `ClientMessage` is internally tagged (`#[serde(tag = "type")]`,
-snake_case), so the `type` discriminator selects the variant. The daemon applies
-the preview as an override for that one zone only.
-
-### Clearing a preview
-
-When the drag ends, or the editor saves, reverts, or unmounts, it clears the
-override with a companion message:
+There is no caller-selected `scene_id`. The daemon rejects that stale field
+instead of silently applying it to another scene. The daemon resolves the live
+scene and applies the preview to its named zone. Clear it with:
 
 ```json
 {
   "type": "zone_layout_preview_clear",
-  "scene_id": "desk-rig",
-  "zone_id": "4f1c0e2a-..."
+  "zone_id": "84b20af9-0700-4b82-8488-88314b87fb5c"
 }
 ```
 
-A socket disconnect mid-drag auto-clears the override daemon-side, so a dropped
-connection never leaves a zone stuck on a half-placed preview. After a successful
-save, `update_zone_layout` clears the preview for that zone explicitly.
+The daemon clears a connection's previews when that socket closes. A committed
+layout write retires only the preview version it replaced, so it cannot erase a
+newer drag. Saving, reverting, and unmounting also send the explicit clear
+command.
 
 ### The binary preview frame
 
-The rendered preview streams back on the `zone_preview` channel as a
-`ZonePreviewFrame`. Two frame layouts share the channel, and the encoder selects
-between them per frame: the legacy layout (tag `0x08`, 46-byte header, `u16`
-dimensions) is used while both dimensions fit in a `u16`, and the wide layout
-(`WIDE_ZONE_PREVIEW_FRAME_TAG`, tag `0x0C`, 50-byte header, `u32` dimensions)
-takes over when either dimension exceeds `u16::MAX`
-(`crates/hypercolor-leptos-ext/src/ws/preview.rs`). Decoders dispatch on the
-tag byte. Subscribe and configure the channel through the standard
-channel-config mechanism; the daemon caps it at 60 fps.
-
-The legacy header, little-endian:
+The rendered `zone_preview` frame still carries both scene and zone UUIDs so a
+subscriber can route interleaved frames. The shared codec in
+`hypercolor-leptos-ext::ws` owns both layouts:
 
 ```text
-[0]      u8    tag = 0x08
-[1..5]   u32   frame_number
-[5..9]   u32   timestamp_ms
-[9..25]  16B   scene_id   (UUID bytes)
-[25..41] 16B   zone_id    (UUID bytes)
-[41..43] u16   width
-[43..45] u16   height
-[45]     u8    pixel format  (0 = rgb, 1 = rgba, 2 = jpeg)
-[46..]         payload
+legacy tag 0x08:
+tag u8 | frame u32 | timestamp u32 | scene_id 16B | zone_id 16B |
+width u16 | height u16 | format u8 | payload
+
+wide tag 0x0C:
+tag u8 | frame u32 | timestamp u32 | scene_id 16B | zone_id 16B |
+width u32 | height u32 | format u8 | payload
 ```
 
-The wide header is identical through the id fields, then widens the dimensions:
+The wide layout is used when either dimension exceeds `u16::MAX`.
 
-```text
-[0]      u8    tag = 0x0C
-[1..5]   u32   frame_number
-[5..9]   u32   timestamp_ms
-[9..25]  16B   scene_id   (UUID bytes)
-[25..41] 16B   zone_id    (UUID bytes)
-[41..45] u32   width
-[45..49] u32   height
-[49]     u8    pixel format  (0 = rgb, 1 = rgba, 2 = jpeg)
-[50..]         payload
-```
-
-Because both the scene id and the zone id travel in the header, a client
-subscribed to `zone_preview` can route each frame to the correct zone tile with
-no ambiguity, even when several zones preview at once.
-
-## How a mutation flows end to end
+## How a structural mutation flows
 
 {% mermaid() %}
 sequenceDiagram
-    participant UI as Studio (client)
+    participant UI as Studio
     participant API as Daemon REST
     participant Bus as Event bus
     participant Other as Other clients
 
-    UI->>API: PATCH /zones/{id} (If-Match: "7")
-    alt revision still 7
-        API->>API: apply + persist (zones_revision -> 8)
-        API-->>UI: 200 + ETag "8"
-        API->>Bus: publish render-group changed
-        Bus-->>Other: converge to revision 8
-    else revision moved to 9
-        API-->>UI: 412 precondition_failed + ETag "9"
-        UI->>UI: ZoneOutcome::Stale -> refetch, rebase, retry
+    UI->>API: PATCH /scene/zones/{zone} with If-Match "42"
+    alt revision is 42
+        API->>API: commit scene revision 43
+        API-->>UI: 200 with ETag "43"
+        API->>Bus: publish scene event
+        Bus-->>Other: refetch live scene
+    else revision changed
+        API-->>UI: 412 with details.current
+        UI->>API: GET /scene
+        UI->>UI: rebase and retry
     end
 {% end %}
 
 ## Related
 
-- [Studio architecture](@/studio/architecture.md): the client-side context and
-  provider map that drives these calls.
-- [REST API](@/api/rest.md): the full daemon REST surface.
-- [WebSocket API](@/api/websocket.md): channels, subscription, the text
-  control protocol, and the binary frame layouts including `zone_preview`.
+- [Studio architecture](@/studio/architecture.md): the client-side contexts
+  that drive these calls.
+- [REST API](@/api/rest.md): the complete daemon REST surface.
+- [WebSocket API](@/api/websocket.md): subscriptions, events, and binary frame
+  layouts.

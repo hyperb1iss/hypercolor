@@ -225,9 +225,8 @@ impl<'de> Deserialize<'de> for Zone {
     {
         let helper = ZoneDeserialize::deserialize(deserializer)?;
         let layers_were_present = helper.layers.is_some();
-        let layers = helper.layers.unwrap_or_else(|| {
+        let mut layers = helper.layers.unwrap_or_else(|| {
             legacy_effect_layer(
-                helper.id,
                 helper.effect_id,
                 &helper.controls,
                 &helper.control_bindings,
@@ -236,6 +235,11 @@ impl<'de> Deserialize<'de> for Zone {
             .into_iter()
             .collect()
         });
+        for layer in &mut layers {
+            if matches!(layer.source, LayerSource::Effect { .. }) && layer.id.0 == helper.id.0 {
+                layer.id = SceneLayerId::new();
+            }
+        }
         let legacy = if layers_were_present {
             legacy_effect_fields_from_layers(&layers).unwrap_or_else(empty_effect_fields)
         } else {
@@ -297,7 +301,6 @@ fn legacy_effect_fields_from_layers(layers: &[SceneLayer]) -> Option<LegacyEffec
 }
 
 fn legacy_effect_layer(
-    group_id: ZoneId,
     effect_id: Option<EffectId>,
     controls: &HashMap<String, ControlValue>,
     control_bindings: &HashMap<String, ControlBinding>,
@@ -305,7 +308,7 @@ fn legacy_effect_layer(
 ) -> Option<SceneLayer> {
     effect_id.map(|effect_id| {
         SceneLayer::from_effect(
-            SceneLayerId::from_uuid(group_id.0),
+            SceneLayerId::new(),
             effect_id,
             controls.clone(),
             control_bindings.clone(),
@@ -420,37 +423,9 @@ impl DisplayFaceTarget {
 }
 
 impl Zone {
-    /// Return the stable synthetic layer ID used for legacy single-effect groups.
-    #[must_use]
-    pub fn legacy_layer_id(&self) -> SceneLayerId {
-        SceneLayerId::from_uuid(self.id.0)
-    }
-
     #[must_use]
     pub fn effective_layers(&self) -> Vec<SceneLayer> {
-        if self.effect_id.is_none()
-            || self
-                .layers
-                .iter()
-                .any(|layer| matches!(layer.source, LayerSource::Effect { .. }))
-        {
-            return self.layers.clone();
-        }
-
-        let Some(legacy_layer) = legacy_effect_layer(
-            self.id,
-            self.effect_id,
-            &self.controls,
-            &self.control_bindings,
-            self.preset_id,
-        ) else {
-            return self.layers.clone();
-        };
-
-        let mut layers = Vec::with_capacity(self.layers.len().saturating_add(1));
-        layers.push(legacy_layer);
-        layers.extend(self.layers.iter().cloned());
-        layers
+        self.layers.clone()
     }
 
     /// Validate layer-stack invariants owned by this group.

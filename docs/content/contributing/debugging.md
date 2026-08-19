@@ -117,8 +117,8 @@ curl -s http://localhost:9420/api/v1/status | jq
 # Connected devices and their current state
 curl -s http://localhost:9420/api/v1/devices | jq
 
-# Active effect
-curl -s http://localhost:9420/api/v1/effects/active | jq
+# Live scene, including real zone and layer ids
+curl -s http://localhost:9420/api/v1/scene | jq
 
 # Real-time event stream (install websocat if needed: cargo install websocat)
 websocat ws://localhost:9420/api/v1/ws | jq

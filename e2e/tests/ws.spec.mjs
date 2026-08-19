@@ -47,14 +47,12 @@ test("websocket handshake, subscribe ack, and live events flow through the proxy
     await readEnvelope(await api.post(`/api/v1/effects/${runnableEffect.id}/apply`));
 
     const effectEvent = await inbox.waitFor(
-      (message) =>
-        message.type === "event" &&
-        ["effect_started", "effect_activated", "effect_changed"].includes(message.event),
+      (message) => message.type === "event" && message.event === "effect_started",
     );
-    expect(effectEvent.event).toMatch(/effect_/);
+    expect(effectEvent.event).toBe("effect_started");
   } finally {
     socket.close();
-    await api.post("/api/v1/effects/stop");
+    await api.post("/api/v1/scene/clear");
     await api.dispose();
   }
 });

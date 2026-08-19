@@ -506,13 +506,7 @@ fn UnassignedStage() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            match api::zones::update_unassigned_behavior(
-                &scene.id,
-                &behavior,
-                Some(scene.zones_revision),
-            )
-            .await
-            {
+            match api::zones::update_unassigned_behavior(&behavior, Some(scene.revision)).await {
                 Ok(ZoneOutcome::Applied(_)) => {
                     toasts::toast_success("Unassigned-lights policy updated");
                     studio.refresh_scene.run(());

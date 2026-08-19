@@ -1,10 +1,14 @@
 //! Effect-related API types and fetch functions.
 
-use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gloo_net::http::Method;
+use hypercolor_types::api::scene::{
+    ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest, SceneDocument,
+};
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::ZoneRole;
 use web_sys::{File, FormData};
 
 use super::client;
@@ -12,48 +16,20 @@ use crate::control_surface_api::path_segment;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-// Wire contracts are shared with the daemon (hypercolor-types::api::effects).
-// ActiveEffectResponse below stays UI-local: it is the non-optional
-// convenience shape derived from the shared wire response.
-use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResponse;
 pub use hypercolor_types::api::effects::{
-    ApplyEffectPresetRequest, ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet,
-    EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
-    EffectPresetSummary, EffectSummary, InstalledEffectResponse, UpdateActiveControlsRequest,
+    EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectSummary, InstalledEffectResponse,
 };
+pub use hypercolor_types::api::scene::ApplyEffectRequest as ApplyEffectBody;
 
-/// Active effect response from `GET /api/v1/effects/active`, narrowed to
-/// the running case.
-///
-/// Not a mirror of the shared wire type but a projection of it: the wire
-/// shape types `id` and `name` as `Option` because the idle body carries
-/// nulls, and every UI consumer here has already branched on `state` and
-/// wants them unwrapped. `fetch_active_effect` decodes the shared
-/// `hypercolor_types::api::effects::ActiveEffectResponse` and maps idle to
-/// `None`, so this type is only ever built from a decoded wire response.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ActiveEffectResponse {
+/// UI projection of the top effect layer in the live scene.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrimaryEffectView {
     pub id: String,
     pub name: String,
-    pub state: String,
-    #[serde(default)]
     pub controls: Vec<ControlDefinition>,
-    #[serde(default)]
     pub control_values: HashMap<String, ControlValue>,
-    #[serde(default)]
     pub active_preset_id: Option<String>,
-    #[serde(default)]
-    pub active_preset_modified: bool,
-    #[serde(default)]
-    pub zone_id: Option<String>,
-    #[serde(default)]
-    pub cover_image_url: Option<String>,
-    /// Server-side controls version (matches the `ETag` header).
-    /// `Some` while an effect is running, `None` on the idle response.
-    /// Clients that want optimistic concurrency echo this back via
-    /// `If-Match` on the effect-id PATCH endpoint.
-    #[serde(default)]
-    pub controls_version: Option<u64>,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
@@ -64,27 +40,19 @@ pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
     Ok(list.items.into_iter().map(route_effect_summary).collect())
 }
 
-/// Fetch the currently active effect, if any.
-pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, String> {
-    let active = client::fetch_json::<Option<WireActiveEffectResponse>>("/api/v1/effects/active")
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(active.and_then(|effect| {
-        if effect.state == "idle" {
-            return None;
-        }
-        Some(ActiveEffectResponse {
-            id: effect.id?,
-            name: effect.name?,
-            state: effect.state,
-            controls: effect.controls,
-            control_values: effect.control_values,
-            active_preset_id: effect.active_preset_id,
-            active_preset_modified: effect.active_preset_modified,
-            zone_id: effect.zone_id,
-            controls_version: effect.controls_version,
-            cover_image_url: route_cover_image_url(effect.cover_image_url),
-        })
+/// Project the primary zone's top effect layer from the live scene tree.
+pub async fn fetch_primary_effect_view() -> Result<Option<PrimaryEffectView>, String> {
+    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
+    let Some((_, _, effect_id, values, _, preset_id)) = effect_target(&scene, None, None) else {
+        return Ok(None);
+    };
+    let detail = fetch_effect_detail(&effect_id.to_string()).await?;
+    Ok(Some(PrimaryEffectView {
+        id: effect_id,
+        name: detail.name,
+        controls: detail.controls,
+        control_values: values,
+        active_preset_id: preset_id,
     }))
 }
 
@@ -125,18 +93,21 @@ pub async fn apply_effect_preset(
         path_segment(effect_id),
         path_segment(preset_id)
     );
-    match zone_id {
-        Some(zone_id) => {
-            client::post_json_discard(
-                &path,
-                &ApplyEffectPresetRequest {
-                    zone_id: Some(zone_id.to_owned()),
-                },
-            )
-            .await
-        }
-        None => client::post_empty(&path).await,
-    }
+    let zone = zone_id
+        .map(|zone_id| {
+            uuid::Uuid::parse_str(zone_id)
+                .map(hypercolor_types::scene::ZoneId)
+                .map_err(|_| "Target zone must be a UUID".to_owned())
+        })
+        .transpose()?;
+    client::post_json_discard(
+        &path,
+        &ApplyEffectBody {
+            zone,
+            ..ApplyEffectBody::default()
+        },
+    )
+    .await
     .map_err(Into::into)
 }
 
@@ -154,86 +125,202 @@ pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<()
 
 /// Stop the currently active effect.
 pub async fn stop_effect() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/stop")
+    client::post_json_discard("/api/v1/scene/clear", &ClearSceneRequest::default())
         .await
         .map_err(Into::into)
 }
 
 /// Update effect control parameters.
 pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
-    let body = UpdateActiveControlsRequest {
-        controls: Some(controls.clone()),
+    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
+    let Some((zone_id, layer_id, _, _, _, _)) = effect_target(&scene, None, None) else {
+        return Err("The active scene has no effect layer".to_owned());
     };
-    client::patch_json_discard("/api/v1/effects/active/controls", &body)
-        .await
-        .map_err(Into::into)
+    patch_controls(&zone_id, &layer_id, controls, Vec::new()).await
 }
 
-/// Outcome of a scoped control PATCH against an effect id.
-///
-/// The `Stale` variant is surfaced separately from generic errors so
-/// the Viewport Designer modal can drive its reconciliation dialog off
-/// a real type rather than HTTP-status string-matching. Kept as a named
-/// enum (rather than a bare [`client::MutationOutcome`]) because the
-/// applied payload here is the version token itself, not a resource.
-pub enum UpdateControlsOutcome {
-    /// Applied; the `new_version` is what the caller should echo as the
-    /// next `If-Match` header on a subsequent PATCH.
-    Applied { new_version: u64 },
-    /// Server's current version no longer matches the `If-Match` we
-    /// sent. `current` is the fresh version token to rebase against.
-    Stale { current: u64 },
-}
-
-/// Successful control-PATCH payload — the envelope data carries the new
-/// `controls_version` (also present in the `ETag` header; the body is
-/// simpler to extract with `gloo_net`).
-///
-/// Stays UI-local rather than moving to hypercolor-types with the rest of
-/// the effects contracts: the daemon still builds that body with a
-/// `serde_json::json!` literal, because naming the shape would reprint its
-/// f32 control values at f32 precision and change the wire.
-#[derive(Debug, Deserialize)]
-struct ControlsVersionResponse {
-    controls_version: u64,
-}
-
-/// Scoped control PATCH against a specific effect id with optional
-/// optimistic-concurrency precondition.
-///
-/// See Spec 46 § 9.1. Pass `None` for `expected_version` to skip the
-/// `If-Match` header (the server then applies unconditionally).
+/// Patch controls on the live layer running a specific effect.
 pub async fn update_effect_controls(
     effect_id: &str,
     controls: &serde_json::Value,
-    expected_version: Option<u64>,
-) -> Result<UpdateControlsOutcome, String> {
-    use gloo_net::http::Method;
-
-    let url = format!("/api/v1/effects/{}/controls", path_segment(effect_id));
-    let body = UpdateActiveControlsRequest {
-        controls: Some(controls.clone()),
+) -> Result<(), String> {
+    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
+    let Some((zone_id, layer_id, _, _, _, _)) = effect_target(&scene, None, Some(effect_id)) else {
+        return Err("The requested effect is not present in the live scene".to_owned());
     };
-    let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
-        Method::PATCH,
-        &url,
-        Some(&body),
-        expected_version,
-    )
-    .await?;
-    Ok(match outcome {
-        client::MutationOutcome::Applied(data) => UpdateControlsOutcome::Applied {
-            new_version: data.controls_version,
-        },
-        client::MutationOutcome::Stale { current } => UpdateControlsOutcome::Stale { current },
-    })
+    patch_controls(&zone_id, &layer_id, controls, Vec::new()).await
 }
 
 /// Reset all controls on the active effect to their defaults.
 pub async fn reset_controls() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/active/reset")
-        .await
-        .map_err(Into::into)
+    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
+    let Some(zone) = scene
+        .zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .or_else(|| scene.zones.first())
+    else {
+        return Err("The active scene has no effect layer".to_owned());
+    };
+    let Some(layer) = zone
+        .layers
+        .iter()
+        .rev()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    else {
+        return Err("The active scene has no effect layer".to_owned());
+    };
+    let LayerSource::Effect {
+        effect_id,
+        control_bindings,
+        ..
+    } = &layer.source
+    else {
+        unreachable!("the selected layer is an effect layer");
+    };
+    let detail = fetch_effect_detail(&effect_id.to_string()).await?;
+    let values: std::collections::HashMap<_, _> = detail
+        .controls
+        .into_iter()
+        .map(|control| (control.control_id().to_owned(), control.default_value))
+        .collect();
+    client::put_json_discard(
+        &format!("/api/v1/scene/zones/{}/layers/{}", zone.id, layer.id),
+        &ReplaceLayerRequest {
+            source: LayerSource::Effect {
+                effect_id: *effect_id,
+                controls: values,
+                control_bindings: control_bindings.clone(),
+                preset_id: None,
+            },
+            name: layer.name.clone(),
+            blend: Some(layer.blend),
+            opacity: Some(layer.opacity),
+            transform: Some(layer.transform),
+            adjust: Some(layer.adjust),
+            bindings: Some(layer.bindings.clone()),
+            enabled: Some(layer.enabled),
+        },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+type EffectTarget = (
+    String,
+    String,
+    String,
+    HashMap<String, ControlValue>,
+    Vec<String>,
+    Option<String>,
+);
+
+fn effect_target(
+    scene: &SceneDocument,
+    zone_id: Option<&str>,
+    effect_id: Option<&str>,
+) -> Option<EffectTarget> {
+    if let Some(zone_id) = zone_id {
+        return scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)
+            .and_then(|zone| effect_target_in_zone(zone, effect_id));
+    }
+    scene
+        .zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .and_then(|zone| effect_target_in_zone(zone, effect_id))
+        .or_else(|| {
+            scene
+                .zones
+                .iter()
+                .find_map(|zone| effect_target_in_zone(zone, effect_id))
+        })
+}
+
+fn effect_target_in_zone(
+    zone: &hypercolor_types::api::scene::ZoneResource,
+    effect_id: Option<&str>,
+) -> Option<EffectTarget> {
+    zone.layers.iter().rev().find_map(|layer| {
+        let LayerSource::Effect {
+            effect_id: current_effect_id,
+            controls,
+            control_bindings,
+            preset_id,
+        } = &layer.source
+        else {
+            return None;
+        };
+        if effect_id.is_some_and(|expected| current_effect_id.to_string() != expected) {
+            return None;
+        }
+        Some((
+            zone.id.to_string(),
+            layer.id.to_string(),
+            current_effect_id.to_string(),
+            controls.clone(),
+            control_bindings.keys().cloned().collect(),
+            preset_id.map(|preset| preset.to_string()),
+        ))
+    })
+}
+
+async fn patch_controls(
+    zone_id: &str,
+    layer_id: &str,
+    controls: &serde_json::Value,
+    clear_bindings: Vec<String>,
+) -> Result<(), String> {
+    let values = controls
+        .as_object()
+        .ok_or_else(|| "Controls must be a JSON object".to_owned())?
+        .iter()
+        .map(|(name, value)| {
+            control_value_from_json(value)
+                .map(|value| (name.clone(), value))
+                .ok_or_else(|| format!("Unsupported control value for {name}"))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let path = format!(
+        "/api/v1/scene/zones/{}/layers/{}/controls",
+        path_segment(zone_id),
+        path_segment(layer_id)
+    );
+    client::patch_json_discard(
+        &path,
+        &PatchControlsRequest {
+            values,
+            clear_bindings,
+        },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+fn control_value_from_json(value: &serde_json::Value) -> Option<ControlValue> {
+    if let Some(value) = value.as_i64() {
+        return i32::try_from(value).ok().map(ControlValue::Integer);
+    }
+    if value.is_number() {
+        return serde_json::from_value::<f32>(value.clone())
+            .ok()
+            .map(ControlValue::Float);
+    }
+    if let Some(value) = value.as_bool() {
+        return Some(ControlValue::Boolean(value));
+    }
+    if let Some(value) = value.as_str() {
+        return Some(ControlValue::Text(value.to_owned()));
+    }
+    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
+        return Some(ControlValue::Color(color));
+    }
+    serde_json::from_value(value.clone())
+        .ok()
+        .map(ControlValue::Rect)
 }
 
 pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String> {

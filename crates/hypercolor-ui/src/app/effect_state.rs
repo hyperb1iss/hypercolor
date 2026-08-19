@@ -21,7 +21,6 @@ pub(super) struct ActiveEffectSnapshot {
     controls: Vec<ControlDefinition>,
     control_values: HashMap<String, ControlValue>,
     preset_id: Option<String>,
-    preset_modified: bool,
 }
 
 pub(super) fn preferences_restore_inline(prefs: Option<&EffectPreferences>) -> bool {
@@ -71,7 +70,7 @@ pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effe
     let mut applied = 0_usize;
     let mut failed = 0_usize;
     for zone_id in &zone_ids {
-        match apply_effect_layer(&scene.id, zone_id, &source).await {
+        match apply_effect_layer(zone_id, &source).await {
             Ok(()) => applied += 1,
             Err(_) => failed += 1,
         }
@@ -88,12 +87,8 @@ pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effe
     }
 }
 
-async fn apply_effect_layer(
-    scene_id: &str,
-    zone_id: &str,
-    source: &LayerSource,
-) -> Result<(), String> {
-    let stack = api::list_layers(scene_id, zone_id).await?;
+async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> Result<(), String> {
+    let stack = api::list_layers(zone_id).await?;
     let outcome = if let Some(layer) = stack
         .items
         .iter()
@@ -102,25 +97,24 @@ async fn apply_effect_layer(
         let mut request = api::update_request_from_layer(layer);
         request.source = source.clone();
         api::update_layer(
-            scene_id,
             zone_id,
             &layer.id.to_string(),
             &request,
-            Some(stack.layers_version),
+            Some(stack.revision),
         )
         .await?
     } else {
         let request = api::CreateLayerRequest {
             name: None,
             source: source.clone(),
-            blend: LayerBlendMode::Alpha,
-            opacity: 1.0,
-            transform: LayerTransform::default(),
-            adjust: LayerAdjust::default(),
-            bindings: Vec::new(),
-            enabled: true,
+            blend: Some(LayerBlendMode::Alpha),
+            opacity: Some(1.0),
+            transform: Some(LayerTransform::default()),
+            adjust: Some(LayerAdjust::default()),
+            bindings: None,
+            enabled: None,
         };
-        api::create_layer(scene_id, zone_id, &request, Some(stack.layers_version)).await?
+        api::create_layer(zone_id, &request, Some(stack.revision)).await?
     };
     match outcome {
         api::LayerStackOutcome::Applied(_) => Ok(()),
@@ -143,16 +137,14 @@ fn effect_layer_source(effect_id: &str, prefs: Option<&EffectPreferences>) -> Op
     })
 }
 
-pub(super) fn apply_active_effect_snapshot(
-    ctx: &EffectsContext,
-    id: String,
-    name: String,
-    controls: Vec<ControlDefinition>,
-    control_values: HashMap<String, ControlValue>,
-    active_preset_id: Option<String>,
-    active_preset_modified: bool,
-    is_playing: bool,
-) {
+pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::PrimaryEffectView) {
+    let api::PrimaryEffectView {
+        id,
+        name,
+        controls,
+        control_values,
+        active_preset_id,
+    } = active;
     let category = ctx
         .effect_summary(&id)
         .map(|effect| effect.category)
@@ -163,8 +155,7 @@ pub(super) fn apply_active_effect_snapshot(
     ctx.set_active_controls.set(controls);
     ctx.set_active_control_values.set(control_values.clone());
     ctx.set_active_preset_id.set(active_preset_id.clone());
-    ctx.set_active_preset_modified.set(active_preset_modified);
-    ctx.set_is_playing.set(is_playing);
+    ctx.set_is_playing.set(true);
     if ctx.active_effect_id.get_untracked().as_deref() != Some(id.as_str()) {
         ctx.set_active_effect_id.set(Some(id.clone()));
     }
@@ -318,14 +309,10 @@ pub(super) fn clear_active_effect_state(ctx: &EffectsContext) {
     ctx.set_active_control_values.set(HashMap::new());
     ctx.set_active_effect_category.set(String::new());
     ctx.set_active_preset_id.set(None);
-    ctx.set_active_preset_modified.set(false);
     ctx.set_is_playing.set(false);
 }
 
-pub(super) fn apply_active_scene_snapshot(
-    ctx: &EffectsContext,
-    active_scene: api::ActiveSceneResponse,
-) {
+pub(super) fn apply_active_scene_snapshot(ctx: &EffectsContext, active_scene: api::LiveSceneView) {
     ctx.set_active_scene_name.set(Some(active_scene.name));
     ctx.set_active_scene_kind.set(Some(active_scene.kind));
     ctx.set_active_scene_mutation_mode
@@ -368,7 +355,6 @@ pub(super) fn capture_active_effect_state(ctx: &EffectsContext) -> ActiveEffectS
         controls: ctx.active_controls.get_untracked(),
         control_values: ctx.active_control_values.get_untracked(),
         preset_id: ctx.active_preset_id.get_untracked(),
-        preset_modified: ctx.active_preset_modified.get_untracked(),
     }
 }
 
@@ -381,7 +367,6 @@ pub(super) fn restore_active_effect_state(ctx: &EffectsContext, snapshot: Active
             ctx.set_active_controls.set(snapshot.controls);
             ctx.set_active_control_values.set(snapshot.control_values);
             ctx.set_active_preset_id.set(snapshot.preset_id);
-            ctx.set_active_preset_modified.set(snapshot.preset_modified);
         }
         None => clear_active_effect_state(ctx),
     }

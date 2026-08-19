@@ -1,9 +1,20 @@
 //! Scene API contracts — `/api/v1/scenes/*`.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::api::common::Pagination;
-use crate::scene::{SceneKind, SceneMutationMode, UnassignedBehavior, Zone};
+use crate::api::scene::{SceneDocument, ZoneLayoutResource, ZoneMember};
+use crate::identity::LayoutId;
+use crate::layer::{
+    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
+    SceneLayerId,
+};
+use crate::scene::{
+    DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
+    UnassignedBehavior, ZoneId, ZoneRole,
+};
 
 /// Response for `GET /api/v1/scenes`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,36 +37,9 @@ pub struct SceneSummary {
     #[serde(default)]
     pub priority: u8,
     /// Live vs snapshot-locked. Lets scene pickers mark locked scenes
-    /// without joining `/scenes/active`.
+    /// without inferring lock state from the live scene kind.
     #[serde(default)]
     pub mutation_mode: SceneMutationMode,
-}
-
-/// Response for `GET /api/v1/scenes/active` — the active scene with its
-/// full zone set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActiveSceneResponse {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default = "default_scene_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub priority: u8,
-    #[serde(default)]
-    pub kind: SceneKind,
-    #[serde(default)]
-    pub mutation_mode: SceneMutationMode,
-    #[serde(default)]
-    pub zones: Vec<Zone>,
-    /// Monotonic zone-structure counter. Carried as the `If-Match`
-    /// precondition for every zone mutation (Spec 64).
-    #[serde(default)]
-    pub zones_revision: u64,
-    /// Scene-level policy for device outputs claimed by no zone (§9.4).
-    #[serde(default)]
-    pub unassigned_behavior: UnassignedBehavior,
 }
 
 /// Response for `DELETE /api/v1/scenes/{id}`.
@@ -82,18 +66,6 @@ pub struct ActivatedSceneRef {
     pub name: String,
 }
 
-/// Response for `POST /api/v1/scenes/deactivate`.
-///
-/// `scene` is the synthesized default the daemon fell back to, and
-/// `previous_scene` the one that was active; either is `null` when the
-/// daemon had no scene in that role.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DeactivateSceneResponse {
-    pub deactivated: bool,
-    pub previous_scene: Option<SceneSummary>,
-    pub scene: Option<SceneSummary>,
-}
-
 /// Request body for `POST /api/v1/scenes`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CreateSceneRequest {
@@ -106,20 +78,147 @@ pub struct CreateSceneRequest {
     pub mutation_mode: Option<SceneMutationMode>,
 }
 
-/// Request body for `PUT /api/v1/scenes/{id}`.
-///
-/// The daemon replaces `name` and `description` wholesale — clients
-/// renaming a scene must echo the existing description back or it is
-/// cleared.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct UpdateSceneRequest {
+/// Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceSceneRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<SceneId>,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub description: Option<String>,
+    pub kind: SceneKind,
+    #[serde(default)]
+    pub unassigned_behavior: UnassignedBehavior,
+    #[serde(default)]
+    pub layout_id: Option<LayoutId>,
+    #[serde(default)]
+    pub activation_brightness: Option<f32>,
+    pub transition: TransitionSpec,
+    pub priority: ScenePriority,
+    pub enabled: bool,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub mutation_mode: SceneMutationMode,
+    #[serde(default)]
+    pub zones: Vec<ReplaceZoneRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceZoneRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
+    pub id: Option<ZoneId>,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub role: ZoneRole,
+    pub enabled: bool,
+    pub brightness: f32,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub display_target: Option<DisplayFaceTarget>,
+    #[serde(default)]
+    pub members: Vec<ZoneMember>,
+    #[serde(default)]
+    pub layout: Option<ZoneLayoutResource>,
+    #[serde(default)]
+    pub layers: Vec<ReplaceSceneLayerRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceSceneLayerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mutation_mode: Option<SceneMutationMode>,
+    pub id: Option<SceneLayerId>,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub source: LayerSource,
+    #[serde(default)]
+    pub blend: LayerBlendMode,
+    #[serde(default = "default_layer_opacity")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub transform: LayerTransform,
+    #[serde(default)]
+    pub adjust: LayerAdjust,
+    #[serde(default)]
+    pub bindings: Vec<LayerBinding>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl From<&SceneDocument> for ReplaceSceneRequest {
+    fn from(document: &SceneDocument) -> Self {
+        Self {
+            id: Some(document.id),
+            name: document.name.clone(),
+            description: document.description.clone(),
+            kind: document.kind,
+            unassigned_behavior: document.unassigned_behavior.clone(),
+            layout_id: document.layout_id.clone(),
+            activation_brightness: document.activation_brightness,
+            transition: document.transition.clone(),
+            priority: document.priority,
+            enabled: document.enabled,
+            metadata: document.metadata.clone(),
+            mutation_mode: document.mutation_mode,
+            zones: document
+                .zones
+                .iter()
+                .map(ReplaceZoneRequest::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<&crate::api::scene::ZoneResource> for ReplaceZoneRequest {
+    fn from(zone: &crate::api::scene::ZoneResource) -> Self {
+        Self {
+            id: Some(zone.id),
+            name: zone.name.clone(),
+            description: zone.description.clone(),
+            role: zone.role,
+            enabled: zone.enabled,
+            brightness: zone.brightness,
+            color: zone.color.clone(),
+            display_target: zone.display_target.clone(),
+            members: zone.members.clone(),
+            layout: zone.layout.clone(),
+            layers: zone
+                .layers
+                .iter()
+                .map(ReplaceSceneLayerRequest::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<&SceneLayer> for ReplaceSceneLayerRequest {
+    fn from(layer: &SceneLayer) -> Self {
+        Self {
+            id: Some(layer.id),
+            name: layer.name.clone(),
+            source: layer.source.clone(),
+            blend: layer.blend,
+            opacity: layer.opacity,
+            transform: layer.transform,
+            adjust: layer.adjust,
+            bindings: layer.bindings.clone(),
+            enabled: layer.enabled,
+        }
+    }
+}
+
+const fn default_layer_opacity() -> f32 {
+    1.0
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 const fn default_scene_enabled() -> bool {

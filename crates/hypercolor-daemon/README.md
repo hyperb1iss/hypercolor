@@ -38,8 +38,10 @@ Notable secondary binaries built from `src/bin/`: `hypercolor-debug` (diagnostic
 The daemon serves on `:9420`:
 
 - `GET /api/v1/effects` — list all effects
-- `POST /api/v1/effects/{id}/apply` — apply effect to devices
-- `PATCH /api/v1/effects/active/controls` — update live controls
+- `POST /api/v1/effects/{id}/apply`: apply an effect to a scene zone
+- `GET /api/v1/scene`: read the complete live scene tree
+- `PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`: update live controls
+- `POST /api/v1/scene/clear`: clear one zone or the whole live scene
 - `GET /api/v1/devices` — connected devices
 - `GET|POST|DELETE /api/v1/library/favorites` — favorites CRUD
 - `GET|POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate` — scene management

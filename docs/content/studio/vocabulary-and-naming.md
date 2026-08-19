@@ -119,22 +119,33 @@ This is the fallback. A layer's top-line caption prefers the user's own name for
 
 `UNASSIGNED_SURFACE_ID = "__unassigned__"` is a synthetic rail entry, deliberately not a UUID so it can never collide with a real `ZoneId`. It is not a surface: it has no layer stack and no Stage editor. It only appears in a genuinely multi-zone scene, and it surfaces the scene's unassigned-lights policy rather than acting as a catch-all "All Lights" bucket. Treat it as a status row, not a zone, in both prose and screenshots.
 
-## Where the wire agrees with the vocabulary, and where it does not yet
+## Where the wire agrees with the vocabulary
 
 The headline domain types in `crates/hypercolor-types/src/scene.rs` already carry the locked names: `Zone`, `ZoneRole`, and (in `spatial.rs`) `Output` and `OutputComponent`. The user-facing word and the Rust type now agree for these. The full type map, including the satellite renames and the in-flight crates, lives in [Studio architecture](@/studio/architecture.md); do not duplicate it here.
 
-The REST surface agrees too. Every route and payload field spells the concept `zones`: the layer stack hangs off `/scenes/{id}/zones/{zone_id}/layers`, the active-scene response carries `zones` and `zones_revision`, and an effect targets a zone through `zone_id`.
+The REST surface agrees too. `GET /scene` returns the full live tree, and every
+fine-grained path stays under `/scene/zones/{zone}`. Zone membership routes use
+`members`, and each member identifies a device segment assignment. A layer
+control patch uses the real layer id embedded in the scene document. The one
+wire concurrency token is the scene document's `revision`.
 
-The WebSocket surface agrees now too. Its event payloads spell the concept `zone_id`, `zone_name`, and `zones_revision`, and the event that fires when a zone changes is `zone_changed`:
+The WebSocket surface agrees too. Zone-change events carry `scene_id`,
+`zone_id`, `role`, and `kind`, and the event name is `zone_changed`:
 
 ```rust
 // crates/hypercolor-ui/src/ws/messages.rs
 let is_zone_changed = event_type == "zone_changed";
 ```
 
-One surface still carries the older vocabulary, deliberately. Persisted scene files on disk keep their `groups` and `groups_revision` fields, because renaming them would require migrating saved user scenes. The daemon reads the persisted `groups` field and serves it under the `zones` name.
+Persisted scene files may still carry legacy compatibility field names. Those
+names are private storage details. The daemon projects them into the canonical
+`zones` tree and single `revision` token on the wire.
 
-So when you document a surface, read its actual names: `zones` everywhere on the wire, `groups` in a saved scene file on disk, and `ZoneRole`'s `primary` / `custom` / `display` variant strings throughout. When you write user-facing or conceptual prose, use the **vocabulary table** words. For the binary frame and event details, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) and [the WebSocket reference](@/api/websocket.md).
+So when you document a surface, use `zones`, `members`, `layers`, and
+`revision` on the wire. When you write user-facing or conceptual prose, use the
+**vocabulary table** words. For the binary frame and event details, see
+[Zone API and concurrency](@/studio/zone-api-and-concurrency.md) and the
+[WebSocket reference](@/api/websocket.md).
 
 ## Quick reference
 

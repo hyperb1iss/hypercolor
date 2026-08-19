@@ -111,12 +111,14 @@ enabled. The auth and rate-limiting model is documented in full on the
 
 ## Concurrency: revisions and `If-Match`
 
-Scene-zone structural edits use optimistic concurrency. A `GET` on a scene's
-zones returns a `zones_revision` and an `ETag` header carrying the same
-revision. Send that value back as `If-Match` on the mutating request. If the
-revision is stale, the daemon rejects the write with `412 Precondition Failed`
-rather than clobbering a concurrent edit. The Studio zone editor relies on this
-to stay coherent across multiple clients.
+The live scene document has one concurrency token: `revision`. `GET /scene`
+returns it in the document and in the `ETag` header. Structural mutations may
+send that value as `If-Match`; a stale value returns `412 Precondition Failed`
+with the current revision instead of overwriting a concurrent edit.
+
+Control-value patches never use `If-Match`. They address a real layer id read
+from the live document. Replacing a layer mints a fresh id, so a stale control
+write returns `404 layer_not_found` rather than landing on the replacement.
 
 ---
 
@@ -277,57 +279,38 @@ pickers, and dropdowns.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/effects/{id}/apply") %}
-Apply an effect to the active output. Optionally override control defaults.
+Replace the target zone's layer stack with one new layer running this effect.
+The server validates the effect, zone, and controls before committing, mints a
+fresh layer id, then wakes paused output.
 
 **Request body (optional):**
 
 ```json
 {
+  "zone": "84b20af9-0700-4b82-8488-88314b87fb5c",
   "controls": {
-    "speed": 7,
-    "palette": "SilkCircuit"
-  }
+    "speed": { "float": 7.0 },
+    "palette": { "enum": "SilkCircuit" }
+  },
+  "transition": { "type": "cut" }
 }
 ```
 
-**Response:** the applied effect, the resolved control values, any layout
-binding, the resolved transition (`cut`, `0` today), and a `warnings` array.
+Omit `zone` to target the primary zone, which the daemon creates if needed.
+The response contains the updated zone resource, including the new layer id,
+the applied transition, and the output-wake outcome. A post-commit wake failure
+is reported inside a `200` response. Repair output through `PATCH /output`
+instead of retrying apply, because every apply creates another layer id.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/effects/active") %}
-The currently active effect and its live control values.
+{% api_endpoint(method="GET", path="/api/v1/effects/{id}/presets") %}
+List bundled and saved presets available for one effect.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/effects/active/controls") %}
-Patch controls on the running effect. Changes take effect on the next frame.
-
-**Request body:**
-
-```json
-{
-  "controls": {
-    "speed": 3,
-    "intensity": 90
-  }
-}
-```
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/effects/active/controls/{name}/binding") %}
-Bind one named control on the running effect to an input source (audio band,
-sensor reading, etc.) so it modulates live instead of holding a fixed value.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/active/reset") %}
-Reset every control on the running effect back to its default.
-{% end %}
-
-{% api_endpoint(method="PATCH", path="/api/v1/effects/{id}/controls") %}
-Patch controls on a specific effect by ID, whether or not it is the active one.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/stop") %}
-Stop the running effect. Output goes dark.
+{% api_endpoint(method="POST", path="/api/v1/effects/{id}/presets/{preset_id}/apply") %}
+Apply one effect-scoped preset through the same stack-replacement contract as
+`POST /effects/{id}/apply`. Preset CRUD remains under `/library/presets`, but
+the library does not expose a second apply route.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/effects/rescan") %}
@@ -344,21 +327,10 @@ built HTML bundle reaches the library without a manual file copy.
 Cover image for one effect.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/effects/active/cover") %}
-Cover image for the active effect.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/effects/{id}/layout") %}
-Get the layout bound to an effect.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/effects/{id}/layout") %}
-Bind an effect to a spatial layout.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/effects/{id}/layout") %}
-Clear an effect's layout binding.
-{% end %}
+Live effect state belongs to `GET /scene`. Patch controls through the real
+layer id embedded in that document, and clear the show through
+`POST /scene/clear`. Spatial layout selection belongs to `scene.layout_id`;
+effects do not carry layout associations.
 
 Effect screenshots are served statically under
 `/api/v1/effects/screenshots/...` from the bundled screenshot root.
@@ -730,16 +702,29 @@ mutation mode, and the engine's default scene transition.
 ```
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/active") %}
-The currently active scene.
+{% api_endpoint(method="GET", path="/api/v1/scene") %}
+Read the complete live scene document. The response always exists and embeds
+every authored zone, each zone's member device segments, and every layer with
+its real id. The document's `revision` is also returned as `ETag`.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}") %}
-One scene's configuration.
+Read one stored scene as a complete document, including its zones, members,
+layouts, and layer stacks. The response carries the document's `revision` and
+the same value as an `ETag` header.
 {% end %}
 
 {% api_endpoint(method="PUT", path="/api/v1/scenes/{id}") %}
-Update a scene.
+Replace one stored scene in full. Read the current document first, remove the
+server-owned `revision` and `is_default` fields, apply the intended edits, and
+send the result with the previous revision in `If-Match`.
+
+The route id is authoritative. If the body includes `id`, it must match the
+route or the daemon returns `422 Unprocessable Entity`. Existing zone and
+layer ids must already belong to this scene. Omit either id only when creating
+that resource, and the daemon mints it. Omitted optional fields are cleared,
+so partial update bodies are not accepted. A stale `If-Match` returns `412
+Precondition Failed` with the current revision.
 {% end %}
 
 {% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}") %}
@@ -751,26 +736,34 @@ Activate a scene, applying its effects and controls with the configured
 transition.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/deactivate") %}
-Deactivate the current scene, returning to the default free-running state.
+{% api_endpoint(method="PATCH", path="/api/v1/scene") %}
+Patch the live scene's name or `unassigned_behavior`. The default scene cannot
+be renamed. This structural write optionally accepts `If-Match`.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/scene/deactivate") %}
+Return to the default scene and receive the new live scene document.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/scene/clear") %}
+Clear every non-display layer stack, or pass `{ "zone": "<zone_uuid>" }` to
+clear one non-display zone. Display zones remain owned by the display API, and
+a targeted display clear is rejected. This is the canonical stop gesture and
+optionally accepts `If-Match`.
 {% end %}
 
 ### Scene zones
 
-Zones are flexible partitions of the scene's canvas. Each zone owns a set of
-device outputs and renders its own effect. Zones live **under** a scene; there
-is no top-level `/zones` collection.
+Zones are flexible partitions of the live scene's canvas. Each zone owns member
+device segments and a layer stack. Fine-grained editing is live-tree-only under
+`/scene`; stored scenes use whole-document `PUT /scenes/{id}`.
 
 {{ img(path="img/ui/ui-studio-zones.webp", alt="Building zones in Studio") }}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
-List a scene's zones. The response includes `zones_revision` and an `ETag`
-header carrying the same revision for optimistic concurrency.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
-Create a zone in a scene. Send `If-Match` with the last seen `zones_revision`;
-a stale revision returns `412 Precondition Failed`.
+{% api_endpoint(method="POST", path="/api/v1/scene/zones") %}
+Create a custom zone. Send `If-Match` with the last seen scene `revision` when
+you need optimistic concurrency; a stale revision returns
+`412 Precondition Failed`.
 
 **Request body:**
 
@@ -782,118 +775,85 @@ a stale revision returns `412 Precondition Failed`.
 ```
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Get one scene zone.
+{% api_endpoint(method="GET", path="/api/v1/scene/zones/{zone}") %}
+Get one live zone resource.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Update zone metadata. Set `make_primary` to make a zone the default output
-zone; that structural edit should carry `If-Match`.
+{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}") %}
+Update a zone's name, enabled state, brightness, or color. The structural write
+optionally accepts `If-Match`.
 
 **Request body:**
 
 ```json
 {
   "name": "Desk halo",
-  "description": "Ambient strips behind the monitor",
   "brightness": 0.8,
   "enabled": true
 }
 ```
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
+{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}") %}
 Delete a zone. The default and display zones cannot be deleted through this
 route.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/devices") %}
-Assign device outputs to a zone. Each item may reference an existing
-device-output ID or carry a full payload.
+{% api_endpoint(method="POST", path="/api/v1/scene/zones/{zone}/members") %}
+Assign one device's segments to a zone. The response carries the minted member
+ids, which are the resource identities for later removal.
 
 **Request body:**
 
 ```json
 {
-  "device_zones": [
-    { "id": "keyboard-left" }
-  ]
+  "device_id": "razer:huntsman-v3",
+  "segments": ["left", "right"]
 }
 ```
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}") %}
-Unassign one device output from a zone.
+{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}/members/{member}") %}
+Remove one membership by the member id returned in the live zone document.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layout") %}
-Update one zone's spatial layout. The route takes a `SpatialLayout` payload and
-preserves the zone's existing output roster, so it is for placement edits only;
-add or remove outputs through the device routes above. Structural edits should
-carry `If-Match`.
-
-**Request body:**
-
-```json
-{
-  "id": "default-zone-layout",
-  "name": "Default zone",
-  "canvas_width": 640,
-  "canvas_height": 480,
-  "zones": [],
-  "default_sampling_mode": { "type": "bilinear" },
-  "default_edge_behavior": "clamp",
-  "spaces": null,
-  "version": 1
-}
-```
-{% end %}
-
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/unassigned-behavior") %}
-Set how outputs not claimed by any zone should render.
-
-**Request body:**
-
-```json
-{
-  "unassigned_behavior": "off"
-}
-```
-
-Values are `"off"`, `"hold"`, or `{ "fallback": "<zone_uuid>" }`.
+{% api_endpoint(method="PUT", path="/api/v1/scene/zones/{zone}/layout") %}
+Replace the zone-scoped spatial placement override. The compact body contains
+`placements`, keyed by member id. Add or remove members through the member
+routes. This structural write optionally accepts `If-Match`.
 {% end %}
 
 ### Scene layers
 
-Each zone (render group) stacks layers: effects, faces, and media composited
-with a blend mode and opacity.
+Each zone stacks layers bottom to top. Clients use the layer ids returned by
+`GET /scene`; they never derive an id from the zone.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
+{% api_endpoint(method="GET", path="/api/v1/scene/zones/{zone}/layers") %}
 List the layers in a zone.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/layers") %}
-Add a layer to a zone.
+{% api_endpoint(method="POST", path="/api/v1/scene/zones/{zone}/layers") %}
+Append a layer to a zone. The server mints its id. This structural write
+optionally accepts `If-Match`.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/order") %}
-Reorder the layers in a zone.
+{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}/layers/order") %}
+Reorder the stack with every layer id exactly once, from bottom to top.
 {% end %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
-Update one layer (blend mode, opacity, transform, color, source binding).
+{% api_endpoint(method="PUT", path="/api/v1/scene/zones/{zone}/layers/{layer}") %}
+Replace a whole layer. Every successful replacement mints a fresh layer id,
+even when the effect is unchanged.
 {% end %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}") %}
+{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}/layers/{layer}") %}
 Delete a layer.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls") %}
-Patch the control values on one layer's source effect.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/layers/broadcast-media") %}
-Broadcast a media layer across the scene's zones in one call.
+{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}/layers/{layer}/controls") %}
+Patch an effect layer with `{ "values": {...}, "clear_bindings": [...] }`.
+Control patches never use `If-Match`. A vanished layer returns
+`404 layer_not_found`.
 {% end %}
 
 ## Profiles
@@ -1020,9 +980,9 @@ Update a preset.
 Delete a preset.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/presets/{id}/apply") %}
-Apply a preset.
-{% end %}
+Apply a preset through
+`POST /api/v1/effects/{effect}/presets/{preset}/apply`. The effect-scoped route
+is the only apply contract; the library owns storage and CRUD.
 
 ### Playlists
 

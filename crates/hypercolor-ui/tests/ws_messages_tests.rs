@@ -3,10 +3,47 @@ use std::collections::HashMap;
 use hypercolor_types::event::{LayerHealth, SceneLibraryChangeKind, ZoneChangeKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_ui::ws::messages::{
-    PerformanceMetrics, extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
-    group_has_degraded_layer, is_resync_required, layer_health_key,
-    scene_event_affects_active_effect,
+    EFFECT_STARTED_EVENTS, EFFECT_STOPPED_EVENTS, InitialSubscriptionAdmission,
+    OutputPowerReconciler, PerformanceMetrics, SCENE_EVENTS, extract_effect_error_hint,
+    extract_layer_health, extract_scene_event_hint, group_has_degraded_layer,
+    initial_subscription_admission, is_resync_required, layer_health_key, reset_layer_health_cache,
+    scene_event_affects_active_effect, sequence_scene_event_hint,
 };
+
+#[test]
+fn effect_lifecycle_vocabulary_has_no_retired_global_aliases() {
+    assert_eq!(EFFECT_STARTED_EVENTS, ["effect_started"]);
+    assert_eq!(EFFECT_STOPPED_EVENTS, ["effect_stopped"]);
+}
+
+#[test]
+fn output_power_reconciliation_rejects_an_older_rest_response() {
+    let mut reconciler = OutputPowerReconciler::default();
+    let started_fetch = reconciler.begin();
+    let stopped_fetch = reconciler.begin();
+
+    assert!(!reconciler.accepts(started_fetch));
+    assert!(reconciler.accepts(stopped_fetch));
+}
+
+#[test]
+fn initial_subscription_admission_requires_a_real_acknowledgment() {
+    assert_eq!(
+        initial_subscription_admission(&serde_json::json!({ "type": "subscribed" })),
+        InitialSubscriptionAdmission::Admitted
+    );
+    assert_eq!(
+        initial_subscription_admission(&serde_json::json!({
+            "type": "error",
+            "code": "invalid_subscription"
+        })),
+        InitialSubscriptionAdmission::Rejected
+    );
+    assert_eq!(
+        initial_subscription_admission(&serde_json::json!({ "type": "hello" })),
+        InitialSubscriptionAdmission::Pending
+    );
+}
 
 #[test]
 fn resync_required_is_only_recognized_as_an_event() {
@@ -22,6 +59,53 @@ fn resync_required_is_only_recognized_as_an_event() {
         "type": "event",
         "event": "paused",
     })));
+}
+
+#[test]
+fn control_changes_are_authoritative_scene_refresh_hints() {
+    assert!(SCENE_EVENTS.contains(&"effect_control_changed"));
+    let hint = extract_scene_event_hint(
+        "effect_control_changed",
+        &serde_json::json!({
+            "zone_id": "zone-2",
+            "layer_id": "layer-4",
+            "control_id": "speed",
+        }),
+    );
+    assert_eq!(hint.zone_id.as_deref(), Some("zone-2"));
+    assert!(scene_event_affects_active_effect(&hint));
+}
+
+#[test]
+fn identical_scene_hints_remain_distinct_invalidation_edges() {
+    let first = sequence_scene_event_hint(
+        None,
+        extract_scene_event_hint(
+            "effect_control_changed",
+            &serde_json::json!({"zone_id": "zone-2", "layer_id": "layer-4"}),
+        ),
+    );
+    let second = sequence_scene_event_hint(
+        Some(&first),
+        extract_scene_event_hint(
+            "effect_control_changed",
+            &serde_json::json!({"zone_id": "zone-2", "layer_id": "layer-4"}),
+        ),
+    );
+
+    assert_ne!(first, second);
+    assert_eq!(first.generation, 1);
+    assert_eq!(second.generation, 2);
+}
+
+#[test]
+fn reconnect_reset_drops_accumulated_layer_health() {
+    let mut health = HashMap::from([(
+        layer_health_key("scene-1", "zone-1", "layer-1"),
+        LayerHealth::AssetMissing,
+    )]);
+    reset_layer_health_cache(&mut health);
+    assert!(health.is_empty());
 }
 
 #[test]

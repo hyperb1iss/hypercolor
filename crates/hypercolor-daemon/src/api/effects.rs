@@ -20,17 +20,18 @@ use hypercolor_core::effect::{
 };
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_types::api::output::OutputPowerMode;
+use hypercolor_types::api::scene::{
+    ApplyEffectRequest as SceneApplyEffectRequest, ApplyEffectResponse as SceneApplyEffectResponse,
+    TransitionType,
+};
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
-    EffectSource,
+    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
-use hypercolor_types::event::{
-    EffectRef, EventControlValue, FrameData, HypercolorEvent, ZoneColors,
-};
+use hypercolor_types::event::{EffectRef, FrameData, HypercolorEvent, ZoneColors};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{Zone, ZoneId};
+use hypercolor_types::scene::Zone;
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -45,11 +46,7 @@ use crate::domain;
 use crate::domain::effect::RequestedTransition;
 use crate::domain::effect::effect_source_kind as source_kind;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
-use crate::effect_layouts;
-use crate::scene_transactions::apply_layout_update;
 use crate::session::set_output_stopped;
-
-pub use hypercolor_types::api::effects::SetEffectLayoutRequest;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -66,23 +63,14 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
-    ActiveEffectResponse, ApplyEffectPresetRequest, ApplyEffectRequest, ApplyEffectResponse,
-    ApplyTransitionResponse, DeleteEffectLayoutResponse, EffectCapabilitySet, EffectDetailResponse,
-    EffectLayoutApplyResult, EffectLayoutResponse, EffectListResponse, EffectPresetListResponse,
-    EffectPresetOrigin, EffectPresetSummary, EffectRefSummary, EffectSummary,
-    InstalledEffectResponse, LayoutLinkSummary, RescanResponse, ResetControlsRequest,
-    SetEffectLayoutResponse, TransitionRequest, UpdateActiveControlsRequest,
+    EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectSummary, InstalledEffectResponse,
+    RescanResponse,
 };
 
 struct ResolvedEffectPreset {
     id: PresetId,
     controls: HashMap<String, ControlValue>,
-}
-
-#[derive(Debug)]
-enum ResolveLayoutLinkError {
-    NotFound(String),
-    AmbiguousName(String),
 }
 
 /// Bring output back to running so a freshly applied effect is visible.
@@ -445,19 +433,6 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     };
     drop(registry);
 
-    let (controls, active_control_values) = if let Some(group) =
-        active_primary_group(state.as_ref())
-            .await
-            .filter(|group| group.effect_id == Some(meta.id))
-    {
-        (
-            controls_with_group_bindings(&meta, &group),
-            Some(resolved_control_values(&meta, &group)),
-        )
-    } else {
-        (meta.controls.clone(), None)
-    };
-
     let cover_image_url = effect_cover_image_url(&meta);
 
     ApiResponse::ok(EffectDetailResponse {
@@ -471,9 +446,8 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         tags: meta.tags,
         version: meta.version,
         audio_reactive: meta.audio_reactive,
-        controls,
+        controls: meta.controls,
         presets: meta.presets,
-        active_control_values,
         cover_image_url,
     })
 }
@@ -523,251 +497,39 @@ pub async fn list_effect_presets(
 }
 
 /// `POST /api/v1/effects/:id/presets/:preset_id/apply` applies one preset.
-#[utoipa::path(
-    post,
-    path = "/api/v1/effects/{id}/presets/{preset_id}/apply",
-    params(
-        ("id" = String, Path, description = "Effect id or name"),
-        ("preset_id" = String, Path, description = "Canonical preset id")
-    ),
-    request_body = Option<ApplyEffectPresetRequest>,
-    responses(
-        (
-            status = 200,
-            description = "Effect preset applied",
-            body = crate::api::envelope::ApiResponse<ApplyEffectResponse>
-        ),
-        (
-            status = 404,
-            description = "Effect or preset was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        ),
-        (
-            status = 422,
-            description = "Preset belongs to another effect",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn apply_effect_preset(
     State(state): State<Arc<AppState>>,
     Path((id, preset_id)): Path<(String, String)>,
-    body: Option<Json<ApplyEffectPresetRequest>>,
+    headers: HeaderMap,
+    body: Option<Json<SceneApplyEffectRequest>>,
 ) -> Response {
-    apply_effect(
-        State(state),
-        Path(id),
-        Some(Json(ApplyEffectRequest {
-            preset_id: Some(preset_id),
-            zone_id: body.and_then(|Json(body)| body.zone_id),
-            ..ApplyEffectRequest::default()
-        })),
-    )
-    .await
-}
-
-/// `GET /api/v1/effects/:id/layout` — Get the layout associated with an effect.
-pub async fn get_effect_layout(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Response {
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        meta
+    let Ok(preset) = preset_id.parse::<PresetId>() else {
+        return DomainError::not_found(ResourceKind::Preset, &preset_id).into_response();
     };
-    let effect_id = effect.id.to_string();
+    let mut request = body.map(|Json(body)| body).unwrap_or_default();
+    request.preset_id = Some(preset);
 
-    let Some(layout_id) = ({
-        let links = state.effect_layout_links.read().await;
-        links.get(&effect_id).cloned()
-    }) else {
-        return DomainError::not_found(ResourceKind::Layout, &id).into_response();
-    };
-
-    let layout = {
-        let layouts = state.layouts.read().await;
-        layouts.get(&layout_id).cloned()
-    };
-
-    let summary = layout.as_ref().map(layout_link_summary);
-    ApiResponse::ok(EffectLayoutResponse {
-        effect: EffectRefSummary {
-            id: effect_id,
-            name: effect.name,
-        },
-        layout_id,
-        resolved: summary.is_some(),
-        layout: summary,
-    })
-}
-
-/// `PUT /api/v1/effects/:id/layout` — Associate an effect with a layout.
-pub async fn set_effect_layout(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<SetEffectLayoutRequest>,
-) -> Response {
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        meta
-    };
-
-    let requested_layout = body.layout_id.trim();
-    if requested_layout.is_empty() {
-        return DomainError::validation("layout_id must not be empty").into_response();
-    }
-
-    let layout = {
-        let layouts = state.layouts.read().await;
-        match resolve_layout_for_link(&layouts, requested_layout) {
-            Ok(layout) => layout,
-            Err(ResolveLayoutLinkError::NotFound(layout_id)) => {
-                return DomainError::not_found(ResourceKind::Layout, &layout_id).into_response();
-            }
-            Err(ResolveLayoutLinkError::AmbiguousName(name)) => {
-                return DomainError::conflict(format!("Layout name is ambiguous: {name}"))
-                    .into_response();
-            }
-        }
-    };
-
-    let effect_id = effect.id.to_string();
-    let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
-        Ok(writer) => writer,
-        Err(error) => {
-            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
-        }
-    };
-    let pending = {
-        let mut links = state.effect_layout_links.write().await;
-        let mut candidate = links.clone();
-        candidate.insert(effect_id.clone(), layout.id.clone());
-        match effect_layouts::reserve_save_with(&writer, &candidate) {
-            Ok(pending) => {
-                *links = candidate;
-                Ok(pending)
-            }
-            Err(error) => Err(error),
-        }
-    };
-    let pending = match pending {
-        Ok(pending) => pending,
-        Err(error) => {
-            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
-        }
-    };
-    if let Err(error) = save_effect_layout_links(&state, pending) {
-        return DomainError::Internal(anyhow::anyhow!(error)).into_response();
-    }
-
-    ApiResponse::ok(SetEffectLayoutResponse {
-        effect: EffectRefSummary {
-            id: effect_id,
-            name: effect.name,
-        },
-        layout: layout_link_summary(&layout),
-        linked: true,
-    })
-}
-
-/// `DELETE /api/v1/effects/:id/layout` — Remove an effect -> layout association.
-pub async fn delete_effect_layout(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Response {
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        meta
-    };
-    let effect_id = effect.id.to_string();
-    let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
-        Ok(writer) => writer,
-        Err(error) => {
-            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
-        }
-    };
-
-    let (removed_layout_id, pending) = {
-        let mut links = state.effect_layout_links.write().await;
-        let mut candidate = links.clone();
-        let removed = candidate.remove(&effect_id);
-        let pending = effect_layouts::reserve_save_with(&writer, &candidate);
-        if pending.is_ok() {
-            *links = candidate;
-        }
-        (removed, pending)
-    };
-
-    let pending = match pending {
-        Ok(pending) => pending,
-        Err(error) => {
-            return DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response();
-        }
-    };
-    if let Err(error) = save_effect_layout_links(&state, pending) {
-        return DomainError::Internal(anyhow::anyhow!(error)).into_response();
-    }
-
-    ApiResponse::ok(DeleteEffectLayoutResponse {
-        effect: EffectRefSummary {
-            id: effect_id,
-            name: effect.name,
-        },
-        deleted: removed_layout_id.is_some(),
-        layout_id: removed_layout_id,
-    })
+    apply_effect(State(state), Path(id), headers, Some(Json(request))).await
 }
 
 /// `POST /api/v1/effects/:id/apply` — Start rendering an effect.
-#[utoipa::path(
-    post,
-    path = "/api/v1/effects/{id}/apply",
-    params(("id" = String, Path, description = "Effect id or name")),
-    request_body = Option<ApplyEffectRequest>,
-    responses(
-        (
-            status = 200,
-            description = "Effect applied",
-            body = crate::api::envelope::ApiResponse<ApplyEffectResponse>
-        ),
-        (
-            status = 400,
-            description = "Request was malformed",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        ),
-        (
-            status = 404,
-            description = "Effect or preset was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        ),
-        (
-            status = 422,
-            description = "Request validation failed",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        ),
-        (
-            status = 500,
-            description = "The effect could not be applied",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn apply_effect(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    body: Option<Json<ApplyEffectRequest>>,
+    headers: HeaderMap,
+    body: Option<Json<SceneApplyEffectRequest>>,
 ) -> Response {
+    let request = body.map(|Json(body)| body).unwrap_or_default();
+    let transition = match request.transition.unwrap_or_default() {
+        TransitionType::Cut => RequestedTransition::cut(),
+    };
+    let expected_revision = match crate::api::scene::parse_if_match(&headers) {
+        Ok(revision) => revision,
+        Err(error) => return error.into_response(),
+    };
+
+    // Validate before the scene commit or output wake so a refusal leaves
+    // the rig unchanged.
     let metadata = {
         let registry = state.effect_registry.read().await;
         let Some(meta) = resolve_effect_metadata(&registry, &id) else {
@@ -791,17 +553,11 @@ pub async fn apply_effect(
         .into_response();
     }
 
-    // The transition rule lives in the domain so MCP cannot diverge from it.
-    if let Err(error) = transition_request(body.as_ref()).resolve() {
-        return error.into_response();
-    }
-
-    // Resolve the optional preset before changing the scene. Both bundled
-    // and saved presets use the same effect-scoped reference here.
-    let resolved_preset = match body.as_ref().and_then(|body| body.preset_id.as_deref()) {
+    let resolved_preset = match request.preset_id.as_ref() {
         None => None,
         Some(preset_ref) => {
-            let Some(preset) = resolve_effect_preset(state.as_ref(), &metadata, preset_ref).await
+            let preset_ref = preset_ref.to_string();
+            let Some(preset) = resolve_effect_preset(state.as_ref(), &metadata, &preset_ref).await
             else {
                 if let Some(saved) =
                     state
@@ -811,7 +567,7 @@ pub async fn apply_effect(
                         .into_iter()
                         .find(|saved| {
                             saved.id.to_string() == preset_ref
-                                || saved.name.eq_ignore_ascii_case(preset_ref)
+                                || saved.name.eq_ignore_ascii_case(&preset_ref)
                         })
                 {
                     return DomainError::validation(format!(
@@ -820,39 +576,43 @@ pub async fn apply_effect(
                     ))
                     .into_response();
                 }
-                return DomainError::not_found(ResourceKind::Preset, preset_ref).into_response();
+                return DomainError::not_found(ResourceKind::Preset, &preset_ref).into_response();
             };
             Some(preset)
         }
     };
 
-    let raw_controls = extract_request_controls(body.as_ref());
-    let (controls, normalized_controls, dropped_controls) = if raw_controls.is_empty()
+    // Explicit controls win; otherwise the preset seeds the layer.
+    let requested_controls = request.controls.unwrap_or_default();
+    let (normalized_controls, dropped_controls) = if requested_controls.is_empty()
         && let Some(preset) = resolved_preset.as_ref()
     {
-        let (normalized, _) = normalize_control_values(&metadata, &preset.controls);
-        (serde_json::Map::new(), normalized, Vec::new())
+        normalize_control_values(&metadata, &preset.controls)
     } else {
-        let (normalized, dropped) = normalize_control_payload(&metadata, &raw_controls);
-        (raw_controls, normalized, dropped)
+        let owned: HashMap<String, ControlValue> = requested_controls.into_iter().collect();
+        normalize_control_values(&metadata, &owned)
     };
+    if !dropped_controls.is_empty() {
+        return DomainError::validation_details(
+            "one or more control values were rejected",
+            serde_json::json!({ "rejected": dropped_controls }),
+        )
+        .into_response();
+    }
+    let control_count = normalized_controls.len();
 
-    // Resolve the optional target zone; a parsed id is matched against
-    // the active scene inside the service.
-    let target_group =
-        match parse_zone_id_field(body.as_ref().and_then(|body| body.zone_id.as_deref())) {
-            Ok(target) => target,
-            Err(error) => return error.into_response(),
-        };
-
+    // Commit before waking output. A wake failure rides in the 200 because
+    // the scene mutation is already real.
     let applied = match domain::effect::apply_effect(
         state.as_ref(),
         domain::effect::ApplyEffect {
             effect: metadata.clone(),
             controls: normalized_controls,
             preset_id: resolved_preset.as_ref().map(|preset| preset.id),
-            target_zone: target_group,
-            transition: transition_request(body.as_ref()),
+            target_zone: request.zone,
+            expected_revision,
+            transition,
+            wake_output: true,
         },
         MutationContext::api(),
     )
@@ -874,78 +634,20 @@ pub async fn apply_effect(
             .as_ref()
             .map(|effect| effect.name.as_str()),
         &applied.effect.name,
-        controls.len(),
-        &dropped_controls,
+        control_count,
+        &[],
     );
 
-    ApiResponse::ok(ApplyEffectResponse {
-        effect: EffectRefSummary {
-            id: applied.effect.id.clone(),
-            name: applied.effect.name.clone(),
-        },
-        applied_controls: serde_json::Value::Object(controls),
-        layout: applied.applied_layout,
-        transition: ApplyTransitionResponse {
-            transition_type: applied.transition.style.to_owned(),
-            duration_ms: applied.transition.duration_ms,
-        },
-        warnings: Vec::new(),
-    })
-}
-
-/// `GET /api/v1/effects/active` — Get the currently active effect.
-#[utoipa::path(
-    get,
-    path = "/api/v1/effects/active",
-    responses(
-        (
-            status = 200,
-            description = "Current active effect, or an idle payload if none is running",
-            body = crate::api::envelope::ApiResponse<ActiveEffectResponse>
-        )
-    ),
-    tag = "effects"
-)]
-pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
-    let Some((group, meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiResponse::ok(ActiveEffectResponse::idle());
-    };
-
-    let loop_state = {
-        let render_loop = state.render_loop.read().await;
-        render_loop.state()
-    };
-    let power_state = *state.power_state.borrow();
-    let effect_state = if loop_state == RenderLoopState::Paused || power_state.sleeping() {
-        "paused"
-    } else {
-        "running"
-    };
-    let controls_version = group.controls_version;
-    let active_preset_modified = active_preset_modified(state.as_ref(), &meta, &group).await;
-    let response = ActiveEffectResponse {
-        id: Some(meta.id.to_string()),
-        name: Some(meta.name.clone()),
-        state: effect_state.to_owned(),
-        controls: controls_with_group_bindings(&meta, &group),
-        control_values: resolved_control_values(&meta, &group),
-        active_preset_id: group.preset_id.map(|preset| preset.to_string()),
-        active_preset_modified,
-        zone_id: Some(group.id.to_string()),
-        controls_version: Some(controls_version),
-        cover_image_url: effect_cover_image_url(&meta),
-    };
-    let response = ApiResponse::ok(response).into_response();
-    attach_controls_version_headers(response, controls_version)
-}
-
-/// `GET /api/v1/effects/active/cover` — Get the active effect cover image.
-pub async fn get_active_effect_cover(State(state): State<Arc<AppState>>) -> Response {
-    let Some((_, meta)) = active_primary_effect(state.as_ref()).await else {
-        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
-    };
-
-    effect_cover_image_response(&meta, EffectCoverCache::Active).await
+    let revision = applied.commit.revision();
+    let mut response = ApiResponse::ok(SceneApplyEffectResponse {
+        zone: crate::domain::scene_tree::zone_resource(&applied.zone),
+        transition: TransitionType::Cut,
+        output: applied.output,
+    });
+    if let Ok(value) = HeaderValue::from_str(&format!("\"{revision}\"")) {
+        response.headers_mut().insert(header::ETAG, value);
+    }
+    response
 }
 
 /// `GET /api/v1/effects/:id/cover` — Get an effect cover image.
@@ -962,371 +664,6 @@ pub async fn get_effect_cover(
     };
 
     effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
-}
-
-/// `POST /api/v1/effects/stop` — Stop the currently active effect.
-pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
-    let stopped = match domain::effect::stop_effect(state.as_ref(), MutationContext::api()).await {
-        Ok(Some(stopped)) => stopped,
-        Ok(None) => return DomainError::not_found(ResourceKind::Effect, "active").into_response(),
-        Err(error) => return error.into_response(),
-    };
-
-    ApiResponse::ok(serde_json::json!({
-        "stopped": true,
-        "released_network_devices": stopped.released_network_devices,
-    }))
-}
-
-/// `PATCH /api/v1/effects/active/controls` — Update controls on active effect
-/// without reloading/reinitializing the effect renderer.
-pub async fn update_active_controls(
-    State(state): State<Arc<AppState>>,
-    body: Option<Json<UpdateActiveControlsRequest>>,
-) -> Response {
-    let controls = body
-        .as_ref()
-        .and_then(|payload| payload.controls.as_ref())
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if controls.is_empty() {
-        return DomainError::validation_field(
-            "controls",
-            "controls payload must include at least one key",
-        )
-        .into_response();
-    }
-
-    let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
-        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
-    };
-    let effect_name = active_meta.name.clone();
-    let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
-
-    let outcome = domain::effect::update_controls(
-        state.as_ref(),
-        domain::effect::UpdateControls {
-            zone_id: group.id,
-            expected_effect_id: Some(active_meta.id),
-            effect: active_meta,
-            controls: applied.clone(),
-            expected_version: None,
-        },
-        MutationContext::api(),
-    )
-    .await;
-
-    match outcome {
-        Ok(Ok(_)) => {}
-        Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
-            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
-        }
-        Ok(Err(domain::effect::ControlsRefusal::Stale { .. })) => {
-            return DomainError::conflict("active effect controls changed concurrently")
-                .into_response();
-        }
-        Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
-            return DomainError::validation(
-                "active group has multiple effect layers; use the layer controls endpoint",
-            )
-            .into_response();
-        }
-        Err(error) => return error.into_response(),
-    }
-
-    if !rejected.is_empty() {
-        warn!(
-            effect = %effect_name,
-            rejected_controls = ?rejected,
-            "Rejected one or more control updates"
-        );
-    }
-
-    // Held back from the wave 3.1c type promotion deliberately: `applied`
-    // carries f32 control values, and `json!` widens them to f64 while a
-    // derived struct does not, so naming this shape would reprint every
-    // non-representable float (0.1 -> 0.10000000149011612 today).
-    ApiResponse::ok(serde_json::json!({
-        "effect": effect_name,
-        "applied": applied,
-        "rejected": rejected,
-    }))
-}
-
-/// `PATCH /api/v1/effects/{effect_id}/controls` — Update controls on a
-/// specific effect, scoped by the effect's metadata id rather than the
-/// ambient "currently active" effect.
-///
-/// Supports optimistic concurrency via the standard `If-Match` header:
-/// the value is the `controls_version` the client last observed (as an
-/// unsigned integer; no quoting required). On a version match the
-/// update is applied, the new version is echoed in the `ETag` response
-/// header AND the JSON body's `controls_version` field. On mismatch
-/// the response is `412 Precondition Failed` with a body containing
-/// the current server version so the client can rebase.
-///
-/// Callers that don't care about concurrency control omit the header;
-/// the endpoint then behaves like `update_active_controls`.
-///
-/// Implemented per Spec 46 § 9.1.
-pub async fn update_effect_controls(
-    State(state): State<Arc<AppState>>,
-    Path(effect_id_raw): Path<String>,
-    headers: HeaderMap,
-    body: Option<Json<UpdateActiveControlsRequest>>,
-) -> Response {
-    let Ok(effect_uuid) = effect_id_raw.parse::<uuid::Uuid>() else {
-        return DomainError::malformed("effect_id must be a valid UUID").into_response();
-    };
-    let effect_id = EffectId::from(effect_uuid);
-
-    let expected_version = match parse_if_match_version(&headers) {
-        Ok(version) => version,
-        Err(message) => return DomainError::malformed(message).into_response(),
-    };
-
-    let controls = body
-        .as_ref()
-        .and_then(|payload| payload.controls.as_ref())
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if controls.is_empty() {
-        return DomainError::validation_field(
-            "controls",
-            "controls payload must include at least one key",
-        )
-        .into_response();
-    }
-
-    let Some((group, active_meta)) = primary_effect_by_id(state.as_ref(), effect_id).await else {
-        return DomainError::not_found(ResourceKind::Zone, effect_id).into_response();
-    };
-    let effect_name = active_meta.name.clone();
-    let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
-
-    // Passing `expected_effect_id` through to the candidate turns a
-    // concurrent effect swap into a not-found instead of a patch landing
-    // on whatever moved into the zone, closing the window between "I
-    // looked up this effect" and "I am patching the zone that loaded it".
-    let outcome = domain::effect::update_controls(
-        state.as_ref(),
-        domain::effect::UpdateControls {
-            zone_id: group.id,
-            expected_effect_id: Some(effect_id),
-            effect: active_meta,
-            controls: applied.clone(),
-            expected_version,
-        },
-        MutationContext::api(),
-    )
-    .await;
-
-    let new_version = match outcome {
-        Ok(Ok(written)) => written.controls_version,
-        Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
-            return DomainError::not_found(ResourceKind::Zone, effect_id).into_response();
-        }
-        Ok(Err(domain::effect::ControlsRefusal::Stale { current })) => {
-            return DomainError::PreconditionFailed {
-                resource: ResourceKind::Effect,
-                // Staleness is only checked when the caller sent a
-                // precondition, so the header value is always present here.
-                expected: expected_version.unwrap_or(current),
-                current,
-            }
-            .into_response();
-        }
-        Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
-            return DomainError::validation(
-                "zone has multiple matching effect layers; use the layer controls endpoint",
-            )
-            .into_response();
-        }
-        Err(error) => return error.into_response(),
-    };
-
-    if !rejected.is_empty() {
-        warn!(
-            effect = %effect_name,
-            rejected_controls = ?rejected,
-            "Rejected one or more control updates"
-        );
-    }
-
-    // Held back for the same f32 reprint reason as its `active` sibling.
-    let body = ApiResponse::ok(serde_json::json!({
-        "effect": effect_name,
-        "applied": applied,
-        "rejected": rejected,
-        "controls_version": new_version,
-    }))
-    .into_response();
-    attach_controls_version_headers(body, new_version)
-}
-
-/// Parse an `If-Match` header as an unsigned decimal `controls_version`.
-///
-/// Per RFC 7232 the canonical shape is a quoted ETag; we accept both
-/// quoted and bare decimal forms because clients do not consistently
-/// quote integer ETags and the parser is cheap. A malformed header
-/// surfaces a static error message the caller wraps into a `400 Bad
-/// Request` — silent fallback to "no precondition" would defeat the
-/// whole point.
-///
-/// Returns `Ok(Some(v))` for a valid precondition, `Ok(None)` for no
-/// header or `*`, and `Err(msg)` for malformed input.
-fn parse_if_match_version(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
-    let Some(value) = headers.get(header::IF_MATCH) else {
-        return Ok(None);
-    };
-    let raw = value
-        .to_str()
-        .map_err(|_| "If-Match header must be ASCII")?;
-    let trimmed = raw.trim().trim_matches('"');
-    if trimmed == "*" {
-        // `*` traditionally means "any existing resource" — we honor
-        // it by skipping the precondition, matching the common HTTP
-        // semantic. Not used by our modal but harmless to support.
-        return Ok(None);
-    }
-    trimmed
-        .parse::<u64>()
-        .map(Some)
-        .map_err(|_| "If-Match must be a non-negative integer controls_version")
-}
-
-fn attach_controls_version_headers(mut response: Response, version: u64) -> Response {
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
-        response.headers_mut().insert(header::ETAG, etag);
-    }
-    response
-}
-
-/// Resolve the zone currently loaded with the given effect id.
-///
-/// Wave 1 policy: if the effect is attached to multiple groups (unusual
-/// but not impossible in custom scenes), take the first — deterministic
-/// enough for the UI's single-effect modal. A future "pick which group"
-/// affordance can extend this.
-async fn primary_effect_by_id(
-    state: &AppState,
-    effect_id: EffectId,
-) -> Option<(Zone, EffectMetadata)> {
-    let scene_manager = state.scene_manager.read().await;
-    let scene = scene_manager.active_scene()?;
-    let group = scene
-        .groups
-        .iter()
-        .find(|group| group.effect_id == Some(effect_id))
-        .cloned()?;
-    drop(scene_manager);
-    let registry = state.effect_registry.read().await;
-    let metadata = registry.get(&effect_id)?.metadata.clone();
-    Some((group, metadata))
-}
-
-/// `PUT /api/v1/effects/active/controls/{name}/binding` — Attach a live sensor
-/// binding to a control on the active effect.
-pub async fn set_active_control_binding(
-    State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-    Json(binding): Json<ControlBinding>,
-) -> Response {
-    let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
-        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
-    };
-    let effect_id = active_meta.id.to_string();
-    let effect_name = active_meta.name.clone();
-    let Some(control) = active_meta.control_by_id(&name) else {
-        return DomainError::not_found(ResourceKind::Control, &name).into_response();
-    };
-    let control_id = control.control_id().to_owned();
-    let normalized = match validate_control_binding_request(&active_meta, &name, binding) {
-        Ok(normalized) => normalized,
-        Err(error) => return DomainError::validation(error).into_response(),
-    };
-    let outcome = domain::effect::set_control_binding(
-        state.as_ref(),
-        domain::effect::SetControlBinding {
-            zone_id: group.id,
-            control_id: control_id.clone(),
-            binding: normalized.clone(),
-        },
-        MutationContext::api(),
-    )
-    .await;
-    match outcome {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) => {
-            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
-        }
-        Err(error) => return error.into_response(),
-    }
-
-    // Held back: `ControlBinding` is six f32 fields, which a named struct
-    // would reprint at f32 precision instead of the widened f64 form the
-    // literal has always emitted.
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id,
-            "name": effect_name,
-        },
-        "control": control_id,
-        "binding": normalized,
-    }))
-}
-
-/// `POST /api/v1/effects/active/reset` — Reset all controls on the active
-/// effect back to their metadata-defined defaults. Accepts an optional
-/// `zone_id` body field to reset a specific zone's effect instead of
-/// the primary.
-pub async fn reset_controls(
-    State(state): State<Arc<AppState>>,
-    body: Option<Json<ResetControlsRequest>>,
-) -> Response {
-    let target_group =
-        match parse_zone_id_field(body.as_ref().and_then(|body| body.zone_id.as_deref())) {
-            Ok(target) => target,
-            Err(error) => return error.into_response(),
-        };
-    let resolved = match target_group {
-        Some(group_id) => active_group_effect(state.as_ref(), group_id).await,
-        None => active_primary_effect(state.as_ref()).await,
-    };
-    let Some((group, meta)) = resolved else {
-        return DomainError::not_found(ResourceKind::Effect, "active").into_response();
-    };
-    let effect_id = meta.id;
-    let effect_name = meta.name.clone();
-
-    let outcome = domain::effect::reset_controls(
-        state.as_ref(),
-        domain::effect::ResetControls {
-            zone_id: group.id,
-            effect: meta,
-        },
-        MutationContext::api(),
-    )
-    .await;
-    match outcome {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) => {
-            return DomainError::not_found(ResourceKind::Effect, "active").into_response();
-        }
-        Err(error) => return error.into_response(),
-    }
-
-    info!(effect = %effect_name, "Controls reset to defaults");
-
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": effect_id.to_string(),
-            "name": effect_name,
-        },
-        "reset": true,
-    }))
 }
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
@@ -1578,48 +915,6 @@ async fn resolve_effect_preset(
         })
 }
 
-async fn active_preset_modified(state: &AppState, metadata: &EffectMetadata, group: &Zone) -> bool {
-    let Some(preset_id) = group.preset_id else {
-        return false;
-    };
-    let Some(preset) = resolve_effect_preset(state, metadata, &preset_id.to_string()).await else {
-        return true;
-    };
-    if !group.control_bindings.is_empty() {
-        return true;
-    }
-
-    let (preset_controls, rejected) = normalize_control_values(metadata, &preset.controls);
-    if !rejected.is_empty() {
-        return true;
-    }
-    let mut preset_baseline = default_control_values(metadata);
-    preset_baseline.extend(preset_controls);
-    preset_baseline != resolved_control_values(metadata, group)
-}
-
-pub(crate) fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
-    match value {
-        ControlValue::Float(_) | ControlValue::Integer(_) => {
-            value.as_f32().map(EventControlValue::Number)
-        }
-        ControlValue::Boolean(value) => Some(EventControlValue::Boolean(*value)),
-        ControlValue::Enum(value) | ControlValue::Text(value) => {
-            Some(EventControlValue::String(value.clone()))
-        }
-        ControlValue::Color(_) | ControlValue::Rect(_) | ControlValue::Gradient(_) => None,
-    }
-}
-
-fn extract_request_controls(
-    body: Option<&Json<ApplyEffectRequest>>,
-) -> serde_json::Map<String, serde_json::Value> {
-    body.and_then(|payload| payload.controls.as_ref())
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default()
-}
-
 pub(crate) async fn active_primary_group(state: &AppState) -> Option<Zone> {
     let scene_manager = state.scene_manager.read().await;
     scene_manager.active_scene()?.primary_group().cloned()
@@ -1633,56 +928,10 @@ pub(crate) async fn active_primary_effect(state: &AppState) -> Option<(Zone, Eff
     Some((group, metadata))
 }
 
-/// Zone-scoped sibling of [`active_primary_effect`]: the named zone's
-/// current effect, or `None` when the zone is missing or idle.
-pub(crate) async fn active_group_effect(
-    state: &AppState,
-    group_id: ZoneId,
-) -> Option<(Zone, EffectMetadata)> {
-    let group = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager
-            .active_scene()?
-            .groups
-            .iter()
-            .find(|group| group.id == group_id)
-            .cloned()?
-    };
-    let effect_id = group.effect_id?;
-    let registry = state.effect_registry.read().await;
-    let metadata = registry.get(&effect_id)?.metadata.clone();
-    Some((group, metadata))
-}
-
-/// Parse an optional `zone_id` request field into a [`ZoneId`].
-/// An id that is not a UUID is malformed syntax, not a value the
-/// domain weighs.
-pub(crate) fn parse_zone_id_field(raw: Option<&str>) -> Result<Option<ZoneId>, DomainError> {
-    match raw {
-        None => Ok(None),
-        Some(raw) => raw
-            .parse::<uuid::Uuid>()
-            .map(|uuid| Some(ZoneId(uuid)))
-            .map_err(|_| DomainError::malformed(format!("Invalid zone_id: {raw}"))),
-    }
-}
-
 pub(crate) async fn active_effect_metadata(state: &AppState) -> Option<EffectMetadata> {
     active_primary_effect(state)
         .await
         .map(|(_, metadata)| metadata)
-}
-
-fn controls_with_group_bindings(metadata: &EffectMetadata, group: &Zone) -> Vec<ControlDefinition> {
-    metadata
-        .controls
-        .iter()
-        .cloned()
-        .map(|mut control| {
-            control.binding = group.control_bindings.get(control.control_id()).cloned();
-            control
-        })
-        .collect()
 }
 
 pub(crate) fn normalize_control_payload(
@@ -1758,57 +1007,6 @@ pub(crate) fn resolved_control_values(
     resolved
 }
 
-fn validate_control_binding_request(
-    metadata: &EffectMetadata,
-    name: &str,
-    binding: ControlBinding,
-) -> Result<ControlBinding, String> {
-    let normalized = binding.normalized();
-    let Some(control) = metadata.control_by_id(name) else {
-        return Err(format!("Control not found on active effect: {name}"));
-    };
-
-    if normalized.sensor.is_empty() {
-        return Err(format!(
-            "Control '{}' requires a non-empty sensor label",
-            control.control_id()
-        ));
-    }
-
-    if !matches!(
-        control.kind,
-        hypercolor_types::effect::ControlKind::Number
-            | hypercolor_types::effect::ControlKind::Boolean
-            | hypercolor_types::effect::ControlKind::Hue
-            | hypercolor_types::effect::ControlKind::Area
-    ) {
-        return Err(format!(
-            "Control '{}' does not support sensor bindings",
-            control.control_id()
-        ));
-    }
-
-    if !normalized.sensor_min.is_finite()
-        || !normalized.sensor_max.is_finite()
-        || !normalized.target_min.is_finite()
-        || !normalized.target_max.is_finite()
-    {
-        return Err(format!(
-            "Control '{}' binding range values must be finite",
-            control.control_id()
-        ));
-    }
-
-    if (normalized.sensor_max - normalized.sensor_min).abs() < f32::EPSILON {
-        return Err(format!(
-            "Control '{}' binding sensor range must not be zero",
-            control.control_id()
-        ));
-    }
-
-    Ok(normalized)
-}
-
 /// Resolve the full device-output roster as a [`SpatialLayout`] — every
 /// discovered device output with default placement. This is the canonical
 /// source for a fresh `Primary` zone (§5.2): a new scene's Default zone,
@@ -1817,17 +1015,6 @@ fn validate_control_binding_request(
 pub(crate) async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout {
     let spatial = state.spatial_engine.read().await;
     spatial.layout().as_ref().clone()
-}
-
-/// Project the REST transition object onto the domain's request type.
-fn transition_request(body: Option<&Json<ApplyEffectRequest>>) -> RequestedTransition {
-    let Some(transition) = body.and_then(|payload| payload.transition.as_ref()) else {
-        return RequestedTransition::cut();
-    };
-    RequestedTransition {
-        style: transition.transition_type.clone(),
-        duration_ms: transition.duration_ms.unwrap_or(0),
-    }
 }
 
 fn log_effect_apply_completion(
@@ -1866,7 +1053,6 @@ pub(crate) fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
 
 #[derive(Debug, Clone, Copy)]
 enum EffectCoverCache {
-    Active,
     Catalog,
 }
 
@@ -1887,7 +1073,6 @@ async fn effect_cover_image_response(
     headers.insert(
         header::CACHE_CONTROL,
         match cache {
-            EffectCoverCache::Active => HeaderValue::from_static("no-store"),
             EffectCoverCache::Catalog => HeaderValue::from_static("public, max-age=86400"),
         },
     );
@@ -2011,107 +1196,6 @@ fn is_runnable_source(source: &EffectSource) -> bool {
         EffectSource::Html { .. } => cfg!(feature = "servo"),
         EffectSource::Shader { .. } => false,
     }
-}
-
-fn layout_link_summary(layout: &SpatialLayout) -> LayoutLinkSummary {
-    LayoutLinkSummary {
-        id: layout.id.clone(),
-        name: layout.name.clone(),
-        canvas_width: layout.canvas_width,
-        canvas_height: layout.canvas_height,
-        zone_count: layout.zones.len(),
-    }
-}
-
-fn resolve_layout_for_link(
-    layouts: &HashMap<String, SpatialLayout>,
-    id_or_name: &str,
-) -> Result<SpatialLayout, ResolveLayoutLinkError> {
-    if let Some(layout) = layouts.get(id_or_name) {
-        return Ok(layout.clone());
-    }
-
-    let matches: Vec<SpatialLayout> = layouts
-        .values()
-        .filter(|layout| layout.name.eq_ignore_ascii_case(id_or_name))
-        .cloned()
-        .collect();
-    if matches.is_empty() {
-        return Err(ResolveLayoutLinkError::NotFound(id_or_name.to_owned()));
-    }
-    if matches.len() > 1 {
-        return Err(ResolveLayoutLinkError::AmbiguousName(id_or_name.to_owned()));
-    }
-
-    Ok(matches
-        .into_iter()
-        .next()
-        .expect("matches len checked above"))
-}
-
-fn save_effect_layout_links(
-    state: &AppState,
-    pending: effect_layouts::EffectLayoutSave,
-) -> Result<(), String> {
-    effect_layouts::save_reserved(pending)
-        .map(|_| ())
-        .map_err(|error| format!("{} ({})", error, state.effect_layout_links_path.display()))
-}
-
-pub(crate) async fn apply_associated_layout(
-    state: &AppState,
-    effect_id: &str,
-) -> Option<EffectLayoutApplyResult> {
-    let associated_layout_id = {
-        let links = state.effect_layout_links.read().await;
-        links.get(effect_id).cloned()
-    }?;
-
-    let layout = {
-        let layouts = state.layouts.read().await;
-        layouts.get(&associated_layout_id).cloned()
-    };
-
-    if let Some(layout) = layout {
-        if let Err(error) = apply_layout_update(
-            &state.spatial_engine,
-            &state.scene_manager,
-            &state.scene_transactions,
-            layout.clone(),
-        )
-        .await
-        {
-            warn!(
-                effect_id,
-                associated_layout_id,
-                %error,
-                "Rejected associated effect layout"
-            );
-            return Some(EffectLayoutApplyResult {
-                associated_layout_id,
-                resolved: true,
-                applied: false,
-                layout: Some(layout_link_summary(&layout)),
-            });
-        }
-        return Some(EffectLayoutApplyResult {
-            associated_layout_id,
-            resolved: true,
-            applied: true,
-            layout: Some(layout_link_summary(&layout)),
-        });
-    }
-
-    warn!(
-        effect_id,
-        associated_layout_id, "Effect has associated layout that no longer exists in layout store"
-    );
-    Some(EffectLayoutApplyResult {
-        associated_layout_id,
-        resolved: false,
-        applied: false,
-        layout: None,
-    })
 }
 
 struct ValidatedUploadedHtml {

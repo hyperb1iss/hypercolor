@@ -189,8 +189,11 @@ fn render_scene_caches_compact_projection_metadata_until_layout_changes() {
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut group = sample_group(2, 2);
-    group.effect_id = Some(solid_id);
-    group.controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut group,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+    );
     group.layout.zones = vec![point_zone_at("zone_cached", 0.25, 0.5)];
     let display_group_target_fps = HashMap::new();
     let mut zones = Vec::new();

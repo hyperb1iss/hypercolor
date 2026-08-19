@@ -5,10 +5,11 @@ use std::collections::HashMap;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId, ZoneRole};
+use hypercolor_types::scene::{DisplayFaceTarget, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
+use hypercolor_ui::api::LiveZoneView;
 use hypercolor_ui::pages::studio::surface::{SurfaceKind, led_zone_count, surfaces_from_zones};
 
 fn sample_layout() -> SpatialLayout {
@@ -26,8 +27,8 @@ fn sample_layout() -> SpatialLayout {
     }
 }
 
-fn group(name: &str, role: ZoneRole, display_target: Option<DisplayFaceTarget>) -> Zone {
-    Zone {
+fn group(name: &str, role: ZoneRole, display_target: Option<DisplayFaceTarget>) -> LiveZoneView {
+    LiveZoneView {
         id: ZoneId::new(),
         name: name.to_owned(),
         description: None,
@@ -42,8 +43,6 @@ fn group(name: &str, role: ZoneRole, display_target: Option<DisplayFaceTarget>) 
         color: None,
         display_target,
         role,
-        controls_version: 0,
-        layers_version: 0,
     }
 }
 

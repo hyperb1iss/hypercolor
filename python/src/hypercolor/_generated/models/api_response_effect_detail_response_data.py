@@ -9,9 +9,6 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.api_response_effect_detail_response_data_active_control_values_type_0 import (
-        ApiResponseEffectDetailResponseDataActiveControlValuesType0,
-    )
     from ..models.control_definition import ControlDefinition
     from ..models.preset_template import PresetTemplate
 
@@ -34,7 +31,6 @@ class ApiResponseEffectDetailResponseData:
         source (str):
         tags (list[str]):
         version (str):
-        active_control_values (ApiResponseEffectDetailResponseDataActiveControlValuesType0 | None | Unset):
         controls (list[ControlDefinition] | Unset):
         cover_image_url (None | str | Unset):
         presets (list[PresetTemplate] | Unset):
@@ -50,19 +46,12 @@ class ApiResponseEffectDetailResponseData:
     source: str
     tags: list[str]
     version: str
-    active_control_values: (
-        ApiResponseEffectDetailResponseDataActiveControlValuesType0 | None | Unset
-    ) = UNSET
     controls: list[ControlDefinition] | Unset = UNSET
     cover_image_url: None | str | Unset = UNSET
     presets: list[PresetTemplate] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.api_response_effect_detail_response_data_active_control_values_type_0 import (
-            ApiResponseEffectDetailResponseDataActiveControlValuesType0,
-        )
-
         audio_reactive = self.audio_reactive
 
         author = self.author
@@ -82,17 +71,6 @@ class ApiResponseEffectDetailResponseData:
         tags = self.tags
 
         version = self.version
-
-        active_control_values: dict[str, Any] | None | Unset
-        if isinstance(self.active_control_values, Unset):
-            active_control_values = UNSET
-        elif isinstance(
-            self.active_control_values,
-            ApiResponseEffectDetailResponseDataActiveControlValuesType0,
-        ):
-            active_control_values = self.active_control_values.to_dict()
-        else:
-            active_control_values = self.active_control_values
 
         controls: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.controls, Unset):
@@ -130,8 +108,6 @@ class ApiResponseEffectDetailResponseData:
                 "version": version,
             }
         )
-        if active_control_values is not UNSET:
-            field_dict["active_control_values"] = active_control_values
         if controls is not UNSET:
             field_dict["controls"] = controls
         if cover_image_url is not UNSET:
@@ -143,9 +119,6 @@ class ApiResponseEffectDetailResponseData:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.api_response_effect_detail_response_data_active_control_values_type_0 import (
-            ApiResponseEffectDetailResponseDataActiveControlValuesType0,
-        )
         from ..models.control_definition import ControlDefinition
         from ..models.preset_template import PresetTemplate
 
@@ -169,34 +142,6 @@ class ApiResponseEffectDetailResponseData:
         tags = cast(list[str], d.pop("tags"))
 
         version = d.pop("version")
-
-        def _parse_active_control_values(
-            data: object,
-        ) -> ApiResponseEffectDetailResponseDataActiveControlValuesType0 | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                active_control_values_type_0 = ApiResponseEffectDetailResponseDataActiveControlValuesType0.from_dict(
-                    data
-                )
-
-                return active_control_values_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(
-                ApiResponseEffectDetailResponseDataActiveControlValuesType0
-                | None
-                | Unset,
-                data,
-            )
-
-        active_control_values = _parse_active_control_values(
-            d.pop("active_control_values", UNSET)
-        )
 
         _controls = d.pop("controls", UNSET)
         controls: list[ControlDefinition] | Unset = UNSET
@@ -236,7 +181,6 @@ class ApiResponseEffectDetailResponseData:
             source=source,
             tags=tags,
             version=version,
-            active_control_values=active_control_values,
             controls=controls,
             cover_image_url=cover_image_url,
             presets=presets,

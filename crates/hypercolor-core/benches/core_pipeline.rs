@@ -31,6 +31,7 @@ use hypercolor_types::effect::{
     EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 
 use effect_engine::EffectEngine;
@@ -302,15 +303,22 @@ fn render_group(
     color: [f32; 4],
     effect_id: EffectId,
 ) -> Zone {
+    let controls = HashMap::from([("color".to_owned(), ControlValue::Color(color))]);
     Zone {
         id: ZoneId::new(),
         name: zone_id.to_owned(),
         description: None,
         effect_id: Some(effect_id),
-        controls: HashMap::from([("color".to_owned(), ControlValue::Color(color))]),
+        controls: controls.clone(),
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            controls,
+            HashMap::new(),
+            None,
+        )],
         layout: layout_with_zone(bench_routing_zone(zone_id, device_id, led_count, None)),
         brightness: 1.0,
         enabled: true,
