@@ -13,8 +13,8 @@ use utoipa::ToSchema;
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, InteractionSourceOrigin, ManagedSourceKey, ManagedSourceRole,
-    ScreenReconfigurationConflict, ScreenSource, SourceKind, SourceState, SourceSwapTarget,
+    InteractionSourceOrigin, ManagedSourceKey, ManagedSourceRole, ScreenReconfigurationConflict,
+    ScreenSource, SourceKind, SourceState, SourceSwapConflict, SourceSwapTarget,
 };
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
@@ -906,18 +906,30 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
             "Applying targeted live audio config change"
         );
 
-        let mut prepared = tokio::task::spawn_blocking(move || plan.prepare())
+        let prepared = tokio::task::spawn_blocking(move || plan.prepare())
             .await
-            .context("audio reconfiguration preparation task failed")??;
+            .context("audio reconfiguration preparation task failed")?;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(_) if !manager.is_current(&latest_config) => continue,
+            Err(error) => return Err(error),
+        };
+        let mut prepared = prepared.into_source_swap();
         if !manager.is_current(&latest_config) {
-            anyhow::bail!("audio config changed while live reconfiguration was prepared");
+            prepared.discard();
+            continue;
         }
         let mut input_manager = state.input_manager.lock().await;
-        match input_manager.commit_audio_runtime_config(&mut prepared) {
+        if !manager.is_current(&latest_config) {
+            drop(input_manager);
+            prepared.discard();
+            continue;
+        }
+        match input_manager.commit_source_swap(&mut prepared) {
             Ok(retirement) => {
                 let sources = input_manager.source_names();
                 drop(input_manager);
-                drop(prepared);
+                prepared.discard();
                 retirement.retire();
                 info!(
                     audio_device = %audio_device,
@@ -925,25 +937,33 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
                     sources = ?sources,
                     "Live audio config change applied"
                 );
-                return Ok(());
+                if manager.is_current(&latest_config) {
+                    return Ok(());
+                }
             }
-            Err(error)
-                if error
-                    .downcast_ref::<AudioReconfigurationConflict>()
-                    .is_some()
-                    && manager.is_current(&latest_config) =>
-            {
-                conflict_count = conflict_count.saturating_add(1);
+            Err(error) if retryable_audio_swap_conflict(&error) => {
                 drop(input_manager);
-                drop(prepared);
+                prepared.discard();
+                if manager.is_current(&latest_config) {
+                    conflict_count = conflict_count.saturating_add(1);
+                }
             }
             Err(error) => {
                 drop(input_manager);
-                drop(prepared);
-                return Err(error);
+                prepared.discard();
+                return Err(error.into());
             }
         }
     }
+}
+
+fn retryable_audio_swap_conflict(error: &SourceSwapConflict) -> bool {
+    matches!(
+        error,
+        SourceSwapConflict::GraphChanged
+            | SourceSwapConflict::SourceChanged { .. }
+            | SourceSwapConflict::SourceLifecycleChanged { .. }
+    )
 }
 
 async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
@@ -1364,24 +1384,35 @@ async fn apply_input_config_change(state: &Arc<AppState>, key: Option<&str>) -> 
     };
     let host_key = ManagedSourceKey::Interaction(InteractionSourceOrigin::Host);
 
-    let (had_source, swap) = {
-        let mut input_manager = state.input_manager.lock().await;
+    let (had_source, plan) = {
+        let input_manager = state.input_manager.lock().await;
         let had_source = input_manager.has_host_capture_source();
-        let swap = input_manager
-            .plan_source_swap(host_key, target)
-            .and_then(|plan| input_manager.commit_source_swap(&plan, &mut replacement));
-        (had_source, swap)
+        let plan = input_manager.plan_source_swap(host_key, target);
+        (had_source, plan)
     };
-    let retirement = match swap {
-        Ok(retirement) => retirement,
+    let mut prepared = match plan.and_then(|plan| plan.prepare(&mut replacement)) {
+        Ok(prepared) => prepared,
         Err(error) => {
             if let Some(source) = replacement.as_mut() {
                 source.source_mut().stop();
             }
+            warn!(%error, "Failed to prepare live host input source");
+            return false;
+        }
+    };
+    let swap = {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.commit_source_swap(&mut prepared)
+    };
+    let retirement = match swap {
+        Ok(retirement) => retirement,
+        Err(error) => {
+            prepared.discard();
             warn!(%error, "Failed to commit live host input source");
             return false;
         }
     };
+    prepared.discard();
     retirement.retire();
     if has_replacement {
         info!("Applied live host input capture config");
@@ -1564,16 +1595,16 @@ mod tests {
     use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
     use hypercolor_core::input::{
         InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
-        ManagedSourceRole, ScreenReconfigurationConflict, ScreenSource, ScreenSourceRole,
-        SourceIssue, SourceKind, SourceRoleBinding, SourceState, SourceStatus, SourceStatusHandle,
-        SourceStatusReporter,
+        ManagedSourceKey, ManagedSourceRole, ScreenReconfigurationConflict, ScreenSource,
+        ScreenSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceState, SourceStatus,
+        SourceStatusHandle, SourceStatusReporter, SourceSwapConflict,
     };
     use hypercolor_types::config::InteractionRoutePolicy;
 
     use super::{
         CaptureConfigTransactionError, ConfigApplyQuery, LiveSections,
         apply_capture_config_transaction, apply_input_config_change, canvas_dimensions_differ,
-        capture_statuses_match, live_sections_for, put_config_key,
+        capture_statuses_match, live_sections_for, put_config_key, retryable_audio_swap_conflict,
         validate_prepared_capture_status, write_covers,
     };
     use crate::api::AppState;
@@ -1605,6 +1636,44 @@ mod tests {
     }
 
     impl InteractionSource for TestHostSource {}
+
+    #[test]
+    fn audio_config_retries_only_concurrent_generic_swap_conflicts() {
+        assert!(retryable_audio_swap_conflict(
+            &SourceSwapConflict::GraphChanged
+        ));
+        assert!(retryable_audio_swap_conflict(
+            &SourceSwapConflict::SourceChanged {
+                key: ManagedSourceKey::Audio,
+            }
+        ));
+        assert!(retryable_audio_swap_conflict(
+            &SourceSwapConflict::SourceLifecycleChanged {
+                key: ManagedSourceKey::Audio,
+            }
+        ));
+        assert!(!retryable_audio_swap_conflict(
+            &SourceSwapConflict::InvalidReplacementPresence
+        ));
+        assert!(!retryable_audio_swap_conflict(
+            &SourceSwapConflict::InvalidReplacementKey {
+                expected: ManagedSourceKey::Audio,
+                observed: ManagedSourceKey::Screen,
+            }
+        ));
+        assert!(!retryable_audio_swap_conflict(
+            &SourceSwapConflict::ReplacementNotReady {
+                key: ManagedSourceKey::Audio,
+                issue: Arc::from("terminal failure"),
+            }
+        ));
+        assert!(!retryable_audio_swap_conflict(
+            &SourceSwapConflict::ReplacementPreparationFailed {
+                key: ManagedSourceKey::Audio,
+                issue: Arc::from("context rejected"),
+            }
+        ));
+    }
 
     struct TestScreenSource {
         running: bool,

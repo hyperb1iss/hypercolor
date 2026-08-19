@@ -366,22 +366,6 @@ impl SourceStatus {
     }
 }
 
-pub(crate) struct SourceStatusPolicy {
-    configured: bool,
-    consented: bool,
-    demanded: bool,
-}
-
-impl SourceStatusPolicy {
-    pub(crate) const fn new(configured: bool, consented: bool, demanded: bool) -> Self {
-        Self {
-            configured,
-            consented,
-            demanded,
-        }
-    }
-}
-
 /// Rejected source-status control transition.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum SourceStatusError {
@@ -842,21 +826,27 @@ impl SourceStatusWriter {
         consented: bool,
         demanded: bool,
     ) -> (Self, SourceStatusHandle) {
-        let initial = Arc::new(SourceStatus::stopped(
+        let initial = SourceStatus::stopped(
             source_id.into(),
             kind,
             backend.into(),
             configured,
             consented,
             demanded,
-        ));
+        );
+        Self::from_initial(initial)
+    }
+
+    fn from_initial(initial: SourceStatus) -> (Self, SourceStatusHandle) {
+        let next_session = initial.session_generation;
+        let initial = Arc::new(initial);
         let (structural, _) = watch::channel(Arc::clone(&initial));
         let (sample_signals, _) = watch::channel(0);
         let shared = Arc::new(SourceStatusShared {
             latest: ArcSwap::from(initial),
             control: Mutex::new(SourceStatusControl {
                 active_session: None,
-                next_session: 0,
+                next_session,
                 sample_signal_generation: 0,
             }),
             structural,
@@ -1161,6 +1151,33 @@ impl SourceStatusReporter {
         }
     }
 
+    pub(crate) fn new_successor(
+        predecessor: &SourceStatusHandle,
+        backend: impl Into<Arc<str>>,
+        configured: bool,
+        consented: bool,
+        demanded: bool,
+    ) -> Self {
+        let predecessor = predecessor.snapshot();
+        let mut initial = SourceStatus::stopped(
+            Arc::clone(&predecessor.source_id),
+            predecessor.kind,
+            backend.into(),
+            configured,
+            consented,
+            demanded,
+        );
+        initial.source_graph_generation = predecessor.source_graph_generation;
+        initial.session_generation = predecessor.session_generation;
+        let (writer, handle) = SourceStatusWriter::from_initial(initial);
+        Self {
+            writer,
+            handle,
+            source_graph_generation: predecessor.source_graph_generation,
+            session: None,
+        }
+    }
+
     /// Clone the source's lock-free read handle.
     #[must_use]
     pub fn handle(&self) -> SourceStatusHandle {
@@ -1174,71 +1191,6 @@ impl SourceStatusReporter {
             "source graph generation must never regress"
         );
         self.source_graph_generation = source_graph_generation;
-    }
-
-    pub(crate) fn reconfigure(
-        &mut self,
-        backend: impl Into<Arc<str>>,
-        policy: SourceStatusPolicy,
-        start_session: bool,
-    ) -> Result<Option<SourceSessionWriter>, SourceStatusError> {
-        let backend = backend.into();
-        let mut control = lock_control(&self.writer.shared);
-        let current = self.handle.snapshot();
-        if current.retired {
-            return Err(SourceStatusError::Retired);
-        }
-        let eligible = policy.configured && policy.consented && policy.demanded;
-        if start_session && !eligible {
-            return Err(SourceStatusError::Ineligible {
-                configured: policy.configured,
-                consented: policy.consented,
-                demanded: policy.demanded,
-            });
-        }
-        if start_session && self.source_graph_generation != 0 {
-            require_newer_graph(
-                self.source_graph_generation,
-                current.source_graph_generation,
-            )?;
-        }
-
-        let mut status = (*current).clone();
-        status.backend = backend;
-        status.configured = policy.configured;
-        status.consented = policy.consented;
-        status.demanded = policy.demanded;
-        let session = if start_session && self.source_graph_generation != 0 {
-            control.next_session = control
-                .next_session
-                .checked_add(1)
-                .expect("source session generation exhausted");
-            let session_generation = control.next_session;
-            control.active_session = Some(session_generation);
-            status.state = SourceState::Starting;
-            status.freshness = SourceFreshness::AwaitingSample;
-            status.source_graph_generation = self.source_graph_generation;
-            status.session_generation = session_generation;
-            status.last_sample_at = None;
-            status.freshness_deadline = None;
-            status.resource_count = 0;
-            status.denied_resource_count = 0;
-            status.issue = None;
-            status.freshness_issue = None;
-            Some(SourceSessionWriter {
-                shared: Arc::clone(&self.writer.shared),
-                session_generation,
-            })
-        } else {
-            control.active_session = None;
-            clear_stopped_state(&mut status);
-            None
-        };
-        self.writer.shared.diagnostics.store(None);
-        publish_structural(&self.writer.shared, status);
-        self.writer.shared.samples.tombstone();
-        self.session.clone_from(&session);
-        Ok(session)
     }
 
     /// Begin a generation-fenced session when the source belongs to a manager.

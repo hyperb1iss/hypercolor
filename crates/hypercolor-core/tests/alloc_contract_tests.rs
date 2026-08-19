@@ -667,19 +667,21 @@ fn prepared_audio_commit_round(config: &AudioPipelineConfig) -> Stats {
     manager
         .start_all()
         .expect("manual audio source should start");
-    let mut prepared = manager
+    let prepared = manager
         .plan_audio_runtime_config(false, config, "prepared-audio", false)
         .expect("manual audio source should support preparation")
         .prepare()
         .expect("disabled audio preparation should stay local");
+    let mut prepared = prepared.into_source_swap();
 
     let mut region = Region::new(GLOBAL);
     region.reset();
     let retirement = black_box(&mut manager)
-        .commit_audio_runtime_config(black_box(&mut prepared))
+        .commit_source_swap(black_box(&mut prepared))
         .expect("prepared audio state should commit");
     black_box(&retirement);
     let stats = region.change();
+    prepared.discard();
     retirement.retire();
     stats
 }

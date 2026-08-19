@@ -66,9 +66,7 @@ pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
 pub use windows::WindowsHostInputFixture;
 
-use crate::input::audio::{
-    AudioInput, AudioPreparationRequest, AudioRuntimeRetirement, PreparedAudioReconfiguration,
-};
+use crate::input::audio::{AudioInput, AudioPreparationRequest, PreparedAudioReconfiguration};
 use crate::types::audio::AudioPipelineConfig;
 use crate::types::event::TimedInputEvent;
 use std::ops::{Deref, DerefMut};
@@ -98,27 +96,15 @@ pub fn input_mono_ms() -> u64 {
 /// input manager lock.
 #[must_use = "audio reconfiguration plans must be prepared and committed"]
 pub struct AudioRuntimeConfigPlan {
-    expected_graph_generation: u64,
-    expected_source_present: bool,
-    expected_source_running: bool,
-    enabled: bool,
-    config: AudioPipelineConfig,
-    display_name: String,
-    capture_active: bool,
+    source_swap: SourceSwapPlan,
+    preparation: Option<AudioPreparationRequest>,
 }
 
-/// A concurrent input-graph transition invalidated prepared audio state.
-#[derive(Debug, thiserror::Error)]
-pub enum AudioReconfigurationConflict {
-    /// The canonical source graph changed after preparation began.
-    #[error("input graph changed while audio reconfiguration was prepared")]
-    GraphChanged,
-    /// An audio source was added or removed after preparation began.
-    #[error("audio source topology changed while reconfiguration was prepared")]
-    SourceTopologyChanged,
-    /// The target audio source started or stopped after preparation began.
-    #[error("audio source lifecycle changed while reconfiguration was prepared")]
-    SourceLifecycleChanged,
+/// Complete audio candidate paired with its generic source-swap fence.
+#[must_use = "prepared audio source swaps must be committed or discarded"]
+pub struct PreparedAudioSourceSwap {
+    source_swap: PreparedSourceSwap,
+    failure_signal: Option<Arc<std::sync::atomic::AtomicU8>>,
 }
 
 /// Generation-fenced screen configuration captured while briefly holding the
@@ -266,7 +252,18 @@ pub struct SourceSwapPlan {
     expected_graph_generation: u64,
     expected_slot_id: Option<u64>,
     expected_running: Option<bool>,
+    replacement_slot_id: u64,
+    replacement_source_graph_generation: u64,
+    source_capability_context: SourceCapabilityContext,
+    screen_publication_hub: Arc<screen::ScreenPublicationHub>,
     target: SourceSwapTarget,
+}
+
+/// Opaque, fully managed candidate for one generic source swap.
+#[must_use = "prepared source swaps must be committed or discarded"]
+pub struct PreparedSourceSwap {
+    plan: SourceSwapPlan,
+    replacement: Option<ManagedInputSource>,
 }
 
 /// A concurrent graph change or invalid candidate rejected a typed swap.
@@ -320,6 +317,65 @@ pub enum SourceSwapConflict {
         /// Kind published by the candidate status handle.
         observed: SourceKind,
     },
+    /// A candidate runtime failed after construction but before commit.
+    #[error("prepared source {key:?} is not ready: {issue}")]
+    ReplacementNotReady {
+        /// Immutable role key of the rejected candidate.
+        key: ManagedSourceKey,
+        /// Stable backend failure description.
+        issue: Arc<str>,
+    },
+    /// Candidate manager state could not be staged from the captured plan.
+    #[error("prepared source {key:?} rejected manager context: {issue}")]
+    ReplacementPreparationFailed {
+        /// Immutable role key of the rejected candidate.
+        key: ManagedSourceKey,
+        /// Stable preparation failure description.
+        issue: Arc<str>,
+    },
+}
+
+fn validate_source_swap_role(
+    plan: &SourceSwapPlan,
+    replacement: Option<&ManagedSourceRole>,
+) -> Result<(), SourceSwapConflict> {
+    let expected_running = match plan.target {
+        SourceSwapTarget::Absent => {
+            return if replacement.is_none() {
+                Ok(())
+            } else {
+                Err(SourceSwapConflict::InvalidReplacementPresence)
+            };
+        }
+        SourceSwapTarget::Present { running } => running,
+    };
+    let Some(replacement) = replacement else {
+        return Err(SourceSwapConflict::InvalidReplacementPresence);
+    };
+    let observed = replacement.key();
+    if observed != plan.key {
+        return Err(SourceSwapConflict::InvalidReplacementKey {
+            expected: plan.key,
+            observed,
+        });
+    }
+    let observed_running = replacement.source().is_running();
+    if observed_running != expected_running {
+        return Err(SourceSwapConflict::InvalidReplacementLifecycle {
+            expected_running,
+            observed_running,
+        });
+    }
+    let expected = replacement.source_kind();
+    if let Some(observed) = replacement
+        .source()
+        .source_status_handle()
+        .map(|status| status.snapshot().kind)
+        .filter(|observed| *observed != expected)
+    {
+        return Err(SourceSwapConflict::InvalidReplacementStatusKind { expected, observed });
+    }
+    Ok(())
 }
 
 /// Source detached by one successful typed graph swap.
@@ -341,6 +397,68 @@ impl SourceRetirement {
             error!(source = source.name(), %error, "Failed to retire input source status");
         }
         info!(source = source.name(), "Retired input source");
+    }
+}
+
+impl SourceSwapPlan {
+    /// Build slot, status, publication, and retained manager state away from commit.
+    ///
+    /// Candidate ownership remains in `replacement` when validation or retained
+    /// context preparation fails.
+    pub fn prepare(
+        self,
+        replacement: &mut Option<ManagedSourceRole>,
+    ) -> Result<PreparedSourceSwap, SourceSwapConflict> {
+        validate_source_swap_role(&self, replacement.as_ref())?;
+        if let Some(source) = replacement.as_mut() {
+            if let Some(screen) = source.as_screen_mut() {
+                screen
+                    .set_capability_context(&self.source_capability_context)
+                    .map_err(|error| SourceSwapConflict::ReplacementPreparationFailed {
+                        key: self.key,
+                        issue: Arc::from(error.to_string()),
+                    })?;
+            }
+            if let Some(interaction) = source.as_interaction_mut() {
+                interaction
+                    .set_capability_context(&self.source_capability_context)
+                    .map_err(|error| SourceSwapConflict::ReplacementPreparationFailed {
+                        key: self.key,
+                        issue: Arc::from(error.to_string()),
+                    })?;
+            }
+        }
+        let replacement = replacement.take().map(|source| {
+            let mut source = ManagedInputSource::new(
+                source,
+                self.replacement_slot_id,
+                self.replacement_source_graph_generation,
+                Arc::clone(&self.screen_publication_hub),
+            );
+            if source.is_running() {
+                source.mark_prestarted_compatibility_live();
+            }
+            source
+        });
+        Ok(PreparedSourceSwap {
+            plan: self,
+            replacement,
+        })
+    }
+}
+
+impl PreparedSourceSwap {
+    /// Whether the caller still owns a prepared replacement candidate.
+    #[must_use]
+    pub const fn has_replacement(&self) -> bool {
+        self.replacement.is_some()
+    }
+
+    /// Stop and discard an uncommitted candidate.
+    pub fn discard(mut self) {
+        if let Some(source) = &mut self.replacement {
+            source.stop();
+        }
     }
 }
 
@@ -373,29 +491,52 @@ impl AudioRuntimeConfigPlan {
     /// # Errors
     ///
     /// Returns an error when the requested native stream cannot be staged.
-    pub fn prepare(self) -> anyhow::Result<PreparedAudioReconfiguration> {
-        PreparedAudioReconfiguration::prepare(self.into_request())
+    pub fn prepare(self) -> anyhow::Result<PreparedAudioSourceSwap> {
+        self.prepare_with(PreparedAudioReconfiguration::prepare)
     }
 
     /// Stage an in-memory capture runtime for deterministic transaction tests.
     #[doc(hidden)]
     pub fn prepare_with_synthetic_capture_for_testing(
         self,
-    ) -> anyhow::Result<PreparedAudioReconfiguration> {
-        PreparedAudioReconfiguration::prepare_with_synthetic_capture_for_testing(
-            self.into_request(),
-        )
+    ) -> anyhow::Result<PreparedAudioSourceSwap> {
+        self.prepare_with(PreparedAudioReconfiguration::prepare_with_synthetic_capture_for_testing)
     }
 
-    fn into_request(self) -> AudioPreparationRequest {
-        AudioPreparationRequest {
-            expected_graph_generation: self.expected_graph_generation,
-            expected_source_present: self.expected_source_present,
-            expected_source_running: self.expected_source_running,
-            enabled: self.enabled,
-            config: self.config,
-            name: self.display_name,
-            capture_active: self.capture_active,
+    fn prepare_with(
+        self,
+        prepare: impl FnOnce(AudioPreparationRequest) -> anyhow::Result<PreparedAudioReconfiguration>,
+    ) -> anyhow::Result<PreparedAudioSourceSwap> {
+        let prepared = self.preparation.map(prepare).transpose()?;
+        let failure_signal = prepared
+            .as_ref()
+            .map(PreparedAudioReconfiguration::failure_signal);
+        let mut replacement = prepared
+            .map(|mut prepared| AudioInput::from_prepared(&mut prepared))
+            .transpose()?
+            .map(|source| ManagedSourceRole::audio(Box::new(source)));
+        let source_swap = self.source_swap.prepare(&mut replacement)?;
+        Ok(PreparedAudioSourceSwap {
+            source_swap,
+            failure_signal,
+        })
+    }
+}
+
+impl PreparedAudioSourceSwap {
+    /// Unwrap the opaque generic source-swap candidate.
+    pub fn into_source_swap(self) -> PreparedSourceSwap {
+        self.source_swap
+    }
+
+    /// Inject a terminal failure after candidate construction.
+    #[doc(hidden)]
+    pub fn fail_before_commit_for_testing(&self) {
+        if let Some(failure) = &self.failure_signal {
+            failure.store(
+                audio::AudioFailureKind::BackendUnavailable as u8,
+                std::sync::atomic::Ordering::Release,
+            );
         }
     }
 }
@@ -783,15 +924,22 @@ impl InputManager {
             expected_graph_generation: self.source_graph_generation,
             expected_slot_id: current.map(|index| self.sources[index].slot.id()),
             expected_running: current.map(|index| self.sources[index].is_running()),
+            replacement_slot_id: self.next_source_slot_id,
+            replacement_source_graph_generation: self
+                .source_graph_generation
+                .checked_add(1)
+                .expect("input source graph generation exhausted"),
+            source_capability_context: self.source_capability_context.clone(),
+            screen_publication_hub: self.screen_plan_builder.publication_hub(),
             target,
         })
     }
 
     /// Commit one prepared typed source if every plan fence still matches.
     ///
-    /// Every rejection leaves the candidate in `replacement` and does not
-    /// mutate the graph. The detached old source remains live until the caller
-    /// invokes [`SourceRetirement::retire`] outside the manager lock.
+    /// Every rejection leaves the candidate in the opaque prepared swap and
+    /// does not mutate the graph. The detached old source remains live until
+    /// the caller invokes [`SourceRetirement::retire`] outside the manager lock.
     ///
     /// # Errors
     ///
@@ -799,13 +947,42 @@ impl InputManager {
     /// replacement changed after planning.
     pub fn commit_source_swap(
         &mut self,
-        plan: &SourceSwapPlan,
-        replacement: &mut Option<ManagedSourceRole>,
+        prepared: &mut PreparedSourceSwap,
     ) -> Result<SourceRetirement, SourceSwapConflict> {
-        let current = self.validate_source_swap(plan, replacement.as_ref())?;
+        let plan = &prepared.plan;
+        let current = self.validate_source_swap(plan)?;
+        if prepared.replacement.is_some() && self.next_source_slot_id != plan.replacement_slot_id {
+            return Err(SourceSwapConflict::SourceChanged { key: plan.key });
+        }
+        if let Some(audio) = prepared
+            .replacement
+            .as_mut()
+            .and_then(ManagedInputSource::as_audio_mut)
+        {
+            audio.ensure_prepared_source_ready().map_err(|issue| {
+                SourceSwapConflict::ReplacementNotReady {
+                    key: plan.key,
+                    issue,
+                }
+            })?;
+        }
+        let prepared_audio_capture_active = (plan.key == ManagedSourceKey::Audio).then(|| {
+            prepared.replacement.as_ref().map_or(Some(false), |source| {
+                Some(
+                    source
+                        .source_status_handle()
+                        .availability_at(Instant::now())
+                        .demanded,
+                )
+            })
+        });
         let source_graph_generation = self.bump_source_graph_generation();
         if current.is_none() && plan.target == SourceSwapTarget::Absent {
-            self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
+            if let Some(Some(active)) = prepared_audio_capture_active {
+                self.audio_capture_active = Some(active);
+            } else {
+                self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
+            }
             self.publish_source_status_registry();
             return Ok(SourceRetirement {
                 source: None,
@@ -813,14 +990,14 @@ impl InputManager {
             });
         }
 
-        let prepared = replacement.take().map(|source| {
-            let mut prepared = self.create_managed_source(source, source_graph_generation);
-            if prepared.is_running() {
-                prepared.mark_prestarted_compatibility_live();
-            }
-            prepared
-        });
-        let retired = match (current, prepared) {
+        let replacement = prepared.replacement.take();
+        if replacement.is_some() {
+            self.next_source_slot_id = self
+                .next_source_slot_id
+                .checked_add(1)
+                .expect("input source slot identity exhausted");
+        }
+        let retired = match (current, replacement) {
             (Some(index), Some(prepared)) => {
                 Some(std::mem::replace(&mut self.sources[index], prepared))
             }
@@ -831,7 +1008,11 @@ impl InputManager {
             }
             (None, None) => unreachable!("empty source swap returned before graph mutation"),
         };
-        self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
+        if let Some(Some(active)) = prepared_audio_capture_active {
+            self.audio_capture_active = Some(active);
+        } else {
+            self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
+        }
         self.publish_source_status_registry();
         Ok(SourceRetirement {
             source: retired,
@@ -842,7 +1023,6 @@ impl InputManager {
     fn validate_source_swap(
         &self,
         plan: &SourceSwapPlan,
-        replacement: Option<&ManagedSourceRole>,
     ) -> Result<Option<usize>, SourceSwapConflict> {
         if self.source_graph_generation != plan.expected_graph_generation {
             return Err(SourceSwapConflict::GraphChanged);
@@ -855,41 +1035,6 @@ impl InputManager {
             return Err(SourceSwapConflict::SourceLifecycleChanged { key: plan.key });
         }
 
-        let expected_running = match plan.target {
-            SourceSwapTarget::Absent => {
-                if replacement.is_some() {
-                    return Err(SourceSwapConflict::InvalidReplacementPresence);
-                }
-                return Ok(current);
-            }
-            SourceSwapTarget::Present { running } => running,
-        };
-        let Some(replacement) = replacement else {
-            return Err(SourceSwapConflict::InvalidReplacementPresence);
-        };
-        let observed = replacement.key();
-        if observed != plan.key {
-            return Err(SourceSwapConflict::InvalidReplacementKey {
-                expected: plan.key,
-                observed,
-            });
-        }
-        let observed_running = replacement.source().is_running();
-        if observed_running != expected_running {
-            return Err(SourceSwapConflict::InvalidReplacementLifecycle {
-                expected_running,
-                observed_running,
-            });
-        }
-        let expected = replacement.source_kind();
-        if let Some(observed) = replacement
-            .source()
-            .source_status_handle()
-            .map(|status| status.snapshot().kind)
-            .filter(|observed| *observed != expected)
-        {
-            return Err(SourceSwapConflict::InvalidReplacementStatusKind { expected, observed });
-        }
         Ok(current)
     }
 
@@ -1152,8 +1297,7 @@ impl InputManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if the registered audio source cannot accept a staged
-    /// native runtime.
+    /// Returns an error if the audio role is ambiguous.
     pub fn plan_audio_runtime_config(
         &self,
         enabled: bool,
@@ -1161,10 +1305,8 @@ impl InputManager {
         display_name: &str,
         capture_active: bool,
     ) -> anyhow::Result<AudioRuntimeConfigPlan> {
-        let source = self.sources.iter().find_map(ManagedInputSource::as_audio);
-        if source.is_some_and(|source| !source.supports_prepared_audio_reconfiguration()) {
-            anyhow::bail!("registered audio source does not support prepared reconfiguration");
-        }
+        let source_index = self.unique_source_index(ManagedSourceKey::Audio)?;
+        let source = source_index.map(|index| &self.sources[index]);
         let mut effective_config = config.clone();
         if !enabled {
             effective_config.source = crate::types::audio::AudioSourceType::None;
@@ -1175,158 +1317,29 @@ impl InputManager {
                 effective_config.source,
                 crate::types::audio::AudioSourceType::None
             );
-        Ok(AudioRuntimeConfigPlan {
-            expected_graph_generation: self.source_graph_generation,
-            expected_source_present: source.is_some(),
-            expected_source_running: source.is_some_and(ManagedSource::is_running),
-            enabled,
-            config: effective_config,
-            display_name: display_name.to_owned(),
-            capture_active,
-        })
-    }
-
-    /// Commit a prepared audio runtime if the input graph is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a concurrent graph or lifecycle transition made
-    /// the prepared runtime stale, or when the source rejects the commit.
-    pub fn commit_audio_runtime_config(
-        &mut self,
-        prepared: &mut PreparedAudioReconfiguration,
-    ) -> anyhow::Result<AudioRuntimeRetirement> {
-        if self.source_graph_generation != prepared.expected_graph_generation {
-            return Err(AudioReconfigurationConflict::GraphChanged.into());
-        }
-        prepared.ensure_ready()?;
-        let source_index = self
-            .sources
-            .iter()
-            .position(|source| source.key() == ManagedSourceKey::Audio);
-        if source_index.is_some() != prepared.expected_source_present {
-            return Err(AudioReconfigurationConflict::SourceTopologyChanged.into());
-        }
-        if let Some(index) = source_index {
-            if self.sources[index].is_running() != prepared.expected_source_running {
-                return Err(AudioReconfigurationConflict::SourceLifecycleChanged.into());
-            }
-            let capture_active = prepared.capture_active;
-            let source_graph_generation = self.bump_source_graph_generation();
-            let result = {
-                let source = &mut self.sources[index];
-                source.set_source_graph_generation(source_graph_generation);
-                source
-                    .as_audio_mut()
-                    .expect("audio key binds typed audio source")
-                    .commit_prepared_audio_reconfiguration(prepared)
-            };
-            if result.is_ok() {
-                self.audio_capture_active = Some(capture_active);
-                info!(
-                    source = self.sources[index].name(),
-                    capture_active, "Committed prepared live audio input source"
-                );
-            }
-            self.publish_source_status_registry();
-            return result;
-        }
-
-        if !prepared.enabled {
-            self.bump_source_graph_generation();
-            self.audio_capture_active = Some(false);
-            return Ok(AudioRuntimeRetirement::empty());
-        }
-
-        let capture_active = prepared.capture_active;
-        let source_graph_generation = self
-            .source_graph_generation
-            .checked_add(1)
-            .expect("input source graph generation exhausted");
-        let audio_input = AudioInput::from_prepared(prepared, source_graph_generation)?;
-        self.source_graph_generation = source_graph_generation;
-        let managed = self.create_managed_source(
-            ManagedSourceRole::audio(Box::new(audio_input)),
-            source_graph_generation,
-        );
-        self.sources.push(managed);
-        self.audio_capture_active = Some(capture_active);
-        self.publish_source_status_registry();
-        info!(
-            source = self
-                .sources
-                .last()
-                .expect("audio source was just registered")
-                .name(),
-            capture_active, "Added prepared live audio input source"
-        );
-        Ok(AudioRuntimeRetirement::empty())
-    }
-
-    /// Apply a live audio config change without rebuilding unrelated sources.
-    ///
-    /// If an audio source already exists, it is reconfigured in place. If audio
-    /// is being enabled and no audio source exists yet, one is created and
-    /// started. Disabling audio reconfigures the existing source to silence.
-    /// Native preparation may enumerate devices and block. Callers that share
-    /// the manager across latency-sensitive work should use
-    /// [`Self::plan_audio_runtime_config`], prepare after releasing the manager,
-    /// then reacquire it for [`Self::commit_audio_runtime_config`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the live audio source switch fails.
-    pub fn apply_audio_runtime_config(
-        &mut self,
-        enabled: bool,
-        config: &AudioPipelineConfig,
-        display_name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        let audio_source = self.sources.iter().find_map(ManagedInputSource::as_audio);
-        if audio_source.is_none_or(AudioSource::supports_prepared_audio_reconfiguration) {
-            let mut prepared = self
-                .plan_audio_runtime_config(enabled, config, display_name, capture_active)?
-                .prepare()?;
-            let retirement = self.commit_audio_runtime_config(&mut prepared)?;
-            retirement.retire();
-            return Ok(());
-        }
-
-        let effective_capture_active = enabled && capture_active;
-        let effective_config = if enabled {
-            config.clone()
+        let running = source.is_none_or(|source| source.is_running());
+        let target = if enabled || source.is_some() {
+            SourceSwapTarget::Present { running }
         } else {
-            let mut disabled = config.clone();
-            disabled.source = crate::types::audio::AudioSourceType::None;
-            disabled
+            SourceSwapTarget::Absent
         };
-
-        let index = self
-            .sources
-            .iter()
-            .position(|source| source.key() == ManagedSourceKey::Audio)
-            .expect("unsupported prepared reconfiguration requires an audio source");
-        let source_graph_generation = self.bump_source_graph_generation();
-        let result = {
-            let source = &mut self.sources[index];
-            source.set_source_graph_generation(source_graph_generation);
-            source
-                .as_audio_mut()
-                .expect("audio key binds typed audio source")
-                .reconfigure_audio(&effective_config, display_name, effective_capture_active)
-        };
-        if result.is_ok() {
-            info!(
-                source = display_name,
-                enabled,
-                capture_active = effective_capture_active,
-                "Reconfigured compatibility audio input source"
-            );
-            self.audio_capture_active = Some(effective_capture_active);
-        }
-        self.publish_source_status_registry();
-        result
+        let source_swap = self.plan_source_swap(ManagedSourceKey::Audio, target)?;
+        let preparation =
+            matches!(target, SourceSwapTarget::Present { .. }).then(|| AudioPreparationRequest {
+                running,
+                source_graph_generation: self
+                    .source_graph_generation
+                    .checked_add(1)
+                    .expect("input source graph generation exhausted"),
+                predecessor_status: source.map(ManagedInputSource::source_status_handle),
+                config: effective_config,
+                name: display_name.to_owned(),
+                capture_active,
+            });
+        Ok(AudioRuntimeConfigPlan {
+            source_swap,
+            preparation,
+        })
     }
 
     /// Toggle live audio capture for any registered audio sources.
@@ -2831,26 +2844,30 @@ mod host_source_swap_tests {
                 SourceSwapTarget::Present { running: true },
             )
             .expect("unique host source plans");
-        manager
-            .add_source(ManagedSourceRole::interaction(Box::new(
-                HostSource::browser("browser"),
-            )))
-            .expect("browser source registers");
-        let graph_generation = manager.source_graph_generation();
         let mut candidate = Box::new(HostSource::new(
             "candidate-host",
             Arc::new(AtomicBool::new(false)),
         ));
         candidate.start().expect("candidate host source starts");
         let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+        let mut prepared = plan
+            .prepare(&mut candidate)
+            .expect("candidate should prepare");
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                HostSource::browser("browser"),
+            )))
+            .expect("browser source registers");
+        let graph_generation = manager.source_graph_generation();
 
         assert!(matches!(
-            manager.commit_source_swap(&plan, &mut candidate),
+            manager.commit_source_swap(&mut prepared),
             Err(SourceSwapConflict::GraphChanged)
         ));
-        assert!(candidate.is_some());
+        assert!(prepared.has_replacement());
         assert_eq!(manager.source_graph_generation(), graph_generation);
         assert_eq!(manager.source_names(), ["old-host", "browser"]);
+        prepared.discard();
     }
 
     #[test]
@@ -2879,9 +2896,12 @@ mod host_source_swap_tests {
         ));
         candidate.start().expect("candidate host source starts");
         let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+        let mut prepared = plan
+            .prepare(&mut candidate)
+            .expect("matching candidate prepares");
 
         let retirement = manager
-            .commit_source_swap(&plan, &mut candidate)
+            .commit_source_swap(&mut prepared)
             .expect("matching candidate commits");
 
         assert!(candidate.is_none());
@@ -2915,8 +2935,11 @@ mod host_source_swap_tests {
         ));
         candidate.start().expect("candidate host source starts");
         let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+        let mut prepared = plan
+            .prepare(&mut candidate)
+            .expect("running candidate prepares");
         let retirement = manager
-            .commit_source_swap(&plan, &mut candidate)
+            .commit_source_swap(&mut prepared)
             .expect("running candidate swaps atomically");
 
         assert!(candidate.is_none());
@@ -2956,7 +2979,7 @@ mod host_source_swap_tests {
         ))));
 
         assert!(matches!(
-            manager.commit_source_swap(&plan, &mut candidate),
+            plan.prepare(&mut candidate),
             Err(SourceSwapConflict::InvalidReplacementLifecycle {
                 expected_running: true,
                 observed_running: false,
@@ -2991,7 +3014,7 @@ mod host_source_swap_tests {
         let mut candidate = Some(ManagedSourceRole::interaction(candidate));
 
         assert!(matches!(
-            manager.commit_source_swap(&plan, &mut candidate),
+            plan.prepare(&mut candidate),
             Err(SourceSwapConflict::InvalidReplacementKey {
                 expected: ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
                 observed: ManagedSourceKey::Interaction(

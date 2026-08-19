@@ -15,10 +15,10 @@ use hypercolor_core::input::screen::{
     ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorPolicy,
 };
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, AudioSource, AudioSourceRole, BrowserInputSource, DataSource,
-    DataSourceKind, DataSourceRole, INPUT_EVENT_RING_CAPACITY, InputData, InputManager,
-    InputSource, InteractionSource, InteractionSourceRole, ManagedSourceKey, ManagedSourceRole,
-    MediaSource, NetSource, ScreenData, ScreenReconfigurationConflict, ScreenSource,
+    AudioSource, AudioSourceRole, BrowserInputSource, DataSource, DataSourceKind, DataSourceRole,
+    INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource, InteractionSource,
+    InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, MediaSource, NetSource,
+    PreparedAudioSourceSwap, ScreenData, ScreenReconfigurationConflict, ScreenSource,
     ScreenSourceRole, SourceCapabilityConflict, SourceCapabilityContext, SourceFreshness,
     SourceIssue, SourceKind, SourceRegistrationError, SourceResourceScanHealth, SourceRoleBinding,
     SourceSessionSlot, SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle,
@@ -56,6 +56,15 @@ fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
     manager
         .add_source(source)
         .expect("typed fixture source should match its declared role");
+}
+
+fn commit_prepared_audio_swap(manager: &mut InputManager, prepared: PreparedAudioSourceSwap) {
+    let mut prepared = prepared.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("prepared audio swap should commit");
+    prepared.discard();
+    retirement.retire();
 }
 
 // ── Mock Sources ───────────────────────────────────────────────────────────
@@ -560,157 +569,6 @@ impl SourceRoleBinding for MismatchedStatusAudioSource {
 
 impl AudioSource for MismatchedStatusAudioSource {}
 
-struct ReconfigurableAudioSource {
-    running: bool,
-    capture_active: bool,
-    config: AudioPipelineConfig,
-    name: String,
-}
-
-impl ReconfigurableAudioSource {
-    fn new() -> Self {
-        Self {
-            running: false,
-            capture_active: false,
-            config: AudioPipelineConfig::default(),
-            name: "AudioInput(default)".to_owned(),
-        }
-    }
-}
-
-impl InputSource for ReconfigurableAudioSource {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        let mut data = AudioData::silence();
-        data.rms_level =
-            if matches!(self.config.source, AudioSourceType::None) || !self.capture_active {
-                0.0
-            } else {
-                0.5
-            };
-        Ok(InputData::Audio(data))
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-}
-
-impl SourceRoleBinding for ReconfigurableAudioSource {
-    type Role = AudioSourceRole;
-}
-
-impl AudioSource for ReconfigurableAudioSource {
-    fn reconfigure_audio(
-        &mut self,
-        config: &AudioPipelineConfig,
-        name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        self.config = config.clone();
-        name.clone_into(&mut self.name);
-        self.running = true;
-        self.capture_active = capture_active;
-        Ok(())
-    }
-
-    fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.capture_active = active;
-        Ok(())
-    }
-}
-
-struct StatusReconfigurableAudioSource {
-    running: bool,
-    status: SourceStatusReporter,
-}
-
-impl StatusReconfigurableAudioSource {
-    fn new() -> Self {
-        Self {
-            running: false,
-            status: SourceStatusReporter::new(
-                "status_reconfigurable_audio",
-                SourceKind::Audio,
-                "test",
-                true,
-                true,
-                false,
-            ),
-        }
-    }
-}
-
-impl InputSource for StatusReconfigurableAudioSource {
-    fn name(&self) -> &'static str {
-        "StatusReconfigurableAudio"
-    }
-
-    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
-        Some(self.status.handle())
-    }
-
-    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
-        Some(&mut self.status)
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.status.stop();
-        self.running = false;
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        Ok(InputData::None)
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-}
-
-impl SourceRoleBinding for StatusReconfigurableAudioSource {
-    type Role = AudioSourceRole;
-}
-
-impl AudioSource for StatusReconfigurableAudioSource {
-    fn reconfigure_audio(
-        &mut self,
-        config: &AudioPipelineConfig,
-        _name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        let configured = !matches!(config.source, AudioSourceType::None);
-        self.status
-            .set_policy(configured, true, configured && capture_active)?;
-        self.running = true;
-        if configured && capture_active {
-            let session = self
-                .status
-                .begin_session()?
-                .expect("manager binds audio reconfiguration generation");
-            session.mark_event_driven_live_without_deadline(1);
-        }
-        Ok(())
-    }
-}
-
 /// A mock screen capture source that produces a known set of zone colors.
 struct MockScreenSource {
     running: bool,
@@ -1187,13 +1045,8 @@ impl SourceRoleBinding for CaptureTrackingAudioSource {
 }
 
 impl AudioSource for CaptureTrackingAudioSource {
-    fn reconfigure_audio(
-        &mut self,
-        _config: &AudioPipelineConfig,
-        _name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        self.capture_active = capture_active;
+    fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active = active;
         Ok(())
     }
 }
@@ -1500,8 +1353,11 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
         )
         .expect("unique screen source should plan");
     let mut replacement = Some(managed_screen(MockScreenSource::new(1)));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("matching screen replacement should prepare");
     let retirement = manager
-        .commit_source_swap(&plan, &mut replacement)
+        .commit_source_swap(&mut prepared)
         .expect("matching screen replacement should commit");
 
     assert!(replacement.is_none());
@@ -1528,6 +1384,34 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
         retired.source_graph_generation,
         after.source_graph_generation()
     );
+}
+
+#[test]
+fn statusless_audio_swap_invalidates_capture_cache_for_compatibility_demand() {
+    let mut manager = InputManager::new();
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Audio,
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("absent audio role should plan");
+    let mut replacement = Some(managed_audio(MockAudioSource::new(0.5)));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("statusless audio candidate should prepare");
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("statusless audio candidate should commit");
+    drop(replacement);
+    retirement.retire();
+
+    assert!(manager.source_status_registry().snapshot().statuses()[0].demanded);
+    let committed_generation = manager.source_graph_generation();
+    manager
+        .set_audio_capture_active(false)
+        .expect("invalidated cache should reconcile compatibility demand");
+    assert!(manager.source_graph_generation() > committed_generation);
+    assert!(!manager.source_status_registry().snapshot().statuses()[0].demanded);
 }
 
 #[test]
@@ -2171,38 +2055,6 @@ fn screen_data_empty_zones_is_valid() {
 }
 
 #[test]
-fn manager_reconfigures_existing_audio_source_live() {
-    let mut mgr = InputManager::new();
-    register_test_source(&mut mgr, managed_audio(ReconfigurableAudioSource::new()));
-
-    let config = AudioPipelineConfig {
-        source: AudioSourceType::Named("microphone".to_owned()),
-        ..AudioPipelineConfig::default()
-    };
-
-    mgr.apply_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
-        .expect("audio reconfigure should succeed");
-
-    assert_eq!(mgr.source_count(), 1);
-    assert_eq!(mgr.source_names(), vec!["AudioInput(microphone)"]);
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
-
-    mgr.set_audio_capture_active(true)
-        .expect("audio capture demand update should succeed");
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
-}
-
-#[test]
 fn prepared_audio_reconfiguration_commits_after_native_work_is_complete() {
     let config = AudioPipelineConfig {
         source: AudioSourceType::None,
@@ -2218,11 +2070,13 @@ fn prepared_audio_reconfiguration_commits_after_native_work_is_complete() {
     let plan = manager
         .plan_audio_runtime_config(false, &config, "audio-after", false)
         .expect("production audio source supports preparation");
-    let mut prepared = plan.prepare().expect("disabled audio preparation is local");
-    manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect("unchanged graph should accept prepared audio")
-        .retire();
+    let prepared = plan.prepare().expect("disabled audio preparation is local");
+    let mut prepared = prepared.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("unchanged graph should accept prepared audio");
+    prepared.discard();
+    retirement.retire();
 
     assert_eq!(manager.source_names(), vec!["audio-after"]);
 }
@@ -2234,16 +2088,18 @@ fn prepared_audio_enable_while_demanded_registers_a_live_source() {
         ..AudioPipelineConfig::default()
     };
     let mut manager = InputManager::new();
-    let mut prepared = manager
+    let prepared = manager
         .plan_audio_runtime_config(true, &config, "audio-active", true)
         .expect("absent audio source should support preparation")
         .prepare_with_synthetic_capture_for_testing()
         .expect("synthetic capture should stage without hardware");
 
-    manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect("active prepared audio source should commit")
-        .retire();
+    let mut prepared = prepared.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("active prepared audio source should commit");
+    prepared.discard();
+    retirement.retire();
 
     assert_eq!(manager.source_names(), vec!["audio-active"]);
     let statuses = manager.source_status_registry().snapshot().statuses();
@@ -2255,7 +2111,49 @@ fn prepared_audio_enable_while_demanded_registers_a_live_source() {
         statuses[0].source_graph_generation,
         manager.source_graph_generation()
     );
+    let committed_generation = manager.source_graph_generation();
+    manager
+        .set_audio_capture_active(true)
+        .expect("committed capture demand should already be cached");
+    assert_eq!(manager.source_graph_generation(), committed_generation);
     manager.stop_all();
+}
+
+#[test]
+fn prepared_audio_reconfiguration_preserves_stopped_lifecycle_and_order() {
+    let disabled = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let enabled = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    register_test_source(&mut manager, managed_screen(MockScreenSource::new(1)));
+    register_test_source(
+        &mut manager,
+        managed_audio(AudioInput::new(&disabled).with_name("audio-before")),
+    );
+    register_test_source(
+        &mut manager,
+        managed_data(SequencedSource::<DataSourceRole>::new([InputData::None])),
+    );
+
+    let prepared = manager
+        .plan_audio_runtime_config(true, &enabled, "audio-after", true)
+        .expect("stopped replacement should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("stopped replacement should not start capture");
+    commit_prepared_audio_swap(&mut manager, prepared);
+
+    assert_eq!(
+        manager.source_names(),
+        vec!["MockScreen", "audio-after", "Sequenced"]
+    );
+    let status = manager.source_status_registry().snapshot().statuses()[1].clone();
+    assert_eq!(status.state, SourceState::Stopped);
+    assert!(status.demanded);
 }
 
 #[test]
@@ -2270,23 +2168,70 @@ fn prepared_audio_reconfiguration_rejects_a_changed_input_graph() {
         managed_audio(AudioInput::new(&config).with_name("audio-before")),
     );
     manager.start_all().expect("audio source should start");
-    let mut prepared = manager
+    let prepared = manager
         .plan_audio_runtime_config(false, &config, "audio-after", false)
         .expect("production audio source supports preparation")
         .prepare()
         .expect("disabled audio preparation is local");
 
     register_test_source(&mut manager, managed_screen(MockScreenSource::new(1)));
-    let error = manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect_err("graph changes must fence a stale prepared runtime");
+    let mut prepared = prepared.into_source_swap();
+    let Err(error) = manager.commit_source_swap(&mut prepared) else {
+        panic!("graph changes must fence a stale prepared runtime");
+    };
 
-    assert!(matches!(
-        error.downcast_ref::<AudioReconfigurationConflict>(),
-        Some(AudioReconfigurationConflict::GraphChanged)
-    ));
+    assert_eq!(error, SourceSwapConflict::GraphChanged);
     assert!(error.to_string().contains("input graph changed"));
+    assert!(
+        prepared.has_replacement(),
+        "conflicts retain candidate ownership"
+    );
     assert_eq!(manager.source_names()[0], "audio-before");
+}
+
+#[test]
+fn prepared_audio_terminal_failure_rejects_every_commit_attempt_without_mutation() {
+    let disabled = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let enabled = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    register_test_source(
+        &mut manager,
+        managed_audio(AudioInput::new(&disabled).with_name("audio-before")),
+    );
+    manager.start_all().expect("audio source should start");
+    let old_handle = manager.source_status_registry().snapshot().handles()[0].clone();
+    let graph_generation = manager.source_graph_generation();
+    let prepared = manager
+        .plan_audio_runtime_config(true, &enabled, "audio-after", true)
+        .expect("replacement should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("synthetic candidate should prepare");
+    prepared.fail_before_commit_for_testing();
+    let mut prepared = prepared.into_source_swap();
+
+    for _ in 0..2 {
+        let Err(error) = manager.commit_source_swap(&mut prepared) else {
+            panic!("terminally failed candidate must never commit");
+        };
+        assert!(matches!(
+            error,
+            SourceSwapConflict::ReplacementNotReady {
+                key: ManagedSourceKey::Audio,
+                ..
+            }
+        ));
+        assert!(prepared.has_replacement());
+        assert_eq!(manager.source_graph_generation(), graph_generation);
+        assert_eq!(manager.source_names(), ["audio-before"]);
+        assert!(!old_handle.snapshot().retired);
+    }
+    prepared.discard();
 }
 
 #[test]
@@ -2299,7 +2244,7 @@ fn prepared_audio_reconfiguration_rejects_changed_capture_demand() {
     manager
         .set_audio_capture_active(false)
         .expect("initial demand should be cached");
-    let mut prepared = manager
+    let prepared = manager
         .plan_audio_runtime_config(false, &config, "audio-disabled", false)
         .expect("absent audio source supports disabled preparation")
         .prepare()
@@ -2308,39 +2253,14 @@ fn prepared_audio_reconfiguration_rejects_changed_capture_demand() {
     manager
         .set_audio_capture_active(true)
         .expect("concurrent demand should update the graph generation");
-    let error = manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect_err("capture demand changes must fence a stale prepared runtime");
+    let mut prepared = prepared.into_source_swap();
+    let Err(error) = manager.commit_source_swap(&mut prepared) else {
+        panic!("capture demand changes must fence a stale prepared runtime");
+    };
 
     assert!(error.to_string().contains("input graph changed"));
+    assert!(!prepared.has_replacement());
     assert_eq!(manager.source_count(), 0);
-}
-
-#[test]
-fn prepared_audio_reconfiguration_rejects_terminal_failure_before_commit() {
-    let config = AudioPipelineConfig {
-        source: AudioSourceType::None,
-        ..AudioPipelineConfig::default()
-    };
-    let mut manager = InputManager::new();
-    register_test_source(
-        &mut manager,
-        managed_audio(AudioInput::new(&config).with_name("audio-before")),
-    );
-    manager.start_all().expect("audio source should start");
-    let mut prepared = manager
-        .plan_audio_runtime_config(false, &config, "audio-after", false)
-        .expect("production audio source supports preparation")
-        .prepare()
-        .expect("disabled audio preparation is local");
-    prepared.fail_before_commit_for_testing();
-
-    let error = manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect_err("a terminal staged failure must preserve the committed source");
-
-    assert!(error.to_string().contains("failed before commit"));
-    assert_eq!(manager.source_names(), vec!["audio-before"]);
 }
 
 #[test]
@@ -2360,26 +2280,26 @@ fn disabling_absent_audio_fences_an_older_enable_plan() {
         .expect("absent audio source supports prepared enable")
         .prepare()
         .expect("idle enable does not open native capture");
-    let mut newer_disable = manager
+    let newer_disable = manager
         .plan_audio_runtime_config(false, &disabled, "audio-disabled", false)
         .expect("absent audio source supports prepared disable")
         .prepare()
         .expect("disable preparation is local");
 
-    manager
-        .commit_audio_runtime_config(&mut newer_disable)
-        .expect("newer disable should commit")
-        .retire();
+    let mut newer_disable = newer_disable.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut newer_disable)
+        .expect("newer disable should commit");
+    newer_disable.discard();
+    retirement.retire();
     assert!(manager.source_graph_generation() > initial_generation);
 
-    let mut older_enable = older_enable;
-    let error = manager
-        .commit_audio_runtime_config(&mut older_enable)
-        .expect_err("newer disable must fence an older enable plan");
-    assert!(matches!(
-        error.downcast_ref::<AudioReconfigurationConflict>(),
-        Some(AudioReconfigurationConflict::GraphChanged)
-    ));
+    let mut older_enable = older_enable.into_source_swap();
+    let Err(error) = manager.commit_source_swap(&mut older_enable) else {
+        panic!("newer disable must fence an older enable plan");
+    };
+    assert_eq!(error, SourceSwapConflict::GraphChanged);
+    assert!(older_enable.has_replacement());
     assert_eq!(manager.source_count(), 0);
 }
 
@@ -2392,16 +2312,24 @@ fn manager_adds_audio_source_when_live_audio_is_enabled() {
         ..AudioPipelineConfig::default()
     };
 
-    mgr.apply_audio_runtime_config(false, &config, "AudioInput(none)", false)
-        .expect("disabling absent audio source should be a no-op");
+    let prepared = mgr
+        .plan_audio_runtime_config(false, &config, "AudioInput(none)", false)
+        .expect("absent disable should plan")
+        .prepare()
+        .expect("absent disable should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
     assert_eq!(mgr.source_count(), 0);
 
     let config = AudioPipelineConfig {
         source: AudioSourceType::Microphone,
         ..AudioPipelineConfig::default()
     };
-    mgr.apply_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
-        .expect("enabling audio should add a source");
+    let prepared = mgr
+        .plan_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
+        .expect("absent enable should plan")
+        .prepare()
+        .expect("idle enable should not open capture");
+    commit_prepared_audio_swap(&mut mgr, prepared);
 
     assert_eq!(mgr.source_count(), 1);
     assert_eq!(mgr.source_names(), vec!["AudioInput(microphone)"]);
@@ -2411,98 +2339,119 @@ fn manager_adds_audio_source_when_live_audio_is_enabled() {
 fn manager_forces_capture_inactive_when_live_audio_is_disabled() {
     let mut mgr = InputManager::new();
     register_test_source(&mut mgr, managed_audio(CaptureTrackingAudioSource::new()));
+    mgr.start_all().expect("audio fixture should start");
 
     let config = AudioPipelineConfig {
         source: AudioSourceType::None,
         ..AudioPipelineConfig::default()
     };
 
-    mgr.apply_audio_runtime_config(false, &config, "AudioInput(none)", true)
-        .expect("disabling audio should clear capture demand");
+    let prepared = mgr
+        .plan_audio_runtime_config(false, &config, "AudioInput(none)", true)
+        .expect("disable should plan")
+        .prepare()
+        .expect("disabled replacement should stay local");
+    commit_prepared_audio_swap(&mut mgr, prepared);
 
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
+    let status = mgr.source_status_registry().snapshot().statuses()[0].clone();
+    assert!(!status.configured);
+    assert!(!status.demanded);
+    assert_eq!(status.state, SourceState::Stopped);
 }
 
 #[test]
 fn manager_reenables_existing_audio_source_after_live_disable() {
     let mut mgr = InputManager::new();
-    register_test_source(&mut mgr, managed_audio(ReconfigurableAudioSource::new()));
+    let initial = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    register_test_source(&mut mgr, managed_audio(AudioInput::new(&initial)));
+    mgr.start_all().expect("audio source should start");
 
     let enabled_config = AudioPipelineConfig {
         source: AudioSourceType::Named("microphone".to_owned()),
         ..AudioPipelineConfig::default()
     };
 
-    mgr.apply_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
-        .expect("enabling audio should succeed");
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
+    let prepared = mgr
+        .plan_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
+        .expect("enable should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("synthetic capture should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
+    assert!(mgr.source_status_registry().snapshot().statuses()[0].demanded);
 
     let disabled_config = AudioPipelineConfig {
         source: AudioSourceType::None,
         ..enabled_config.clone()
     };
 
-    mgr.apply_audio_runtime_config(false, &disabled_config, "AudioInput(microphone)", true)
-        .expect("disabling audio should keep the existing source registered");
+    let prepared = mgr
+        .plan_audio_runtime_config(false, &disabled_config, "AudioInput(microphone)", true)
+        .expect("disable should plan")
+        .prepare()
+        .expect("disabled replacement should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
+    assert_eq!(mgr.source_count(), 1);
+    assert!(!mgr.source_status_registry().snapshot().statuses()[0].demanded);
 
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
-
-    mgr.apply_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
-        .expect("re-enabling audio should restore live capture");
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
+    let prepared = mgr
+        .plan_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
+        .expect("re-enable should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("synthetic capture should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
+    assert!(mgr.source_status_registry().snapshot().statuses()[0].demanded);
 }
 
 #[test]
 fn audio_runtime_reconfiguration_binds_each_status_session_to_a_new_graph_generation() {
     let mut manager = InputManager::new();
-    register_test_source(
-        &mut manager,
-        managed_audio(StatusReconfigurableAudioSource::new()),
-    );
+    let initial = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    register_test_source(&mut manager, managed_audio(AudioInput::new(&initial)));
+    manager.start_all().expect("audio source should start");
     let registry = manager.source_status_registry();
+    let original_handle = registry.snapshot().handles()[0].clone();
+    let original_source_id = original_handle.snapshot().source_id.clone();
     let config_a = AudioPipelineConfig {
         source: AudioSourceType::Named("source-a".to_owned()),
         ..AudioPipelineConfig::default()
     };
 
-    manager
-        .apply_audio_runtime_config(true, &config_a, "source-a", true)
-        .expect("first live audio source should bind");
+    let prepared = manager
+        .plan_audio_runtime_config(true, &config_a, "source-a", true)
+        .expect("first source should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("first source should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let first = registry.snapshot().statuses()[0].clone();
-    assert_eq!(first.state, SourceState::Live);
+    assert_eq!(first.state, SourceState::Starting);
+    assert_eq!(first.source_id, original_source_id);
     assert_eq!(
         first.source_graph_generation,
         manager.source_graph_generation()
     );
 
-    manager
-        .apply_audio_runtime_config(false, &config_a, "source-a", true)
-        .expect("audio disable should fence the active session");
+    let prepared = manager
+        .plan_audio_runtime_config(false, &config_a, "source-a", true)
+        .expect("disable should plan")
+        .prepare()
+        .expect("disable should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let disabled = registry.snapshot().statuses()[0].clone();
     assert_eq!(disabled.state, SourceState::Stopped);
     assert!(!disabled.demanded);
 
-    manager
-        .apply_audio_runtime_config(true, &config_a, "source-a", true)
-        .expect("audio re-enable should start a successor session");
+    let prepared = manager
+        .plan_audio_runtime_config(true, &config_a, "source-a", true)
+        .expect("re-enable should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("re-enable should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let reenabled = registry.snapshot().statuses()[0].clone();
     assert!(
         reenabled.source_graph_generation > first.source_graph_generation,
@@ -2514,9 +2463,12 @@ fn audio_runtime_reconfiguration_binds_each_status_session_to_a_new_graph_genera
         source: AudioSourceType::Named("source-b".to_owned()),
         ..config_a
     };
-    manager
-        .apply_audio_runtime_config(true, &config_b, "source-b", true)
-        .expect("active source replacement should start a successor session");
+    let prepared = manager
+        .plan_audio_runtime_config(true, &config_b, "source-b", true)
+        .expect("replacement should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("replacement should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let replaced = registry.snapshot().statuses()[0].clone();
     assert!(replaced.source_graph_generation > reenabled.source_graph_generation);
     assert!(replaced.session_generation > reenabled.session_generation);
@@ -2524,6 +2476,8 @@ fn audio_runtime_reconfiguration_binds_each_status_session_to_a_new_graph_genera
         replaced.source_graph_generation,
         manager.source_graph_generation()
     );
+    assert!(original_handle.snapshot().retired);
+    assert_eq!(replaced.source_id, original_source_id);
 }
 
 #[test]
@@ -3423,8 +3377,11 @@ fn manager_tracks_and_removes_host_capture_sources() {
         )
         .expect("unique host source plans");
     let mut replacement = None;
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("host removal should prepare");
     let retirement = mgr
-        .commit_source_swap(&plan, &mut replacement)
+        .commit_source_swap(&mut prepared)
         .expect("host removal commits");
     assert_eq!(mgr.source_graph_generation(), graph_generation + 1);
     assert!(!mgr.has_host_capture_source());
@@ -3450,8 +3407,11 @@ fn absent_host_commit_fences_an_older_enable_plan() {
         .expect("empty host slot plans a disable");
     let graph_generation = manager.source_graph_generation();
     let mut no_replacement = None;
+    let mut prepared_disable = disable
+        .prepare(&mut no_replacement)
+        .expect("absence should prepare");
     let retirement = manager
-        .commit_source_swap(&disable, &mut no_replacement)
+        .commit_source_swap(&mut prepared_disable)
         .expect("absence commit linearizes");
 
     assert_eq!(manager.source_graph_generation(), graph_generation + 1);
@@ -3461,12 +3421,18 @@ fn absent_host_commit_fences_an_older_enable_plan() {
     let mut candidate = CaptureTrackingInteractionSource::new(transitions);
     candidate.start().expect("host candidate starts");
     let mut candidate = Some(managed_interaction(candidate));
+    let mut stale_enable = stale_enable
+        .prepare(&mut candidate)
+        .expect("stale candidate still prepares against its captured plan");
 
     assert!(matches!(
-        manager.commit_source_swap(&stale_enable, &mut candidate),
+        manager.commit_source_swap(&mut stale_enable),
         Err(SourceSwapConflict::GraphChanged)
     ));
-    assert!(candidate.is_some(), "stale enable retains its candidate");
+    assert!(
+        stale_enable.has_replacement(),
+        "stale enable retains its candidate"
+    );
     assert!(!manager.has_host_capture_source());
     assert_eq!(manager.source_graph_generation(), graph_generation + 1);
 }

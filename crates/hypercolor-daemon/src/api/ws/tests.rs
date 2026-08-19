@@ -1714,8 +1714,11 @@ async fn relay_sensors_reacquires_replaced_source_while_subscribed() {
             snapshot: Arc::new(StdMutex::new(Arc::new(replacement_snapshot))),
             running: false,
         })));
+        let mut prepared = plan
+            .prepare(&mut replacement)
+            .expect("sensor replacement should prepare");
         input_manager
-            .commit_source_swap(&plan, &mut replacement)
+            .commit_source_swap(&mut prepared)
             .expect("sensor replacement should commit")
     };
     retirement.retire();

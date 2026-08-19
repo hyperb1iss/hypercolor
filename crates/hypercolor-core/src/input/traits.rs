@@ -6,8 +6,7 @@
 
 use super::graph::InteractionSourceOrigin;
 use super::status::{SourceKind, SourceStatusError, SourceStatusHandle, SourceStatusReporter};
-use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
-use crate::types::audio::{AudioData, AudioPipelineConfig};
+use crate::types::audio::AudioData;
 use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
 use crate::types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -839,39 +838,13 @@ pub use ManagedSource as InputSource;
 
 /// Audio-specific source contract.
 pub trait AudioSource: ManagedSource + SourceRoleBinding<Role = AudioSourceRole> {
-    /// Reconfigure a running audio source without rebuilding the full input manager.
-    ///
-    /// Non-audio sources can ignore this by keeping the default implementation.
+    /// Confirm that a fully prepared replacement remains ready for commit.
     ///
     /// # Errors
     ///
-    /// Returns an error if the source cannot apply the new audio configuration.
-    fn reconfigure_audio(
-        &mut self,
-        _config: &AudioPipelineConfig,
-        _name: &str,
-        _capture_active: bool,
-    ) -> anyhow::Result<()> {
+    /// Returns a stable failure description when the staged runtime terminated.
+    fn ensure_prepared_source_ready(&mut self) -> Result<(), Arc<str>> {
         Ok(())
-    }
-
-    /// Whether the source can commit a native runtime prepared without holding
-    /// the input manager lock.
-    fn supports_prepared_audio_reconfiguration(&self) -> bool {
-        false
-    }
-
-    /// Commit a previously staged native audio runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the source does not support transactional audio
-    /// reconfiguration or the staged state cannot be committed.
-    fn commit_prepared_audio_reconfiguration(
-        &mut self,
-        _prepared: &mut PreparedAudioReconfiguration,
-    ) -> anyhow::Result<AudioRuntimeRetirement> {
-        anyhow::bail!("audio source does not support prepared reconfiguration")
     }
 
     /// Toggle whether an audio source should actively capture from hardware.
