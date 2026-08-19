@@ -6,8 +6,8 @@ use hypercolor_ui::ws::messages::{
     EFFECT_STARTED_EVENTS, EFFECT_STOPPED_EVENTS, InitialSubscriptionAdmission,
     OutputPowerReconciler, PerformanceMetrics, SCENE_EVENTS, extract_effect_error_hint,
     extract_layer_health, extract_scene_event_hint, group_has_degraded_layer,
-    initial_subscription_admission, is_resync_required, layer_health_key,
-    reset_layer_health_cache, scene_event_affects_active_effect, sequence_scene_event_hint,
+    initial_subscription_admission, is_resync_required, layer_health_key, reset_layer_health_cache,
+    scene_event_affects_active_effect, sequence_scene_event_hint,
 };
 
 #[test]
