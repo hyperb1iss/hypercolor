@@ -53,7 +53,14 @@ from .scene import (
     SceneLayoutActivationOutcome,
 )
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
-from .system import HealthStatus, OutputState, RenderLoopStatus, ServerIdentity, SystemState
+from .system import (
+    HealthStatus,
+    OutputState,
+    RenderLoopStatus,
+    ServerIdentity,
+    SystemResource,
+    SystemState,
+)
 from .zone import (
     DisplayTarget,
     ReplaceSceneLayerRequest,
@@ -125,6 +132,7 @@ __all__ = [
     "SideEffectOutcome",
     "SpatialLayout",
     "SpectrumSnapshot",
+    "SystemResource",
     "SystemState",
     "TransitionSpec",
     "TransportKind",

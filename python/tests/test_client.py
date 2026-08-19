@@ -11,6 +11,7 @@ import respx
 
 from hypercolor.client import HypercolorClient, _normalize_payload
 from hypercolor.exceptions import (
+    HypercolorAuthenticationError,
     HypercolorConnectionError,
     HypercolorNotFoundError,
 )
@@ -859,35 +860,42 @@ async def test_health(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_status_uses_current_daemon_shape(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/status").mock(
+    respx.get("http://hyperia.test:9420/api/v1/system").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
                 {
-                    "running": True,
-                    "version": "0.1.0",
-                    "server": {
+                    "identity": {
                         "instance_id": "srv_1",
                         "instance_name": "Hyperia",
                         "version": "0.1.0",
                     },
-                    "config_path": "/var/lib/hypercolor/hypercolor.toml",
-                    "data_dir": "/var/lib/hypercolor/data",
-                    "cache_dir": "/var/cache/hypercolor",
-                    "uptime_seconds": 42,
-                    "device_count": 2,
-                    "effect_count": 9,
-                    "scene_count": 3,
-                    "active_effect": "Aurora",
-                    "global_brightness": 65,
-                    "audio_available": True,
-                    "capture_available": False,
-                    "render_loop": {
-                        "state": "running",
-                        "fps_tier": "high",
-                        "total_frames": 1024,
+                    "status": {
+                        "running": True,
+                        "version": "0.1.0",
+                        "server": {
+                            "instance_id": "srv_1",
+                            "instance_name": "Hyperia",
+                            "version": "0.1.0",
+                        },
+                        "config_path": "/var/lib/hypercolor/hypercolor.toml",
+                        "data_dir": "/var/lib/hypercolor/data",
+                        "cache_dir": "/var/cache/hypercolor",
+                        "uptime_seconds": 42,
+                        "device_count": 2,
+                        "effect_count": 9,
+                        "scene_count": 3,
+                        "active_effect": "Aurora",
+                        "global_brightness": 65,
+                        "audio_available": True,
+                        "capture_available": False,
+                        "render_loop": {
+                            "state": "running",
+                            "fps_tier": "high",
+                            "total_frames": 1024,
+                        },
+                        "event_bus_subscribers": 4,
                     },
-                    "event_bus_subscribers": 4,
                 }
             ),
         )
@@ -899,6 +907,30 @@ async def test_get_status_uses_current_daemon_shape(client: HypercolorClient) ->
     assert status.brightness == 65
     assert status.paused is False
     assert status.active_effect == "Aurora"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_status_requires_authenticated_system_projection(
+    client: HypercolorClient,
+) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/system").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "identity": {
+                        "instance_id": "srv_1",
+                        "instance_name": "Hyperia",
+                        "version": "0.1.0",
+                    }
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorAuthenticationError):
+        await client.get_status()
 
 
 @pytest.mark.asyncio
