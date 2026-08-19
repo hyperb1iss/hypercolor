@@ -7222,17 +7222,19 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
     };
     assert_ne!(first_layer_id, second_layer_id);
 
-    let stop_response = app
+    let deactivate_response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/library/playlists/stop")
+                .uri("/api/v1/library/playlists/deactivate")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
+    let deactivate_json = body_json(deactivate_response).await;
+    assert_eq!(deactivate_json["data"]["deactivated"], true);
 }
 
 #[tokio::test]
@@ -7343,17 +7345,17 @@ async fn library_playlist_activate_replaces_previous_runtime() {
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["playlist"]["id"], second_id);
 
-    let stop_response = app
+    let deactivate_response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/library/playlists/stop")
+                .uri("/api/v1/library/playlists/deactivate")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

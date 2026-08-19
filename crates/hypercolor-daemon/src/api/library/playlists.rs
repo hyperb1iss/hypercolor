@@ -27,8 +27,8 @@ use super::{metadata_for_effect_id, resolve_preset_id, store_error_to_response, 
 // the web UI and the TUI.
 pub use hypercolor_types::api::library::{
     ActivatePlaylistResponse, ActivePlaylistResponse, ActivePlaylistStateResponse,
-    DeletePlaylistResponse, PlaylistItemRequest, PlaylistListResponse, PlaylistTargetRequest,
-    SavePlaylistRequest, StopPlaylistResponse,
+    DeactivatePlaylistResponse, DeletePlaylistResponse, PlaylistItemRequest, PlaylistListResponse,
+    PlaylistTargetRequest, SavePlaylistRequest,
 };
 
 const DEFAULT_PLAYLIST_ITEM_DURATION_MS: u64 = 30_000;
@@ -286,8 +286,8 @@ pub async fn get_active_playlist(State(state): State<Arc<AppState>>) -> Response
     })
 }
 
-/// `POST /api/v1/library/playlists/stop` — stop playlist playback if active.
-pub async fn stop_playlist(State(state): State<Arc<AppState>>) -> Response {
+/// `POST /api/v1/library/playlists/deactivate` — end playlist playback if active.
+pub async fn deactivate_playlist(State(state): State<Arc<AppState>>) -> Response {
     let active = {
         let mut runtime = state.playlist_runtime.lock().await;
         runtime.active.take()
@@ -299,9 +299,9 @@ pub async fn stop_playlist(State(state): State<Arc<AppState>>) -> Response {
     let payload = active_playlist_payload(&active);
     stop_runtime(Some(active));
 
-    ApiResponse::ok(StopPlaylistResponse {
+    ApiResponse::ok(DeactivatePlaylistResponse {
         playlist: payload,
-        stopped: true,
+        deactivated: true,
     })
 }
 

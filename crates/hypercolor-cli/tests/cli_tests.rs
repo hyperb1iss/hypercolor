@@ -401,7 +401,7 @@ fn build_cmd() -> clap::Command {
                                 .arg(Arg::new("playlist").required(true)),
                         )
                         .subcommand(Command::new("active").about("Show active playlist"))
-                        .subcommand(Command::new("stop").about("Stop active playlist"))
+                        .subcommand(Command::new("deactivate").about("Deactivate active playlist"))
                         .subcommand(
                             Command::new("delete")
                                 .about("Delete playlist")
@@ -1125,6 +1125,30 @@ fn parse_library_playlists_activate() {
     assert_eq!(
         activate.get_one::<String>("playlist").map(String::as_str),
         Some("runtime_loop")
+    );
+}
+
+#[test]
+fn parse_library_playlists_deactivate_with_the_real_cli() {
+    use clap::Parser as _;
+    use hypercolor_cli::Commands;
+    use hypercolor_cli::commands::library::{LibraryCommand, PlaylistsCommand};
+
+    let cli =
+        hypercolor_cli::Cli::try_parse_from(["hypercolor", "library", "playlists", "deactivate"])
+            .expect("library playlists deactivate should parse");
+    let Commands::Library(library) = cli.command else {
+        panic!("expected the library subcommand");
+    };
+    let LibraryCommand::Playlists(playlists) = library.command else {
+        panic!("expected the playlists subcommand");
+    };
+    assert!(matches!(playlists.command, PlaylistsCommand::Deactivate));
+
+    assert!(
+        hypercolor_cli::Cli::try_parse_from(["hypercolor", "library", "playlists", "stop",])
+            .is_err(),
+        "the retired stop command must not remain as an alias"
     );
 }
 

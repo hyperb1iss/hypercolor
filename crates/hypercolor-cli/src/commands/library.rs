@@ -160,8 +160,8 @@ pub enum PlaylistsCommand {
     Activate(PlaylistActivateArgs),
     /// Show currently active playlist runtime.
     Active,
-    /// Stop the active playlist runtime.
-    Stop,
+    /// Deactivate the active playlist runtime.
+    Deactivate,
     /// Delete a playlist.
     Delete(PlaylistDeleteArgs),
 }
@@ -656,9 +656,9 @@ async fn execute_playlists(
                 }
             }
         }
-        PlaylistsCommand::Stop => {
+        PlaylistsCommand::Deactivate => {
             let response = client
-                .post("/library/playlists/stop", &serde_json::json!({}))
+                .post("/library/playlists/deactivate", &serde_json::json!({}))
                 .await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
@@ -668,7 +668,7 @@ async fn execute_playlists(
                         .and_then(|playlist| playlist.get("name"))
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("?");
-                    ctx.success(&format!("Playlist stopped: {name}"));
+                    ctx.success(&format!("Playlist deactivated: {name}"));
                 }
             }
         }
