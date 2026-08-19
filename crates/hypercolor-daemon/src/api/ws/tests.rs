@@ -7,6 +7,7 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message, Utf8Bytes};
 use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
+use tokio_util::sync::CancellationToken;
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use hypercolor_core::effect::EffectRegistry;
@@ -132,8 +133,9 @@ fn websocket_native_errors_project_canonical_domain_codes() {
 use super::relays::{
     PreviewCursorQueue, PreviewOutboundError, PreviewOutboundItem, PreviewOutboundLimits,
     PreviewOutboundReceiver, PreviewOutboundSender, PreviewPublication, PreviewPublishOutcome,
-    PreviewSendCursor, build_device_metrics_message, build_metrics_message,
-    preview_outbound_channel, preview_outbound_channel_with_limits, publish_subscriptions,
+    PreviewRelayPublish, PreviewSendCursor, build_device_metrics_message, build_metrics_message,
+    preview_outbound_channel, preview_outbound_channel_with_limits,
+    publish_preview_until_cancelled, publish_preview_while_subscribed, publish_subscriptions,
     relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
     relay_screen_zones, relay_sensors, relay_spectrum, relay_zone_preview, sync_preview_receiver,
     try_enqueue_json,
@@ -2578,6 +2580,98 @@ async fn preview_router_retries_the_latest_stream_after_capacity_frees() {
     let decoded = WirePreviewFrame::decode_bytes(&encoded).expect("remaining preview frame");
     assert_eq!(decoded.channel, PreviewFrameChannel::ScreenCanvas);
     assert!(receiver.try_recv().is_none());
+}
+
+#[tokio::test]
+async fn preview_capacity_wait_yields_to_subscription_changes() {
+    let canvas = preview_test_frame(PreviewFrameChannel::Canvas, 1, 64);
+    let screen = preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 64);
+    let publication_bytes = canvas.len().max(screen.len());
+    let (sender, receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes: publication_bytes,
+        max_connection_bytes: publication_bytes,
+    });
+    sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+            canvas,
+            None,
+        )
+        .expect("canvas preview publication");
+    let in_flight =
+        try_receive_preview_publication(&receiver).expect("canvas preview moves in flight");
+
+    let (subscriptions_tx, mut subscriptions_rx) = watch::channel(SubscriptionState::default());
+    let waiting_sender = sender.clone();
+    let waiting = tokio::spawn(async move {
+        publish_preview_while_subscribed(
+            &waiting_sender,
+            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
+            screen,
+            "screen_canvas",
+            &mut subscriptions_rx,
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !waiting.is_finished(),
+        "publication should be capacity-bound"
+    );
+
+    subscriptions_tx
+        .send(SubscriptionState::default())
+        .expect("subscription relay remains live");
+    assert_eq!(
+        waiting.await.expect("waiting publication task"),
+        PreviewRelayPublish::SubscriptionChanged
+    );
+    assert!(receiver.try_recv().is_none());
+    receiver.complete(&in_flight);
+}
+
+#[tokio::test]
+async fn preview_capacity_wait_yields_to_task_cancellation() {
+    let canvas = preview_test_frame(PreviewFrameChannel::Canvas, 1, 64);
+    let display = display_preview_test_frame(2, 64);
+    let publication_bytes = canvas.len().max(display.len());
+    let (sender, receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes: publication_bytes,
+        max_connection_bytes: publication_bytes,
+    });
+    sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+            canvas,
+            None,
+        )
+        .expect("canvas preview publication");
+    let in_flight =
+        try_receive_preview_publication(&receiver).expect("canvas preview moves in flight");
+
+    let cancel = CancellationToken::new();
+    let waiting_cancel = cancel.clone();
+    let waiting_sender = sender.clone();
+    let waiting = tokio::spawn(async move {
+        publish_preview_until_cancelled(
+            &waiting_sender,
+            PreviewStreamId::Display(test_display_device().to_string()),
+            display,
+            "display_preview",
+            &waiting_cancel,
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !waiting.is_finished(),
+        "publication should be capacity-bound"
+    );
+
+    cancel.cancel();
+    assert_eq!(waiting.await.expect("waiting publication task"), None);
+    assert!(receiver.try_recv().is_none());
+    receiver.complete(&in_flight);
 }
 
 #[tokio::test]

@@ -391,7 +391,8 @@ fn preview_cancellation_state_bytes(stream: &PreviewStreamId) -> usize {
 #[derive(Debug)]
 struct PreviewOutboundShared {
     state: StdMutex<PreviewOutboundState>,
-    notify: Notify,
+    item_notify: Notify,
+    capacity_notify: Notify,
 }
 
 #[derive(Clone, Debug)]
@@ -426,7 +427,8 @@ pub(super) fn preview_outbound_channel_with_limits(
             limits,
             capability: PreviewTransportCapability::default(),
         }),
-        notify: Notify::new(),
+        item_notify: Notify::new(),
+        capacity_notify: Notify::new(),
     });
     (
         PreviewOutboundSender {
@@ -645,7 +647,7 @@ impl PreviewOutboundSender {
         WS_PREVIEW_QUEUE_BYTES.fetch_add(encoded_len, Ordering::Relaxed);
         WS_PREVIEW_PUBLICATION_QUEUED_COUNT.fetch_add(1, Ordering::Relaxed);
         drop(state);
-        self.shared.notify.notify_one();
+        self.shared.item_notify.notify_one();
         Ok(outcome)
     }
 
@@ -692,7 +694,8 @@ impl PreviewOutboundSender {
         let cancelled = streams.len();
         drop(state);
         if cancelled > 0 {
-            self.shared.notify.notify_one();
+            self.shared.item_notify.notify_one();
+            self.shared.capacity_notify.notify_waiters();
         }
         Ok(cancelled)
     }
@@ -703,11 +706,18 @@ impl PreviewOutboundSender {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(removed) = state.remove_queued(stream) {
+        let released_capacity = if let Some(removed) = state.remove_queued(stream) {
             state.queued_bytes = state.queued_bytes.saturating_sub(removed.encoded.len());
             WS_PREVIEW_QUEUE_BYTES.fetch_sub(removed.encoded.len(), Ordering::Relaxed);
-        }
+            true
+        } else {
+            false
+        };
         state.current.remove(stream);
+        drop(state);
+        if released_capacity {
+            self.shared.capacity_notify.notify_waiters();
+        }
     }
 
     pub(super) fn cancel_subscription(
@@ -757,7 +767,8 @@ impl PreviewOutboundSender {
         let cancelled = streams.len();
         drop(state);
         if cancelled > 0 {
-            self.shared.notify.notify_one();
+            self.shared.item_notify.notify_one();
+            self.shared.capacity_notify.notify_waiters();
         }
         Ok(cancelled)
     }
@@ -802,7 +813,7 @@ fn preview_stream_matches_selection(
 impl PreviewOutboundReceiver {
     pub(super) async fn recv(&self) -> PreviewOutboundItem {
         loop {
-            let notified = self.shared.notify.notified();
+            let notified = self.shared.item_notify.notified();
             if let Some(publication) = self.try_recv() {
                 return publication;
             }
@@ -860,7 +871,7 @@ impl PreviewOutboundReceiver {
         }
         remove_current_publication(&mut state.current, stream, publication_id);
         drop(state);
-        self.shared.notify.notify_waiters();
+        self.shared.capacity_notify.notify_waiters();
     }
 }
 
@@ -1455,7 +1466,7 @@ pub(super) async fn publish_preview(
     channel: &'static str,
 ) -> bool {
     loop {
-        let capacity_available = preview_tx.shared.notify.notified();
+        let capacity_available = preview_tx.shared.capacity_notify.notified();
         tokio::pin!(capacity_available);
         capacity_available.as_mut().enable();
         match preview_tx.publish(stream.clone(), payload.clone(), None) {
@@ -1468,6 +1479,53 @@ pub(super) async fn publish_preview(
                 return false;
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreviewRelayPublish {
+    Published,
+    Rejected,
+    SubscriptionChanged,
+    SubscriptionsClosed,
+}
+
+pub(super) async fn publish_preview_while_subscribed(
+    preview_tx: &PreviewOutboundSender,
+    stream: PreviewStreamId,
+    payload: Bytes,
+    channel: &'static str,
+    subscriptions: &mut watch::Receiver<SubscriptionState>,
+) -> PreviewRelayPublish {
+    tokio::select! {
+        published = publish_preview(preview_tx, stream, payload, channel) => {
+            if published {
+                PreviewRelayPublish::Published
+            } else {
+                PreviewRelayPublish::Rejected
+            }
+        }
+        changed = subscriptions.changed() => {
+            if changed.is_err() {
+                PreviewRelayPublish::SubscriptionsClosed
+            } else {
+                let _ = subscriptions.borrow_and_update();
+                PreviewRelayPublish::SubscriptionChanged
+            }
+        }
+    }
+}
+
+pub(super) async fn publish_preview_until_cancelled(
+    preview_tx: &PreviewOutboundSender,
+    stream: PreviewStreamId,
+    payload: Bytes,
+    channel: &'static str,
+    cancel: &CancellationToken,
+) -> Option<bool> {
+    tokio::select! {
+        published = publish_preview(preview_tx, stream, payload, channel) => Some(published),
+        () = cancel.cancelled() => None,
     }
 }
 
@@ -1712,7 +1770,7 @@ pub(super) async fn relay_canvas(
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
 
-    loop {
+    'relay: loop {
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
@@ -1815,15 +1873,24 @@ pub(super) async fn relay_canvas(
                     continue;
                 };
 
-                if !publish_preview(
+                match publish_preview_while_subscribed(
                     &preview_tx,
                     PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
                     payload,
                     "canvas",
+                    &mut subscriptions,
                 ).await {
-                    last_sent_at = Instant::now();
-                    pending_send = false;
-                    continue;
+                    PreviewRelayPublish::Published => {}
+                    PreviewRelayPublish::Rejected => {
+                        last_sent_at = Instant::now();
+                        pending_send = false;
+                        continue;
+                    }
+                    PreviewRelayPublish::SubscriptionChanged => {
+                        active_canvas_config = None;
+                        continue 'relay;
+                    }
+                    PreviewRelayPublish::SubscriptionsClosed => break 'relay,
                 }
 
                 last_sent_at = Instant::now();
@@ -1848,7 +1915,7 @@ pub(super) async fn relay_screen_canvas(
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
 
-    loop {
+    'relay: loop {
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
@@ -1930,15 +1997,24 @@ pub(super) async fn relay_screen_canvas(
                     continue;
                 };
 
-                if !publish_preview(
+                match publish_preview_while_subscribed(
                     &preview_tx,
                     PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
                     payload,
                     "screen_canvas",
+                    &mut subscriptions,
                 ).await {
-                    last_sent_at = Instant::now();
-                    pending_send = false;
-                    continue;
+                    PreviewRelayPublish::Published => {}
+                    PreviewRelayPublish::Rejected => {
+                        last_sent_at = Instant::now();
+                        pending_send = false;
+                        continue;
+                    }
+                    PreviewRelayPublish::SubscriptionChanged => {
+                        active_canvas_config = None;
+                        continue 'relay;
+                    }
+                    PreviewRelayPublish::SubscriptionsClosed => break 'relay,
                 }
 
                 last_sent_at = Instant::now();
@@ -1965,7 +2041,7 @@ pub(super) async fn relay_screen_zones(
     let mut pending_send = false;
     let mut last_sent_at = preview_initial_last_sent();
 
-    loop {
+    'relay: loop {
         if active_config.is_none() {
             active_config = {
                 let subscriptions = subscriptions.borrow();
@@ -2030,13 +2106,22 @@ pub(super) async fn relay_screen_zones(
                         continue;
                     }
                 };
-                if publish_preview(
+                match publish_preview_while_subscribed(
                     &preview_tx,
                     PreviewStreamId::ScreenZones,
                     payload,
                     "screen_zones",
+                    &mut subscriptions,
                 ).await {
-                    last_sent_at = Instant::now();
+                    PreviewRelayPublish::Published => {
+                        last_sent_at = Instant::now();
+                    }
+                    PreviewRelayPublish::Rejected => {}
+                    PreviewRelayPublish::SubscriptionChanged => {
+                        active_config = None;
+                        continue 'relay;
+                    }
+                    PreviewRelayPublish::SubscriptionsClosed => break 'relay,
                 }
                 pending_send = false;
             }
@@ -2089,7 +2174,7 @@ pub(super) async fn relay_web_viewport_canvas(
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
 
-    loop {
+    'relay: loop {
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
@@ -2171,15 +2256,24 @@ pub(super) async fn relay_web_viewport_canvas(
                     continue;
                 };
 
-                if !publish_preview(
+                match publish_preview_while_subscribed(
                     &preview_tx,
                     PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
                     payload,
                     "web_viewport_canvas",
+                    &mut subscriptions,
                 ).await {
-                    last_sent_at = Instant::now();
-                    pending_send = false;
-                    continue;
+                    PreviewRelayPublish::Published => {}
+                    PreviewRelayPublish::Rejected => {
+                        last_sent_at = Instant::now();
+                        pending_send = false;
+                        continue;
+                    }
+                    PreviewRelayPublish::SubscriptionChanged => {
+                        active_canvas_config = None;
+                        continue 'relay;
+                    }
+                    PreviewRelayPublish::SubscriptionsClosed => break 'relay,
                 }
 
                 last_sent_at = Instant::now();
@@ -2203,7 +2297,7 @@ pub(super) async fn relay_zone_preview(
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
 
-    loop {
+    'relay: loop {
         if active_canvas_config.is_none() {
             active_canvas_config = {
                 let subs = subscriptions.borrow();
@@ -2284,13 +2378,20 @@ pub(super) async fn relay_zone_preview(
                     let Some(payload) = payload else {
                         continue;
                     };
-                    if !publish_preview(
+                    match publish_preview_while_subscribed(
                         &preview_tx,
                         stream.clone(),
                         payload,
                         "zone_preview",
+                        &mut subscriptions,
                     ).await {
-                        continue;
+                        PreviewRelayPublish::Published => {}
+                        PreviewRelayPublish::Rejected => continue,
+                        PreviewRelayPublish::SubscriptionChanged => {
+                            active_canvas_config = None;
+                            continue 'relay;
+                        }
+                        PreviewRelayPublish::SubscriptionsClosed => break 'relay,
                     }
                     last_sent_surfaces.insert(stream, surface_identity);
                 }
@@ -2559,12 +2660,16 @@ async fn follow_display_preview(
                         last_sent_at = Instant::now();
                         continue;
                     };
-                    if publish_preview(
+                    let Some(published) = publish_preview_until_cancelled(
                         &preview_tx,
                         PreviewStreamId::Display(wire_key.clone()),
                         payload,
                         "display_preview",
-                    ).await {
+                        &cancel,
+                    ).await else {
+                        return;
+                    };
+                    if published {
                         last_frame_number = Some(snapshot.frame_number);
                     }
                     // Either way the clock advances, so a rejected
