@@ -7,7 +7,11 @@ import msgspec
 from hypercolor._generated.api.devices import update_attachments
 from hypercolor._generated.models import ComponentBinding, UpdateAttachmentsRequest
 from hypercolor.models.device import Device
-from hypercolor.models.driver import Driver
+from hypercolor.models.driver import (
+    Driver,
+    DriverTransportAvailable,
+    DriverTransportUnsupportedPlatform,
+)
 from hypercolor.models.effect import Effect
 
 
@@ -157,7 +161,16 @@ def test_driver_model_decodes_protocol_catalog() -> None:
             "id": "nollie",
             "display_name": "Nollie",
             "module_kind": "hal",
-            "transports": ["usb"],
+            "transports": [
+                {"kind": "usb", "availability": {"status": "available"}},
+                {
+                    "kind": "smbus",
+                    "availability": {
+                        "status": "unsupported_platform",
+                        "platform": "macOS",
+                    },
+                },
+            ],
             "capabilities": {
                 "config": False,
                 "discovery": True,
@@ -169,7 +182,7 @@ def test_driver_model_decodes_protocol_catalog() -> None:
                 "presentation": True,
                 "controls": False,
             },
-            "api_schema_version": 1,
+            "api_schema_version": 3,
             "config_version": 1,
             "default_enabled": True,
         },
@@ -194,6 +207,18 @@ def test_driver_model_decodes_protocol_catalog() -> None:
     driver = msgspec.convert(payload, type=Driver)
 
     assert driver.descriptor.capabilities.protocol_catalog is True
+    assert driver.descriptor.api_schema_version == 3
+    assert driver.descriptor.transports[0].kind == "usb"
+    assert isinstance(
+        driver.descriptor.transports[0].availability,
+        DriverTransportAvailable,
+    )
+    assert isinstance(
+        driver.descriptor.transports[1].availability,
+        DriverTransportUnsupportedPlatform,
+    )
+    assert driver.descriptor.transports[1].availability.platform == "macOS"
+    assert msgspec.to_builtins(driver.descriptor.transports) == payload["descriptor"]["transports"]
     assert driver.presentation is not None
     assert driver.presentation.label == "Nollie"
     assert driver.protocols[0].protocol_id == "nollie_8"

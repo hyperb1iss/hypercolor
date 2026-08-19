@@ -26,7 +26,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceColorSpace,
     DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
     DeviceTopologyHint, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
-    DriverPresentation, DriverTransportKind, SegmentInfo,
+    DriverPresentation, DriverTransportDescriptor, DriverTransportKind, SegmentInfo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -217,7 +217,9 @@ impl DriverModule for OpenRgbDriverModule {
     fn module_descriptor(&self) -> DriverModuleDescriptor {
         let mut descriptor = self.descriptor().module_descriptor();
         descriptor.module_kind = DriverModuleKind::Bridge;
-        descriptor.transports = vec![DriverTransportKind::Bridge];
+        descriptor.transports = vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Bridge,
+        )];
         descriptor.capabilities = DriverCapabilitySet {
             config: true,
             discovery: true,

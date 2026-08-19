@@ -1,10 +1,12 @@
-//! Async transport abstraction for USB I/O.
+//! Transport resolution and async byte-level I/O.
 
+use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::protocol::TransferType;
+use crate::registry::{HidRawReportMode, TransportType};
 
 pub mod bulk;
 pub mod control;
@@ -16,6 +18,157 @@ pub mod midi;
 pub mod serial;
 pub mod smbus;
 pub mod vendor;
+
+/// Operating system used to resolve platform-free transport intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportPlatform {
+    /// Linux host.
+    Linux,
+    /// macOS host.
+    MacOs,
+    /// Windows host.
+    Windows,
+    /// A host without a supported transport backend.
+    Other(&'static str),
+}
+
+impl TransportPlatform {
+    /// Platform targeted by the current build.
+    pub const CURRENT: Self = current_transport_platform();
+}
+
+impl fmt::Display for TransportPlatform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Linux => f.write_str("Linux"),
+            Self::MacOs => f.write_str("macOS"),
+            Self::Windows => f.write_str("Windows"),
+            Self::Other(name) => f.write_str(name),
+        }
+    }
+}
+
+const fn current_transport_platform() -> TransportPlatform {
+    if cfg!(target_os = "linux") {
+        TransportPlatform::Linux
+    } else if cfg!(target_os = "macos") {
+        TransportPlatform::MacOs
+    } else if cfg!(target_os = "windows") {
+        TransportPlatform::Windows
+    } else {
+        TransportPlatform::Other(std::env::consts::OS)
+    }
+}
+
+/// How a HID device expects the host HID driver to be managed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HidAccessMode {
+    /// Keep the host HID driver attached while sending reports.
+    HostManaged,
+    /// Claim the HID interface directly where the operating system allows it.
+    Direct,
+}
+
+/// Platform-free HID requirements declared by a device descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HidTransportIntent {
+    /// Whether the host HID driver must remain attached.
+    pub access: HidAccessMode,
+    /// HID interface number.
+    pub interface: u8,
+    /// HID report ID.
+    pub report_id: u8,
+    /// Feature-report or output-report I/O mode.
+    pub report_mode: HidRawReportMode,
+    /// Full HID report buffer length, including a report ID prefix when used.
+    pub max_report_len: usize,
+    /// Optional HID usage page filter.
+    pub usage_page: Option<u16>,
+    /// Optional HID usage filter.
+    pub usage: Option<u16>,
+}
+
+/// Platform-free transport requirements declared by a protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportIntent {
+    /// HID report transport.
+    Hid(HidTransportIntent),
+    /// Local I2C/SMBus transport.
+    I2cSmBus {
+        /// 7-bit SMBus slave address.
+        address: u16,
+    },
+}
+
+/// Resolve platform-free transport requirements for an operating system.
+///
+/// # Errors
+///
+/// Returns [`TransportError::UnsupportedPlatform`] when the target has no
+/// implementation for the requested transport.
+pub const fn resolve_transport(
+    intent: TransportIntent,
+    platform: TransportPlatform,
+) -> Result<TransportType, TransportError> {
+    match intent {
+        TransportIntent::Hid(intent) => resolve_hid_transport(intent, platform),
+        TransportIntent::I2cSmBus { address } => match platform {
+            TransportPlatform::Linux | TransportPlatform::Windows => {
+                Ok(TransportType::I2cSmBus { address })
+            }
+            TransportPlatform::MacOs | TransportPlatform::Other(_) => {
+                Err(TransportError::UnsupportedPlatform {
+                    transport: "SMBus",
+                    platform,
+                })
+            }
+        },
+    }
+}
+
+/// Resolve transport requirements for the current build target.
+///
+/// # Errors
+///
+/// Returns [`TransportError::UnsupportedPlatform`] when the current target has
+/// no implementation for the requested transport.
+pub const fn resolve_current_transport(
+    intent: TransportIntent,
+) -> Result<TransportType, TransportError> {
+    resolve_transport(intent, TransportPlatform::CURRENT)
+}
+
+const fn resolve_hid_transport(
+    intent: HidTransportIntent,
+    platform: TransportPlatform,
+) -> Result<TransportType, TransportError> {
+    match platform {
+        TransportPlatform::Linux => match intent.access {
+            HidAccessMode::HostManaged => Ok(TransportType::UsbHidRaw {
+                interface: intent.interface,
+                report_id: intent.report_id,
+                report_mode: intent.report_mode,
+                usage_page: intent.usage_page,
+                usage: intent.usage,
+            }),
+            HidAccessMode::Direct => Ok(TransportType::UsbHid {
+                interface: intent.interface,
+            }),
+        },
+        TransportPlatform::MacOs | TransportPlatform::Windows => Ok(TransportType::UsbHidApi {
+            interface: Some(intent.interface),
+            report_id: intent.report_id,
+            report_mode: intent.report_mode,
+            max_report_len: intent.max_report_len,
+            usage_page: intent.usage_page,
+            usage: intent.usage,
+        }),
+        TransportPlatform::Other(_) => Err(TransportError::UnsupportedPlatform {
+            transport: "HID",
+            platform,
+        }),
+    }
+}
 
 pub(crate) async fn spawn_blocking_transport_io<F, T>(
     operation_name: &'static str,
@@ -193,6 +346,15 @@ pub enum TransportError {
     PermissionDenied {
         /// Human-readable detail.
         detail: String,
+    },
+
+    /// Requested transport has no backend on this operating system.
+    #[error("{transport} transport is not supported on {platform}")]
+    UnsupportedPlatform {
+        /// Human-readable transport name.
+        transport: &'static str,
+        /// Operating system without a transport backend.
+        platform: TransportPlatform,
     },
 
     /// Requested transfer path is not implemented by this transport.

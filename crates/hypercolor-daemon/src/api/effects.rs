@@ -25,7 +25,7 @@ use hypercolor_types::api::scene::{
     TransitionType,
 };
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
+use hypercolor_types::device::DriverTransportKind;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
@@ -111,10 +111,9 @@ fn schedule_output_reconnect(state: &AppState, network_only: bool) {
             .into_iter()
             .filter_map(|driver| {
                 let descriptor = driver.module_descriptor();
-                let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
-                    || descriptor
-                        .transports
-                        .contains(&DriverTransportKind::Network);
+                let is_network_driver = descriptor.transports.iter().any(|transport| {
+                    transport.is_available() && transport.kind == DriverTransportKind::Network
+                });
                 is_network_driver.then_some(descriptor.id)
             })
             .collect::<Vec<_>>()

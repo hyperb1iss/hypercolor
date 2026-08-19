@@ -7,6 +7,36 @@ import msgspec
 type TransportKind = str | dict[str, str]
 
 
+class DriverTransportAvailable(
+    msgspec.Struct,
+    tag="available",
+    tag_field="status",
+    kw_only=True,
+):
+    """A driver transport backed on the current platform."""
+
+
+class DriverTransportUnsupportedPlatform(
+    msgspec.Struct,
+    tag="unsupported_platform",
+    tag_field="status",
+    kw_only=True,
+):
+    """A driver transport without a backend on the current platform."""
+
+    platform: str
+
+
+type DriverTransportAvailability = DriverTransportAvailable | DriverTransportUnsupportedPlatform
+
+
+class DriverTransportDescriptor(msgspec.Struct, kw_only=True):
+    """One transport category and its current platform availability."""
+
+    kind: TransportKind
+    availability: DriverTransportAvailability
+
+
 class DriverPresentation(msgspec.Struct, kw_only=True):
     """API and UI presentation metadata for a driver module."""
 
@@ -38,7 +68,7 @@ class DriverModuleDescriptor(msgspec.Struct, kw_only=True):
     id: str
     display_name: str
     module_kind: str
-    transports: list[TransportKind]
+    transports: list[DriverTransportDescriptor]
     capabilities: DriverCapabilitySet
     api_schema_version: int
     config_version: int

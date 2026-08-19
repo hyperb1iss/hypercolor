@@ -349,12 +349,22 @@ async fn clear_session_sleep(runtime: &SessionRuntime, generation: u64) -> bool 
 async fn run_host_resume_scan(runtime: &SessionRuntime) {
     let config_guard = runtime.config_manager.get();
     let config = Arc::clone(&*config_guard);
+    let targets = match DiscoveryTarget::session_resume_targets(
+        config.as_ref(),
+        runtime.driver_registry.as_ref(),
+    ) {
+        Ok(targets) => targets,
+        Err(error) => {
+            warn!(%error, "Failed to resolve host resume discovery targets");
+            return;
+        }
+    };
     let Some(result) = discovery::execute_discovery_scan_or_enqueue(
         runtime.discovery_runtime.clone(),
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         config,
-        DiscoveryTarget::session_resume_targets(),
+        targets,
         discovery::default_timeout(),
     )
     .await

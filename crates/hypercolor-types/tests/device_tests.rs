@@ -6,8 +6,8 @@ use hypercolor_types::device::{
     DeviceColorFormat, DeviceColorSpace, DeviceError, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin,
     DeviceState, DeviceTopologyHint, DeviceUserSettings, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverTransportKind, SegmentInfo,
-    SegmentLayoutHint,
+    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverTransportAvailability,
+    DriverTransportDescriptor, DriverTransportKind, SegmentInfo, SegmentLayoutHint,
 };
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 use uuid::Uuid;
@@ -432,7 +432,9 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
         display_name: "Fixture HAL".into(),
         vendor_name: Some("Fixture HAL".into()),
         module_kind: DriverModuleKind::Hal,
-        transports: vec![DriverTransportKind::Usb],
+        transports: vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Usb,
+        )],
         capabilities: DriverCapabilitySet {
             protocol_catalog: true,
             presentation: true,
@@ -447,6 +449,29 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
     let back: DriverModuleDescriptor = serde_json::from_str(&json).expect("deserialize");
 
     assert_eq!(back, descriptor);
+}
+
+#[test]
+fn driver_transport_descriptor_serializes_platform_availability() {
+    let transports = vec![
+        DriverTransportDescriptor::available(DriverTransportKind::Usb),
+        DriverTransportDescriptor::unsupported_platform(DriverTransportKind::Smbus, "macOS"),
+    ];
+
+    let json = serde_json::to_value(&transports).expect("transport inventory should serialize");
+
+    assert_eq!(json[0]["kind"], "usb");
+    assert_eq!(json[0]["availability"]["status"], "available");
+    assert_eq!(json[1]["kind"], "smbus");
+    assert_eq!(json[1]["availability"]["status"], "unsupported_platform");
+    assert_eq!(json[1]["availability"]["platform"], "macOS");
+    assert!(transports[0].is_available());
+    assert_eq!(
+        transports[1].availability,
+        DriverTransportAvailability::UnsupportedPlatform {
+            platform: "macOS".to_owned(),
+        }
+    );
 }
 
 // ── DeviceFamily ──────────────────────────────────────────────────────────

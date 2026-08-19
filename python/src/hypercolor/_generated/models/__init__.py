@@ -194,6 +194,15 @@ from .driver_module_kind import DriverModuleKind
 from .driver_presentation import DriverPresentation
 from .driver_protocol_descriptor import DriverProtocolDescriptor
 from .driver_summary import DriverSummary
+from .driver_transport_availability_type_0 import DriverTransportAvailabilityType0
+from .driver_transport_availability_type_0_status import (
+    DriverTransportAvailabilityType0Status,
+)
+from .driver_transport_availability_type_1 import DriverTransportAvailabilityType1
+from .driver_transport_availability_type_1_status import (
+    DriverTransportAvailabilityType1Status,
+)
+from .driver_transport_descriptor import DriverTransportDescriptor
 from .driver_transport_kind_type_0 import DriverTransportKindType0
 from .driver_transport_kind_type_1 import DriverTransportKindType1
 from .driver_transport_kind_type_2 import DriverTransportKindType2
@@ -500,6 +509,11 @@ __all__ = (
     "DriverPresentation",
     "DriverProtocolDescriptor",
     "DriverSummary",
+    "DriverTransportAvailabilityType0",
+    "DriverTransportAvailabilityType0Status",
+    "DriverTransportAvailabilityType1",
+    "DriverTransportAvailabilityType1Status",
+    "DriverTransportDescriptor",
     "DriverTransportKindType0",
     "DriverTransportKindType1",
     "DriverTransportKindType2",

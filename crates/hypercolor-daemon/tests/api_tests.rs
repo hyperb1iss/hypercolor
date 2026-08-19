@@ -4102,7 +4102,10 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(wled["descriptor"]["module_kind"], "network");
     assert_eq!(
         wled["descriptor"]["transports"],
-        serde_json::json!(["network"])
+        serde_json::json!([{
+            "kind": "network",
+            "availability": { "status": "available" }
+        }])
     );
     assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["output_backend"], true);
@@ -4129,7 +4132,16 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(nollie["descriptor"]["module_kind"], "hal");
     assert_eq!(
         nollie["descriptor"]["transports"],
-        serde_json::json!(["usb", "serial"])
+        serde_json::json!([
+            {
+                "kind": "usb",
+                "availability": { "status": "available" }
+            },
+            {
+                "kind": "serial",
+                "availability": { "status": "available" }
+            }
+        ])
     );
     assert_eq!(
         nollie["descriptor"]["capabilities"]["protocol_catalog"],

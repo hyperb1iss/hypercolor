@@ -678,6 +678,7 @@ impl UsbBackend {
                 TransportError::NotFound { .. }
                 | TransportError::Closed
                 | TransportError::PermissionDenied { .. }
+                | TransportError::UnsupportedPlatform { .. }
                 | TransportError::UnsupportedTransfer { .. },
             )
             | None => FrameWriteDisposition::Fatal,
