@@ -94,7 +94,7 @@ class ConfigMutationResult(msgspec.Struct, kw_only=True):
 
 
 class TransitionSpec(msgspec.Struct, kw_only=True):
-    """Transition description for effect/profile/scene application."""
+    """Transition description for effect and scene application."""
 
     type: str
     duration_ms: int = 300

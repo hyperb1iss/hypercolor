@@ -15,7 +15,6 @@ from .models.common import (
     DiscoverResult,
     IdentifyResult,
     MutationResult,
-    TransitionSpec,
 )
 from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
@@ -28,7 +27,6 @@ from .models.effect import (
     EffectSummary,
 )
 from .models.layout import Layout, LayoutSummary
-from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
 from .models.system import HealthStatus, OutputState, SystemState
 from .models.zone import Zone
@@ -264,20 +262,6 @@ class SyncHypercolorClient:
     def apply_layout(self, layout_id: str) -> MutationResult:
         return self._run(self._client.apply_layout(layout_id))
 
-    def get_profiles(self) -> list[ProfileSummary]:
-        return self._run(self._client.get_profiles())
-
-    def get_profile(self, profile_id: str) -> Profile:
-        return self._run(self._client.get_profile(profile_id))
-
-    def apply_profile(
-        self,
-        profile_id: str,
-        *,
-        transition: TransitionSpec | Mapping[str, Any] | None = None,
-    ) -> ApplyProfileResult:
-        return self._run(self._client.apply_profile(profile_id, transition=transition))
-
     def get_scenes(self, **filters: Any) -> list[Scene]:
         return self._run(self._client.get_scenes(**filters))
 
@@ -323,6 +307,14 @@ class SyncHypercolorClient:
                 name, description=description, enabled=enabled, mutation_mode=mutation_mode
             )
         )
+
+    def snapshot_scene(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+    ) -> Scene:
+        return self._run(self._client.snapshot_scene(name, description=description))
 
     def update_scene(
         self,

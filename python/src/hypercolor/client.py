@@ -34,11 +34,6 @@ from ._generated.api.layouts import (
     get_active_layout as generated_get_active_layout,
     list_layouts as generated_list_layouts,
 )
-from ._generated.api.profiles import (
-    apply_profile as generated_apply_profile,
-    get_profile as generated_get_profile,
-    list_profiles as generated_list_profiles,
-)
 from ._generated.api.scenes import (
     activate_scene as generated_activate_scene,
     list_scenes as generated_list_scenes,
@@ -49,7 +44,6 @@ from ._generated.api.system import (
     list_audio_devices as generated_list_audio_devices,
 )
 from ._generated.models.apply_control_changes_request import ApplyControlChangesRequest
-from ._generated.models.apply_profile_request import ApplyProfileRequest
 from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
@@ -74,7 +68,6 @@ from .models.common import (
     DiscoverResult,
     IdentifyResult,
     MutationResult,
-    TransitionSpec,
 )
 from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
@@ -93,7 +86,6 @@ from .models.library import (
     Playlist,
     Preset,
 )
-from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
 from .models.system import HealthStatus, OutputState, SystemState
 from .models.zone import Zone
@@ -586,60 +578,6 @@ class HypercolorClient:
             MutationResult,
         )
 
-    async def get_profiles(self) -> list[ProfileSummary]:
-        """List saved profiles."""
-        return await self._generated_items(
-            generated_list_profiles._get_kwargs(),
-            ProfileSummary,
-        )
-
-    async def get_profile(self, profile_id: str) -> Profile:
-        """Fetch a single profile."""
-        return await self._generated_model(
-            generated_get_profile._get_kwargs(profile_id),
-            Profile,
-        )
-
-    async def apply_profile(
-        self,
-        profile_id: str,
-        *,
-        transition: TransitionSpec | Mapping[str, Any] | None = None,
-    ) -> ApplyProfileResult:
-        """Apply a saved profile."""
-        body = _drop_none({"transition": _to_json_mapping(transition)})
-        kwargs = (
-            generated_apply_profile._get_kwargs(
-                profile_id,
-                body=ApplyProfileRequest.from_dict(body),
-            )
-            if body
-            else generated_apply_profile._get_kwargs(profile_id)
-        )
-        return await self._generated_model(
-            kwargs,
-            ApplyProfileResult,
-        )
-
-    async def save_profile(
-        self,
-        name: str,
-        *,
-        description: str | None = None,
-        brightness: int | None = None,
-        force: bool = False,
-    ) -> Profile:
-        """Save a profile from the current runtime state."""
-        body = _drop_none(
-            {
-                "name": name,
-                "description": description,
-                "brightness": brightness,
-                "force": force,
-            }
-        )
-        return await self._request_model("POST", "/profiles", Profile, body=body)
-
     async def get_scenes(self, **filters: Any) -> list[Scene]:
         """List available scenes."""
         if any(key not in _SCENE_FILTERS for key in filters):
@@ -717,6 +655,16 @@ class HypercolorClient:
             }
         )
         return await self._request_model("POST", "/scenes", Scene, body=body)
+
+    async def snapshot_scene(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+    ) -> Scene:
+        """Save the current runtime scene as a snapshot-locked scene."""
+        body = _drop_none({"name": name, "description": description})
+        return await self._request_model("POST", "/scenes/snapshot", Scene, body=body)
 
     async def activate_scene(self, scene_id: str) -> ActivateSceneResult:
         """Trigger a scene manually."""
@@ -1492,14 +1440,6 @@ def _legacy_control_type(control_type: Any) -> str:
         "text_input": "text",
         "toggle": "boolean",
     }.get(str(control_type), str(control_type))
-
-
-def _to_json_mapping(value: TransitionSpec | Mapping[str, Any] | None) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if isinstance(value, Mapping):
-        return {str(key): item for key, item in value.items()}
-    return msgspec.to_builtins(value)
 
 
 def _transition_value(value: str | Mapping[str, Any] | None) -> dict[str, Any] | None:
