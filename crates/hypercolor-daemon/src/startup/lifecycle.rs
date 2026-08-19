@@ -483,8 +483,8 @@ impl DaemonState {
         if snapshot.manual_paused {
             restore_manual_pause(&self.power_state, [0, 0, 0]);
         }
-        let profile_mode = config.daemon.start_profile.trim();
-        if !profile_mode.eq_ignore_ascii_case("last") {
+        let scene_mode = config.daemon.start_scene.trim();
+        if !scene_mode.eq_ignore_ascii_case("last") {
             return;
         }
         set_global_brightness(&self.power_state, snapshot.global_brightness);

@@ -2646,7 +2646,7 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
 /// settings stand in for anything a driver may persist without the host
 /// modelling the shape.
 const RESET_FIXTURE_CONFIG: &str = r#"
-schema_version = 4
+schema_version = 5
 include = ["desk-overrides.toml", "travel.toml"]
 
 [daemon]
@@ -2674,7 +2674,7 @@ refresh_token = "rt-do-not-lose-me"
 /// Spec 76 §3.1 promises arbitrary extension documents survive a reset, so
 /// the shape that exercises the serialization boundary gets its own fixture.
 const RESET_NESTED_EXTENSION_CONFIG: &str = r#"
-schema_version = 4
+schema_version = 5
 
 [telemetry]
 enabled = true
@@ -2695,7 +2695,7 @@ name = "audit"
 
 /// A driver entry the registered WLED module rejects as invalid.
 const RESET_INVALID_DRIVER_CONFIG: &str = r#"
-schema_version = 4
+schema_version = 5
 
 [drivers.wled]
 enabled = true

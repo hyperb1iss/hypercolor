@@ -54,7 +54,7 @@ use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 
 /// Minimal TOML content that `ConfigManager` can parse.
-const MINIMAL_TOML: &str = "schema_version = 4\n";
+const MINIMAL_TOML: &str = "schema_version = 5\n";
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -304,7 +304,7 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
 #[tokio::test]
 async fn load_config_reads_toml_file() {
     let toml_content = r#"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 target_fps = 30
@@ -432,7 +432,7 @@ fn parse_config_toml_minimal() {
 #[test]
 fn parse_config_toml_with_overrides() {
     let toml_str = r#"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 target_fps = 45
@@ -475,7 +475,7 @@ wasm_plugins = true
 
 #[test]
 fn parse_config_toml_runs_the_shared_normalize_and_seed() {
-    let config = parse_config_toml("schema_version = 4\n[audio]\ndevice = \"Auto\"\n")
+    let config = parse_config_toml("schema_version = 5\n[audio]\ndevice = \"Auto\"\n")
         .expect("current-schema config should parse");
 
     // Normalization: audio device aliases canonicalize.
@@ -492,7 +492,7 @@ fn parse_config_toml_refuses_an_outdated_schema() {
     let rendered = format!("{error:#}");
 
     assert!(rendered.contains("schema_version 3"), "{rendered}");
-    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+    assert!(rendered.contains("schema_version = 5"), "{rendered}");
     assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
     assert!(
         rendered.contains(r#"preview_route = "browser""#),
@@ -502,11 +502,11 @@ fn parse_config_toml_refuses_an_outdated_schema() {
 
 #[test]
 fn parse_config_toml_refuses_a_newer_schema() {
-    let error = parse_config_toml("schema_version = 5\n")
+    let error = parse_config_toml("schema_version = 6\n")
         .expect_err("a future schema must be refused, not read");
     let rendered = format!("{error:#}");
 
-    assert!(rendered.contains("schema_version 5"), "{rendered}");
+    assert!(rendered.contains("schema_version 6"), "{rendered}");
     assert!(rendered.contains("newer hypercolor"), "{rendered}");
 }
 
@@ -516,7 +516,7 @@ fn loaded_config_and_manager_agree_after_one_load() {
     let path = dir.path().join("hypercolor.toml");
     std::fs::write(
         &path,
-        "schema_version = 4\n[audio]\ndevice = \"Microphone\"\n[daemon]\nport = 9421\n",
+        "schema_version = 5\n[audio]\ndevice = \"Microphone\"\n[daemon]\nport = 9421\n",
     )
     .expect("config file should write");
 
@@ -545,7 +545,7 @@ fn parse_config_toml_rejects_invalid_toml() {
 #[test]
 fn default_config_has_sane_values() {
     let config = default_config();
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
@@ -1156,7 +1156,7 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
     // the file only has to agree with it for the accessor to be honest.
     std::fs::write(
         temp.path(),
-        "schema_version = 4\n[daemon]\ntarget_fps = 45\n",
+        "schema_version = 5\n[daemon]\ntarget_fps = 45\n",
     )
     .expect("failed to write config");
     let state = DaemonState::initialize(
@@ -1231,7 +1231,7 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
     .expect("stale snapshot should be written");
 
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
@@ -1282,7 +1282,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     .expect("runtime state should save");
 
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
@@ -1320,7 +1320,7 @@ async fn daemon_start_restores_manual_pause_before_rendering() {
     .expect("runtime state should save");
 
     let mut config = default_config();
-    config.daemon.start_profile = "default".into();
+    config.daemon.start_scene = "default".into();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
@@ -1522,7 +1522,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
     .expect("runtime state should save");
 
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
@@ -1547,7 +1547,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
 async fn default_scene_contents_restore_on_restart() {
     let guard = TestDataDirGuard::new().await;
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
@@ -1651,7 +1651,7 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
     .expect("runtime state should save");
 
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     config.discovery.background_enabled = false;
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(

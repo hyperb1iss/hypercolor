@@ -46,7 +46,7 @@ mod defaults {
     pub fn log_level() -> LogLevel {
         LogLevel::Info
     }
-    pub fn start_profile() -> String {
+    pub fn start_scene() -> String {
         "last".into()
     }
     pub fn shutdown_behavior() -> ShutdownBehavior {
@@ -291,7 +291,7 @@ pub struct HypercolorConfig {
 }
 
 /// Current schema version for newly created configurations.
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 impl Default for HypercolorConfig {
     fn default() -> Self {
@@ -399,8 +399,8 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub log_file: String,
 
-    #[serde(default = "defaults::start_profile")]
-    pub start_profile: String,
+    #[serde(default = "defaults::start_scene")]
+    pub start_scene: String,
 
     #[serde(default = "defaults::shutdown_behavior")]
     pub shutdown_behavior: ShutdownBehavior,
@@ -421,7 +421,7 @@ impl Default for DaemonConfig {
             max_devices: defaults::max_devices(),
             log_level: defaults::log_level(),
             log_file: String::new(),
-            start_profile: defaults::start_profile(),
+            start_scene: defaults::start_scene(),
             shutdown_behavior: defaults::shutdown_behavior(),
             shutdown_color: defaults::shutdown_color(),
         }
@@ -1415,7 +1415,7 @@ mod extension_section_tests {
     #[test]
     fn unknown_top_level_sections_survive_a_round_trip() {
         let source = r"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 port = 9420

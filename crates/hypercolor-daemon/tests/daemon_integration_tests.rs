@@ -27,7 +27,7 @@ use tempfile::NamedTempFile;
 use tokio::sync::{Mutex, watch};
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
-const MINIMAL_TOML: &str = "schema_version = 4\n";
+const MINIMAL_TOML: &str = "schema_version = 5\n";
 
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -315,7 +315,7 @@ async fn daemon_start_rolls_back_partial_startup() {
     config.rendering.servo_gpu_import.mode = ServoGpuImportMode::Off;
     config.effect_engine.watch_effects = false;
     config.discovery.background_enabled = false;
-    config.daemon.start_profile = "none".to_owned();
+    config.daemon.start_scene = "none".to_owned();
 
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
@@ -345,7 +345,7 @@ async fn daemon_start_rolls_back_partial_startup() {
 async fn removed_runtime_effect_fields_are_rejected_on_startup() {
     let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
-    config.daemon.start_profile = "last".to_owned();
+    config.daemon.start_scene = "last".to_owned();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
@@ -459,7 +459,7 @@ async fn config_loading_all_sub_configs_have_defaults() {
 #[tokio::test]
 async fn config_loading_from_custom_file() {
     let toml_str = r"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 target_fps = 45
@@ -653,7 +653,7 @@ async fn daemon_render_loop_uses_configured_fps() {
     let mut config = default_config();
     config.daemon.target_fps = 30;
 
-    let toml_str = "schema_version = 4\n[daemon]\ntarget_fps = 30\n";
+    let toml_str = "schema_version = 5\n[daemon]\ntarget_fps = 30\n";
     let mut temp = NamedTempFile::new().expect("create temp");
     temp.write_all(toml_str.as_bytes()).expect("write");
     temp.flush().expect("flush");

@@ -77,7 +77,7 @@ impl DaemonHarness {
         let mut config = default_config();
         "127.0.0.1".clone_into(&mut config.daemon.listen_address);
         config.daemon.port = port;
-        "none".clone_into(&mut config.daemon.start_profile);
+        "none".clone_into(&mut config.daemon.start_scene);
         config.audio.enabled = false;
         config.capture.enabled = false;
         config.input.enabled = false;
