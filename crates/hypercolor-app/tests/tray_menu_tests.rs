@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_app::{
-    state::{AppState, EffectInfo, ProfileInfo, ServerEntry},
+    state::{AppState, EffectInfo, SceneInfo, ServerEntry},
     tray::icons::{IconState, icon_state_for, icon_state_for_with_supervisor},
     tray::menu::{MenuAction, MenuEntry, action_for_menu_id, ids, menu_model},
 };
@@ -107,8 +107,8 @@ fn connected_menu_contains_dynamic_entries() {
     assert_item(effects, "effect:aurora", "Aurora Borealis", true);
     assert_item(effects, "effect:wave", "Color Wave", true);
 
-    let profiles = find_submenu(&entries, "Profiles");
-    assert_item(profiles, "profile:movie", "Movie Night", true);
+    let scenes = find_submenu(&entries, "Scenes");
+    assert_item(scenes, "scene:movie", "Movie Night", true);
 
     let servers = find_submenu(&entries, "Servers");
     assert_item(servers, "server:0", "\u{25cf} desk-pc (127.0.0.1)", true);
@@ -179,8 +179,8 @@ fn menu_ids_map_to_app_actions() {
         Some(MenuAction::ApplyEffect("aurora".to_owned()))
     );
     assert_eq!(
-        action_for_menu_id("profile:movie"),
-        Some(MenuAction::ApplyProfile("movie".to_owned()))
+        action_for_menu_id("scene:movie"),
+        Some(MenuAction::ActivateScene("movie".to_owned()))
     );
     assert_eq!(
         action_for_menu_id("server:2"),
@@ -213,7 +213,7 @@ fn connected_state() -> AppState {
                 name: "Color Wave".to_owned(),
             },
         ],
-        profiles: vec![ProfileInfo {
+        scenes: vec![SceneInfo {
             id: "movie".to_owned(),
             name: "Movie Night".to_owned(),
         }],

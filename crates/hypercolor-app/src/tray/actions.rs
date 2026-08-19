@@ -39,8 +39,8 @@ pub fn target_for_action(action: &MenuAction) -> ActionTarget {
         MenuAction::ApplyEffect(id) => {
             ActionTarget::DaemonCommand(TrayCommand::ApplyEffect(id.clone()))
         }
-        MenuAction::ApplyProfile(id) => {
-            ActionTarget::DaemonCommand(TrayCommand::ApplyProfile(id.clone()))
+        MenuAction::ActivateScene(id) => {
+            ActionTarget::DaemonCommand(TrayCommand::ActivateScene(id.clone()))
         }
         MenuAction::SwitchServer(index) => {
             ActionTarget::DaemonCommand(TrayCommand::SwitchServer(*index))

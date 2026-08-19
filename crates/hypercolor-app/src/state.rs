@@ -29,8 +29,8 @@ pub struct AppState {
     pub device_count: usize,
     /// All available effects from the daemon registry.
     pub effects: Vec<EffectInfo>,
-    /// All available profiles.
-    pub profiles: Vec<ProfileInfo>,
+    /// All available reusable scenes.
+    pub scenes: Vec<SceneInfo>,
     /// Connected server identity, when known.
     pub server_identity: Option<ServerIdentity>,
     /// Discovered Hypercolor servers on the local network.
@@ -53,7 +53,7 @@ impl AppState {
             scene_snapshot_locked: false,
             device_count: 0,
             effects: Vec::new(),
-            profiles: Vec::new(),
+            scenes: Vec::new(),
             server_identity: None,
             servers: Vec::new(),
             active_server: None,
@@ -145,9 +145,9 @@ pub struct EffectInfo {
     pub name: String,
 }
 
-/// Lightweight profile information for display in the tray menu.
+/// Lightweight scene information for display in the tray menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProfileInfo {
+pub struct SceneInfo {
     pub id: String,
     pub name: String,
 }
@@ -210,8 +210,8 @@ pub enum StateUpdate {
 pub enum TrayCommand {
     /// Apply the given effect by ID.
     ApplyEffect(String),
-    /// Apply the given profile by ID.
-    ApplyProfile(String),
+    /// Activate the given scene by ID.
+    ActivateScene(String),
     /// Stop the currently active effect.
     StopEffect,
     /// Set global brightness (0-100).
@@ -268,15 +268,15 @@ pub struct EffectSummary {
     pub name: String,
 }
 
-/// Response from `GET /api/v1/profiles`.
+/// Response from `GET /api/v1/scenes`.
 #[derive(Debug, Deserialize)]
-pub struct ProfileListResponse {
-    pub items: Vec<ProfileSummary>,
+pub struct SceneListResponse {
+    pub items: Vec<SceneSummary>,
 }
 
-/// A single profile from the profile list.
+/// A single scene from the scene list.
 #[derive(Debug, Deserialize)]
-pub struct ProfileSummary {
+pub struct SceneSummary {
     pub id: String,
     pub name: String,
 }

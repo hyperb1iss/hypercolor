@@ -14,7 +14,7 @@ fn default_state_is_disconnected() {
     assert_eq!(state.brightness, 0);
     assert!(state.current_effect.is_none());
     assert!(state.effects.is_empty());
-    assert!(state.profiles.is_empty());
+    assert!(state.scenes.is_empty());
 }
 
 #[test]
