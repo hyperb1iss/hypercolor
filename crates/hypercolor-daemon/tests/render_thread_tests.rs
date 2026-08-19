@@ -25,7 +25,11 @@ use hypercolor_core::device::{
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
-use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData, SourceKind};
+use hypercolor_core::input::{
+    AudioSource, AudioSourceRole, InputData, InputManager, InputSource, InteractionSource,
+    InteractionSourceRole, ManagedSourceRole, ScreenData, ScreenSource, ScreenSourceRole,
+    SourceKind, SourceRoleBinding,
+};
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
@@ -441,6 +445,12 @@ impl InputSource for MockScreenSource {
     }
 }
 
+impl SourceRoleBinding for MockScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for MockScreenSource {}
+
 struct MockScreenPreviewSource {
     running: bool,
     screen_data: ScreenData,
@@ -485,6 +495,12 @@ impl InputSource for MockScreenPreviewSource {
         true
     }
 }
+
+impl SourceRoleBinding for MockScreenPreviewSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for MockScreenPreviewSource {}
 
 #[cfg(feature = "wgpu")]
 struct SequencedScreenPreviewSource {
@@ -553,6 +569,14 @@ impl InputSource for SequencedScreenPreviewSource {
     }
 }
 
+#[cfg(feature = "wgpu")]
+impl SourceRoleBinding for SequencedScreenPreviewSource {
+    type Role = ScreenSourceRole;
+}
+
+#[cfg(feature = "wgpu")]
+impl ScreenSource for SequencedScreenPreviewSource {}
+
 struct StallableScreenPreviewSource {
     running: bool,
     screen_data: ScreenData,
@@ -604,6 +628,12 @@ impl InputSource for StallableScreenPreviewSource {
     }
 }
 
+impl SourceRoleBinding for StallableScreenPreviewSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for StallableScreenPreviewSource {}
+
 struct MockAudioSource {
     running: bool,
     audio: AudioData,
@@ -648,6 +678,12 @@ impl InputSource for MockAudioSource {
         true
     }
 }
+
+impl SourceRoleBinding for MockAudioSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for MockAudioSource {}
 
 struct DemandGatedMockAudioSource {
     running: bool,
@@ -710,6 +746,12 @@ impl InputSource for DemandGatedMockAudioSource {
         Ok(())
     }
 }
+
+impl SourceRoleBinding for DemandGatedMockAudioSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for DemandGatedMockAudioSource {}
 
 struct DemandGatedMockScreenSource {
     running: bool,
@@ -774,6 +816,12 @@ impl InputSource for DemandGatedMockScreenSource {
     }
 }
 
+impl SourceRoleBinding for DemandGatedMockScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for DemandGatedMockScreenSource {}
+
 struct EventOnlySource {
     running: bool,
     events: Vec<TimedInputEvent>,
@@ -833,6 +881,12 @@ impl InputSource for EventOnlySource {
         }
     }
 }
+
+impl SourceRoleBinding for EventOnlySource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for EventOnlySource {}
 
 async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>>, expected: bool) {
     tokio::time::timeout(WAIT_DEADLINE, async {
@@ -1262,14 +1316,18 @@ async fn render_thread_publishes_discrete_input_events() {
     let release_events = Arc::new(AtomicBool::new(false));
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(EventOnlySource::new(
-            vec![InputEvent::Key {
-                source_id: "host:/dev/input/event4".into(),
-                key: "a".into(),
-                state: InputButtonState::Pressed,
-            }],
-            Arc::clone(&release_events),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                EventOnlySource::new(
+                    vec![InputEvent::Key {
+                        source_id: "host:/dev/input/event4".into(),
+                        key: "a".into(),
+                        state: InputButtonState::Pressed,
+                    }],
+                    Arc::clone(&release_events),
+                ),
+            )))
+            .expect("event-only interaction source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -1373,7 +1431,11 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
+                audio,
+            ))))
+            .expect("mock audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -1441,10 +1503,11 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
-            audio,
-            Arc::clone(&transitions),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(
+                DemandGatedMockAudioSource::new(audio, Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -1517,10 +1580,11 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
-            AudioData::silence(),
-            Arc::clone(&transitions),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(
+                DemandGatedMockAudioSource::new(AudioData::silence(), Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -2168,10 +2232,11 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     audio.rms_level = 0.7;
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
-            audio,
-            Arc::clone(&transitions),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(
+                DemandGatedMockAudioSource::new(audio, Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -2266,10 +2331,11 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockScreenSource::new(
-            screen_data,
-            Arc::clone(&transitions),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                DemandGatedMockScreenSource::new(screen_data, Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -2385,10 +2451,11 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
     };
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockScreenSource::new(
-            screen_data,
-            Arc::clone(&transitions),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                DemandGatedMockScreenSource::new(screen_data, Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated screen source should register");
         input_manager
             .start_all()
             .expect("new screen source should start");
@@ -3169,16 +3236,20 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenSource::new(vec![
-            ZoneColors {
-                zone_id: "screen:sector_0_0".to_owned(),
-                colors: vec![[255, 0, 0]],
-            },
-            ZoneColors {
-                zone_id: "screen:sector_0_1".to_owned(),
-                colors: vec![[0, 255, 0]],
-            },
-        ])));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(MockScreenSource::new(
+                vec![
+                    ZoneColors {
+                        zone_id: "screen:sector_0_0".to_owned(),
+                        colors: vec![[255, 0, 0]],
+                    },
+                    ZoneColors {
+                        zone_id: "screen:sector_0_1".to_owned(),
+                        colors: vec![[0, 255, 0]],
+                    },
+                ],
+            ))))
+            .expect("mock screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3261,7 +3332,11 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenPreviewSource::new(screen_data)));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                MockScreenPreviewSource::new(screen_data),
+            )))
+            .expect("mock screen preview source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3367,10 +3442,11 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(StallableScreenPreviewSource::new(
-            screen_data,
-            Arc::clone(&source_stalled),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                StallableScreenPreviewSource::new(screen_data, Arc::clone(&source_stalled)),
+            )))
+            .expect("stallable screen preview source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3519,10 +3595,11 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(StallableScreenPreviewSource::new(
-            screen_data,
-            Arc::clone(&source_stalled),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                StallableScreenPreviewSource::new(screen_data, Arc::clone(&source_stalled)),
+            )))
+            .expect("stallable screen preview source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3655,7 +3732,11 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenPreviewSource::new(screen_data)));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                MockScreenPreviewSource::new(screen_data),
+            )))
+            .expect("mock screen preview source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3756,10 +3837,14 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(
-            vec![initial_screen, intermediate_screen, latest_screen],
-            Arc::clone(&advance_sequence),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                SequencedScreenPreviewSource::new(
+                    vec![initial_screen, intermediate_screen, latest_screen],
+                    Arc::clone(&advance_sequence),
+                ),
+            )))
+            .expect("sequenced screen preview source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3911,10 +3996,11 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(
-            screens,
-            Arc::clone(&advance_sequence),
-        )));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                SequencedScreenPreviewSource::new(screens, Arc::clone(&advance_sequence)),
+            )))
+            .expect("sequenced screen preview source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4044,16 +4130,20 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenSource::new(vec![
-            ZoneColors {
-                zone_id: "screen:sector_0_0".to_owned(),
-                colors: vec![[255, 0, 0]],
-            },
-            ZoneColors {
-                zone_id: "screen:sector_0_1".to_owned(),
-                colors: vec![[0, 255, 0]],
-            },
-        ])));
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(MockScreenSource::new(
+                vec![
+                    ZoneColors {
+                        zone_id: "screen:sector_0_0".to_owned(),
+                        colors: vec![[255, 0, 0]],
+                    },
+                    ZoneColors {
+                        zone_id: "screen:sector_0_1".to_owned(),
+                        colors: vec![[0, 255, 0]],
+                    },
+                ],
+            ))))
+            .expect("mock screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4247,7 +4337,11 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
+                audio,
+            ))))
+            .expect("mock audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4304,7 +4398,11 @@ async fn render_thread_reuses_published_spectrum_bins_between_frames() {
 
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
+                audio,
+            ))))
+            .expect("mock audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");

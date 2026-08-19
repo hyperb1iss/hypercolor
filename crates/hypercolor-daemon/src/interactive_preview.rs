@@ -196,7 +196,6 @@ pub struct InteractivePreviewContext {
     pub asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     pub event_bus: Arc<HypercolorBus>,
     pub input_graph: InputGraphHandle,
-    pub sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     pub interaction_routing: InteractionRoutingControl,
     pub input_demands: InputPublicationDemandHandle,
     pub canvas_width: u32,
@@ -215,7 +214,6 @@ struct InteractivePreviewExecutorInner {
     catalog: PreviewSceneCatalogSource,
     interaction_routing: InteractionRoutingControl,
     input_graph: InputGraphHandle,
-    sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     input_demands: InputPublicationDemandHandle,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     acceleration: InteractivePreviewAcceleration,
@@ -334,7 +332,6 @@ struct PreviewLaneId {
 
 struct PreviewLaneInput {
     graph: InputGraphHandle,
-    sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     routing: InteractionRoutingControl,
     publication_id: BrowserInputPublicationId,
     graph_generation: Option<u64>,
@@ -404,7 +401,6 @@ impl InteractivePreviewExecutor {
                 catalog,
                 interaction_routing: context.interaction_routing,
                 input_graph: context.input_graph,
-                sensor_snapshots: context.sensor_snapshots,
                 input_demands: context.input_demands,
                 asset_library: context.asset_library,
                 acceleration,
@@ -487,7 +483,6 @@ impl InteractivePreviewExecutor {
             spec,
             catalog: self.inner.catalog.clone(),
             graph: self.inner.input_graph.clone(),
-            sensor_snapshots: self.inner.sensor_snapshots.clone(),
             routing: self.inner.interaction_routing.clone(),
             demands: self.inner.input_demands.clone(),
             asset_library: self.inner.asset_library.clone(),
@@ -796,7 +791,6 @@ struct PreviewLaneContext {
     spec: InteractivePreviewSpec,
     catalog: PreviewSceneCatalogSource,
     graph: InputGraphHandle,
-    sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     routing: InteractionRoutingControl,
     demands: InputPublicationDemandHandle,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
@@ -930,7 +924,6 @@ impl PreviewLane {
             .register(InputPublicationConsumer::Preview, current_demand.clone());
         let input = PreviewLaneInput::new(
             context.graph,
-            context.sensor_snapshots,
             context.routing,
             context.id.publication_id,
             context.consumer,
@@ -1213,14 +1206,12 @@ fn preview_zone_runtime(
 impl PreviewLaneInput {
     fn new(
         graph: InputGraphHandle,
-        sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
         routing: InteractionRoutingControl,
         publication_id: BrowserInputPublicationId,
         consumer: ConsumerIncarnation,
     ) -> Self {
         Self {
             graph,
-            sensor_snapshots,
             routing,
             publication_id,
             graph_generation: None,
@@ -1249,9 +1240,6 @@ impl PreviewLaneInput {
             self.rebuild_interaction_sources(&graph, &browser);
         }
         self.read_typed(&graph);
-        if let Some(sensors) = self.sensor_snapshots.as_ref() {
-            self.sensor_snapshot = Arc::clone(&sensors.borrow());
-        }
         self.refresh_availability();
         let routing = self.routing.snapshot();
         self.router.resolve_into(

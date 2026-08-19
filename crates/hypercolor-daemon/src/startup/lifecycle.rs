@@ -158,12 +158,9 @@ impl DaemonState {
             RenderThread::try_spawn(rt_state)
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
-        let (input_graph, sensor_snapshots) = {
+        let input_graph = {
             let input_manager = self.input_manager.lock().await;
-            (
-                input_manager.input_graph_handle(),
-                input_manager.sensor_snapshot_receiver(),
-            )
+            input_manager.input_graph_handle()
         };
         let input_demands = self
             .render_thread
@@ -176,7 +173,6 @@ impl DaemonState {
             asset_library: Some(Arc::clone(&self.asset_library)),
             event_bus: Arc::clone(&self.event_bus),
             input_graph,
-            sensor_snapshots,
             interaction_routing: self.interaction_routing.clone(),
             input_demands,
             canvas_width: config.daemon.canvas_width,

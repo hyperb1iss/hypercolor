@@ -19,7 +19,9 @@ use hypercolor_core::input::audio::linux;
 use hypercolor_core::input::screen::{
     PixelExtent, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
 };
-use hypercolor_core::input::{SourceFreshness, SourceIssue, SourceKind, SourceState, SourceStatus};
+use hypercolor_core::input::{
+    DataSourceKind, InputData, SourceFreshness, SourceIssue, SourceKind, SourceState, SourceStatus,
+};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::source_status::SourceDiagnosticsEnvelope;
@@ -1304,10 +1306,18 @@ fn config_path(state: &AppState) -> PathBuf {
     )
 }
 
-async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
-    let input_manager = state.input_manager.lock().await;
-    input_manager
-        .latest_sensor_snapshot()
+pub(crate) async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
+    let graph = {
+        let input_manager = state.input_manager.lock().await;
+        input_manager.input_graph_handle()
+    };
+    graph
+        .snapshot()
+        .latest_data_source(DataSourceKind::Sensors)
+        .and_then(|sample| match sample.as_ref() {
+            InputData::Sensors(snapshot) => Some(Arc::clone(snapshot)),
+            _ => None,
+        })
         .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))
 }
 
@@ -2101,7 +2111,10 @@ mod tests {
     use axum::extract::{Path, State};
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
-    use hypercolor_core::input::{SourceFreshness, SourceKind, SourceState, SourceStatus};
+    use hypercolor_core::input::{
+        DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, ManagedSourceRole,
+        SourceFreshness, SourceKind, SourceRoleBinding, SourceState, SourceStatus,
+    };
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
     use hypercolor_types::source_status::{
@@ -2110,7 +2123,62 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::Arc;
     use std::time::Instant;
-    use tokio::sync::watch;
+
+    struct FixedSensorSource {
+        snapshot: Arc<SystemSnapshot>,
+        running: bool,
+    }
+
+    impl InputSource for FixedSensorSource {
+        fn name(&self) -> &'static str {
+            "fixed-sensors"
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(if self.running {
+                InputData::Sensors(Arc::clone(&self.snapshot))
+            } else {
+                InputData::None
+            })
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+    }
+
+    impl SourceRoleBinding for FixedSensorSource {
+        type Role = DataSourceRole;
+    }
+
+    impl DataSource for FixedSensorSource {
+        fn data_source_kind(&self) -> DataSourceKind {
+            DataSourceKind::Sensors
+        }
+    }
+
+    async fn install_sensor_snapshot(state: &AppState, snapshot: Arc<SystemSnapshot>) {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager
+            .add_source(ManagedSourceRole::data(Box::new(FixedSensorSource {
+                snapshot,
+                running: false,
+            })))
+            .expect("fixed sensor source should register");
+        input_manager
+            .start_all()
+            .expect("fixed sensor source starts");
+        input_manager.sample_sources(0.0);
+    }
 
     #[tokio::test]
     async fn server_response_exposes_only_the_attested_session_id() {
@@ -2921,12 +2989,7 @@ mod tests {
             )],
             polled_at_ms: 1234,
         });
-        let (_tx, rx) = watch::channel(snapshot);
-        state
-            .input_manager
-            .lock()
-            .await
-            .set_sensor_snapshot_receiver(rx);
+        install_sensor_snapshot(&state, snapshot).await;
 
         let response = get_sensors(State(state)).await;
         let body = to_bytes(response.into_body(), usize::MAX)
@@ -2962,12 +3025,7 @@ mod tests {
             )],
             polled_at_ms: 77,
         });
-        let (_tx, rx) = watch::channel(snapshot);
-        state
-            .input_manager
-            .lock()
-            .await
-            .set_sensor_snapshot_receiver(rx);
+        install_sensor_snapshot(&state, snapshot).await;
 
         let response = get_sensor(State(state), Path("package-id-0".to_owned())).await;
         let body = to_bytes(response.into_body(), usize::MAX)

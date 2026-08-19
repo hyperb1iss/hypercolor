@@ -13,7 +13,7 @@ use utoipa::ToSchema;
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, InputSource, ScreenReconfigurationConflict, SourceKind,
+    AudioReconfigurationConflict, ScreenReconfigurationConflict, ScreenSource, SourceKind,
     SourceState,
 };
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
@@ -1311,7 +1311,7 @@ fn capture_statuses_match(
         || matches!(status.state, SourceState::Stopped) && !status.demanded
 }
 
-async fn stop_prepared_capture_source(source: Option<Box<dyn InputSource>>) {
+async fn stop_prepared_capture_source(source: Option<Box<dyn ScreenSource>>) {
     let Some(mut source) = source else {
         return;
     };
@@ -1347,29 +1347,38 @@ async fn apply_input_config_change(state: &Arc<AppState>, key: Option<&str>) -> 
         return route_changed;
     }
 
-    let mut input_manager = state.input_manager.lock().await;
-    // Only the host hardware source is consent-gated; the browser injection
-    // source is always registered and must survive enable/disable toggles.
-    let had_source = input_manager.has_host_capture_source();
-    let replacement = crate::startup::services::build_interaction_source(&input);
-
-    // Rebuild on any change so keyboard/mouse toggles apply, not just enable
-    // and disable.
-    input_manager.remove_host_capture_sources();
-    let Some(mut source) = replacement else {
-        if had_source {
-            info!("Disabled host input capture live");
-        }
-        return had_source || route_changed;
-    };
-
-    if let Err(error) = source.start() {
+    let had_source = state.input_manager.lock().await.has_host_capture_source();
+    let mut replacement = crate::startup::services::build_interaction_source(&input);
+    let has_replacement = replacement.is_some();
+    if let Some(source) = replacement.as_mut()
+        && let Err(error) = source.start()
+    {
         warn!(%error, "Failed to start live host input source");
         return had_source || route_changed;
     }
-    input_manager.add_source(source);
-    info!("Applied live host input capture config");
-    true
+
+    let swap = state
+        .input_manager
+        .lock()
+        .await
+        .swap_host_capture_source(&mut replacement);
+    let retirement = match swap {
+        Ok(retirement) => retirement,
+        Err(error) => {
+            if let Some(source) = replacement.as_mut() {
+                source.stop();
+            }
+            warn!(%error, "Failed to commit live host input source");
+            return had_source || route_changed;
+        }
+    };
+    retirement.retire();
+    if has_replacement {
+        info!("Applied live host input capture config");
+    } else if had_source {
+        info!("Disabled host input capture live");
+    }
+    had_source || has_replacement || route_changed
 }
 
 /// Apply render config changes live: FPS retune and canvas resize.
@@ -1544,8 +1553,9 @@ mod tests {
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
     use hypercolor_core::input::{
-        InputData, InputManager, InputSource, ScreenReconfigurationConflict, SourceIssue,
-        SourceKind, SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
+        InputData, InputManager, InputSource, ManagedSourceRole, ScreenReconfigurationConflict,
+        ScreenSource, ScreenSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceState,
+        SourceStatus, SourceStatusHandle, SourceStatusReporter,
     };
     use hypercolor_types::config::InteractionRoutePolicy;
 
@@ -1609,6 +1619,12 @@ mod tests {
             Ok(())
         }
     }
+
+    impl SourceRoleBinding for TestScreenSource {
+        type Role = ScreenSourceRole;
+    }
+
+    impl ScreenSource for TestScreenSource {}
 
     fn test_screen_demand() -> ScreenCaptureDemand {
         ScreenCaptureDemand::active(
@@ -1940,7 +1956,7 @@ mod tests {
             .set_screen_capture_demand(first_plan.capture_demand())
             .expect("prepared source should accept demand");
         first.start().expect("prepared source should start");
-        let mut first = Some(first as Box<dyn InputSource>);
+        let mut first = Some(first as Box<dyn ScreenSource>);
         manager
             .commit_screen_runtime_config(&first_plan, &mut first)
             .expect("initial prepared source should commit")
@@ -1955,7 +1971,7 @@ mod tests {
             .set_screen_capture_demand(replacement_plan.capture_demand())
             .expect("replacement should accept demand");
         replacement.start().expect("replacement should start");
-        let mut replacement = Some(replacement as Box<dyn InputSource>);
+        let mut replacement = Some(replacement as Box<dyn ScreenSource>);
         let retirement = manager
             .commit_screen_runtime_config(&replacement_plan, &mut replacement)
             .expect("replacement should commit");
@@ -1972,8 +1988,12 @@ mod tests {
         let stopped = Arc::new(AtomicBool::new(false));
         let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
         source.start().expect("prepared source should start");
-        let mut replacement = Some(source as Box<dyn InputSource>);
-        manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
+        let mut replacement = Some(source as Box<dyn ScreenSource>);
+        manager
+            .add_source(ManagedSourceRole::data(Box::new(
+                hypercolor_core::input::MediaSource::new(),
+            )))
+            .expect("media source should register");
 
         assert!(matches!(
             manager.commit_screen_runtime_config(&plan, &mut replacement),
@@ -2100,7 +2120,9 @@ mod tests {
             let mut input_manager = state.input_manager.lock().await;
             let mut old = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
             old.start().expect("old test source should start");
-            input_manager.add_source(old);
+            input_manager
+                .add_source(ManagedSourceRole::screen(old))
+                .expect("existing screen source should register");
             input_manager
                 .set_screen_capture_demand(test_screen_demand())
                 .expect("old source should accept active demand");
@@ -2155,10 +2177,14 @@ mod tests {
             let mut input_manager = state.input_manager.lock().await;
             let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
             source.start().expect("stale source should start");
-            input_manager.add_source(source);
+            input_manager
+                .add_source(ManagedSourceRole::screen(source))
+                .expect("primary screen source should register");
             let mut extra = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
             extra.start().expect("extra stale source should start");
-            input_manager.add_source(extra);
+            input_manager
+                .add_source(ManagedSourceRole::screen(extra))
+                .expect("extra screen source should register");
         }
 
         let response = put_config_key(

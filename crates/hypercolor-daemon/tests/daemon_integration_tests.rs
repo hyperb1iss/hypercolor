@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use hypercolor_core::config::{BootConfig, ConfigManager};
-use hypercolor_core::input::InputManager;
+use hypercolor_core::input::{InputManager, ManagedSourceRole, SensorSource};
 use hypercolor_daemon::extensions::DaemonLifecycleExtension;
 use hypercolor_daemon::startup::{DaemonState, config_sources, default_config};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
@@ -22,9 +22,8 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::scene::SceneId;
-use hypercolor_types::sensor::SystemSnapshot;
 use tempfile::NamedTempFile;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::Mutex;
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
@@ -114,9 +113,10 @@ fn temp_config_file() -> NamedTempFile {
 }
 
 fn test_input_manager() -> InputManager {
-    let (_tx, rx) = watch::channel(Arc::new(SystemSnapshot::empty()));
     let mut input_manager = InputManager::new();
-    input_manager.set_sensor_snapshot_receiver(rx);
+    input_manager
+        .add_source(ManagedSourceRole::data(Box::new(SensorSource::new())))
+        .expect("sensor source should register");
     input_manager
 }
 

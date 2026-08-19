@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::{
-    InputData, InputSource, SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter,
+    AudioSource, AudioSourceRole, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    SourceKind, SourceRoleBinding, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api::{self, AppState};
@@ -156,6 +157,12 @@ impl InputSource for FailedInputSource {
     }
 }
 
+impl SourceRoleBinding for FailedInputSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for FailedInputSource {}
+
 #[tokio::test]
 async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
     let state = Arc::new(fresh_app_state());
@@ -193,7 +200,9 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
     let state = fresh_app_state();
     {
         let mut manager = state.input_manager.lock().await;
-        manager.add_source(Box::new(FailedInputSource::new()));
+        manager
+            .add_source(ManagedSourceRole::audio(Box::new(FailedInputSource::new())))
+            .expect("failed audio source should register");
         manager.start_all().expect("test input graph should start");
     }
 

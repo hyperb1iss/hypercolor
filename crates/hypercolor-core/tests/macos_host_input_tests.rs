@@ -337,8 +337,8 @@ mod fixtures {
 
     use hypercolor_core::input::{
         CapabilityActionDisposition, InputData, InputManager, InputSource, MacosHostInput,
-        MacosInputFixtureBackend, SourceCapabilityConflict, SourceCapabilityContext, SourceState,
-        SourceStatus,
+        MacosInputFixtureBackend, ManagedSourceRole, SourceCapabilityConflict,
+        SourceCapabilityContext, SourceState, SourceStatus,
     };
     use hypercolor_macos_input::{MacosInputEvent, event_masks};
 
@@ -656,7 +656,9 @@ mod fixtures {
             .source_status_handle()
             .expect("macOS host source exposes status");
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(source));
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(source)))
+            .expect("macOS host fixture should match its declared role");
         manager
             .set_source_capability_context(capability_context("broker", None, None))
             .expect("owner update should publish");

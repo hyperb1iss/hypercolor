@@ -15,7 +15,7 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     CapabilityActionDisposition, InputData, InputManager, InputSource, InteractionData,
-    SourceCapabilityConflict, SourceCapabilityContext, SourceStatus,
+    ManagedSourceRole, SourceCapabilityConflict, SourceCapabilityContext, SourceStatus,
 };
 use hypercolor_macos_capture::{
     MacosAttachment, MacosCaptureCadence, MacosCaptureCapabilities, MacosCaptureColorimetry,
@@ -32,6 +32,12 @@ use hypercolor_types::sensor::SystemSnapshot;
 
 const BGRA8: u32 = 0x4247_5241;
 const RGBA16_FLOAT: u32 = 0x5247_6841;
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("macOS screen fixture should match its declared role");
+}
 
 fn fixture_frame(epoch: u64, pixel: [u8; 4]) -> MacosCaptureFrame {
     let extent = MacosPixelExtent::new(4, 2).expect("fixture extent is valid");
@@ -802,7 +808,7 @@ fn manager_gates_headless_macos_picker_before_local_execution() {
         .source_status_handle()
         .expect("macOS fixture exposes status");
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, ManagedSourceRole::screen(Box::new(source)));
     manager
         .set_source_capability_context(capability_context("launchd_service", None, None, false))
         .expect("owner update should publish");
@@ -855,7 +861,7 @@ fn late_macos_capture_source_inherits_process_capabilities() {
         ))
         .expect("manager retains capabilities before source registration");
 
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, ManagedSourceRole::screen(Box::new(source)));
 
     let snapshot = status.snapshot();
     let platform = diagnostics_payload(&snapshot);

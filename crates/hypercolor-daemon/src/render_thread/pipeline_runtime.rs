@@ -21,8 +21,9 @@ use hypercolor_core::input::screen::{
     ScreenPlanGeneration, ScreenPublicationExecutorRequest,
 };
 use hypercolor_core::input::{
-    InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
-    SourceFreshness, SourceKind, SourceState, SourceStatusAvailability, SourceStatusHandle,
+    DataSourceKind, InputData, InputGraphSnapshot, InputSourceSlot, InteractionData,
+    MotionAggregate, PointerMode, SourceFreshness, SourceKind, SourceState,
+    SourceStatusAvailability, SourceStatusHandle,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
@@ -51,7 +52,7 @@ use super::frame_policy::SkipDecision;
 use super::gpu_device::GpuRenderDevice;
 use super::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationReader, OwnedInputPublicationDemand,
+    InputPublicationDemandRegistration, InputPublicationReader, OwnedInputPublicationDemand,
 };
 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
 use super::macos_screen_diagnostics::MacosScreenParityDiagnosticMailbox;
@@ -227,7 +228,6 @@ struct InputRouteCache {
     media_routes: Vec<usize>,
     network_routes: Vec<usize>,
     sensor_routes: Vec<usize>,
-    untyped_routes: Vec<usize>,
     interaction_sources: Vec<InteractionRouteSource>,
     interaction_statuses: Vec<SourceStatusHandle>,
     interaction_availability: Vec<CachedInteractionAvailability>,
@@ -267,7 +267,6 @@ impl InputRouteCache {
             media_routes: Vec::new(),
             network_routes: Vec::new(),
             sensor_routes: Vec::new(),
-            untyped_routes: Vec::new(),
             interaction_sources: Vec::new(),
             interaction_statuses: Vec::new(),
             interaction_availability: Vec::new(),
@@ -279,7 +278,6 @@ impl InputRouteCache {
     }
 
     fn read_into(&mut self, state: &RenderThreadState, inputs: &mut FrameInputs) {
-        let sensors = self.reader.latest_sensor_snapshot();
         let graph = self.reader.graph_snapshot();
         let graph_changed = self.graph_generation != Some(graph.generation());
         if graph_changed {
@@ -291,8 +289,8 @@ impl InputRouteCache {
             self.rebuild_interaction_sources(&graph, &browser_registry);
         }
 
-        inputs.prepare_for_sample(sensors);
-        self.route_latest_into(inputs);
+        inputs.prepare_for_sample(None);
+        self.route_latest_into(&graph, inputs);
         self.route_interaction_into(&state.event_bus, &graph, &browser_registry, inputs);
     }
 
@@ -423,7 +421,7 @@ impl InputRouteCache {
         aggregate_interaction_availability(handles, Instant::now())
     }
 
-    fn route_latest_into(&mut self, inputs: &mut FrameInputs) {
+    fn route_latest_into(&mut self, graph: &InputGraphSnapshot, inputs: &mut FrameInputs) {
         for &route_index in &self.audio_routes {
             if let Some(sample) = self.routes[route_index].slot.latest()
                 && let InputData::Audio(snapshot) = sample.as_ref()
@@ -458,35 +456,11 @@ impl InputRouteCache {
                 inputs.net = Some(Arc::clone(snapshot));
             }
         }
-        for &route_index in &self.sensor_routes {
-            if let Some(sample) = self.routes[route_index].slot.latest()
-                && let InputData::Sensors(snapshot) = sample.as_ref()
-            {
-                inputs.sensors = Arc::clone(snapshot);
-            }
-        }
-        for &route_index in &self.untyped_routes {
-            let Some(sample) = self.routes[route_index].slot.latest() else {
-                continue;
-            };
-            match sample.as_ref() {
-                InputData::Audio(snapshot) => {
-                    inputs.audio.clone_from(snapshot);
-                    inputs.audio_was_published = true;
-                }
-                InputData::Interaction(_) => {}
-                InputData::Media(snapshot) => inputs.media = Some(Arc::clone(snapshot)),
-                InputData::Net(snapshot) => inputs.net = Some(Arc::clone(snapshot)),
-                InputData::Screen(snapshot) => {
-                    match &mut inputs.screen_data {
-                        Some(current) => current.clone_from(snapshot),
-                        None => inputs.screen_data = Some(snapshot.clone()),
-                    }
-                    screen_seen = true;
-                }
-                InputData::Sensors(snapshot) => inputs.sensors = Arc::clone(snapshot),
-                InputData::None => {}
-            }
+        if !self.sensor_routes.is_empty()
+            && let Some(sample) = graph.latest_data_source(DataSourceKind::Sensors)
+            && let InputData::Sensors(snapshot) = sample.as_ref()
+        {
+            inputs.sensors = Arc::clone(snapshot);
         }
         if !screen_seen {
             inputs.screen_data = None;
@@ -502,13 +476,12 @@ impl InputRouteCache {
             let route_index = self.routes.len();
             self.routes.push(CachedInputRoute { slot: slot.clone() });
             match slot.kind() {
-                Some(SourceKind::Audio) => self.audio_routes.push(route_index),
-                Some(SourceKind::Screen) => self.screen_routes.push(route_index),
-                Some(SourceKind::Interaction) => {}
-                Some(SourceKind::Media) => self.media_routes.push(route_index),
-                Some(SourceKind::Network) => self.network_routes.push(route_index),
-                Some(SourceKind::Sensors) => self.sensor_routes.push(route_index),
-                None => self.untyped_routes.push(route_index),
+                SourceKind::Audio => self.audio_routes.push(route_index),
+                SourceKind::Screen => self.screen_routes.push(route_index),
+                SourceKind::Interaction => {}
+                SourceKind::Media => self.media_routes.push(route_index),
+                SourceKind::Network => self.network_routes.push(route_index),
+                SourceKind::Sensors => self.sensor_routes.push(route_index),
             }
         }
         self.graph_generation = Some(graph.generation());
@@ -578,7 +551,6 @@ impl InputRouteCache {
         self.media_routes.clear();
         self.network_routes.clear();
         self.sensor_routes.clear();
-        self.untyped_routes.clear();
     }
 }
 
@@ -1359,6 +1331,7 @@ pub(crate) struct FrameLoopState {
     pub(crate) lighting_feed: super::lighting_feed::LightingFeedState,
     pub(crate) input_demands: InputPublicationDemandHandle,
     pub(crate) authoritative_input_demand: OwnedInputPublicationDemand,
+    _sensor_baseline_input_demand: InputPublicationDemandRegistration,
 }
 
 impl FrameLoopState {
@@ -2288,6 +2261,10 @@ impl PipelineRuntime {
         sparkleflinger.apply_zone_sampling_plan(sampling_preparation);
         #[cfg(feature = "wgpu")]
         display_sparkleflinger.apply_canvas_resize(display_sparkleflinger_preparation);
+        let sensor_baseline_input_demand = input_demands.register(
+            InputPublicationConsumer::PassiveStream,
+            InputPublicationDemand::default().with_source(SourceKind::Sensors, BACKGROUND_INPUT_HZ),
+        );
 
         Ok(Self {
             scene: SceneSnapshotState::new(initial_spatial_engine, screen_capture_configured),
@@ -2303,6 +2280,7 @@ impl PipelineRuntime {
                     &input_demands,
                     InputPublicationConsumer::Authoritative,
                 ),
+                _sensor_baseline_input_demand: sensor_baseline_input_demand,
             },
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),
@@ -2353,9 +2331,10 @@ mod tests {
         ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutorRequest,
     };
     use hypercolor_core::input::{
-        InputData, InputGraphSnapshot, InputManager, InputSource, InputSourceSlot, InteractionData,
-        MotionAggregate, Q16_16_SCALE, ScrollAggregate, SourceIssue, SourceKind,
-        SourceStatusWriter,
+        DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphSnapshot, InputManager,
+        InputSource, InputSourceSlot, InteractionData, InteractionSource, InteractionSourceRole,
+        ManagedSourceRole, MotionAggregate, Q16_16_SCALE, ScrollAggregate, SourceIssue, SourceKind,
+        SourceRoleBinding, SourceStatusWriter,
     };
     use hypercolor_core::spatial::{
         SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
@@ -2395,7 +2374,7 @@ mod tests {
         running: bool,
     }
 
-    struct WarmingUntypedSensorSource {
+    struct WarmingSensorSource {
         snapshot: Arc<SystemSnapshot>,
         samples: usize,
         running: bool,
@@ -2476,7 +2455,13 @@ mod tests {
         }
     }
 
-    impl WarmingUntypedSensorSource {
+    impl SourceRoleBinding for EventOnceSource {
+        type Role = InteractionSourceRole;
+    }
+
+    impl InteractionSource for EventOnceSource {}
+
+    impl WarmingSensorSource {
         fn new(snapshot: Arc<SystemSnapshot>) -> Self {
             Self {
                 snapshot,
@@ -2486,9 +2471,9 @@ mod tests {
         }
     }
 
-    impl InputSource for WarmingUntypedSensorSource {
+    impl InputSource for WarmingSensorSource {
         fn name(&self) -> &'static str {
-            "warming-untyped-sensor"
+            "warming-sensor"
         }
 
         fn start(&mut self) -> anyhow::Result<()> {
@@ -2514,6 +2499,16 @@ mod tests {
 
         fn is_running(&self) -> bool {
             self.running
+        }
+    }
+
+    impl SourceRoleBinding for WarmingSensorSource {
+        type Role = DataSourceRole;
+    }
+
+    impl DataSource for WarmingSensorSource {
+        fn data_source_kind(&self) -> DataSourceKind {
+            DataSourceKind::Sensors
         }
     }
 
@@ -2574,6 +2569,12 @@ mod tests {
             true
         }
     }
+
+    impl SourceRoleBinding for FixedInteractionSource {
+        type Role = InteractionSourceRole;
+    }
+
+    impl InteractionSource for FixedInteractionSource {}
 
     fn empty_layout() -> SpatialLayout {
         SpatialLayout {
@@ -2650,7 +2651,7 @@ mod tests {
             routes.rebuild_interaction_sources(graph, &registry);
         }
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(inputs);
+        routes.route_latest_into(graph, inputs);
         routes.route_interaction_into(event_bus, graph, &registry, inputs);
     }
 
@@ -2701,7 +2702,11 @@ mod tests {
     #[test]
     fn statusless_interaction_source_is_routed_through_its_graph_slot() {
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(EventOnceSource::new("KeyA")));
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                EventOnceSource::new("KeyA"),
+            )))
+            .expect("statusless interaction source should register");
         manager
             .start_all()
             .expect("statusless interaction source should start");
@@ -2726,10 +2731,16 @@ mod tests {
     #[test]
     fn authoritative_route_selects_host_exact_browser_and_merge_with_releases() {
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(FixedInteractionSource::new("KeyA", 7)));
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                FixedInteractionSource::new("KeyA", 7),
+            )))
+            .expect("host interaction source should register");
         let browser_source = BrowserInputSource::new();
         let browser = browser_source.handle();
-        manager.add_source(Box::new(browser_source));
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(browser_source)))
+            .expect("browser interaction source should register");
         manager.start_all().expect("input sources should start");
         manager
             .set_interaction_capture_active(true)
@@ -2819,38 +2830,45 @@ mod tests {
     }
 
     #[test]
-    fn untyped_source_is_routed_after_warming_up_without_a_graph_change() {
+    fn sensor_source_is_routed_after_warming_up_without_a_graph_change() {
         let snapshot = Arc::new(SystemSnapshot::empty());
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(WarmingUntypedSensorSource::new(Arc::clone(
-            &snapshot,
-        ))));
+        manager
+            .add_source(ManagedSourceRole::data(Box::new(WarmingSensorSource::new(
+                Arc::clone(&snapshot),
+            ))))
+            .expect("warming sensor source should register");
         manager.start_all().expect("sensor source should start");
         let graph = manager.input_graph_handle();
         let mut routes = InputRouteCache::default();
         let mut inputs = FrameInputs::silence();
 
         manager.sample_sources(1.0 / 60.0);
-        routes.rebuild_routes(&graph.snapshot());
+        let graph = graph.snapshot();
+        routes.rebuild_routes(&graph);
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(&mut inputs);
+        routes.route_latest_into(&graph, &mut inputs);
         assert!(!Arc::ptr_eq(&inputs.sensors, &snapshot));
 
         manager.sample_sources(1.0 / 60.0);
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(&mut inputs);
+        routes.route_latest_into(&graph, &mut inputs);
         assert!(Arc::ptr_eq(&inputs.sensors, &snapshot));
 
         manager.sample_sources(1.0 / 60.0);
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(&mut inputs);
-        assert!(!Arc::ptr_eq(&inputs.sensors, &snapshot));
+        routes.route_latest_into(&graph, &mut inputs);
+        assert!(Arc::ptr_eq(&inputs.sensors, &snapshot));
     }
 
     #[test]
     fn source_replacement_and_availability_changes_invalidate_reuse_identity() {
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(FixedInteractionSource::new("KeyA", 7)));
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                FixedInteractionSource::new("KeyA", 7),
+            )))
+            .expect("host interaction source should register");
         manager.start_all().expect("first source should start");
         manager
             .set_interaction_capture_active(true)
@@ -2875,8 +2893,10 @@ mod tests {
         assert_ne!(inactive_reuse, live_reuse);
         assert!(!inputs.input_availability.routed);
 
-        let replacement =
-            manager.replace_source(0, Box::new(FixedInteractionSource::new("KeyB", 7)));
+        let replacement = manager.replace_source(
+            0,
+            ManagedSourceRole::interaction(Box::new(FixedInteractionSource::new("KeyB", 7))),
+        );
         assert!(replacement.is_ok(), "replacement index should exist");
         manager
             .start_all()
@@ -2901,7 +2921,9 @@ mod tests {
         let mut manager = InputManager::new();
         let browser_source = BrowserInputSource::new();
         let browser = browser_source.handle();
-        manager.add_source(Box::new(browser_source));
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(browser_source)))
+            .expect("browser interaction source should register");
         manager.start_all().expect("browser source should start");
         manager
             .set_interaction_capture_active(true)

@@ -85,6 +85,7 @@ use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+const SENSOR_STREAM_HZ: u32 = 1;
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
@@ -556,6 +557,7 @@ pub(super) struct WsInputDemandLeases {
     spectrum: Option<InputPublicationDemandRegistration>,
     screen: Option<InputPublicationDemandRegistration>,
     interaction: Option<InputPublicationDemandRegistration>,
+    sensors: Option<InputPublicationDemandRegistration>,
     #[cfg(test)]
     screen_requested_extent: Option<PixelExtent>,
 }
@@ -579,6 +581,7 @@ impl WsInputDemandLeases {
             spectrum: None,
             screen: None,
             interaction: None,
+            sensors: None,
             #[cfg(test)]
             screen_requested_extent: None,
         }
@@ -699,6 +702,12 @@ impl WsInputDemandLeases {
                     self.interaction_hz,
                 )
             }),
+            sensors: subscriptions.contains(TopicId::Sensors).then(|| {
+                InputPublicationDemand::default().with_source(
+                    hypercolor_core::input::SourceKind::Sensors,
+                    SENSOR_STREAM_HZ,
+                )
+            }),
             #[cfg(test)]
             screen_requested_extent,
         })
@@ -710,6 +719,7 @@ impl WsInputDemandLeases {
         Self::synchronize_domain(&self.demands, &mut self.spectrum, projected.spectrum);
         Self::synchronize_domain(&self.demands, &mut self.screen, projected.screen);
         Self::synchronize_domain(&self.demands, &mut self.interaction, projected.interaction);
+        Self::synchronize_domain(&self.demands, &mut self.sensors, projected.sensors);
         #[cfg(test)]
         {
             self.screen_requested_extent = projected.screen_requested_extent;
@@ -756,6 +766,7 @@ pub(super) struct ProjectedInputDemand {
     spectrum: Option<InputPublicationDemand>,
     screen: Option<InputPublicationDemand>,
     interaction: Option<InputPublicationDemand>,
+    sensors: Option<InputPublicationDemand>,
     #[cfg(test)]
     screen_requested_extent: Option<PixelExtent>,
 }

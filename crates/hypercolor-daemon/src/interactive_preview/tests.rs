@@ -60,7 +60,6 @@ impl PreviewTestRig {
             asset_library: None,
             event_bus: Arc::new(HypercolorBus::new()),
             input_graph: InputManager::new().input_graph_handle(),
-            sensor_snapshots: None,
             interaction_routing: routing,
             input_demands: demands.clone(),
             canvas_width: 8,

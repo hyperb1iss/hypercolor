@@ -22,7 +22,7 @@ use hypercolor_core::input::screen::{
     WindowsScreenCaptureInput,
 };
 use hypercolor_core::input::{
-    InputManager, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
+    InputManager, ManagedSourceRole, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
@@ -319,7 +319,9 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
     let (source, fixture) = WindowsHostInput::new_deterministic_fixture(true, true);
     let mut manager = InputManager::new();
     let statuses = manager.source_status_registry();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(source)))
+        .expect("Windows host fixture should register");
     manager.start_all().expect("fixture source starts");
     let state = render_state(manager, false);
     install_effect_with_test_demand_activation(&state, "solid_color", true).await;
@@ -437,7 +439,9 @@ async fn capture_frame_reaches_daemon_screen_and_canvas_watches() {
             .expect("deterministic Windows capture source is valid");
     let mut manager = InputManager::new();
     let statuses = manager.source_status_registry();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("Windows screen fixture should register");
     manager.start_all().expect("fixture source starts idle");
     let state = render_state(manager, true);
     install_effect_with_test_demand_activation(&state, "screen_cast", false).await;

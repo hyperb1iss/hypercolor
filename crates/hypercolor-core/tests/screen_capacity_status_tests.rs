@@ -6,7 +6,16 @@ use hypercolor_core::input::screen::{
     PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenByteAdmissionError,
     ScreenCaptureDemand,
 };
-use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenReconfigurationConflict};
+use hypercolor_core::input::{
+    InputData, InputManager, InputSource, ManagedSourceRole, ScreenReconfigurationConflict,
+    ScreenSource, ScreenSourceRole, SourceRoleBinding,
+};
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("capacity fixture source should match its declared role");
+}
 
 struct PlannedScreenSource {
     running: bool,
@@ -74,6 +83,12 @@ impl InputSource for PlannedScreenSource {
         Ok(())
     }
 }
+
+impl SourceRoleBinding for PlannedScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for PlannedScreenSource {}
 
 #[test]
 fn status_handle_tracks_policy_and_live_physical_reservations() {
@@ -292,7 +307,7 @@ fn compound_capacity_and_runtime_commit_publishes_one_coherent_policy() {
         .set_screen_capture_demand(demand)
         .expect("prepared source should accept demand");
     source.start().expect("prepared source should start");
-    let mut replacement = Some(source as Box<dyn InputSource>);
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
     let committed_total =
         ScreenAdmissionCapacity::new(analysis.peak_bytes() + 1_000, analysis.peak_bytes() + 750);
     let capacity = manager
@@ -318,7 +333,10 @@ fn compound_capacity_and_runtime_commit_publishes_one_coherent_policy() {
         .prepare_screen_capacity_plan(initial_total, 0)
         .expect("disable capacity should prepare")
         .expect("capacity enforcement should remain installed");
-    manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::data(Box::new(hypercolor_core::input::MediaSource::new())),
+    );
     let stable = status.snapshot().policy();
     let mut no_replacement = None;
     assert!(matches!(

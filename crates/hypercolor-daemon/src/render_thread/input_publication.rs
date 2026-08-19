@@ -19,7 +19,6 @@ use hypercolor_core::input::screen::{
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
 };
-use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::{Mutex, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant as TokioInstant, timeout};
@@ -734,7 +733,6 @@ impl OwnedInputPublicationDemand {
 #[derive(Clone)]
 pub(crate) struct InputPublicationReader {
     graph: InputGraphHandle,
-    sensors: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     #[allow(
         dead_code,
         reason = "screen publication leases are optional for pump consumers"
@@ -743,14 +741,9 @@ pub(crate) struct InputPublicationReader {
 }
 
 impl InputPublicationReader {
-    fn new(
-        graph: InputGraphHandle,
-        sensors: Option<watch::Receiver<Arc<SystemSnapshot>>>,
-        screen_publications: Arc<ScreenPublicationHub>,
-    ) -> Self {
+    fn new(graph: InputGraphHandle, screen_publications: Arc<ScreenPublicationHub>) -> Self {
         Self {
             graph,
-            sensors,
             screen_publications,
         }
     }
@@ -759,19 +752,12 @@ impl InputPublicationReader {
     pub(crate) fn empty() -> Self {
         Self::new(
             InputGraphHandle::default(),
-            None,
             hypercolor_core::input::screen::ScreenPlanBuilder::new().publication_hub(),
         )
     }
 
     pub(crate) fn graph_snapshot(&self) -> Arc<InputGraphSnapshot> {
         self.graph.snapshot()
-    }
-
-    pub(crate) fn latest_sensor_snapshot(&self) -> Option<Arc<SystemSnapshot>> {
-        self.sensors
-            .as_ref()
-            .map(|receiver| Arc::clone(&receiver.borrow()))
     }
 
     #[allow(
@@ -863,7 +849,6 @@ impl InputPublicationPump {
             let manager = manager.lock().await;
             InputPublicationReader::new(
                 manager.input_graph_handle(),
-                manager.sensor_snapshot_receiver(),
                 manager.screen_publication_hub(),
             )
         };

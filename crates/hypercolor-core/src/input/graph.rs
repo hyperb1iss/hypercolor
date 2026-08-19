@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use tokio::sync::watch;
 
-use super::{InputData, SourceKind, SourceStatusHandle};
+use super::{
+    DataSourceKind, InputData, SourceFreshness, SourceKind, SourceState, SourceStatusHandle,
+};
 use crate::types::event::TimedInputEvent;
 
 /// Maximum events retained per source between consumer reads.
@@ -30,7 +32,7 @@ pub struct InputSourceSlot {
 
 struct InputSourceSlotInner {
     id: u64,
-    kind: Option<SourceKind>,
+    kind: SourceKind,
     interaction_origin: Option<InteractionSourceOrigin>,
     status: SourceStatusHandle,
     publication: InputPublicationSlot,
@@ -44,6 +46,7 @@ pub(crate) struct InputPublicationSlot {
 
 struct InputPublicationSlotInner {
     latest: ArcSwapOption<InputData>,
+    publication_revision: watch::Sender<u64>,
     event_slots: Box<[Mutex<Option<InputEventEntry>>]>,
     writer: Mutex<InputPublicationWriter>,
     revision: AtomicU64,
@@ -118,7 +121,7 @@ pub struct InputPublicationRead {
 impl InputSourceSlot {
     pub(crate) fn new(
         id: u64,
-        kind: Option<SourceKind>,
+        kind: SourceKind,
         interaction_origin: Option<InteractionSourceOrigin>,
         status: SourceStatusHandle,
     ) -> Self {
@@ -141,7 +144,7 @@ impl InputSourceSlot {
 
     /// Declared source kind used to build typed route caches.
     #[must_use]
-    pub fn kind(&self) -> Option<SourceKind> {
+    pub fn kind(&self) -> SourceKind {
         self.inner.kind
     }
 
@@ -169,6 +172,16 @@ impl InputSourceSlot {
         events: &mut Vec<TimedInputEvent>,
     ) {
         self.inner.publication.publish_batch(sample, events);
+    }
+
+    pub(crate) fn clear_latest(&self) {
+        self.inner.publication.clear_latest();
+    }
+
+    /// Subscribe to latest-value changes for this stable source slot.
+    #[must_use]
+    pub fn subscribe_publication(&self) -> watch::Receiver<u64> {
+        self.inner.publication.subscribe_publication()
     }
 
     /// Atomically read one latest sample and its bounded event revision.
@@ -213,6 +226,7 @@ impl InputSourceSlot {
 
 impl InputPublicationSlot {
     pub(crate) fn new(event_capacity: usize) -> Self {
+        let (publication_revision, _) = watch::channel(0);
         let event_slots = (0..event_capacity)
             .map(|_| Mutex::new(None))
             .collect::<Vec<_>>()
@@ -220,6 +234,7 @@ impl InputPublicationSlot {
         Self {
             inner: Arc::new(InputPublicationSlotInner {
                 latest: ArcSwapOption::empty(),
+                publication_revision,
                 event_slots,
                 writer: Mutex::new(InputPublicationWriter {
                     next_cursor: 0,
@@ -244,15 +259,19 @@ impl InputPublicationSlot {
         events: &mut Vec<TimedInputEvent>,
     ) {
         let mut writer = lock_publication_writer(&self.inner.writer);
-        let _revision = PublicationRevisionGuard::begin(&self.inner.revision);
+        let revision = PublicationRevisionGuard::begin(&self.inner.revision);
         let latest = self.inner.latest.load_full();
         if let Some(InputData::Interaction(interaction)) = sample.as_deref() {
             writer.interaction_transients.absorb(interaction);
         }
         let retain_change_only_sample = sample.is_none()
             && latest.as_ref().is_some_and(|latest| {
-                matches!(latest.as_ref(), InputData::Media(_) | InputData::Net(_))
+                matches!(
+                    latest.as_ref(),
+                    InputData::Media(_) | InputData::Net(_) | InputData::Sensors(_)
+                )
             });
+        let latest_changed = !retain_change_only_sample && (sample.is_some() || latest.is_some());
         if !retain_change_only_sample {
             self.inner.latest.store(sample);
         }
@@ -303,6 +322,30 @@ impl InputPublicationSlot {
         self.inner
             .interaction_transients
             .store(writer.interaction_transients);
+        drop(revision);
+        drop(writer);
+        if latest_changed {
+            advance_publication_revision(&self.inner.publication_revision);
+        }
+    }
+
+    pub(crate) fn clear_latest(&self) {
+        let mut writer = lock_publication_writer(&self.inner.writer);
+        let revision = PublicationRevisionGuard::begin(&self.inner.revision);
+        let had_latest = self.inner.latest.swap(None).is_some();
+        writer.interaction_transients = InteractionTransientTotals::default();
+        self.inner
+            .interaction_transients
+            .store(writer.interaction_transients);
+        drop(revision);
+        drop(writer);
+        if had_latest {
+            advance_publication_revision(&self.inner.publication_revision);
+        }
+    }
+
+    pub(crate) fn subscribe_publication(&self) -> watch::Receiver<u64> {
+        self.inner.publication_revision.subscribe()
     }
 
     pub(crate) fn read_publication_since(
@@ -391,6 +434,14 @@ impl InputPublicationSlot {
     pub(crate) fn event_cursor(&self) -> u64 {
         self.inner.next_cursor.load(Ordering::Acquire)
     }
+}
+
+fn advance_publication_revision(revision: &watch::Sender<u64>) {
+    revision.send_modify(|current| {
+        *current = current
+            .checked_add(1)
+            .expect("input publication revision exhausted");
+    });
 }
 
 impl InteractionTransientTotals {
@@ -536,6 +587,26 @@ impl InputGraphSnapshot {
     #[must_use]
     pub fn slots(&self) -> &[InputSourceSlot] {
         &self.slots
+    }
+
+    /// Resolve the unique slot for one general-data source kind.
+    #[must_use]
+    pub fn data_source_slot(&self, kind: DataSourceKind) -> Option<&InputSourceSlot> {
+        let source_kind = SourceKind::from(kind);
+        self.slots.iter().find(|slot| slot.kind() == source_kind)
+    }
+
+    /// Load the latest healthy sample for one general-data source kind.
+    #[must_use]
+    pub fn latest_data_source(&self, kind: DataSourceKind) -> Option<Arc<InputData>> {
+        let slot = self.data_source_slot(kind)?;
+        let status = slot.status().snapshot();
+        if !matches!(status.state, SourceState::Live | SourceState::Degraded)
+            || status.freshness == SourceFreshness::Stale
+        {
+            return None;
+        }
+        slot.latest()
     }
 }
 

@@ -64,7 +64,7 @@ use hypercolor_core::device::{
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
-use hypercolor_core::input::{InputManager, SourceStatusRegistry};
+use hypercolor_core::input::{InputManager, ManagedSourceRole, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
@@ -531,7 +531,11 @@ impl AppState {
             HypercolorConfig::default().input.preview_route,
         );
         let mut standalone_input_manager = InputManager::new();
-        standalone_input_manager.add_source(Box::new(browser_input_source));
+        standalone_input_manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                browser_input_source,
+            )))
+            .expect("standalone browser input source should register");
         let input_status = standalone_input_manager.source_status_registry();
         let screen_capacity_status = standalone_input_manager.screen_capacity_status_handle();
         let input_manager = Arc::new(Mutex::new(standalone_input_manager));

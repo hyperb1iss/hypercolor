@@ -16,7 +16,10 @@ use hypercolor_core::input::screen::{
     ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
 };
-use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
+use hypercolor_core::input::{
+    InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+    ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind, SourceRoleBinding,
+};
 use tokio::sync::{Mutex, Notify};
 
 use super::{
@@ -268,6 +271,12 @@ impl InputSource for ScreenDemandSource {
     }
 }
 
+impl SourceRoleBinding for ScreenDemandSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for ScreenDemandSource {}
+
 impl CountingSource {
     fn new(samples: Arc<AtomicUsize>) -> Self {
         Self {
@@ -318,6 +327,12 @@ impl InputSource for CountingSource {
         Ok(())
     }
 }
+
+impl SourceRoleBinding for CountingSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for CountingSource {}
 
 #[test]
 fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
@@ -724,7 +739,11 @@ fn source_reactivation_starts_with_one_cadence_window() {
 async fn pump_waits_for_live_demand_then_samples_without_render_frames() {
     let samples = Arc::new(AtomicUsize::new(0));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(CountingSource::new(Arc::clone(&samples))));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            CountingSource::new(Arc::clone(&samples)),
+        )))
+        .expect("counting source should register");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
     let _demand = demands.register(
@@ -762,7 +781,11 @@ async fn pump_waits_for_live_demand_then_samples_without_render_frames() {
 async fn dropping_the_pump_aborts_its_worker() {
     let samples = Arc::new(AtomicUsize::new(0));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(CountingSource::new(Arc::clone(&samples))));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            CountingSource::new(Arc::clone(&samples)),
+        )))
+        .expect("counting source should register");
     manager.start_all().expect("counting source should start");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
@@ -792,7 +815,11 @@ async fn dropping_the_pump_aborts_its_worker() {
 async fn pump_sleeps_with_zero_typed_demand() {
     let samples = Arc::new(AtomicUsize::new(0));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(CountingSource::new(Arc::clone(&samples))));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            CountingSource::new(Arc::clone(&samples)),
+        )))
+        .expect("counting source should register");
     manager.start_all().expect("counting source should start");
     let mut pump = InputPublicationPump::start(
         Arc::new(Mutex::new(manager)),
@@ -823,7 +850,11 @@ async fn zero_demand_graph_change_shuts_down_new_source() {
     );
     source.start().expect("counting source should start");
 
-    manager.lock().await.add_source(Box::new(source));
+    manager
+        .lock()
+        .await
+        .add_source(ManagedSourceRole::interaction(Box::new(source)))
+        .expect("prestarted counting source should register");
 
     tokio::time::timeout(Duration::from_millis(500), async {
         while capture_active.load(Ordering::Acquire) {
@@ -841,7 +872,11 @@ async fn zero_demand_graph_change_shuts_down_new_source() {
 async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
     let samples = Arc::new(AtomicUsize::new(0));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(CountingSource::new(Arc::clone(&samples))));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            CountingSource::new(Arc::clone(&samples)),
+        )))
+        .expect("counting source should register");
     manager.start_all().expect("counting source should start");
     let graph = manager.input_graph_handle();
     let manager = Arc::new(Mutex::new(manager));
@@ -880,7 +915,11 @@ async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
 async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(ScreenDemandSource::new(Arc::clone(&transitions))));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
@@ -907,7 +946,11 @@ async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active()
 async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(ScreenDemandSource::new(Arc::clone(&transitions))));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
@@ -965,7 +1008,9 @@ async fn reader_exposes_exact_cpu_surface_without_legacy_screen_data() {
     let source = ScreenDemandSource::new(Arc::clone(&transitions));
     let runtime = Arc::clone(&source.runtime);
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
@@ -1051,7 +1096,9 @@ async fn failed_exact_replacement_preserves_retirement_barrier_across_demand_cha
         Arc::clone(&retirement_release),
     );
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
@@ -1107,7 +1154,9 @@ async fn persistent_exact_failure_uses_bounded_retry_cadence_after_retirement() 
         Arc::new(Notify::new()),
     );
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
@@ -1143,8 +1192,14 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
         Arc::clone(&preparation_release),
     );
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
-    manager.add_source(Box::new(CountingSource::new(Arc::clone(&samples))));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("screen demand source should register");
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            CountingSource::new(Arc::clone(&samples)),
+        )))
+        .expect("counting source should register");
     manager.start_all().expect("input sources start");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
@@ -1191,11 +1246,14 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
 async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(ScreenDemandSource::new(Arc::clone(&transitions))));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let reader = InputPublicationReader::new(
         manager.input_graph_handle(),
-        manager.sensor_snapshot_receiver(),
         manager.screen_publication_hub(),
     );
     let publications = reader.screen_publications();
@@ -1239,7 +1297,11 @@ async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
 async fn pump_rejects_a_stale_demand_after_waiting_for_the_manager() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(ScreenDemandSource::new(Arc::clone(&transitions))));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();

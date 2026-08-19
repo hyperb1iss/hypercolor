@@ -218,7 +218,10 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use hypercolor_core::input::{InputData, InputSource};
+    use hypercolor_core::input::{
+        InputData, InputSource, ManagedSourceRole, ScreenSource, ScreenSourceRole,
+        SourceRoleBinding,
+    };
 
     use super::*;
 
@@ -262,15 +265,23 @@ mod tests {
         }
     }
 
+    impl SourceRoleBinding for FailingScreenSource {
+        type Role = ScreenSourceRole;
+    }
+
+    impl ScreenSource for FailingScreenSource {}
+
     #[test]
     fn failed_demand_retries_every_tick_and_paces_only_the_warning() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let fail = Arc::new(AtomicBool::new(true));
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(FailingScreenSource {
-            attempts: Arc::clone(&attempts),
-            fail: Arc::clone(&fail),
-        }));
+        manager
+            .add_source(ManagedSourceRole::screen(Box::new(FailingScreenSource {
+                attempts: Arc::clone(&attempts),
+                fail: Arc::clone(&fail),
+            })))
+            .expect("failing screen source should register");
 
         let extent = hypercolor_core::input::screen::PixelExtent::new(640, 480)
             .expect("fixture extent is valid");

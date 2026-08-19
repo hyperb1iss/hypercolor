@@ -1158,6 +1158,16 @@ pub enum ManagedSourceRole {
 
 impl ManagedSourceRole {
     #[must_use]
+    pub fn audio(source: Box<dyn AudioSource>) -> Self {
+        Self::Audio(source)
+    }
+
+    #[must_use]
+    pub fn screen(source: Box<dyn ScreenSource>) -> Self {
+        Self::Screen(source)
+    }
+
+    #[must_use]
     pub fn interaction(source: Box<dyn InteractionSource>) -> Self {
         Self::Interaction(ManagedInteractionSource {
             origin: source.interaction_source_origin(),
@@ -1184,7 +1194,25 @@ impl ManagedSourceRole {
     }
 
     #[must_use]
-    pub fn source(&self) -> &dyn ManagedSource {
+    pub fn source_kind(&self) -> SourceKind {
+        match self.key() {
+            ManagedSourceKey::Audio => SourceKind::Audio,
+            ManagedSourceKey::Screen => SourceKind::Screen,
+            ManagedSourceKey::Interaction(_) => SourceKind::Interaction,
+            ManagedSourceKey::Data(kind) => kind.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn interaction_origin(&self) -> Option<InteractionSourceOrigin> {
+        match self.key() {
+            ManagedSourceKey::Interaction(origin) => Some(origin),
+            ManagedSourceKey::Audio | ManagedSourceKey::Screen | ManagedSourceKey::Data(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &(dyn ManagedSource + 'static) {
         match self {
             Self::Audio(source) => source.as_ref(),
             Self::Screen(source) => source.as_ref(),
@@ -1193,12 +1221,57 @@ impl ManagedSourceRole {
         }
     }
 
-    pub fn source_mut(&mut self) -> &mut dyn ManagedSource {
+    pub fn source_mut(&mut self) -> &mut (dyn ManagedSource + 'static) {
         match self {
             Self::Audio(source) => source.as_mut(),
             Self::Screen(source) => source.as_mut(),
             Self::Interaction(source) => source.source.as_mut(),
             Self::Data(source) => source.source.as_mut(),
+        }
+    }
+
+    #[must_use]
+    pub fn as_audio(&self) -> Option<&(dyn AudioSource + 'static)> {
+        match self {
+            Self::Audio(source) => Some(source.as_ref()),
+            Self::Screen(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    pub fn as_audio_mut(&mut self) -> Option<&mut (dyn AudioSource + 'static)> {
+        match self {
+            Self::Audio(source) => Some(source.as_mut()),
+            Self::Screen(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_screen(&self) -> Option<&(dyn ScreenSource + 'static)> {
+        match self {
+            Self::Screen(source) => Some(source.as_ref()),
+            Self::Audio(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    pub fn as_screen_mut(&mut self) -> Option<&mut (dyn ScreenSource + 'static)> {
+        match self {
+            Self::Screen(source) => Some(source.as_mut()),
+            Self::Audio(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_interaction(&self) -> Option<&(dyn InteractionSource + 'static)> {
+        match self {
+            Self::Interaction(source) => Some(source.source.as_ref()),
+            Self::Audio(_) | Self::Screen(_) | Self::Data(_) => None,
+        }
+    }
+
+    pub fn as_interaction_mut(&mut self) -> Option<&mut (dyn InteractionSource + 'static)> {
+        match self {
+            Self::Interaction(source) => Some(source.source.as_mut()),
+            Self::Audio(_) | Self::Screen(_) | Self::Data(_) => None,
         }
     }
 }
