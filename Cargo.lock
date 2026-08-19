@@ -5398,6 +5398,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-linux-input"
+version = "0.3.2"
+dependencies = [
+ "evdev",
+ "hypercolor-worker-retention",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "hypercolor-linux-session"
 version = "0.3.2"
 dependencies = [
