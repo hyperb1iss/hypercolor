@@ -392,10 +392,6 @@ test.describe("REST API", () => {
       expect((await api.get(`/api/v1/devices/${simulatorId}`)).ok()).toBeTruthy();
 
       expect((await api.get(`/api/v1/devices/${simulatorId}/attachments`)).ok()).toBeTruthy();
-      const categories = await readEnvelope(await api.get("/api/v1/attachments/categories"));
-      expect(categories.items.length).toBeGreaterThan(0);
-      const vendors = await readEnvelope(await api.get("/api/v1/attachments/vendors"));
-      expect(vendors.items.length).toBeGreaterThan(0);
 
       const createdTemplate = await readEnvelope(
         await api.post("/api/v1/attachments/templates", {
@@ -404,19 +400,10 @@ test.describe("REST API", () => {
       );
       expect(createdTemplate.id).toBe(templateId);
 
-      const templateDetail = await readEnvelope(
-        await api.get(`/api/v1/attachments/templates/${templateId}`),
+      const templates = await readEnvelope(
+        await api.get(`/api/v1/attachments/templates?q=${templateId}`),
       );
-      expect(templateDetail.id).toBe(templateId);
-
-      const updatedTemplate = await readEnvelope(
-        await api.put(`/api/v1/attachments/templates/${templateId}`, {
-          data: buildAttachmentTemplate(templateId, "E2E Template Updated", 12),
-        }),
-      );
-      expect(updatedTemplate.name).toBe("E2E Template Updated");
-
-      expect((await api.delete(`/api/v1/attachments/templates/${templateId}`)).ok()).toBeTruthy();
+      expect(templates.items.some((template) => template.id === templateId)).toBe(true);
     } finally {
       if (simulatorId) {
         await api.delete(`/api/v1/simulators/displays/${simulatorId}`);

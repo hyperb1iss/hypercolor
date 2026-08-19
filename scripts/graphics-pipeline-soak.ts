@@ -336,20 +336,20 @@ function wsEndpoint(raw: string): string {
 }
 
 async function fetchStatus(config: Config): Promise<JsonObject> {
-    const statusUrl = `${apiPrefix(config.daemon)}/status`
+    const systemUrl = `${apiPrefix(config.daemon)}/system`
     let response: Response
     try {
-        response = await fetch(statusUrl)
+        response = await fetch(systemUrl)
     } catch (error) {
-        throw new Error(`Daemon is not reachable at ${statusUrl}: ${errorMessage(error)}`)
+        throw new Error(`Daemon is not reachable at ${systemUrl}: ${errorMessage(error)}`)
     }
     if (!response.ok) {
-        throw new Error(`Daemon status check failed at ${statusUrl}: HTTP ${response.status}`)
+        throw new Error(`Daemon status check failed at ${systemUrl}: HTTP ${response.status}`)
     }
     const envelope = (await response.json()) as JsonObject
-    const status = objectAt(envelope, ["data"])
+    const status = objectAt(envelope, ["data", "status"])
     if (!status) {
-        throw new Error(`Daemon status at ${statusUrl} omitted the data object`)
+        throw new Error(`Daemon status at ${systemUrl} omitted data.status`)
     }
     return status
 }

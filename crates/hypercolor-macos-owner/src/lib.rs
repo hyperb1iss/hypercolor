@@ -402,7 +402,7 @@ pub struct MacosDaemonSessionAttestation {
     pub owner_epoch: u64,
     /// Full process identity current when this session was published.
     pub owner_identity: MacosOwnerIdentity,
-    /// Per-process identifier safe to expose from `GET /server`.
+    /// Per-process identifier safe to expose from `GET /system`.
     pub server_session_id: MacosServerSessionId,
     /// Private bearer credential accepted only from a loopback peer.
     pub protected_control_credential: MacosProtectedControlCredential,
