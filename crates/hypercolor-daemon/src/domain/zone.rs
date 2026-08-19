@@ -22,7 +22,7 @@ use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{SceneMutation, commit_scene, zone_changed_event};
+use crate::domain::scene::{SceneMutation, SceneTarget, commit_scene, zone_changed_event};
 use crate::domain::scene_tree::check_scene_revision;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::layout_auto_exclusions;
@@ -33,7 +33,7 @@ use crate::layout_auto_exclusions;
 #[derive(Debug, Clone)]
 pub struct CreateZone {
     /// Which scene gains the zone.
-    pub scene_id: SceneId,
+    pub scene: SceneTarget,
     /// The zone's name. Must not be blank.
     pub name: String,
     /// Optional swatch for the Studio zone tree.
@@ -51,7 +51,7 @@ pub struct CreateZone {
 #[derive(Debug, Clone)]
 pub struct UpdateZone {
     /// Which scene owns the zone.
-    pub scene_id: SceneId,
+    pub scene: SceneTarget,
     /// Which zone to patch.
     pub zone_id: ZoneId,
     /// The fields to change; `None` fields keep their current values.
@@ -70,7 +70,7 @@ pub struct UpdateZone {
 #[derive(Debug, Clone)]
 pub struct DeleteZone {
     /// Which scene owns the zone.
-    pub scene_id: SceneId,
+    pub scene: SceneTarget,
     /// Which zone to remove.
     pub zone_id: ZoneId,
     /// The `groups_revision` the caller last saw, when it sent one.
@@ -222,24 +222,21 @@ pub async fn create_zone(
     }
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = command.scene.resolve(&mutation, "creating a zone")?;
     check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
+    check_groups_revision(&mutation, scene_id, command.expected_revision)?;
 
     let zone_id = mutation
         .create_zone(
-            command.scene_id,
+            scene_id,
             command.name,
             command.color,
             command.fallback_canvas,
         )
-        .map_err(|error| zone_error(error, command.scene_id, None, None))?;
-    let zone = zone_in_scene(&mutation, command.scene_id, zone_id)?;
-    let groups_revision = groups_revision(&mutation, command.scene_id);
-    mutation.record(zone_changed_event(
-        command.scene_id,
-        &zone,
-        ZoneChangeKind::Created,
-    ));
+        .map_err(|error| zone_error(error, scene_id, None, None))?;
+    let zone = zone_in_scene(&mutation, scene_id, zone_id)?;
+    let groups_revision = groups_revision(&mutation, scene_id);
+    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Created));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
@@ -266,20 +263,17 @@ pub async fn update_zone(
 
     let structural = command.patch.make_primary == Some(true);
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = command.scene.resolve(&mutation, "updating a zone")?;
     check_scene_revision(&mutation, command.expected_scene_revision)?;
     if structural {
-        check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
+        check_groups_revision(&mutation, scene_id, command.expected_revision)?;
     }
 
     let zone = mutation
-        .update_zone_meta(command.scene_id, command.zone_id, command.patch)
-        .map_err(|error| zone_error(error, command.scene_id, Some(command.zone_id), None))?;
-    let groups_revision = groups_revision(&mutation, command.scene_id);
-    mutation.record(zone_changed_event(
-        command.scene_id,
-        &zone,
-        ZoneChangeKind::Updated,
-    ));
+        .update_zone_meta(scene_id, command.zone_id, command.patch)
+        .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
+    let groups_revision = groups_revision(&mutation, scene_id);
+    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
@@ -306,23 +300,20 @@ pub async fn delete_zone(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = command.scene.resolve(&mutation, "deleting a zone")?;
     check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
+    check_groups_revision(&mutation, scene_id, command.expected_revision)?;
 
-    let zone = zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
+    let zone = zone_in_scene(&mutation, scene_id, command.zone_id)?;
     mutation
-        .delete_zone(command.scene_id, command.zone_id)
-        .map_err(|error| zone_error(error, command.scene_id, Some(command.zone_id), None))?;
-    let groups_revision = groups_revision(&mutation, command.scene_id);
-    mutation.record(zone_changed_event(
-        command.scene_id,
-        &zone,
-        ZoneChangeKind::Removed,
-    ));
+        .delete_zone(scene_id, command.zone_id)
+        .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
+    let groups_revision = groups_revision(&mutation, scene_id);
+    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Removed));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
-    remove_zone_auto_exclusions(state, command.scene_id, command.zone_id).await;
+    remove_zone_auto_exclusions(state, scene_id, command.zone_id).await;
 
     Ok(ZoneRemoved {
         zone,

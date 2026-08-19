@@ -23,7 +23,8 @@ use hypercolor_types::api::scene::{
     ZoneMemberId, ZoneResource,
 };
 use hypercolor_types::event::{
-    HypercolorEvent, SceneLibraryChangeKind, SceneSettingsChangeKind, ZoneChangeKind,
+    HypercolorEvent, LayerStackChangeKind, SceneLibraryChangeKind, SceneSettingsChangeKind,
+    ZoneChangeKind,
 };
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
@@ -308,10 +309,10 @@ pub async fn patch_scene(
         mutation
             .set_unassigned_behavior(scene_id, behavior)
             .map_err(|_| DomainError::not_found(ResourceKind::Scene, scene_id))?;
-        let revision = mutation.base_revision();
+        let zones_revision = active_scene(&mutation)?.groups_revision;
         mutation.record(HypercolorEvent::SceneSettingsChanged {
             scene_id,
-            zones_revision: revision,
+            zones_revision,
             kind: SceneSettingsChangeKind::UnassignedBehavior,
         });
     }
@@ -426,8 +427,16 @@ pub async fn replace_layer(
     let zone = mutation
         .insert_layer(scene_id, command.zone_id, command.layer, Some(index), None)
         .map_err(|error| layer_error(error, command.zone_id, None))?;
+    crate::domain::layer::validate_candidate_media_admission(state, &mutation, scene_id).await?;
 
-    finish_zone_mutation(state, mutation, scene_id, zone).await
+    finish_layer_mutation(
+        state,
+        mutation,
+        scene_id,
+        zone,
+        LayerStackChangeKind::Updated,
+    )
+    .await
 }
 
 /// Write control values and drop named bindings on one layer.
@@ -470,7 +479,14 @@ pub async fn patch_layer_controls(
         )
         .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
 
-    finish_zone_mutation(state, mutation, scene_id, zone).await
+    finish_layer_mutation(
+        state,
+        mutation,
+        scene_id,
+        zone,
+        LayerStackChangeKind::ControlsPatched,
+    )
+    .await
 }
 
 /// Assign a device's segments to a zone.
@@ -612,6 +628,34 @@ async fn finish_zone_mutation(
     zone: Zone,
 ) -> Result<ZoneWritten, DomainError> {
     mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
+    let commit = commit_scene(state, mutation).await?;
+    crate::api::save_runtime_session_snapshot(state).await;
+    Ok(ZoneWritten {
+        zone: zone_resource(&zone),
+        revision: commit.revision(),
+        commit,
+    })
+}
+
+async fn finish_layer_mutation(
+    state: &AppState,
+    mut mutation: SceneMutation,
+    scene_id: SceneId,
+    zone: Zone,
+    kind: LayerStackChangeKind,
+) -> Result<ZoneWritten, DomainError> {
+    let zone_kind = if kind == LayerStackChangeKind::ControlsPatched {
+        ZoneChangeKind::ControlsPatched
+    } else {
+        ZoneChangeKind::Updated
+    };
+    mutation.record(zone_changed_event(scene_id, &zone, zone_kind));
+    mutation.record(HypercolorEvent::LayerStackChanged {
+        scene_id,
+        zone_id: zone.id,
+        layers_version: zone.layers_version,
+        kind,
+    });
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
     Ok(ZoneWritten {

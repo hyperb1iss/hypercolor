@@ -14,13 +14,15 @@ use std::time::SystemTime;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
+use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::effect::{
-    ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-    EffectState,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+    EffectId, EffectMetadata, EffectSource, EffectState,
 };
+use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, SceneSettingsChangeKind};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -101,7 +103,22 @@ fn sample_effect(name: &str) -> EffectMetadata {
         description: format!("{name} description"),
         category: EffectCategory::Ambient,
         tags: vec!["test".to_owned()],
-        controls: Vec::new(),
+        controls: vec![ControlDefinition {
+            id: "speed".to_owned(),
+            name: "Speed".to_owned(),
+            kind: ControlKind::Number,
+            control_type: ControlType::Slider,
+            default_value: ControlValue::Float(0.5),
+            min: Some(0.0),
+            max: Some(1.0),
+            step: Some(0.01),
+            labels: Vec::new(),
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: None,
+        }],
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
@@ -111,6 +128,20 @@ fn sample_effect(name: &str) -> EffectMetadata {
         },
         license: None,
     }
+}
+
+async fn insert_stream_asset(state: &Arc<AppState>, name: &str, url: &str) -> String {
+    let mut options = AssetUploadOptions::new(name);
+    options.type_hint = Some(AssetTypeHint::Stream);
+    state
+        .asset_library
+        .write()
+        .await
+        .add_bytes(format!("{url}\n").as_bytes(), options)
+        .expect("stream URL asset should upload")
+        .record
+        .id
+        .to_string()
 }
 
 fn sample_output(id: &str, segment: Option<&str>) -> Output {
@@ -1102,4 +1133,173 @@ async fn reading_the_tree_never_advances_the_revision() {
         .as_u64()
         .expect("revision");
     assert_eq!(first, last, "a safe method must not commit");
+}
+
+#[tokio::test]
+async fn live_layer_create_and_replace_enforce_media_admission() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let first_stream =
+        insert_stream_asset(&state, "camera-a.stream", "https://1.1.1.1/live-a.m3u8").await;
+    let second_stream =
+        insert_stream_asset(&state, "camera-b.stream", "https://8.8.8.8/live-b.m3u8").await;
+
+    let document = read_document(&app).await;
+    let zone = primary_zone(&document);
+    let zone_id = zone["id"].as_str().expect("zone id").to_owned();
+    let original_layer = zone["layers"][0]["id"]
+        .as_str()
+        .expect("layer id")
+        .to_owned();
+
+    let admitted = send(
+        &app,
+        json_request(
+            "POST",
+            format!("/api/v1/scene/zones/{zone_id}/layers"),
+            json!({ "source": { "type": "media", "asset_id": first_stream } }),
+        ),
+    )
+    .await;
+    assert_eq!(admitted.status(), StatusCode::CREATED);
+
+    let create_rejected = send(
+        &app,
+        json_request(
+            "POST",
+            format!("/api/v1/scene/zones/{zone_id}/layers"),
+            json!({ "source": { "type": "media", "asset_id": second_stream } }),
+        ),
+    )
+    .await;
+    assert_eq!(create_rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let create_error = body_json(create_rejected).await;
+    assert_eq!(create_error["error"]["details"]["counts"]["livestream"], 2);
+    assert_eq!(create_error["error"]["details"]["caps"]["livestream"], 1);
+
+    let replace_rejected = send(
+        &app,
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{original_layer}"),
+            json!({ "source": { "type": "media", "asset_id": second_stream } }),
+        ),
+    )
+    .await;
+    assert_eq!(replace_rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let replace_error = body_json(replace_rejected).await;
+    assert_eq!(replace_error["error"]["details"]["counts"]["livestream"], 2);
+
+    let unchanged = read_document(&app).await;
+    assert!(
+        primary_zone(&unchanged)["layers"]
+            .as_array()
+            .expect("layers")
+            .iter()
+            .any(|layer| layer["id"] == original_layer),
+        "a refused replacement leaves the addressed layer intact"
+    );
+}
+
+#[tokio::test]
+async fn live_layer_replacement_and_controls_publish_stack_events() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let document = read_document(&app).await;
+    let zone = primary_zone(&document);
+    let zone_id = zone["id"].as_str().expect("zone id").to_owned();
+    let original_layer = zone["layers"][0]["id"]
+        .as_str()
+        .expect("layer id")
+        .to_owned();
+    let mut events = state.event_bus.subscribe_all();
+
+    let replaced = send(
+        &app,
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{original_layer}"),
+            json!({
+                "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(replaced.status(), StatusCode::OK);
+    let replaced = body_json(replaced).await;
+    let replacement = replaced["data"]["layers"][0]["id"]
+        .as_str()
+        .expect("replacement layer")
+        .to_owned();
+
+    let event = events.recv().await.expect("zone event");
+    assert!(matches!(event.event, HypercolorEvent::ZoneChanged { .. }));
+    let event = events.recv().await.expect("layer event");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::LayerStackChanged {
+            kind: LayerStackChangeKind::Updated,
+            ..
+        }
+    ));
+
+    let patched = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{replacement}/controls"),
+            json!({ "values": { "speed": { "float": 0.75 } } }),
+        ),
+    )
+    .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+
+    let event = events.recv().await.expect("zone controls event");
+    assert!(matches!(event.event, HypercolorEvent::ZoneChanged { .. }));
+    let event = events.recv().await.expect("layer controls event");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::LayerStackChanged {
+            kind: LayerStackChangeKind::ControlsPatched,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn scene_settings_event_carries_the_candidate_zones_revision() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let mut events = state.event_bus.subscribe_all();
+
+    let patched = send(
+        &app,
+        json_request(
+            "PATCH",
+            "/api/v1/scene".into(),
+            json!({ "unassigned_behavior": "off" }),
+        ),
+    )
+    .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+
+    let expected = state
+        .scene_manager
+        .read()
+        .await
+        .active_scene()
+        .expect("active scene")
+        .groups_revision;
+    let event = events.recv().await.expect("scene settings event");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::SceneSettingsChanged {
+            zones_revision,
+            kind: SceneSettingsChangeKind::UnassignedBehavior,
+            ..
+        } if zones_revision == expected
+    ));
 }

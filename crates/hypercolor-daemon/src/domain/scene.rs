@@ -62,6 +62,45 @@ pub struct SceneMutation {
     persists_scene_content: bool,
 }
 
+/// Which scene a mutation addresses.
+///
+/// Explicit scene-library routes resolve their path before entering the
+/// domain. Live-tree routes carry [`Self::Active`] so the target is
+/// resolved from the same candidate the mutation will commit.
+#[derive(Debug, Clone, Copy)]
+pub enum SceneTarget {
+    /// A scene selected explicitly by id or name.
+    Scene(SceneId),
+    /// The active scene in the mutation candidate.
+    Active,
+}
+
+impl From<SceneId> for SceneTarget {
+    fn from(scene_id: SceneId) -> Self {
+        Self::Scene(scene_id)
+    }
+}
+
+impl SceneTarget {
+    /// Resolve this target against a mutation candidate.
+    ///
+    /// # Errors
+    ///
+    /// Active targets refuse a missing or snapshot-locked scene.
+    pub fn resolve(self, mutation: &SceneMutation, action: &str) -> Result<SceneId, DomainError> {
+        match self {
+            Self::Scene(scene_id) => Ok(scene_id),
+            Self::Active => mutation.active_scene_for_runtime_mutation(action),
+        }
+    }
+
+    /// Whether the target follows the live scene tree.
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
 impl SceneMutation {
     /// The revision this candidate was snapshotted from.
     #[must_use]
@@ -922,6 +961,31 @@ pub fn evaluate_scene_media_admission(
             media_config,
         ),
     }
+}
+
+/// Enforce the hard media-producer caps for a complete scene candidate.
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] with the canonical cap, count, and layer
+/// details when the candidate exceeds a configured producer limit.
+pub fn validate_scene_media_admission(
+    scene: &Scene,
+    asset_mime_types: &HashMap<AssetId, String>,
+    media_config: &MediaConfig,
+) -> Result<(), DomainError> {
+    let admission = evaluate_scene_media_admission(scene, asset_mime_types, media_config);
+    let Some(violation) = admission.violation else {
+        return Ok(());
+    };
+    Err(DomainError::validation_details(
+        violation.message,
+        serde_json::json!({
+            "caps": violation.caps,
+            "counts": violation.counts,
+            "layers": violation.layers,
+        }),
+    ))
 }
 
 // ── activate_scene ───────────────────────────────────────────────────────

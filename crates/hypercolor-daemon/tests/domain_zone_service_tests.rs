@@ -142,7 +142,7 @@ fn drain_events(
 
 fn create_command(scene_id: SceneId, name: &str) -> CreateZone {
     CreateZone {
-        scene_id,
+        scene: scene_id.into(),
         name: name.to_owned(),
         color: None,
         fallback_canvas: (640, 480),
@@ -282,7 +282,7 @@ async fn a_cosmetic_zone_patch_ignores_the_revision_precondition() {
     let written = update_zone(
         &state,
         UpdateZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
                 name: Some("Desk Left".to_owned()),
@@ -313,7 +313,7 @@ async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
     let error = update_zone(
         &state,
         UpdateZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
                 make_primary: Some(true),
@@ -350,7 +350,7 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     let removed = delete_zone(
         &state,
         DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: created.zone.id,
             expected_revision: None,
             expected_scene_revision: None,
@@ -395,7 +395,7 @@ async fn delete_zone_refuses_the_primary_zone() {
     let error = delete_zone(
         &state,
         DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: primary_id,
             expected_revision: None,
             expected_scene_revision: None,
@@ -418,7 +418,7 @@ async fn delete_zone_refuses_an_unknown_zone() {
     let error = delete_zone(
         &state,
         DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: ZoneId::new(),
             expected_revision: None,
             expected_scene_revision: None,

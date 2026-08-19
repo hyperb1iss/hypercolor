@@ -96,7 +96,7 @@ pub async fn create_layer(
 
     match layer::insert_layer(
         state.as_ref(),
-        scene_id,
+        scene_id.into(),
         zone_id,
         layer,
         query.index,
@@ -242,7 +242,7 @@ pub async fn delete_layer(
 
     match layer::remove_layer(
         state.as_ref(),
-        scene_id,
+        scene_id.into(),
         zone_id,
         layer_id,
         expected_version,
@@ -282,7 +282,7 @@ pub async fn reorder_layers(
 
     match layer::reorder_layers(
         state.as_ref(),
-        scene_id,
+        scene_id.into(),
         zone_id,
         body.layer_ids,
         expected_version,
@@ -616,11 +616,11 @@ async fn validate_livestream_admission(
             zone.layers.push(media_layer_for_validation(asset_id));
         }
     }
-    let counts = scenes::scene_media_admission_counts(&candidate, &asset_mime_types);
-    if let Some(error) = scenes::validate_scene_media_admission(&counts, &media_config) {
-        return Err(error);
-    }
-    Ok(())
+    crate::domain::scene::validate_scene_media_admission(
+        &candidate,
+        &asset_mime_types,
+        &media_config,
+    )
 }
 
 fn media_layer_for_validation(asset_id: AssetId) -> SceneLayer {

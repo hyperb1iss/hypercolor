@@ -67,7 +67,7 @@ pub async fn create_zone(
     match zone::create_zone(
         state.as_ref(),
         zone::CreateZone {
-            scene_id,
+            scene: scene_id.into(),
             name: body.name,
             color: body.color,
             fallback_canvas,
@@ -123,7 +123,7 @@ pub async fn update_zone(
     match zone::update_zone(
         state.as_ref(),
         zone::UpdateZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id,
             patch: zone_update_patch(body),
             expected_revision,
@@ -157,7 +157,7 @@ pub async fn delete_zone(
     let removed = match zone::delete_zone(
         state.as_ref(),
         zone::DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id,
             expected_revision,
             expected_scene_revision: None,

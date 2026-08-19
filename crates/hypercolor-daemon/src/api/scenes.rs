@@ -304,22 +304,6 @@ pub(crate) fn current_media_config(state: &AppState) -> MediaConfig {
         .map_or_else(MediaConfig::default, |manager| manager.get().media.clone())
 }
 
-pub(crate) fn validate_scene_media_admission(
-    counts: &MediaAdmissionCounts,
-    media_config: &MediaConfig,
-) -> Option<DomainError> {
-    let details = scene_media_admission_violation_details(counts, media_config)?;
-
-    Some(DomainError::validation_details(
-        details.message,
-        serde_json::json!({
-            "caps": details.caps,
-            "counts": details.counts,
-            "layers": details.layers,
-        }),
-    ))
-}
-
 #[derive(Debug)]
 pub struct MediaAdmissionViolationDetails {
     pub message: String,

@@ -25,7 +25,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{SceneMutation, commit_scene, zone_changed_event};
+use crate::domain::scene::{SceneMutation, SceneTarget, commit_scene, zone_changed_event};
 use crate::domain::{DomainError, MutationContext};
 
 /// The outcome of a layer-stack mutation.
@@ -61,7 +61,7 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 /// lands first.
 pub async fn insert_layer(
     state: &AppState,
-    scene_id: SceneId,
+    target: SceneTarget,
     zone_id: ZoneId,
     layer: SceneLayer,
     index: Option<usize>,
@@ -72,11 +72,15 @@ pub async fn insert_layer(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = target.resolve(&mutation, "creating a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, expected_version) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if target.is_active() {
+        validate_candidate_media_admission(state, &mutation, scene_id).await?;
+    }
     finish(
         state,
         mutation,
@@ -155,7 +159,7 @@ pub async fn update_layer(
 /// As [`insert_layer`].
 pub async fn remove_layer(
     state: &AppState,
-    scene_id: SceneId,
+    target: SceneTarget,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     expected_version: Option<u64>,
@@ -165,6 +169,7 @@ pub async fn remove_layer(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = target.resolve(&mutation, "deleting a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, expected_version) {
         Ok(zone) => zone,
@@ -187,7 +192,7 @@ pub async fn remove_layer(
 /// As [`insert_layer`].
 pub async fn reorder_layers(
     state: &AppState,
-    scene_id: SceneId,
+    target: SceneTarget,
     zone_id: ZoneId,
     layer_ids: Vec<SceneLayerId>,
     expected_version: Option<u64>,
@@ -197,6 +202,7 @@ pub async fn reorder_layers(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = target.resolve(&mutation, "reordering layers")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
     let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, expected_version) {
         Ok(zone) => zone,
@@ -210,6 +216,20 @@ pub async fn reorder_layers(
         LayerStackChangeKind::Reordered,
     )
     .await
+}
+
+pub(crate) async fn validate_candidate_media_admission(
+    state: &AppState,
+    mutation: &SceneMutation,
+    scene_id: SceneId,
+) -> Result<(), DomainError> {
+    let asset_mime_types = crate::api::scenes::asset_mime_types(state).await;
+    let media_config = crate::api::scenes::current_media_config(state);
+    let scene = mutation
+        .scenes()
+        .get(&scene_id)
+        .ok_or_else(|| DomainError::not_found(crate::domain::ResourceKind::Scene, scene_id))?;
+    crate::domain::scene::validate_scene_media_admission(scene, &asset_mime_types, &media_config)
 }
 
 /// Merge control overrides into one effect layer.
