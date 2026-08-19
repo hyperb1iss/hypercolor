@@ -107,23 +107,20 @@ pub struct PreparedAudioSourceSwap {
     failure_signal: Option<Arc<std::sync::atomic::AtomicU8>>,
 }
 
-/// Generation-fenced screen configuration captured while briefly holding the
-/// input manager lock.
-#[must_use = "screen reconfiguration plans must be prepared and committed"]
-pub struct ScreenRuntimeConfigPlan {
-    expected_graph_generation: u64,
-    expected_source_present: bool,
-    expected_source_running: bool,
+/// Exact screen swap state captured while briefly holding the input manager lock.
+#[must_use = "screen source swap plans must be prepared and committed"]
+pub struct ScreenSourceSwapPlan {
+    source_swap: SourceSwapPlan,
     expected_capture_demand: ScreenCaptureDemand,
-    enabled: bool,
     capture_demand: ScreenCaptureDemand,
+    capacity: Option<ScreenCapacityPreparation>,
 }
 
-impl ScreenRuntimeConfigPlan {
+impl ScreenSourceSwapPlan {
     /// Whether the replacement source must be registered after commit.
     #[must_use]
     pub const fn enabled(&self) -> bool {
-        self.enabled
+        matches!(self.source_swap.target, SourceSwapTarget::Present { .. })
     }
 
     /// Demand state the prepared replacement must adopt before it starts.
@@ -135,10 +132,17 @@ impl ScreenRuntimeConfigPlan {
     /// Graph generation reserved for a staged replacement source.
     #[must_use]
     pub fn replacement_source_graph_generation(&self) -> u64 {
-        self.expected_graph_generation
-            .checked_add(1)
-            .expect("input source graph generation exhausted")
+        self.source_swap.replacement_source_graph_generation
     }
+}
+
+/// Fully managed screen candidate paired with demand and capacity fences.
+#[must_use = "prepared screen source swaps must be committed or discarded"]
+pub struct PreparedScreenSourceSwap {
+    source_swap: PreparedSourceSwap,
+    expected_capture_demand: ScreenCaptureDemand,
+    capture_demand: ScreenCaptureDemand,
+    capacity: Option<ScreenCapacityPreparation>,
 }
 
 /// Exact steady-state screen capacity prepared against one manager revision.
@@ -192,15 +196,9 @@ pub enum ScreenCapacityPreparationError {
 /// A concurrent input-graph transition invalidated prepared screen state.
 #[derive(Debug, thiserror::Error)]
 pub enum ScreenReconfigurationConflict {
-    /// The canonical source graph changed after preparation began.
-    #[error("input graph changed while screen reconfiguration was prepared")]
-    GraphChanged,
-    /// A screen source was added or removed after preparation began.
-    #[error("screen source topology changed while reconfiguration was prepared")]
-    SourceTopologyChanged,
-    /// The target screen source started or stopped after preparation began.
-    #[error("screen source lifecycle changed while reconfiguration was prepared")]
-    SourceLifecycleChanged,
+    /// The generic source swap no longer describes the canonical graph.
+    #[error(transparent)]
+    Source(#[from] SourceSwapConflict),
     /// Screen demand changed after preparation began.
     #[error("screen capture demand changed while reconfiguration was prepared")]
     CaptureDemandChanged,
@@ -213,9 +211,20 @@ pub enum ScreenReconfigurationConflict {
     /// The configured analysis/publication split changed after preparation began.
     #[error("screen capacity policy changed while reconfiguration was prepared")]
     CapacityPolicyChanged,
-    /// The prepared replacement does not match the plan.
-    #[error("prepared screen source does not match the reconfiguration plan")]
-    InvalidReplacement,
+    /// The prepared replacement does not carry the planned exact demand.
+    #[error("prepared screen source demand does not match the reconfiguration plan")]
+    InvalidReplacementDemand,
+}
+
+/// Failure before a screen source swap reaches its visibility fence.
+#[derive(Debug, thiserror::Error)]
+pub enum ScreenSourceSwapCommitError<E> {
+    /// A captured graph, demand, publication, resource, or capacity fence advanced.
+    #[error(transparent)]
+    Conflict(#[from] ScreenReconfigurationConflict),
+    /// Durable configuration persistence failed before graph mutation.
+    #[error(transparent)]
+    Persistence(E),
 }
 
 /// A typed source cannot enter the graph under ambiguous or conflicting metadata.
@@ -462,24 +471,73 @@ impl PreparedSourceSwap {
     }
 }
 
-/// Screen sources detached by an atomic graph commit.
-#[must_use = "retired screen sources must be stopped outside the input manager lock"]
-pub struct ScreenRuntimeRetirement {
-    sources: Vec<ManagedInputSource>,
-    source_graph_generation: u64,
+impl ScreenSourceSwapPlan {
+    /// Bind a prepared screen backend to the generic source-swap lane.
+    ///
+    /// Candidate ownership remains in `replacement` on failure.
+    pub fn prepare(
+        self,
+        replacement: &mut Option<Box<dyn ScreenSource>>,
+    ) -> Result<PreparedScreenSourceSwap, SourceSwapConflict> {
+        let mut role = replacement.take().map(ManagedSourceRole::screen);
+        let source_swap = match self.source_swap.prepare(&mut role) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                *replacement = role.map(|role| match role {
+                    ManagedSourceRole::Screen(source) => source,
+                    ManagedSourceRole::Audio(_)
+                    | ManagedSourceRole::Interaction(_)
+                    | ManagedSourceRole::Data(_) => {
+                        unreachable!("screen swap preparation preserves the screen role")
+                    }
+                });
+                return Err(error);
+            }
+        };
+        Ok(PreparedScreenSourceSwap {
+            source_swap,
+            expected_capture_demand: self.expected_capture_demand,
+            capture_demand: self.capture_demand,
+            capacity: self.capacity,
+        })
+    }
 }
 
-impl ScreenRuntimeRetirement {
-    /// Stop detached workers and retire their status handles.
-    pub fn retire(mut self) {
-        for source in &mut self.sources {
-            source.set_active_consumer_count(0);
-            source.stop();
-            if let Err(error) = source.retire_source_status(self.source_graph_generation) {
-                error!(source = source.name(), %error, "Failed to retire screen input source status");
-            }
-            info!(source = source.name(), "Retired screen capture source");
+impl PreparedScreenSourceSwap {
+    /// Whether the caller still owns a prepared replacement candidate.
+    #[must_use]
+    pub const fn has_replacement(&self) -> bool {
+        self.source_swap.has_replacement()
+    }
+
+    /// Stop and discard an uncommitted candidate.
+    pub fn discard(self) {
+        self.source_swap.discard();
+    }
+}
+
+/// One-shot infallible graph move issued only after every screen fence validates.
+#[must_use = "screen source swap commits must be installed exactly once"]
+pub struct ScreenSourceSwapCommit<'a> {
+    manager: &'a mut InputManager,
+    prepared: &'a mut PreparedScreenSourceSwap,
+    current: Option<usize>,
+}
+
+impl ScreenSourceSwapCommit<'_> {
+    /// Move prepared state, install live config, then publish one visibility fence.
+    #[must_use = "detached sources must be retired outside the input manager lock"]
+    pub fn commit(self, install_live_config: impl FnOnce()) -> SourceRetirement {
+        if let Some(capacity) = self.prepared.capacity.take() {
+            self.manager.commit_screen_capacity_unpublished(capacity);
         }
+        let retirement = self
+            .manager
+            .commit_source_swap_unpublished(&mut self.prepared.source_swap, self.current);
+        self.manager.screen_capture_demand = Some(self.prepared.capture_demand);
+        install_live_config();
+        self.manager.publish_source_status_registry();
+        retirement
     }
 }
 
@@ -949,7 +1007,21 @@ impl InputManager {
         &mut self,
         prepared: &mut PreparedSourceSwap,
     ) -> Result<SourceRetirement, SourceSwapConflict> {
+        let current = self.validate_prepared_source_swap(prepared)?;
+        let retirement = self.commit_source_swap_unpublished(prepared, current);
+        self.publish_source_status_registry();
+        Ok(retirement)
+    }
+
+    fn validate_prepared_source_swap(
+        &self,
+        prepared: &mut PreparedSourceSwap,
+    ) -> Result<Option<usize>, SourceSwapConflict> {
         let plan = &prepared.plan;
+        validate_source_swap_role(
+            plan,
+            prepared.replacement.as_ref().map(|source| &source.source),
+        )?;
         let current = self.validate_source_swap(plan)?;
         if prepared.replacement.is_some() && self.next_source_slot_id != plan.replacement_slot_id {
             return Err(SourceSwapConflict::SourceChanged { key: plan.key });
@@ -966,6 +1038,15 @@ impl InputManager {
                 }
             })?;
         }
+        Ok(current)
+    }
+
+    fn commit_source_swap_unpublished(
+        &mut self,
+        prepared: &mut PreparedSourceSwap,
+        current: Option<usize>,
+    ) -> SourceRetirement {
+        let plan = &prepared.plan;
         let prepared_audio_capture_active = (plan.key == ManagedSourceKey::Audio).then(|| {
             prepared.replacement.as_ref().map_or(Some(false), |source| {
                 Some(
@@ -983,11 +1064,10 @@ impl InputManager {
             } else {
                 self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
             }
-            self.publish_source_status_registry();
-            return Ok(SourceRetirement {
+            return SourceRetirement {
                 source: None,
                 source_graph_generation,
-            });
+            };
         }
 
         let replacement = prepared.replacement.take();
@@ -1013,11 +1093,10 @@ impl InputManager {
         } else {
             self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
         }
-        self.publish_source_status_registry();
-        Ok(SourceRetirement {
+        SourceRetirement {
             source: retired,
             source_graph_generation,
-        })
+        }
     }
 
     fn validate_source_swap(
@@ -1588,7 +1667,7 @@ impl InputManager {
         preparation: &ScreenCapacityPreparation,
     ) -> Result<(), ScreenReconfigurationConflict> {
         if self.source_graph_generation != preparation.expected_graph_generation {
-            return Err(ScreenReconfigurationConflict::GraphChanged);
+            return Err(SourceSwapConflict::GraphChanged.into());
         }
         if self.screen_capture_demand != preparation.expected_capture_demand {
             return Err(ScreenReconfigurationConflict::CaptureDemandChanged);
@@ -1987,144 +2066,78 @@ impl InputManager {
             .any(|source| source.key() == ManagedSourceKey::Screen)
     }
 
-    /// Snapshot a generation-fenced screen-source replacement plan.
-    pub fn plan_screen_runtime_config(&self, enabled: bool) -> ScreenRuntimeConfigPlan {
-        let source = self.sources.iter().find_map(ManagedInputSource::as_screen);
+    /// Snapshot one exact screen swap on the generic source lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ambiguity error when more than one screen source is registered.
+    pub fn plan_screen_source_swap(
+        &self,
+        enabled: bool,
+        capacity: Option<ScreenCapacityPreparation>,
+    ) -> Result<ScreenSourceSwapPlan, SourceSwapConflict> {
         let current_demand = self.current_screen_capture_demand();
-        ScreenRuntimeConfigPlan {
-            expected_graph_generation: self.source_graph_generation,
-            expected_source_present: source.is_some(),
-            expected_source_running: source.is_some_and(ManagedSource::is_running),
+        Ok(ScreenSourceSwapPlan {
+            source_swap: self.plan_source_swap(
+                ManagedSourceKey::Screen,
+                if enabled {
+                    SourceSwapTarget::Present { running: true }
+                } else {
+                    SourceSwapTarget::Absent
+                },
+            )?,
             expected_capture_demand: current_demand,
-            enabled,
             capture_demand: if enabled {
                 current_demand
             } else {
                 ScreenCaptureDemand::Inactive
             },
-        }
+            capacity,
+        })
     }
 
-    /// Atomically install a prepared screen source if the input graph is unchanged.
+    /// Persist and install one prepared screen source behind a single visibility fence.
     ///
-    /// `replacement` remains owned by the caller on error so dropping or stopping
-    /// a prepared backend never occurs while the input manager lock is held.
+    /// The callback receives an opaque one-shot continuation only after every
+    /// manager-owned fence validates. It must make durable persistence its last
+    /// fallible action, invoke the continuation, then install live configuration.
     ///
     /// # Errors
     ///
-    /// Returns a typed conflict when graph topology or lifecycle changed during
-    /// preparation, or the replacement does not match the plan.
-    pub fn commit_screen_runtime_config(
+    /// Returns without consuming the candidate when any fence or persistence fails.
+    pub fn commit_screen_source_swap<E>(
         &mut self,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &mut Option<Box<dyn ScreenSource>>,
-    ) -> Result<ScreenRuntimeRetirement, ScreenReconfigurationConflict> {
-        self.validate_screen_runtime_config(plan, replacement)?;
-        let retirement = self.commit_screen_runtime_config_unpublished(plan, replacement);
-        self.publish_source_status_registry();
-        Ok(retirement)
-    }
-
-    /// Atomically install a prepared screen capacity policy and source runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed conflict before either prepared transaction mutates the
-    /// manager when a capacity or runtime fence has advanced.
-    pub fn commit_screen_capacity_and_runtime_config(
-        &mut self,
-        capacity: ScreenCapacityPreparation,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &mut Option<Box<dyn ScreenSource>>,
-    ) -> Result<ScreenRuntimeRetirement, ScreenReconfigurationConflict> {
-        self.validate_screen_runtime_config(plan, replacement)?;
-        self.validate_screen_capacity(&capacity)?;
-        self.commit_screen_capacity_unpublished(capacity);
-        let retirement = self.commit_screen_runtime_config_unpublished(plan, replacement);
-        self.publish_source_status_registry();
-        Ok(retirement)
-    }
-
-    fn commit_screen_runtime_config_unpublished(
-        &mut self,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &mut Option<Box<dyn ScreenSource>>,
-    ) -> ScreenRuntimeRetirement {
-        let source_index = self
-            .sources
-            .iter()
-            .position(|source| source.key() == ManagedSourceKey::Screen);
-        let topology_changed = source_index.is_some() || replacement.is_some();
-        let source_graph_generation = if topology_changed {
-            self.bump_source_graph_generation()
-        } else {
-            self.source_graph_generation
-        };
-        let mut retired = Vec::with_capacity(usize::from(source_index.is_some()));
-        match (source_index, replacement.take()) {
-            (Some(index), Some(source)) => {
-                let replacement = self.create_managed_source(
-                    ManagedSourceRole::screen(source),
-                    source_graph_generation,
-                );
-                retired.push(std::mem::replace(&mut self.sources[index], replacement));
-            }
-            (Some(index), None) => retired.push(self.sources.remove(index)),
-            (None, Some(source)) => {
-                let replacement = self.create_managed_source(
-                    ManagedSourceRole::screen(source),
-                    source_graph_generation,
-                );
-                self.sources.push(replacement);
-            }
-            (None, None) => {}
+        prepared: &mut PreparedScreenSourceSwap,
+        persist_and_install: impl FnOnce(ScreenSourceSwapCommit<'_>) -> Result<SourceRetirement, E>,
+    ) -> Result<SourceRetirement, ScreenSourceSwapCommitError<E>> {
+        let current = self
+            .validate_prepared_source_swap(&mut prepared.source_swap)
+            .map_err(ScreenReconfigurationConflict::from)?;
+        if self.current_screen_capture_demand() != prepared.expected_capture_demand {
+            return Err(ScreenReconfigurationConflict::CaptureDemandChanged.into());
         }
-        if topology_changed {
-            self.invalidate_capture_domains((false, true, false));
-        }
-        self.screen_capture_demand = Some(plan.capture_demand);
-        ScreenRuntimeRetirement {
-            sources: retired,
-            source_graph_generation,
-        }
-    }
-
-    /// Verify that a prepared screen replacement can still commit.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed conflict when the source graph changed during preparation.
-    pub fn validate_screen_runtime_config(
-        &self,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &Option<Box<dyn ScreenSource>>,
-    ) -> Result<(), ScreenReconfigurationConflict> {
-        if self.source_graph_generation != plan.expected_graph_generation {
-            return Err(ScreenReconfigurationConflict::GraphChanged);
-        }
-        let source_index = self
-            .sources
-            .iter()
-            .position(|source| source.key() == ManagedSourceKey::Screen);
-        if source_index.is_some() != plan.expected_source_present {
-            return Err(ScreenReconfigurationConflict::SourceTopologyChanged);
-        }
-        if source_index
-            .is_some_and(|index| self.sources[index].is_running() != plan.expected_source_running)
-        {
-            return Err(ScreenReconfigurationConflict::SourceLifecycleChanged);
-        }
-        if self.current_screen_capture_demand() != plan.expected_capture_demand {
-            return Err(ScreenReconfigurationConflict::CaptureDemandChanged);
-        }
-        if replacement.as_ref().is_some() != plan.enabled
-            || replacement.as_ref().is_some_and(|source| {
-                !source.is_running() || source.screen_capture_demand() != plan.capture_demand
+        if prepared
+            .source_swap
+            .replacement
+            .as_ref()
+            .is_some_and(|source| {
+                source
+                    .as_screen()
+                    .is_none_or(|source| source.screen_capture_demand() != prepared.capture_demand)
             })
         {
-            return Err(ScreenReconfigurationConflict::InvalidReplacement);
+            return Err(ScreenReconfigurationConflict::InvalidReplacementDemand.into());
         }
-        Ok(())
+        if let Some(capacity) = &prepared.capacity {
+            self.validate_screen_capacity(capacity)?;
+        }
+        let retirement = persist_and_install(ScreenSourceSwapCommit {
+            manager: self,
+            prepared,
+            current,
+        })
+        .map_err(ScreenSourceSwapCommitError::Persistence)?;
+        Ok(retirement)
     }
 
     /// Whether any registered source captures host interaction.
@@ -2154,33 +2167,6 @@ impl InputManager {
         self.sources.iter().any(|source| {
             source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host)
         })
-    }
-
-    /// Stop and remove all registered screen sources.
-    pub fn remove_screen_sources(&mut self) {
-        if !self
-            .sources
-            .iter()
-            .any(|source| source.key() == ManagedSourceKey::Screen)
-        {
-            return;
-        }
-        let source_graph_generation = self.bump_source_graph_generation();
-        self.sources.retain_mut(|source| {
-            if source.key() == ManagedSourceKey::Screen {
-                source.set_active_consumer_count(0);
-                source.stop();
-                if let Err(error) = source.retire_source_status(source_graph_generation) {
-                    error!(source = source.name(), %error, "Failed to retire screen input source status");
-                }
-                info!(source = source.name(), "Removed screen capture source");
-                false
-            } else {
-                true
-            }
-        });
-        self.invalidate_capture_domains((false, true, false));
-        self.publish_source_status_registry();
     }
 
     /// Apply new capture settings to any registered screen sources.

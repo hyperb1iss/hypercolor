@@ -19,11 +19,12 @@ use hypercolor_core::input::{
     INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource, InteractionSource,
     InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, MediaSource, NetSource,
     PreparedAudioSourceSwap, ScreenData, ScreenReconfigurationConflict, ScreenSource,
-    ScreenSourceRole, SourceCapabilityConflict, SourceCapabilityContext, SourceFreshness,
-    SourceIssue, SourceKind, SourceRegistrationError, SourceResourceScanHealth, SourceRoleBinding,
-    SourceSessionSlot, SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle,
-    SourceStatusReporter, SourceStatusWriter, SourceSwapConflict, SourceSwapTarget,
-    SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
+    ScreenSourceRole, ScreenSourceSwapCommitError, SourceCapabilityConflict,
+    SourceCapabilityContext, SourceFreshness, SourceIssue, SourceKind, SourceRegistrationError,
+    SourceResourceScanHealth, SourceRoleBinding, SourceSessionSlot, SourceSessionWriter,
+    SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    SourceSwapConflict, SourceSwapTarget, SourceTimestampField, TerminalFailureLatch,
+    classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
@@ -64,6 +65,22 @@ fn commit_prepared_audio_swap(manager: &mut InputManager, prepared: PreparedAudi
         .commit_source_swap(&mut prepared)
         .expect("prepared audio swap should commit");
     prepared.discard();
+    retirement.retire();
+}
+
+fn remove_unique_screen_source(manager: &mut InputManager) {
+    let plan = manager
+        .plan_screen_source_swap(false, None)
+        .expect("test graph should contain at most one screen source");
+    let mut replacement = None;
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("absent screen swap should prepare");
+    let retirement = manager
+        .commit_screen_source_swap(&mut prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
+        .expect("unchanged screen removal should commit");
     retirement.retire();
 }
 
@@ -618,6 +635,39 @@ impl SourceRoleBinding for MockScreenSource {
 }
 
 impl ScreenSource for MockScreenSource {}
+
+struct ExternallyStoppedScreenSource {
+    running: Arc<AtomicBool>,
+}
+
+impl InputSource for ExternallyStoppedScreenSource {
+    fn name(&self) -> &'static str {
+        "ExternallyStoppedScreen"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running.store(false, Ordering::Release);
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+}
+
+impl SourceRoleBinding for ExternallyStoppedScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for ExternallyStoppedScreenSource {}
 
 /// A mock source that always fails on start.
 struct FailingSource;
@@ -1228,7 +1278,7 @@ fn multiple_screen_sources_register_but_keyed_swap_planning_rejects_ambiguity() 
     let graph_generation = manager.source_graph_generation();
 
     assert!(matches!(
-        manager.plan_source_swap(ManagedSourceKey::Screen, SourceSwapTarget::Absent),
+        manager.plan_screen_source_swap(false, None),
         Err(SourceSwapConflict::AmbiguousKey {
             key: ManagedSourceKey::Screen
         })
@@ -1319,7 +1369,7 @@ fn manager_graph_generation_advances_and_removal_retires_status() {
     manager.start_all().expect("status-aware source starts");
     let started_generation = manager.source_graph_generation();
     assert!(started_generation > added.source_graph_generation());
-    manager.remove_screen_sources();
+    remove_unique_screen_source(&mut manager);
 
     let removed = registry.snapshot();
     assert!(removed.source_graph_generation() > started_generation);
@@ -1384,6 +1434,69 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
         retired.source_graph_generation,
         after.source_graph_generation()
     );
+}
+
+#[test]
+fn screen_swap_persistence_failure_preserves_candidate_and_graph() {
+    let mut manager = InputManager::new();
+    let graph_generation = manager.source_graph_generation();
+    let plan = manager
+        .plan_screen_source_swap(true, None)
+        .expect("absent screen source should plan");
+    let mut source = Box::new(MockScreenSource::new(1));
+    source.start().expect("screen candidate should start");
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("screen candidate should prepare");
+
+    assert!(matches!(
+        manager.commit_screen_source_swap(&mut prepared, |_| Err("persistence failed")),
+        Err(ScreenSourceSwapCommitError::Persistence(
+            "persistence failed"
+        ))
+    ));
+    assert!(prepared.has_replacement());
+    assert_eq!(manager.source_graph_generation(), graph_generation);
+    assert!(!manager.has_screen_source());
+    prepared.discard();
+}
+
+#[test]
+fn screen_swap_rechecks_candidate_lifecycle_before_persistence() {
+    let mut manager = InputManager::new();
+    let plan = manager
+        .plan_screen_source_swap(true, None)
+        .expect("absent screen source should plan");
+    let running = Arc::new(AtomicBool::new(false));
+    let mut source = Box::new(ExternallyStoppedScreenSource {
+        running: Arc::clone(&running),
+    });
+    source.start().expect("screen candidate should start");
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("running screen candidate should prepare");
+    running.store(false, Ordering::Release);
+    let persistence_called = AtomicBool::new(false);
+
+    assert!(matches!(
+        manager.commit_screen_source_swap(&mut prepared, |commit| {
+            persistence_called.store(true, Ordering::Release);
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        }),
+        Err(ScreenSourceSwapCommitError::Conflict(
+            ScreenReconfigurationConflict::Source(
+                SourceSwapConflict::InvalidReplacementLifecycle {
+                    expected_running: true,
+                    observed_running: false,
+                }
+            )
+        ))
+    ));
+    assert!(!persistence_called.load(Ordering::Acquire));
+    assert!(prepared.has_replacement());
+    prepared.discard();
 }
 
 #[test]
@@ -1635,7 +1748,7 @@ fn removed_source_fences_worker_owned_session() {
         .clone()
         .expect("worker session was published");
 
-    manager.remove_screen_sources();
+    remove_unique_screen_source(&mut manager);
 
     assert!(!stale_worker.failed(SourceIssue::new(
         "late_worker_exit",
@@ -3098,7 +3211,7 @@ fn screen_status_uses_frame_acquisition_time_not_consumer_read_time() {
 }
 
 #[test]
-fn input_manager_removes_screen_sources() {
+fn input_manager_screen_swap_preserves_other_roles() {
     let log = Arc::new(Mutex::new(ScreenReconfigLog::default()));
     let mut manager = InputManager::new();
     register_test_source(
@@ -3108,7 +3221,7 @@ fn input_manager_removes_screen_sources() {
     register_test_source(&mut manager, managed_audio(MockAudioSource::new(0.5)));
     assert!(manager.has_screen_source());
 
-    manager.remove_screen_sources();
+    remove_unique_screen_source(&mut manager);
     assert!(!manager.has_screen_source());
     assert!(
         manager.source_names().contains(&"MockAudio".to_owned()),

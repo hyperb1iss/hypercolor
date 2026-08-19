@@ -297,21 +297,28 @@ fn compound_capacity_and_runtime_commit_publishes_one_coherent_policy() {
     assert_eq!(before.capture_demand(), demand);
     assert_eq!(before.analysis_resource_plan(), None);
 
-    let runtime = manager.plan_screen_runtime_config(true);
     let mut source = Box::new(PlannedScreenSource::new());
     source
         .set_screen_capture_demand(demand)
         .expect("prepared source should accept demand");
     source.start().expect("prepared source should start");
-    let mut replacement = Some(source as Box<dyn ScreenSource>);
     let committed_total =
         ScreenAdmissionCapacity::new(analysis.peak_bytes() + 1_000, analysis.peak_bytes() + 750);
     let capacity = manager
         .prepare_screen_capacity_plan(committed_total, analysis.peak_bytes())
         .expect("candidate split should prepare")
         .expect("capacity enforcement should be installed");
+    let runtime = manager
+        .plan_screen_source_swap(true, Some(capacity))
+        .expect("unique screen swap should plan");
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
+    let mut prepared = runtime
+        .prepare(&mut replacement)
+        .expect("screen replacement should prepare");
     manager
-        .commit_screen_capacity_and_runtime_config(capacity, &runtime, &mut replacement)
+        .commit_screen_source_swap(&mut prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
         .expect("unchanged capacity and runtime should commit")
         .retire();
 
@@ -324,24 +331,33 @@ fn compound_capacity_and_runtime_commit_publishes_one_coherent_policy() {
         ScreenAdmissionCapacity::new(1_000, 750)
     );
 
-    let stale_runtime = manager.plan_screen_runtime_config(false);
     let stale_capacity = manager
         .prepare_screen_capacity_plan(initial_total, 0)
         .expect("disable capacity should prepare")
         .expect("capacity enforcement should remain installed");
+    let stale_runtime = manager
+        .plan_screen_source_swap(false, Some(stale_capacity))
+        .expect("unique screen removal should plan");
+    let mut no_replacement = None;
+    let mut stale_prepared = stale_runtime
+        .prepare(&mut no_replacement)
+        .expect("screen removal should prepare");
     register_test_source(
         &mut manager,
         ManagedSourceRole::data(Box::new(hypercolor_core::input::MediaSource::new())),
     );
     let stable = status.snapshot().policy();
-    let mut no_replacement = None;
     assert!(matches!(
-        manager.commit_screen_capacity_and_runtime_config(
-            stale_capacity,
-            &stale_runtime,
-            &mut no_replacement,
-        ),
-        Err(ScreenReconfigurationConflict::GraphChanged)
+        manager.commit_screen_source_swap(&mut stale_prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        }),
+        Err(
+            hypercolor_core::input::ScreenSourceSwapCommitError::Conflict(
+                ScreenReconfigurationConflict::Source(
+                    hypercolor_core::input::SourceSwapConflict::GraphChanged
+                )
+            )
+        )
     ));
     assert_eq!(status.snapshot().policy(), stable);
 }

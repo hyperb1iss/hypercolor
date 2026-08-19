@@ -684,10 +684,17 @@ async fn one_adapter_sums_consumers_across_owned_capture_source_ids() {
         2
     );
     let retired_handle = manager.source_status_registry().snapshot().handles()[0].clone();
-    let plan = manager.plan_screen_runtime_config(false);
+    let plan = manager
+        .plan_screen_source_swap(false, None)
+        .expect("unique screen removal should plan");
     let mut replacement = None;
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("screen removal should prepare");
     let retirement = manager
-        .commit_screen_runtime_config(&plan, &mut replacement)
+        .commit_screen_source_swap(&mut prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
         .expect("screen runtime removal commits");
     retirement.retire();
     let retired = retired_handle.snapshot();
