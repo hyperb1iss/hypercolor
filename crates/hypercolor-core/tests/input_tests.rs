@@ -15,13 +15,14 @@ use hypercolor_core::input::screen::{
     ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorPolicy,
 };
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, BrowserInputSource, DataSourceKind, INPUT_EVENT_RING_CAPACITY,
-    InputData, InputManager, InputSource, ManagedSourceKey, ManagedSourceRole, MediaSource,
-    NetSource, ScreenData, ScreenReconfigurationConflict, SourceCapabilityConflict,
+    AudioReconfigurationConflict, AudioSource, AudioSourceRole, BrowserInputSource, DataSourceKind,
+    INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource, InteractionSource,
+    InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, MediaSource, NetSource, ScreenData,
+    ScreenReconfigurationConflict, ScreenSource, ScreenSourceRole, SourceCapabilityConflict,
     SourceCapabilityContext, SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth,
-    SourceSessionSlot, SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle,
-    SourceStatusReporter, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
-    classify_source_resource_scan,
+    SourceRoleBinding, SourceSessionSlot, SourceSessionWriter, SourceState, SourceStatusError,
+    SourceStatusHandle, SourceStatusReporter, SourceStatusWriter, SourceTimestampField,
+    TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
@@ -29,7 +30,7 @@ use hypercolor_types::source_status::{SourceDiagnosticsDisplayField, SourceDiagn
 use std::collections::VecDeque;
 #[cfg(target_os = "linux")]
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,82 @@ use std::time::{Duration, Instant};
 struct MockAudioSource {
     running: bool,
     rms_level: f32,
+}
+
+struct MutableInteractionRoleSource {
+    aggregate: Arc<AtomicBool>,
+}
+
+impl InputSource for MutableInteractionRoleSource {
+    fn name(&self) -> &'static str {
+        "MutableInteractionRole"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        false
+    }
+
+    fn interaction_source_origin(&self) -> hypercolor_core::input::InteractionSourceOrigin {
+        if self.aggregate.load(Ordering::Relaxed) {
+            hypercolor_core::input::InteractionSourceOrigin::BrowserCompatibilityAggregate
+        } else {
+            hypercolor_core::input::InteractionSourceOrigin::Host
+        }
+    }
+}
+
+impl SourceRoleBinding for MutableInteractionRoleSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for MutableInteractionRoleSource {}
+
+struct MutableDataRoleSource {
+    network: Arc<AtomicBool>,
+}
+
+impl InputSource for MutableDataRoleSource {
+    fn name(&self) -> &'static str {
+        "MutableDataRole"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        false
+    }
+}
+
+impl SourceRoleBinding for MutableDataRoleSource {
+    type Role = hypercolor_core::input::DataSourceRole;
+}
+
+impl hypercolor_core::input::DataSource for MutableDataRoleSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        if self.network.load(Ordering::Relaxed) {
+            DataSourceKind::Network
+        } else {
+            DataSourceKind::Media
+        }
+    }
 }
 
 struct StatusAwareScreenSource {
@@ -394,6 +471,12 @@ impl InputSource for MockAudioSource {
     }
 }
 
+impl SourceRoleBinding for MockAudioSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for MockAudioSource {}
+
 struct ReconfigurableAudioSource {
     running: bool,
     capture_active: bool,
@@ -584,6 +667,12 @@ impl InputSource for MockScreenSource {
         self.running
     }
 }
+
+impl SourceRoleBinding for MockScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for MockScreenSource {}
 
 /// A mock source that always fails on start.
 struct FailingSource;
@@ -1103,15 +1192,47 @@ fn input_data_none_variant() {
 }
 
 #[test]
-fn managed_data_role_exposes_one_typed_key_and_common_source() {
-    let mut source = ManagedSourceRole::Data(Box::new(NetSource::new()));
+fn managed_roles_expose_stable_typed_keys_and_common_sources() {
+    let mut audio = ManagedSourceRole::Audio(Box::new(MockAudioSource::new(0.25)));
+    let screen = ManagedSourceRole::Screen(Box::new(MockScreenSource::new(1)));
+    let interaction = ManagedSourceRole::interaction(Box::new(BrowserInputSource::new()));
+    let data = ManagedSourceRole::data(Box::new(NetSource::new()));
+
+    assert_eq!(audio.key(), ManagedSourceKey::Audio);
+    assert_eq!(screen.key(), ManagedSourceKey::Screen);
+    assert_eq!(
+        interaction.key(),
+        ManagedSourceKey::Interaction(
+            hypercolor_core::input::InteractionSourceOrigin::BrowserCompatibilityAggregate,
+        )
+    );
+    assert_eq!(data.key(), ManagedSourceKey::Data(DataSourceKind::Network));
+    assert_eq!(audio.source().name(), "MockAudio");
+    assert_eq!(screen.source().name(), "MockScreen");
+    assert_eq!(interaction.source().name(), "BrowserInput");
+    assert_eq!(data.source().name(), "net");
+    assert!(!audio.source_mut().is_running());
+}
+
+#[test]
+fn managed_role_keys_do_not_change_after_registration() {
+    let aggregate = Arc::new(AtomicBool::new(false));
+    let network = Arc::new(AtomicBool::new(false));
+    let interaction = ManagedSourceRole::interaction(Box::new(MutableInteractionRoleSource {
+        aggregate: Arc::clone(&aggregate),
+    }));
+    let data = ManagedSourceRole::data(Box::new(MutableDataRoleSource {
+        network: Arc::clone(&network),
+    }));
+
+    aggregate.store(true, Ordering::Relaxed);
+    network.store(true, Ordering::Relaxed);
 
     assert_eq!(
-        source.key(),
-        ManagedSourceKey::Data(DataSourceKind::Network)
+        interaction.key(),
+        ManagedSourceKey::Interaction(hypercolor_core::input::InteractionSourceOrigin::Host)
     );
-    assert_eq!(source.source().name(), "net");
-    assert!(!source.source_mut().is_running());
+    assert_eq!(data.key(), ManagedSourceKey::Data(DataSourceKind::Media));
 }
 
 // ── InputManager Tests ─────────────────────────────────────────────────────

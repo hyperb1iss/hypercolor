@@ -1,0 +1,17 @@
+error[E0277]: the trait bound `Source: AudioSource` is not satisfied
+  --> tests/ui/source_roles/roleless_registration.rs:26:44
+   |
+26 |     let _source = ManagedSourceRole::Audio(Box::new(Source));
+   |                                            ^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `AudioSource` is not implemented for `Source`
+  --> tests/ui/source_roles/roleless_registration.rs:3:1
+   |
+ 3 | struct Source;
+   | ^^^^^^^^^^^^^
+help: the trait `AudioSource` is implemented for `AudioInput`
+  --> src/input/audio/mod.rs
+   |
+   | impl AudioSource for AudioInput {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for the cast from `Box<Source>` to `Box<(dyn AudioSource + 'static)>`

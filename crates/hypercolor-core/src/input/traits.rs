@@ -1,6 +1,6 @@
 //! Input source abstraction — trait and data types for audio, screen, and future inputs.
 //!
-//! [`InputSource`] is the polymorphic entry point for anything that feeds data
+//! [`ManagedSource`] is the polymorphic entry point for anything that feeds data
 //! into the effect pipeline. Each source produces [`InputData`] snapshots that
 //! the render loop consumes per frame.
 
@@ -700,7 +700,7 @@ impl ScreenData {
 /// 4. Call [`stop`] to release hardware resources
 ///
 /// Sources must be [`Send`] so the engine can own them across thread boundaries.
-pub trait InputSource: Send {
+pub trait ManagedSource: Send {
     /// Human-readable name for logging and UI display (e.g., `"PipeWire Monitor"`).
     fn name(&self) -> &str;
 
@@ -1107,57 +1107,88 @@ pub trait InputSource: Send {
     }
 }
 
+pub use ManagedSource as InputSource;
+
 /// Audio-specific source contract.
-pub trait AudioSource: InputSource + SourceRoleBinding<Role = AudioSourceRole> {}
+pub trait AudioSource: ManagedSource + SourceRoleBinding<Role = AudioSourceRole> {}
 
 /// Screen-specific source contract.
-pub trait ScreenSource: InputSource + SourceRoleBinding<Role = ScreenSourceRole> {}
+pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRole> {}
 
 /// Interaction-specific source contract.
-pub trait InteractionSource: InputSource + SourceRoleBinding<Role = InteractionSourceRole> {}
+pub trait InteractionSource:
+    ManagedSource + SourceRoleBinding<Role = InteractionSourceRole>
+{
+}
 
 /// General-data source contract.
-pub trait DataSource: InputSource + SourceRoleBinding<Role = DataSourceRole> {
+pub trait DataSource: ManagedSource + SourceRoleBinding<Role = DataSourceRole> {
     fn data_source_kind(&self) -> DataSourceKind;
+}
+
+/// Interaction source with immutable registration metadata.
+pub struct ManagedInteractionSource {
+    origin: InteractionSourceOrigin,
+    source: Box<dyn InteractionSource>,
+}
+
+/// General-data source with immutable registration metadata.
+pub struct ManagedDataSource {
+    kind: DataSourceKind,
+    source: Box<dyn DataSource>,
 }
 
 /// Exclusive owned storage for every source role accepted by the manager.
 pub enum ManagedSourceRole {
     Audio(Box<dyn AudioSource>),
     Screen(Box<dyn ScreenSource>),
-    Interaction(Box<dyn InteractionSource>),
-    Data(Box<dyn DataSource>),
+    Interaction(ManagedInteractionSource),
+    Data(ManagedDataSource),
 }
 
 impl ManagedSourceRole {
+    #[must_use]
+    pub fn interaction(source: Box<dyn InteractionSource>) -> Self {
+        Self::Interaction(ManagedInteractionSource {
+            origin: source.interaction_source_origin(),
+            source,
+        })
+    }
+
+    #[must_use]
+    pub fn data(source: Box<dyn DataSource>) -> Self {
+        Self::Data(ManagedDataSource {
+            kind: source.data_source_kind(),
+            source,
+        })
+    }
+
     #[must_use]
     pub fn key(&self) -> ManagedSourceKey {
         match self {
             Self::Audio(_) => ManagedSourceKey::Audio,
             Self::Screen(_) => ManagedSourceKey::Screen,
-            Self::Interaction(source) => {
-                ManagedSourceKey::Interaction(source.interaction_source_origin())
-            }
-            Self::Data(source) => ManagedSourceKey::Data(source.data_source_kind()),
+            Self::Interaction(source) => ManagedSourceKey::Interaction(source.origin),
+            Self::Data(source) => ManagedSourceKey::Data(source.kind),
         }
     }
 
     #[must_use]
-    pub fn source(&self) -> &dyn InputSource {
+    pub fn source(&self) -> &dyn ManagedSource {
         match self {
             Self::Audio(source) => source.as_ref(),
             Self::Screen(source) => source.as_ref(),
-            Self::Interaction(source) => source.as_ref(),
-            Self::Data(source) => source.as_ref(),
+            Self::Interaction(source) => source.source.as_ref(),
+            Self::Data(source) => source.source.as_ref(),
         }
     }
 
-    pub fn source_mut(&mut self) -> &mut dyn InputSource {
+    pub fn source_mut(&mut self) -> &mut dyn ManagedSource {
         match self {
             Self::Audio(source) => source.as_mut(),
             Self::Screen(source) => source.as_mut(),
-            Self::Interaction(source) => source.as_mut(),
-            Self::Data(source) => source.as_mut(),
+            Self::Interaction(source) => source.source.as_mut(),
+            Self::Data(source) => source.source.as_mut(),
         }
     }
 }

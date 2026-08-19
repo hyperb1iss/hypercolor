@@ -1,0 +1,16 @@
+error[E0271]: type mismatch resolving `<Source as SourceRoleBinding>::Role == ScreenSourceRole`
+  --> tests/ui/source_roles/multi_role.rs:32:23
+   |
+32 | impl ScreenSource for Source {}
+   |                       ^^^^^^ type mismatch resolving `<Source as SourceRoleBinding>::Role == ScreenSourceRole`
+   |
+note: expected this to be `ScreenSourceRole`
+  --> tests/ui/source_roles/multi_role.rs:28:17
+   |
+28 |     type Role = AudioSourceRole;
+   |                 ^^^^^^^^^^^^^^^
+note: required by a bound in `ScreenSource`
+  --> src/input/traits.rs
+   |
+   | pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRole> {}
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ScreenSource`

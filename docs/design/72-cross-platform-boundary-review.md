@@ -253,19 +253,21 @@ and subtrait methods are unreachable after erasure. The shape:
 /// Every trait here is object-safe, Send, and NOT Sync (the manager
 /// owns sources behind its existing lock; control methods take &mut).
 enum ManagedSourceRole {
-    Audio(Box<dyn AudioSource>),        // DataSource + audio control plane
-    Screen(Box<dyn ScreenSource>),      // DataSource + screen publication protocol
-    Interaction(Box<dyn InteractionSource>), // DataSource + capture toggles
-    Data(Box<dyn DataSource>),          // sample/status only (media, net, sensors)
+    Audio(Box<dyn AudioSource>),        // ManagedSource + audio control plane
+    Screen(Box<dyn ScreenSource>),      // ManagedSource + screen publication protocol
+    Interaction(Box<dyn InteractionSource>), // ManagedSource + capture toggles
+    Data(Box<dyn DataSource>),          // ManagedSource + kind (media, net, sensors)
 }
 ```
 
-`DataSource` carries name/start/stop/sample-and-drain/status; each role
-trait extends it with that role's control plane (supertrait, so the data
-plane is reachable from every variant without downcasts). Kind is the
-variant, declared at registration; `CaptureDomain` and the `is_*` flag
-inference disappear; the manager's three parallel plan/commit/retire
-lanes collapse onto one generic generation-fenced swap keyed by role.
+`ManagedSource` carries name/start/stop/sample-and-drain/status. Each role
+trait extends it with that role's control plane, so the common plane is
+reachable from every variant without downcasts. `DataSource` is the
+general-data role and declares one immutable `DataSourceKind` at
+registration. The other kinds come from their variants; `CaptureDomain`
+and the `is_*` flag inference disappear. The manager's three parallel
+plan/commit/retire lanes collapse onto one generic generation-fenced swap
+keyed by role and fenced by exact slot identity.
 
 ### Contract sketches: the load-bearing Rust decisions
 
@@ -861,8 +863,9 @@ builders, source tests, spec 76 manager-idiom status.
 
 Implementation:
 
-- Introduce object-safe `DataSource`, `AudioSource`, `ScreenSource`, and
-  `InteractionSource` traits plus exclusive `ManagedSourceRole` storage.
+- Introduce an object-safe common `ManagedSource` trait, object-safe
+  `DataSource`, `AudioSource`, `ScreenSource`, and `InteractionSource`
+  role traits, plus exclusive `ManagedSourceRole` storage.
 - Give `DataSource` an exhaustive `DataSourceKind` for media, network,
   and sensors, mapped once into scheduling and status `SourceKind` values.
   Sensors must participate in the same graph publication and cadence path;

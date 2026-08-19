@@ -131,6 +131,7 @@ criterion = { workspace = true }
 gif = { workspace = true }
 pollster = { workspace = true }
 stats_alloc = { workspace = true }
+trybuild = "1.0.120"
 
 [[test]]
 name = "alloc_contract_tests"
