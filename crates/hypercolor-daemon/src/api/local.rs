@@ -270,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn trusted_http_rejects_non_api_and_websocket_paths() {
         let api = secured_api();
-        for path in ["/health", "/api/v1/ws", "https://example.com/api/v1/status"] {
+        for path in ["/health", "/api/v1/ws", "https://example.com/api/v1/system"] {
             let error = api
                 .execute(
                     Request::builder()
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn trusted_websocket_rejects_noncanonical_paths() {
         let api = secured_api();
-        for path in ["/api/v1/status", "ws://localhost/api/v1/ws"] {
+        for path in ["/api/v1/system", "ws://localhost/api/v1/ws"] {
             let error = api
                 .open_websocket(path)
                 .err()

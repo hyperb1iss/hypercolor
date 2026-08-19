@@ -5408,18 +5408,18 @@ fn parse_command_method_rejects_invalid_values() {
 #[test]
 fn normalize_command_path_adds_api_prefix() {
     assert_eq!(
-        normalize_command_path("/status").expect("path should normalize"),
-        "/api/v1/status"
+        normalize_command_path("/system").expect("path should normalize"),
+        "/api/v1/system"
     );
     assert_eq!(
-        normalize_command_path("/api/v1/status").expect("path should stay stable"),
-        "/api/v1/status"
+        normalize_command_path("/api/v1/system").expect("path should stay stable"),
+        "/api/v1/system"
     );
 }
 
 #[test]
 fn normalize_command_path_rejects_relative_paths() {
-    let error = normalize_command_path("status").expect_err("relative path must fail");
+    let error = normalize_command_path("system").expect_err("relative path must fail");
     assert_eq!(error.code, "malformed_request");
 }
 

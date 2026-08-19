@@ -275,7 +275,7 @@ mod tests {
 
     fn request_with_connect_info(ip: IpAddr) -> Request<Body> {
         let mut request = Request::builder()
-            .uri("/api/v1/status")
+            .uri("/api/v1/system")
             .body(Body::empty())
             .expect("request should build");
         request
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn client_addr_is_none_without_connect_info() {
         let request = Request::builder()
-            .uri("/api/v1/status")
+            .uri("/api/v1/system")
             .body(Body::empty())
             .expect("request should build");
         assert!(client_addr(&request).is_none());

@@ -1348,8 +1348,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(library::activate_playlist),
         )
         // ── System ───────────────────────────────────────────────────
-        .route("/server", axum::routing::get(system::get_server))
-        .route("/status", axum::routing::get(system::get_status_route))
+        .route("/system", axum::routing::get(system::get_system))
         .route("/system/sensors", axum::routing::get(system::get_sensors))
         .route(
             "/system/audio-devices",

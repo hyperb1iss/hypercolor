@@ -84,7 +84,7 @@ async fn openapi_json_is_served_with_expected_paths() {
     let body = body_json(response).await;
     assert_eq!(body["openapi"], "3.1.0");
     assert!(body["paths"]["/health"].is_object());
-    assert!(body["paths"]["/api/v1/status"].is_object());
+    assert!(body["paths"]["/api/v1/system"].is_object());
     assert!(body["paths"]["/api/v1/devices"].is_object());
     assert!(body["paths"]["/api/v1/effects"].is_object());
     assert!(body["paths"]["/api/v1/output"]["get"].is_object());
@@ -98,6 +98,8 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["paths"]["/api/v1/system/audio-devices"]["get"].is_object());
     // The merged routes carry no catalog entry either.
     for retired in [
+        "/api/v1/server",
+        "/api/v1/status",
         "/api/v1/output/power",
         "/api/v1/settings/brightness",
         "/api/v1/audio/devices",
@@ -116,6 +118,7 @@ async fn openapi_json_is_served_with_expected_paths() {
             "{retired} must be absent from the catalog"
         );
     }
+    assert!(body["components"]["schemas"]["SystemResource"].is_object());
     for retired in [
         "SetOutputPowerRequest",
         "OutputPowerResponse",
@@ -278,6 +281,67 @@ fn router_operations() -> BTreeSet<(String, String)> {
     }
 
     operations
+}
+
+fn target_operations() -> BTreeSet<(String, String)> {
+    let target: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/rest_v1/spec78-target-manifest.json"))
+            .expect("Spec 78 target manifest should parse");
+    target["paths"]
+        .as_array()
+        .expect("target manifest paths should be an array")
+        .iter()
+        .flat_map(|route| {
+            let path = route["path"]
+                .as_str()
+                .expect("target route should have a path")
+                .to_owned();
+            route["methods"]
+                .as_array()
+                .expect("target route methods should be an array")
+                .iter()
+                .map(move |method| {
+                    (
+                        method
+                            .as_str()
+                            .expect("target method should be a string")
+                            .to_ascii_lowercase(),
+                        path.clone(),
+                    )
+                })
+        })
+        .collect()
+}
+
+#[test]
+fn live_router_exactly_matches_the_spec_78_target_manifest() {
+    let mut live = router_operations();
+    live.insert(("get".to_owned(), "/health".to_owned()));
+    let target = target_operations();
+
+    assert_eq!(target.len(), 117, "target operation count drifted");
+    assert_eq!(live.len(), 117, "live operation count has not converged");
+    assert_eq!(
+        target
+            .iter()
+            .map(|(_, path)| path)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        82,
+        "target path count drifted"
+    );
+    assert_eq!(
+        live.iter()
+            .map(|(_, path)| path)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        82,
+        "live path count has not converged"
+    );
+    assert_eq!(
+        live, target,
+        "live router diverged from the locked inventory"
+    );
 }
 
 #[test]

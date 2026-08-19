@@ -574,6 +574,8 @@ async fn deleted_dead_resource_routes_leave_nothing_behind() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
     let removed = [
+        ("GET", "/api/v1/server"),
+        ("GET", "/api/v1/status"),
         ("GET", "/api/v1/attachments/categories"),
         ("GET", "/api/v1/attachments/templates/template-id"),
         ("PUT", "/api/v1/attachments/templates/template-id"),
@@ -585,10 +587,7 @@ async fn deleted_dead_resource_routes_leave_nothing_behind() {
         ("GET", "/api/v1/devices/debug/routing"),
         ("GET", "/api/v1/devices/metrics"),
         ("POST", "/api/v1/devices/device-id/zones/zone-id/identify"),
-        (
-            "POST",
-            "/api/v1/devices/device-id/attachments/preview",
-        ),
+        ("POST", "/api/v1/devices/device-id/attachments/preview"),
         ("GET", "/api/v1/devices/device-id/logical-devices"),
         ("POST", "/api/v1/devices/device-id/logical-devices"),
         ("GET", "/api/v1/logical-devices"),

@@ -79,8 +79,7 @@ impl DeviceMetrics {
     }
 }
 
-/// Shared snapshot served by `/api/v1/devices/metrics` and the
-/// `device_metrics` WebSocket topic.
+/// Snapshot served by the `device_metrics` WebSocket topic.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DeviceMetricsSnapshot {
