@@ -93,6 +93,11 @@ impl DaemonState {
         // Restore persisted scene state before the render loop begins producing frames.
         self.restore_runtime_session(&config).await;
 
+        let session_config = config.session.clone();
+        let monitors = self
+            .session_monitors
+            .take()
+            .unwrap_or_else(|| crate::session::platform_session_monitors(&session_config));
         self.session_controller = Some(SessionController::start(
             Arc::clone(&self.config_manager),
             Arc::clone(&self.event_bus),
@@ -101,6 +106,7 @@ impl DaemonState {
             self.discovery_runtime(),
             Arc::clone(&self.driver_host),
             Arc::clone(&self.driver_registry),
+            monitors,
         ));
 
         activate_simulated_displays(&self.discovery_runtime(), &self.simulated_displays)

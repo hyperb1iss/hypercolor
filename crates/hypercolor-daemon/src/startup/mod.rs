@@ -28,6 +28,7 @@ use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
+use hypercolor_core::session::SessionMonitor;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -276,6 +277,9 @@ pub struct DaemonState {
 
     /// Session/power-awareness watcher and policy controller.
     pub(super) session_controller: Option<SessionController>,
+
+    /// Explicit platform monitors supplied by the process host.
+    pub(super) session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
 
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,

@@ -155,6 +155,7 @@ impl DaemonArgs {
             macos_owner: None,
             macos_owner_snapshot: None,
             macos_daemon_session_attestation: None,
+            session_monitors: None,
         }
     }
 }

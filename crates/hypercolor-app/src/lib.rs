@@ -10,7 +10,6 @@ pub mod helper_client;
 pub mod linux_webkit;
 pub mod logging;
 pub mod ownership;
-pub mod power_events;
 pub mod process_ext;
 pub mod state;
 pub mod supervisor;

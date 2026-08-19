@@ -5153,6 +5153,7 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
  "hypercolor-leptos-ext",
+ "hypercolor-linux-session",
  "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
  "hypercolor-macos-input",
@@ -5163,6 +5164,7 @@ dependencies = [
  "hypercolor-windows-capture",
  "hypercolor-windows-gpu-interop",
  "hypercolor-windows-input",
+ "hypercolor-windows-session",
  "if-addrs",
  "image",
  "jsonschema",
@@ -5396,6 +5398,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-linux-session"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures-core",
+ "futures-util",
+ "hypercolor-core",
+ "hypercolor-types",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
 name = "hypercolor-macos-capture"
 version = "0.3.2"
 dependencies = [
@@ -5622,6 +5640,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-registry",
+ "windows-service",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hypercolor-windows-session"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hypercolor-core",
+ "hypercolor-types",
+ "tokio",
+ "tokio-util",
+ "tracing",
  "windows-service",
  "windows-sys 0.61.2",
 ]

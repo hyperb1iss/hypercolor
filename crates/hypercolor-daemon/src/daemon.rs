@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_core::config::{BootConfig, ConfigManager, LoadedConfig};
+use hypercolor_core::session::SessionMonitor;
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
 };
@@ -30,7 +31,7 @@ const API_LISTEN_BACKLOG: i32 = 1024;
 const API_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Runtime options for one daemon process.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct DaemonRunOptions {
     /// Path to the configuration file.
     pub config: Option<PathBuf>,
@@ -56,6 +57,8 @@ pub struct DaemonRunOptions {
     pub macos_owner_snapshot: Option<MacosOwnerSnapshot>,
     /// Exact private process session derived from canonical macOS ownership.
     pub macos_daemon_session_attestation: Option<MacosDaemonSessionAttestation>,
+    /// Platform session monitors supplied by the process host.
+    pub session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
 }
 
 /// Ownership handle for the exact sockets bound during daemon preparation.
@@ -132,6 +135,7 @@ impl PreparedDaemon {
             self.config_manager,
             self.options.macos_owner_snapshot,
         )?;
+        daemon_state.session_monitors = self.options.session_monitors.take();
         for installer in extension_installers {
             installer.install(&mut daemon_state)?;
         }

@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::session::{SessionWatcher, SleepPolicy};
+use hypercolor_core::session::{SessionMonitor, SessionWatcher, SleepPolicy};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
@@ -172,9 +172,10 @@ impl SessionController {
         discovery_runtime: DiscoveryRuntime,
         driver_host: Arc<DaemonDriverHost>,
         driver_registry: Arc<DriverModuleRegistry>,
+        monitors: Vec<Box<dyn SessionMonitor>>,
     ) -> Self {
         let session_config = config_manager.get().session.clone();
-        let watcher = SessionWatcher::start(&session_config);
+        let watcher = SessionWatcher::start(&session_config, monitors);
         let event_rx = watcher.subscribe();
         let runtime = SessionRuntime {
             config_manager,
@@ -195,6 +196,27 @@ impl SessionController {
         self.task.abort();
         let _ = self.task.await;
         self.watcher.shutdown().await;
+    }
+}
+
+pub(crate) fn platform_session_monitors(
+    config: &hypercolor_types::session::SessionConfig,
+) -> Vec<Box<dyn SessionMonitor>> {
+    #[cfg(target_os = "linux")]
+    {
+        return hypercolor_linux_session::monitors(config);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = config;
+        return hypercolor_windows_session::standalone_monitors();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = config;
+        Vec::new()
     }
 }
 

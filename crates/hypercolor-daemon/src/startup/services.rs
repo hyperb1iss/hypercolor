@@ -691,6 +691,7 @@ impl DaemonState {
             device_metrics_collector_task: None,
             input_status_event_publisher: None,
             session_controller: None,
+            session_monitors: None,
             start_time: Instant::now(),
             server_identity,
         })

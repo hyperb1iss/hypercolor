@@ -4,13 +4,12 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use futures_util::StreamExt;
+use hypercolor_core::session::SessionMonitor;
+use hypercolor_types::session::SessionEvent;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zbus::{Connection, Proxy};
-
-use crate::session::SessionMonitor;
-use crate::types::session::SessionEvent;
 
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 
@@ -62,7 +61,7 @@ impl SessionMonitor for ScreensaverMonitor {
     }
 
     async fn run(
-        self,
+        self: Box<Self>,
         tx: mpsc::Sender<SessionEvent>,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {

@@ -68,12 +68,12 @@ Hypercolor's architecture is already well-factored for multi-platform support. T
 - **Protocol layer** — All protocol impls (Razer, Corsair, ASUS USB, etc.) are transport-agnostic
 - **Wire-format structs** — `zerocopy` is pure Rust, no platform deps
 
-### Linux-Only (Needs Windows Impl)
+### Platform-Specific Implementations
 
 - `hypercolor-core/src/input/audio/linux.rs` — PulseAudio capture + source enumeration
 - `hypercolor-core/src/input/evdev.rs` — Keyboard reactive input
-- `hypercolor-core/src/session/logind.rs` — systemd-logind sleep/lock events
-- `hypercolor-core/src/session/screensaver.rs` — D-Bus screensaver signals
+- `hypercolor-linux-session/src/logind.rs`: systemd-logind sleep/lock events behind `SessionMonitor`
+- `hypercolor-linux-session/src/screensaver.rs`: D-Bus screensaver signals behind `SessionMonitor`
 - `hypercolor-hal/src/transport/hidraw.rs` — Linux HIDRAW (not needed on Windows)
 - `hypercolor-hal/src/transport/smbus.rs` — Linux I2C userspace
 - `hypercolor-core/src/device/smbus_scanner.rs` — Linux I2C bus enumeration
@@ -128,7 +128,8 @@ Every `#[cfg(target_os = "linux")]` block needs a corresponding `#[cfg(target_os
 - `hypercolor-daemon/src/startup.rs` — Gate evdev import
 - `hypercolor-hal/src/transport/mod.rs` — Gate HIDRAW and SMBus module inclusion
 - `hypercolor-core/src/input/mod.rs` — Gate evdev module
-- `hypercolor-core/src/session/mod.rs` — Gate logind and screensaver modules
+- `hypercolor-linux-session` and `hypercolor-windows-session` — Keep platform
+  acquisition behind crate boundaries; core consumes only neutral monitors
 - `hypercolor-core/src/device/smbus_scanner.rs` — Already gated, verify stub returns empty
 
 ### 4.2 HIDAPI on Windows
@@ -356,15 +357,18 @@ ASUS Aura motherboard LEDs, GPU LEDs, and DRAM LEDs controllable on Windows. The
 
 ### 7.1 Session Monitoring
 
-**New file:** `hypercolor-core/src/session/windows.rs`
+**Platform crate:** `hypercolor-windows-session`
 
-Implement `SessionMonitor` for:
+The crate implements `SessionMonitor` for both Windows host modes:
 
-- **Sleep/wake** — `WM_POWERBROADCAST` with `PBT_APMQUERYSUSPEND` / `PBT_APMRESUMEAUTOMATIC`
-- **Lock/unlock** — `WTSRegisterSessionNotification` → `WM_WTSSESSION_CHANGE` with `WTS_SESSION_LOCK` / `WTS_SESSION_UNLOCK`
-- **Lid close** (laptops) — `RegisterPowerSettingNotification` with `GUID_LIDSWITCH_STATE_CHANGE`
+- **Desktop app mode** receives sleep/wake through a message-only window
+  registered with `RegisterSuspendResumeNotification`, plus lock/unlock through
+  `WTSRegisterSessionNotification`.
+- **Windows Service mode** translates `POWER_EVENT` and `SESSION_CHANGE`
+  callbacks from the Service Control Manager into the same neutral event stream.
 
-Uses the `windows` crate for Win32 API access. Spawns a hidden message-only window for receiving system messages.
+The daemon chooses the host adapter at composition time. Core owns only event
+merging, duplicate suppression, and session policy.
 
 ### 7.2 Service Lifecycle
 
@@ -581,7 +585,7 @@ trait SmBusBackend: Send + Sync {
 | Crate             | Purpose                                           | Conditional                                   |
 | ----------------- | ------------------------------------------------- | --------------------------------------------- |
 | `cpal`            | WASAPI audio capture                              | `cfg(target_os = "windows")` in core          |
-| `windows`         | Win32 session/power events, named mutex, registry | `cfg(target_os = "windows")` in core + daemon |
+| `windows`         | Win32 session/power events, named mutex, registry | Platform crates plus target-specific app and daemon code |
 | `windows-service` | Optional Windows Service mode                     | `cfg(target_os = "windows")` in daemon        |
 | `libloading`      | PawnIO DLL + NvAPI + ADL runtime loading          | `cfg(target_os = "windows")`; PawnIO wrapper lives in `hypercolor-windows-pawnio` |
 

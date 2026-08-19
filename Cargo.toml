@@ -147,11 +147,13 @@ hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
 hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention" }
+hypercolor-linux-session = { path = "crates/hypercolor-linux-session" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
 hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture" }
 hypercolor-macos-input = { path = "crates/hypercolor-macos-input" }
 hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner" }
+hypercolor-windows-session = { path = "crates/hypercolor-windows-session" }
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }

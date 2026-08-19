@@ -6,14 +6,13 @@ use std::time::Duration;
 use anyhow::Context;
 use futures_core::Stream;
 use futures_util::StreamExt;
+use hypercolor_core::session::SessionMonitor;
+use hypercolor_types::session::{SessionConfig, SessionEvent};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zbus::Connection;
 use zbus::zvariant::{OwnedFd, OwnedObjectPath};
-
-use crate::session::SessionMonitor;
-use crate::types::session::{SessionConfig, SessionEvent};
 
 const INHIBITOR_GRACE: Duration = Duration::from_millis(100);
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
@@ -69,7 +68,7 @@ impl SessionMonitor for LogindMonitor {
     }
 
     async fn run(
-        self,
+        self: Box<Self>,
         tx: mpsc::Sender<SessionEvent>,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {
