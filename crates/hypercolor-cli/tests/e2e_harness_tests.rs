@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_core::config::{BootConfig, ConfigManager};
-use hypercolor_core::input::{BrowserInputSource, InputManager};
+use hypercolor_core::input::{BrowserInputSource, InputManager, ManagedSourceRole};
 use hypercolor_core::types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
@@ -196,7 +196,9 @@ fn install_browser_only_input(daemon_state: &mut DaemonState) {
         config.input.preview_route,
     );
     let mut input_manager = InputManager::new();
-    input_manager.add_source(Box::new(browser_source));
+    input_manager
+        .add_source(ManagedSourceRole::interaction(Box::new(browser_source)))
+        .expect("browser source should register");
     let input_status = input_manager.source_status_registry();
 
     daemon_state.input_manager = Arc::new(Mutex::new(input_manager));

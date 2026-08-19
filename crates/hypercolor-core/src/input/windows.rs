@@ -644,14 +644,22 @@ impl InputSource for WindowsHostInput {
         Some(&mut self.status)
     }
 
-    fn is_interaction_source(&self) -> bool {
-        true
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if self.publish_worker_failure_once() {
+            return Vec::new();
+        }
+        if let Ok(mut guard) = self.shared.lock() {
+            return drain_events(&mut guard.events);
+        }
+        Vec::new()
     }
+}
 
-    fn is_host_capture_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for WindowsHostInput {
+    type Role = InteractionSourceRole;
+}
 
+impl InteractionSource for WindowsHostInput {
     fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {
         let worker_failure =
             self.session
@@ -697,23 +705,7 @@ impl InputSource for WindowsHostInput {
         }
         Ok(())
     }
-
-    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
-        if self.publish_worker_failure_once() {
-            return Vec::new();
-        }
-        if let Ok(mut guard) = self.shared.lock() {
-            return drain_events(&mut guard.events);
-        }
-        Vec::new()
-    }
 }
-
-impl SourceRoleBinding for WindowsHostInput {
-    type Role = InteractionSourceRole;
-}
-
-impl InteractionSource for WindowsHostInput {}
 
 // ── Folding ────────────────────────────────────────────────────────────────
 

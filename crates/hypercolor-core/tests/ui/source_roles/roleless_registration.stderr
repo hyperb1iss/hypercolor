@@ -12,6 +12,6 @@ help: the trait `AudioSource` is not implemented for `Source`
 help: the trait `AudioSource` is implemented for `AudioInput`
   --> src/input/audio/mod.rs
    |
-   | impl AudioSource for AudioInput {}
+   | impl AudioSource for AudioInput {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: required for the cast from `Box<Source>` to `Box<(dyn AudioSource + 'static)>`

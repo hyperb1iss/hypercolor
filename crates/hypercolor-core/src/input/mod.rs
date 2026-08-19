@@ -432,7 +432,7 @@ impl AudioRuntimeConfigPlan {
     }
 }
 
-/// Orchestrates multiple [`InputSource`] instances.
+/// Orchestrates multiple [`ManagedSource`] instances.
 ///
 /// Owns a heterogeneous collection of input sources and provides batch
 /// lifecycle management. The render loop holds one `InputManager` and
@@ -442,8 +442,8 @@ impl AudioRuntimeConfigPlan {
 ///
 /// ```rust,ignore
 /// let mut mgr = InputManager::new();
-/// mgr.add_source(Box::new(audio_input));
-/// mgr.add_source(Box::new(screen_capture));
+/// mgr.add_source(ManagedSourceRole::audio(Box::new(audio_input)))?;
+/// mgr.add_source(ManagedSourceRole::screen(Box::new(screen_capture)))?;
 /// mgr.start_all()?;
 ///
 /// loop {
@@ -490,11 +490,11 @@ impl ManagedInputSource {
     ) -> Self {
         let declared_kind = source.source_kind();
         let interaction_origin = source.interaction_origin();
+        if let Some(screen) = source.as_screen_mut() {
+            screen.set_screen_publication_hub(screen_publication_hub);
+        }
         let managed_source = source.source_mut();
         managed_source.set_source_graph_generation(source_graph_generation);
-        if declared_kind == SourceKind::Screen {
-            managed_source.set_screen_publication_hub(screen_publication_hub);
-        }
         let mut compatibility_status = managed_source.source_status_handle().is_none().then(|| {
             SourceStatusReporter::new(
                 format!("compatibility:{slot_id}:{}", managed_source.name()),
@@ -530,20 +530,38 @@ impl ManagedInputSource {
         self.source.key()
     }
 
-    fn is_audio_source(&self) -> bool {
-        self.key() == ManagedSourceKey::Audio
+    fn as_audio(&self) -> Option<&dyn AudioSource> {
+        self.source.as_audio()
     }
 
-    fn is_screen_source(&self) -> bool {
-        self.key() == ManagedSourceKey::Screen
+    fn as_audio_mut(&mut self) -> Option<&mut (dyn AudioSource + 'static)> {
+        self.source.as_audio_mut()
     }
 
-    fn is_interaction_source(&self) -> bool {
-        matches!(self.key(), ManagedSourceKey::Interaction(_))
+    fn as_screen(&self) -> Option<&dyn ScreenSource> {
+        self.source.as_screen()
     }
 
-    fn is_host_capture_source(&self) -> bool {
-        self.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host)
+    fn as_screen_mut(&mut self) -> Option<&mut (dyn ScreenSource + 'static)> {
+        self.source.as_screen_mut()
+    }
+
+    fn as_interaction(&self) -> Option<&dyn InteractionSource> {
+        self.source.as_interaction()
+    }
+
+    fn as_interaction_mut(&mut self) -> Option<&mut (dyn InteractionSource + 'static)> {
+        self.source.as_interaction_mut()
+    }
+
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        if let Some(source) = self.source.as_screen_mut() {
+            source.set_capability_context(context)?;
+        }
+        if let Some(source) = self.source.as_interaction_mut() {
+            source.set_capability_context(context)?;
+        }
+        Ok(())
     }
 
     fn source_status_handle(&self) -> SourceStatusHandle {
@@ -703,28 +721,6 @@ impl AsMut<dyn ManagedSource> for ManagedInputSource {
     }
 }
 
-#[derive(Clone, Copy)]
-enum CaptureDomain {
-    Audio,
-    Interaction,
-}
-
-impl CaptureDomain {
-    fn matches(self, source: &ManagedInputSource) -> bool {
-        match self {
-            Self::Audio => source.is_audio_source(),
-            Self::Interaction => source.is_interaction_source(),
-        }
-    }
-
-    fn transition(self, source: &mut ManagedInputSource, active: bool) -> anyhow::Result<()> {
-        match self {
-            Self::Audio => source.set_audio_capture_active(active),
-            Self::Interaction => source.set_interaction_capture_active(active),
-        }
-    }
-}
-
 impl InputManager {
     /// Create an empty manager with no sources.
     #[must_use]
@@ -838,7 +834,7 @@ impl InputManager {
         plan: &SourceSwapPlan,
         replacement: &mut Option<ManagedSourceRole>,
     ) -> Result<SourceRetirement, SourceSwapConflict> {
-        let current = self.validate_source_swap(plan, replacement)?;
+        let current = self.validate_source_swap(plan, replacement.as_ref())?;
         if current.is_none() && plan.target == SourceSwapTarget::Absent {
             return Ok(SourceRetirement {
                 source: None,
@@ -872,7 +868,7 @@ impl InputManager {
     fn validate_source_swap(
         &self,
         plan: &SourceSwapPlan,
-        replacement: &Option<ManagedSourceRole>,
+        replacement: Option<&ManagedSourceRole>,
     ) -> Result<Option<usize>, SourceSwapConflict> {
         if self.source_graph_generation != plan.expected_graph_generation {
             return Err(SourceSwapConflict::GraphChanged);
@@ -894,7 +890,7 @@ impl InputManager {
             }
             SourceSwapTarget::Present { running } => running,
         };
-        let Some(replacement) = replacement.as_ref() else {
+        let Some(replacement) = replacement else {
             return Err(SourceSwapConflict::InvalidReplacementPresence);
         };
         let observed = replacement.key();
@@ -952,11 +948,7 @@ impl InputManager {
             return Err(source);
         }
         let source_graph_generation = self.bump_source_graph_generation();
-        let previous_domains = (
-            self.sources[index].is_audio_source(),
-            self.sources[index].is_screen_source(),
-            self.sources[index].is_interaction_source(),
-        );
+        let previous_domains = managed_source_capture_domains(self.sources[index].key());
         let replacement_domains = managed_source_capture_domains(source.key());
         let replacement = self.create_managed_source(source, source_graph_generation);
         let mut previous = std::mem::replace(&mut self.sources[index], replacement);
@@ -1108,7 +1100,18 @@ impl InputManager {
     ///
     /// Returns an error if an interaction source cannot update its capture state.
     pub fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.transition_capture_demand(CaptureDomain::Interaction, active)
+        self.transition_capture_demand(
+            active,
+            |manager| manager.interaction_capture_active,
+            |manager, demand| manager.interaction_capture_active = demand,
+            |source| source.as_interaction().is_some(),
+            |source, demand| {
+                source
+                    .as_interaction_mut()
+                    .expect("interaction route matches typed source")
+                    .set_interaction_capture_active(demand)
+            },
+        )
     }
 
     /// Start all registered sources.
@@ -1184,7 +1187,7 @@ impl InputManager {
         display_name: &str,
         capture_active: bool,
     ) -> anyhow::Result<AudioRuntimeConfigPlan> {
-        let source = self.sources.iter().find(|source| source.is_audio_source());
+        let source = self.sources.iter().find_map(ManagedInputSource::as_audio);
         if source.is_some_and(|source| !source.supports_prepared_audio_reconfiguration()) {
             anyhow::bail!("registered audio source does not support prepared reconfiguration");
         }
@@ -1201,7 +1204,7 @@ impl InputManager {
         Ok(AudioRuntimeConfigPlan {
             expected_graph_generation: self.source_graph_generation,
             expected_source_present: source.is_some(),
-            expected_source_running: source.is_some_and(|source| source.is_running()),
+            expected_source_running: source.is_some_and(ManagedSource::is_running),
             enabled,
             config: effective_config,
             display_name: display_name.to_owned(),
@@ -1226,7 +1229,7 @@ impl InputManager {
         let source_index = self
             .sources
             .iter()
-            .position(|source| source.is_audio_source());
+            .position(|source| source.key() == ManagedSourceKey::Audio);
         if source_index.is_some() != prepared.expected_source_present {
             return Err(AudioReconfigurationConflict::SourceTopologyChanged.into());
         }
@@ -1239,7 +1242,10 @@ impl InputManager {
             let result = {
                 let source = &mut self.sources[index];
                 source.set_source_graph_generation(source_graph_generation);
-                source.commit_prepared_audio_reconfiguration(prepared)
+                source
+                    .as_audio_mut()
+                    .expect("audio key binds typed audio source")
+                    .commit_prepared_audio_reconfiguration(prepared)
             };
             if result.is_ok() {
                 self.audio_capture_active = Some(capture_active);
@@ -1303,8 +1309,8 @@ impl InputManager {
         display_name: &str,
         capture_active: bool,
     ) -> anyhow::Result<()> {
-        let audio_source = self.sources.iter().find(|source| source.is_audio_source());
-        if audio_source.is_none_or(|source| source.supports_prepared_audio_reconfiguration()) {
+        let audio_source = self.sources.iter().find_map(ManagedInputSource::as_audio);
+        if audio_source.is_none_or(AudioSource::supports_prepared_audio_reconfiguration) {
             let mut prepared = self
                 .plan_audio_runtime_config(enabled, config, display_name, capture_active)?
                 .prepare()?;
@@ -1325,13 +1331,16 @@ impl InputManager {
         let index = self
             .sources
             .iter()
-            .position(|source| source.is_audio_source())
+            .position(|source| source.key() == ManagedSourceKey::Audio)
             .expect("unsupported prepared reconfiguration requires an audio source");
         let source_graph_generation = self.bump_source_graph_generation();
         let result = {
             let source = &mut self.sources[index];
             source.set_source_graph_generation(source_graph_generation);
-            source.reconfigure_audio(&effective_config, display_name, effective_capture_active)
+            source
+                .as_audio_mut()
+                .expect("audio key binds typed audio source")
+                .reconfigure_audio(&effective_config, display_name, effective_capture_active)
         };
         if result.is_ok() {
             info!(
@@ -1355,7 +1364,18 @@ impl InputManager {
     ///
     /// Returns an error if an audio source cannot update its capture state.
     pub fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.transition_capture_demand(CaptureDomain::Audio, active)
+        self.transition_capture_demand(
+            active,
+            |manager| manager.audio_capture_active,
+            |manager, demand| manager.audio_capture_active = demand,
+            |source| source.as_audio().is_some(),
+            |source, demand| {
+                source
+                    .as_audio_mut()
+                    .expect("audio route matches typed source")
+                    .set_audio_capture_active(demand)
+            },
+        )
     }
 
     /// Apply live screen publication demand to every registered screen source.
@@ -1472,7 +1492,7 @@ impl InputManager {
     pub fn screen_analysis_resource_plan(
         &self,
     ) -> anyhow::Result<Option<screen::ScreenAnalysisResourcePlan>> {
-        let Some(source) = self.sources.iter().find(|source| source.is_screen_source()) else {
+        let Some(source) = self.sources.iter().find_map(ManagedInputSource::as_screen) else {
             return Ok(None);
         };
         source.screen_analysis_resource_plan(self.current_screen_capture_demand())
@@ -1482,7 +1502,7 @@ impl InputManager {
     pub fn screen_analysis_work_plan(
         &self,
     ) -> anyhow::Result<Option<screen::ScreenAnalysisWorkPlan>> {
-        let Some(source) = self.sources.iter().find(|source| source.is_screen_source()) else {
+        let Some(source) = self.sources.iter().find_map(ManagedInputSource::as_screen) else {
             return Ok(None);
         };
         source.screen_analysis_work_plan(self.current_screen_capture_demand())
@@ -1495,8 +1515,8 @@ impl InputManager {
     ) -> Option<screen::ScreenAnalysisComputeCapacity> {
         self.sources
             .iter()
-            .find(|source| source.is_screen_source())
-            .and_then(|source| source.screen_analysis_compute_capacity())
+            .find_map(ManagedInputSource::as_screen)
+            .and_then(ScreenSource::screen_analysis_compute_capacity)
     }
 
     /// Return the manager's authoritative current screen-capture demand.
@@ -1632,7 +1652,7 @@ impl InputManager {
         self.screen_capture_demand.unwrap_or_else(|| {
             self.sources
                 .iter()
-                .find(|source| source.is_screen_source())
+                .find_map(ManagedInputSource::as_screen)
                 .map_or(ScreenCaptureDemand::Inactive, |source| {
                     source.screen_capture_demand()
                 })
@@ -1650,20 +1670,16 @@ impl InputManager {
         let source_count = self
             .sources
             .iter()
-            .filter(|source| source.is_screen_source())
+            .filter_map(ManagedInputSource::as_screen)
             .count();
         let changed = source_count != self.screen_publication_source_snapshot.len()
             || self
                 .sources
                 .iter()
-                .filter(|source| source.is_screen_source())
+                .filter_map(|source| Some((source.slot.id(), source.as_screen()?)))
                 .zip(&self.screen_publication_source_snapshot)
-                .any(|(source, observed)| {
-                    *observed
-                        != (
-                            source.slot.id(),
-                            source.screen_publication_resolution_revision(),
-                        )
+                .any(|((slot_id, source), observed)| {
+                    *observed != (slot_id, source.screen_publication_resolution_revision())
                 });
         if changed {
             self.screen_publication_source_snapshot.clear();
@@ -1672,12 +1688,9 @@ impl InputManager {
             self.screen_publication_source_snapshot.extend(
                 self.sources
                     .iter()
-                    .filter(|source| source.is_screen_source())
-                    .map(|source| {
-                        (
-                            source.slot.id(),
-                            source.screen_publication_resolution_revision(),
-                        )
+                    .filter_map(|source| Some((source.slot.id(), source.as_screen()?)))
+                    .map(|(slot_id, source)| {
+                        (slot_id, source.screen_publication_resolution_revision())
                     }),
             );
             self.screen_publication_resolution_revision = self
@@ -1742,11 +1755,11 @@ impl InputManager {
         for (branch_index, branch) in demand.branches().iter().enumerate() {
             let mut resolution = None;
             for (source_index, source) in self.sources.iter().enumerate() {
-                if !source.is_screen_source() {
+                let Some(screen) = source.as_screen() else {
                     continue;
-                }
+                };
                 let candidate =
-                    source
+                    screen
                         .resolve_screen_publication_branch(branch)
                         .map_err(|error| {
                             screen::ScreenPublicationTransitionError::SourceResolutionFailed {
@@ -1839,12 +1852,17 @@ impl InputManager {
                 .map(|(_, source_index, _)| *source_index)
                 .or_else(|| {
                     self.sources.iter().position(|source| {
-                        source.is_screen_source()
-                            && source.owns_screen_publication_source(&source_id)
+                        source
+                            .as_screen()
+                            .is_some_and(|screen| screen.owns_screen_publication_source(&source_id))
                     })
                 });
             let preparation = if let Some(owner) = owner {
-                match self.sources[owner].begin_screen_publication_preparation(ticket) {
+                match self.sources[owner]
+                    .as_screen_mut()
+                    .expect("screen owner index binds typed screen source")
+                    .begin_screen_publication_preparation(ticket)
+                {
                     Ok(preparation) => preparation,
                     Err(error) => {
                         drop(preparing.abort());
@@ -1960,11 +1978,12 @@ impl InputManager {
         let worker_retirements = self
             .sources
             .iter_mut()
-            .filter(|source| source.is_screen_source())
             .filter_map(|source| {
+                let name = Arc::from(source.name());
                 source
+                    .as_screen_mut()?
                     .begin_screen_publication_retirement()
-                    .map(|retirement| (Arc::from(source.name()), retirement))
+                    .map(|retirement| (name, retirement))
             })
             .collect();
         Ok(screen::CommittedScreenPublicationTransition::new(
@@ -1976,17 +1995,19 @@ impl InputManager {
     /// Whether any registered source handles screen capture.
     #[must_use]
     pub fn has_screen_source(&self) -> bool {
-        self.sources.iter().any(|source| source.is_screen_source())
+        self.sources
+            .iter()
+            .any(|source| source.key() == ManagedSourceKey::Screen)
     }
 
     /// Snapshot a generation-fenced screen-source replacement plan.
     pub fn plan_screen_runtime_config(&self, enabled: bool) -> ScreenRuntimeConfigPlan {
-        let source = self.sources.iter().find(|source| source.is_screen_source());
+        let source = self.sources.iter().find_map(ManagedInputSource::as_screen);
         let current_demand = self.current_screen_capture_demand();
         ScreenRuntimeConfigPlan {
             expected_graph_generation: self.source_graph_generation,
             expected_source_present: source.is_some(),
-            expected_source_running: source.is_some_and(|source| source.is_running()),
+            expected_source_running: source.is_some_and(ManagedSource::is_running),
             expected_capture_demand: current_demand,
             enabled,
             capture_demand: if enabled {
@@ -2045,7 +2066,7 @@ impl InputManager {
         let source_index = self
             .sources
             .iter()
-            .position(|source| source.is_screen_source());
+            .position(|source| source.key() == ManagedSourceKey::Screen);
         let topology_changed = source_index.is_some() || replacement.is_some();
         let source_graph_generation = if topology_changed {
             self.bump_source_graph_generation()
@@ -2097,7 +2118,7 @@ impl InputManager {
         let source_index = self
             .sources
             .iter()
-            .position(|source| source.is_screen_source());
+            .position(|source| source.key() == ManagedSourceKey::Screen);
         if source_index.is_some() != plan.expected_source_present {
             return Err(ScreenReconfigurationConflict::SourceTopologyChanged);
         }
@@ -2124,7 +2145,7 @@ impl InputManager {
     pub fn has_interaction_source(&self) -> bool {
         self.sources
             .iter()
-            .any(|source| source.is_interaction_source())
+            .any(|source| matches!(source.key(), ManagedSourceKey::Interaction(_)))
     }
 
     /// Collect health snapshots from every interaction source.
@@ -2132,7 +2153,8 @@ impl InputManager {
     pub fn interaction_diagnostics(&self) -> Vec<InteractionDiagnostics> {
         self.sources
             .iter()
-            .filter_map(|source| source.interaction_diagnostics())
+            .filter_map(ManagedInputSource::as_interaction)
+            .filter_map(InteractionSource::interaction_diagnostics)
             .collect()
     }
 
@@ -2142,9 +2164,9 @@ impl InputManager {
     /// config can tell whether host capture is actually wired up.
     #[must_use]
     pub fn has_host_capture_source(&self) -> bool {
-        self.sources
-            .iter()
-            .any(|source| source.is_host_capture_source())
+        self.sources.iter().any(|source| {
+            source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host)
+        })
     }
 
     /// Atomically replace the registered host source with one pre-started candidate.
@@ -2166,7 +2188,10 @@ impl InputManager {
             .sources
             .iter()
             .enumerate()
-            .filter_map(|(index, source)| source.is_host_capture_source().then_some(index));
+            .filter_map(|(index, source)| {
+                (source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host))
+                    .then_some(index)
+            });
         let current_index = host_indices.next();
         if host_indices.next().is_some() {
             return Err(HostReconfigurationError::SourceTopologyChanged);
@@ -2217,16 +2242,14 @@ impl InputManager {
     /// Leaves the browser injection source in place so disabling host
     /// consent never breaks browser-preview input.
     pub fn remove_host_capture_sources(&mut self) {
-        if !self
-            .sources
-            .iter()
-            .any(|source| source.is_host_capture_source())
-        {
+        if !self.sources.iter().any(|source| {
+            source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host)
+        }) {
             return;
         }
         let source_graph_generation = self.bump_source_graph_generation();
         self.sources.retain_mut(|source| {
-            if source.is_host_capture_source() {
+            if source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host) {
                 source.stop();
                 if let Err(error) = source.retire_source_status(source_graph_generation) {
                     error!(source = source.name(), %error, "Failed to retire host input source status");
@@ -2243,12 +2266,16 @@ impl InputManager {
 
     /// Stop and remove all registered screen sources.
     pub fn remove_screen_sources(&mut self) {
-        if !self.sources.iter().any(|source| source.is_screen_source()) {
+        if !self
+            .sources
+            .iter()
+            .any(|source| source.key() == ManagedSourceKey::Screen)
+        {
             return;
         }
         let source_graph_generation = self.bump_source_graph_generation();
         self.sources.retain_mut(|source| {
-            if source.is_screen_source() {
+            if source.key() == ManagedSourceKey::Screen {
                 source.set_active_consumer_count(0);
                 source.stop();
                 if let Err(error) = source.retire_source_status(source_graph_generation) {
@@ -2273,19 +2300,23 @@ impl InputManager {
         &mut self,
         config: &screen::CaptureConfig,
     ) -> anyhow::Result<()> {
-        if !self.sources.iter().any(|source| source.is_screen_source()) {
+        if !self
+            .sources
+            .iter()
+            .any(|source| source.key() == ManagedSourceKey::Screen)
+        {
             return Ok(());
         }
         let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
-            if source.is_screen_source() {
+            if source.key() == ManagedSourceKey::Screen {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
         let mut result = Ok(());
         for source in &mut self.sources {
-            if source.is_screen_source() {
-                if let Err(error) = source.reconfigure_screen_capture(config) {
+            if let Some(screen) = source.as_screen_mut() {
+                if let Err(error) = screen.reconfigure_screen_capture(config) {
                     result = Err(error);
                     break;
                 }
@@ -2309,8 +2340,8 @@ impl InputManager {
         config: &screen::CaptureConfig,
     ) -> anyhow::Result<()> {
         for source in &mut self.sources {
-            if source.is_screen_source() {
-                source.reconfigure_screen_processing(config)?;
+            if let Some(screen) = source.as_screen_mut() {
+                screen.reconfigure_screen_processing(config)?;
             }
         }
         self.publish_source_status_registry();
@@ -2381,7 +2412,8 @@ impl InputManager {
     pub fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
         self.sources
             .iter()
-            .find_map(|source| source.input_authorization_action())
+            .filter_map(ManagedInputSource::as_interaction)
+            .find_map(InteractionSource::input_authorization_action)
     }
 
     fn resolve_protected_source_action<A>(
@@ -2411,7 +2443,8 @@ impl InputManager {
     pub fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
         self.sources
             .iter()
-            .find_map(|source| source.screen_authorization_action())
+            .filter_map(ManagedInputSource::as_screen)
+            .find_map(ScreenSource::screen_authorization_action)
     }
 
     /// Resolve the explicit Screen Recording request against this process.
@@ -2430,7 +2463,8 @@ impl InputManager {
     pub fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
         self.sources
             .iter()
-            .find_map(|source| source.screen_source_picker_action())
+            .filter_map(ManagedInputSource::as_screen)
+            .find_map(ScreenSource::screen_source_picker_action)
     }
 
     /// Resolve the native picker request against its exact local executor.
@@ -2447,7 +2481,8 @@ impl InputManager {
     pub fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
         self.sources
             .iter()
-            .find_map(|source| source.diagnostic_artifact_action())
+            .filter_map(ManagedInputSource::as_screen)
+            .find_map(ScreenSource::diagnostic_artifact_action)
     }
 
     /// Ask screen sources to discard their persisted selection and re-prompt.
@@ -2456,19 +2491,23 @@ impl InputManager {
     ///
     /// Returns an error if a screen source cannot restart its session.
     pub fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
-        if !self.sources.iter().any(|source| source.is_screen_source()) {
+        if !self
+            .sources
+            .iter()
+            .any(|source| source.key() == ManagedSourceKey::Screen)
+        {
             return Ok(());
         }
         let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
-            if source.is_screen_source() {
+            if source.key() == ManagedSourceKey::Screen {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
         let mut result = Ok(());
         for source in &mut self.sources {
-            if source.is_screen_source() {
-                if let Err(error) = source.reselect_screen_source() {
+            if let Some(screen) = source.as_screen_mut() {
+                if let Err(error) = screen.reselect_screen_source() {
                     result = Err(error);
                     break;
                 }
@@ -2492,10 +2531,16 @@ impl InputManager {
         mut source: ManagedSourceRole,
         source_graph_generation: u64,
     ) -> ManagedInputSource {
-        source
-            .source_mut()
-            .set_capability_context(&self.source_capability_context)
-            .expect("new source accepts retained capability status");
+        if let Some(screen) = source.as_screen_mut() {
+            screen
+                .set_capability_context(&self.source_capability_context)
+                .expect("new screen source accepts retained capability status");
+        }
+        if let Some(interaction) = source.as_interaction_mut() {
+            interaction
+                .set_capability_context(&self.source_capability_context)
+                .expect("new interaction source accepts retained capability status");
+        }
         let id = self.next_source_slot_id;
         self.next_source_slot_id = self
             .next_source_slot_id
@@ -2509,15 +2554,21 @@ impl InputManager {
         )
     }
 
-    fn transition_capture_demand(
+    fn transition_capture_demand<GetCache, SetCache, Matches, Transition>(
         &mut self,
-        domain: CaptureDomain,
         active: bool,
-    ) -> anyhow::Result<()> {
-        let cached = match domain {
-            CaptureDomain::Audio => self.audio_capture_active,
-            CaptureDomain::Interaction => self.interaction_capture_active,
-        };
+        get_cache: GetCache,
+        set_cache: SetCache,
+        matches: Matches,
+        mut transition: Transition,
+    ) -> anyhow::Result<()>
+    where
+        GetCache: Fn(&Self) -> Option<bool>,
+        SetCache: Fn(&mut Self, Option<bool>),
+        Matches: Fn(&ManagedInputSource) -> bool,
+        Transition: FnMut(&mut ManagedInputSource, bool) -> anyhow::Result<()>,
+    {
+        let cached = get_cache(self);
         if cached == Some(active) {
             return Ok(());
         }
@@ -2526,32 +2577,28 @@ impl InputManager {
             .sources
             .iter()
             .map(|source| {
-                domain
-                    .matches(source)
-                    .then(|| source.source_status_handle().snapshot().demanded)
+                matches(source).then(|| source.source_status_handle().snapshot().demanded)
             })
             .collect::<Vec<_>>();
 
         let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
-            if domain.matches(source) {
+            if matches(source) {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
 
         for source_index in 0..self.sources.len() {
-            if !domain.matches(&self.sources[source_index]) {
+            if !matches(&self.sources[source_index]) {
                 continue;
             }
-            let transition = domain
-                .transition(&mut self.sources[source_index], active)
+            let result = transition(&mut self.sources[source_index], active)
                 .and_then(|()| self.sources[source_index].set_compatibility_demand(active));
-            if let Err(error) = transition {
+            if let Err(error) = result {
                 let mut rollback_succeeded = true;
                 for (rollback, previous) in self.sources.iter_mut().zip(&prior_demands) {
                     if let Some(previous) = previous {
-                        let rollback_result = domain
-                            .transition(rollback, *previous)
+                        let rollback_result = transition(rollback, *previous)
                             .and_then(|()| rollback.set_compatibility_demand(*previous));
                         if let Err(rollback_error) = rollback_result {
                             rollback_succeeded = false;
@@ -2571,22 +2618,15 @@ impl InputManager {
                 } else {
                     None
                 };
-                self.set_capture_demand_cache(domain, restored_cache);
+                set_cache(self, restored_cache);
                 self.publish_source_status_registry();
                 return Err(error);
             }
         }
 
-        self.set_capture_demand_cache(domain, Some(active));
+        set_cache(self, Some(active));
         self.publish_source_status_registry();
         Ok(())
-    }
-
-    fn set_capture_demand_cache(&mut self, domain: CaptureDomain, demand: Option<bool>) {
-        match domain {
-            CaptureDomain::Audio => self.audio_capture_active = demand,
-            CaptureDomain::Interaction => self.interaction_capture_active = demand,
-        }
     }
 
     fn transition_screen_capture_demand(
@@ -2601,16 +2641,12 @@ impl InputManager {
         let prior_demands = self
             .sources
             .iter()
-            .map(|source| {
-                source
-                    .is_screen_source()
-                    .then(|| source.screen_capture_demand())
-            })
+            .map(|source| source.as_screen().map(ScreenSource::screen_capture_demand))
             .collect::<Vec<_>>();
         let analysis_peak_bytes = self
             .sources
             .iter()
-            .filter(|source| source.is_screen_source())
+            .filter_map(ManagedInputSource::as_screen)
             .try_fold(0_u64, |total, source| {
                 let bytes = source
                     .screen_analysis_resource_plan(demand)?
@@ -2625,15 +2661,17 @@ impl InputManager {
             preparation.expected_graph_generation = source_graph_generation;
         }
         for source in &mut self.sources {
-            if source.is_screen_source() {
+            if source.key() == ManagedSourceKey::Screen {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
         for source_index in 0..self.sources.len() {
-            if !self.sources[source_index].is_screen_source() {
+            if self.sources[source_index].key() != ManagedSourceKey::Screen {
                 continue;
             }
             let transition = self.sources[source_index]
+                .as_screen_mut()
+                .expect("screen key binds typed screen source")
                 .set_screen_capture_demand(demand)
                 .and_then(|()| {
                     self.sources[source_index].set_compatibility_demand(demand.is_active())
@@ -2643,6 +2681,8 @@ impl InputManager {
                 for (source, previous) in self.sources.iter_mut().zip(&prior_demands) {
                     if let Some(previous) = previous {
                         let rollback_result = source
+                            .as_screen_mut()
+                            .expect("screen demand snapshot binds typed screen source")
                             .set_screen_capture_demand(*previous)
                             .and_then(|()| source.set_compatibility_demand(previous.is_active()));
                         if let Err(rollback_error) = rollback_result {
@@ -2698,7 +2738,7 @@ impl InputManager {
         for source in self
             .sources
             .iter_mut()
-            .filter(|source| source.is_screen_source())
+            .filter(|source| source.key() == ManagedSourceKey::Screen)
         {
             source.set_active_consumer_count(active_consumer_count);
         }
@@ -2711,11 +2751,16 @@ impl InputManager {
         for source in self
             .sources
             .iter_mut()
-            .filter(|source| source.is_screen_source())
+            .filter(|source| source.key() == ManagedSourceKey::Screen)
         {
             let active_consumer_count = active_consumer_counts
                 .iter()
-                .filter(|(source_id, _)| source.owns_screen_publication_source(source_id))
+                .filter(|(source_id, _)| {
+                    source
+                        .as_screen()
+                        .expect("screen key binds typed screen source")
+                        .owns_screen_publication_source(source_id)
+                })
                 .map(|(_, count)| *count)
                 .sum();
             source.set_active_consumer_count(active_consumer_count);
@@ -2878,25 +2923,17 @@ mod host_source_swap_tests {
         fn is_running(&self) -> bool {
             self.running
         }
-
-        fn is_interaction_source(&self) -> bool {
-            true
-        }
-
-        fn interaction_source_origin(&self) -> InteractionSourceOrigin {
-            self.origin
-        }
-
-        fn is_host_capture_source(&self) -> bool {
-            self.origin == InteractionSourceOrigin::Host
-        }
     }
 
     impl SourceRoleBinding for HostSource {
         type Role = InteractionSourceRole;
     }
 
-    impl InteractionSource for HostSource {}
+    impl InteractionSource for HostSource {
+        fn interaction_source_origin(&self) -> InteractionSourceOrigin {
+            self.origin
+        }
+    }
 
     #[test]
     fn typed_swap_preserves_candidate_and_graph_on_conflict() {

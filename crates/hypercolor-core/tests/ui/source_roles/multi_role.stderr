@@ -12,5 +12,5 @@ note: expected this to be `ScreenSourceRole`
 note: required by a bound in `ScreenSource`
   --> src/input/traits.rs
    |
-   | pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRole> {}
+   | pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRole> {
    |                                                           ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ScreenSource`

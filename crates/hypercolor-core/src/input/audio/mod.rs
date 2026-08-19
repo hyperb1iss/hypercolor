@@ -1384,11 +1384,9 @@ impl InputSource for AudioInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
-
+impl AudioSource for AudioInput {
     fn reconfigure_audio(
         &mut self,
         config: &AudioPipelineConfig,
@@ -1417,8 +1415,6 @@ impl InputSource for AudioInput {
 impl SourceRoleBinding for AudioInput {
     type Role = AudioSourceRole;
 }
-
-impl AudioSource for AudioInput {}
 
 impl Drop for AudioInput {
     fn drop(&mut self) {

@@ -248,11 +248,13 @@ mod tests {
         fn is_running(&self) -> bool {
             true
         }
+    }
 
-        fn is_screen_source(&self) -> bool {
-            true
-        }
+    impl SourceRoleBinding for FailingScreenSource {
+        type Role = ScreenSourceRole;
+    }
 
+    impl ScreenSource for FailingScreenSource {
         fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
             if !demand.is_active() {
                 return Ok(());
@@ -264,12 +266,6 @@ mod tests {
             Ok(())
         }
     }
-
-    impl SourceRoleBinding for FailingScreenSource {
-        type Role = ScreenSourceRole;
-    }
-
-    impl ScreenSource for FailingScreenSource {}
 
     #[test]
     fn failed_demand_retries_every_tick_and_paces_only_the_warning() {

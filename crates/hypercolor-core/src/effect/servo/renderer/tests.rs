@@ -418,10 +418,10 @@ fn display_faces_submit_gpu_preferred_renders_when_import_is_on() {
 #[test]
 fn sensor_updates_are_limited_to_sensor_aware_metadata() {
     let plain = html_metadata(PathBuf::from("bubble.html"));
-    assert!(!effect_uses_sensor_data(&plain));
+    assert!(!plain.requires_sensors());
 
     let display = display_html_metadata(PathBuf::from("face.html"));
-    assert!(!effect_uses_sensor_data(&display));
+    assert!(!display.requires_sensors());
 
     let mut sensor_control = html_metadata(PathBuf::from("sensor.html"));
     sensor_control.category = EffectCategory::Display;
@@ -441,7 +441,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
         preview_source: None,
         binding: None,
     });
-    assert!(effect_uses_sensor_data(&sensor_control));
+    assert!(sensor_control.requires_sensors());
     assert_eq!(
         scoped_sensor_control_ids(&sensor_control),
         vec!["targetSensor".to_owned()]
@@ -449,7 +449,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
 
     let mut tagged = plain;
     tagged.tags.push("system-monitor".to_owned());
-    assert!(effect_uses_sensor_data(&tagged));
+    assert!(tagged.requires_sensors());
     assert!(scoped_sensor_control_ids(&tagged).is_empty());
 }
 

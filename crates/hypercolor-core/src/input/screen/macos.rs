@@ -1341,24 +1341,6 @@ impl InputSource for MacosScreenCaptureInput {
         "macos_screen_capture"
     }
 
-    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
-        let Some(owner) = MacosCapabilityOwner::from_id(&context.owner) else {
-            return Ok(());
-        };
-        let conflict = context.conflict.as_ref().and_then(|conflict| {
-            Some(MacosDaemonOwnerConflict {
-                active: MacosCapabilityOwner::from_id(&conflict.active)?,
-                contender: MacosCapabilityOwner::from_id(&conflict.contender)?,
-                observed_at_ms: conflict.observed_at_ms,
-            })
-        });
-        self.owner = owner;
-        self.owner_conflict = conflict.map(Arc::new);
-        self.owner_designated_requirement_hash = context.identity_hash.clone();
-        self.metal4 = context.features.get("metal4").copied().unwrap_or(false);
-        self.refresh_platform_status()
-    }
-
     fn start(&mut self) -> anyhow::Result<()> {
         if self.running {
             return Ok(());
@@ -1433,11 +1415,27 @@ impl InputSource for MacosScreenCaptureInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
+impl ScreenSource for MacosScreenCaptureInput {
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        let Some(owner) = MacosCapabilityOwner::from_id(&context.owner) else {
+            return Ok(());
+        };
+        let conflict = context.conflict.as_ref().and_then(|conflict| {
+            Some(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::from_id(&conflict.active)?,
+                contender: MacosCapabilityOwner::from_id(&conflict.contender)?,
+                observed_at_ms: conflict.observed_at_ms,
+            })
+        });
+        self.owner = owner;
+        self.owner_conflict = conflict.map(Arc::new);
+        self.owner_designated_requirement_hash
+            .clone_from(&context.identity_hash);
+        self.metal4 = context.features.get("metal4").copied().unwrap_or(false);
+        self.refresh_platform_status()
     }
-
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
     }
@@ -1765,8 +1763,6 @@ impl InputSource for MacosScreenCaptureInput {
 impl SourceRoleBinding for MacosScreenCaptureInput {
     type Role = ScreenSourceRole;
 }
-
-impl ScreenSource for MacosScreenCaptureInput {}
 
 fn protected_action_identity(
     owner: MacosCapabilityOwner,

@@ -1605,11 +1605,13 @@ mod tests {
         fn is_running(&self) -> bool {
             self.running
         }
+    }
 
-        fn is_screen_source(&self) -> bool {
-            true
-        }
+    impl SourceRoleBinding for TestScreenSource {
+        type Role = ScreenSourceRole;
+    }
 
+    impl ScreenSource for TestScreenSource {
         fn screen_capture_demand(&self) -> ScreenCaptureDemand {
             self.demand
         }
@@ -1619,12 +1621,6 @@ mod tests {
             Ok(())
         }
     }
-
-    impl SourceRoleBinding for TestScreenSource {
-        type Role = ScreenSourceRole;
-    }
-
-    impl ScreenSource for TestScreenSource {}
 
     fn test_screen_demand() -> ScreenCaptureDemand {
         ScreenCaptureDemand::active(

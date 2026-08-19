@@ -53,11 +53,9 @@ impl InputSource for PlannedScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for PlannedScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
     }
@@ -87,8 +85,6 @@ impl InputSource for PlannedScreenSource {
 impl SourceRoleBinding for PlannedScreenSource {
     type Role = ScreenSourceRole;
 }
-
-impl ScreenSource for PlannedScreenSource {}
 
 #[test]
 fn status_handle_tracks_policy_and_live_physical_reservations() {

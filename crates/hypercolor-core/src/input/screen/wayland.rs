@@ -2224,11 +2224,9 @@ impl InputSource for WaylandScreenCaptureInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for WaylandScreenCaptureInput {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.capture_demand
     }
@@ -2413,8 +2411,6 @@ impl InputSource for WaylandScreenCaptureInput {
 impl SourceRoleBinding for WaylandScreenCaptureInput {
     type Role = ScreenSourceRole;
 }
-
-impl ScreenSource for WaylandScreenCaptureInput {}
 
 fn clear_restore_token(settings: &SharedSettings, token_sink: Option<&RestoreTokenSink>) {
     let _session_guard = settings

@@ -833,63 +833,12 @@ pub trait ManagedSource: Send {
             sample => Ok(Some(Arc::new(sample))),
         }
     }
+}
 
-    /// Whether this source supports runtime audio reconfiguration.
-    fn is_audio_source(&self) -> bool {
-        false
-    }
+pub use ManagedSource as InputSource;
 
-    /// Whether this source supports runtime screen capture demand control.
-    fn is_screen_source(&self) -> bool {
-        false
-    }
-
-    /// Whether this source captures host keyboard/mouse interaction.
-    fn is_interaction_source(&self) -> bool {
-        false
-    }
-
-    /// Typed routing origin for an interaction source.
-    ///
-    /// The manager ignores this value unless [`Self::is_interaction_source`]
-    /// returns `true`. Third-party interaction sources capture host input unless
-    /// they explicitly declare a different aggregate origin.
-    fn interaction_source_origin(&self) -> InteractionSourceOrigin {
-        InteractionSourceOrigin::Host
-    }
-
-    /// Health snapshot for interaction sources, for status and remediation UX.
-    ///
-    /// Non-interaction sources return `None`. Interaction sources report
-    /// their backend and, for host hardware, how many device nodes opened
-    /// versus were denied — so the UI can tell "input is off" apart from
-    /// "input is on but the udev rules are missing".
-    fn interaction_diagnostics(&self) -> Option<InteractionDiagnostics> {
-        None
-    }
-
-    /// Whether this source captures from host input hardware (evdev, OS
-    /// event tap) rather than an injected feed like the browser preview.
-    ///
-    /// Consent config only governs host capture; the browser source is
-    /// always registered and is not a host source, so live enable/disable
-    /// of host input must not add or remove it.
-    fn is_host_capture_source(&self) -> bool {
-        false
-    }
-
-    /// Toggle whether an interaction source should actively capture host input.
-    ///
-    /// Interaction sources close their device handles and clear all held
-    /// state when capture goes inactive, so no keys or buttons stay stuck.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the source cannot update its capture state.
-    fn set_interaction_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
-        Ok(())
-    }
-
+/// Audio-specific source contract.
+pub trait AudioSource: ManagedSource + SourceRoleBinding<Role = AudioSourceRole> {
     /// Reconfigure a running audio source without rebuilding the full input manager.
     ///
     /// Non-audio sources can ignore this by keeping the default implementation.
@@ -922,7 +871,7 @@ pub trait ManagedSource: Send {
         &mut self,
         _prepared: &mut PreparedAudioReconfiguration,
     ) -> anyhow::Result<AudioRuntimeRetirement> {
-        anyhow::bail!("input source does not support prepared audio reconfiguration")
+        anyhow::bail!("audio source does not support prepared reconfiguration")
     }
 
     /// Toggle whether an audio source should actively capture from hardware.
@@ -936,7 +885,10 @@ pub trait ManagedSource: Send {
     fn set_audio_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
         Ok(())
     }
+}
 
+/// Screen-specific source contract.
+pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRole> {
     /// Current screen publication demand retained by this source.
     fn screen_capture_demand(&self) -> crate::input::screen::ScreenCaptureDemand {
         crate::input::screen::ScreenCaptureDemand::Inactive
@@ -990,7 +942,7 @@ pub trait ManagedSource: Send {
     /// Bind this source to the process-wide exact publication authority.
     fn set_screen_publication_hub(
         &mut self,
-        _hub: std::sync::Arc<crate::input::screen::ScreenPublicationHub>,
+        _hub: Arc<crate::input::screen::ScreenPublicationHub>,
     ) {
     }
 
@@ -1043,7 +995,7 @@ pub trait ManagedSource: Send {
         &mut self,
         _ticket: crate::input::screen::ScreenWorkerPreparationTicket,
     ) -> anyhow::Result<crate::input::screen::ScreenWorkerPreparation> {
-        anyhow::bail!("input source does not support exact screen publication preparation")
+        anyhow::bail!("screen source does not support exact publication preparation")
     }
 
     /// Start source-owned cleanup after committed authority retires bindings.
@@ -1097,11 +1049,6 @@ pub trait ManagedSource: Send {
         Ok(())
     }
 
-    /// Return the explicit Input Monitoring request owned by this source.
-    fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
-        None
-    }
-
     /// Return the explicit Screen Recording request owned by this source.
     fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
         None
@@ -1117,18 +1064,48 @@ pub trait ManagedSource: Send {
     }
 }
 
-pub use ManagedSource as InputSource;
-
-/// Audio-specific source contract.
-pub trait AudioSource: ManagedSource + SourceRoleBinding<Role = AudioSourceRole> {}
-
-/// Screen-specific source contract.
-pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRole> {}
-
 /// Interaction-specific source contract.
 pub trait InteractionSource:
     ManagedSource + SourceRoleBinding<Role = InteractionSourceRole>
 {
+    /// Typed routing origin for an interaction source.
+    ///
+    /// Third-party interaction sources capture host input unless they explicitly
+    /// declare a different aggregate origin.
+    fn interaction_source_origin(&self) -> InteractionSourceOrigin {
+        InteractionSourceOrigin::Host
+    }
+
+    /// Health snapshot for interaction sources, for status and remediation UX.
+    ///
+    /// Interaction sources report their backend and, for host hardware, how many
+    /// device nodes opened versus were denied, so the UI can tell "input is off"
+    /// apart from "input is on but the udev rules are missing".
+    fn interaction_diagnostics(&self) -> Option<InteractionDiagnostics> {
+        None
+    }
+
+    /// Toggle whether an interaction source should actively capture host input.
+    ///
+    /// Interaction sources close their device handles and clear all held
+    /// state when capture goes inactive, so no keys or buttons stay stuck.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot update its capture state.
+    fn set_interaction_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Apply the active process capability context to this source.
+    fn set_capability_context(&mut self, _context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Return the explicit Input Monitoring request owned by this source.
+    fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        None
+    }
 }
 
 /// General-data source contract.

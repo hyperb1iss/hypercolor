@@ -260,11 +260,9 @@ impl InputSource for ExactDemandProbe {
     fn is_running(&self) -> bool {
         true
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for ExactDemandProbe {
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
         *self.hub.lock().expect("probe hub mutex is healthy") = Some(hub);
     }
@@ -367,8 +365,6 @@ impl InputSource for ExactDemandProbe {
 impl SourceRoleBinding for ExactDemandProbe {
     type Role = ScreenSourceRole;
 }
-
-impl ScreenSource for ExactDemandProbe {}
 
 struct PassiveSource;
 

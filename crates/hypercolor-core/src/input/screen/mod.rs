@@ -1412,10 +1412,6 @@ impl InputSource for ScreenCaptureInput {
         self.running
     }
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
     fn source_status_handle(&self) -> Option<SourceStatusHandle> {
         Some(self.status.handle())
     }

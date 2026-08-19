@@ -146,11 +146,13 @@ impl InputSource for ScreenDemandSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for ScreenDemandSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for ScreenDemandSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
     }
@@ -271,12 +273,6 @@ impl InputSource for ScreenDemandSource {
     }
 }
 
-impl SourceRoleBinding for ScreenDemandSource {
-    type Role = ScreenSourceRole;
-}
-
-impl ScreenSource for ScreenDemandSource {}
-
 impl CountingSource {
     fn new(samples: Arc<AtomicUsize>) -> Self {
         Self {
@@ -317,22 +313,18 @@ impl InputSource for CountingSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
-
-    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.capture_active.store(active, Ordering::Release);
-        Ok(())
-    }
 }
 
 impl SourceRoleBinding for CountingSource {
     type Role = InteractionSourceRole;
 }
 
-impl InteractionSource for CountingSource {}
+impl InteractionSource for CountingSource {
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active.store(active, Ordering::Release);
+        Ok(())
+    }
+}
 
 #[test]
 fn demand_snapshot_uses_the_highest_typed_consumer_rate() {

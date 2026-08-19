@@ -71,10 +71,6 @@ impl InputSource for SequencedInteractionSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
 }
 
 impl SourceRoleBinding for SequencedInteractionSource {

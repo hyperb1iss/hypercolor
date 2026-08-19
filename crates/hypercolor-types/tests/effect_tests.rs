@@ -833,6 +833,27 @@ fn requires_interaction_covers_flag_category_and_legacy_tags() {
 }
 
 #[test]
+fn requires_sensors_covers_sensor_tags_and_controls() {
+    let mut metadata = sample_metadata();
+    metadata.tags = vec!["ambient".into()];
+    assert!(!metadata.requires_sensors());
+
+    for tag in ["sensor", "SENSORS", "System-Monitor"] {
+        metadata.tags = vec![tag.into()];
+        assert!(
+            metadata.requires_sensors(),
+            "tag {tag} should opt into sensors"
+        );
+    }
+
+    metadata.tags.clear();
+    let mut sensor_control = sample_slider_control();
+    sensor_control.kind = ControlKind::Sensor;
+    metadata.controls = vec![sensor_control];
+    assert!(metadata.requires_sensors());
+}
+
+#[test]
 fn input_reactive_defaults_to_false_when_absent_from_json() {
     let json = serde_json::to_value(sample_metadata()).expect("serialize metadata");
     let mut trimmed = json.clone();

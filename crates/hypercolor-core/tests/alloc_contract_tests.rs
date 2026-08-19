@@ -349,16 +349,14 @@ fn steady_availability_control() -> (Stats, Stats) {
 }
 
 struct SharedSampleSource<R> {
-    kind: SourceKind,
     sample: Arc<InputData>,
     running: bool,
     role: PhantomData<R>,
 }
 
 impl<R> SharedSampleSource<R> {
-    fn new(kind: SourceKind, sample: InputData) -> Self {
+    fn new(sample: InputData) -> Self {
         Self {
-            kind,
             sample: Arc::new(sample),
             running: false,
             role: PhantomData,
@@ -395,18 +393,6 @@ impl<R: Send> InputSource for SharedSampleSource<R> {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_audio_source(&self) -> bool {
-        self.kind == SourceKind::Audio
-    }
-
-    fn is_screen_source(&self) -> bool {
-        self.kind == SourceKind::Screen
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        self.kind == SourceKind::Interaction
-    }
 }
 
 impl SourceRoleBinding for SharedSampleSource<AudioSourceRole> {
@@ -441,21 +427,18 @@ fn steady_manager_sampling_control() -> (Stats, Stats) {
     register_test_source(
         &mut manager,
         ManagedSourceRole::audio(Box::new(SharedSampleSource::<AudioSourceRole>::new(
-            SourceKind::Audio,
             InputData::Audio(AudioData::silence()),
         ))),
     );
     register_test_source(
         &mut manager,
         ManagedSourceRole::screen(Box::new(SharedSampleSource::<ScreenSourceRole>::new(
-            SourceKind::Screen,
             InputData::Screen(ScreenData::from_zones(Vec::new(), 0, 0)),
         ))),
     );
     register_test_source(
         &mut manager,
         ManagedSourceRole::interaction(Box::new(SharedSampleSource::<InteractionSourceRole>::new(
-            SourceKind::Interaction,
             InputData::Interaction(InteractionData::default()),
         ))),
     );
@@ -490,14 +473,12 @@ fn steady_typed_manager_sampling_control() -> (Stats, Stats) {
     register_test_source(
         &mut manager,
         ManagedSourceRole::audio(Box::new(SharedSampleSource::<AudioSourceRole>::new(
-            SourceKind::Audio,
             InputData::Audio(AudioData::silence()),
         ))),
     );
     register_test_source(
         &mut manager,
         ManagedSourceRole::interaction(Box::new(SharedSampleSource::<InteractionSourceRole>::new(
-            SourceKind::Interaction,
             InputData::Interaction(InteractionData::default()),
         ))),
     );
@@ -606,7 +587,6 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
     register_test_source(
         &mut manager,
         ManagedSourceRole::interaction(Box::new(SharedSampleSource::<InteractionSourceRole>::new(
-            SourceKind::Interaction,
             InputData::Interaction(InteractionData {
                 batch: InteractionBatch {
                     motion: MotionAggregate {

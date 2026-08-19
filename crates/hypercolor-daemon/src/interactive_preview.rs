@@ -24,7 +24,7 @@ use hypercolor_types::canvas::{PublishedSurface, SurfaceDescriptor};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
-use hypercolor_types::layer::LayerSource;
+use hypercolor_types::layer::{BindingSource, LayerSource};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
@@ -50,6 +50,7 @@ pub(crate) use resources::{PreviewCapacityLedger, PreviewResourceLease};
 pub use resources::{PreviewCapacitySnapshot, PreviewResourceLedger};
 
 const MAX_PREVIEW_FPS: u32 = 60;
+const BACKGROUND_INPUT_HZ: u32 = 1;
 static NEXT_CONSUMER_INCARNATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1549,14 +1550,24 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
         .expect("resolved preview canvas dimensions are non-empty");
     let mut media = false;
     let mut network = false;
+    let mut sensors = false;
     for group in scene.groups.iter().filter(|group| group.enabled) {
         for layer in group
             .effective_layers()
             .into_iter()
             .filter(|layer| layer.enabled)
         {
+            sensors |= layer
+                .bindings
+                .iter()
+                .any(|binding| matches!(&binding.source, BindingSource::Sensor { .. }));
             match &layer.source {
-                LayerSource::Effect { effect_id, .. } => {
+                LayerSource::Effect {
+                    effect_id,
+                    control_bindings,
+                    ..
+                } => {
+                    sensors |= !control_bindings.is_empty();
                     if let Some(entry) = scene.registry.get(effect_id) {
                         if entry.metadata.audio_reactive {
                             demand = demand.with_source(SourceKind::Audio, requested_hz);
@@ -1577,6 +1588,7 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
                             .tags
                             .iter()
                             .any(|tag| tag.eq_ignore_ascii_case("net"));
+                        sensors |= entry.metadata.requires_sensors();
                     }
                 }
                 LayerSource::ScreenRegion { .. } => {
@@ -1588,10 +1600,13 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
         }
     }
     if media {
-        demand = demand.with_source(SourceKind::Media, 1);
+        demand = demand.with_source(SourceKind::Media, BACKGROUND_INPUT_HZ);
     }
     if network {
-        demand = demand.with_source(SourceKind::Network, 1);
+        demand = demand.with_source(SourceKind::Network, BACKGROUND_INPUT_HZ);
+    }
+    if sensors {
+        demand = demand.with_source(SourceKind::Sensors, BACKGROUND_INPUT_HZ);
     }
     demand
 }

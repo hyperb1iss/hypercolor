@@ -1548,11 +1548,9 @@ impl InputSource for WindowsScreenCaptureInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for WindowsScreenCaptureInput {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.capture_demand
     }
@@ -1714,8 +1712,6 @@ impl InputSource for WindowsScreenCaptureInput {
 impl SourceRoleBinding for WindowsScreenCaptureInput {
     type Role = ScreenSourceRole;
 }
-
-impl ScreenSource for WindowsScreenCaptureInput {}
 
 fn resolve_windows_publication_branch(
     source: &WindowsPublicationSource,

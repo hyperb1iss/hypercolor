@@ -439,10 +439,6 @@ impl InputSource for MockScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_screen_source(&self) -> bool {
-        true
-    }
 }
 
 impl SourceRoleBinding for MockScreenSource {
@@ -489,10 +485,6 @@ impl InputSource for MockScreenPreviewSource {
 
     fn is_running(&self) -> bool {
         self.running
-    }
-
-    fn is_screen_source(&self) -> bool {
-        true
     }
 }
 
@@ -563,10 +555,6 @@ impl InputSource for SequencedScreenPreviewSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_screen_source(&self) -> bool {
-        true
-    }
 }
 
 #[cfg(feature = "wgpu")]
@@ -622,10 +610,6 @@ impl InputSource for StallableScreenPreviewSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_screen_source(&self) -> bool {
-        true
-    }
 }
 
 impl SourceRoleBinding for StallableScreenPreviewSource {
@@ -672,10 +656,6 @@ impl InputSource for MockAudioSource {
 
     fn is_running(&self) -> bool {
         self.running
-    }
-
-    fn is_audio_source(&self) -> bool {
-        true
     }
 }
 
@@ -732,11 +712,13 @@ impl InputSource for DemandGatedMockAudioSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for DemandGatedMockAudioSource {
+    type Role = AudioSourceRole;
+}
 
+impl AudioSource for DemandGatedMockAudioSource {
     fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.capture_active = active;
         self.transitions
@@ -746,12 +728,6 @@ impl InputSource for DemandGatedMockAudioSource {
         Ok(())
     }
 }
-
-impl SourceRoleBinding for DemandGatedMockAudioSource {
-    type Role = AudioSourceRole;
-}
-
-impl AudioSource for DemandGatedMockAudioSource {}
 
 struct DemandGatedMockScreenSource {
     running: bool,
@@ -797,11 +773,13 @@ impl InputSource for DemandGatedMockScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for DemandGatedMockScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for DemandGatedMockScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.capture_demand
     }
@@ -815,12 +793,6 @@ impl InputSource for DemandGatedMockScreenSource {
         Ok(())
     }
 }
-
-impl SourceRoleBinding for DemandGatedMockScreenSource {
-    type Role = ScreenSourceRole;
-}
-
-impl ScreenSource for DemandGatedMockScreenSource {}
 
 struct EventOnlySource {
     running: bool,
@@ -867,10 +839,6 @@ impl InputSource for EventOnlySource {
 
     fn is_running(&self) -> bool {
         self.running
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        true
     }
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {

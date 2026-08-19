@@ -859,20 +859,6 @@ impl InputSource for MacosHostInput {
         &self.name
     }
 
-    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
-        let Some(owner) = MacosCapabilityOwner::from_id(&context.owner) else {
-            return Ok(());
-        };
-        let conflict = context.conflict.as_ref().and_then(|conflict| {
-            Some(MacosDaemonOwnerConflict {
-                active: MacosCapabilityOwner::from_id(&conflict.active)?,
-                contender: MacosCapabilityOwner::from_id(&conflict.contender)?,
-                observed_at_ms: conflict.observed_at_ms,
-            })
-        });
-        self.set_daemon_ownership(owner, conflict, context.identity_hash.clone())
-    }
-
     fn start(&mut self) -> anyhow::Result<()> {
         if self.running {
             return Ok(());
@@ -954,13 +940,21 @@ impl InputSource for MacosHostInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
-
-    fn is_host_capture_source(&self) -> bool {
-        true
+impl InteractionSource for MacosHostInput {
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        let Some(owner) = MacosCapabilityOwner::from_id(&context.owner) else {
+            return Ok(());
+        };
+        let conflict = context.conflict.as_ref().and_then(|conflict| {
+            Some(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::from_id(&conflict.active)?,
+                contender: MacosCapabilityOwner::from_id(&conflict.contender)?,
+                observed_at_ms: conflict.observed_at_ms,
+            })
+        });
+        self.set_daemon_ownership(owner, conflict, context.identity_hash.clone())
     }
 
     fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
@@ -1057,8 +1051,6 @@ impl InputSource for MacosHostInput {
 impl SourceRoleBinding for MacosHostInput {
     type Role = InteractionSourceRole;
 }
-
-impl InteractionSource for MacosHostInput {}
 
 fn protected_action_identity(
     owner: MacosCapabilityOwner,

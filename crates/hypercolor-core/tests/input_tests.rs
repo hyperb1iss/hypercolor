@@ -88,7 +88,9 @@ impl InputSource for MutableInteractionRoleSource {
     fn is_running(&self) -> bool {
         false
     }
+}
 
+impl InteractionSource for MutableInteractionRoleSource {
     fn interaction_source_origin(&self) -> hypercolor_core::input::InteractionSourceOrigin {
         if self.aggregate.load(Ordering::Relaxed) {
             hypercolor_core::input::InteractionSourceOrigin::BrowserCompatibilityAggregate
@@ -101,8 +103,6 @@ impl InputSource for MutableInteractionRoleSource {
 impl SourceRoleBinding for MutableInteractionRoleSource {
     type Role = InteractionSourceRole;
 }
-
-impl InteractionSource for MutableInteractionRoleSource {}
 
 struct MutableDataRoleSource {
     network: Arc<AtomicBool>,
@@ -174,7 +174,13 @@ impl InputSource for CapabilityStateAwareSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
+impl SourceRoleBinding for CapabilityStateAwareSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for CapabilityStateAwareSource {
     fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
         self.state
             .lock()
@@ -236,10 +242,6 @@ impl InputSource for StatusAwareScreenSource {
 
     fn is_running(&self) -> bool {
         self.running
-    }
-
-    fn is_screen_source(&self) -> bool {
-        true
     }
 }
 
@@ -344,11 +346,13 @@ impl InputSource for FallibleStatusScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for FallibleStatusScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for FallibleStatusScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.state.lock().expect("demand state lock").demand
     }
@@ -443,11 +447,13 @@ impl InputSource for RestartingStatusScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for RestartingStatusScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for RestartingStatusScreenSource {
     fn reconfigure_screen_capture(&mut self, config: &ScreenCaptureConfig) -> anyhow::Result<()> {
         if self.target_fps != config.target_fps {
             self.target_fps = config.target_fps;
@@ -600,11 +606,13 @@ impl InputSource for ReconfigurableAudioSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for ReconfigurableAudioSource {
+    type Role = AudioSourceRole;
+}
 
+impl AudioSource for ReconfigurableAudioSource {
     fn reconfigure_audio(
         &mut self,
         config: &AudioPipelineConfig,
@@ -675,11 +683,13 @@ impl InputSource for StatusReconfigurableAudioSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for StatusReconfigurableAudioSource {
+    type Role = AudioSourceRole;
+}
 
+impl AudioSource for StatusReconfigurableAudioSource {
     fn reconfigure_audio(
         &mut self,
         config: &AudioPipelineConfig,
@@ -859,16 +869,14 @@ struct StatuslessDemandSource {
 
 struct SequencedSource<R> {
     samples: VecDeque<InputData>,
-    interaction: bool,
     running: bool,
     role: PhantomData<R>,
 }
 
 impl<R> SequencedSource<R> {
-    fn new(samples: impl IntoIterator<Item = InputData>, interaction: bool) -> Self {
+    fn new(samples: impl IntoIterator<Item = InputData>) -> Self {
         Self {
             samples: samples.into_iter().collect(),
-            interaction,
             running: false,
             role: PhantomData,
         }
@@ -899,10 +907,6 @@ impl<R: Send> InputSource for SequencedSource<R> {
 
     fn is_running(&self) -> bool {
         self.running
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        self.interaction
     }
 }
 
@@ -988,11 +992,13 @@ impl InputSource for StatuslessDemandSource {
     fn is_running(&self) -> bool {
         self.running && self.capture_active
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for StatuslessDemandSource {
+    type Role = InteractionSourceRole;
+}
 
+impl InteractionSource for StatuslessDemandSource {
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.capture_active = active;
         Ok(())
@@ -1056,11 +1062,13 @@ impl InputSource for CountingScreenDemandSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CountingScreenDemandSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for CountingScreenDemandSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
     }
@@ -1132,11 +1140,13 @@ impl InputSource for CaptureTrackingScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CaptureTrackingScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for CaptureTrackingScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
     }
@@ -1170,11 +1180,13 @@ impl InputSource for CaptureTrackingAudioSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CaptureTrackingAudioSource {
+    type Role = AudioSourceRole;
+}
 
+impl AudioSource for CaptureTrackingAudioSource {
     fn reconfigure_audio(
         &mut self,
         _config: &AudioPipelineConfig,
@@ -1664,17 +1676,17 @@ fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
     let mut manager = InputManager::new();
     register_test_source(
         &mut manager,
-        managed_interaction(SequencedSource::<InteractionSourceRole>::new(
-            [InputData::Interaction(interaction), InputData::None],
-            true,
-        )),
+        managed_interaction(SequencedSource::<InteractionSourceRole>::new([
+            InputData::Interaction(interaction),
+            InputData::None,
+        ])),
     );
     register_test_source(
         &mut manager,
-        managed_data(SequencedSource::<DataSourceRole>::new(
-            [InputData::Media(Arc::clone(&media)), InputData::None],
-            false,
-        )),
+        managed_data(SequencedSource::<DataSourceRole>::new([
+            InputData::Media(Arc::clone(&media)),
+            InputData::None,
+        ])),
     );
     manager.start_all().expect("sequenced sources should start");
     let graph = manager.input_graph_handle();
@@ -2999,11 +3011,13 @@ impl InputSource for ReconfigurableScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for ReconfigurableScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for ReconfigurableScreenSource {
     fn reconfigure_screen_capture(&mut self, config: &ScreenCaptureConfig) -> anyhow::Result<()> {
         self.log
             .lock()
@@ -3208,15 +3222,13 @@ impl InputSource for CaptureTrackingInteractionSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CaptureTrackingInteractionSource {
+    type Role = InteractionSourceRole;
+}
 
-    fn is_host_capture_source(&self) -> bool {
-        true
-    }
-
+impl InteractionSource for CaptureTrackingInteractionSource {
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active != active {
             self.transitions
@@ -3269,28 +3281,9 @@ macro_rules! impl_interaction_fixture {
     };
 }
 
-impl_audio_fixture!(
-    ReconfigurableAudioSource,
-    StatusReconfigurableAudioSource,
-    DeltaAwareSource,
-    CaptureTrackingAudioSource,
-);
-impl_screen_fixture!(
-    StatusAwareScreenSource,
-    FallibleStatusScreenSource,
-    RestartingStatusScreenSource,
-    CaptureTrackingScreenSource,
-    CountingScreenDemandSource,
-    ReconfigurableScreenSource,
-);
-impl_interaction_fixture!(
-    CapabilityStateAwareSource,
-    FailingSource,
-    FaultySampleSource,
-    EventfulSource,
-    StatuslessDemandSource,
-    CaptureTrackingInteractionSource,
-);
+impl_audio_fixture!(DeltaAwareSource,);
+impl_screen_fixture!(StatusAwareScreenSource,);
+impl_interaction_fixture!(FailingSource, FaultySampleSource, EventfulSource,);
 
 #[test]
 fn manager_routes_interaction_capture_demand_to_interaction_sources_only() {

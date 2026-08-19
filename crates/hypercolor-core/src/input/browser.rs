@@ -1196,10 +1196,20 @@ impl InputSource for BrowserInputSource {
         Some(&mut self.status)
     }
 
-    fn is_interaction_source(&self) -> bool {
-        true
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if self.running {
+            self.drain_aggregate_events()
+        } else {
+            Vec::new()
+        }
     }
+}
 
+impl SourceRoleBinding for BrowserInputSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for BrowserInputSource {
     fn interaction_source_origin(&self) -> InteractionSourceOrigin {
         InteractionSourceOrigin::BrowserCompatibilityAggregate
     }
@@ -1214,21 +1224,7 @@ impl InputSource for BrowserInputSource {
             degraded: None,
         })
     }
-
-    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
-        if self.running {
-            self.drain_aggregate_events()
-        } else {
-            Vec::new()
-        }
-    }
 }
-
-impl SourceRoleBinding for BrowserInputSource {
-    type Role = InteractionSourceRole;
-}
-
-impl InteractionSource for BrowserInputSource {}
 
 fn merge_transient_delta(data: &mut InteractionData, transients: InteractionTransientTotals) {
     data.batch.motion.dx += finite_f32(transients.dx);

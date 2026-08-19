@@ -519,14 +519,23 @@ impl InputSource for EvdevHostInput {
         Some(&mut self.status)
     }
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if !self.running || self.worker.is_none() {
+            return Vec::new();
+        }
+        if let Ok(mut guard) = self.shared.lock() {
+            return drain_events(&mut guard.events);
+        }
 
-    fn is_host_capture_source(&self) -> bool {
-        true
+        Vec::new()
     }
+}
 
+impl SourceRoleBinding for EvdevHostInput {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for EvdevHostInput {
     fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {
         let status = self.device_status();
         let devices_opened = status
@@ -577,24 +586,7 @@ impl InputSource for EvdevHostInput {
         self.capture_active = active;
         Ok(())
     }
-
-    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
-        if !self.running || self.worker.is_none() {
-            return Vec::new();
-        }
-        if let Ok(mut guard) = self.shared.lock() {
-            return drain_events(&mut guard.events);
-        }
-
-        Vec::new()
-    }
 }
-
-impl SourceRoleBinding for EvdevHostInput {
-    type Role = InteractionSourceRole;
-}
-
-impl InteractionSource for EvdevHostInput {}
 
 // ── Worker internals ───────────────────────────────────────────────────────
 

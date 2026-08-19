@@ -14,7 +14,6 @@ fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
 }
 
 struct CountingSource<R> {
-    kind: SourceKind,
     samples: Arc<AtomicUsize>,
     delta_bits: Arc<AtomicU32>,
     running: bool,
@@ -22,9 +21,8 @@ struct CountingSource<R> {
 }
 
 impl<R> CountingSource<R> {
-    fn new(kind: SourceKind, samples: Arc<AtomicUsize>, delta_bits: Arc<AtomicU32>) -> Self {
+    fn new(samples: Arc<AtomicUsize>, delta_bits: Arc<AtomicU32>) -> Self {
         Self {
-            kind,
             samples,
             delta_bits,
             running: false,
@@ -61,18 +59,6 @@ impl<R: Send> InputSource for CountingSource<R> {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_audio_source(&self) -> bool {
-        self.kind == SourceKind::Audio
-    }
-
-    fn is_screen_source(&self) -> bool {
-        self.kind == SourceKind::Screen
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        self.kind == SourceKind::Interaction
-    }
 }
 
 impl SourceRoleBinding for CountingSource<AudioSourceRole> {
@@ -97,7 +83,6 @@ fn typed_sampling_only_publishes_due_source_kinds() {
     register_test_source(
         &mut manager,
         ManagedSourceRole::audio(Box::new(CountingSource::<AudioSourceRole>::new(
-            SourceKind::Audio,
             Arc::clone(&audio_samples),
             Arc::clone(&audio_delta),
         ))),
@@ -105,7 +90,6 @@ fn typed_sampling_only_publishes_due_source_kinds() {
     register_test_source(
         &mut manager,
         ManagedSourceRole::interaction(Box::new(CountingSource::<InteractionSourceRole>::new(
-            SourceKind::Interaction,
             Arc::clone(&interaction_samples),
             Arc::clone(&interaction_delta),
         ))),

@@ -3,15 +3,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::effect::{EffectEntry, EffectRegistry};
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputSource,
     BrowserPreviewId, InputManager, InputSource,
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_types::config::InteractionRoutePolicy;
+use hypercolor_types::effect::{
+    ControlBinding, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BindingMap, BindingSource, LayerAdjust, LayerBinding, LayerBlendMode, LayerParameter,
+    LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -158,6 +162,64 @@ fn color_group(color: [f32; 4]) -> Zone {
     }
 }
 
+fn preview_effect_entry(effect_id: EffectId) -> EffectEntry {
+    EffectEntry {
+        metadata: EffectMetadata {
+            id: effect_id,
+            name: "Preview sensors".into(),
+            author: "test".into(),
+            version: "0.1.0".into(),
+            description: "sensor demand fixture".into(),
+            category: EffectCategory::Ambient,
+            tags: Vec::new(),
+            controls: Vec::new(),
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Native {
+                path: "native/preview-sensors.wgsl".into(),
+            },
+            license: None,
+        },
+        source_path: "/effects/native/preview-sensors.wgsl".into(),
+        modified: std::time::SystemTime::now(),
+        state: EffectState::Loading,
+    }
+}
+
+fn preview_effect_group(effect_id: EffectId) -> Zone {
+    let mut group = color_group([0.0, 0.0, 0.0, 1.0]);
+    group.effect_id = Some(effect_id);
+    group
+}
+
+fn resolved_preview_scene(group: Zone, entry: EffectEntry) -> ResolvedPreviewScene {
+    let mut registry = EffectRegistry::default();
+    registry.register(entry);
+    ResolvedPreviewScene {
+        scene_id: None,
+        groups_revision: 0,
+        groups: Arc::from([group]),
+        registry: Arc::new(registry),
+        catalog_generation: 0,
+        canvas_width: 8,
+        canvas_height: 6,
+    }
+}
+
+fn preview_control_binding() -> ControlBinding {
+    ControlBinding {
+        sensor: "cpu.temperature".into(),
+        sensor_min: 20.0,
+        sensor_max: 100.0,
+        target_min: 0.0,
+        target_max: 1.0,
+        deadband: 0.0,
+        smoothing: 0.0,
+    }
+}
+
 fn spec(width: u32, height: u32) -> InteractivePreviewSpec {
     InteractivePreviewSpec {
         target: InteractivePreviewTarget::ActiveScene,
@@ -281,6 +343,53 @@ fn screen_preview_demands_the_resolved_scene_extent() {
             hypercolor_core::input::screen::PixelExtent::new(5_120, 720)
                 .expect("test screen extent should be non-empty")
         )
+    );
+}
+
+#[test]
+fn preview_sensor_demand_covers_metadata_control_and_layer_bindings() {
+    let metadata_effect_id = EffectId::new(uuid::Uuid::now_v7());
+    let mut metadata_entry = preview_effect_entry(metadata_effect_id);
+    metadata_entry.metadata.tags = vec!["system-monitor".into()];
+    let metadata_demand = preview_input_demand(
+        &resolved_preview_scene(preview_effect_group(metadata_effect_id), metadata_entry),
+        45,
+    );
+    assert_eq!(
+        metadata_demand.requested_hz(hypercolor_core::input::SourceKind::Sensors),
+        1
+    );
+
+    let control_effect_id = EffectId::new(uuid::Uuid::now_v7());
+    let mut control_group = preview_effect_group(control_effect_id);
+    control_group
+        .control_bindings
+        .insert("intensity".into(), preview_control_binding());
+    let control_demand = preview_input_demand(
+        &resolved_preview_scene(control_group, preview_effect_entry(control_effect_id)),
+        45,
+    );
+    assert_eq!(
+        control_demand.requested_hz(hypercolor_core::input::SourceKind::Sensors),
+        1
+    );
+
+    let layer_effect_id = EffectId::new(uuid::Uuid::now_v7());
+    let mut layer_group = preview_effect_group(layer_effect_id);
+    layer_group.layers[0].bindings.push(LayerBinding {
+        target: LayerParameter::Opacity,
+        source: BindingSource::Sensor {
+            name: "gpu.temperature".into(),
+        },
+        map: BindingMap::linear(20.0..=100.0, 0.0..=1.0),
+    });
+    let layer_demand = preview_input_demand(
+        &resolved_preview_scene(layer_group, preview_effect_entry(layer_effect_id)),
+        45,
+    );
+    assert_eq!(
+        layer_demand.requested_hz(hypercolor_core::input::SourceKind::Sensors),
+        1
     );
 }
 

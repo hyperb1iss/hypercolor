@@ -1388,6 +1388,9 @@ fn authoritative_input_demand(
     if effect_demand.network_input_active {
         demand = demand.with_source(SourceKind::Network, BACKGROUND_INPUT_HZ);
     }
+    if effect_demand.sensor_input_active {
+        demand = demand.with_source(SourceKind::Sensors, BACKGROUND_INPUT_HZ);
+    }
     demand
 }
 
@@ -2449,10 +2452,6 @@ mod tests {
         fn drain_events(&mut self) -> Vec<TimedInputEvent> {
             std::mem::take(&mut self.events)
         }
-
-        fn is_interaction_source(&self) -> bool {
-            true
-        }
     }
 
     impl SourceRoleBinding for EventOnceSource {
@@ -2563,10 +2562,6 @@ mod tests {
 
         fn drain_events(&mut self) -> Vec<TimedInputEvent> {
             std::mem::take(&mut self.events)
-        }
-
-        fn is_interaction_source(&self) -> bool {
-            true
         }
     }
 
@@ -3027,6 +3022,7 @@ mod tests {
             interaction_capture_active: true,
             media_input_active: true,
             network_input_active: true,
+            sensor_input_active: true,
         };
 
         let screen_extent = PixelExtent::new(5_120, 2_160)
@@ -3037,7 +3033,8 @@ mod tests {
             .with_screen(60, screen_extent)
             .with_source(SourceKind::Interaction, 60)
             .with_source(SourceKind::Media, 1)
-            .with_source(SourceKind::Network, 1);
+            .with_source(SourceKind::Network, 1)
+            .with_source(SourceKind::Sensors, 1);
 
         assert_eq!(demand, expected);
     }
@@ -3051,6 +3048,7 @@ mod tests {
             interaction_capture_active: false,
             media_input_active: false,
             network_input_active: false,
+            sensor_input_active: false,
         };
         let screen_extent = PixelExtent::new(7_680, 4_320)
             .expect("test screen publication extent should be non-empty");
