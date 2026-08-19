@@ -405,11 +405,13 @@ fn main() -> Result<()> {
         return windows_service::run(args.into_run_options());
     }
 
-    let mut options = args.into_run_options();
+    let options = args.into_run_options();
     #[cfg(target_os = "macos")]
-    {
+    let options = {
+        let mut options = options;
         options.macos_owner_snapshot = Some(owner_snapshot);
-    }
+        options
+    };
     #[cfg(target_os = "macos")]
     {
         let runtime = daemon::build_main_runtime()?;
