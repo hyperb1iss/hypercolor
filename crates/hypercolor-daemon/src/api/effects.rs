@@ -496,7 +496,7 @@ pub async fn list_effect_presets(
     })
 }
 
-/// `POST /api/v1/effects/:id/presets/:preset_id/apply` applies one preset.
+/// `POST /api/v1/effects/:id/presets/:preset/apply` applies one preset.
 pub async fn apply_effect_preset(
     State(state): State<Arc<AppState>>,
     Path((id, preset_id)): Path<(String, String)>,

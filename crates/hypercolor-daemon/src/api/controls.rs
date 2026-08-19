@@ -115,7 +115,7 @@ pub async fn get_driver_control_surface(
     }
 }
 
-/// `GET /api/v1/control-surfaces/:surface_id` - Return one control surface by
+/// `GET /api/v1/control-surfaces/:id` - Return one control surface by
 /// its stable surface ID.
 pub async fn get_control_surface(
     State(state): State<Arc<AppState>>,
@@ -258,7 +258,7 @@ pub async fn get_device_control_surface(
     ))
 }
 
-/// `PATCH /api/v1/control-surfaces/:surface_id/values` — Apply typed control
+/// `PATCH /api/v1/control-surfaces/:id/values` — Apply typed control
 /// values to a surface.
 pub async fn apply_control_surface_values(
     State(state): State<Arc<AppState>>,
@@ -346,7 +346,7 @@ pub async fn apply_control_surface_values(
     ApiResponse::ok(response)
 }
 
-/// `POST /api/v1/control-surfaces/:surface_id/actions/:action_id` - Invoke a
+/// `POST /api/v1/control-surfaces/:id/actions/:action` - Invoke a
 /// typed control-surface action.
 pub async fn invoke_control_surface_action(
     State(state): State<Arc<AppState>>,

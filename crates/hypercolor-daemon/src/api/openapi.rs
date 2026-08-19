@@ -734,7 +734,7 @@ pub const ROUTES: &[RouteSpec] = &[
         "List effect presets",
     ),
     RouteSpec::post(
-        "/api/v1/effects/{id}/presets/{preset_id}/apply",
+        "/api/v1/effects/{id}/presets/{preset}/apply",
         "apply_effect_preset",
         "effects",
         "Apply effect preset",
@@ -954,20 +954,20 @@ pub const ROUTES: &[RouteSpec] = &[
         "List control surfaces",
     ),
     RouteSpec::get(
-        "/api/v1/control-surfaces/{surface_id}",
+        "/api/v1/control-surfaces/{id}",
         "get_control_surface",
         "controls",
         "Get control surface",
     ),
     RouteSpec::patch(
-        "/api/v1/control-surfaces/{surface_id}/values",
+        "/api/v1/control-surfaces/{id}/values",
         "apply_control_surface_values",
         "controls",
         "Apply control surface values",
     )
     .with_request_body("ApplyControlChangesRequest", true),
     RouteSpec::post(
-        "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+        "/api/v1/control-surfaces/{id}/actions/{action}",
         "invoke_control_surface_action",
         "controls",
         "Invoke control surface action",

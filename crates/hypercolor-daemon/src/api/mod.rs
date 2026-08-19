@@ -1269,7 +1269,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(effects::list_effect_presets),
         )
         .route(
-            "/effects/{id}/presets/{preset_id}/apply",
+            "/effects/{id}/presets/{preset}/apply",
             axum::routing::post(effects::apply_effect_preset),
         )
         .route(
@@ -1449,15 +1449,15 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(controls::list_control_surfaces),
         )
         .route(
-            "/control-surfaces/{surface_id}",
+            "/control-surfaces/{id}",
             axum::routing::get(controls::get_control_surface),
         )
         .route(
-            "/control-surfaces/{surface_id}/values",
+            "/control-surfaces/{id}/values",
             axum::routing::patch(controls::apply_control_surface_values),
         )
         .route(
-            "/control-surfaces/{surface_id}/actions/{action_id}",
+            "/control-surfaces/{id}/actions/{action}",
             axum::routing::post(controls::invoke_control_surface_action),
         )
         // ── Diagnostics ──────────────────────────────────────────────
