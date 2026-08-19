@@ -26,15 +26,16 @@ use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError,
     default_primary_group,
 };
+use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::api::scenes::{
-    ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest,
+    ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest, SceneLayoutActivationOutcome,
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::{
-    HypercolorEvent, SceneChangeReason, SceneLibraryChangeKind, ZoneChangeKind,
+    HypercolorEvent, SceneChangeReason, SceneLibraryChangeKind, Severity, ZoneChangeKind,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
@@ -49,6 +50,7 @@ use crate::api::scenes::MediaAdmissionViolationDetails;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
+use crate::scene_transactions::LayoutUpdateGuard;
 
 // ── Owned candidate ──────────────────────────────────────────────────────
 
@@ -540,6 +542,34 @@ impl SceneMutation {
         Ok(changed)
     }
 
+    /// Refresh geometry for display zones that already belong to one scene.
+    pub fn hydrate_existing_display_surfaces(
+        &mut self,
+        scene_id: SceneId,
+        displays: &[(DeviceId, String, SpatialLayout)],
+    ) -> Result<bool, DomainError> {
+        let mut scene = self
+            .candidate
+            .get(&scene_id)
+            .cloned()
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
+        let mut changed = false;
+        for (device_id, _, layout) in displays {
+            let Some(zone) = scene.display_group_for_mut(*device_id) else {
+                continue;
+            };
+            if zone.layout != *layout {
+                zone.layout.clone_from(layout);
+                changed = true;
+            }
+        }
+        if changed {
+            scene.groups_revision = scene.groups_revision.saturating_add(1);
+            self.update_scene(scene)?;
+        }
+        Ok(changed)
+    }
+
     /// Update how a display zone's face composes over the effect layer.
     pub fn patch_display_target(
         &mut self,
@@ -981,6 +1011,10 @@ pub struct SceneActivated {
     pub previous_scene_id: Option<SceneId>,
     /// The estimated producer cost that drove soft admission.
     pub estimated_cost_us: u64,
+    /// The post-commit named-layout outcome.
+    pub layout: SceneLayoutActivationOutcome,
+    /// The post-commit activation-brightness outcome.
+    pub brightness: SideEffectOutcome,
     /// The commit receipt.
     pub commit: SceneCommit,
 }
@@ -1004,6 +1038,12 @@ pub async fn activate_scene(
 
     let asset_mime_types = crate::api::scenes::asset_mime_types(state).await;
     let media_config = crate::api::scenes::current_media_config(state);
+    let display_surfaces = crate::api::displays::connected_display_surface_layouts(state).await;
+    let _activation_guard = state
+        .scene_transactions
+        .acquire_scene_activation_guard()
+        .await;
+    let layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
 
     let mut mutation = state.begin_scene_mutation().await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
@@ -1013,10 +1053,13 @@ pub async fn activate_scene(
         .get(&command.scene_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, command.scene_id))?;
     let scene_name = scene.name.clone();
+    let layout_id = scene.layout_id.clone();
+    let activation_brightness = scene.activation_brightness;
     let admission = evaluate_scene_media_admission(scene, &asset_mime_types, &media_config);
     if let Some(message) = admission.rejection_message() {
         return Err(DomainError::validation(message.to_owned()));
     }
+    mutation.hydrate_existing_display_surfaces(command.scene_id, &display_surfaces)?;
 
     mutation.activate(command.scene_id, command.transition)?;
 
@@ -1043,6 +1086,9 @@ pub async fn activate_scene(
         admission.estimated_cost_us,
     )
     .await;
+    let layout = apply_activation_layout(state, &layout_guard, layout_id).await;
+    drop(layout_guard);
+    let brightness = apply_activation_brightness(state, activation_brightness).await;
     crate::api::save_runtime_session_snapshot(state).await;
 
     // Which scene is active decides which devices are worth connecting.
@@ -1053,8 +1099,73 @@ pub async fn activate_scene(
         scene_name,
         previous_scene_id,
         estimated_cost_us: admission.estimated_cost_us,
+        layout,
+        brightness,
         commit,
     })
+}
+
+async fn apply_activation_layout(
+    state: &AppState,
+    guard: &LayoutUpdateGuard,
+    layout_id: Option<hypercolor_types::identity::LayoutId>,
+) -> SceneLayoutActivationOutcome {
+    let Some(layout_id) = layout_id else {
+        return SceneLayoutActivationOutcome {
+            layout_id: None,
+            applied: false,
+            message: None,
+        };
+    };
+    let layout = state.layouts.read().await.get(layout_id.as_str()).cloned();
+    let Some(layout) = layout else {
+        let message = format!("scene layout '{layout_id}' is not available");
+        state.event_bus.publish(HypercolorEvent::Error {
+            code: "scene_layout_unavailable".to_owned(),
+            message: message.clone(),
+            severity: Severity::Warning,
+        });
+        return SceneLayoutActivationOutcome {
+            layout_id: Some(layout_id),
+            applied: false,
+            message: Some(message),
+        };
+    };
+
+    match crate::api::layouts::apply_persisted_layout_update_under_guard(state, guard, layout).await
+    {
+        Ok(()) => SceneLayoutActivationOutcome {
+            layout_id: Some(layout_id),
+            applied: true,
+            message: None,
+        },
+        Err(error) => SceneLayoutActivationOutcome {
+            layout_id: Some(layout_id),
+            applied: false,
+            message: Some(format!(
+                "layout did not apply: {error}; retry through the layout resource"
+            )),
+        },
+    }
+}
+
+async fn apply_activation_brightness(
+    state: &AppState,
+    brightness: Option<f32>,
+) -> SideEffectOutcome {
+    let Some(brightness) = brightness else {
+        return SideEffectOutcome {
+            applied: false,
+            message: None,
+        };
+    };
+
+    match crate::domain::output::set_brightness(state, brightness).await {
+        Ok(()) => SideEffectOutcome::applied(),
+        Err(error) => SideEffectOutcome::failed(format!(
+            "brightness did not apply: {error}; patch /output to retry"
+        )),
+    }
 }
 
 // ── Scene library CRUD ───────────────────────────────────────────────────
@@ -1072,6 +1183,15 @@ pub struct CreateScene {
     pub mutation_mode: Option<SceneMutationMode>,
     /// Free-form provenance the adapter wants recorded on the scene.
     pub metadata: HashMap<String, String>,
+}
+
+/// Save the active runtime scene as a snapshot-locked named scene.
+#[derive(Debug, Clone)]
+pub struct SnapshotScene {
+    /// Human-readable name for the saved scene.
+    pub name: String,
+    /// Optional long-form description for the saved scene.
+    pub description: Option<String>,
 }
 
 /// Replace a scene's stored definition.
@@ -1177,6 +1297,59 @@ pub async fn create_scene(
     };
 
     let mut mutation = state.begin_scene_mutation().await;
+    mutation.create_scene(scene.clone())?;
+    mutation.record(HypercolorEvent::SceneLibraryChanged {
+        scene_id: scene.id,
+        kind: SceneLibraryChangeKind::Created,
+        name: Some(scene.name.clone()),
+    });
+    let commit = commit_scene(state, mutation).await?;
+
+    Ok(SceneWritten { scene, commit })
+}
+
+/// Save the active runtime tree as a snapshot-locked named scene.
+///
+/// The layout guard and scene mutation lock produce one coherent view
+/// of the current scene and active spatial layout. Zone and layer ids
+/// remain stable so clients may keep addressing the captured resources.
+///
+/// # Errors
+///
+/// [`DomainError::Conflict`] when no scene is active or the snapshot
+/// cannot be added, and [`DomainError::Conflict`] when a concurrent
+/// scene mutation lands first.
+pub async fn snapshot_scene(
+    state: &AppState,
+    command: SnapshotScene,
+    meta: MutationContext,
+) -> Result<SceneWritten, DomainError> {
+    let _ = meta;
+
+    let _layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
+    let mut mutation = state.begin_scene_mutation().await;
+    let active = mutation
+        .scenes()
+        .active_scene()
+        .cloned()
+        .ok_or_else(|| DomainError::conflict("no active scene to snapshot"))?;
+    let layout_id = {
+        let spatial = state.spatial_engine.read().await;
+        hypercolor_types::identity::LayoutId::new(spatial.layout().id.clone()).map_err(|error| {
+            DomainError::Internal(anyhow::anyhow!("active layout has an invalid id: {error}"))
+        })?
+    };
+    let scene = Scene {
+        id: SceneId::new(),
+        name: command.name,
+        description: command.description,
+        kind: SceneKind::Named,
+        mutation_mode: SceneMutationMode::Snapshot,
+        layout_id: Some(layout_id),
+        activation_brightness: None,
+        ..active
+    };
+
     mutation.create_scene(scene.clone())?;
     mutation.record(HypercolorEvent::SceneLibraryChanged {
         scene_id: scene.id,
@@ -1559,6 +1732,17 @@ pub async fn delete_scene(
         return Err(DomainError::conflict("Default scene cannot be deleted"));
     }
 
+    let _activation_guard = state
+        .scene_transactions
+        .acquire_scene_activation_guard()
+        .await;
+    let is_active = state.scene_manager.read().await.active_scene_id().copied() == Some(scene_id);
+    let layout_guard = if is_active {
+        Some(state.scene_transactions.acquire_layout_update_guard().await)
+    } else {
+        None
+    };
+
     let mut mutation = state.begin_scene_mutation().await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
     let scene = mutation.delete_scene(&scene_id)?;
@@ -1580,7 +1764,11 @@ pub async fn delete_scene(
     });
     mutation.retire_scene_previews(scene_id);
     let commit = commit_scene(state, mutation).await?;
+    drop(layout_guard);
     crate::api::save_runtime_session_snapshot(state).await;
+    if is_active {
+        crate::api::sync_connectivity(state).await;
+    }
 
     Ok(SceneDeleted {
         scene,
@@ -1602,6 +1790,12 @@ pub async fn deactivate_scene(
 ) -> Result<SceneDeactivated, DomainError> {
     let _ = meta;
 
+    let _activation_guard = state
+        .scene_transactions
+        .acquire_scene_activation_guard()
+        .await;
+    let layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
+
     let mut mutation = state.begin_scene_mutation().await;
     let previous_scene = mutation.scenes().active_scene().cloned();
     mutation.deactivate_current();
@@ -1620,6 +1814,7 @@ pub async fn deactivate_scene(
         ));
     }
     let commit = commit_scene(state, mutation).await?;
+    drop(layout_guard);
     crate::api::save_runtime_session_snapshot(state).await;
 
     // Which scene is active decides which devices are worth connecting.

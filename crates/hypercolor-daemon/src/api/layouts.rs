@@ -6,6 +6,7 @@
 
 #[cfg(feature = "persistence-test-hooks")]
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "persistence-test-hooks")]
 use std::sync::Mutex as StdMutex;
@@ -23,8 +24,9 @@ use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
 use crate::api::AppState;
+use crate::api::RuntimeSessionSnapshotReader;
 use crate::api::envelope::ApiResponse;
-use crate::api::{build_runtime_session_snapshot, persist_layout_auto_exclusions, persist_layouts};
+use crate::api::{persist_layout_auto_exclusions, persist_layouts};
 use crate::discovery;
 use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
@@ -47,6 +49,25 @@ enum LayoutPersistenceStatus {
 }
 
 const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone)]
+struct LayoutPersistenceContext {
+    runtime_state_path: PathBuf,
+    runtime_snapshot_reader: RuntimeSessionSnapshotReader,
+}
+
+impl LayoutPersistenceContext {
+    fn from_state(state: &AppState) -> Self {
+        Self {
+            runtime_state_path: state.runtime_state_path.clone(),
+            runtime_snapshot_reader: state.runtime_session_snapshot_reader(),
+        }
+    }
+
+    async fn snapshot(&self) -> crate::runtime_state::RuntimeSessionSnapshot {
+        self.runtime_snapshot_reader.snapshot().await
+    }
+}
 
 #[cfg(feature = "persistence-test-hooks")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -719,12 +740,12 @@ fn layout_store_persistence_error_response(
 }
 
 async fn admit_persisted_layout_update_under_guard(
-    state: &Arc<AppState>,
+    state: &AppState,
     guard: &LayoutUpdateGuard,
     layout: SpatialLayout,
 ) -> Result<(), LayoutUpdateError> {
     let prepared = PreparedLayoutUpdate::try_new(layout)?;
-    let persistence_state = Arc::clone(state);
+    let persistence_context = LayoutPersistenceContext::from_state(state);
     apply_prepared_layout_update_under_guard_with_persistence(
         Arc::clone(&state.spatial_engine),
         Arc::clone(&state.scene_manager),
@@ -732,17 +753,28 @@ async fn admit_persisted_layout_update_under_guard(
         guard,
         prepared,
         move |phase| {
-            let state = Arc::clone(&persistence_state);
-            async move { persist_layout_runtime_phase(&state, phase).await }
+            let context = persistence_context.clone();
+            async move { persist_layout_runtime_phase(&context, phase).await }
         },
     )
     .await
 }
 
-async fn converge_persisted_layout_update(state: &Arc<AppState>) -> LayoutPersistenceStatus {
+pub(crate) async fn apply_persisted_layout_update_under_guard(
+    state: &AppState,
+    guard: &LayoutUpdateGuard,
+    layout: SpatialLayout,
+) -> Result<(), LayoutUpdateError> {
+    admit_persisted_layout_update_under_guard(state, guard, layout).await?;
+    let _ = converge_persisted_layout_update(state).await;
+    Ok(())
+}
+
+async fn converge_persisted_layout_update(state: &AppState) -> LayoutPersistenceStatus {
     let runtime = super::discovery_runtime(state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
-    match persist_layout_runtime_phase(state, LayoutPersistencePhase::Converge).await {
+    let context = LayoutPersistenceContext::from_state(state);
+    match persist_layout_runtime_phase(&context, LayoutPersistencePhase::Converge).await {
         LayoutPersistenceOutcome::Written => LayoutPersistenceStatus::Synchronized,
         LayoutPersistenceOutcome::Superseded => {
             warn!("layout committed but convergence persistence was superseded");
@@ -760,14 +792,14 @@ async fn converge_persisted_layout_update(state: &Arc<AppState>) -> LayoutPersis
 }
 
 async fn persist_layout_runtime_phase(
-    state: &Arc<AppState>,
+    context: &LayoutPersistenceContext,
     phase: LayoutPersistencePhase,
 ) -> LayoutPersistenceOutcome {
-    let writer = match AtomicFileWriter::new(&state.runtime_state_path) {
+    let writer = match AtomicFileWriter::new(&context.runtime_state_path) {
         Ok(writer) => writer,
         Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
     };
-    let pending = match crate::runtime_state::reserve_save(&state.runtime_state_path) {
+    let pending = match crate::runtime_state::reserve_save(&context.runtime_state_path) {
         Ok(pending) => pending,
         Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
     };
@@ -775,7 +807,7 @@ async fn persist_layout_runtime_phase(
         &phase,
         LayoutPersistencePhase::Rollback | LayoutPersistencePhase::Converge
     );
-    let mut snapshot = build_runtime_session_snapshot(state.as_ref()).await;
+    let mut snapshot = context.snapshot().await;
     if let LayoutPersistencePhase::Precommit(candidate) = phase {
         snapshot.active_layout_id = Some(candidate.layout.id);
         if candidate.active_scene_id == Some(SceneId::DEFAULT) {

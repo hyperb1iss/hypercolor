@@ -310,6 +310,35 @@ pub struct AppState {
     pub security_state: security::SecurityState,
 }
 
+#[derive(Clone)]
+pub(crate) struct RuntimeSessionSnapshotReader {
+    scene_manager: Arc<RwLock<SceneManager>>,
+    spatial_engine: Arc<RwLock<SpatialEngine>>,
+    power_state: watch::Sender<OutputPowerState>,
+    driver_host: Arc<DaemonDriverHost>,
+    driver_registry: Arc<DriverModuleRegistry>,
+}
+
+impl RuntimeSessionSnapshotReader {
+    async fn snapshot(&self) -> runtime_state::RuntimeSessionSnapshot {
+        let mut snapshot = {
+            let manager = self.scene_manager.read().await;
+            runtime_state::snapshot_from_scene_manager(&manager)
+        };
+        {
+            let spatial = self.spatial_engine.read().await;
+            snapshot.active_layout_id = Some(spatial.layout().id.clone());
+        }
+        snapshot.global_brightness = current_global_brightness(&self.power_state);
+        snapshot.manual_paused = self.power_state.borrow().manually_paused();
+        self.driver_host
+            .driver_inventory()
+            .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
+            .await;
+        snapshot
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const fn effect_renderer_acceleration_mode(
     requested_mode: RenderAccelerationMode,
@@ -348,6 +377,16 @@ mod tests {
 }
 
 impl AppState {
+    pub(crate) fn runtime_session_snapshot_reader(&self) -> RuntimeSessionSnapshotReader {
+        RuntimeSessionSnapshotReader {
+            scene_manager: Arc::clone(&self.scene_manager),
+            spatial_engine: Arc::clone(&self.spatial_engine),
+            power_state: self.power_state.clone(),
+            driver_host: Arc::clone(&self.driver_host),
+            driver_registry: Arc::clone(&self.driver_registry),
+        }
+    }
+
     /// Create a new `AppState` with default empty subsystems.
     ///
     /// Primarily useful for testing. In production, prefer
@@ -960,24 +999,7 @@ pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
 pub(crate) async fn build_runtime_session_snapshot(
     state: &AppState,
 ) -> runtime_state::RuntimeSessionSnapshot {
-    let mut snapshot = {
-        let scene_manager = state.scene_manager.read().await;
-        runtime_state::snapshot_from_scene_manager(&scene_manager)
-    };
-
-    // Capture active layout ID from the spatial engine.
-    {
-        let spatial = state.spatial_engine.read().await;
-        snapshot.active_layout_id = Some(spatial.layout().id.clone());
-    }
-    snapshot.global_brightness = current_global_brightness(&state.power_state);
-    snapshot.manual_paused = state.power_state.borrow().manually_paused();
-    state
-        .driver_host
-        .driver_inventory()
-        .refresh(state.driver_registry.as_ref(), state.driver_host.as_ref())
-        .await;
-    snapshot
+    state.runtime_session_snapshot_reader().snapshot().await
 }
 
 pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
@@ -1303,6 +1325,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/scenes",
             axum::routing::get(scenes::list_scenes).post(scenes::create_scene),
+        )
+        .route(
+            "/scenes/snapshot",
+            axum::routing::post(scenes::snapshot_scene),
         )
         .route(
             "/scenes/{id}",

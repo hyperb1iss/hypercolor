@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::api::common::Pagination;
-use crate::api::scene::{SceneDocument, ZoneLayoutResource, ZoneMember};
+use crate::api::scene::{SceneDocument, SideEffectOutcome, ZoneLayoutResource, ZoneMember};
 use crate::identity::LayoutId;
 use crate::layer::{
     LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
@@ -57,6 +57,18 @@ pub struct DeleteSceneResponse {
 pub struct ActivateSceneResponse {
     pub scene: ActivatedSceneRef,
     pub activated: bool,
+    pub layout: SceneLayoutActivationOutcome,
+    pub brightness: SideEffectOutcome,
+}
+
+/// Post-commit outcome for a scene's optional named layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneLayoutActivationOutcome {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_id: Option<LayoutId>,
+    pub applied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// The scene an activation resolved to, by id and name.
@@ -76,6 +88,15 @@ pub struct CreateSceneRequest {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutation_mode: Option<SceneMutationMode>,
+}
+
+/// Request body for `POST /api/v1/scenes/snapshot`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotSceneRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Whole-document replacement body for `PUT /api/v1/scenes/{id}`.

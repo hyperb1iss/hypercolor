@@ -741,6 +741,12 @@ pub const ROUTES: &[RouteSpec] = &[
     ),
     RouteSpec::get("/api/v1/scenes", "list_scenes", "scenes", "List scenes"),
     RouteSpec::post("/api/v1/scenes", "create_scene", "scenes", "Create scene"),
+    RouteSpec::post(
+        "/api/v1/scenes/snapshot",
+        "snapshot_scene",
+        "scenes",
+        "Snapshot the active scene",
+    ),
     RouteSpec::get("/api/v1/scenes/{id}", "get_scene", "scenes", "Get scene"),
     RouteSpec::put(
         "/api/v1/scenes/{id}",

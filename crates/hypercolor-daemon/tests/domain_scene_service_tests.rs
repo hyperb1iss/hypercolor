@@ -13,17 +13,23 @@ use std::time::SystemTime;
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_types::asset::AssetId;
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
+    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+};
 use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
-use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, ZoneChangeKind};
+use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, Severity, ZoneChangeKind};
+use hypercolor_types::identity::LayoutId;
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
     SceneLayerId,
 };
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, ZoneId, ZoneRole,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+    ZoneRole,
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
@@ -32,8 +38,8 @@ use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
 use hypercolor_daemon::domain::scene::{
-    ActivateScene, CreateScene, UpdateScene, activate_scene, commit_scene, create_scene,
-    deactivate_scene, delete_scene, update_scene,
+    ActivateScene, CreateScene, SnapshotScene, UpdateScene, activate_scene, commit_scene,
+    create_scene, deactivate_scene, delete_scene, snapshot_scene, update_scene,
 };
 use hypercolor_daemon::domain::scene_tree::{ClearScene, clear_scene};
 use hypercolor_daemon::domain::{DomainError, MutationContext};
@@ -157,6 +163,65 @@ fn preview_layout() -> SpatialLayout {
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
         version: 1,
+    }
+}
+
+fn display_device_info(device_id: DeviceId, width: u32, height: u32) -> DeviceInfo {
+    DeviceInfo {
+        id: device_id,
+        name: "Panel".to_owned(),
+        vendor: "test".to_owned(),
+        family: DeviceFamily::new_static("test", "Test"),
+        model: Some("Panel".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+        zones: vec![ZoneInfo {
+            name: "Display".to_owned(),
+            led_count: width.saturating_mul(height),
+            topology: DeviceTopologyHint::Display {
+                width,
+                height,
+                circular: false,
+            },
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: width.saturating_mul(height),
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: true,
+            display_resolution: Some((width, height)),
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    }
+}
+
+fn imported_display_zone(device_id: DeviceId) -> Zone {
+    Zone {
+        id: ZoneId::new(),
+        name: "Imported display".to_owned(),
+        description: None,
+        effect_id: None,
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout: SpatialLayout {
+            canvas_width: 1,
+            canvas_height: 1,
+            ..preview_layout()
+        },
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(device_id)),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
     }
 }
 
@@ -360,6 +425,9 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
     assert_eq!(activated.scene_id, scene_id);
     assert_eq!(activated.scene_name, "evening");
     assert_eq!(activated.commit.durability(), CommitDurability::Written);
+    assert!(!activated.layout.applied);
+    assert_eq!(activated.layout.layout_id, None);
+    assert!(!activated.brightness.applied);
 
     let mut active_changed = 0;
     while let Ok(timestamped) = events.try_recv() {
@@ -372,6 +440,116 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
 
     let manager = state.scene_manager.read().await;
     assert_eq!(manager.active_scene_id().copied(), Some(scene_id));
+}
+
+#[tokio::test]
+async fn activation_hydrates_only_existing_connected_display_zones() {
+    let (state, _tempdir) = isolated_state();
+    let assigned_device = DeviceId::new();
+    let unassigned_device = DeviceId::new();
+    for device_id in [assigned_device, unassigned_device] {
+        state
+            .device_registry
+            .add(display_device_info(device_id, 320, 200))
+            .await;
+        assert!(
+            state
+                .device_registry
+                .set_state(&device_id, DeviceState::Connected)
+                .await
+        );
+    }
+
+    let mut scene = named_scene("imported");
+    scene.mutation_mode = SceneMutationMode::Snapshot;
+    scene.groups.push(imported_display_zone(assigned_device));
+    let scene_id = scene.id;
+    state
+        .scene_manager
+        .write()
+        .await
+        .create(scene)
+        .expect("scene should be created");
+
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("snapshot activation should hydrate derived geometry");
+
+    let manager = state.scene_manager.read().await;
+    let active = manager.active_scene().expect("scene should be active");
+    let assigned = active
+        .display_group_for(assigned_device)
+        .expect("assigned display zone should remain");
+    assert_eq!(assigned.layout.canvas_width, 320);
+    assert_eq!(assigned.layout.canvas_height, 200);
+    assert!(active.display_group_for(unassigned_device).is_none());
+}
+
+#[tokio::test]
+async fn activation_commits_before_layout_failure_and_still_applies_brightness() {
+    let (state, _tempdir) = isolated_state();
+    let mut scene = named_scene("evening");
+    scene.layout_id = Some(LayoutId::new("missing-layout").expect("valid layout id"));
+    scene.activation_brightness = Some(0.42);
+    let scene_id = scene.id;
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager.create(scene).expect("scene should be created");
+    }
+    let mut events = state.event_bus.subscribe_all();
+
+    let activated = activate_scene(
+        &state,
+        ActivateScene {
+            scene_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("post-commit side effects must not turn activation into an error");
+
+    assert_eq!(
+        state.scene_manager.read().await.active_scene_id().copied(),
+        Some(scene_id)
+    );
+    assert_eq!(
+        activated.layout.layout_id.as_ref().map(LayoutId::as_str),
+        Some("missing-layout")
+    );
+    assert!(!activated.layout.applied);
+    assert!(
+        activated
+            .layout
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("not available"))
+    );
+    assert!(activated.brightness.applied);
+    assert_eq!(
+        hypercolor_daemon::domain::output::get_output(&state).brightness,
+        0.42
+    );
+
+    let mut warned = false;
+    while let Ok(timestamped) = events.try_recv() {
+        warned |= matches!(
+            timestamped.event,
+            HypercolorEvent::Error {
+                ref code,
+                severity: Severity::Warning,
+                ..
+            } if code == "scene_layout_unavailable"
+        );
+    }
+    assert!(warned);
 }
 
 #[tokio::test]
@@ -849,6 +1027,52 @@ async fn create_scene_seeds_a_default_zone_and_announces_the_scene() {
         library_events(&mut events),
         vec![(created.scene.id, SceneLibraryChangeKind::Created)]
     );
+}
+
+#[tokio::test]
+async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = test_effect_metadata("aurora");
+    insert_effect(&state, &metadata).await;
+    apply_effect(&state, apply_command(&metadata), MutationContext::api())
+        .await
+        .expect("the live scene should contain one effect layer");
+    let active = state
+        .scene_manager
+        .read()
+        .await
+        .active_scene()
+        .cloned()
+        .expect("the default scene should be active");
+    let active_layout_id = state.spatial_engine.read().await.layout().id.clone();
+
+    let snapshot = snapshot_scene(
+        &state,
+        SnapshotScene {
+            name: "Captured desk".to_owned(),
+            description: Some("Runtime state".to_owned()),
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("snapshot should commit");
+
+    assert_ne!(snapshot.scene.id, active.id);
+    assert_eq!(snapshot.scene.name, "Captured desk");
+    assert_eq!(snapshot.scene.description.as_deref(), Some("Runtime state"));
+    assert_eq!(snapshot.scene.kind, SceneKind::Named);
+    assert_eq!(snapshot.scene.mutation_mode, SceneMutationMode::Snapshot);
+    assert_eq!(snapshot.scene.groups, active.groups);
+    assert_eq!(
+        snapshot.scene.layout_id.as_ref().map(LayoutId::as_str),
+        Some(active_layout_id.as_str())
+    );
+    assert_eq!(snapshot.scene.activation_brightness, None);
+    assert_eq!(snapshot.commit.durability(), CommitDurability::Written);
+
+    let manager = state.scene_manager.read().await;
+    assert_eq!(manager.active_scene_id(), Some(&active.id));
+    assert_eq!(manager.get(&snapshot.scene.id), Some(&snapshot.scene));
 }
 
 /// MCP used to mint scenes with no zones and announce nothing, so a

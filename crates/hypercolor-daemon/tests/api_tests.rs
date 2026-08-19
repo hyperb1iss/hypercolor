@@ -7658,6 +7658,51 @@ async fn list_scenes_excludes_default_scene() {
 }
 
 #[tokio::test]
+async fn snapshot_scene_creates_a_locked_copy_of_the_live_tree() {
+    let state = Arc::new(isolated_state());
+    let active = state
+        .scene_manager
+        .read()
+        .await
+        .active_scene()
+        .cloned()
+        .expect("default scene should be active");
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/snapshot")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Desk capture","description":"Current runtime"}"#,
+                ))
+                .expect("snapshot request"),
+        )
+        .await
+        .expect("snapshot response");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Desk capture");
+    assert_eq!(json["data"]["mutation_mode"], "snapshot");
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("snapshot id")
+        .parse::<Uuid>()
+        .expect("snapshot UUID");
+
+    let manager = state.scene_manager.read().await;
+    let saved = manager
+        .get(&SceneId(scene_id))
+        .expect("snapshot should be stored");
+    assert_eq!(saved.groups, active.groups);
+    assert_eq!(saved.activation_brightness, None);
+    assert_eq!(manager.active_scene_id(), Some(&active.id));
+}
+
+#[tokio::test]
 async fn stored_scene_replace_is_whole_document_versioned_and_identity_safe() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
