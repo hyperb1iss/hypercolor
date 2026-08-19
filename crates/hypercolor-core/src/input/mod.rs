@@ -9,6 +9,7 @@ pub mod browser;
 #[cfg(target_os = "linux")]
 pub mod evdev;
 mod graph;
+mod host_fold;
 pub mod keymap;
 pub mod macos;
 pub mod media;
@@ -32,6 +33,10 @@ pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
     InputPublicationRead, InputSourceSlot, InteractionSourceOrigin, InteractionTransientTotals,
+};
+pub use host_fold::{
+    HostInputFold, HostInputFoldDiagnostics, HostInputPublishOutcome, HostInputSample,
+    HostInputSink,
 };
 #[doc(hidden)]
 pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;

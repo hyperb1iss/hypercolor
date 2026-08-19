@@ -12,6 +12,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+hypercolor-types = { workspace = true }
 hypercolor-worker-retention = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

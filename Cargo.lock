@@ -5403,6 +5403,7 @@ name = "hypercolor-linux-input"
 version = "0.3.2"
 dependencies = [
  "evdev",
+ "hypercolor-types",
  "hypercolor-worker-retention",
  "thiserror 2.0.18",
  "tracing",

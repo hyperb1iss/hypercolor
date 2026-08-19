@@ -1,6 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(any(target_os = "linux", test))]
+use hypercolor_types::host_input::{
+    HostInputDevice, HostInputEvent, HostKeyIdentity, HostKeySignal, HostRepeatEvidence,
+    host_key_name_from_evdev,
+};
+
 /// Capture configuration for one evdev session.
 #[derive(Clone)]
 pub struct EvdevInputConfig {
@@ -8,8 +14,8 @@ pub struct EvdevInputConfig {
     pub keyboard: bool,
     /// Open relative-pointer event nodes.
     pub pointer: bool,
-    /// Epoch allocated by the shared fold and echoed in every batch.
-    pub epoch: u64,
+    /// Monotonic identity for this acquisition session.
+    pub session_generation: u64,
     /// Shared monotonic clock sampled once for every published batch.
     pub clock: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -19,139 +25,9 @@ impl std::fmt::Debug for EvdevInputConfig {
         f.debug_struct("EvdevInputConfig")
             .field("keyboard", &self.keyboard)
             .field("pointer", &self.pointer)
-            .field("epoch", &self.epoch)
+            .field("session_generation", &self.session_generation)
             .finish_non_exhaustive()
     }
-}
-
-/// Device classes accepted from one evdev node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DeviceCapabilities {
-    pub keyboard: bool,
-    pub pointer: bool,
-}
-
-/// Immutable identity for one opened event-node lifetime.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvdevDeviceDescriptor {
-    pub source_id: Arc<str>,
-    pub path: Arc<str>,
-    pub label: Arc<str>,
-    pub capabilities: DeviceCapabilities,
-    pub session_epoch: u64,
-    /// Monotonic within one acquisition session. Reopening the same path gets
-    /// a new generation even when the kernel recycles the node name.
-    pub device_generation: u64,
-}
-
-/// Native repeat evidence carried by an evdev key report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EvdevKeyState {
-    Pressed,
-    Released,
-    Repeated,
-}
-
-/// Pointer buttons with stable cross-platform meaning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EvdevPointerButton {
-    Left,
-    Right,
-    Middle,
-    Side,
-    Extra,
-}
-
-impl EvdevPointerButton {
-    /// Canonical name used by the shared fold.
-    #[must_use]
-    pub const fn canonical_name(self) -> &'static str {
-        match self {
-            Self::Left => "left",
-            Self::Right => "right",
-            Self::Middle => "middle",
-            Self::Side => "side",
-            Self::Extra => "extra",
-        }
-    }
-}
-
-/// Why the shared fold must discard its assumptions for one device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EvdevStateGapReason {
-    SynchronizationDropped,
-    DeviceRemoved,
-    ReadFailed,
-}
-
-/// One ordered native edge or device-lifecycle marker.
-#[derive(Debug, Clone, PartialEq)]
-pub enum EvdevInputEvent {
-    Key {
-        device: Arc<EvdevDeviceDescriptor>,
-        code: u16,
-        state: EvdevKeyState,
-    },
-    Button {
-        device: Arc<EvdevDeviceDescriptor>,
-        button: EvdevPointerButton,
-        state: EvdevKeyState,
-    },
-    /// Relative counts accumulated for one device until its `SYN_REPORT`.
-    MotionRelative {
-        device: Arc<EvdevDeviceDescriptor>,
-        dx: i32,
-        dy: i32,
-    },
-    /// Signed Q16.16 travel in `Line120` units.
-    Scroll {
-        device: Arc<EvdevDeviceDescriptor>,
-        delta_x_q16_16: i64,
-        delta_y_q16_16: i64,
-    },
-    DeviceArrived {
-        device: Arc<EvdevDeviceDescriptor>,
-    },
-    StateGap {
-        device: Arc<EvdevDeviceDescriptor>,
-        reason: EvdevStateGapReason,
-    },
-    DeviceRemoved {
-        device: Arc<EvdevDeviceDescriptor>,
-    },
-}
-
-impl EvdevInputEvent {
-    /// Device bucket this event belongs to.
-    #[must_use]
-    pub fn device(&self) -> &Arc<EvdevDeviceDescriptor> {
-        match self {
-            Self::Key { device, .. }
-            | Self::Button { device, .. }
-            | Self::MotionRelative { device, .. }
-            | Self::Scroll { device, .. }
-            | Self::DeviceArrived { device }
-            | Self::StateGap { device, .. }
-            | Self::DeviceRemoved { device } => device,
-        }
-    }
-
-    /// Stable source bucket for the event-node lifetime.
-    #[must_use]
-    pub fn source_id(&self) -> &Arc<str> {
-        &self.device().source_id
-    }
-}
-
-/// One coherent publication from the acquisition worker.
-#[derive(Debug)]
-pub struct EvdevInputBatch<'a> {
-    pub events: &'a [EvdevInputEvent],
-    pub at_ms: u64,
-    pub epoch: u64,
-    /// Advances once for each rescan or read-failure transaction that changes
-    /// the open-device set.
-    pub topology_generation: u64,
 }
 
 /// Why an event node is not currently contributing input.
@@ -195,49 +71,88 @@ pub enum EvdevInputError {
 
 pub type EvdevInputResult<T> = Result<T, EvdevInputError>;
 
-/// Events awaiting one atomic delivery to the shared fold.
-#[derive(Debug, Default)]
-pub struct PendingEvents {
-    events: Vec<EvdevInputEvent>,
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn normalize_evdev_key(
+    device: &Arc<HostInputDevice>,
+    code: u16,
+    native_name: &str,
+    value: i32,
+) -> Option<HostInputEvent> {
+    let (pressed, repeat) = match value {
+        0 => (false, HostRepeatEvidence::NotRepeat),
+        1 => (true, HostRepeatEvidence::NotRepeat),
+        2 => (true, HostRepeatEvidence::Repeat),
+        _ => return None,
+    };
+    let key = host_key_name_from_evdev(code).unwrap_or(native_name);
+    Some(HostInputEvent::Key {
+        device: Some(Arc::clone(device)),
+        identity: HostKeyIdentity {
+            key: Arc::from(key),
+            physical_code: Arc::from(format!("evdev:{native_name}")),
+        },
+        signal: HostKeySignal::Edge { pressed, repeat },
+    })
 }
 
-impl PendingEvents {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { events: Vec::new() }
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::host_input::{HostInputCapabilities, HostInputDevice};
+
+    use super::*;
+
+    fn device() -> Arc<HostInputDevice> {
+        Arc::new(HostInputDevice {
+            source_id: Arc::from("linux:evdev:s4:d2:/dev/input/event7"),
+            label: Arc::from("fixture"),
+            capabilities: HostInputCapabilities {
+                keyboard: true,
+                pointer: false,
+            },
+            session_generation: 4,
+            device_generation: 2,
+        })
     }
 
-    pub fn push(&mut self, event: EvdevInputEvent) {
-        self.events.push(event);
+    #[test]
+    fn raw_evdev_fixture_normalizes_canonical_identity_and_repeat() {
+        let event = normalize_evdev_key(&device(), 30, "KEY_A", 2)
+            .expect("repeat fixture is a valid key signal");
+
+        assert!(matches!(
+            event,
+            HostInputEvent::Key {
+                identity: HostKeyIdentity { key, physical_code },
+                signal: HostKeySignal::Edge {
+                    pressed: true,
+                    repeat: HostRepeatEvidence::Repeat,
+                },
+                ..
+            } if &*key == "a" && &*physical_code == "evdev:KEY_A"
+        ));
     }
 
-    pub fn extend(&mut self, events: impl IntoIterator<Item = EvdevInputEvent>) {
-        self.events.extend(events);
+    #[test]
+    fn raw_evdev_fixture_preserves_extensible_unknown_name() {
+        let event = normalize_evdev_key(&device(), 0x2ff, "KEY_VENDOR_MACRO", 1)
+            .expect("press fixture is a valid key signal");
+
+        assert!(matches!(
+            event,
+            HostInputEvent::Key {
+                identity: HostKeyIdentity { key, physical_code },
+                signal: HostKeySignal::Edge {
+                    pressed: true,
+                    repeat: HostRepeatEvidence::NotRepeat,
+                },
+                ..
+            } if &*key == "KEY_VENDOR_MACRO"
+                && &*physical_code == "evdev:KEY_VENDOR_MACRO"
+        ));
     }
 
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-
-    /// Deliver the pending sequence once, then clear it.
-    pub fn deliver(
-        &mut self,
-        at_ms: u64,
-        epoch: u64,
-        topology_generation: u64,
-        sink: &mut impl FnMut(EvdevInputBatch<'_>),
-    ) -> bool {
-        if self.events.is_empty() {
-            return false;
-        }
-        sink(EvdevInputBatch {
-            events: &self.events,
-            at_ms,
-            epoch,
-            topology_generation,
-        });
-        self.events.clear();
-        true
+    #[test]
+    fn raw_evdev_fixture_rejects_invalid_key_state() {
+        assert!(normalize_evdev_key(&device(), 30, "KEY_A", 3).is_none());
     }
 }

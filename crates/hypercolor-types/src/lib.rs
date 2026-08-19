@@ -15,6 +15,7 @@ pub mod device;
 pub mod display;
 pub mod effect;
 pub mod event;
+pub mod host_input;
 pub mod identity;
 pub mod layer;
 pub mod library;

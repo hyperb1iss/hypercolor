@@ -8,10 +8,10 @@
 
 mod shared;
 
+pub use hypercolor_types::host_input::HostInputBatch;
 pub use shared::{
-    DeviceCapabilities, DeviceOpenState, DeviceOpenStatus, EvdevDeviceDescriptor, EvdevInputBatch,
-    EvdevInputConfig, EvdevInputError, EvdevInputEvent, EvdevInputResult, EvdevKeyState,
-    EvdevPointerButton, EvdevStateGapReason, EvdevWorkerState, PendingEvents,
+    DeviceOpenState, DeviceOpenStatus, EvdevInputConfig, EvdevInputError, EvdevInputResult,
+    EvdevWorkerState,
 };
 
 #[doc(hidden)]
@@ -34,7 +34,7 @@ pub use stubs::EvdevInputSession;
 /// Returns a platform, configuration, worker-start, or readiness error.
 pub fn start_evdev_input(
     config: EvdevInputConfig,
-    sink: impl FnMut(EvdevInputBatch<'_>) + Send + 'static,
+    sink: impl FnMut(HostInputBatch<'_>) + Send + 'static,
 ) -> EvdevInputResult<EvdevInputSession> {
     EvdevInputSession::start(config, sink)
 }

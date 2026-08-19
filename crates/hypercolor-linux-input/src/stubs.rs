@@ -1,6 +1,6 @@
 use crate::{
-    DeviceOpenStatus, EvdevInputBatch, EvdevInputConfig, EvdevInputError, EvdevInputResult,
-    EvdevWorkerState,
+    DeviceOpenStatus, EvdevInputConfig, EvdevInputError, EvdevInputResult, EvdevWorkerState,
+    HostInputBatch,
 };
 
 /// Native evdev session placeholder outside Linux.
@@ -12,7 +12,7 @@ impl EvdevInputSession {
     /// Always fails because evdev is Linux-only.
     pub fn start(
         _config: EvdevInputConfig,
-        _sink: impl FnMut(EvdevInputBatch<'_>) + Send + 'static,
+        _sink: impl FnMut(HostInputBatch<'_>) + Send + 'static,
     ) -> EvdevInputResult<Self> {
         Err(EvdevInputError::UnsupportedPlatform)
     }
@@ -23,7 +23,7 @@ impl EvdevInputSession {
     }
 
     #[must_use]
-    pub const fn topology_generation(&self) -> u64 {
+    pub const fn device_catalog_generation(&self) -> u64 {
         0
     }
 

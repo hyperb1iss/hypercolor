@@ -11,19 +11,63 @@ use evdev::{
     AttributeSetRef, Device, EventSummary, InputEvent, KeyCode, RelativeAxisCode,
     SynchronizationCode,
 };
+use hypercolor_types::event::{PointerScrollPhase, PointerScrollUnit};
+use hypercolor_types::host_input::{
+    HostInputBatch, HostInputCapabilities, HostInputDevice, HostInputEvent, HostInputGapReason,
+    HostPointerButton, HostPointerMotion, HostRepeatEvidence,
+};
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use tracing::{debug, info, trace, warn};
 
+use crate::shared::normalize_evdev_key;
 use crate::{
-    DeviceCapabilities, DeviceOpenState, DeviceOpenStatus, EvdevDeviceDescriptor, EvdevInputBatch,
-    EvdevInputConfig, EvdevInputError, EvdevInputEvent, EvdevInputResult, EvdevKeyState,
-    EvdevPointerButton, EvdevStateGapReason, EvdevWorkerState, PendingEvents,
+    DeviceOpenState, DeviceOpenStatus, EvdevInputConfig, EvdevInputError, EvdevInputResult,
+    EvdevWorkerState,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const RESCAN_TICKS: u32 = 250;
+const POINTER_COUNTS_PER_UNIT: f64 = 1200.0;
+
+#[derive(Debug, Default)]
+struct PendingEvents {
+    events: Vec<HostInputEvent>,
+}
+
+impl PendingEvents {
+    const fn new() -> Self {
+        Self { events: Vec::new() }
+    }
+
+    fn push(&mut self, event: HostInputEvent) {
+        self.events.push(event);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn deliver(
+        &mut self,
+        at_ms: u64,
+        device_catalog_generation: u64,
+        sink: &mut impl FnMut(HostInputBatch<'_>),
+    ) -> bool {
+        if self.events.is_empty() {
+            return false;
+        }
+        sink(HostInputBatch {
+            events: &self.events,
+            pointer: None,
+            at_ms,
+            device_catalog_generation,
+        });
+        self.events.clear();
+        true
+    }
+}
 
 struct OpenDevice {
     event_state: DeviceEventState,
@@ -31,7 +75,7 @@ struct OpenDevice {
 }
 
 struct DeviceEventState {
-    descriptor: Arc<EvdevDeviceDescriptor>,
+    descriptor: Arc<HostInputDevice>,
     capabilities: NativeCapabilities,
     relative_motion: RelativeMotionFrame,
     discard_until_report: bool,
@@ -46,8 +90,8 @@ struct NativeCapabilities {
 }
 
 impl NativeCapabilities {
-    const fn public(self) -> DeviceCapabilities {
-        DeviceCapabilities {
+    const fn public(self) -> HostInputCapabilities {
+        HostInputCapabilities {
             keyboard: self.keyboard,
             pointer: self.pointer,
         }
@@ -69,13 +113,17 @@ impl RelativeMotionFrame {
         }
     }
 
-    fn take_event(&mut self, device: &Arc<EvdevDeviceDescriptor>) -> Option<EvdevInputEvent> {
+    fn take_event(&mut self, device: &Arc<HostInputDevice>) -> Option<HostInputEvent> {
         let dx = std::mem::take(&mut self.dx);
         let dy = std::mem::take(&mut self.dy);
-        (dx != 0 || dy != 0).then(|| EvdevInputEvent::MotionRelative {
-            device: Arc::clone(device),
-            dx,
-            dy,
+        (dx != 0 || dy != 0).then(|| HostInputEvent::Motion {
+            device: Some(Arc::clone(device)),
+            motion: HostPointerMotion::Relative {
+                delta_x: f64::from(dx),
+                delta_y: f64::from(dy),
+                units_per_x: POINTER_COUNTS_PER_UNIT,
+                units_per_y: POINTER_COUNTS_PER_UNIT,
+            },
         })
     }
 
@@ -89,7 +137,7 @@ struct WorkerContext {
     config: EvdevInputConfig,
     devices: BTreeMap<PathBuf, OpenDevice>,
     next_device_generation: u64,
-    topology_generation: u64,
+    device_catalog_generation: u64,
     pending: PendingEvents,
     status: Arc<Mutex<Vec<DeviceOpenStatus>>>,
     device_count: Arc<AtomicUsize>,
@@ -107,7 +155,7 @@ impl WorkerContext {
             config,
             devices: BTreeMap::new(),
             next_device_generation: 1,
-            topology_generation: 0,
+            device_catalog_generation: 0,
             pending: PendingEvents::new(),
             status,
             device_count,
@@ -121,22 +169,22 @@ impl WorkerContext {
         generation
     }
 
-    fn topology_changed(&mut self) {
-        self.topology_generation = self.topology_generation.wrapping_add(1);
+    fn device_catalog_changed(&mut self) {
+        self.device_catalog_generation = self.device_catalog_generation.wrapping_add(1);
         self.published_topology
-            .store(self.topology_generation, Ordering::Release);
+            .store(self.device_catalog_generation, Ordering::Release);
         self.device_count
             .store(self.devices.len(), Ordering::Release);
     }
 
-    fn deliver(&mut self, sink: &mut impl FnMut(EvdevInputBatch<'_>)) -> Result<(), ()> {
+    fn deliver(&mut self, sink: &mut impl FnMut(HostInputBatch<'_>)) -> Result<(), ()> {
         if self.pending.is_empty() {
             return Ok(());
         }
         std::panic::catch_unwind(AssertUnwindSafe(|| {
             let at_ms = (self.config.clock)();
             self.pending
-                .deliver(at_ms, self.config.epoch, self.topology_generation, sink);
+                .deliver(at_ms, self.device_catalog_generation, sink);
         }))
         .map_err(|_| ())
     }
@@ -149,7 +197,7 @@ pub struct EvdevInputSession {
     worker: Option<JoinHandle<()>>,
     status: Arc<Mutex<Vec<DeviceOpenStatus>>>,
     device_count: Arc<AtomicUsize>,
-    topology_generation: Arc<AtomicU64>,
+    device_catalog_generation: Arc<AtomicU64>,
     state: Arc<Mutex<EvdevWorkerState>>,
 }
 
@@ -157,7 +205,7 @@ impl EvdevInputSession {
     /// Start capture and wait until the initial device scan is complete.
     pub fn start(
         config: EvdevInputConfig,
-        sink: impl FnMut(EvdevInputBatch<'_>) + Send + 'static,
+        sink: impl FnMut(HostInputBatch<'_>) + Send + 'static,
     ) -> EvdevInputResult<Self> {
         if !config.keyboard && !config.pointer {
             return Err(EvdevInputError::NothingToCapture);
@@ -165,7 +213,7 @@ impl EvdevInputSession {
 
         let status = Arc::new(Mutex::new(Vec::new()));
         let device_count = Arc::new(AtomicUsize::new(0));
-        let topology_generation = Arc::new(AtomicU64::new(0));
+        let device_catalog_generation = Arc::new(AtomicU64::new(0));
         let state = Arc::new(Mutex::new(EvdevWorkerState::Running));
         let (stop_tx, stop_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::sync_channel(1);
@@ -176,7 +224,7 @@ impl EvdevInputSession {
             {
                 let status = Arc::clone(&status);
                 let device_count = Arc::clone(&device_count);
-                let topology_generation = Arc::clone(&topology_generation);
+                let device_catalog_generation = Arc::clone(&device_catalog_generation);
                 let state = Arc::clone(&state);
                 move || {
                     run_worker(
@@ -187,7 +235,7 @@ impl EvdevInputSession {
                         &state,
                         status,
                         device_count,
-                        topology_generation,
+                        device_catalog_generation,
                     );
                     let _ = finished_tx.send(());
                 }
@@ -202,7 +250,7 @@ impl EvdevInputSession {
                 worker: Some(worker),
                 status,
                 device_count,
-                topology_generation,
+                device_catalog_generation,
                 state,
             }),
             Ok(Err(error)) => {
@@ -226,8 +274,8 @@ impl EvdevInputSession {
 
     /// Current open-device topology generation.
     #[must_use]
-    pub fn topology_generation(&self) -> u64 {
-        self.topology_generation.load(Ordering::Acquire)
+    pub fn device_catalog_generation(&self) -> u64 {
+        self.device_catalog_generation.load(Ordering::Acquire)
     }
 
     /// Results from the latest `/dev/input` discovery pass.
@@ -309,15 +357,15 @@ impl Drop for EvdevInputSession {
 )]
 fn run_worker(
     config: EvdevInputConfig,
-    mut sink: impl FnMut(EvdevInputBatch<'_>),
+    mut sink: impl FnMut(HostInputBatch<'_>),
     stop_rx: mpsc::Receiver<()>,
     ready_tx: &mpsc::SyncSender<EvdevInputResult<()>>,
     worker_state: &Mutex<EvdevWorkerState>,
     status: Arc<Mutex<Vec<DeviceOpenStatus>>>,
     device_count: Arc<AtomicUsize>,
-    topology_generation: Arc<AtomicU64>,
+    device_catalog_generation: Arc<AtomicU64>,
 ) {
-    let mut context = WorkerContext::new(config, status, device_count, topology_generation);
+    let mut context = WorkerContext::new(config, status, device_count, device_catalog_generation);
     rescan_devices(&mut context);
     if context.deliver(&mut sink).is_err() {
         set_worker_failure(worker_state, "evdev input publication panicked".to_owned());
@@ -353,7 +401,7 @@ fn run_worker(
 fn rescan_devices(context: &mut WorkerContext) {
     let mut statuses = Vec::new();
     let mut present = BTreeSet::new();
-    let mut topology_changed = false;
+    let mut catalog_changed = false;
     let paths = match enumerate_event_nodes() {
         Ok(paths) => paths,
         Err(error) => {
@@ -398,15 +446,14 @@ fn rescan_devices(context: &mut WorkerContext) {
 
                 let device_generation = context.allocate_device_generation();
                 let path_text: Arc<str> = Arc::from(path.display().to_string());
-                let descriptor = Arc::new(EvdevDeviceDescriptor {
+                let descriptor = Arc::new(HostInputDevice {
                     source_id: Arc::from(format!(
                         "linux:evdev:s{}:d{device_generation}:{path_text}",
-                        context.config.epoch
+                        context.config.session_generation
                     )),
-                    path: Arc::clone(&path_text),
                     label: Arc::from(label.clone()),
                     capabilities: capabilities.public(),
-                    session_epoch: context.config.epoch,
+                    session_generation: context.config.session_generation,
                     device_generation,
                 });
                 info!(
@@ -420,7 +467,7 @@ fn rescan_devices(context: &mut WorkerContext) {
                     label,
                     state: DeviceOpenState::Opened,
                 });
-                context.pending.push(EvdevInputEvent::DeviceArrived {
+                context.pending.push(HostInputEvent::DeviceArrived {
                     device: Arc::clone(&descriptor),
                 });
                 context.devices.insert(
@@ -435,7 +482,7 @@ fn rescan_devices(context: &mut WorkerContext) {
                         device,
                     },
                 );
-                topology_changed = true;
+                catalog_changed = true;
             }
             Err(error) if error.kind() == ErrorKind::PermissionDenied => {
                 statuses.push(DeviceOpenStatus {
@@ -463,12 +510,8 @@ fn rescan_devices(context: &mut WorkerContext) {
     for path in removed {
         if let Some(open) = context.devices.remove(&path) {
             debug!(device = %open.event_state.descriptor.label, "evdev input device removed");
-            queue_removal(
-                context,
-                open.event_state.descriptor,
-                EvdevStateGapReason::DeviceRemoved,
-            );
-            topology_changed = true;
+            queue_removal(context, open.event_state.descriptor, None);
+            catalog_changed = true;
         }
     }
 
@@ -487,8 +530,8 @@ fn rescan_devices(context: &mut WorkerContext) {
         );
     }
     replace_status(&context.status, statuses);
-    if topology_changed {
-        context.topology_changed();
+    if catalog_changed {
+        context.device_catalog_changed();
     } else {
         context
             .device_count
@@ -523,12 +566,12 @@ fn poll_devices(context: &mut WorkerContext) {
             queue_removal(
                 context,
                 open.event_state.descriptor,
-                EvdevStateGapReason::ReadFailed,
+                Some(HostInputGapReason::ReadFailed),
             );
         }
         mark_status_failed(&context.status, &path, error);
     }
-    context.topology_changed();
+    context.device_catalog_changed();
 }
 
 fn translate_event(open: &mut DeviceEventState, event: InputEvent, pending: &mut PendingEvents) {
@@ -548,33 +591,35 @@ fn translate_event(open: &mut DeviceEventState, event: InputEvent, pending: &mut
     ) {
         open.relative_motion.clear();
         open.discard_until_report = true;
-        pending.push(EvdevInputEvent::StateGap {
-            device: Arc::clone(&open.descriptor),
-            reason: EvdevStateGapReason::SynchronizationDropped,
+        pending.push(HostInputEvent::StateGap {
+            device: Some(Arc::clone(&open.descriptor)),
+            reason: HostInputGapReason::SynchronizationLost,
         });
         return;
     }
 
     match summary {
         EventSummary::Key(_, code, value) => {
-            let Some(state) = key_state(value) else {
+            let Some((pressed, _)) = key_signal(value) else {
                 trace!(device = %open.descriptor.label, ?code, value, "ignoring evdev key value");
                 return;
             };
             if let Some(button) = pointer_button(code) {
                 if open.capabilities.pointer {
-                    pending.push(EvdevInputEvent::Button {
-                        device: Arc::clone(&open.descriptor),
+                    pending.push(HostInputEvent::Button {
+                        device: Some(Arc::clone(&open.descriptor)),
                         button,
-                        state,
+                        pressed,
+                        physical_code: Arc::from(format!("evdev:{code:?}")),
                     });
                 }
             } else if open.capabilities.keyboard && !is_non_keyboard_key(code) {
-                pending.push(EvdevInputEvent::Key {
-                    device: Arc::clone(&open.descriptor),
-                    code: code.0,
-                    state,
-                });
+                let native_name = format!("{code:?}");
+                if let Some(event) =
+                    normalize_evdev_key(&open.descriptor, code.0, &native_name, value)
+                {
+                    pending.push(event);
+                }
             }
         }
         EventSummary::RelativeAxis(_, axis, value) => {
@@ -586,16 +631,40 @@ fn translate_event(open: &mut DeviceEventState, event: InputEvent, pending: &mut
                     open.relative_motion.accumulate(axis, value);
                 }
                 RelativeAxisCode::REL_WHEEL_HI_RES => {
-                    queue_scroll(pending, &open.descriptor, 0, i64::from(value) << 16);
+                    queue_scroll(
+                        pending,
+                        &open.descriptor,
+                        0,
+                        i64::from(value) << 16,
+                        "evdev:REL_WHEEL_HI_RES",
+                    );
                 }
                 RelativeAxisCode::REL_HWHEEL_HI_RES => {
-                    queue_scroll(pending, &open.descriptor, i64::from(value) << 16, 0);
+                    queue_scroll(
+                        pending,
+                        &open.descriptor,
+                        i64::from(value) << 16,
+                        0,
+                        "evdev:REL_HWHEEL_HI_RES",
+                    );
                 }
                 RelativeAxisCode::REL_WHEEL if !open.capabilities.hi_res_vertical_scroll => {
-                    queue_scroll(pending, &open.descriptor, 0, (i64::from(value) * 120) << 16);
+                    queue_scroll(
+                        pending,
+                        &open.descriptor,
+                        0,
+                        (i64::from(value) * 120) << 16,
+                        "evdev:REL_WHEEL",
+                    );
                 }
                 RelativeAxisCode::REL_HWHEEL if !open.capabilities.hi_res_horizontal_scroll => {
-                    queue_scroll(pending, &open.descriptor, (i64::from(value) * 120) << 16, 0);
+                    queue_scroll(
+                        pending,
+                        &open.descriptor,
+                        (i64::from(value) * 120) << 16,
+                        0,
+                        "evdev:REL_HWHEEL",
+                    );
                 }
                 _ => {}
             }
@@ -611,29 +680,36 @@ fn translate_event(open: &mut DeviceEventState, event: InputEvent, pending: &mut
 
 fn queue_scroll(
     pending: &mut PendingEvents,
-    device: &Arc<EvdevDeviceDescriptor>,
+    device: &Arc<HostInputDevice>,
     delta_x_q16_16: i64,
     delta_y_q16_16: i64,
+    physical_code: &'static str,
 ) {
-    pending.push(EvdevInputEvent::Scroll {
-        device: Arc::clone(device),
+    pending.push(HostInputEvent::Scroll {
+        device: Some(Arc::clone(device)),
         delta_x_q16_16,
         delta_y_q16_16,
+        unit: PointerScrollUnit::Line120,
+        phase: PointerScrollPhase::None,
+        momentum_phase: PointerScrollPhase::None,
+        physical_code: Arc::from(physical_code),
     });
 }
 
 fn queue_removal(
     context: &mut WorkerContext,
-    device: Arc<EvdevDeviceDescriptor>,
-    reason: EvdevStateGapReason,
+    device: Arc<HostInputDevice>,
+    reason: Option<HostInputGapReason>,
 ) {
-    context.pending.push(EvdevInputEvent::StateGap {
-        device: Arc::clone(&device),
-        reason,
-    });
+    if let Some(reason) = reason {
+        context.pending.push(HostInputEvent::StateGap {
+            device: Some(Arc::clone(&device)),
+            reason,
+        });
+    }
     context
         .pending
-        .push(EvdevInputEvent::DeviceRemoved { device });
+        .push(HostInputEvent::DeviceRemoved { device });
 }
 
 fn enumerate_event_nodes() -> std::io::Result<Vec<PathBuf>> {
@@ -698,22 +774,22 @@ fn device_label(path: &Path, device: &Device) -> String {
     )
 }
 
-const fn key_state(value: i32) -> Option<EvdevKeyState> {
+const fn key_signal(value: i32) -> Option<(bool, HostRepeatEvidence)> {
     match value {
-        0 => Some(EvdevKeyState::Released),
-        1 => Some(EvdevKeyState::Pressed),
-        2 => Some(EvdevKeyState::Repeated),
+        0 => Some((false, HostRepeatEvidence::NotRepeat)),
+        1 => Some((true, HostRepeatEvidence::NotRepeat)),
+        2 => Some((true, HostRepeatEvidence::Repeat)),
         _ => None,
     }
 }
 
-const fn pointer_button(code: KeyCode) -> Option<EvdevPointerButton> {
+fn pointer_button(code: KeyCode) -> Option<HostPointerButton> {
     match code {
-        KeyCode::BTN_LEFT => Some(EvdevPointerButton::Left),
-        KeyCode::BTN_RIGHT => Some(EvdevPointerButton::Right),
-        KeyCode::BTN_MIDDLE => Some(EvdevPointerButton::Middle),
-        KeyCode::BTN_SIDE => Some(EvdevPointerButton::Side),
-        KeyCode::BTN_EXTRA => Some(EvdevPointerButton::Extra),
+        KeyCode::BTN_LEFT => Some(HostPointerButton::left()),
+        KeyCode::BTN_RIGHT => Some(HostPointerButton::right()),
+        KeyCode::BTN_MIDDLE => Some(HostPointerButton::middle()),
+        KeyCode::BTN_SIDE => Some(HostPointerButton::side()),
+        KeyCode::BTN_EXTRA => Some(HostPointerButton::extra()),
         _ => None,
     }
 }
@@ -758,17 +834,17 @@ fn set_worker_failure(state: &Mutex<EvdevWorkerState>, failure: String) {
 mod tests {
     use super::*;
     use evdev::{AttributeSet, EventType};
+    use hypercolor_types::host_input::{HostKeyIdentity, HostKeySignal};
 
-    fn descriptor() -> Arc<EvdevDeviceDescriptor> {
-        Arc::new(EvdevDeviceDescriptor {
+    fn descriptor() -> Arc<HostInputDevice> {
+        Arc::new(HostInputDevice {
             source_id: Arc::from("linux:evdev:s7:d1:/dev/input/event0"),
-            path: Arc::from("/dev/input/event0"),
             label: Arc::from("fixture"),
-            capabilities: DeviceCapabilities {
+            capabilities: HostInputCapabilities {
                 keyboard: true,
                 pointer: true,
             },
-            session_epoch: 7,
+            session_generation: 7,
             device_generation: 1,
         })
     }
@@ -784,6 +860,10 @@ mod tests {
 
     fn relative_event(axis: RelativeAxisCode, value: i32) -> InputEvent {
         InputEvent::new(EventType::RELATIVE.0, axis.0, value)
+    }
+
+    fn key_event(code: KeyCode, value: i32) -> InputEvent {
+        InputEvent::new(EventType::KEY.0, code.0, value)
     }
 
     fn sync_event(code: SynchronizationCode) -> InputEvent {
@@ -810,7 +890,7 @@ mod tests {
         let config = EvdevInputConfig {
             keyboard: true,
             pointer: true,
-            epoch: 7,
+            session_generation: 7,
             clock: Arc::new(|| panic!("fixture clock panic")),
         };
         let mut context = WorkerContext::new(
@@ -819,7 +899,7 @@ mod tests {
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicU64::new(0)),
         );
-        context.pending.push(EvdevInputEvent::DeviceArrived {
+        context.pending.push(HostInputEvent::DeviceArrived {
             device: descriptor(),
         });
 
@@ -831,7 +911,7 @@ mod tests {
         let config = EvdevInputConfig {
             keyboard: true,
             pointer: true,
-            epoch: 7,
+            session_generation: 7,
             clock: Arc::new(|| panic!("idle delivery must not sample the clock")),
         };
         let mut context = WorkerContext::new(
@@ -864,12 +944,11 @@ mod tests {
         };
         let mut first = event_state(capabilities);
         let mut second = event_state(capabilities);
-        second.descriptor = Arc::new(EvdevDeviceDescriptor {
+        second.descriptor = Arc::new(HostInputDevice {
             source_id: Arc::from("linux:evdev:s7:d2:/dev/input/event1"),
-            path: Arc::from("/dev/input/event1"),
             label: Arc::from("fixture-2"),
             capabilities: capabilities.public(),
-            session_epoch: 7,
+            session_generation: 7,
             device_generation: 2,
         });
         let mut pending = PendingEvents::new();
@@ -897,13 +976,25 @@ mod tests {
             &mut pending,
         );
         let mut captured = Vec::new();
-        pending.deliver(1, 7, 1, &mut |batch| {
+        pending.deliver(1, 1, &mut |batch| {
             captured.extend_from_slice(batch.events);
         });
-        assert!(matches!(
-            captured.as_slice(),
-            [EvdevInputEvent::MotionRelative { dx: 3, dy: 4, .. }]
-        ));
+        let [
+            HostInputEvent::Motion {
+                motion:
+                    HostPointerMotion::Relative {
+                        delta_x: 3.0,
+                        delta_y: 4.0,
+                        units_per_x,
+                        units_per_y,
+                    },
+                ..
+            },
+        ] = captured.as_slice()
+        else {
+            panic!("SYN_REPORT must emit one relative-motion event");
+        };
+        assert_eq!((*units_per_x, *units_per_y), (1200.0, 1200.0));
     }
 
     #[test]
@@ -938,13 +1029,13 @@ mod tests {
         );
 
         let mut captured = Vec::new();
-        pending.deliver(1, 7, 1, &mut |batch| {
+        pending.deliver(1, 1, &mut |batch| {
             captured.extend_from_slice(batch.events);
         });
         assert!(matches!(
             captured.as_slice(),
-            [EvdevInputEvent::StateGap {
-                reason: EvdevStateGapReason::SynchronizationDropped,
+            [HostInputEvent::StateGap {
+                reason: HostInputGapReason::SynchronizationLost,
                 ..
             }]
         ));
@@ -971,16 +1062,81 @@ mod tests {
             &mut pending,
         );
         let mut captured = Vec::new();
-        pending.deliver(1, 7, 1, &mut |batch| {
+        pending.deliver(1, 1, &mut |batch| {
             captured.extend_from_slice(batch.events);
         });
         assert!(matches!(
             captured.as_slice(),
-            [EvdevInputEvent::Scroll {
+            [HostInputEvent::Scroll {
                 delta_x_q16_16: 0,
                 delta_y_q16_16,
+                unit: PointerScrollUnit::Line120,
+                physical_code,
                 ..
             }] if *delta_y_q16_16 == 30_i64 << 16
+                && &**physical_code == "evdev:REL_WHEEL_HI_RES"
+        ));
+    }
+
+    #[test]
+    fn evdev_key_fixture_normalizes_name_identity_and_repeat_evidence() {
+        let capabilities = NativeCapabilities {
+            keyboard: true,
+            pointer: false,
+            hi_res_vertical_scroll: false,
+            hi_res_horizontal_scroll: false,
+        };
+        let mut open = event_state(capabilities);
+        let mut pending = PendingEvents::new();
+
+        translate_event(&mut open, key_event(KeyCode::KEY_A, 1), &mut pending);
+        translate_event(&mut open, key_event(KeyCode::KEY_A, 2), &mut pending);
+        translate_event(&mut open, key_event(KeyCode::KEY_A, 0), &mut pending);
+
+        let mut captured = Vec::new();
+        pending.deliver(9, 3, &mut |batch| {
+            assert_eq!(batch.device_catalog_generation, 3);
+            captured.extend_from_slice(batch.events);
+        });
+        assert_eq!(captured.len(), 3);
+        for event in &captured {
+            assert!(matches!(
+                event,
+                HostInputEvent::Key {
+                    identity: HostKeyIdentity { key, physical_code },
+                    ..
+                } if &**key == "a" && &**physical_code == "evdev:KEY_A"
+            ));
+        }
+        assert!(matches!(
+            captured[0],
+            HostInputEvent::Key {
+                signal: HostKeySignal::Edge {
+                    pressed: true,
+                    repeat: HostRepeatEvidence::NotRepeat,
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            captured[1],
+            HostInputEvent::Key {
+                signal: HostKeySignal::Edge {
+                    pressed: true,
+                    repeat: HostRepeatEvidence::Repeat,
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            captured[2],
+            HostInputEvent::Key {
+                signal: HostKeySignal::Edge {
+                    pressed: false,
+                    repeat: HostRepeatEvidence::NotRepeat,
+                },
+                ..
+            }
         ));
     }
 }
