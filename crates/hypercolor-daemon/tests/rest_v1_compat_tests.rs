@@ -596,6 +596,8 @@ async fn deleted_dead_resource_routes_leave_nothing_behind() {
         ("DELETE", "/api/v1/logical-devices/logical-id"),
         ("POST", "/api/v1/diagnose/memory"),
         ("GET", "/api/v1/effects/screenshots"),
+        ("GET", "/api/v1/displays/display-id/preview.jpg"),
+        ("POST", "/api/v1/capture/source/pick"),
         ("GET", "/api/v1/system/sensors/sensor-label"),
     ];
 

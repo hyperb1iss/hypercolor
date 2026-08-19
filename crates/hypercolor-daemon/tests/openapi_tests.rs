@@ -172,7 +172,7 @@ async fn openapi_json_is_served_with_expected_paths() {
     for (path, method) in [
         ("/api/v1/input/authorize", "post"),
         ("/api/v1/capture/authorize", "post"),
-        ("/api/v1/capture/source/pick", "post"),
+        ("/api/v1/capture/source", "put"),
         ("/api/v1/capture/monitors", "get"),
     ] {
         assert!(

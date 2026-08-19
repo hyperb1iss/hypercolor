@@ -1149,8 +1149,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         // ── Displays ─────────────────────────────────────────────────
         .route("/displays", axum::routing::get(displays::list_displays))
         .route(
-            "/displays/{id}/preview.jpg",
-            axum::routing::get(displays::get_display_preview),
+            "/displays/{id}/frame",
+            axum::routing::get(displays::get_display_frame),
         )
         .route(
             "/displays/{id}/face",
@@ -1365,8 +1365,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(capture::authorize_screen_recording),
         )
         .route(
-            "/capture/source/pick",
-            axum::routing::post(capture::pick_capture_source),
+            "/capture/source",
+            axum::routing::put(capture::set_capture_source),
         )
         .route(
             "/capture/monitors",
