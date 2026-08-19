@@ -46,6 +46,27 @@ const BOTTOM_MAX: f64 = 500.0;
 const LS_KEY_SIDEBAR: &str = "hc-layout-sidebar-width";
 const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
 
+#[derive(Debug, PartialEq, Eq)]
+struct ZoneSaveCompletion {
+    update_editor: bool,
+    clear_preview: bool,
+    clear_active_preview: bool,
+}
+
+fn zone_save_completion(
+    selected_zone_id: Option<&str>,
+    active_preview_key: Option<&str>,
+    saved_zone_id: &str,
+    is_latest_save: bool,
+) -> ZoneSaveCompletion {
+    let active_preview_matches = active_preview_key == Some(saved_zone_id);
+    ZoneSaveCompletion {
+        update_editor: is_latest_save && selected_zone_id == Some(saved_zone_id),
+        clear_preview: is_latest_save || !active_preview_matches,
+        clear_active_preview: is_latest_save && active_preview_matches,
+    }
+}
+
 fn load_panel_size(key: &str, default: f64, min: f64, max: f64) -> f64 {
     storage::get_clamped(key, default, min, max)
 }
@@ -817,6 +838,7 @@ pub(crate) fn ZoneLayoutProvider(
     // Previews are keyed by zone alone: the daemon applies them to the
     // live tree, so the scene is not the client's to choose.
     let active_preview_key = StoredValue::new(None::<String>);
+    let save_generation = StoredValue::new(0_u64);
     let push_preview = Callback::new(move |snapshot: SpatialLayout| {
         let Some(zone_id) = selected_zone_id.get_untracked() else {
             return;
@@ -919,20 +941,46 @@ pub(crate) fn ZoneLayoutProvider(
         let Some(revision) = active_scene.get_untracked().map(|scene| scene.revision) else {
             return;
         };
+        let generation = save_generation.get_value().wrapping_add(1);
+        save_generation.set_value(generation);
         leptos::task::spawn_local(async move {
             match api::zones::update_zone_layout(&zone_id, &current, Some(revision)).await {
                 Ok(api::zones::ZoneOutcome::Applied(_)) => {
-                    set_saved_layout.set(Some(current));
-                    set_layout.mark_clean();
-                    ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
-                    active_preview_key.set_value(None);
-                    toasts::toast_success("Zone layout saved");
+                    let completion = zone_save_completion(
+                        selected_zone_id.get_untracked().as_deref(),
+                        active_preview_key.get_value().as_deref(),
+                        &zone_id,
+                        save_generation.get_value() == generation,
+                    );
+                    if completion.update_editor {
+                        set_saved_layout.set(Some(current));
+                        set_layout.mark_clean();
+                        toasts::toast_success("Zone layout saved");
+                    }
+                    if completion.clear_preview {
+                        ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
+                    }
+                    if completion.clear_active_preview {
+                        active_preview_key.set_value(None);
+                    }
                     refresh_scene.run(());
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                    ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
-                    active_preview_key.set_value(None);
-                    toasts::toast_error("Scene changed elsewhere — reloaded, try again");
+                    let completion = zone_save_completion(
+                        selected_zone_id.get_untracked().as_deref(),
+                        active_preview_key.get_value().as_deref(),
+                        &zone_id,
+                        save_generation.get_value() == generation,
+                    );
+                    if completion.clear_preview {
+                        ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
+                    }
+                    if completion.clear_active_preview {
+                        active_preview_key.set_value(None);
+                    }
+                    if completion.update_editor {
+                        toasts::toast_error("Scene changed elsewhere; reloaded, try again");
+                    }
                     refresh_scene.run(());
                 }
                 Err(error) => toasts::toast_error(&format!("Save failed: {error}")),
@@ -961,4 +1009,45 @@ pub(crate) fn ZoneLayoutProvider(
     });
 
     children()
+}
+
+#[cfg(test)]
+mod zone_save_tests {
+    use super::{ZoneSaveCompletion, zone_save_completion};
+
+    #[test]
+    fn current_zone_completion_updates_editor_and_retires_its_preview() {
+        assert_eq!(
+            zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", true),
+            ZoneSaveCompletion {
+                update_editor: true,
+                clear_preview: true,
+                clear_active_preview: true,
+            }
+        );
+    }
+
+    #[test]
+    fn old_zone_completion_does_not_mutate_the_new_zone() {
+        assert_eq!(
+            zone_save_completion(Some("zone-b"), Some("zone-b"), "zone-a", true),
+            ZoneSaveCompletion {
+                update_editor: false,
+                clear_preview: true,
+                clear_active_preview: false,
+            }
+        );
+    }
+
+    #[test]
+    fn superseded_save_does_not_clear_the_newer_preview() {
+        assert_eq!(
+            zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", false),
+            ZoneSaveCompletion {
+                update_editor: false,
+                clear_preview: false,
+                clear_active_preview: false,
+            }
+        );
+    }
 }
