@@ -25,7 +25,7 @@ use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::attachment::DeviceComponentProfile;
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, OwnedDisplayFramePayload, USB_OUTPUT_BACKEND_ID, ZoneInfo,
+    DeviceId, DeviceInfo, OwnedDisplayFramePayload, SegmentInfo, USB_OUTPUT_BACKEND_ID,
 };
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -1090,10 +1090,15 @@ impl DeviceBackend for UsbBackend {
         let transport_name = transport.name();
         let resolved_info =
             build_connected_device_info(*id, &pending.info_template, protocol.as_ref());
-        let zone_summary = resolved_info
-            .zones
+        let segment_summary = resolved_info
+            .segments
             .iter()
-            .map(|zone| format!("{}:{}:{:?}", zone.name, zone.led_count, zone.topology))
+            .map(|segment| {
+                format!(
+                    "{}:{}:{:?}",
+                    segment.name, segment.led_count, segment.topology
+                )
+            })
             .collect::<Vec<_>>();
         debug!(
             device_id = %id,
@@ -1101,8 +1106,8 @@ impl DeviceBackend for UsbBackend {
             protocol = protocol.name(),
             transport = transport_name,
             total_leds = resolved_info.total_led_count(),
-            zone_count = resolved_info.zones.len(),
-            zones = ?zone_summary,
+            segment_count = resolved_info.segments.len(),
+            segments = ?segment_summary,
             "USB connect resolved protocol topology"
         );
         let target_fps = fps_from_frame_interval(protocol.frame_interval());
@@ -1498,17 +1503,17 @@ fn build_connected_device_info(
 ) -> DeviceInfo {
     let mut info = template.clone();
     info.id = device_id;
-    info.zones = protocol
+    info.segments = protocol
         .zones()
         .into_iter()
-        .map(protocol_zone_to_zone_info)
+        .map(protocol_zone_to_segment_info)
         .collect();
     info.capabilities = protocol.capabilities();
     info
 }
 
-fn protocol_zone_to_zone_info(zone: hypercolor_hal::protocol::ProtocolZone) -> ZoneInfo {
-    ZoneInfo {
+fn protocol_zone_to_segment_info(zone: hypercolor_hal::protocol::ProtocolZone) -> SegmentInfo {
+    SegmentInfo {
         name: zone.name,
         led_count: zone.led_count,
         topology: zone.topology,

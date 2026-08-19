@@ -321,7 +321,7 @@ mod tests {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: Vec::new(),
+            segments: Vec::new(),
             firmware_version: None,
             capabilities: DeviceCapabilities::default(),
         }

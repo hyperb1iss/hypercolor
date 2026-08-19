@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde::{Deserialize, Serialize};
@@ -161,7 +161,7 @@ pub fn build_device_info(device: &GoveeLanDevice) -> DeviceInfo {
         model: Some(device.sku.clone()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count,
             topology,

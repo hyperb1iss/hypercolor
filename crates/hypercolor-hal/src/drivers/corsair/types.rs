@@ -1,6 +1,6 @@
 //! Shared Corsair protocol enums and endpoint definitions.
 
-use hypercolor_types::device::{DeviceTopologyHint, ZoneLayoutHint};
+use hypercolor_types::device::{DeviceTopologyHint, SegmentLayoutHint};
 use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 
 /// Wire-level command bytes for the Corsair iCUE LINK hub.
@@ -205,10 +205,10 @@ impl LinkDeviceType {
 
     /// Driver-owned layout hint for devices whose LEDs are not evenly spaced.
     #[must_use]
-    pub fn layout_hint(self) -> Option<ZoneLayoutHint> {
+    pub fn layout_hint(self) -> Option<SegmentLayoutHint> {
         match self {
             Self::HSeriesAio | Self::TitanAio => Some(
-                ZoneLayoutHint::custom_grid(
+                SegmentLayoutHint::custom_grid(
                     13,
                     13,
                     &[
@@ -246,8 +246,8 @@ impl LinkDeviceType {
 
 /// Layout hint for the iCUE LINK Cooler Pump LCD 24-LED ring.
 #[must_use]
-pub fn cooler_pump_lcd_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
+pub fn cooler_pump_lcd_layout_hint() -> SegmentLayoutHint {
+    SegmentLayoutHint::custom_grid(
         11,
         11,
         &[

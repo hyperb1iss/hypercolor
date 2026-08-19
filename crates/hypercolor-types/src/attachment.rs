@@ -514,7 +514,7 @@ impl DeviceInfo {
         let mut led_start = 0_u32;
         let mut slot_ids: HashMap<String, u32> = HashMap::new();
         let slots = self
-            .zones
+            .segments
             .iter()
             .map(|zone| {
                 let slot_id = dedupe_slot_id(&mut slot_ids, &slugify_slot_id(&zone.name));

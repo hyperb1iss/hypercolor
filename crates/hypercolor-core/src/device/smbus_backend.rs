@@ -12,7 +12,7 @@ use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, Respons
 use hypercolor_hal::smbus_registry::build_smbus_protocol;
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusTransport};
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID, ZoneInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID, SegmentInfo};
 use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
@@ -636,17 +636,17 @@ fn build_connected_device_info(
 ) -> DeviceInfo {
     let mut info = template.clone();
     info.id = device_id;
-    info.zones = protocol
+    info.segments = protocol
         .zones()
         .into_iter()
-        .map(protocol_zone_to_zone_info)
+        .map(protocol_zone_to_segment_info)
         .collect();
     info.capabilities = protocol.capabilities();
     info
 }
 
-fn protocol_zone_to_zone_info(zone: hypercolor_hal::protocol::ProtocolZone) -> ZoneInfo {
-    ZoneInfo {
+fn protocol_zone_to_segment_info(zone: hypercolor_hal::protocol::ProtocolZone) -> SegmentInfo {
+    SegmentInfo {
         name: zone.name,
         led_count: zone.led_count,
         topology: zone.topology,

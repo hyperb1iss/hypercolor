@@ -344,8 +344,8 @@ impl DiscoveryOrchestrator {
                 .clone_from(&incoming.info.firmware_version);
         }
 
-        if existing.info.zones.is_empty() && !incoming.info.zones.is_empty() {
-            existing.info.zones.clone_from(&incoming.info.zones);
+        if existing.info.segments.is_empty() && !incoming.info.segments.is_empty() {
+            existing.info.segments.clone_from(&incoming.info.segments);
         }
 
         if existing.info.capabilities.led_count == 0 && incoming.info.capabilities.led_count > 0 {

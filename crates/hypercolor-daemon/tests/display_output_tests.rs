@@ -17,7 +17,7 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    OwnedDisplayFramePayload, ZoneInfo,
+    OwnedDisplayFramePayload, SegmentInfo,
 };
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
@@ -497,8 +497,8 @@ fn display_device_info_with_format_and_max_fps(
     color_format: DeviceColorFormat,
     max_fps: u32,
 ) -> DeviceInfo {
-    let zones = if has_display {
-        vec![ZoneInfo {
+    let segments = if has_display {
+        vec![SegmentInfo {
             name: "Display".to_owned(),
             led_count: 0,
             topology: DeviceTopologyHint::Display {
@@ -510,7 +510,7 @@ fn display_device_info_with_format_and_max_fps(
             layout_hint: None,
         }]
     } else {
-        vec![ZoneInfo {
+        vec![SegmentInfo {
             name: "Ring".to_owned(),
             led_count: 24,
             topology: DeviceTopologyHint::Ring { count: 24 },
@@ -527,7 +527,7 @@ fn display_device_info_with_format_and_max_fps(
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
-        zones,
+        segments,
         firmware_version: None,
         capabilities: DeviceCapabilities {
             led_count: if has_display { 0 } else { 24 },
@@ -961,15 +961,15 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
         model: Some("hybrid-display".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Pads".to_owned(),
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Display".to_owned(),
                 led_count: 0,
                 topology: DeviceTopologyHint::Display {

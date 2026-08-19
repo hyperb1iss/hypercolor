@@ -1023,12 +1023,12 @@ pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
 }
 
 pub(crate) fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
-    for zone in &info.zones {
+    for segment in &info.segments {
         if let DeviceTopologyHint::Display {
             width,
             height,
             circular,
-        } = &zone.topology
+        } = &segment.topology
         {
             return Some(DisplaySurfaceInfo {
                 width: *width,
@@ -1056,11 +1056,11 @@ pub(crate) fn display_descriptor_for_device(
 ) -> Option<DisplayDescriptor> {
     let surface = display_surface_info(info)?;
     let pixel_format = info
-        .zones
+        .segments
         .iter()
-        .find_map(|zone| match zone.topology {
+        .find_map(|segment| match segment.topology {
             DeviceTopologyHint::Display { .. } => Some(
-                DisplayFrameFormat::from_device_color_format(zone.color_format),
+                DisplayFrameFormat::from_device_color_format(segment.color_format),
             ),
             _ => None,
         })

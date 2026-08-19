@@ -79,7 +79,7 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
     let bridge = &bridges[0];
     assert_eq!(bridge.bridge_id, "test-bridge");
     assert_eq!(bridge.info.name, "Studio");
-    assert_eq!(bridge.info.zones.len(), 1);
+    assert_eq!(bridge.info.segments.len(), 1);
     assert_eq!(bridge.info.total_led_count(), 1);
     assert_eq!(
         bridge.connect_behavior,

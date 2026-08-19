@@ -37,7 +37,7 @@ use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DriverTransportKind, ZoneInfo,
+    DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -309,7 +309,7 @@ fn usb_device_info() -> DeviceInfo {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
             .with_protocol_id("prismrgb/test-prism"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Channel 1".into(),
             led_count: 16,
             topology: DeviceTopologyHint::Strip,
@@ -340,7 +340,7 @@ fn smbus_device_info(name: &str) -> DeviceInfo {
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
             .with_protocol_id("asus/aura-smbus"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".into(),
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
@@ -371,15 +371,15 @@ fn prism_s_device_info_with_backend(backend_id: &str) -> DeviceInfo {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", backend_id, ConnectionType::Usb)
             .with_protocol_id("prismrgb/prism-s"),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "ATX Strimer".to_owned(),
                 led_count: 120,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "GPU Strimer".to_owned(),
                 led_count: 162,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
@@ -401,7 +401,7 @@ fn mock_device_info() -> DeviceInfo {
         model: Some("mock_layout_device".into()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".into(),
             led_count: 16,
             topology: DeviceTopologyHint::Strip,

@@ -15,7 +15,7 @@ use hypercolor_daemon::api::{self, AppState};
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -120,7 +120,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -154,7 +154,7 @@ async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
             .with_protocol_id("nollie/prism-8"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Channel 1".to_owned(),
             led_count: 126,
             topology: DeviceTopologyHint::Strip,
@@ -188,8 +188,8 @@ async fn insert_nollie32_test_device(state: &Arc<AppState>) -> DeviceId {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
             .with_protocol_id("nollie/nollie-32"),
-        zones: (1..=20)
-            .map(|index| ZoneInfo {
+        segments: (1..=20)
+            .map(|index| SegmentInfo {
                 name: format!("Channel {index}"),
                 led_count: 256,
                 topology: DeviceTopologyHint::Strip,

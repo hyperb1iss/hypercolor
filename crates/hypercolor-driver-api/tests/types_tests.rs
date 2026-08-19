@@ -18,7 +18,8 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
-    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind, ZoneInfo,
+    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
+    SegmentInfo,
 };
 
 #[test]
@@ -527,7 +528,7 @@ fn discovered_device_payload_keeps_connect_behavior() {
             "fixture-backend",
             ConnectionType::Network,
         ),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -575,7 +576,7 @@ fn discovered_device_converts_from_core_payload() {
             "fixture-bridge-backend",
             ConnectionType::Network,
         ),
-        zones: Vec::new(),
+        segments: Vec::new(),
         firmware_version: Some("1.0".to_owned()),
         capabilities: DeviceCapabilities {
             led_count: 0,

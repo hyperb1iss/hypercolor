@@ -734,7 +734,7 @@ async fn display_targets(
             continue;
         }
         let Some((geometry, frame_format)) =
-            display_target_geometry_for_device(&tracked.info.zones).or_else(|| {
+            display_target_geometry_for_device(&tracked.info.segments).or_else(|| {
                 tracked
                     .info
                     .capabilities
@@ -753,8 +753,8 @@ async fn display_targets(
         else {
             continue;
         };
-        let has_non_display_led_zones = tracked.info.zones.iter().any(|zone| {
-            zone.led_count > 0 && !matches!(zone.topology, DeviceTopologyHint::Display { .. })
+        let has_non_display_led_segments = tracked.info.segments.iter().any(|segment| {
+            segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
         });
         let display_target = display_face_targets
             .get(&tracked.info.id)
@@ -778,7 +778,7 @@ async fn display_targets(
             layout.as_ref(),
             &logical_store,
             tracked.info.id,
-            has_non_display_led_zones,
+            has_non_display_led_segments,
         )
         .or_else(|| {
             canvas_source
@@ -905,9 +905,9 @@ fn display_face_target_binding_preferred(
 }
 
 fn display_target_geometry_for_device(
-    zones: &[hypercolor_types::device::ZoneInfo],
+    segments: &[hypercolor_types::device::SegmentInfo],
 ) -> Option<(DisplayGeometry, DisplayFrameFormat)> {
-    zones.iter().find_map(|zone| match zone.topology {
+    segments.iter().find_map(|segment| match segment.topology {
         DeviceTopologyHint::Display {
             width,
             height,
@@ -918,7 +918,7 @@ fn display_target_geometry_for_device(
                 height,
                 circular,
             },
-            DisplayFrameFormat::from_device_color_format(zone.color_format),
+            DisplayFrameFormat::from_device_color_format(segment.color_format),
         )),
         _ => None,
     })
@@ -928,7 +928,7 @@ fn display_viewport_for_device(
     layout: &SpatialLayout,
     logical_store: &HashMap<String, LogicalDevice>,
     physical_device_id: DeviceId,
-    has_non_display_led_zones: bool,
+    has_non_display_led_segments: bool,
 ) -> Option<DisplayViewport> {
     let mut first_matching_zone = None;
     let mut explicit_display_zone = None;
@@ -956,7 +956,7 @@ fn display_viewport_for_device(
     explicit_display_zone.or(generic_display_zone).map_or_else(
         || {
             let first_matching_zone = first_matching_zone?;
-            if !has_non_display_led_zones {
+            if !has_non_display_led_segments {
                 return Some(DisplayViewport {
                     position: first_matching_zone.position,
                     size: first_matching_zone.size,

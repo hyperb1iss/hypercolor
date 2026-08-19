@@ -15,7 +15,7 @@ use hypercolor_core::effect::EffectEntry;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -176,7 +176,7 @@ fn display_device_info(device_id: DeviceId, width: u32, height: u32) -> DeviceIn
         model: Some("Panel".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Display".to_owned(),
             led_count: width.saturating_mul(height),
             topology: DeviceTopologyHint::Display {

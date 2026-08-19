@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use hypercolor_types::attachment::zone_name_matches_slot_alias;
-use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, SegmentInfo};
 use hypercolor_types::spatial::{
     LedTopology, NormalizedPosition, Output, OutputComponent, SpatialLayout, StripDirection,
 };
@@ -500,18 +500,18 @@ pub(super) fn normalized_led_mapping(led_mapping: Option<&[u32]>) -> Option<Box<
     Some(led_mapping.to_vec().into_boxed_slice())
 }
 
-pub(super) fn zone_segments_from_device_info(
+pub(super) fn device_segments_from_device_info(
     device_info: &DeviceInfo,
 ) -> HashMap<String, SegmentRange> {
     let mut next_start = 0_usize;
-    let mut segments = HashMap::with_capacity(device_info.zones.len());
+    let mut segments = HashMap::with_capacity(device_info.segments.len());
 
-    for zone in &device_info.zones {
-        let Some(segment) = next_zone_segment(zone, next_start) else {
+    for device_segment in &device_info.segments {
+        let Some(segment) = next_device_segment(device_segment, next_start) else {
             continue;
         };
         next_start = segment.end();
-        segments.insert(zone.name.clone(), segment);
+        segments.insert(device_segment.name.clone(), segment);
     }
 
     segments
@@ -533,12 +533,12 @@ pub(super) fn device_output_len(device_info: &DeviceInfo) -> Option<usize> {
     Some(total_leds)
 }
 
-fn next_zone_segment(zone: &ZoneInfo, start: usize) -> Option<SegmentRange> {
-    let Ok(length) = usize::try_from(zone.led_count) else {
+fn next_device_segment(segment: &SegmentInfo, start: usize) -> Option<SegmentRange> {
+    let Ok(length) = usize::try_from(segment.led_count) else {
         warn!(
-            zone_name = %zone.name,
-            zone_led_count = zone.led_count,
-            "ignoring device zone segment because led_count does not fit in usize"
+            segment_name = %segment.name,
+            segment_led_count = segment.led_count,
+            "ignoring device segment because led_count does not fit in usize"
         );
         return None;
     };
@@ -580,7 +580,7 @@ pub(super) fn mapped_segment_for_zone_name(
             base_segment_length = base_segment.length,
             zone_segment_start = zone_segment.start,
             zone_segment_length = zone_segment.length,
-            "using the overlap between the logical device segment and the hardware zone segment"
+            "using the overlap between the logical and hardware device segments"
         );
         return Some(SegmentRange::new(
             overlap_start,
@@ -595,7 +595,7 @@ pub(super) fn mapped_segment_for_zone_name(
         base_segment_length = base_segment.length,
         zone_segment_start = zone_segment.start,
         zone_segment_length = zone_segment.length,
-        "ignoring hardware zone segment because it does not overlap the mapped logical segment"
+        "ignoring hardware segment because it does not overlap the mapped logical segment"
     );
     Some(base_segment)
 }

@@ -20,7 +20,7 @@ mod peripherals;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceFamily, ZoneLayoutHint};
+use hypercolor_types::device::{DeviceFamily, SegmentLayoutHint};
 use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 
 use crate::protocol::Protocol;
@@ -113,7 +113,7 @@ pub fn build_basilisk_v3_protocol() -> Box<dyn Protocol> {
         .with_write_only_custom_effect_activation(Duration::ZERO)
         .with_scroll_features()
         .with_layout_hint(
-            ZoneLayoutHint::custom_grid(
+            SegmentLayoutHint::custom_grid(
                 7,
                 8,
                 &[

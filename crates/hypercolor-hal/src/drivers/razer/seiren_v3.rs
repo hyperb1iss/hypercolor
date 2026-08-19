@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, ZoneLayoutHint,
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, SegmentLayoutHint,
 };
 use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
@@ -185,7 +185,7 @@ impl Protocol for SeirenV3Protocol {
             topology: DeviceTopologyHint::Custom,
             color_format: DeviceColorFormat::Rgb,
             layout_hint: Some(
-                ZoneLayoutHint::custom_grid(
+                SegmentLayoutHint::custom_grid(
                     6,
                     2,
                     &[

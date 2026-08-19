@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::portable::PortableIdentityClaim;
 
@@ -174,14 +174,14 @@ pub fn build_device_info(
         .iter()
         .map(|light| (light.id.as_str(), light))
         .collect();
-    let zones: Vec<ZoneInfo> = entertainment_config
+    let segments: Vec<SegmentInfo> = entertainment_config
         .map(|config| {
             config
                 .channels
                 .iter()
                 .map(|channel| {
                     let led_count = channel.segment_count.max(1);
-                    ZoneInfo {
+                    SegmentInfo {
                         name: resolved_channel_name(channel, &lights_by_id),
                         led_count,
                         topology: if led_count == 1 {
@@ -196,7 +196,7 @@ pub fn build_device_info(
                 .collect()
         })
         .unwrap_or_default();
-    let total_led_count = zones.iter().map(|zone| zone.led_count).sum();
+    let total_led_count = segments.iter().map(|segment| segment.led_count).sum();
 
     DeviceInfo {
         id: device_id,
@@ -209,7 +209,7 @@ pub fn build_device_info(
             .map(ToOwned::to_owned),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
-        zones,
+        segments,
         firmware_version: sw_version
             .map(str::trim)
             .filter(|value| !value.is_empty())

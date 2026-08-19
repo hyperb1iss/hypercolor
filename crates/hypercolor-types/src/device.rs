@@ -65,8 +65,8 @@ pub struct DeviceInfo {
     /// Driver ownership and output routing metadata.
     pub origin: DeviceOrigin,
 
-    /// Zones within this device, each with its own LED topology.
-    pub zones: Vec<ZoneInfo>,
+    /// Segments within this device, each with its own LED topology.
+    pub segments: Vec<SegmentInfo>,
 
     /// Firmware version string, if known.
     pub firmware_version: Option<String>,
@@ -76,10 +76,10 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    /// Total LED count across all zones.
+    /// Total LED count across all segments.
     #[must_use]
     pub fn total_led_count(&self) -> u32 {
-        self.zones.iter().map(|z| z.led_count).sum()
+        self.segments.iter().map(|segment| segment.led_count).sum()
     }
 
     /// Driver module that owns this device's semantics.
@@ -204,52 +204,52 @@ impl Default for DeviceUserSettings {
     }
 }
 
-// ── ZoneInfo ──────────────────────────────────────────────────────────────
+// ── SegmentInfo ───────────────────────────────────────────────────────────
 
-/// A single zone within a device.
+/// A single hardware segment within a device.
 ///
-/// Each zone maps to a contiguous range of LEDs with a specific topology.
-/// The spatial layout engine positions zones on the canvas independently.
+/// Each segment maps to a contiguous range of LEDs with a specific topology.
+/// The spatial layout engine positions segments on the canvas independently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZoneInfo {
-    /// Zone name (e.g., "Channel 1", "ATX Strimer", "Keyboard Backlight").
+pub struct SegmentInfo {
+    /// Segment name (e.g., "Channel 1", "ATX Strimer", "Keyboard Backlight").
     pub name: String,
 
-    /// Number of LEDs in this zone.
+    /// Number of LEDs in this segment.
     pub led_count: u32,
 
     /// Physical arrangement of LEDs.
     pub topology: DeviceTopologyHint,
 
-    /// Wire-level color format for this zone.
+    /// Wire-level color format for this segment.
     pub color_format: DeviceColorFormat,
 
     /// Optional device-declared spatial presentation hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout_hint: Option<ZoneLayoutHint>,
+    pub layout_hint: Option<SegmentLayoutHint>,
 }
 
 /// Device-declared spatial hint used when auto-generating or repairing layouts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ZoneLayoutHint {
+pub struct SegmentLayoutHint {
     /// Rich topology to use instead of deriving one from [`DeviceTopologyHint`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<LedTopology>,
 
-    /// Preferred zone size in normalized canvas coordinates.
+    /// Preferred segment size in normalized canvas coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<NormalizedPosition>,
 
-    /// Preferred editor shape for this zone.
+    /// Preferred editor shape for this segment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<ZoneShape>,
 
-    /// Place this zone at the same center as sibling zones.
+    /// Place this segment at the same center as sibling segments.
     #[serde(default)]
     pub co_located: bool,
 }
 
-impl ZoneLayoutHint {
+impl SegmentLayoutHint {
     /// Build a custom topology from integer grid coordinates.
     #[must_use]
     pub fn custom_grid(width: u32, height: u32, coordinates: &[(u32, u32)]) -> Self {
@@ -821,7 +821,7 @@ impl fmt::Display for DeviceState {
 
 // ── DeviceColorFormat ─────────────────────────────────────────────────────
 
-/// Wire-level color format used by a device zone.
+/// Wire-level color format used by a device segment.
 ///
 /// Backends apply the conversion in `push_frame` before writing bytes to
 /// the transport.

@@ -897,10 +897,10 @@ fn preserve_renderable_device_shape(
         return;
     }
 
-    let incoming_has_shape = !incoming.zones.is_empty()
+    let incoming_has_shape = !incoming.segments.is_empty()
         || incoming.capabilities.led_count > 0
         || incoming.capabilities.has_display;
-    let existing_has_shape = !existing.zones.is_empty()
+    let existing_has_shape = !existing.segments.is_empty()
         || existing.capabilities.led_count > 0
         || existing.capabilities.has_display;
 
@@ -908,6 +908,6 @@ fn preserve_renderable_device_shape(
         return;
     }
 
-    incoming.zones.clone_from(&existing.zones);
+    incoming.segments.clone_from(&existing.segments);
     incoming.capabilities = existing.capabilities;
 }

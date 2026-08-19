@@ -26,7 +26,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceColorSpace,
     DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
     DeviceTopologyHint, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
-    DriverPresentation, DriverTransportKind, ZoneInfo,
+    DriverPresentation, DriverTransportKind, SegmentInfo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1499,7 +1499,11 @@ fn build_device_info(
     target_fps: u32,
     output_enabled: bool,
 ) -> DeviceInfo {
-    let zones = controller.zones.iter().map(zone_info).collect::<Vec<_>>();
+    let segments = controller
+        .zones
+        .iter()
+        .map(segment_info)
+        .collect::<Vec<_>>();
     let led_count = controller_led_count(controller).unwrap_or(0);
     let display_name = if controller.vendor.trim().is_empty() {
         controller.name.clone()
@@ -1527,7 +1531,7 @@ fn build_device_info(
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::new(DESCRIPTOR.id, DESCRIPTOR.id, DriverTransportKind::Bridge)
             .with_protocol_id("openrgb-sdk"),
-        zones,
+        segments,
         firmware_version: if controller.version.trim().is_empty() {
             None
         } else {
@@ -1546,7 +1550,7 @@ fn build_device_info(
     }
 }
 
-fn zone_info(zone: &ControllerZone) -> ZoneInfo {
+fn segment_info(zone: &ControllerZone) -> SegmentInfo {
     let led_count = zone.leds_count;
     let topology = match zone.zone_type {
         hypercolor_openrgb_sdk::ZoneType::Single => DeviceTopologyHint::Point,
@@ -1567,7 +1571,7 @@ fn zone_info(zone: &ControllerZone) -> ZoneInfo {
             DeviceTopologyHint::Strip
         }
     };
-    ZoneInfo {
+    SegmentInfo {
         name: zone.name.clone(),
         led_count,
         topology,

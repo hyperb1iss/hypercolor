@@ -485,7 +485,7 @@ fn display_group_output_route_for_device(
         .display_resolution
         .map(|(width, height)| (width, height, false, DisplayFrameFormat::Jpeg));
     let (width, height, circular, frame_format) =
-        display_target_geometry_for_device(&info.zones).or(resolution_geometry)?;
+        display_target_geometry_for_device(&info.segments).or(resolution_geometry)?;
 
     Some(DisplayGroupOutputRoute {
         device_id: info.id,
@@ -499,9 +499,9 @@ fn display_group_output_route_for_device(
 }
 
 fn display_target_geometry_for_device(
-    zones: &[hypercolor_types::device::ZoneInfo],
+    segments: &[hypercolor_types::device::SegmentInfo],
 ) -> Option<(u32, u32, bool, DisplayFrameFormat)> {
-    zones.iter().find_map(|zone| match zone.topology {
+    segments.iter().find_map(|segment| match segment.topology {
         DeviceTopologyHint::Display {
             width,
             height,
@@ -510,7 +510,7 @@ fn display_target_geometry_for_device(
             width,
             height,
             circular,
-            DisplayFrameFormat::from_device_color_format(zone.color_format),
+            DisplayFrameFormat::from_device_color_format(segment.color_format),
         )),
         _ => None,
     })
@@ -673,7 +673,7 @@ mod tests {
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
         DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-        DisplayFrameFormat, ZoneInfo,
+        DisplayFrameFormat, SegmentInfo,
     };
     use hypercolor_types::effect::{
         EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -855,7 +855,7 @@ mod tests {
             model: Some("LCD".into()),
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "LCD".into(),
                 led_count: 320 * 320,
                 topology: DeviceTopologyHint::Display {

@@ -38,8 +38,8 @@ use hypercolor_types::config::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
-    ZoneLayoutHint,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    SegmentLayoutHint,
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
@@ -265,7 +265,7 @@ fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("cleanup", "cleanup", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
@@ -1436,7 +1436,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
                 model: None,
                 connection_type: ConnectionType::Network,
                 origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-                zones: vec![ZoneInfo {
+                segments: vec![SegmentInfo {
                     name: "Main".to_owned(),
                     led_count: 30,
                     topology: DeviceTopologyHint::Strip,
@@ -1761,7 +1761,7 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
                 "static-hold-test",
                 ConnectionType::Usb,
             ),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 30,
                 topology: DeviceTopologyHint::Strip,
@@ -2062,7 +2062,7 @@ fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("fixture-strip", "fixture-output", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 30,
             topology: DeviceTopologyHint::Strip,
@@ -2117,7 +2117,7 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("display", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Screen".to_owned(),
             led_count: 1,
             topology: DeviceTopologyHint::Display {
@@ -2155,8 +2155,8 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
     assert!(layout.zones.is_empty());
 }
 
-fn compact_perimeter_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
+fn compact_perimeter_layout_hint() -> SegmentLayoutHint {
+    SegmentLayoutHint::custom_grid(
         6,
         2,
         &[
@@ -2176,8 +2176,8 @@ fn compact_perimeter_layout_hint() -> ZoneLayoutHint {
     .with_shape(ZoneShape::Rectangle)
 }
 
-fn asymmetric_pointer_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
+fn asymmetric_pointer_layout_hint() -> SegmentLayoutHint {
+    SegmentLayoutHint::custom_grid(
         7,
         8,
         &[
@@ -2198,8 +2198,8 @@ fn asymmetric_pointer_layout_hint() -> ZoneLayoutHint {
     .with_shape(ZoneShape::Rectangle)
 }
 
-fn outer_ring_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
+fn outer_ring_layout_hint() -> SegmentLayoutHint {
+    SegmentLayoutHint::custom_grid(
         13,
         13,
         &[
@@ -2230,8 +2230,8 @@ fn outer_ring_layout_hint() -> ZoneLayoutHint {
     .co_located()
 }
 
-fn inner_ring_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
+fn inner_ring_layout_hint() -> SegmentLayoutHint {
+    SegmentLayoutHint::custom_grid(
         11,
         11,
         &[
@@ -2277,7 +2277,7 @@ fn append_auto_layout_zones_uses_device_declared_compact_custom_geometry() {
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 10,
             topology: DeviceTopologyHint::Strip,
@@ -2332,7 +2332,7 @@ fn append_auto_layout_zones_uses_device_declared_asymmetric_custom_geometry() {
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 11,
             topology: DeviceTopologyHint::Matrix { rows: 1, cols: 11 },
@@ -2387,15 +2387,15 @@ fn append_auto_layout_zones_preserves_device_declared_colocated_ring_geometry() 
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Outer Ring".to_owned(),
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: Some(outer_ring_layout_hint()),
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Inner Ring".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
@@ -2482,43 +2482,43 @@ fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panick
         model: Some("push2".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("ableton", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Pads".to_owned(),
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Buttons Above".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Buttons Below".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Scene Launch".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Transport".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Custom,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Touch Strip".to_owned(),
                 led_count: 31,
                 topology: DeviceTopologyHint::Strip,
@@ -2573,7 +2573,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Channel 1".to_owned(),
             led_count: 10,
             topology: DeviceTopologyHint::Strip,
@@ -2647,15 +2647,15 @@ fn reconcile_auto_layout_zones_repairs_device_declared_geometry_without_touching
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Outer Ring".to_owned(),
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: Some(outer_ring_layout_hint()),
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Inner Ring".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
@@ -2775,7 +2775,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
             .with_protocol_id("prismrgb/prism-s"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "GPU Strimer".to_owned(),
             led_count: 108,
             topology: DeviceTopologyHint::Matrix { rows: 4, cols: 27 },

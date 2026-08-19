@@ -427,9 +427,9 @@ impl DeviceBackend for WledBackend {
         };
         let rgbw = discovered
             .info
-            .zones
+            .segments
             .first()
-            .is_some_and(|zone| matches!(zone.color_format, DeviceColorFormat::Rgbw));
+            .is_some_and(|segment| matches!(segment.color_format, DeviceColorFormat::Rgbw));
         let mac = discovered
             .fingerprint
             .0

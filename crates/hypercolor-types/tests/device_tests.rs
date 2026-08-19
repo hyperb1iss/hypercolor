@@ -6,8 +6,8 @@ use hypercolor_types::device::{
     DeviceColorFormat, DeviceColorSpace, DeviceError, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin,
     DeviceState, DeviceTopologyHint, DeviceUserSettings, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverTransportKind, ZoneInfo,
-    ZoneLayoutHint,
+    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverTransportKind, SegmentInfo,
+    SegmentLayoutHint,
 };
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 use uuid::Uuid;
@@ -73,15 +73,15 @@ fn sample_device_info() -> DeviceInfo {
             "fixture-network",
             ConnectionType::Network,
         ),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Main".into(),
                 led_count: 60,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Accent".into(),
                 led_count: 30,
                 topology: DeviceTopologyHint::Ring { count: 30 },
@@ -122,6 +122,9 @@ fn device_info_exposes_driver_and_output_backend_separately() {
 fn device_info_serde_round_trip() {
     let info = sample_device_info();
     let json = serde_json::to_string_pretty(&info).expect("serialize");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("deserialize value");
+    assert!(value.get("segments").is_some());
+    assert!(value.get("zones").is_none());
     let back: DeviceInfo = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.name, "Test Strip");
     assert_eq!(back.total_led_count(), 90);
@@ -129,7 +132,7 @@ fn device_info_serde_round_trip() {
 }
 
 #[test]
-fn device_info_empty_zones_yields_zero_leds() {
+fn device_info_empty_segments_yields_zero_leds() {
     let info = DeviceInfo {
         id: DeviceId::new(),
         name: "Empty".into(),
@@ -138,7 +141,7 @@ fn device_info_empty_zones_yields_zero_leds() {
         model: None,
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::native("test", "test", ConnectionType::Bridge),
-        zones: vec![],
+        segments: vec![],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
     };
@@ -951,19 +954,19 @@ fn device_fingerprint_stable_device_id_differs_for_distinct_fingerprints() {
     assert_ne!(left, right);
 }
 
-// ── ZoneInfo ──────────────────────────────────────────────────────────────
+// ── SegmentInfo ───────────────────────────────────────────────────────────
 
 #[test]
-fn zone_info_serde_round_trip() {
-    let zone = ZoneInfo {
+fn segment_info_serde_round_trip() {
+    let segment = SegmentInfo {
         name: "Main Strip".into(),
         led_count: 144,
         topology: DeviceTopologyHint::Strip,
         color_format: DeviceColorFormat::Rgb,
         layout_hint: None,
     };
-    let json = serde_json::to_string(&zone).expect("serialize");
-    let back: ZoneInfo = serde_json::from_str(&json).expect("deserialize");
+    let json = serde_json::to_string(&segment).expect("serialize");
+    let back: SegmentInfo = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.name, "Main Strip");
     assert_eq!(back.led_count, 144);
     assert_eq!(back.topology, DeviceTopologyHint::Strip);
@@ -971,8 +974,8 @@ fn zone_info_serde_round_trip() {
 }
 
 #[test]
-fn zone_layout_hint_custom_grid_builds_normalized_positions() {
-    let hint = ZoneLayoutHint::custom_grid(3, 2, &[(0, 0), (1, 1), (2, 1)])
+fn segment_layout_hint_custom_grid_builds_normalized_positions() {
+    let hint = SegmentLayoutHint::custom_grid(3, 2, &[(0, 0), (1, 1), (2, 1)])
         .with_size(NormalizedPosition::new(0.2, 0.1))
         .with_shape(ZoneShape::Rectangle)
         .co_located();
@@ -991,8 +994,8 @@ fn zone_layout_hint_custom_grid_builds_normalized_positions() {
 }
 
 #[test]
-fn zone_layout_hint_custom_grid_preserves_coordinates_above_u16() {
-    let hint = ZoneLayoutHint::custom_grid(100_001, 2, &[(0, 0), (50_000, 1), (100_000, 1)]);
+fn segment_layout_hint_custom_grid_preserves_coordinates_above_u16() {
+    let hint = SegmentLayoutHint::custom_grid(100_001, 2, &[(0, 0), (50_000, 1), (100_000, 1)]);
     let positions = match hint.topology {
         Some(LedTopology::Custom { positions }) => positions,
         other => panic!("expected custom topology, got {other:?}"),
@@ -1005,15 +1008,15 @@ fn zone_layout_hint_custom_grid_preserves_coordinates_above_u16() {
 }
 
 #[test]
-fn zone_info_matrix_topology() {
-    let zone = ZoneInfo {
+fn segment_info_matrix_topology() {
+    let segment = SegmentInfo {
         name: "Panel".into(),
         led_count: 256,
         topology: DeviceTopologyHint::Matrix { rows: 16, cols: 16 },
         color_format: DeviceColorFormat::Rgbw,
         layout_hint: None,
     };
-    if let DeviceTopologyHint::Matrix { rows, cols } = zone.topology {
+    if let DeviceTopologyHint::Matrix { rows, cols } = segment.topology {
         assert_eq!(rows, 16);
         assert_eq!(cols, 16);
     } else {

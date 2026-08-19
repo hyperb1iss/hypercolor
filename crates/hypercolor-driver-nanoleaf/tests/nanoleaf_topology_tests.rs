@@ -74,10 +74,10 @@ fn build_device_info_filters_non_led_panels_and_preserves_order() {
         DeviceFamily::new_static("nanoleaf", "Nanoleaf")
     );
     assert_eq!(info.total_led_count(), 2);
-    assert_eq!(info.zones.len(), 2);
-    assert_eq!(info.zones[0].name, "Panel 11");
-    assert_eq!(info.zones[0].topology, DeviceTopologyHint::Point);
-    assert_eq!(info.zones[1].name, "Panel 12");
-    assert_eq!(info.zones[1].topology, DeviceTopologyHint::Strip);
+    assert_eq!(info.segments.len(), 2);
+    assert_eq!(info.segments[0].name, "Panel 11");
+    assert_eq!(info.segments[0].topology, DeviceTopologyHint::Point);
+    assert_eq!(info.segments[1].name, "Panel 12");
+    assert_eq!(info.segments[1].topology, DeviceTopologyHint::Strip);
     assert_eq!(panel_ids_from_layout(panels.as_slice()), vec![11, 12]);
 }

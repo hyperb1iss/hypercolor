@@ -579,7 +579,7 @@ pub async fn identify_segment(
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
-    let zone_index = match resolve_zone_index(&tracked.info, &segment) {
+    let segment_index = match resolve_segment_index(&tracked.info, &segment) {
         Ok(index) => index,
         Err(error) => return error.into_response(),
     };
@@ -614,7 +614,7 @@ pub async fn identify_segment(
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
 
-    let on_frame = build_zone_identify_frame(&tracked.info, zone_index, identify_color);
+    let on_frame = build_segment_identify_frame(&tracked.info, segment_index, identify_color);
 
     let backend_id = resolved_backend_id(&tracked.info);
     sync_identify_usb_protocol_config(state.as_ref(), device_id, &tracked.info).await;
@@ -642,12 +642,12 @@ pub async fn identify_segment(
         return error.into_response();
     }
 
-    let segment_name = tracked.info.zones[zone_index].name.clone();
+    let segment_name = tracked.info.segments[segment_index].name.clone();
     tracing::info!(
         device_id = %device_id,
         device = %tracked.info.name,
         segment = %segment_name,
-        segment_index = zone_index,
+        segment_index,
         backend = %backend_id,
         duration_ms,
         color = ?identify_rgb,
@@ -880,7 +880,7 @@ pub(super) async fn summarize_device_for_response(
         total_leds: info.total_led_count(),
         auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await,
         segments: info
-            .zones
+            .segments
             .iter()
             .enumerate()
             .map(|(i, z)| SegmentSummary {
@@ -1459,43 +1459,44 @@ fn identify_color_channels(color: Rgb) -> [u8; 3] {
 
 // ── Identify helpers ─────────────────────────────────────────────────────
 
-/// Resolve a zone specifier (`"zone_0"`, `"0"`, or zone name) to an index.
-fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, DomainError> {
-    // Try "zone_N" format
-    if let Some(stripped) = zone_id.strip_prefix("zone_")
+/// Resolve a segment specifier (`"segment_0"`, `"0"`, or name) to an index.
+fn resolve_segment_index(info: &DeviceInfo, segment_id: &str) -> Result<usize, DomainError> {
+    if let Some(stripped) = segment_id.strip_prefix("segment_")
         && let Ok(index) = stripped.parse::<usize>()
-        && index < info.zones.len()
+        && index < info.segments.len()
     {
         return Ok(index);
     }
 
-    // Try bare numeric index
-    if let Ok(index) = zone_id.parse::<usize>()
-        && index < info.zones.len()
+    if let Ok(index) = segment_id.parse::<usize>()
+        && index < info.segments.len()
     {
         return Ok(index);
     }
 
-    // Try name match (case-insensitive)
-    let needle = zone_id.to_ascii_lowercase();
-    for (i, zone) in info.zones.iter().enumerate() {
-        if zone.name.to_ascii_lowercase() == needle {
-            return Ok(i);
+    let needle = segment_id.to_ascii_lowercase();
+    for (index, segment) in info.segments.iter().enumerate() {
+        if segment.name.to_ascii_lowercase() == needle {
+            return Ok(index);
         }
     }
 
-    Err(DomainError::not_found(ResourceKind::Zone, zone_id))
+    Err(DomainError::not_found(ResourceKind::Zone, segment_id))
 }
 
-/// Build a full-device LED frame with only one zone lit.
-fn build_zone_identify_frame(info: &DeviceInfo, zone_index: usize, color: [u8; 3]) -> Vec<[u8; 3]> {
+/// Build a full-device LED frame with only one segment lit.
+fn build_segment_identify_frame(
+    info: &DeviceInfo,
+    segment_index: usize,
+    color: [u8; 3],
+) -> Vec<[u8; 3]> {
     let total_leds = usize::try_from(info.total_led_count()).unwrap_or_default();
     let mut frame = vec![[0_u8; 3]; total_leds];
 
     let mut offset = 0_usize;
-    for (i, zone) in info.zones.iter().enumerate() {
-        let count = usize::try_from(zone.led_count).unwrap_or_default();
-        if i == zone_index {
+    for (index, segment) in info.segments.iter().enumerate() {
+        let count = usize::try_from(segment.led_count).unwrap_or_default();
+        if index == segment_index {
             for led in &mut frame[offset..offset + count] {
                 *led = color;
             }

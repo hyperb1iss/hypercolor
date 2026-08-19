@@ -56,17 +56,17 @@ impl UsbScanner {
         protocol: Option<&dyn Protocol>,
         device_id: hypercolor_types::device::DeviceId,
     ) -> DeviceInfo {
-        let (zones, capabilities) = if let Some(protocol) = protocol {
-            let zones = protocol
+        let (segments, capabilities) = if let Some(protocol) = protocol {
+            let segments = protocol
                 .zones()
                 .into_iter()
-                .map(protocol_zone_to_zone_info)
+                .map(protocol_zone_to_segment_info)
                 .collect::<Vec<_>>();
-            (zones, protocol.capabilities())
+            (segments, protocol.capabilities())
         } else {
             let fallback_led_count = 1_u32;
             (
-                vec![hypercolor_types::device::ZoneInfo {
+                vec![hypercolor_types::device::SegmentInfo {
                     name: "Lighting".to_owned(),
                     led_count: fallback_led_count,
                     topology: DeviceTopologyHint::Point,
@@ -104,7 +104,7 @@ impl UsbScanner {
                 ConnectionType::Usb,
             )
             .with_protocol_id(descriptor.protocol.id),
-            zones,
+            segments,
             firmware_version: Some(hex_version(usb.device_version())),
             capabilities,
         }
@@ -199,8 +199,8 @@ impl TransportScanner for UsbScanner {
     }
 }
 
-fn protocol_zone_to_zone_info(zone: ProtocolZone) -> hypercolor_types::device::ZoneInfo {
-    hypercolor_types::device::ZoneInfo {
+fn protocol_zone_to_segment_info(zone: ProtocolZone) -> hypercolor_types::device::SegmentInfo {
+    hypercolor_types::device::SegmentInfo {
         name: zone.name,
         led_count: zone.led_count,
         topology: zone.topology,

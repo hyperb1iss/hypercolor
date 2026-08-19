@@ -8,7 +8,7 @@ use serde::Deserialize;
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::portable::PortableIdentityClaim;
 
@@ -113,10 +113,10 @@ pub fn build_device_info(
     let fingerprint = DeviceFingerprint(format!("nanoleaf:{device_key}"));
     let device_id = fingerprint.stable_device_id();
 
-    let zones: Vec<ZoneInfo> = panels
+    let segments: Vec<SegmentInfo> = panels
         .iter()
         .filter(|panel| panel.has_leds())
-        .map(|panel| ZoneInfo {
+        .map(|panel| SegmentInfo {
             name: format!("Panel {}", panel.panel_id),
             led_count: 1,
             topology: panel.topology_hint(),
@@ -124,7 +124,7 @@ pub fn build_device_info(
             layout_hint: None,
         })
         .collect();
-    let panel_count = u32::try_from(zones.len()).unwrap_or(u32::MAX);
+    let panel_count = u32::try_from(segments.len()).unwrap_or(u32::MAX);
 
     DeviceInfo {
         id: device_id,
@@ -141,7 +141,7 @@ pub fn build_device_info(
             .map(ToOwned::to_owned),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
-        zones,
+        segments,
         firmware_version: firmware
             .map(str::trim)
             .filter(|value| !value.is_empty())
