@@ -226,6 +226,7 @@ struct InputRouteCache {
     screen_routes: Vec<usize>,
     media_routes: Vec<usize>,
     network_routes: Vec<usize>,
+    sensor_routes: Vec<usize>,
     untyped_routes: Vec<usize>,
     interaction_sources: Vec<InteractionRouteSource>,
     interaction_statuses: Vec<SourceStatusHandle>,
@@ -265,6 +266,7 @@ impl InputRouteCache {
             screen_routes: Vec::new(),
             media_routes: Vec::new(),
             network_routes: Vec::new(),
+            sensor_routes: Vec::new(),
             untyped_routes: Vec::new(),
             interaction_sources: Vec::new(),
             interaction_statuses: Vec::new(),
@@ -456,6 +458,13 @@ impl InputRouteCache {
                 inputs.net = Some(Arc::clone(snapshot));
             }
         }
+        for &route_index in &self.sensor_routes {
+            if let Some(sample) = self.routes[route_index].slot.latest()
+                && let InputData::Sensors(snapshot) = sample.as_ref()
+            {
+                inputs.sensors = Arc::clone(snapshot);
+            }
+        }
         for &route_index in &self.untyped_routes {
             let Some(sample) = self.routes[route_index].slot.latest() else {
                 continue;
@@ -498,6 +507,7 @@ impl InputRouteCache {
                 Some(SourceKind::Interaction) => {}
                 Some(SourceKind::Media) => self.media_routes.push(route_index),
                 Some(SourceKind::Network) => self.network_routes.push(route_index),
+                Some(SourceKind::Sensors) => self.sensor_routes.push(route_index),
                 None => self.untyped_routes.push(route_index),
             }
         }
@@ -567,6 +577,7 @@ impl InputRouteCache {
         self.screen_routes.clear();
         self.media_routes.clear();
         self.network_routes.clear();
+        self.sensor_routes.clear();
         self.untyped_routes.clear();
     }
 }

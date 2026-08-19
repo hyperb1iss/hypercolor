@@ -1215,6 +1215,19 @@ fn managed_roles_expose_stable_typed_keys_and_common_sources() {
 }
 
 #[test]
+fn data_source_kinds_map_once_into_scheduling_kinds() {
+    assert_eq!(SourceKind::from(DataSourceKind::Media), SourceKind::Media);
+    assert_eq!(
+        SourceKind::from(DataSourceKind::Network),
+        SourceKind::Network
+    );
+    assert_eq!(
+        SourceKind::from(DataSourceKind::Sensors),
+        SourceKind::Sensors
+    );
+}
+
+#[test]
 fn managed_role_keys_do_not_change_after_registration() {
     let aggregate = Arc::new(AtomicBool::new(false));
     let network = Arc::new(AtomicBool::new(false));

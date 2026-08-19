@@ -28,6 +28,8 @@ pub enum SourceKind {
     Media,
     /// Network-delivered input.
     Network,
+    /// System sensor telemetry.
+    Sensors,
 }
 
 /// Current lifecycle health of an input source.

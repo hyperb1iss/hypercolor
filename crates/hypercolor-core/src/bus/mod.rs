@@ -1120,6 +1120,7 @@ const fn source_kind_name(kind: SourceKind) -> &'static str {
         SourceKind::Interaction => "interaction",
         SourceKind::Media => "media",
         SourceKind::Network => "network",
+        SourceKind::Sensors => "sensors",
     }
 }
 

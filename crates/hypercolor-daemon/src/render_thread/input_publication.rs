@@ -40,12 +40,13 @@ const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// path. Spec 74 folds the source resolution revision into the pump key,
 /// which turns this into an event-driven re-arm.
 const EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-const SOURCE_KINDS: [SourceKind; 5] = [
+const SOURCE_KINDS: [SourceKind; 6] = [
     SourceKind::Audio,
     SourceKind::Screen,
     SourceKind::Interaction,
     SourceKind::Media,
     SourceKind::Network,
+    SourceKind::Sensors,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +70,7 @@ pub struct InputPublicationDemand {
     interaction: u32,
     media: u32,
     network: u32,
+    sensors: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,6 +161,7 @@ impl InputPublicationDemand {
             interaction: requested_hz,
             media: requested_hz,
             network: requested_hz,
+            sensors: requested_hz,
         }
     }
 
@@ -185,6 +188,7 @@ impl InputPublicationDemand {
             SourceKind::Interaction => self.interaction = requested_hz,
             SourceKind::Media => self.media = requested_hz,
             SourceKind::Network => self.network = requested_hz,
+            SourceKind::Sensors => self.sensors = requested_hz,
         }
         self
     }
@@ -247,6 +251,7 @@ impl InputPublicationDemand {
             SourceKind::Interaction => self.interaction,
             SourceKind::Media => self.media,
             SourceKind::Network => self.network,
+            SourceKind::Sensors => self.sensors,
         }
     }
 }
@@ -1501,6 +1506,7 @@ const fn source_kind_index(source: SourceKind) -> usize {
         SourceKind::Interaction => 2,
         SourceKind::Media => 3,
         SourceKind::Network => 4,
+        SourceKind::Sensors => 5,
     }
 }
 

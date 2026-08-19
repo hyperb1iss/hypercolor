@@ -5,7 +5,7 @@
 //! the render loop consumes per frame.
 
 use super::graph::InteractionSourceOrigin;
-use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
+use super::status::{SourceKind, SourceStatusError, SourceStatusHandle, SourceStatusReporter};
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
@@ -190,6 +190,16 @@ pub enum DataSourceKind {
     Media,
     Network,
     Sensors,
+}
+
+impl From<DataSourceKind> for SourceKind {
+    fn from(kind: DataSourceKind) -> Self {
+        match kind {
+            DataSourceKind::Media => Self::Media,
+            DataSourceKind::Network => Self::Network,
+            DataSourceKind::Sensors => Self::Sensors,
+        }
+    }
 }
 
 /// Stable identity used to find or replace one managed source role.

@@ -338,6 +338,7 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     let snapshot = demands.snapshot();
     assert_eq!(snapshot.requested_hz(SourceKind::Interaction), 360);
     assert_eq!(snapshot.requested_hz(SourceKind::Screen), 144);
+    assert_eq!(snapshot.requested_hz(SourceKind::Sensors), 60);
     assert_eq!(snapshot.compatibility_screen_extent, Some(extent(640, 480)));
     assert_eq!(snapshot.screen_branches.len(), 2);
     assert!(
@@ -657,6 +658,7 @@ fn authoritative_registration_does_not_blanket_unrequested_source_types() {
     assert_eq!(snapshot.requested_hz(SourceKind::Interaction), 0);
     assert_eq!(snapshot.requested_hz(SourceKind::Media), 0);
     assert_eq!(snapshot.requested_hz(SourceKind::Network), 0);
+    assert_eq!(snapshot.requested_hz(SourceKind::Sensors), 0);
 }
 
 #[test]
