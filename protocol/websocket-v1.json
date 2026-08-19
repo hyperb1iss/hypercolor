@@ -139,7 +139,6 @@
     "device_discovery_started",
     "device_error",
     "device_firmware_info",
-    "device_rebound",
     "device_settings_changed",
     "device_state_changed",
     "effect_control_changed",
