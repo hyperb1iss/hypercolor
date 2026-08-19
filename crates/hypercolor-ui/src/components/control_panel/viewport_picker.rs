@@ -8,7 +8,7 @@ use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 
-use crate::api::effects::fetch_active_effect;
+use crate::api::effects::fetch_primary_effect_view;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::viewport_designer::{
     ModeDraft, ViewportDesignerContext, ViewportDesignerModal, ViewportDesignerMode,
@@ -116,9 +116,8 @@ pub(super) fn ViewportPicker(
         .unwrap_or_default();
     let (url_text, set_url_text) = signal(initial_url);
 
-    // Viewport Designer modal state. We populate it on demand via one
-    // GET /api/v1/effects/active so the inline picker doesn't need
-    // extra props — the Edit button is self-contained.
+    // Viewport Designer modal state. We populate it on demand from the
+    // live scene projection so the Edit button stays self-contained.
     let designer_context = RwSignal::<Option<ViewportDesignerContext>>::new(None);
     let designer_opening = RwSignal::new(false);
     if let Some(binding) = url_input.clone() {
@@ -203,9 +202,8 @@ pub(super) fn ViewportPicker(
         designer_opening.set(true);
         let seed_viewport = value.get_untracked().clamp();
         leptos::task::spawn_local(async move {
-            match fetch_active_effect().await {
+            match fetch_primary_effect_view().await {
                 Ok(Some(effect)) => {
-                    let version = effect.controls_version.unwrap_or(0);
                     let mode = detect_designer_mode(&effect);
                     let fit = parse_fit_from_values(&effect.control_values);
                     let brightness = effect
@@ -259,7 +257,6 @@ pub(super) fn ViewportPicker(
                                 viewport: seed_viewport,
                                 fit_mode: fit,
                                 brightness,
-                                controls_version: version,
                             },
                             mode: mode_draft,
                         },
@@ -615,9 +612,7 @@ fn resize_viewport_rect(
 /// built-in that exposes `url` / `scroll_y`. A future spec can add a
 /// proper marker to the response; today this matches the built-in
 /// shapes.
-fn detect_designer_mode(
-    effect: &crate::api::effects::ActiveEffectResponse,
-) -> ViewportDesignerMode {
+fn detect_designer_mode(effect: &crate::api::effects::PrimaryEffectView) -> ViewportDesignerMode {
     if effect.control_values.contains_key("url") || effect.control_values.contains_key("scroll_y") {
         ViewportDesignerMode::WebViewport
     } else {

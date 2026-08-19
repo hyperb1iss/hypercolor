@@ -73,7 +73,7 @@ async fn active_scene_event_refreshes_daemon_status() {
 
     assert_eq!(updated.0.as_deref(), Some("Movie Night"));
     assert!(updated.1);
-    assert_eq!(status_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(status_calls.load(Ordering::SeqCst), 2);
 
     cancel.cancel();
     bridge.await.expect("bridge task should join");
@@ -148,7 +148,7 @@ async fn control_surface_event_refreshes_device_surface() {
 
 async fn status_handler(State(state): State<TestState>) -> Json<serde_json::Value> {
     let call = state.status_calls.fetch_add(1, Ordering::SeqCst);
-    let (scene_name, snapshot_locked) = if call == 0 {
+    let (scene_name, snapshot_locked) = if call <= 1 {
         ("Default", false)
     } else {
         ("Movie Night", true)
@@ -258,6 +258,15 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
             .expect("send hello");
 
         let _ = socket.recv().await;
+        let subscribed = serde_json::json!({
+            "type": "subscribed",
+            "topics": [],
+            "preview_transport": "preview_transport_v2"
+        });
+        socket
+            .send(Message::Text(subscribed.to_string().into()))
+            .await
+            .expect("send subscription acknowledgment");
 
         let event = serde_json::json!({
             "type": "event",
@@ -299,6 +308,15 @@ async fn control_surface_ws_handler(ws: WebSocketUpgrade) -> Response {
             .expect("send hello");
 
         let _ = socket.recv().await;
+        let subscribed = serde_json::json!({
+            "type": "subscribed",
+            "topics": [],
+            "preview_transport": "preview_transport_v2"
+        });
+        socket
+            .send(Message::Text(subscribed.to_string().into()))
+            .await
+            .expect("send subscription acknowledgment");
 
         let event = serde_json::json!({
             "type": "event",

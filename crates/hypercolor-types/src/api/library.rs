@@ -97,15 +97,6 @@ pub struct SavePresetRequest {
     pub tags: Option<Vec<String>>,
 }
 
-/// Optional body for `POST /api/v1/library/presets/{id}/apply` — scopes
-/// the apply to one zone.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ApplyPresetRequest {
-    /// Target zone id. Omitted targets the primary zone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zone_id: Option<String>,
-}
-
 /// Response for `GET /api/v1/library/presets`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresetListResponse {

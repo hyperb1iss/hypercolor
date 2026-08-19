@@ -70,7 +70,7 @@ pub struct ActiveScene {
     pub kind: SceneKind,
     pub mutation_mode: SceneMutationMode,
     pub snapshot_locked: bool,
-    pub zones_revision: u64,
+    pub revision: u64,
     pub zones: Vec<ZoneSummary>,
 }
 
@@ -99,22 +99,19 @@ impl ActiveScene {
 
 /// A render group (zone) within the active scene.
 ///
-/// Projection of `hypercolor_types::scene::Zone` carrying only what the
-/// TUI renders and mutates. The zone's id doubles as its legacy layer id
-/// for the layer-scoped controls PATCH (`Zone::legacy_layer_id()` wraps
-/// the same UUID).
+/// Projection of the canonical live zone carrying the effect layer id
+/// needed for control patches.
 #[derive(Debug, Clone)]
 pub struct ZoneSummary {
     pub id: String,
     pub name: String,
+    pub layer_id: Option<String>,
     pub effect_id: Option<String>,
     pub brightness: f32,
     pub enabled: bool,
     pub is_primary: bool,
     pub color: Option<String>,
     pub controls: HashMap<String, ControlValue>,
-    pub controls_version: u64,
-    pub layers_version: u64,
 }
 
 // ── Daemon State ────────────────────────────────────────────────────

@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use crate::effect::ControlValue;
 use crate::identity::LayoutId;
 use crate::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
+    SceneLayerId,
 };
 use crate::library::PresetId;
 use crate::scene::{
@@ -176,7 +177,7 @@ pub struct ScenePatchRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClearSceneRequest {
-    /// Clear one zone's stack; omitted clears every zone's.
+    /// Clear one non-display zone's stack; omitted clears every non-display zone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<ZoneId>,
 }
@@ -267,6 +268,10 @@ pub struct CreateLayerRequest {
     pub transform: Option<LayerTransform>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adjust: Option<LayerAdjust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bindings: Option<Vec<LayerBinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 /// `PUT /scene/zones/{zone}/layers/{layer}` — whole-layer replace.

@@ -39,6 +39,7 @@ use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent, ZoneColors,
 };
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::session::OffOutputBehavior;
@@ -291,6 +292,13 @@ fn primary_group(
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
 ) -> Zone {
+    let layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls.clone(),
+        HashMap::new(),
+        None,
+    )];
     Zone {
         id: ZoneId::new(),
         name: "Primary".into(),
@@ -299,7 +307,7 @@ fn primary_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers,
         layout,
         brightness: 1.0,
         enabled: true,
@@ -317,6 +325,13 @@ fn custom_group(
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
 ) -> Zone {
+    let layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls.clone(),
+        HashMap::new(),
+        None,
+    )];
     Zone {
         id: ZoneId::new(),
         name: name.into(),
@@ -325,7 +340,7 @@ fn custom_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers,
         layout,
         brightness: 1.0,
         enabled: true,
@@ -344,6 +359,13 @@ fn display_group(
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
 ) -> Zone {
+    let layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls.clone(),
+        HashMap::new(),
+        None,
+    )];
     Zone {
         id: group_id,
         name: "Display".into(),
@@ -352,7 +374,7 @@ fn display_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers,
         layout,
         brightness: 1.0,
         enabled: true,

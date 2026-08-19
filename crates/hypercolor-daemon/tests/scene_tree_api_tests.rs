@@ -18,11 +18,16 @@ use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectId, EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
-use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, SceneSettingsChangeKind};
+use hypercolor_types::event::{
+    ChangeTrigger, EffectStopReason, EventControlValue, HypercolorEvent, LayerStackChangeKind,
+    SceneSettingsChangeKind,
+};
+use hypercolor_types::library::PresetId;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -108,10 +113,10 @@ fn sample_effect(name: &str) -> EffectMetadata {
             name: "Speed".to_owned(),
             kind: ControlKind::Number,
             control_type: ControlType::Slider,
-            default_value: ControlValue::Float(0.5),
+            default_value: ControlValue::Float(0.25),
             min: Some(0.0),
             max: Some(1.0),
-            step: Some(0.01),
+            step: Some(0.05),
             labels: Vec::new(),
             group: None,
             tooltip: None,
@@ -119,7 +124,12 @@ fn sample_effect(name: &str) -> EffectMetadata {
             preview_source: None,
             binding: None,
         }],
-        presets: Vec::new(),
+        presets: vec![PresetTemplate {
+            id: PresetId::stable("test-fast"),
+            name: "Fast".to_owned(),
+            description: None,
+            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(0.9))]),
+        }],
         audio_reactive: false,
         screen_reactive: false,
         input_reactive: false,
@@ -296,6 +306,51 @@ async fn the_document_embeds_real_layer_identity_and_segment_members() {
     );
 }
 
+#[tokio::test]
+async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
+    let (state, _tmp) = isolated_state();
+    let metadata = sample_effect("First Light");
+    let effect_id = metadata.id;
+    state.effect_registry.write().await.register(EffectEntry {
+        metadata,
+        source_path: "/tmp/first-light.rs".into(),
+        modified: SystemTime::now(),
+        state: EffectState::Loading,
+    });
+    let app = api::build_router(Arc::clone(&state), None);
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            format!("/api/v1/effects/{effect_id}/apply"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_etag(&response), "\"1\"");
+    let applied = body_json(response).await;
+    let zone_id = applied["data"]["zone"]["id"].as_str().expect("zone id");
+    let layer_id = applied["data"]["zone"]["layers"][0]["id"]
+        .as_str()
+        .expect("layer id");
+    assert_ne!(
+        layer_id, zone_id,
+        "a layer id is never derived from its zone"
+    );
+
+    let manager = state.scene_manager.read().await;
+    let zone = manager
+        .active_scene()
+        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .expect("the first apply should persist a primary zone");
+    let [layer] = zone.layers.as_slice() else {
+        panic!("the first apply should persist exactly one real layer");
+    };
+    assert_eq!(layer.id.to_string(), layer_id);
+}
+
 // ── Layer identity lifecycle (§1.4) ──────────────────────────────────────
 
 #[tokio::test]
@@ -311,6 +366,7 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
         .as_str()
         .expect("layer id")
         .to_owned();
+    hypercolor_daemon::domain::output::set_power(&state, OutputPowerMode::Paused).await;
 
     // Replace the layer with one running the very same effect. Spec 78
     // §1.4 mints a fresh id regardless: replacement is creation.
@@ -326,6 +382,10 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        state.power_state.borrow().manually_paused(),
+        "whole-layer replacement must not wake paused output"
+    );
     let replaced = body_json(response).await;
     let new_layer = replaced["data"]["layers"][0]["id"]
         .as_str()
@@ -457,6 +517,219 @@ async fn structural_writes_honor_if_match_and_control_writes_do_not() {
         StatusCode::OK,
         "value writes take no token (Spec 78 §1.6)"
     );
+}
+
+#[tokio::test]
+async fn concurrent_control_writes_rebase_until_every_write_commits() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let before = read_document(&app).await;
+    let revision = before["data"]["revision"].as_u64().expect("revision");
+    let zone = primary_zone(&before);
+    let zone_id = zone["id"].as_str().expect("zone id").to_owned();
+    let layer_id = zone["layers"][0]["id"]
+        .as_str()
+        .expect("layer id")
+        .to_owned();
+    let writer_count = 12_usize;
+    let barrier = Arc::new(tokio::sync::Barrier::new(writer_count + 1));
+    let mut writers = Vec::with_capacity(writer_count);
+
+    for index in 0..writer_count {
+        let app = app.clone();
+        let barrier = Arc::clone(&barrier);
+        let route = format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls");
+        writers.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let value = (index + 1) as f64 / (writer_count + 1) as f64;
+            send(
+                &app,
+                json_request(
+                    "PATCH",
+                    route,
+                    json!({ "values": { "speed": { "float": value } } }),
+                ),
+            )
+            .await
+        }));
+    }
+
+    barrier.wait().await;
+    for writer in writers {
+        let response = writer.await.expect("control writer should join");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "an unguarded control write rebases instead of surfacing a structural conflict"
+        );
+    }
+
+    let after = read_document(&app).await;
+    assert_eq!(
+        after["data"]["revision"].as_u64(),
+        Some(revision + writer_count as u64),
+        "every admitted last-write-wins patch advances the tree once"
+    );
+}
+
+#[tokio::test]
+async fn effect_apply_sugars_reject_stale_revisions_before_waking_output() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let before = read_document(&app).await;
+    let revision = before["data"]["revision"].as_u64().expect("revision");
+
+    hypercolor_daemon::domain::output::set_power(&state, OutputPowerMode::Paused).await;
+
+    let routes = [
+        format!("/api/v1/effects/{effect_id}/apply"),
+        format!(
+            "/api/v1/effects/{effect_id}/presets/{}/apply",
+            PresetId::stable("test-fast")
+        ),
+    ];
+    for route in routes {
+        let response = send(
+            &app,
+            if_match(json_request("POST", route, json!({})), revision + 1),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "precondition_failed"
+        );
+        assert!(
+            state.power_state.borrow().manually_paused(),
+            "a rejected sugar must not wake output"
+        );
+        assert_eq!(
+            read_document(&app).await["data"],
+            before["data"],
+            "a rejected sugar must not mutate the live scene"
+        );
+    }
+}
+
+#[tokio::test]
+async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let preset_id = PresetId::stable("test-fast");
+    let before_revision = read_document(&app).await["data"]["revision"]
+        .as_u64()
+        .expect("live scene revision");
+    let zone_id = state
+        .scene_manager
+        .read()
+        .await
+        .active_scene()
+        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .expect("seeded scene should have a primary zone")
+        .id;
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            format!("/api/v1/effects/{effect_id}/presets/{preset_id}/apply"),
+            json!({
+                "controls": { "speed": { "float": 0.7 } },
+                "preset_id": PresetId::stable("body-value-must-not-win"),
+                "zone": zone_id,
+                "transition": { "type": "cut" }
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response_etag(&response),
+        format!("\"{}\"", before_revision + 1)
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["data"]["transition"]["type"], "cut");
+    assert_eq!(
+        body["data"]["zone"]["layers"][0]["source"]["preset_id"],
+        preset_id.to_string()
+    );
+    assert_eq!(
+        body["data"]["zone"]["layers"][0]["source"]["controls"]["speed"],
+        json!({ "float": 0.7 })
+    );
+
+    let rejected = send(
+        &app,
+        json_request(
+            "POST",
+            format!("/api/v1/effects/{effect_id}/presets/{preset_id}/apply"),
+            json!({ "zone": zone_id, "discarded_field": true }),
+        ),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn a_control_patch_event_names_its_zone_and_real_layer() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let (zone_id, layer_id) = {
+        let manager = state.scene_manager.read().await;
+        let zone = manager
+            .active_scene()
+            .and_then(hypercolor_types::scene::Scene::primary_group)
+            .expect("primary zone should exist");
+        let layer_id = zone
+            .effective_layers()
+            .first()
+            .expect("effect layer should exist")
+            .id;
+        (zone.id, layer_id)
+    };
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
+            json!({ "values": { "speed": { "float": 0.75 } } }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let control_event = std::iter::from_fn(|| events.try_recv().ok())
+        .map(|timestamped| timestamped.event)
+        .find_map(|event| match event {
+            HypercolorEvent::EffectControlChanged {
+                effect_id,
+                control_id,
+                old_value,
+                new_value,
+                zone_id,
+                layer_id,
+                trigger,
+            } => Some((
+                effect_id, control_id, old_value, new_value, zone_id, layer_id, trigger,
+            )),
+            _ => None,
+        })
+        .expect("the control patch should publish its addressed identity");
+
+    assert_eq!(control_event.0, effect_id.to_string());
+    assert_eq!(control_event.1, "speed");
+    assert_eq!(control_event.2, EventControlValue::Number(0.25));
+    assert_eq!(control_event.3, EventControlValue::Number(0.75));
+    assert_eq!(control_event.4, zone_id);
+    assert_eq!(control_event.5, layer_id);
+    assert_eq!(control_event.6, ChangeTrigger::Api);
 }
 
 #[tokio::test]
@@ -836,6 +1109,44 @@ async fn clear_empties_one_zone_or_the_whole_tree() {
 }
 
 #[tokio::test]
+async fn whole_tree_clear_publishes_the_destructive_stop_lifecycle() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let before = read_document(&app).await;
+    let expected_zone_id = primary_zone(&before)["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+    let expected_zone_name = primary_zone(&before)["name"]
+        .as_str()
+        .expect("zone name")
+        .to_owned();
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = send(&app, empty_request("POST", "/api/v1/scene/clear".into())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let stopped = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|timestamped| match timestamped.event {
+            HypercolorEvent::EffectStopped {
+                reason,
+                zone_id,
+                zone_name,
+                ..
+            } => Some((reason, zone_id, zone_name)),
+            _ => None,
+        })
+        .expect("the whole-tree stop gesture should publish effect_stopped");
+    assert_eq!(stopped.0, EffectStopReason::Stopped);
+    assert_eq!(
+        stopped.1.map(|zone_id| zone_id.to_string()).as_deref(),
+        Some(expected_zone_id.as_str())
+    );
+    assert_eq!(stopped.2.as_deref(), Some(expected_zone_name.as_str()));
+}
+
+#[tokio::test]
 async fn patching_the_scene_refuses_to_rename_the_default() {
     let (state, _tmp) = isolated_state();
     let app = api::build_router(Arc::clone(&state), None);
@@ -1023,6 +1334,112 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "and naming one explicitly is refused rather than honored"
     );
+}
+
+#[tokio::test]
+async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let display_zone_id = {
+        let metadata = {
+            let registry = state.effect_registry.read().await;
+            registry
+                .get(&effect_id)
+                .map(|entry| entry.metadata.clone())
+                .expect("seeded effect")
+        };
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .upsert_display_group(
+                hypercolor_types::device::DeviceId::new(),
+                "Panel",
+                &metadata,
+                HashMap::new(),
+                sample_layout(vec![sample_output("out-face", None)]),
+            )
+            .expect("face assigns")
+            .id
+    };
+    let before = read_document(&app).await;
+    let face = before["data"]["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .find(|zone| zone["id"] == display_zone_id.to_string())
+        .expect("display zone");
+    let layer_id = face["layers"][0]["id"]
+        .as_str()
+        .expect("face layer")
+        .to_owned();
+    let member_id = face["members"][0]["id"]
+        .as_str()
+        .expect("face member")
+        .to_owned();
+    let placements = face["layout"]["placements"].clone();
+    let zone = display_zone_id.to_string();
+    let requests = vec![
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone}"),
+            json!({ "name": "Hijacked" }),
+        ),
+        empty_request("DELETE", format!("/api/v1/scene/zones/{zone}")),
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone}/layout"),
+            json!({ "placements": placements }),
+        ),
+        json_request(
+            "POST",
+            format!("/api/v1/scene/zones/{zone}/members"),
+            json!({ "device_id": "mock:controller", "segments": [] }),
+        ),
+        empty_request(
+            "DELETE",
+            format!("/api/v1/scene/zones/{zone}/members/{member_id}"),
+        ),
+        json_request(
+            "POST",
+            format!("/api/v1/scene/zones/{zone}/layers"),
+            json!({
+                "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
+            }),
+        ),
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone}/layers/order"),
+            json!({ "order": [layer_id.clone()] }),
+        ),
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone}/layers/{layer_id}"),
+            json!({
+                "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
+            }),
+        ),
+        empty_request(
+            "DELETE",
+            format!("/api/v1/scene/zones/{zone}/layers/{layer_id}"),
+        ),
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone}/layers/{layer_id}/controls"),
+            json!({ "values": { "speed": { "float": 0.75 } } }),
+        ),
+    ];
+
+    for request in requests {
+        let response = send(&app, request).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "display face state belongs exclusively to the display API"
+        );
+    }
+
+    let after = read_document(&app).await;
+    assert_eq!(after["data"], before["data"]);
 }
 
 #[tokio::test]
@@ -1258,6 +1675,11 @@ async fn live_layer_replacement_and_controls_publish_stack_events() {
 
     let event = events.recv().await.expect("zone controls event");
     assert!(matches!(event.event, HypercolorEvent::ZoneChanged { .. }));
+    let event = events.recv().await.expect("effect control event");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::EffectControlChanged { .. }
+    ));
     let event = events.recv().await.expect("layer controls event");
     assert!(matches!(
         event.event,
@@ -1269,7 +1691,7 @@ async fn live_layer_replacement_and_controls_publish_stack_events() {
 }
 
 #[tokio::test]
-async fn scene_settings_event_carries_the_candidate_zones_revision() {
+async fn scene_settings_event_carries_the_candidate_revision() {
     let (state, _tmp) = isolated_state();
     let app = api::build_router(Arc::clone(&state), None);
     seed_tree(&state).await;
@@ -1285,21 +1707,17 @@ async fn scene_settings_event_carries_the_candidate_zones_revision() {
     )
     .await;
     assert_eq!(patched.status(), StatusCode::OK);
+    let expected = body_json(patched).await["data"]["revision"]
+        .as_u64()
+        .expect("scene revision");
 
-    let expected = state
-        .scene_manager
-        .read()
-        .await
-        .active_scene()
-        .expect("active scene")
-        .groups_revision;
     let event = events.recv().await.expect("scene settings event");
     assert!(matches!(
         event.event,
         HypercolorEvent::SceneSettingsChanged {
-            zones_revision,
+            revision,
             kind: SceneSettingsChangeKind::UnassignedBehavior,
             ..
-        } if zones_revision == expected
+        } if revision == expected
     ));
 }

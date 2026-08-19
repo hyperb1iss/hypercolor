@@ -54,15 +54,16 @@ fn single_full_scene_group_renders_directly_into_surface() {
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let producer_counts_before = crate::render_thread::producer_frame_counts();
+    let controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
     let group = Zone {
         id: ZoneId::new(),
         name: "Direct".into(),
         description: None,
         effect_id: Some(solid_id),
-        controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+        controls: controls.clone(),
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers: vec![effect_layer(solid_id, controls)],
         layout: SpatialLayout {
             id: "direct-group".into(),
             name: "Direct Group".into(),
@@ -136,8 +137,11 @@ fn single_full_display_group_keeps_shared_scene_canvas_blank() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut group = sample_display_group(4, 4);
     group.name = "Display".into();
-    group.effect_id = Some(solid_id);
-    group.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+    set_effect_group(
+        &mut group,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+    );
     let mut zones = Vec::new();
     let display_group_target_fps = HashMap::new();
 
@@ -203,14 +207,18 @@ fn full_scene_group_with_display_group_keeps_display_faces_out_of_led_sampling()
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut scene_group = sample_group(4, 4);
-    scene_group.effect_id = Some(solid_id);
-    scene_group.controls =
-        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut scene_group,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+    );
     scene_group.layout.zones = vec![point_zone("zone_preview")];
     let mut display_group = sample_display_group(4, 4);
-    display_group.effect_id = Some(solid_id);
-    display_group.controls =
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+    set_effect_group(
+        &mut display_group,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+    );
     display_group.layout.zones = vec![point_zone("zone_display")];
     let mut zones = Vec::new();
     let display_group_target_fps = HashMap::new();
@@ -275,16 +283,20 @@ fn multiple_custom_groups_render_distinct_zone_colors() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
+    let left_controls =
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    let right_controls =
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
     let groups = vec![
         Zone {
             id: ZoneId::new(),
             name: "Left".into(),
             description: None,
             effect_id: Some(solid_id),
-            controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            controls: left_controls.clone(),
             control_bindings: HashMap::new(),
             preset_id: None,
-            layers: Vec::new(),
+            layers: vec![effect_layer(solid_id, left_controls)],
             layout: SpatialLayout {
                 id: "left-group".into(),
                 name: "Left Group".into(),
@@ -310,10 +322,10 @@ fn multiple_custom_groups_render_distinct_zone_colors() {
             name: "Right".into(),
             description: None,
             effect_id: Some(solid_id),
-            controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            controls: right_controls.clone(),
             control_bindings: HashMap::new(),
             preset_id: None,
-            layers: Vec::new(),
+            layers: vec![effect_layer(solid_id, right_controls)],
             layout: SpatialLayout {
                 id: "right-group".into(),
                 name: "Right Group".into(),
@@ -369,13 +381,19 @@ fn overlapping_custom_groups_sample_each_group_canvas_independently() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut red = sample_group(4, 4);
     red.name = "Red".into();
-    red.effect_id = Some(solid_id);
-    red.controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut red,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+    );
     red.layout.zones = vec![point_zone("zone_red")];
     let mut blue = sample_group(4, 4);
     blue.name = "Blue".into();
-    blue.effect_id = Some(solid_id);
-    blue.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+    set_effect_group(
+        &mut blue,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+    );
     blue.layout.zones = vec![point_zone("zone_blue")];
     let groups = [red, blue];
     let mut zones = Vec::new();
@@ -409,18 +427,27 @@ fn overlapping_custom_groups_are_order_independent_for_their_own_zones() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut red = sample_group(4, 4);
     red.name = "Red".into();
-    red.effect_id = Some(solid_id);
-    red.controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut red,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+    );
     red.layout.zones = vec![point_zone("zone_red")];
     let mut green = sample_group(4, 4);
     green.name = "Green".into();
-    green.effect_id = Some(solid_id);
-    green.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut green,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+    );
     green.layout.zones = vec![point_zone("zone_green")];
     let mut blue = sample_group(4, 4);
     blue.name = "Blue".into();
-    blue.effect_id = Some(solid_id);
-    blue.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+    set_effect_group(
+        &mut blue,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+    );
     blue.layout.zones = vec![point_zone("zone_blue")];
 
     let forward =
@@ -451,18 +478,27 @@ fn multiple_custom_groups_with_display_group_exclude_display_faces_from_led_samp
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut left = sample_group(4, 4);
     left.name = "Left".into();
-    left.effect_id = Some(solid_id);
-    left.controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut left,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+    );
     left.layout.zones = vec![point_zone_at("zone_left", 0.25, 0.5)];
     let mut right = sample_group(4, 4);
     right.name = "Right".into();
-    right.effect_id = Some(solid_id);
-    right.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut right,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+    );
     right.layout.zones = vec![point_zone_at("zone_right", 0.75, 0.5)];
     let mut display = sample_display_group(4, 4);
     display.name = "Display".into();
-    display.effect_id = Some(solid_id);
-    display.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+    set_effect_group(
+        &mut display,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+    );
     display.layout.zones = vec![point_zone("zone_display")];
     let mut zones = Vec::new();
     let display_group_target_fps = HashMap::new();
@@ -520,13 +556,19 @@ fn multiple_display_groups_publish_surface_backed_direct_canvases() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut left = sample_display_group(4, 4);
     left.name = "Left Display".into();
-    left.effect_id = Some(solid_id);
-    left.controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut left,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+    );
     left.layout.zones = vec![point_zone("zone_left")];
     let mut right = sample_display_group(4, 4);
     right.name = "Right Display".into();
-    right.effect_id = Some(solid_id);
-    right.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+    set_effect_group(
+        &mut right,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+    );
     right.layout.zones = vec![point_zone("zone_right")];
     let groups = vec![left.clone(), right.clone()];
     let mut zones = Vec::new();
@@ -568,12 +610,18 @@ fn zero_zone_scene_groups_keep_empty_presampled_led_strategy() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut left = sample_group(2, 2);
     left.name = "Left".into();
-    left.effect_id = Some(solid_id);
-    left.controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut left,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+    );
     let mut right = sample_group(2, 2);
     right.name = "Right".into();
-    right.effect_id = Some(solid_id);
-    right.controls = HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+    set_effect_group(
+        &mut right,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+    );
     let mut zones = Vec::new();
 
     let result = render_scene_for_test(

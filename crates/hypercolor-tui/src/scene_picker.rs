@@ -2,7 +2,7 @@
 //!
 //! Opened with `c`. Arrow keys / j/k navigate, Enter activates, Esc closes.
 //! The first row is always the ephemeral "Default" scene (mapped to
-//! `POST /scenes/deactivate`), mirroring the web UI's "Return to Default".
+//! `POST /scene/deactivate`), mirroring the web UI's "Return to Default".
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};

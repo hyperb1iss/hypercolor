@@ -229,9 +229,12 @@ impl SceneManager {
 
     /// Register a new scene. Returns an error if a scene with the same
     /// ID already exists.
-    pub fn create(&mut self, scene: Scene) -> Result<()> {
+    pub fn create(&mut self, mut scene: Scene) -> Result<()> {
         if self.scenes.contains_key(&scene.id) {
             bail!("scene already exists: {}", scene.id);
+        }
+        for group in &mut scene.groups {
+            materialize_legacy_effect_layer(group);
         }
         if let Err(errors) = scene.validate() {
             bail!("scene '{}' is invalid: {}", scene.name, errors.join("; "));
@@ -254,7 +257,7 @@ impl SceneManager {
 
     /// Update an existing scene in-place. Returns an error if the scene
     /// does not exist.
-    pub fn update(&mut self, scene: Scene) -> Result<()> {
+    pub fn update(&mut self, mut scene: Scene) -> Result<()> {
         let Some(existing) = self.scenes.get(&scene.id) else {
             bail!("scene not found: {}", scene.id);
         };
@@ -263,6 +266,9 @@ impl SceneManager {
         }
         if scene.id.is_default() && scene.name != existing.name {
             bail!("default scene cannot be renamed");
+        }
+        for group in &mut scene.groups {
+            materialize_legacy_effect_layer(group);
         }
         if let Err(errors) = scene.validate() {
             bail!("scene '{}' is invalid: {}", scene.name, errors.join("; "));
@@ -489,7 +495,7 @@ impl SceneManager {
             } else {
                 group.control_bindings.clone()
             };
-            replace_legacy_effect_layer_stack(
+            replace_effect_layer_stack(
                 group,
                 effect.id,
                 controls,
@@ -511,14 +517,14 @@ impl SceneManager {
             // quietly overwriting controls for the wrong effect.
             group.controls_version = group.controls_version.saturating_add(1);
         } else {
-            scene.groups.push(Zone {
+            let mut group = Zone {
                 id: ZoneId::new(),
                 name: DEFAULT_ZONE_NAME.to_owned(),
                 description: Some("Default zone.".to_owned()),
-                effect_id: Some(effect.id),
-                controls,
+                effect_id: None,
+                controls: HashMap::new(),
                 control_bindings: HashMap::new(),
-                preset_id: active_preset_id,
+                preset_id: None,
                 layers: Vec::new(),
                 layout: next_primary_layout,
                 brightness: 1.0,
@@ -528,7 +534,15 @@ impl SceneManager {
                 role: ZoneRole::Primary,
                 controls_version: 0,
                 layers_version: 0,
-            });
+            };
+            replace_effect_layer_stack(
+                &mut group,
+                effect.id,
+                controls,
+                HashMap::new(),
+                active_preset_id,
+            );
+            scene.groups.push(group);
             structural_changed = true;
         }
 
@@ -562,7 +576,7 @@ impl SceneManager {
             } else {
                 group.control_bindings.clone()
             };
-            replace_legacy_effect_layer_stack(group, effect.id, controls, control_bindings, None);
+            replace_effect_layer_stack(group, effect.id, controls, control_bindings, None);
             group.layout = layout;
             group.display_target = Some(DisplayFaceTarget::new(device_id));
             group.enabled = true;
@@ -571,12 +585,12 @@ impl SceneManager {
                 group.name = format!("{device_name} Face");
             }
         } else {
-            scene.groups.push(Zone {
+            let mut group = Zone {
                 id: ZoneId::new(),
                 name: format!("{device_name} Face"),
                 description: Some(format!("Display face for {device_name}")),
-                effect_id: Some(effect.id),
-                controls,
+                effect_id: None,
+                controls: HashMap::new(),
                 control_bindings: HashMap::new(),
                 preset_id: None,
                 layers: Vec::new(),
@@ -588,7 +602,9 @@ impl SceneManager {
                 role: ZoneRole::Display,
                 controls_version: 0,
                 layers_version: 0,
-            });
+            };
+            replace_effect_layer_stack(&mut group, effect.id, controls, HashMap::new(), None);
+            scene.groups.push(group);
         }
 
         self.refresh_active_render_groups();
@@ -1619,7 +1635,7 @@ impl SceneManager {
             // it was editing. Reporting `GroupMissing` (vs a new
             // "effect changed" variant) keeps the API surface small
             // and routes clients into the same "re-seed your draft
-            // from /effects/active" recovery path as a true
+            // from the live scene" recovery path as a true
             // missing-group case.
             return Err(ControlsVersionMismatch::GroupMissing);
         }
@@ -1737,7 +1753,7 @@ impl SceneManager {
         } else {
             group.control_bindings.clone()
         };
-        replace_legacy_effect_layer_stack(
+        replace_effect_layer_stack(
             group,
             effect.id,
             controls,
@@ -1994,6 +2010,7 @@ impl SceneManager {
     /// only reaches the active render groups while the active scene has no
     /// assigned display zone for the same device.
     pub fn set_default_display_group(&mut self, mut zone: Zone) {
+        materialize_legacy_effect_layer(&mut zone);
         let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
             return;
         };
@@ -2086,7 +2103,7 @@ fn materialize_legacy_effect_layer(group: &mut Zone) {
     group.layers.insert(
         0,
         SceneLayer::from_effect(
-            group.legacy_layer_id(),
+            SceneLayerId::new(),
             effect_id,
             group.controls.clone(),
             group.control_bindings.clone(),
@@ -2197,7 +2214,8 @@ fn reset_device_zone_placement(zone: &mut Output, slot: usize) {
     zone.display_order = i32::try_from(slot).unwrap_or(0);
 }
 
-fn replace_legacy_effect_layer_stack(
+/// Replace a zone's whole stack with a freshly identified effect layer.
+fn replace_effect_layer_stack(
     group: &mut Zone,
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
@@ -2209,7 +2227,7 @@ fn replace_legacy_effect_layer_stack(
     group.control_bindings.clone_from(&control_bindings);
     group.preset_id = preset_id;
     group.layers = vec![SceneLayer::from_effect(
-        group.legacy_layer_id(),
+        SceneLayerId::new(),
         effect_id,
         controls,
         control_bindings,

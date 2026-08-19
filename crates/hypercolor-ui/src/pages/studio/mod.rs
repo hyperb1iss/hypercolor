@@ -62,13 +62,13 @@ fn save_hidden_outputs(map: &HashMap<String, HashSet<String>>) {
     }
 }
 
-/// An empty layer stack at version 0 — the resource value for a selection
+/// An empty layer stack at revision 0 — the resource value for a selection
 /// that has no per-group layer endpoint (none selected, or the synthetic
 /// Unassigned entry).
 fn empty_layer_stack() -> api::LayerStackResponse {
     api::LayerStackResponse {
         items: Vec::new(),
-        layers_version: 0,
+        revision: 0,
     }
 }
 
@@ -77,9 +77,9 @@ fn empty_layer_stack() -> api::LayerStackResponse {
 #[derive(Clone, Copy)]
 pub struct StudioContext {
     pub selected_surface_id: RwSignal<Option<String>>,
-    pub active_scene: Signal<Option<api::ActiveSceneResponse>>,
+    pub active_scene: Signal<Option<api::LiveSceneView>>,
     /// Re-fetch the active scene. Zone mutations call this so the tree and
-    /// Stage pick up the new group set and `zones_revision`.
+    /// Stage pick up the new zone set and scene revision.
     pub refresh_scene: Callback<()>,
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
@@ -114,7 +114,7 @@ pub fn StudioPage() -> impl IntoView {
     // keep it fresh, so zone changes made from other pages, other
     // clients, or the CLI land here without a Studio-local refetch.
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
-    let active_scene: Signal<Option<api::ActiveSceneResponse>> = zones_ctx.active_scene.into();
+    let active_scene: Signal<Option<api::LiveSceneView>> = zones_ctx.active_scene.into();
 
     let selected_surface_id = RwSignal::new(None::<String>);
 
@@ -189,7 +189,7 @@ pub fn StudioPage() -> impl IntoView {
                 // The Unassigned entry is not a surface — it has no layer
                 // stack, so it never hits the per-group layer endpoint.
                 (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => Ok(empty_layer_stack()),
-                (Some(scene), Some(group_id)) => api::list_layers(&scene.id, &group_id).await,
+                (Some(_), Some(group_id)) => api::list_layers(&group_id).await,
                 _ => Ok(empty_layer_stack()),
             }
         }

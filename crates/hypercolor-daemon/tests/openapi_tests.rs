@@ -103,6 +103,13 @@ async fn openapi_json_is_served_with_expected_paths() {
         "/api/v1/audio/devices",
         "/api/v1/effects/pause",
         "/api/v1/effects/resume",
+        "/api/v1/effects/active",
+        "/api/v1/effects/stop",
+        "/api/v1/scenes/active",
+        "/api/v1/scenes/deactivate",
+        "/api/v1/scenes/{id}/zones",
+        "/api/v1/scenes/{id}/unassigned-behavior",
+        "/api/v1/library/presets/{id}/apply",
     ] {
         assert!(
             body["paths"][retired].is_null(),
@@ -116,6 +123,8 @@ async fn openapi_json_is_served_with_expected_paths() {
         "SetBrightnessRequest",
         "PauseEffectResponse",
         "ResumeEffectResponse",
+        "CreateZoneRequest",
+        "AssignDevicesRequest",
     ] {
         assert!(
             body["components"]["schemas"][retired].is_null(),
@@ -127,26 +136,11 @@ async fn openapi_json_is_served_with_expected_paths() {
         body["paths"]["/api/v1/effects/{id}/apply"]["post"]["requestBody"]["required"],
         true
     );
-    assert_eq!(
-        body["paths"]["/api/v1/scenes/{id}/zones"]["post"]["requestBody"]["required"],
-        true
-    );
-    assert_eq!(
-        body["paths"]["/api/v1/scenes/{id}/zones/{zone_id}/layout"]["put"]["requestBody"]["content"]
-            ["application/json"]["schema"]["$ref"],
-        "#/components/schemas/SpatialLayout"
-    );
     assert!(body["components"]["schemas"]["SpatialLayout"].is_object());
-    assert!(
-        body["paths"]["/api/v1/scenes/{id}/unassigned-behavior"]["patch"]["responses"]["412"]
-            .is_object()
-    );
     assert!(body["paths"]["/api/v1/control-surfaces"].is_object());
     assert!(body["components"]["schemas"]["ControlSurfaceDocument"].is_object());
     assert!(body["components"]["schemas"]["ApplyControlChangesRequest"].is_object());
     assert!(body["components"]["schemas"]["ControlFieldDescriptor"].is_object());
-    assert!(body["components"]["schemas"]["CreateZoneRequest"].is_object());
-    assert!(body["components"]["schemas"]["AssignDevicesRequest"].is_object());
     let input_status = &body["components"]["schemas"]["InputStatus"];
     assert!(input_status.is_object());
     for legacy_field in [

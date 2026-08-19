@@ -43,6 +43,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -1563,23 +1564,31 @@ async fn default_scene_contents_restore_on_restart() {
             })
             .expect("breathing effect should be registered")
     };
+    let zone_id = ZoneId::new();
+    let controls = std::collections::HashMap::from([(
+        "speed".to_owned(),
+        hypercolor_types::effect::ControlValue::Float(4.5),
+    )]);
 
     runtime_state::save(
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: vec![Zone {
-                id: ZoneId::new(),
+                id: zone_id,
                 name: "Saved Default Group".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
                 effect_id: Some(effect_id),
-                controls: std::collections::HashMap::from([(
-                    "speed".to_owned(),
-                    hypercolor_types::effect::ControlValue::Float(4.5),
-                )]),
+                controls: controls.clone(),
                 control_bindings: std::collections::HashMap::new(),
                 preset_id: None,
-                layers: Vec::new(),
+                layers: vec![SceneLayer::from_effect(
+                    SceneLayerId::new(),
+                    effect_id,
+                    controls,
+                    std::collections::HashMap::new(),
+                    None,
+                )],
                 layout: SpatialLayout {
                     id: "default_saved".to_owned(),
                     name: "Saved Default Layout".to_owned(),

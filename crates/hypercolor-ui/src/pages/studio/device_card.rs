@@ -709,17 +709,9 @@ fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_id
         .into_iter()
         .map(|id| api::zones::OutputAssignment::Existing { id })
         .collect::<Vec<_>>();
-    let scene_id = scene.id.clone();
-    let revision = scene.zones_revision;
+    let revision = scene.revision;
     spawn_local(async move {
-        match api::zones::assign_devices(
-            &scene_id,
-            &target_zone_id,
-            assignments,
-            false,
-            Some(revision),
-        )
-        .await
+        match api::zones::assign_devices(&target_zone_id, assignments, false, Some(revision)).await
         {
             Ok(ZoneOutcome::Applied(_)) => {
                 let suffix = if count == 1 { "" } else { "s" };
@@ -974,7 +966,7 @@ fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
 }
 
 /// Unassign every output this device has in `zone_id`. The removals run in
-/// sequence because each one bumps `zones_revision`; threading the new
+/// sequence because each one bumps the scene revision; threading the new
 /// revision into the next call lets a multi-output controller leave the
 /// zone in a single user action.
 fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
@@ -999,12 +991,10 @@ fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: St
     if output_ids.is_empty() {
         return;
     }
-    let scene_id = scene.id.clone();
-    let mut revision = scene.zones_revision;
+    let mut revision = scene.revision;
     spawn_local(async move {
         for output_id in output_ids {
-            match api::zones::unassign_device(&scene_id, &zone_id, &output_id, Some(revision)).await
-            {
+            match api::zones::unassign_device(&zone_id, &output_id, Some(revision)).await {
                 Ok(ZoneOutcome::Applied(next)) => revision = next,
                 Ok(ZoneOutcome::Stale { .. }) => {
                     toasts::toast_error("Scene changed elsewhere — reloaded, try again");

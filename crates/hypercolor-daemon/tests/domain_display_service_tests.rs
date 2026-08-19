@@ -17,6 +17,7 @@ use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
     SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
@@ -136,6 +137,13 @@ fn overlay_zone(device_id: DeviceId, effect_id: EffectId) -> hypercolor_types::s
     "Kraken Face".clone_into(&mut zone.name);
     zone.role = ZoneRole::Display;
     zone.effect_id = Some(effect_id);
+    zone.layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    )];
     zone.display_target = Some(DisplayFaceTarget::new(device_id));
     zone
 }
@@ -481,7 +489,7 @@ async fn the_default_overlay_installs_and_retracts_without_persisting() {
 
 /// Re-materializing an unchanged preference used to commit, and a commit
 /// mints a scene revision that invalidates every in-flight candidate.
-/// `GET /api/v1/scenes/active` walks this path once per stored
+/// `GET /api/v1/scene` walks this path once per stored
 /// preference, so an unguarded install turned a plain read into the thing
 /// that fails a user's zone edit.
 #[tokio::test]
@@ -498,7 +506,9 @@ async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
     let after_install = state.scene_commits.revision();
 
     for _ in 0..3 {
-        let installed = set_default_display_overlay(&state, device_id, zone.clone())
+        let mut refresh = zone.clone();
+        refresh.layers[0].id = SceneLayerId::new();
+        let installed = set_default_display_overlay(&state, device_id, refresh)
             .await
             .expect("a repeat install succeeds")
             .expect("it reports the installed overlay");

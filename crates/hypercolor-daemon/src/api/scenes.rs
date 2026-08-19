@@ -29,9 +29,8 @@ const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 // Wire contracts live in hypercolor-types::api::scenes — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::scenes::{
-    ActivateSceneResponse, ActivatedSceneRef, ActiveSceneResponse, CreateSceneRequest,
-    DeactivateSceneResponse, DeleteSceneResponse, ReplaceSceneRequest, SceneListResponse,
-    SceneSummary,
+    ActivateSceneResponse, ActivatedSceneRef, CreateSceneRequest, DeleteSceneResponse,
+    ReplaceSceneRequest, SceneListResponse, SceneSummary,
 };
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -75,29 +74,6 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
         ApiResponse::ok(crate::domain::scene_tree::scene_document(scene, revision)),
         revision,
     )
-}
-
-/// `GET /api/v1/scenes/active` — Get the currently active scene, including Default.
-pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
-    crate::api::displays::sync_active_display_surfaces(&state).await;
-
-    let manager = state.scene_manager.read().await;
-    let Some(scene) = manager.active_scene() else {
-        return DomainError::not_found(ResourceKind::Scene, "active").into_response();
-    };
-
-    ApiResponse::ok(ActiveSceneResponse {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-        kind: scene.kind,
-        mutation_mode: scene.mutation_mode,
-        zones: scene.groups.clone(),
-        zones_revision: scene.groups_revision,
-        unassigned_behavior: scene.unassigned_behavior.clone(),
-    })
 }
 
 /// `POST /api/v1/scenes` — Create a new scene.
@@ -253,25 +229,6 @@ pub async fn activate_scene(
             name: activated.scene_name,
         },
         activated: true,
-    })
-}
-
-/// `POST /api/v1/scenes/deactivate` — Return to the synthesized default scene.
-pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
-    let deactivated = match crate::domain::scene::deactivate_scene(
-        state.as_ref(),
-        crate::domain::MutationContext::api(),
-    )
-    .await
-    {
-        Ok(deactivated) => deactivated,
-        Err(error) => return error.into_response(),
-    };
-
-    ApiResponse::ok(DeactivateSceneResponse {
-        deactivated: true,
-        previous_scene: deactivated.previous_scene.as_ref().map(scene_summary),
-        scene: deactivated.current_scene.as_ref().map(scene_summary),
     })
 }
 

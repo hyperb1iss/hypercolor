@@ -7,8 +7,10 @@
 use std::collections::HashMap;
 
 use hypercolor_types::layer::WebViewportRender;
-use hypercolor_types::layer::{LayerBlendMode, LayerSource};
-use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
+use hypercolor_types::layer::{
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+};
+use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
@@ -21,6 +23,32 @@ use hypercolor_ui::components::layer_panel::source::{
 
 /// A valid UUID string for effect/media id parsing.
 const SAMPLE_ID: &str = "0192f5a0-1234-7890-abcd-ef0123456789";
+
+#[test]
+fn layer_replacement_uses_the_canonical_creation_shape() {
+    let layer = SceneLayer {
+        id: SceneLayerId::new(),
+        name: Some("Wash".to_owned()),
+        source: LayerSource::ColorFill {
+            rgba: [0.2, 0.4, 0.6, 1.0],
+        },
+        blend: LayerBlendMode::Screen,
+        opacity: 0.75,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: false,
+    };
+
+    let request = hypercolor_ui::api::update_request_from_layer(&layer);
+    let wire = serde_json::to_value(request).expect("replacement request should serialize");
+
+    assert_eq!(wire["name"], "Wash");
+    assert_eq!(wire["opacity"], 0.75);
+    assert!(wire.get("id").is_none());
+    assert_eq!(wire["bindings"], serde_json::json!([]));
+    assert_eq!(wire["enabled"], false);
+}
 
 #[test]
 fn picker_exposes_only_effect_and_media_sources() {
@@ -309,8 +337,8 @@ fn sample_layout() -> SpatialLayout {
     }
 }
 
-fn group(name: &str, role: ZoneRole) -> Zone {
-    Zone {
+fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::LiveZoneView {
+    hypercolor_ui::api::LiveZoneView {
         id: ZoneId::new(),
         name: name.to_owned(),
         description: None,
@@ -325,8 +353,6 @@ fn group(name: &str, role: ZoneRole) -> Zone {
         color: None,
         display_target: None,
         role,
-        controls_version: 0,
-        layers_version: 0,
     }
 }
 

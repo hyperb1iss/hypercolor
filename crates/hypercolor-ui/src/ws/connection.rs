@@ -1,6 +1,6 @@
 //! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -34,10 +34,10 @@ use super::interactive_preview::{
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
-    MacosDaemonOwnershipEventHint, OutputPowerReconciler, PerformanceMetrics, PreviewBinaryDecoder,
-    PreviewBinaryMessage, PreviewFrameChannel, SceneEventHint, ScreenZonesFrame,
-    handle_json_message, interactive_preview_supported, is_resync_required,
-    reset_layer_health_cache,
+    InitialSubscriptionAdmission, MacosDaemonOwnershipEventHint, OutputPowerReconciler,
+    PerformanceMetrics, PreviewBinaryDecoder, PreviewBinaryMessage, PreviewFrameChannel,
+    SceneEventHint, ScreenZonesFrame, handle_json_message, initial_subscription_admission,
+    interactive_preview_supported, is_resync_required, reset_layer_health_cache,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -51,6 +51,7 @@ use crate::api::DeviceMetricsSnapshot;
 use crate::api::client;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
+const INITIAL_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(5);
 const TAURI_WINDOW_VISIBILITY_EVENT: &str = "hypercolor-window-visibility";
 const VERIFIED_DAEMON_CONNECTION_EVENT: &str = "hypercolor-verified-daemon-connection-changed";
 const TAURI_WINDOW_VISIBLE_GLOBAL: &str = "__HYPERCOLOR_TAURI_WINDOW_VISIBLE";
@@ -265,6 +266,9 @@ impl WsManager {
             StoredValue::new_local(None);
         let reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
             StoredValue::new_local(None);
+        let initial_subscription_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
+            StoredValue::new_local(None);
+        let awaiting_initial_subscription = StoredValue::new(false);
 
         // Reconnection attempt counter for exponential backoff.
         let reconnect_attempts = StoredValue::new(0_u32);
@@ -277,7 +281,9 @@ impl WsManager {
         let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> = StoredValue::new_local(None);
 
         let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
-            clear_reconnect_timer(reconnect_timeout);
+            clear_timeout(reconnect_timeout);
+            clear_timeout(initial_subscription_timeout);
+            awaiting_initial_subscription.set_value(false);
             dispose_existing_socket(ws_handle, socket_callbacks);
             set_connection_state.set(ConnectionState::Connecting);
             set_backpressure_notice.set(None);
@@ -318,14 +324,20 @@ impl WsManager {
             ws_handle.set_value(Some(ws.clone()));
             let preview_decoder = Rc::new(RefCell::new(PreviewBinaryDecoder::default()));
             let preview_expiry_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
-            let awaiting_initial_subscription = Rc::new(Cell::new(true));
 
             // onopen — subscribe to events, metrics, and host sensors
             let ws_clone = ws.clone();
             let on_open = move |_| {
-                set_connection_state.set(ConnectionState::Connected);
-                reconnect_attempts.set_value(0);
-                clear_reconnect_timer(reconnect_timeout);
+                awaiting_initial_subscription.set_value(true);
+                let timeout_ws = ws_clone.clone();
+                let timeout = browser_set_timeout(INITIAL_SUBSCRIPTION_TIMEOUT, move || {
+                    if awaiting_initial_subscription.get_value() {
+                        awaiting_initial_subscription.set_value(false);
+                        set_connection_state.set(ConnectionState::Error);
+                        let _ = timeout_ws.close();
+                    }
+                });
+                initial_subscription_timeout.set_value(Some(timeout));
 
                 let subscribe_msg = serde_json::json!({
                     "type": "subscribe",
@@ -344,6 +356,8 @@ impl WsManager {
             let close_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
             let on_close = move |_| {
                 clear_preview_decoder(&close_preview_decoder, &close_preview_expiry_timeout);
+                clear_timeout(initial_subscription_timeout);
+                awaiting_initial_subscription.set_value(false);
                 set_connection_state.set(ConnectionState::Disconnected);
                 ws_handle.set_value(None);
                 clear_preview_subscription(
@@ -380,6 +394,8 @@ impl WsManager {
             let error_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
             let on_error = move |_| {
                 clear_preview_decoder(&error_preview_decoder, &error_preview_expiry_timeout);
+                clear_timeout(initial_subscription_timeout);
+                awaiting_initial_subscription.set_value(false);
                 set_connection_state.set(ConnectionState::Error);
                 ws_handle.set_value(None);
             };
@@ -387,7 +403,6 @@ impl WsManager {
             // onmessage — handle both JSON and binary frames
             let message_preview_decoder = Rc::clone(&preview_decoder);
             let message_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
-            let message_awaiting_initial_subscription = Rc::clone(&awaiting_initial_subscription);
             let message_ws = ws.clone();
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
@@ -484,10 +499,25 @@ impl WsManager {
                 if let Some(text) = event.data().as_string()
                     && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
                 {
-                    if msg.get("type").and_then(serde_json::Value::as_str) == Some("subscribed")
-                        && message_awaiting_initial_subscription.replace(false)
-                    {
-                        set_connection_generation.update(|generation| *generation += 1);
+                    if awaiting_initial_subscription.get_value() {
+                        match initial_subscription_admission(&msg) {
+                            InitialSubscriptionAdmission::Admitted => {
+                                awaiting_initial_subscription.set_value(false);
+                                clear_timeout(initial_subscription_timeout);
+                                set_connection_state.set(ConnectionState::Connected);
+                                set_connection_generation.update(|generation| *generation += 1);
+                                reconnect_attempts.set_value(0);
+                                clear_timeout(reconnect_timeout);
+                            }
+                            InitialSubscriptionAdmission::Rejected => {
+                                awaiting_initial_subscription.set_value(false);
+                                clear_timeout(initial_subscription_timeout);
+                                set_connection_state.set(ConnectionState::Error);
+                                let _ = message_ws.close();
+                                return;
+                            }
+                            InitialSubscriptionAdmission::Pending => {}
+                        }
                     }
                     if is_resync_required(&msg) {
                         let _ = message_ws.close();
@@ -942,7 +972,7 @@ fn schedule_reconnect(
     reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage>,
     connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage>,
 ) {
-    clear_reconnect_timer(reconnect_timeout);
+    clear_timeout(reconnect_timeout);
     let attempt = reconnect_attempts.get_value();
     reconnect_attempts.set_value(attempt.saturating_add(1));
 
@@ -959,10 +989,8 @@ fn schedule_reconnect(
     reconnect_timeout.set_value(Some(timeout));
 }
 
-fn clear_reconnect_timer(
-    reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage>,
-) {
-    reconnect_timeout.update_value(|timeout| {
+fn clear_timeout(timeout_handle: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage>) {
+    timeout_handle.update_value(|timeout| {
         if let Some(mut timeout) = timeout.take() {
             timeout.cancel();
         }

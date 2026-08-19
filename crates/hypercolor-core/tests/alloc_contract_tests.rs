@@ -34,6 +34,7 @@ use hypercolor_core::input::{
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_core::types::event::TimedInputEvent;
 use hypercolor_types::effect::ControlValue;
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
@@ -86,18 +87,25 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
         spaces: None,
         version: 1,
     };
+    let controls = HashMap::from([(
+        "color".to_owned(),
+        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+    )]);
     let mut group = Zone {
         id: ZoneId::new(),
         name: "Allocation Group".to_owned(),
         description: None,
         effect_id: Some(effect_id),
-        controls: HashMap::from([(
-            "color".to_owned(),
-            ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
-        )]),
+        controls: controls.clone(),
         control_bindings: HashMap::new(),
         preset_id: None,
-        layers: Vec::new(),
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            controls,
+            HashMap::new(),
+            None,
+        )],
         layout,
         brightness: 1.0,
         enabled: true,
@@ -111,10 +119,12 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
     pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("live effect pool should prepare");
     if change_controls {
-        group.controls.insert(
-            "color".to_owned(),
-            ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
-        );
+        let updated = ControlValue::Color([0.0, 0.0, 1.0, 1.0]);
+        group.controls.insert("color".to_owned(), updated.clone());
+        let LayerSource::Effect { controls, .. } = &mut group.layers[0].source else {
+            panic!("fixture should store an effect layer");
+        };
+        controls.insert("color".to_owned(), updated);
     }
     let prepared = pool
         .prepare_reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())

@@ -47,7 +47,8 @@ pub async fn spawn_data_bridge(
             break;
         }
 
-        // Phase 1: REST bootstrap — fetch effects, devices, favorites, status
+        // Phase 1: REST bootstrap for reachability. Connection admission is
+        // announced only after the WebSocket subscription is acknowledged.
         let rest_ok = match bootstrap_rest(&client, &action_tx).await {
             Ok(state) => {
                 latest_daemon_state = Some(state);
@@ -104,9 +105,20 @@ pub async fn spawn_data_bridge(
                     msg = ws_rx.recv() => {
                         match msg {
                             Some(WsMessage::Hello(state)) => {
-                                if let Some(daemon_state) = parse_hello_state(&state) {
-                                    latest_daemon_state = Some(daemon_state.clone());
-                                    let _ = action_tx.send(Action::DaemonConnected(Box::new(daemon_state)));
+                                let _ = state;
+                            }
+                            Some(WsMessage::Subscribed(_acknowledgment)) => {
+                                match bootstrap_rest(&client, &action_tx).await {
+                                    Ok(state) => {
+                                        latest_daemon_state = Some(state.clone());
+                                        notified_disconnect = false;
+                                        let _ = action_tx.send(Action::DaemonConnected(Box::new(state)));
+                                    }
+                                    Err(error) => {
+                                        tracing::debug!(%error, "REST reconciliation failed after WebSocket admission");
+                                        ws_handle.abort();
+                                        break;
+                                    }
                                 }
                             }
                             Some(WsMessage::Canvas(frame)) => {
@@ -172,7 +184,6 @@ async fn bootstrap_rest(
     action_tx: &mpsc::UnboundedSender<Action>,
 ) -> anyhow::Result<DaemonState> {
     let status = client.get_status().await?;
-    let _ = action_tx.send(Action::DaemonConnected(Box::new(status.clone())));
 
     refresh_effects(client, action_tx).await;
     refresh_devices(client, action_tx).await;
@@ -440,56 +451,6 @@ fn json_f32(value: &serde_json::Value) -> Option<f32> {
     }
 
     Some(value as f32)
-}
-
-/// Parse the daemon state from the WebSocket hello message.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-fn parse_hello_state(hello: &serde_json::Value) -> Option<DaemonState> {
-    let state = hello.get("state")?;
-    Some(DaemonState {
-        running: state.get("running")?.as_bool().unwrap_or(true),
-        brightness: state
-            .get("brightness")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(100, |v| v.min(255) as u8),
-        fps_target: state
-            .get("fps")
-            .and_then(|f| f.get("target"))
-            .and_then(serde_json::Value::as_f64)
-            .map_or(60.0, |v| v as f32),
-        fps_actual: state
-            .get("fps")
-            .and_then(|f| f.get("actual"))
-            .and_then(serde_json::Value::as_f64)
-            .map_or(0.0, |v| v as f32),
-        scene_name: state
-            .get("scene")
-            .and_then(|s| s.get("name"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-        scene_snapshot_locked: state
-            .get("scene")
-            .and_then(|s| s.get("snapshot_locked"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-        profile_name: state
-            .get("profile")
-            .and_then(|p| p.get("name"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-        device_count: state
-            .get("device_count")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(0, |v| v as u32),
-        total_leds: state
-            .get("total_leds")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(0, |v| v as u32),
-    })
 }
 
 #[cfg(test)]

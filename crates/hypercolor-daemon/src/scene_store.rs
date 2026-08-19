@@ -49,11 +49,20 @@ impl SceneStore {
 
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read scenes at {}", path.display()))?;
-        let scenes = serde_json::from_str::<HashMap<SceneId, Scene>>(&raw)
+        let original = serde_json::from_str::<serde_json::Value>(&raw)
+            .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
+        let scenes = serde_json::from_value::<HashMap<SceneId, Scene>>(original.clone())
             .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
 
         let mut store = Self { writer, scenes };
         store.normalize();
+        let normalized = serde_json::to_value(&store.scenes)
+            .context("failed to serialize normalized scene store")?;
+        if normalized != original {
+            store
+                .save()
+                .context("failed to persist normalized scene store")?;
+        }
         Ok(store)
     }
 

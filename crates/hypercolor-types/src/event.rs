@@ -809,12 +809,9 @@ pub enum HypercolorEvent {
         old_value: EventControlValue,
         new_value: EventControlValue,
         /// Zone whose stack holds the patched layer.
-        #[serde(default)]
-        zone_id: Option<ZoneId>,
-        /// The patched layer. `None` only for publishers without layer
-        /// context.
-        #[serde(default)]
-        layer_id: Option<SceneLayerId>,
+        zone_id: ZoneId,
+        /// The patched layer.
+        layer_id: SceneLayerId,
         trigger: ChangeTrigger,
     },
 
@@ -897,7 +894,7 @@ pub enum HypercolorEvent {
     LayerStackChanged {
         scene_id: SceneId,
         zone_id: ZoneId,
-        layers_version: u64,
+        revision: u64,
         kind: LayerStackChangeKind,
     },
 
@@ -912,7 +909,7 @@ pub enum HypercolorEvent {
     /// Scene-level settings changed without activating a different scene.
     SceneSettingsChanged {
         scene_id: SceneId,
-        zones_revision: u64,
+        revision: u64,
         kind: SceneSettingsChangeKind,
     },
 

@@ -22,7 +22,6 @@ use crate::components::modal::Modal;
 use crate::components::shell::Shell;
 use crate::components::welcome_overlay::WelcomeOverlay;
 use crate::config_state::{ConfigContext, ConfigSchemaContext};
-use crate::control_value_json::controls_to_json;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
 use crate::extensions::{UiExtensions, parent_route, ui_route};
@@ -49,7 +48,7 @@ use crate::ws::{
 mod effect_state;
 
 use effect_state::{
-    ActiveEffectApiSnapshot, apply_active_effect_snapshot, apply_active_scene_snapshot,
+    apply_active_effect_snapshot, apply_active_scene_snapshot,
     apply_effect_to_current_led_zones, capture_active_effect_state, clear_active_scene_state,
     effect_error_toast_message, preferences_restore_inline, restore_active_effect_state,
 };
@@ -173,8 +172,6 @@ pub struct EffectsContext {
     pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
     pub active_preset_id: ReadSignal<Option<String>>,
     pub set_active_preset_id: WriteSignal<Option<String>>,
-    pub active_preset_modified: ReadSignal<bool>,
-    pub set_active_preset_modified: WriteSignal<bool>,
     pub active_scene_name: ReadSignal<Option<String>>,
     pub set_active_scene_name: WriteSignal<Option<String>>,
     pub active_scene_kind: ReadSignal<Option<SceneKind>>,
@@ -243,21 +240,9 @@ impl EffectsContext {
     pub fn refresh_active_effect(&self) {
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            match api::fetch_active_effect().await {
+            match api::fetch_primary_effect_view().await {
                 Ok(Some(active)) => {
-                    let is_playing = active.state != "paused";
-                    apply_active_effect_snapshot(
-                        &ctx,
-                        ActiveEffectApiSnapshot {
-                            id: active.id,
-                            name: active.name,
-                            controls: active.controls,
-                            control_values: active.control_values,
-                            active_preset_id: active.active_preset_id,
-                            active_preset_modified: active.active_preset_modified,
-                            is_playing,
-                        },
-                    );
+                    apply_active_effect_snapshot(&ctx, active);
                 }
                 Ok(None) => ctx.set_is_playing.set(false),
                 Err(_) => {}
@@ -296,13 +281,16 @@ impl EffectsContext {
                 preset_id: stored_prefs
                     .as_ref()
                     .and_then(|prefs| prefs.preset_id.as_deref())
-                    .filter(|preset_id| uuid::Uuid::parse_str(preset_id).is_ok())
-                    .map(ToOwned::to_owned),
+                    .and_then(|preset_id| preset_id.parse().ok()),
                 controls: stored_prefs.as_ref().and_then(|prefs| {
                     (!prefs.control_values.is_empty())
-                        .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
+                        .then(|| prefs.control_values.clone().into_iter().collect())
                 }),
-                zone_id: target_zone_id.clone(),
+                zone: target_zone_id.as_deref().and_then(|zone_id| {
+                    uuid::Uuid::parse_str(zone_id)
+                        .ok()
+                        .map(hypercolor_types::scene::ZoneId)
+                }),
                 ..api::ApplyEffectBody::default()
             });
 
@@ -647,8 +635,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                         effect_category: indexed.map(|entry| entry.effect.category.clone()),
                         control_values: group.controls.clone(),
                         preset_id: group.preset_id.as_ref().map(ToString::to_string),
-                        controls_version: group.controls_version,
-                        layers_version: group.layers_version,
+                        revision: scene.revision,
                         effect_id,
                         zone: surface,
                     }
@@ -668,7 +655,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         })
     });
 
-    let active_resource = api::daemon_resource(api::fetch_active_effect);
+    let active_resource = api::daemon_resource(api::fetch_primary_effect_view);
     let favorites_resource = api::daemon_resource(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
@@ -677,7 +664,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     let (active_control_values, set_active_control_values) =
         signal(HashMap::<String, ControlValue>::new());
     let (active_preset_id, set_active_preset_id) = signal(None::<String>);
-    let (active_preset_modified, set_active_preset_modified) = signal(false);
     let (active_scene_name, set_active_scene_name) = signal(None::<String>);
     let (active_scene_kind, set_active_scene_kind) = signal(None::<SceneKind>);
     let (active_scene_mutation_mode, set_active_scene_mutation_mode) =
@@ -710,8 +696,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_active_control_values,
         active_preset_id,
         set_active_preset_id,
-        active_preset_modified,
-        set_active_preset_modified,
         active_scene_name,
         set_active_scene_name,
         active_scene_kind,
@@ -803,19 +787,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     // Initialize active effect from API on load
     Effect::new(move |_| {
         if let Some(Ok(Some(active))) = active_resource.get() {
-            let is_playing = active.state != "paused";
-            apply_active_effect_snapshot(
-                &effects_ctx,
-                ActiveEffectApiSnapshot {
-                    id: active.id,
-                    name: active.name,
-                    controls: active.controls,
-                    control_values: active.control_values,
-                    active_preset_id: active.active_preset_id,
-                    active_preset_modified: active.active_preset_modified,
-                    is_playing,
-                },
-            );
+            apply_active_effect_snapshot(&effects_ctx, active);
         } else if let Some(Ok(None)) = active_resource.get() {
             effects_ctx.set_is_playing.set(false);
         }

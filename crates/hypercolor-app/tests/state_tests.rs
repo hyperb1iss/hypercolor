@@ -82,6 +82,8 @@ fn parse_ws_event_effect_started() {
         "event": "effect_started",
         "timestamp": "2026-03-10T12:00:00Z",
         "data": {
+            "zone_id": "019c0000-0000-7000-8000-000000000001",
+            "layer_id": "019c0000-0000-7000-8000-000000000002",
             "effect": {
                 "id": "def-456",
                 "name": "Cosmic Wave",
@@ -109,6 +111,43 @@ fn resync_required_event_requests_full_state_reconciliation() {
     .expect("should parse resync event");
 
     assert!(message.requires_full_resync());
+}
+
+#[test]
+fn only_explicit_stops_are_destructive_lifecycle_events() {
+    for (reason, destructive) in [("stopped", true), ("error", false), ("replaced", false)] {
+        let message: WsEventMessage = serde_json::from_value(json!({
+            "type": "event",
+            "event": "effect_stopped",
+            "data": {
+                "reason": reason,
+                "zone_id": "019c0000-0000-7000-8000-000000000001"
+            }
+        }))
+        .expect("should parse stop event");
+
+        assert_eq!(message.is_destructive_effect_stop(), destructive);
+    }
+}
+
+#[test]
+fn lifecycle_events_only_target_the_canonical_primary_zone() {
+    let primary = hypercolor_types::scene::ZoneId::new();
+    let secondary = hypercolor_types::scene::ZoneId::new();
+    let display = hypercolor_types::scene::ZoneId::new();
+    let message: WsEventMessage = serde_json::from_value(json!({
+        "type": "event",
+        "event": "effect_started",
+        "data": {
+            "zone_id": primary.to_string(),
+            "layer_id": hypercolor_types::layer::SceneLayerId::new().to_string()
+        }
+    }))
+    .expect("should parse lifecycle event");
+
+    assert!(message.targets_zone(&primary));
+    assert!(!message.targets_zone(&secondary));
+    assert!(!message.targets_zone(&display));
 }
 
 #[test]
@@ -230,7 +269,7 @@ fn state_update_applies_dynamic_tray_changes() {
 }
 
 #[test]
-fn websocket_snapshot_refreshes_runtime_state_and_preserves_effect() {
+fn websocket_snapshot_preserves_content_state() {
     let mut state = AppState {
         running: true,
         paused: true,

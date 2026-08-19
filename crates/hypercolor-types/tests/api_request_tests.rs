@@ -10,9 +10,6 @@ use hypercolor_types::api::devices::{
     DiscoverRequest, IdentifyAttachmentRequest, IdentifyRequest, UpdateAttachmentsRequest,
 };
 use hypercolor_types::api::displays::{DisplayFaceScope, DisplayFaceScopeQuery};
-use hypercolor_types::api::layers::{
-    CreateLayerRequest, PatchLayerControlsRequest, UpdateLayerRequest,
-};
 use hypercolor_types::api::library::{
     PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest, SavePresetRequest,
 };
@@ -103,19 +100,6 @@ fn absent_and_explicit_null_optional_fields_decode_alike() {
         duration_ms,
         transition_ms,
     );
-    assert_null_and_absent_agree!(
-        CreateLayerRequest,
-        json!({ "source": { "type": "screen_region" } }),
-        name,
-    );
-    assert_null_and_absent_agree!(
-        UpdateLayerRequest,
-        json!({
-            "id": "00000000-0000-0000-0000-000000000001",
-            "source": { "type": "screen_region" },
-        }),
-        name,
-    );
 }
 
 #[test]
@@ -194,13 +178,6 @@ fn component_binding_accepts_absent_and_explicit_null_names() {
 
     assert_eq!(absent, explicit_null);
     assert_eq!(absent.bindings[0].name, None);
-}
-
-#[test]
-fn patch_layer_controls_accepts_an_absent_controls_field() {
-    let empty: PatchLayerControlsRequest =
-        serde_json::from_value(json!({})).expect("empty patch body decodes");
-    assert_eq!(empty.controls, None);
 }
 
 #[test]

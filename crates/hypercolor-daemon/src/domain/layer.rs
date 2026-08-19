@@ -1,9 +1,9 @@
 //! Layer-stack domain services (Spec 76 §2.2, §2.3).
 //!
 //! Every zone owns an ordered layer stack, and each of these six
-//! transactions moves it: insert, batch insert, update, remove, reorder,
-//! and control patch. All of them are persisted scene content guarded by
-//! a `layers_version` precondition, and all of them publish the same
+//! transactions moves it: insert, remove, reorder, and control patch.
+//! All of them are persisted scene content guarded by the scene revision,
+//! and all of them publish the same
 //! pair of events — the zone change the compositor reacts to, and the
 //! layer-stack change the Studio panel reacts to.
 //!
@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_core::scene::{LayerMutationError, SceneGroupLayerInsert};
+use hypercolor_core::scene::LayerMutationError;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, ZoneChangeKind};
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
@@ -25,8 +25,10 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{SceneMutation, SceneTarget, commit_scene, zone_changed_event};
-use crate::domain::{DomainError, MutationContext};
+use crate::domain::scene::{
+    MediaAdmissionContext, SceneMutation, commit_scene, zone_changed_event,
+};
+use crate::domain::{DomainError, MutationContext, ResourceKind};
 
 /// The outcome of a layer-stack mutation.
 #[derive(Debug)]
@@ -61,25 +63,29 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 /// lands first.
 pub async fn insert_layer(
     state: &AppState,
-    target: SceneTarget,
+    scene_id: SceneId,
     zone_id: ZoneId,
     layer: SceneLayer,
     index: Option<usize>,
-    expected_version: Option<u64>,
-    expected_scene_revision: Option<u64>,
+    expected_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
+    let media_admission = MediaAdmissionContext::for_layer(state, &layer).await;
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = target.resolve(&mutation, "creating a layer")?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
-    let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, expected_version) {
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if target.is_active() {
-        validate_candidate_media_admission(state, &mutation, scene_id).await?;
+    if let Some(media_admission) = media_admission {
+        let scene = mutation
+            .scenes()
+            .get(&scene_id)
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
+        media_admission.validate(scene)?;
     }
     finish(
         state,
@@ -91,67 +97,6 @@ pub async fn insert_layer(
     .await
 }
 
-/// Insert one layer into each of several zones, all or nothing.
-///
-/// # Errors
-///
-/// As [`insert_layer`].
-pub async fn insert_layers(
-    state: &AppState,
-    scene_id: SceneId,
-    inserts: Vec<SceneGroupLayerInsert>,
-    meta: MutationContext,
-) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let zones = match mutation.insert_layers(scene_id, inserts) {
-        Ok(zones) => zones,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
-    finish(
-        state,
-        mutation,
-        scene_id,
-        zones,
-        LayerStackChangeKind::Created,
-    )
-    .await
-}
-
-/// Replace one layer's definition in place.
-///
-/// # Errors
-///
-/// As [`insert_layer`].
-pub async fn update_layer(
-    state: &AppState,
-    scene_id: SceneId,
-    zone_id: ZoneId,
-    layer_id: SceneLayerId,
-    layer: SceneLayer,
-    expected_version: Option<u64>,
-    expected_scene_revision: Option<u64>,
-    meta: MutationContext,
-) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
-    let zone = match mutation.update_layer(scene_id, zone_id, layer_id, layer, expected_version) {
-        Ok(zone) => zone,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
-    finish(
-        state,
-        mutation,
-        scene_id,
-        vec![zone],
-        LayerStackChangeKind::Updated,
-    )
-    .await
-}
-
 /// Drop one layer out of a zone's stack.
 ///
 /// # Errors
@@ -159,19 +104,18 @@ pub async fn update_layer(
 /// As [`insert_layer`].
 pub async fn remove_layer(
     state: &AppState,
-    target: SceneTarget,
+    scene_id: SceneId,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
-    expected_version: Option<u64>,
-    expected_scene_revision: Option<u64>,
+    expected_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = target.resolve(&mutation, "deleting a layer")?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
-    let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, expected_version) {
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -192,19 +136,18 @@ pub async fn remove_layer(
 /// As [`insert_layer`].
 pub async fn reorder_layers(
     state: &AppState,
-    target: SceneTarget,
+    scene_id: SceneId,
     zone_id: ZoneId,
     layer_ids: Vec<SceneLayerId>,
-    expected_version: Option<u64>,
-    expected_scene_revision: Option<u64>,
+    expected_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = target.resolve(&mutation, "reordering layers")?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
-    let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, expected_version) {
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -243,21 +186,15 @@ pub async fn patch_layer_controls(
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     controls: HashMap<String, ControlValue>,
-    expected_version: Option<u64>,
-    expected_scene_revision: Option<u64>,
+    expected_revision: Option<u64>,
     meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_scene_revision)?;
-    let zone = match mutation.patch_layer_controls(
-        scene_id,
-        zone_id,
-        layer_id,
-        controls,
-        expected_version,
-    ) {
+    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    let zone = match mutation.patch_layer_controls(scene_id, zone_id, layer_id, controls, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -280,12 +217,16 @@ async fn finish(
     zones: Vec<Zone>,
     kind: LayerStackChangeKind,
 ) -> Result<LayerResult, DomainError> {
+    let revision = mutation
+        .base_revision()
+        .checked_add(1)
+        .expect("scene revision must not exhaust u64");
     for zone in &zones {
         mutation.record(zone_changed_event(scene_id, zone, zone_change_kind(kind)));
         mutation.record(HypercolorEvent::LayerStackChanged {
             scene_id,
             zone_id: zone.id,
-            layers_version: zone.layers_version,
+            revision,
             kind,
         });
     }

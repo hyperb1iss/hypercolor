@@ -32,7 +32,6 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
-use crate::domain::scene::SceneTarget;
 use crate::domain::scene_tree::{
     AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
     ZoneWritten,
@@ -138,6 +137,10 @@ pub async fn create_zone(
         Err(error) => return error.into_response(),
     };
 
+    let scene_id = match active_scene_id(state.as_ref()).await {
+        Ok(scene_id) => scene_id,
+        Err(error) => return error.into_response(),
+    };
     let canvas = {
         let spatial = state.spatial_engine.read().await;
         let layout = spatial.layout();
@@ -147,12 +150,11 @@ pub async fn create_zone(
     let created = crate::domain::zone::create_zone(
         state.as_ref(),
         crate::domain::zone::CreateZone {
-            scene: SceneTarget::Active,
+            scene_id,
             name: body.name,
             color: body.color,
             fallback_canvas: canvas,
-            expected_revision: None,
-            expected_scene_revision: expected,
+            expected_revision: expected,
         },
         MutationContext::api(),
     )
@@ -180,9 +182,8 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    let revision = state.scene_commits.revision();
     match scene_tree::read_zone(state.as_ref(), zone_id).await {
-        Ok(resource) => with_revision(ApiResponse::ok(resource), revision),
+        Ok((resource, revision)) => with_revision(ApiResponse::ok(resource), revision),
         Err(error) => error.into_response(),
     }
 }
@@ -194,7 +195,7 @@ pub async fn patch_zone(
     headers: HeaderMap,
     Json(body): Json<PatchZoneRequest>,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers) {
+    let (zone_id, expected, scene_id) = match zone_request(state.as_ref(), &zone, &headers).await {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -203,7 +204,7 @@ pub async fn patch_zone(
         crate::domain::zone::update_zone(
             state.as_ref(),
             crate::domain::zone::UpdateZone {
-                scene: SceneTarget::Active,
+                scene_id,
                 zone_id,
                 patch: hypercolor_core::scene::ZoneMetaPatch {
                     name: body.name,
@@ -213,8 +214,7 @@ pub async fn patch_zone(
                     enabled: body.enabled,
                     make_primary: None,
                 },
-                expected_revision: None,
-                expected_scene_revision: expected,
+                expected_revision: expected,
             },
             MutationContext::api(),
         )
@@ -228,7 +228,7 @@ pub async fn delete_zone(
     Path(zone): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers) {
+    let (zone_id, expected, scene_id) = match zone_request(state.as_ref(), &zone, &headers).await {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -236,10 +236,9 @@ pub async fn delete_zone(
     if let Err(error) = crate::domain::zone::delete_zone(
         state.as_ref(),
         crate::domain::zone::DeleteZone {
-            scene: SceneTarget::Active,
+            scene_id,
             zone_id,
-            expected_revision: None,
-            expected_scene_revision: expected,
+            expected_revision: expected,
         },
         MutationContext::api(),
     )
@@ -343,9 +342,8 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    let revision = state.scene_commits.revision();
     match scene_tree::read_zone(state.as_ref(), zone_id).await {
-        Ok(resource) => {
+        Ok((resource, revision)) => {
             let total = resource.layers.len() as u64;
             with_revision(
                 ApiResponse::ok(ListResponse {
@@ -367,7 +365,7 @@ pub async fn create_layer(
     headers: HeaderMap,
     Json(body): Json<CreateLayerRequest>,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers) {
+    let (zone_id, expected, scene_id) = match zone_request(state.as_ref(), &zone, &headers).await {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -375,13 +373,11 @@ pub async fn create_layer(
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
-
     let inserted = crate::domain::layer::insert_layer(
         state.as_ref(),
-        SceneTarget::Active,
+        scene_id,
         zone_id,
         layer,
-        None,
         None,
         expected,
         MutationContext::api(),
@@ -412,7 +408,7 @@ pub async fn reorder_layers(
     headers: HeaderMap,
     Json(body): Json<ReorderLayersRequest>,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers) {
+    let (zone_id, expected, scene_id) = match zone_request(state.as_ref(), &zone, &headers).await {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -420,10 +416,9 @@ pub async fn reorder_layers(
     layer_stack_response(
         crate::domain::layer::reorder_layers(
             state.as_ref(),
-            SceneTarget::Active,
+            scene_id,
             zone_id,
             body.order,
-            None,
             expected,
             MutationContext::api(),
         )
@@ -458,7 +453,6 @@ pub async fn replace_layer(
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
-
     written_response(
         scene_tree::replace_layer(
             state.as_ref(),
@@ -480,7 +474,7 @@ pub async fn delete_layer(
     Path((zone, layer)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers) {
+    let (zone_id, expected, scene_id) = match zone_request(state.as_ref(), &zone, &headers).await {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -492,10 +486,9 @@ pub async fn delete_layer(
     layer_stack_response(
         crate::domain::layer::remove_layer(
             state.as_ref(),
-            SceneTarget::Active,
+            scene_id,
             zone_id,
             layer_id,
-            None,
             expected,
             MutationContext::api(),
         )
@@ -615,11 +608,25 @@ pub(crate) fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainE
         .map_err(|_| DomainError::malformed("If-Match must be the scene revision"))
 }
 
-/// Parse the transport-owned pieces of a zone-scoped mutation.
-fn zone_request(zone: &str, headers: &HeaderMap) -> Result<(ZoneId, Option<u64>), DomainError> {
+async fn active_scene_id(
+    state: &AppState,
+) -> Result<hypercolor_types::scene::SceneId, DomainError> {
+    let manager = state.scene_manager.read().await;
+    crate::domain::scene::active_scene_for_runtime_mutation(&manager, "editing the scene tree")
+}
+
+/// The three things every zone-scoped mutation needs before it calls a
+/// service: the zone it addresses, the precondition it carries, and the
+/// scene that owns the live tree.
+async fn zone_request(
+    state: &AppState,
+    zone: &str,
+    headers: &HeaderMap,
+) -> Result<(ZoneId, Option<u64>, hypercolor_types::scene::SceneId), DomainError> {
     let zone_id = parse_zone_id(zone)?;
     let expected = parse_if_match(headers)?;
-    Ok((zone_id, expected))
+    let scene_id = active_scene_id(state).await?;
+    Ok((zone_id, expected, scene_id))
 }
 
 fn parse_zone_id(raw: &str) -> Result<ZoneId, DomainError> {
@@ -653,8 +660,8 @@ async fn build_layer(
         opacity: request.opacity.unwrap_or(1.0),
         transform: request.transform.unwrap_or_default(),
         adjust: request.adjust.unwrap_or_default(),
-        bindings: Vec::new(),
-        enabled: true,
+        bindings: request.bindings.unwrap_or_default(),
+        enabled: request.enabled.unwrap_or(true),
     }
     .normalized();
     layer.validate().map_err(|errors| {

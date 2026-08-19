@@ -286,6 +286,21 @@ impl WsEventMessage {
     pub fn requires_full_resync(&self) -> bool {
         self.msg_type == "event" && self.event == "resync_required"
     }
+
+    #[must_use]
+    pub fn is_destructive_effect_stop(&self) -> bool {
+        self.msg_type == "event"
+            && self.event == "effect_stopped"
+            && self.data.get("reason").and_then(serde_json::Value::as_str) == Some("stopped")
+    }
+
+    #[must_use]
+    pub fn targets_zone(&self, zone_id: &hypercolor_types::scene::ZoneId) -> bool {
+        self.data
+            .get("zone_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == zone_id.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -293,7 +308,7 @@ mod app_state_tests {
     use super::{AppState, EffectInfo, StateUpdate};
 
     #[test]
-    fn websocket_snapshot_refreshes_runtime_state_and_preserves_effect() {
+    fn websocket_snapshot_preserves_content_state() {
         let mut state = AppState {
             running: true,
             paused: true,
@@ -355,5 +370,42 @@ mod tests {
         .expect("should parse resync event");
 
         assert!(message.requires_full_resync());
+    }
+
+    #[test]
+    fn only_explicit_stops_are_destructive_lifecycle_events() {
+        for (reason, destructive) in [("stopped", true), ("error", false), ("replaced", false)] {
+            let message: WsEventMessage = serde_json::from_value(serde_json::json!({
+                "type": "event",
+                "event": "effect_stopped",
+                "data": {
+                    "reason": reason,
+                    "zone_id": "019c0000-0000-7000-8000-000000000001"
+                }
+            }))
+            .expect("should parse stop event");
+
+            assert_eq!(message.is_destructive_effect_stop(), destructive);
+        }
+    }
+
+    #[test]
+    fn lifecycle_events_only_target_the_canonical_primary_zone() {
+        let primary = hypercolor_types::scene::ZoneId::new();
+        let secondary = hypercolor_types::scene::ZoneId::new();
+        let display = hypercolor_types::scene::ZoneId::new();
+        let message: WsEventMessage = serde_json::from_value(serde_json::json!({
+            "type": "event",
+            "event": "effect_started",
+            "data": {
+                "zone_id": primary.to_string(),
+                "layer_id": hypercolor_types::layer::SceneLayerId::new().to_string()
+            }
+        }))
+        .expect("should parse lifecycle event");
+
+        assert!(message.targets_zone(&primary));
+        assert!(!message.targets_zone(&secondary));
+        assert!(!message.targets_zone(&display));
     }
 }

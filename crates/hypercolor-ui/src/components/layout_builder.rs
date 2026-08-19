@@ -789,15 +789,15 @@ pub(crate) struct ZoneCanvasActions {
 #[component]
 pub(crate) fn ZoneLayoutProvider(
     /// The active scene — the source of the zone set and the
-    /// `zones_revision` carried as each save's `If-Match` precondition.
+    /// scene revision carried as each save's `If-Match` precondition.
     #[prop(into)]
-    active_scene: Signal<Option<api::ActiveSceneResponse>>,
+    active_scene: Signal<Option<api::LiveSceneView>>,
     /// The selected zone's id (a `Zone` id). `None`, an unknown
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
     selected_zone_id: Signal<Option<String>>,
     /// Re-fetch the active scene after a save so the tree and Stage pick
-    /// up the new `zones_revision`.
+    /// up the new scene revision.
     refresh_scene: Callback<()>,
     children: Children,
 ) -> impl IntoView {
@@ -916,16 +916,11 @@ pub(crate) fn ZoneLayoutProvider(
         let Some(zone_id) = selected_zone_id.get_untracked() else {
             return;
         };
-        let Some((scene_id, revision)) = active_scene
-            .get_untracked()
-            .map(|scene| (scene.id, scene.zones_revision))
-        else {
+        let Some(revision) = active_scene.get_untracked().map(|scene| scene.revision) else {
             return;
         };
         leptos::task::spawn_local(async move {
-            match api::zones::update_zone_layout(&scene_id, &zone_id, &current, Some(revision))
-                .await
-            {
+            match api::zones::update_zone_layout(&zone_id, &current, Some(revision)).await {
                 Ok(api::zones::ZoneOutcome::Applied(_)) => {
                     set_saved_layout.set(Some(current));
                     set_layout.mark_clean();

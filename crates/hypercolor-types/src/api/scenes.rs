@@ -13,7 +13,7 @@ use crate::layer::{
 };
 use crate::scene::{
     DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
-    UnassignedBehavior, Zone, ZoneId, ZoneRole,
+    UnassignedBehavior, ZoneId, ZoneRole,
 };
 
 /// Response for `GET /api/v1/scenes`.
@@ -37,36 +37,9 @@ pub struct SceneSummary {
     #[serde(default)]
     pub priority: u8,
     /// Live vs snapshot-locked. Lets scene pickers mark locked scenes
-    /// without joining `/scenes/active`.
+    /// without inferring lock state from the live scene kind.
     #[serde(default)]
     pub mutation_mode: SceneMutationMode,
-}
-
-/// Response for `GET /api/v1/scenes/active` — the active scene with its
-/// full zone set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActiveSceneResponse {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default = "default_scene_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub priority: u8,
-    #[serde(default)]
-    pub kind: SceneKind,
-    #[serde(default)]
-    pub mutation_mode: SceneMutationMode,
-    #[serde(default)]
-    pub zones: Vec<Zone>,
-    /// Monotonic zone-structure counter. Carried as the `If-Match`
-    /// precondition for every zone mutation (Spec 64).
-    #[serde(default)]
-    pub zones_revision: u64,
-    /// Scene-level policy for device outputs claimed by no zone (§9.4).
-    #[serde(default)]
-    pub unassigned_behavior: UnassignedBehavior,
 }
 
 /// Response for `DELETE /api/v1/scenes/{id}`.
@@ -91,18 +64,6 @@ pub struct ActivateSceneResponse {
 pub struct ActivatedSceneRef {
     pub id: String,
     pub name: String,
-}
-
-/// Response for `POST /api/v1/scenes/deactivate`.
-///
-/// `scene` is the synthesized default the daemon fell back to, and
-/// `previous_scene` the one that was active; either is `null` when the
-/// daemon had no scene in that role.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DeactivateSceneResponse {
-    pub deactivated: bool,
-    pub previous_scene: Option<SceneSummary>,
-    pub scene: Option<SceneSummary>,
 }
 
 /// Request body for `POST /api/v1/scenes`.

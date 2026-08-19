@@ -1,10 +1,11 @@
 //! Integration tests for persisted named-scene storage.
 
-use hypercolor_core::scene::{SceneManager, make_scene};
+use hypercolor_core::scene::{SceneManager, default_primary_group, make_scene};
 use hypercolor_daemon::persistence::AtomicWriteOutcome;
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -73,6 +74,52 @@ fn scene_store_round_trips_named_scenes() {
     assert_eq!(loaded.len(), 2);
     assert!(names.contains(&"Movie Night"));
     assert!(names.contains(&"Focus"));
+}
+
+#[test]
+fn scene_store_materializes_and_persists_fresh_legacy_layer_ids() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let mut scene = make_scene("Legacy");
+    scene.groups = vec![default_primary_group(sample_layout("desk:main"))];
+    let zone_id = scene.groups[0].id;
+    let effect_id = EffectId::from(Uuid::now_v7());
+    scene.groups[0].layers = vec![SceneLayer::from_effect(
+        SceneLayerId::from_uuid(zone_id.0),
+        effect_id,
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+        None,
+    )];
+    let payload = serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
+        .expect("scene payload should serialize");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&payload).expect("scene payload should serialize"),
+    )
+    .expect("legacy scene store should write");
+
+    let loaded = SceneStore::load(&path).expect("legacy scene store should migrate");
+    let migrated_id = loaded
+        .list()
+        .next()
+        .and_then(|scene| scene.groups.first())
+        .and_then(|zone| zone.layers.first())
+        .map(|layer| layer.id)
+        .expect("legacy effect should become a layer");
+    assert_ne!(migrated_id.as_uuid(), zone_id.0);
+
+    let reloaded = SceneStore::load(&path).expect("migrated scene store should reload");
+    assert_eq!(
+        reloaded
+            .list()
+            .next()
+            .and_then(|scene| scene.groups.first())
+            .and_then(|zone| zone.layers.first())
+            .map(|layer| layer.id),
+        Some(migrated_id),
+        "the minted layer id must persist across daemon restarts"
+    );
 }
 
 #[test]

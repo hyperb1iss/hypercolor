@@ -23,8 +23,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use hypercolor_core::scene::{
-    ControlsVersionMismatch, LayerMutationError, OutputPlacement, SceneGroupLayerInsert,
-    SceneManager, ZoneMetaPatch, ZoneMutationError, default_primary_group,
+    LayerMutationError, OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError,
+    default_primary_group,
 };
 use hypercolor_types::api::scenes::{
     ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest,
@@ -32,11 +32,11 @@ use hypercolor_types::api::scenes::{
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::{
     HypercolorEvent, SceneChangeReason, SceneLibraryChangeKind, ZoneChangeKind,
 };
-use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, EasingFunction, Scene, SceneId, SceneKind,
@@ -364,26 +364,6 @@ impl SceneMutation {
         Some(zone)
     }
 
-    /// Merge control overrides into a zone, refusing a stale version and
-    /// a zone that stopped running the expected effect.
-    pub fn patch_effect_controls(
-        &mut self,
-        zone_id: ZoneId,
-        expected_effect_id: Option<EffectId>,
-        updates: HashMap<String, ControlValue>,
-        expected_version: Option<u64>,
-    ) -> Result<(Zone, u64), ControlsVersionMismatch> {
-        let (zone, version) = self.candidate.patch_effect_controls_with_precondition(
-            zone_id,
-            expected_effect_id,
-            updates,
-            expected_version,
-        )?;
-        let zone = zone.clone();
-        self.persists_scene_content = true;
-        Ok((zone, version))
-    }
-
     /// Merge control overrides into a zone with no effect precondition.
     pub fn patch_zone_controls(
         &mut self,
@@ -396,47 +376,6 @@ impl SceneMutation {
             .clone();
         self.persists_scene_content = true;
         Some(zone)
-    }
-
-    /// Replace a zone's control values with the effect's defaults.
-    pub fn reset_zone_controls(
-        &mut self,
-        zone_id: ZoneId,
-        defaults: HashMap<String, ControlValue>,
-    ) -> Option<Zone> {
-        let zone = self
-            .candidate
-            .reset_group_controls(zone_id, defaults)?
-            .clone();
-        self.persists_scene_content = true;
-        Some(zone)
-    }
-
-    /// Attach a live sensor binding to one of a zone's controls.
-    pub fn set_zone_control_binding(
-        &mut self,
-        zone_id: ZoneId,
-        control_id: String,
-        binding: ControlBinding,
-    ) -> Option<Zone> {
-        let zone = self
-            .candidate
-            .set_group_control_binding(zone_id, control_id, binding)?
-            .clone();
-        self.persists_scene_content = true;
-        Some(zone)
-    }
-
-    /// Record which preset a zone's control values came from.
-    pub fn set_zone_preset_id(&mut self, zone_id: ZoneId, preset_id: Option<PresetId>) -> bool {
-        let changed = self
-            .candidate
-            .set_group_preset_id(zone_id, preset_id)
-            .is_some();
-        if changed {
-            self.persists_scene_content = true;
-        }
-        changed
     }
 
     /// Force the active scene's resolved zones to be recomputed.
@@ -463,40 +402,6 @@ impl SceneMutation {
             zone_id,
             layer,
             index,
-            expected_version,
-        )?;
-        let zone = zone.clone();
-        self.persists_scene_content = true;
-        Ok(zone)
-    }
-
-    /// Insert one layer into each of several zones, all or nothing.
-    pub fn insert_layers(
-        &mut self,
-        scene_id: SceneId,
-        inserts: Vec<SceneGroupLayerInsert>,
-    ) -> Result<Vec<Zone>, LayerMutationError> {
-        let zones = self
-            .candidate
-            .insert_scene_group_layers_batch(scene_id, inserts)?;
-        self.persists_scene_content = true;
-        Ok(zones)
-    }
-
-    /// Replace one layer's definition in place.
-    pub fn update_layer(
-        &mut self,
-        scene_id: SceneId,
-        zone_id: ZoneId,
-        layer_id: SceneLayerId,
-        layer: SceneLayer,
-        expected_version: Option<u64>,
-    ) -> Result<Zone, LayerMutationError> {
-        let (zone, _version) = self.candidate.update_scene_group_layer(
-            scene_id,
-            zone_id,
-            layer_id,
-            layer,
             expected_version,
         )?;
         let zone = zone.clone();
@@ -688,10 +593,9 @@ impl SceneMutation {
     /// would mint a scene revision and invalidate every in-flight
     /// candidate for no change at all.
     ///
-    /// The comparison normalizes the zone id because
-    /// `set_default_display_group` reuses the installed zone's id, so a
-    /// freshly built overlay differs from an identical installed one in
-    /// that field alone.
+    /// The comparison normalizes runtime identities because a freshly
+    /// built overlay mints them before it can discover the installed
+    /// equivalent.
     pub fn set_default_display_zone(&mut self, zone: Zone) -> bool {
         let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
             return false;
@@ -702,6 +606,13 @@ impl SceneMutation {
             .is_some_and(|installed| {
                 let mut candidate = zone.clone();
                 candidate.id = installed.id;
+                if candidate.layers.len() == installed.layers.len() {
+                    for (candidate_layer, installed_layer) in
+                        candidate.layers.iter_mut().zip(&installed.layers)
+                    {
+                        candidate_layer.id = installed_layer.id;
+                    }
+                }
                 *installed == candidate
             });
         if unchanged {
@@ -953,6 +864,43 @@ pub struct SceneMediaAdmission {
     pub estimated_cost_us: u64,
     /// The hard-cap violation, when the scene has one.
     pub violation: Option<MediaAdmissionViolationDetails>,
+}
+
+/// Media-cap inputs resolved before a candidate transaction begins.
+#[derive(Debug)]
+pub struct MediaAdmissionContext {
+    asset_mime_types: HashMap<AssetId, String>,
+    media_config: MediaConfig,
+}
+
+impl MediaAdmissionContext {
+    /// Resolve admission inputs only when a layer can add a media producer.
+    pub async fn for_layer(state: &AppState, layer: &SceneLayer) -> Option<Self> {
+        if !matches!(layer.source, LayerSource::Media { .. }) {
+            return None;
+        }
+        Some(Self {
+            asset_mime_types: crate::api::scenes::asset_mime_types(state).await,
+            media_config: crate::api::scenes::current_media_config(state),
+        })
+    }
+
+    /// Reject a mutated candidate that exceeds the configured producer caps.
+    pub fn validate(&self, scene: &Scene) -> Result<(), DomainError> {
+        let admission =
+            evaluate_scene_media_admission(scene, &self.asset_mime_types, &self.media_config);
+        let Some(violation) = admission.violation else {
+            return Ok(());
+        };
+        Err(DomainError::validation_details(
+            violation.message,
+            serde_json::json!({
+                "caps": violation.caps,
+                "counts": violation.counts,
+                "layers": violation.layers,
+            }),
+        ))
+    }
 }
 
 impl SceneMediaAdmission {

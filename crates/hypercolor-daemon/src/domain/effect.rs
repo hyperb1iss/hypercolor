@@ -13,7 +13,6 @@ use std::str::FromStr;
 
 use strum::VariantNames;
 
-use hypercolor_types::api::effects::EffectLayoutApplyResult;
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
@@ -132,8 +131,13 @@ pub struct ApplyEffect {
     /// Which zone to load into. `None` targets the primary zone, which
     /// is created when the active scene has none.
     pub target_zone: Option<ZoneId>,
+    /// The structural revision the caller observed, when guarded.
+    pub expected_revision: Option<u64>,
     /// The requested transition.
     pub transition: RequestedTransition,
+    /// Whether the post-commit output wake belongs to this gesture.
+    /// Playlist advancement preserves the existing power state.
+    pub wake_output: bool,
 }
 
 /// The outcome of loading an effect.
@@ -149,12 +153,10 @@ pub struct EffectApplied {
     pub zone_change: ZoneChangeKind,
     /// What the target zone ran before, when it ran anything.
     pub previous_effect: Option<EffectRef>,
-    /// The layout the effect's association pulled in, primary only.
-    pub applied_layout: Option<EffectLayoutApplyResult>,
     /// The transition the daemon applied.
     pub transition: AppliedTransition,
-    /// Whether the post-commit power wake left output running
-    /// (Spec 78 §2.3). The commit stands either way.
+    /// Whether the requested post-commit output policy succeeded.
+    /// The commit stands either way.
     pub output: SideEffectOutcome,
     /// The commit receipt.
     pub commit: SceneCommit,
@@ -199,6 +201,7 @@ pub async fn apply_effect(
     let layout = crate::api::effects::resolve_full_scope_layout(state).await;
 
     let mut mutation = state.begin_scene_mutation().await;
+    crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("applying an effect")?;
 
     // A target naming the primary zone — or no target at all — takes the
@@ -250,19 +253,13 @@ pub async fn apply_effect(
 
     // Every refusal above returns before this point, so nothing the
     // caller can get rejected for has woken output (Spec 78 §2.3).
-    let output = if crate::api::effects::wake_output_for_effect_start(state).await {
-        SideEffectOutcome::applied()
-    } else {
-        SideEffectOutcome::failed("output did not resume; patch /output to retry")
-    };
+    let output =
+        if command.wake_output && !crate::api::effects::wake_output_for_effect_start(state).await {
+            SideEffectOutcome::failed("output did not resume; patch /output to retry")
+        } else {
+            SideEffectOutcome::applied()
+        };
 
-    // A named zone keeps its own layout; only a primary apply adopts the
-    // effect's associated one.
-    let applied_layout = if named_target.is_some() {
-        None
-    } else {
-        crate::api::effects::apply_associated_layout(state, &metadata.id.to_string()).await
-    };
     crate::api::save_runtime_session_snapshot(state).await;
 
     Ok(EffectApplied {
@@ -271,7 +268,6 @@ pub async fn apply_effect(
         zone,
         zone_change,
         previous_effect,
-        applied_layout,
         transition,
         output,
         commit,
@@ -362,222 +358,6 @@ pub async fn stop_effect(
         scene_id,
         zone: cleared,
         released_network_devices,
-        commit,
-    }))
-}
-
-// ── Control mutations ────────────────────────────────────────────────────
-
-/// Merge control overrides into one zone's effect.
-#[derive(Debug, Clone)]
-pub struct UpdateControls {
-    /// Which zone's controls change, resolved by the adapter.
-    pub zone_id: ZoneId,
-    /// The effect the zone must still be running.
-    ///
-    /// `Some` turns a concurrent effect swap into a not-found instead of
-    /// a patch landing on whatever moved in; `None` accepts whatever the
-    /// zone runs, which is what the ambient "current effect" surface
-    /// means.
-    pub expected_effect_id: Option<EffectId>,
-    /// The effect's metadata, for resolving the per-control events.
-    pub effect: EffectMetadata,
-    /// Control values, already normalized against the effect's schema.
-    pub controls: HashMap<String, ControlValue>,
-    /// The `controls_version` the caller last saw, when it sent one.
-    pub expected_version: Option<u64>,
-}
-
-/// Reset one zone's controls to the effect's metadata defaults.
-#[derive(Debug, Clone)]
-pub struct ResetControls {
-    /// Which zone to reset, resolved by the adapter.
-    pub zone_id: ZoneId,
-    /// The effect the zone runs, for defaults and change events.
-    pub effect: EffectMetadata,
-}
-
-/// Attach a live sensor binding to one of a zone's controls.
-#[derive(Debug, Clone)]
-pub struct SetControlBinding {
-    /// Which zone owns the control, resolved by the adapter.
-    pub zone_id: ZoneId,
-    /// Which control gains the binding.
-    pub control_id: String,
-    /// The validated binding.
-    pub binding: hypercolor_types::effect::ControlBinding,
-}
-
-/// The outcome of a control mutation.
-#[derive(Debug)]
-pub struct ControlsWritten {
-    /// The scene that owns the zone.
-    pub scene_id: SceneId,
-    /// The zone as it stands after the mutation.
-    pub zone: Zone,
-    /// The zone's `controls_version` afterwards.
-    pub controls_version: u64,
-    /// The commit receipt.
-    pub commit: SceneCommit,
-}
-
-/// Why a control patch could not land on the zone the caller named.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ControlsRefusal {
-    /// No active scene, or no such zone in it.
-    ZoneMissing,
-    /// The caller's `controls_version` precondition is stale.
-    Stale {
-        /// The version the zone actually holds.
-        current: u64,
-    },
-    /// More than one effect layer could receive the patch.
-    AmbiguousLayerStack,
-}
-
-/// Merge control overrides into a zone without reloading its renderer.
-///
-/// # Errors
-///
-/// [`DomainError::Conflict`] when the active scene is snapshot-locked
-/// and [`DomainError::Conflict`] when a concurrent scene
-/// mutation lands first. A refusal that names the zone's own state comes
-/// back as `Ok(Err(ControlsRefusal))`, because each transport renders
-/// those three cases on its own frozen wire.
-pub async fn update_controls(
-    state: &AppState,
-    command: UpdateControls,
-    meta: MutationContext,
-) -> Result<Result<ControlsWritten, ControlsRefusal>, DomainError> {
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = mutation.active_scene_for_runtime_mutation("updating effect controls")?;
-    let Some(previous) = zone_control_values(&mutation, command.zone_id, &command.effect) else {
-        return Ok(Err(ControlsRefusal::ZoneMissing));
-    };
-
-    let changed_ids = command.controls.keys().cloned().collect::<Vec<_>>();
-    let (zone, controls_version) = match mutation.patch_effect_controls(
-        command.zone_id,
-        command.expected_effect_id,
-        command.controls,
-        command.expected_version,
-    ) {
-        Ok(patched) => patched,
-        Err(refusal) => return Ok(Err(controls_refusal(refusal))),
-    };
-
-    mutation.record(zone_changed_event(
-        scene_id,
-        &zone,
-        ZoneChangeKind::ControlsPatched,
-    ));
-    record_control_changed_events(
-        &mut mutation,
-        &command.effect,
-        &zone,
-        &previous,
-        &crate::api::effects::resolved_control_values(&command.effect, &zone),
-        changed_ids.iter().map(String::as_str),
-        meta.trigger,
-    );
-
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
-
-    Ok(Ok(ControlsWritten {
-        scene_id,
-        zone,
-        controls_version,
-        commit,
-    }))
-}
-
-/// Reset a zone's controls to the effect's metadata defaults.
-///
-/// # Errors
-///
-/// As [`update_controls`].
-pub async fn reset_controls(
-    state: &AppState,
-    command: ResetControls,
-    meta: MutationContext,
-) -> Result<Result<ControlsWritten, ControlsRefusal>, DomainError> {
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id =
-        mutation.active_scene_for_runtime_mutation("resetting active effect controls")?;
-    let Some(previous) = zone_control_values(&mutation, command.zone_id, &command.effect) else {
-        return Ok(Err(ControlsRefusal::ZoneMissing));
-    };
-
-    let defaults = crate::api::effects::default_control_values(&command.effect);
-    let Some(zone) = mutation.reset_zone_controls(command.zone_id, defaults) else {
-        return Ok(Err(ControlsRefusal::ZoneMissing));
-    };
-
-    mutation.record(zone_changed_event(
-        scene_id,
-        &zone,
-        ZoneChangeKind::ControlsPatched,
-    ));
-    let control_ids = command
-        .effect
-        .controls
-        .iter()
-        .map(|control| control.control_id().to_owned())
-        .collect::<Vec<_>>();
-    record_control_changed_events(
-        &mut mutation,
-        &command.effect,
-        &zone,
-        &previous,
-        &crate::api::effects::resolved_control_values(&command.effect, &zone),
-        control_ids.iter().map(String::as_str),
-        meta.trigger,
-    );
-
-    let controls_version = zone.controls_version;
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
-
-    Ok(Ok(ControlsWritten {
-        scene_id,
-        zone,
-        controls_version,
-        commit,
-    }))
-}
-
-/// Attach a live sensor binding to one of a zone's controls.
-///
-/// # Errors
-///
-/// As [`update_controls`].
-pub async fn set_control_binding(
-    state: &AppState,
-    command: SetControlBinding,
-    meta: MutationContext,
-) -> Result<Result<ControlsWritten, ControlsRefusal>, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id =
-        mutation.active_scene_for_runtime_mutation("updating an active effect control binding")?;
-    let Some(zone) =
-        mutation.set_zone_control_binding(command.zone_id, command.control_id, command.binding)
-    else {
-        return Ok(Err(ControlsRefusal::ZoneMissing));
-    };
-
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
-
-    let controls_version = zone.controls_version;
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
-
-    Ok(Ok(ControlsWritten {
-        scene_id,
-        zone,
-        controls_version,
         commit,
     }))
 }
@@ -786,83 +566,10 @@ fn effect_matches_search(metadata: &EffectMetadata, term: &str) -> bool {
 
 // ── Shared steps ─────────────────────────────────────────────────────────
 
-async fn effect_ref_index(state: &AppState) -> HashMap<EffectId, EffectRef> {
+pub(super) async fn effect_ref_index(state: &AppState) -> HashMap<EffectId, EffectRef> {
     let registry = state.effect_registry.read().await;
     registry
         .iter()
         .map(|(id, entry)| (*id, crate::api::effects::effect_ref(&entry.metadata)))
         .collect()
-}
-
-fn zone_control_values(
-    mutation: &crate::domain::scene::SceneMutation,
-    zone_id: ZoneId,
-    effect: &EffectMetadata,
-) -> Option<HashMap<String, ControlValue>> {
-    let zone = mutation
-        .scenes()
-        .active_scene()?
-        .groups
-        .iter()
-        .find(|zone| zone.id == zone_id)?;
-    Some(crate::api::effects::resolved_control_values(effect, zone))
-}
-
-fn controls_refusal(error: hypercolor_core::scene::ControlsVersionMismatch) -> ControlsRefusal {
-    use hypercolor_core::scene::ControlsVersionMismatch;
-    match error {
-        ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing => {
-            ControlsRefusal::ZoneMissing
-        }
-        ControlsVersionMismatch::Stale { current } => ControlsRefusal::Stale { current },
-        ControlsVersionMismatch::AmbiguousLayerStack => ControlsRefusal::AmbiguousLayerStack,
-    }
-}
-
-/// Record one `EffectControlChanged` per control whose resolved value
-/// actually moved, so the events publish in commit order with the zone
-/// change rather than racing it on the bus.
-fn record_control_changed_events<'a>(
-    mutation: &mut crate::domain::scene::SceneMutation,
-    effect: &EffectMetadata,
-    zone: &Zone,
-    previous_values: &HashMap<String, ControlValue>,
-    next_values: &HashMap<String, ControlValue>,
-    changed_control_ids: impl IntoIterator<Item = &'a str>,
-    trigger: hypercolor_types::event::ChangeTrigger,
-) {
-    // The layer identity a client would patch next: the effect layer
-    // these values actually live on.
-    let layer_id = zone.effective_layers().iter().find_map(|layer| {
-        matches!(
-            &layer.source,
-            hypercolor_types::layer::LayerSource::Effect { effect_id, .. } if *effect_id == effect.id
-        )
-        .then_some(layer.id)
-    });
-    for control_id in changed_control_ids {
-        let (Some(previous), Some(next)) =
-            (previous_values.get(control_id), next_values.get(control_id))
-        else {
-            continue;
-        };
-        if previous == next {
-            continue;
-        }
-        let (Some(old_value), Some(new_value)) = (
-            crate::api::effects::event_control_value(previous),
-            crate::api::effects::event_control_value(next),
-        ) else {
-            continue;
-        };
-        mutation.record(HypercolorEvent::EffectControlChanged {
-            effect_id: effect.id.to_string(),
-            control_id: control_id.to_owned(),
-            old_value,
-            new_value,
-            zone_id: Some(zone.id),
-            layer_id,
-            trigger: trigger.clone(),
-        });
-    }
 }

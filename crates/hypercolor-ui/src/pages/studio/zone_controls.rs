@@ -5,7 +5,7 @@
 //! they drive. Extracted so the zone tree can reuse them without dragging
 //! in the retired surface rail.
 //!
-//! Every mutation carries the active scene's `zones_revision` as the
+//! Every mutation carries the live scene's `revision` as the
 //! `If-Match` precondition; a `Stale` outcome reloads the scene so the
 //! user retries against the fresh revision rather than clobbering a
 //! concurrent edit.
@@ -129,7 +129,6 @@ pub fn ZoneControls(surface: Surface) -> impl IntoView {
                 {
                     let zone_id = zone_id.clone();
                     move || {
-                        let promote_id = zone_id.clone();
                         let delete_id = zone_id.clone();
                         if confirm_delete.get() {
                             view! {
@@ -157,14 +156,6 @@ pub fn ZoneControls(surface: Surface) -> impl IntoView {
                                 .into_any()
                         } else {
                             view! {
-                                <button
-                                    type="button"
-                                    class="chip-interactive inline-flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary"
-                                    title="Make this the default zone"
-                                    on:click=move |_| commit_make_default(studio, &promote_id)
-                                >
-                                    <Icon icon=LuCircleCheck width="11px" height="11px" />
-                                </button>
                                 <button
                                     type="button"
                                     class="chip-interactive inline-flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary hover:text-[rgba(255,99,99,0.9)]"
@@ -252,7 +243,7 @@ fn scene_context(studio: StudioContext) -> Option<(String, u64)> {
     studio
         .active_scene
         .get_untracked()
-        .map(|scene| (scene.id, scene.zones_revision))
+        .map(|scene| (scene.id, scene.revision))
 }
 
 /// Create a zone from a typed name. Returns whether the request was sent
@@ -263,12 +254,12 @@ pub fn create_zone_from(studio: StudioContext, name: &str) -> bool {
         toasts::toast_error("Zone name must not be empty");
         return false;
     }
-    let Some((scene_id, revision)) = scene_context(studio) else {
+    let Some((_, revision)) = scene_context(studio) else {
         toasts::toast_error("No active scene is available");
         return false;
     };
     spawn_local(async move {
-        match api::zones::create_zone(&scene_id, &name, None, Some(revision)).await {
+        match api::zones::create_zone(&name, None, Some(revision)).await {
             Ok(ZoneOutcome::Applied(zone)) => {
                 studio.selected_surface_id.set(Some(zone.id.to_string()));
                 toasts::toast_success(&format!("Zone \"{}\" created", zone.name));
@@ -321,27 +312,19 @@ fn commit_zone_enabled(studio: StudioContext, zone_id: &str, enabled: bool) {
     );
 }
 
-fn commit_make_default(studio: StudioContext, zone_id: &str) {
-    let request = api::zones::UpdateZoneRequest {
-        make_primary: Some(true),
-        ..Default::default()
-    };
-    apply_zone_update(studio, zone_id, request, "Default zone changed");
-}
-
 fn apply_zone_update(
     studio: StudioContext,
     zone_id: &str,
     request: api::zones::UpdateZoneRequest,
     success: &'static str,
 ) {
-    let Some((scene_id, revision)) = scene_context(studio) else {
+    let Some((_, revision)) = scene_context(studio) else {
         toasts::toast_error("No active scene is available");
         return;
     };
     let zone_id = zone_id.to_owned();
     spawn_local(async move {
-        match api::zones::update_zone(&scene_id, &zone_id, &request, Some(revision)).await {
+        match api::zones::update_zone(&zone_id, &request, Some(revision)).await {
             Ok(ZoneOutcome::Applied(_)) => {
                 toasts::toast_success(success);
                 studio.refresh_scene.run(());
@@ -356,13 +339,13 @@ fn apply_zone_update(
 }
 
 fn commit_zone_delete(studio: StudioContext, zone_id: &str) {
-    let Some((scene_id, revision)) = scene_context(studio) else {
+    let Some((_, revision)) = scene_context(studio) else {
         toasts::toast_error("No active scene is available");
         return;
     };
     let zone_id = zone_id.to_owned();
     spawn_local(async move {
-        match api::zones::delete_zone(&scene_id, &zone_id, Some(revision)).await {
+        match api::zones::delete_zone(&zone_id, Some(revision)).await {
             Ok(ZoneOutcome::Applied(())) => {
                 toasts::toast_success("Zone deleted");
                 studio.refresh_scene.run(());

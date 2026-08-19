@@ -285,14 +285,13 @@ fn zone(id: &str, name: &str, is_primary: bool) -> ZoneSummary {
     ZoneSummary {
         id: id.to_string(),
         name: name.to_string(),
+        layer_id: None,
         effect_id: None,
         brightness: 1.0,
         enabled: true,
         is_primary,
         color: None,
         controls: HashMap::new(),
-        controls_version: 0,
-        layers_version: 0,
     }
 }
 
@@ -303,7 +302,7 @@ fn scene_with(zones: Vec<ZoneSummary>) -> ActiveScene {
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
         snapshot_locked: false,
-        zones_revision: 1,
+        revision: 1,
         zones,
     }
 }

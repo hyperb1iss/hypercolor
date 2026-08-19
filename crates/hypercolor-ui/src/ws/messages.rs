@@ -901,6 +901,22 @@ impl OutputPowerReconciler {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitialSubscriptionAdmission {
+    Pending,
+    Admitted,
+    Rejected,
+}
+
+#[must_use]
+pub fn initial_subscription_admission(message: &serde_json::Value) -> InitialSubscriptionAdmission {
+    match message.get("type").and_then(serde_json::Value::as_str) {
+        Some("subscribed") => InitialSubscriptionAdmission::Admitted,
+        Some("error") => InitialSubscriptionAdmission::Rejected,
+        _ => InitialSubscriptionAdmission::Pending,
+    }
+}
+
 // ── JSON Message Handler ────────────────────────────────────────────────────
 
 /// Handle incoming JSON events from the daemon.

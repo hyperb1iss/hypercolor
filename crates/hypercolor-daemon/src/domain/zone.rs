@@ -1,28 +1,20 @@
 //! Zone domain services (Spec 76 §2.2, §2.3).
 //!
-//! A scene's zones are the partition its outputs live in, so every
-//! mutation here is structural: it moves persisted scene content, bumps
-//! the scene's `groups_revision`, and changes which devices are worth
-//! connecting. All seven transactions share the same shape — resolve on
-//! a candidate, check the caller's `groups_revision` precondition
-//! against that candidate, mutate, commit, then reconcile the
-//! layout-exclusion bookkeeping and connectivity the new partition
-//! implies.
+//! Zone identity and metadata mutations commit through the same scene
+//! transaction boundary as the canonical live tree API.
 //!
 //! Identity resolution stays with the adapter, matching
 //! [`apply_effect`](super::effect::apply_effect): a REST path segment
 //! naming a scene by id or name is a transport concern, and the service
 //! takes the [`SceneId`] it found.
 
-use hypercolor_core::scene::{OutputPlacement, ZoneMetaPatch, ZoneMutationError};
-use hypercolor_types::api::zones::OutputAssignment;
-use hypercolor_types::event::{HypercolorEvent, SceneSettingsChangeKind, ZoneChangeKind};
-use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
-use hypercolor_types::spatial::{Output, SpatialLayout};
+use hypercolor_core::scene::{ZoneMetaPatch, ZoneMutationError};
+use hypercolor_types::event::ZoneChangeKind;
+use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{SceneMutation, SceneTarget, commit_scene, zone_changed_event};
+use crate::domain::scene::{SceneMutation, commit_scene, zone_changed_event};
 use crate::domain::scene_tree::check_scene_revision;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::layout_auto_exclusions;
@@ -33,119 +25,39 @@ use crate::layout_auto_exclusions;
 #[derive(Debug, Clone)]
 pub struct CreateZone {
     /// Which scene gains the zone.
-    pub scene: SceneTarget,
+    pub scene_id: SceneId,
     /// The zone's name. Must not be blank.
     pub name: String,
     /// Optional swatch for the Studio zone tree.
     pub color: Option<String>,
     /// Canvas dimensions the new zone's empty layout inherits.
     pub fallback_canvas: (u32, u32),
-    /// The `groups_revision` the caller last saw, when it sent one.
+    /// The scene `revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
-    /// The scene `revision` the caller last saw, when it sent one
-    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
-    pub expected_scene_revision: Option<u64>,
 }
 
 /// Patch a zone's presentation metadata.
 #[derive(Debug, Clone)]
 pub struct UpdateZone {
     /// Which scene owns the zone.
-    pub scene: SceneTarget,
+    pub scene_id: SceneId,
     /// Which zone to patch.
     pub zone_id: ZoneId,
     /// The fields to change; `None` fields keep their current values.
     pub patch: ZoneMetaPatch,
-    /// The `groups_revision` the caller last saw, when it sent one.
-    ///
-    /// Only a structural patch (promoting a zone to primary) checks it —
-    /// renaming or recoloring a zone races with nothing.
+    /// The scene `revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
-    /// The scene `revision` the caller last saw, when it sent one
-    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
-    pub expected_scene_revision: Option<u64>,
 }
 
 /// Remove a custom zone from a scene.
 #[derive(Debug, Clone)]
 pub struct DeleteZone {
     /// Which scene owns the zone.
-    pub scene: SceneTarget,
+    pub scene_id: SceneId,
     /// Which zone to remove.
     pub zone_id: ZoneId,
-    /// The `groups_revision` the caller last saw, when it sent one.
+    /// The scene `revision` the caller last saw, when it sent one.
     pub expected_revision: Option<u64>,
-    /// The scene `revision` the caller last saw, when it sent one
-    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
-    pub expected_scene_revision: Option<u64>,
-}
-
-/// Move outputs into a zone.
-#[derive(Debug, Clone)]
-pub struct AssignOutputs {
-    /// Which scene owns the zone.
-    pub scene_id: SceneId,
-    /// Which zone receives the outputs.
-    pub zone_id: ZoneId,
-    /// The outputs to move.
-    ///
-    /// An `Existing` reference names an output anywhere in the scene and
-    /// resolves against the candidate, so the `groups_revision`
-    /// precondition is checked before an unknown reference is reported.
-    pub assignments: Vec<OutputAssignment>,
-    /// Whether moved outputs keep their coordinates or get re-gridded.
-    pub placement: OutputPlacement,
-    /// The `groups_revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
-    /// The scene `revision` the caller last saw, when it sent one
-    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
-    pub expected_scene_revision: Option<u64>,
-}
-
-/// Drop one output out of whatever zone holds it.
-#[derive(Debug, Clone)]
-pub struct UnassignOutput {
-    /// Which scene owns the zone.
-    pub scene_id: SceneId,
-    /// Which zone the caller addressed.
-    pub zone_id: ZoneId,
-    /// Which output to drop.
-    pub output_id: String,
-    /// The `groups_revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
-    /// The scene `revision` the caller last saw, when it sent one
-    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
-    pub expected_scene_revision: Option<u64>,
-}
-
-/// Reposition a zone's outputs without changing which it owns.
-#[derive(Debug, Clone)]
-pub struct SetZoneLayout {
-    /// Which scene owns the zone.
-    pub scene_id: SceneId,
-    /// Which zone to reposition.
-    pub zone_id: ZoneId,
-    /// The new placement. Must carry exactly the zone's current outputs.
-    pub layout: SpatialLayout,
-    /// The `groups_revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
-    /// The scene `revision` the caller last saw, when it sent one
-    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
-    pub expected_scene_revision: Option<u64>,
-}
-
-/// Choose what a scene does with outputs no zone claims.
-#[derive(Debug, Clone)]
-pub struct SetUnassignedBehavior {
-    /// Which scene to configure.
-    pub scene_id: SceneId,
-    /// What unclaimed outputs should render.
-    pub behavior: UnassignedBehavior,
-    /// The `groups_revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
-    /// The scene `revision` the caller last saw, when it sent one
-    /// (Spec 78 §1.6). The one token the `/scene` tree speaks.
-    pub expected_scene_revision: Option<u64>,
 }
 
 // ── Outcomes ─────────────────────────────────────────────────────────────
@@ -155,21 +67,6 @@ pub struct SetUnassignedBehavior {
 pub struct ZoneWritten {
     /// The zone as it now stands.
     pub zone: Zone,
-    /// The scene's `groups_revision` after the mutation.
-    pub groups_revision: u64,
-    /// The commit receipt.
-    pub commit: SceneCommit,
-}
-
-/// The outcome of a mutation that reports the whole partition.
-#[derive(Debug)]
-pub struct ZonesWritten {
-    /// Every zone in the scene after the mutation.
-    pub zones: Vec<Zone>,
-    /// The zone the caller addressed.
-    pub target_zone: Zone,
-    /// The scene's `groups_revision` after the mutation.
-    pub groups_revision: u64,
     /// The commit receipt.
     pub commit: SceneCommit,
 }
@@ -179,19 +76,6 @@ pub struct ZonesWritten {
 pub struct ZoneRemoved {
     /// The zone that was removed.
     pub zone: Zone,
-    /// The scene's `groups_revision` after the mutation.
-    pub groups_revision: u64,
-    /// The commit receipt.
-    pub commit: SceneCommit,
-}
-
-/// The outcome of changing a scene's unassigned-output behavior.
-#[derive(Debug)]
-pub struct UnassignedBehaviorWritten {
-    /// The behavior that is now in force.
-    pub behavior: UnassignedBehavior,
-    /// The scene's `groups_revision` after the mutation.
-    pub groups_revision: u64,
     /// The commit receipt.
     pub commit: SceneCommit,
 }
@@ -205,7 +89,7 @@ pub struct UnassignedBehaviorWritten {
 /// [`DomainError::Validation`] for a blank name,
 /// [`DomainError::NotFound`] for an unknown scene,
 /// [`DomainError::Conflict`] for a snapshot-locked scene, and
-/// [`DomainError::PreconditionFailed`] for a stale `groups_revision` or
+/// [`DomainError::PreconditionFailed`] for a stale scene revision or
 /// a concurrent scene mutation.
 pub async fn create_zone(
     state: &AppState,
@@ -222,30 +106,27 @@ pub async fn create_zone(
     }
 
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command.scene.resolve(&mutation, "creating a zone")?;
-    check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, scene_id, command.expected_revision)?;
+    check_scene_revision(&mutation, command.expected_revision)?;
 
     let zone_id = mutation
         .create_zone(
-            scene_id,
+            command.scene_id,
             command.name,
             command.color,
             command.fallback_canvas,
         )
-        .map_err(|error| zone_error(error, scene_id, None, None))?;
-    let zone = zone_in_scene(&mutation, scene_id, zone_id)?;
-    let groups_revision = groups_revision(&mutation, scene_id);
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Created));
+        .map_err(|error| zone_error(error, command.scene_id, None, None))?;
+    let zone = zone_in_scene(&mutation, command.scene_id, zone_id)?;
+    mutation.record(zone_changed_event(
+        command.scene_id,
+        &zone,
+        ZoneChangeKind::Created,
+    ));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
 
-    Ok(ZoneWritten {
-        zone,
-        groups_revision,
-        commit,
-    })
+    Ok(ZoneWritten { zone, commit })
 }
 
 /// Patch a zone's presentation metadata.
@@ -261,28 +142,23 @@ pub async fn update_zone(
 ) -> Result<ZoneWritten, DomainError> {
     let _ = meta;
 
-    let structural = command.patch.make_primary == Some(true);
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command.scene.resolve(&mutation, "updating a zone")?;
-    check_scene_revision(&mutation, command.expected_scene_revision)?;
-    if structural {
-        check_groups_revision(&mutation, scene_id, command.expected_revision)?;
-    }
+    check_scene_revision(&mutation, command.expected_revision)?;
+    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let zone = mutation
-        .update_zone_meta(scene_id, command.zone_id, command.patch)
-        .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
-    let groups_revision = groups_revision(&mutation, scene_id);
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
+        .update_zone_meta(command.scene_id, command.zone_id, command.patch)
+        .map_err(|error| zone_error(error, command.scene_id, Some(command.zone_id), None))?;
+    mutation.record(zone_changed_event(
+        command.scene_id,
+        &zone,
+        ZoneChangeKind::Updated,
+    ));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
 
-    Ok(ZoneWritten {
-        zone,
-        groups_revision,
-        commit,
-    })
+    Ok(ZoneWritten { zone, commit })
 }
 
 /// Remove a custom zone from a scene, dropping the layout exclusions it
@@ -300,219 +176,28 @@ pub async fn delete_zone(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command.scene.resolve(&mutation, "deleting a zone")?;
-    check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, scene_id, command.expected_revision)?;
+    check_scene_revision(&mutation, command.expected_revision)?;
+    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
-    let zone = zone_in_scene(&mutation, scene_id, command.zone_id)?;
+    let zone = zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
     mutation
-        .delete_zone(scene_id, command.zone_id)
-        .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
-    mutation.retire_zone_preview(scene_id, command.zone_id);
-    let groups_revision = groups_revision(&mutation, scene_id);
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Removed));
-
-    let commit = commit_scene(state, mutation).await?;
-    settle_zone_mutation(state).await;
-    remove_zone_auto_exclusions(state, scene_id, command.zone_id).await;
-
-    Ok(ZoneRemoved {
-        zone,
-        groups_revision,
-        commit,
-    })
-}
-
-/// Move outputs into a zone.
-///
-/// # Errors
-///
-/// As [`update_zone`], plus [`DomainError::NotFound`] for an output no
-/// zone in the scene owns.
-pub async fn assign_outputs(
-    state: &AppState,
-    command: AssignOutputs,
-    meta: MutationContext,
-) -> Result<ZonesWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
-    let previous_zones = scene_zones(&mutation, command.scene_id)?;
-    zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
-    let outputs = resolve_assignments(&mutation, command.scene_id, command.assignments)?;
-
-    for output in outputs {
-        mutation
-            .assign_output(command.scene_id, command.zone_id, output, command.placement)
-            .map_err(|error| zone_error(error, command.scene_id, Some(command.zone_id), None))?;
-    }
-
-    finish_partition_mutation(
-        state,
-        mutation,
-        command.scene_id,
-        command.zone_id,
-        &previous_zones,
-    )
-    .await
-}
-
-/// Drop one output out of whatever zone holds it.
-///
-/// # Errors
-///
-/// As [`assign_outputs`].
-pub async fn unassign_output(
-    state: &AppState,
-    command: UnassignOutput,
-    meta: MutationContext,
-) -> Result<ZonesWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
-    let previous_zones = scene_zones(&mutation, command.scene_id)?;
-    let target = zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
-    if !target
-        .layout
-        .zones
-        .iter()
-        .any(|output| output.id == command.output_id)
-    {
-        return Err(DomainError::not_found(
-            ResourceKind::Device,
-            &command.output_id,
-        ));
-    }
-
-    mutation
-        .unassign_output(command.scene_id, &command.output_id)
-        .map_err(|error| {
-            zone_error(
-                error,
-                command.scene_id,
-                Some(command.zone_id),
-                Some(&command.output_id),
-            )
-        })?;
-
-    finish_partition_mutation(
-        state,
-        mutation,
-        command.scene_id,
-        command.zone_id,
-        &previous_zones,
-    )
-    .await
-}
-
-/// Reposition a zone's outputs without changing which it owns.
-///
-/// # Errors
-///
-/// As [`update_zone`], plus [`DomainError::Validation`] when the layout
-/// does not carry exactly the zone's current outputs.
-pub async fn set_zone_layout(
-    state: &AppState,
-    command: SetZoneLayout,
-    meta: MutationContext,
-) -> Result<ZoneWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
-    let zone = mutation
-        .set_zone_layout(command.scene_id, command.zone_id, command.layout)
+        .delete_zone(command.scene_id, command.zone_id)
         .map_err(|error| zone_error(error, command.scene_id, Some(command.zone_id), None))?;
     mutation.retire_zone_preview(command.scene_id, command.zone_id);
-    let groups_revision = groups_revision(&mutation, command.scene_id);
     mutation.record(zone_changed_event(
         command.scene_id,
         &zone,
-        ZoneChangeKind::Updated,
+        ZoneChangeKind::Removed,
     ));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
+    remove_zone_auto_exclusions(state, command.scene_id, command.zone_id).await;
 
-    Ok(ZoneWritten {
-        zone,
-        groups_revision,
-        commit,
-    })
-}
-
-/// Choose what a scene does with outputs no zone claims.
-///
-/// # Errors
-///
-/// As [`update_zone`].
-pub async fn set_unassigned_behavior(
-    state: &AppState,
-    command: SetUnassignedBehavior,
-    meta: MutationContext,
-) -> Result<UnassignedBehaviorWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    check_scene_revision(&mutation, command.expected_scene_revision)?;
-    check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
-
-    let behavior = mutation
-        .set_unassigned_behavior(command.scene_id, command.behavior)
-        .map_err(|error| zone_error(error, command.scene_id, None, None))?;
-    let groups_revision = groups_revision(&mutation, command.scene_id);
-    mutation.record(HypercolorEvent::SceneSettingsChanged {
-        scene_id: command.scene_id,
-        zones_revision: groups_revision,
-        kind: SceneSettingsChangeKind::UnassignedBehavior,
-    });
-
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
-
-    Ok(UnassignedBehaviorWritten {
-        behavior,
-        groups_revision,
-        commit,
-    })
+    Ok(ZoneRemoved { zone, commit })
 }
 
 // ── Shared steps ─────────────────────────────────────────────────────────
-
-/// Commit a mutation that rewrote which outputs sit in which zone, then
-/// reconcile the exclusions and connectivity the new partition implies.
-async fn finish_partition_mutation(
-    state: &AppState,
-    mut mutation: SceneMutation,
-    scene_id: SceneId,
-    zone_id: ZoneId,
-    previous_zones: &[Zone],
-) -> Result<ZonesWritten, DomainError> {
-    let zones = scene_zones(&mutation, scene_id)?;
-    let target_zone = zone_in_scene(&mutation, scene_id, zone_id)?;
-    let groups_revision = groups_revision(&mutation, scene_id);
-    mutation.record(zone_changed_event(
-        scene_id,
-        &target_zone,
-        ZoneChangeKind::Updated,
-    ));
-
-    let commit = commit_scene(state, mutation).await?;
-    settle_zone_mutation(state).await;
-    reconcile_zone_auto_exclusions(state, scene_id, previous_zones, &zones).await;
-
-    Ok(ZonesWritten {
-        zones,
-        target_zone,
-        groups_revision,
-        commit,
-    })
-}
 
 /// Everything a structural zone change implies once it is committed:
 /// the session snapshot records the new partition, and a device that
@@ -520,79 +205,6 @@ async fn finish_partition_mutation(
 async fn settle_zone_mutation(state: &AppState) {
     crate::api::save_runtime_session_snapshot(state).await;
     crate::api::sync_connectivity(state).await;
-}
-
-/// Refuse a candidate the caller's `groups_revision` no longer
-/// describes.
-///
-/// A scene the candidate does not hold has no revision to compare, and
-/// the mutation that follows reports the missing scene with its own
-/// error, so the precondition passes through.
-fn check_groups_revision(
-    mutation: &SceneMutation,
-    scene_id: SceneId,
-    expected: Option<u64>,
-) -> Result<(), DomainError> {
-    let Some(expected) = expected else {
-        return Ok(());
-    };
-    let Some(current) = mutation
-        .scenes()
-        .get(&scene_id)
-        .map(|scene| scene.groups_revision)
-    else {
-        return Ok(());
-    };
-    if expected == current {
-        return Ok(());
-    }
-    Err(DomainError::PreconditionFailed {
-        resource: ResourceKind::Zone,
-        expected,
-        current,
-    })
-}
-
-fn groups_revision(mutation: &SceneMutation, scene_id: SceneId) -> u64 {
-    mutation
-        .scenes()
-        .get(&scene_id)
-        .map_or(0, |scene| scene.groups_revision)
-}
-
-fn scene_zones(mutation: &SceneMutation, scene_id: SceneId) -> Result<Vec<Zone>, DomainError> {
-    mutation
-        .scenes()
-        .get(&scene_id)
-        .map(|scene| scene.groups.clone())
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))
-}
-
-/// Resolve each assignment against the candidate: a `New` output is
-/// taken as written, an `Existing` reference names an output the scene
-/// already holds in some zone.
-fn resolve_assignments(
-    mutation: &SceneMutation,
-    scene_id: SceneId,
-    assignments: Vec<OutputAssignment>,
-) -> Result<Vec<Output>, DomainError> {
-    let scene = mutation
-        .scenes()
-        .get(&scene_id)
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
-    assignments
-        .into_iter()
-        .map(|assignment| match assignment {
-            OutputAssignment::Existing { id } => scene
-                .groups
-                .iter()
-                .flat_map(|zone| zone.layout.zones.iter())
-                .find(|output| output.id == id)
-                .cloned()
-                .ok_or_else(|| DomainError::not_found(ResourceKind::Device, id)),
-            OutputAssignment::New(output) => Ok(*output),
-        })
-        .collect()
 }
 
 fn zone_in_scene(

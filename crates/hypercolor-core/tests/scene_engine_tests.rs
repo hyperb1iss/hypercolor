@@ -371,6 +371,7 @@ fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
     scene.groups[0].role = ZoneRole::Primary;
     scene.groups[0].layers = vec![effect_layer(old_id, 0.25)];
     scene.groups[0].layers_version = 4;
+    let previous_layer_id = scene.groups[0].layers[0].id;
 
     mgr.create(scene).expect("create primary scene");
     mgr.activate(&scene_id, None)
@@ -391,9 +392,9 @@ fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
     assert_eq!(updated.layers_version, 5);
     assert_eq!(updated.controls_version, 1);
     let [layer] = updated.layers.as_slice() else {
-        panic!("legacy apply should replace the stack with one effect layer");
+        panic!("apply should replace the stack with one effect layer");
     };
-    assert_eq!(layer.id, updated.legacy_layer_id());
+    assert_ne!(layer.id, previous_layer_id);
     let LayerSource::Effect {
         effect_id,
         controls,
@@ -414,6 +415,42 @@ fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
     };
     assert_eq!(effect_id, new_id);
     assert!(mgr.active_render_groups_revision() > initial_revision);
+}
+
+#[test]
+fn scene_manager_reapplying_an_effect_mints_another_layer_id() {
+    let mut mgr = SceneManager::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let mut scene = grouped_scene("Primary", "desk:main", effect_id);
+    let scene_id = scene.id;
+    scene.groups[0].role = ZoneRole::Primary;
+
+    mgr.create(scene).expect("create primary scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate primary scene");
+
+    let first = mgr
+        .upsert_primary_group(
+            &effect_metadata(effect_id, "plasma"),
+            HashMap::new(),
+            None,
+            sample_layout("desk:first"),
+        )
+        .expect("first apply")
+        .layers[0]
+        .id;
+    let second = mgr
+        .upsert_primary_group(
+            &effect_metadata(effect_id, "plasma"),
+            HashMap::new(),
+            None,
+            sample_layout("desk:second"),
+        )
+        .expect("second apply")
+        .layers[0]
+        .id;
+
+    assert_ne!(first, second);
 }
 
 #[test]
@@ -495,6 +532,12 @@ fn scene_manager_add_layer_materializes_legacy_effect_and_refreshes_cache() {
     let group_id = scene.groups[0].id;
 
     mgr.create(scene).expect("create grouped scene");
+    let materialized_layer_id = mgr
+        .get(&scene_id)
+        .and_then(|scene| scene.groups.first())
+        .and_then(|zone| zone.layers.first())
+        .map(|layer| layer.id)
+        .expect("scene creation should materialize the legacy effect");
     mgr.activate(&scene_id, None)
         .expect("activate grouped scene");
     let initial_revision = mgr.active_render_groups_revision();
@@ -509,7 +552,8 @@ fn scene_manager_add_layer_materializes_legacy_effect_and_refreshes_cache() {
     assert_eq!(version, 1);
     assert_eq!(updated.layers_version, 1);
     assert_eq!(updated.layers.len(), 2);
-    assert_eq!(updated.layers[0].id, updated.legacy_layer_id());
+    assert_eq!(updated.layers[0].id, materialized_layer_id);
+    assert_ne!(updated.layers[0].id.as_uuid(), group_id.0);
     assert_eq!(updated.layers[1].id, overlay_id);
     assert_eq!(updated.effect_id, Some(effect_id));
     assert!(mgr.active_render_groups_revision() > initial_revision);

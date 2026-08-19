@@ -108,8 +108,8 @@ fn effect_events_have_effect_category() {
             control_id: "speed".into(),
             old_value: EventControlValue::Number(0.5),
             new_value: EventControlValue::Number(0.8),
-            zone_id: None,
-            layer_id: None,
+            zone_id: ZoneId::new(),
+            layer_id: SceneLayerId::new(),
             trigger: ChangeTrigger::Api,
         },
         HypercolorEvent::EffectLayerAdded {
@@ -151,6 +151,39 @@ fn effect_events_have_effect_category() {
 }
 
 #[test]
+fn effect_control_changed_requires_zone_and_layer_identity() {
+    let event = HypercolorEvent::EffectControlChanged {
+        effect_id: "rainbow".into(),
+        control_id: "speed".into(),
+        old_value: EventControlValue::Number(0.5),
+        new_value: EventControlValue::Number(0.8),
+        zone_id: ZoneId::new(),
+        layer_id: SceneLayerId::new(),
+        trigger: ChangeTrigger::Api,
+    };
+    let mut encoded = serde_json::to_value(event).expect("event should serialize");
+    let data = encoded["data"]
+        .as_object_mut()
+        .expect("event data should be an object");
+
+    let zone_id = data.remove("zone_id").expect("zone id should serialize");
+    assert!(
+        serde_json::from_value::<HypercolorEvent>(encoded.clone()).is_err(),
+        "a control event without zone identity must be refused"
+    );
+
+    encoded["data"]["zone_id"] = zone_id;
+    encoded["data"]
+        .as_object_mut()
+        .expect("event data should be an object")
+        .remove("layer_id");
+    assert!(
+        serde_json::from_value::<HypercolorEvent>(encoded).is_err(),
+        "a control event without layer identity must be refused"
+    );
+}
+
+#[test]
 fn scene_events_have_scene_category() {
     let events = vec![
         HypercolorEvent::SceneActivated {
@@ -182,7 +215,7 @@ fn scene_events_have_scene_category() {
         HypercolorEvent::LayerStackChanged {
             scene_id: SceneId::DEFAULT,
             zone_id: ZoneId::new(),
-            layers_version: 2,
+            revision: 2,
             kind: LayerStackChangeKind::Updated,
         },
         HypercolorEvent::LayerHealthChanged {

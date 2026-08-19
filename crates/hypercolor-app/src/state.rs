@@ -318,4 +318,19 @@ impl WsEventMessage {
     pub fn requires_full_resync(&self) -> bool {
         self.msg_type == "event" && self.event == "resync_required"
     }
+
+    #[must_use]
+    pub fn is_destructive_effect_stop(&self) -> bool {
+        self.msg_type == "event"
+            && self.event == "effect_stopped"
+            && self.data.get("reason").and_then(serde_json::Value::as_str) == Some("stopped")
+    }
+
+    #[must_use]
+    pub fn targets_zone(&self, zone_id: &hypercolor_types::scene::ZoneId) -> bool {
+        self.data
+            .get("zone_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == zone_id.to_string())
+    }
 }

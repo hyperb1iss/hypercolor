@@ -4,8 +4,7 @@
 //! primary tab keeps the page's existing plumbing untouched — the
 //! `active_controls` / `active_control_values` signals and the
 //! current-controls PATCH session. A non-primary tab edits that zone's
-//! own controls through the layers route (a zone's synthetic legacy
-//! layer id is the zone id itself, per `Zone::legacy_layer_id`), so
+//! own controls through the real effect layer read from `/scene`, so
 //! tuning zone 2 no longer silently rewrites the primary zone — design
 //! doc 57 §1.3's "most misleading interaction in the app".
 //!
@@ -15,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
@@ -40,7 +40,7 @@ pub type ZoneControlSchemaCache = StoredValue<HashMap<String, Vec<ControlDefinit
 /// The controls-card body: an optional zone tab strip plus the panel
 /// for the selected zone. The primary tab renders the caller-supplied
 /// signals and change handler verbatim; non-primary tabs mount a
-/// [`ZoneControlsPanel`] scoped to that zone's legacy layer.
+/// [`ZoneControlsPanel`] scoped to that zone's real effect layer.
 #[component]
 pub fn ZoneScopedControls(
     /// Primary-zone control schema (today's plumbing).
@@ -79,11 +79,6 @@ pub fn ZoneScopedControls(
         fx.zone_effects
             .with(|zones| zones.iter().find(|state| state.zone.id == zone_id).cloned())
     });
-    let scene_id = Memo::new(move |_| {
-        zones_ctx
-            .active_scene
-            .with(|scene| scene.as_ref().map(|scene| scene.id.clone()))
-    });
 
     view! {
         <div class="space-y-2.5">
@@ -106,9 +101,6 @@ pub fn ZoneScopedControls(
                     }
                         .into_any();
                 };
-                let Some(scene_id) = scene_id.get() else {
-                    return ().into_any();
-                };
                 let Some(effect_id) = state.effect_id.clone() else {
                     return view! {
                         <ZoneQuietNotice message="Nothing playing in this zone" />
@@ -117,7 +109,6 @@ pub fn ZoneScopedControls(
                 };
                 view! {
                     <ZoneControlsPanel
-                        scene_id=scene_id
                         effect_id=effect_id
                         state=state
                         schema_cache=schema_cache
@@ -205,17 +196,37 @@ fn ZoneTabStrip(selected_zone_id: Memo<Option<String>>) -> impl IntoView {
 /// Controls for one non-primary zone's directly-assigned effect. The
 /// schema comes from the (cached) effect detail; values seed from the
 /// zone's scene-stored controls; edits run through the shared patch
-/// session against the zone's synthetic legacy layer. The host body
+/// session against the real layer returned by `/scene`. The host body
 /// re-mounts this panel whenever the zone or its effect changes, so the
 /// seeds are always fresh.
 #[component]
 fn ZoneControlsPanel(
-    scene_id: String,
     effect_id: String,
     state: ZoneEffectState,
     schema_cache: ZoneControlSchemaCache,
 ) -> impl IntoView {
+    let zones_ctx = expect_context::<ZonesContext>();
     let zone_id = state.zone.id.clone();
+    let layer_id = zones_ctx.active_scene.with_untracked(|scene| {
+        scene
+            .as_ref()?
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)?
+            .layers
+            .iter()
+            .rev()
+            .find_map(|layer| match &layer.source {
+                LayerSource::Effect {
+                    effect_id: current, ..
+                } if current.to_string() == effect_id => Some(layer.id.to_string()),
+                _ => None,
+            })
+    });
+    let Some(layer_id) = layer_id else {
+        return view! { <ZoneQuietNotice message="The effect layer changed. Reloading…" /> }
+            .into_any();
+    };
     let accent_rgb = {
         let category = state.effect_category.clone().unwrap_or_default();
         Signal::derive(move || category_accent_rgb(&category).to_string())
@@ -243,25 +254,23 @@ fn ZoneControlsPanel(
     // Optimistic local values, seeded from the zone's scene state.
     let (values, set_values) = signal(state.control_values.clone());
 
-    // Mirror Studio's layer-inspector request shape: the zone's controls
-    // live on its synthetic legacy layer, whose id is the zone id itself.
+    // The layer id came from the live document. Replacement retires it, so
+    // a stale control patch cannot land on a newer effect.
     let patch: ControlPatchFn = Arc::new({
         let zone_id = zone_id.clone();
-        move |payload: serde_json::Value, version: Option<u64>| -> ControlPatchFuture {
-            let scene_id = scene_id.clone();
+        move |payload: serde_json::Value, _version: Option<u64>| -> ControlPatchFuture {
             let zone_id = zone_id.clone();
+            let layer_id = layer_id.clone();
             Box::pin(async move {
-                let outcome =
-                    api::patch_layer_controls(&scene_id, &zone_id, &zone_id, &payload, version)
-                        .await?;
-                Ok(outcome.map(|stack| Some(stack.layers_version)))
+                api::patch_layer_controls(&zone_id, &layer_id, &payload).await?;
+                Ok(api::MutationOutcome::Applied(None))
             })
         }
     });
     let session = use_control_patch_session(ControlPatchConfig {
         defs,
         set_values,
-        initial_version: Some(state.layers_version),
+        initial_version: None,
         debounce_ms: ZONE_CONTROLS_DEBOUNCE_MS,
         patch,
         on_error: Callback::new(|error: String| {
@@ -287,6 +296,7 @@ fn ZoneControlsPanel(
             }
         }}
     }
+    .into_any()
 }
 
 /// Quiet inline notice for a zone tab with nothing to edit — matches

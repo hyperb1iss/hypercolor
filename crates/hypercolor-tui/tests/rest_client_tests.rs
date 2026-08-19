@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use hypercolor_tui::client::rest::DaemonClient;
 use hypercolor_types::controls::{
@@ -222,30 +222,25 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
 /// title bar effectively never showed a number.
 #[tokio::test]
 async fn get_status_reads_fps_from_the_render_loop_block() {
-    let router = Router::new()
-        .route(
-            "/api/v1/status",
-            get(|| async {
-                Json(json!({
-                    "data": {
-                        "running": true,
-                        "global_brightness": 80,
-                        "device_count": 0,
-                        "active_effect": null,
-                        "active_scene": null,
-                        "render_loop": {
-                            "state": "running",
-                            "target_fps": 45,
-                            "actual_fps": 44.2
-                        }
+    let router = Router::new().route(
+        "/api/v1/status",
+        get(|| async {
+            Json(json!({
+                "data": {
+                    "running": true,
+                    "global_brightness": 80,
+                    "device_count": 0,
+                    "active_effect": null,
+                    "active_scene": null,
+                    "render_loop": {
+                        "state": "running",
+                        "target_fps": 45,
+                        "actual_fps": 44.2
                     }
-                }))
-            }),
-        )
-        .route(
-            "/api/v1/effects/active",
-            get(|| async { Json(json!({ "data": null })) }),
-        );
+                }
+            }))
+        }),
+    );
 
     let client = client_for(spawn_server(router).await);
     let status = client.get_status().await.expect("fetch status");
@@ -257,25 +252,20 @@ async fn get_status_reads_fps_from_the_render_loop_block() {
 /// An absent render_loop block is tolerated rather than fatal.
 #[tokio::test]
 async fn get_status_survives_a_status_payload_without_a_render_loop() {
-    let router = Router::new()
-        .route(
-            "/api/v1/status",
-            get(|| async {
-                Json(json!({
-                    "data": {
-                        "running": false,
-                        "global_brightness": 10,
-                        "device_count": 0,
-                        "active_effect": null,
-                        "active_scene": null
-                    }
-                }))
-            }),
-        )
-        .route(
-            "/api/v1/effects/active",
-            get(|| async { Json(json!({ "data": null })) }),
-        );
+    let router = Router::new().route(
+        "/api/v1/status",
+        get(|| async {
+            Json(json!({
+                "data": {
+                    "running": false,
+                    "global_brightness": 10,
+                    "device_count": 0,
+                    "active_effect": null,
+                    "active_scene": null
+                }
+            }))
+        }),
+    );
 
     let client = client_for(spawn_server(router).await);
     let status = client.get_status().await.expect("fetch status");
@@ -670,22 +660,95 @@ async fn get_simulated_display_frame_returns_none_for_missing_frame() {
     assert!(frame.is_none());
 }
 
-#[tokio::test]
-async fn update_control_wraps_payload_under_controls() {
-    let captured = Arc::new(Mutex::new(None::<Value>));
-    let router =
-        Router::new()
-            .route(
-                "/api/v1/effects/active/controls",
-                patch(
-                    |State(captured): State<Arc<Mutex<Option<Value>>>>,
-                     Json(payload): Json<Value>| async move {
-                        *captured.lock().await = Some(payload);
-                        Json(json!({ "data": { "applied": { "speed": { "float": 0.5 } } } }))
+const SCENE_ID: &str = "0198c5b6-1111-7000-8000-000000000001";
+const ZONE_A: &str = "0198c5b6-1111-7000-8000-000000000002";
+const ZONE_B: &str = "0198c5b6-1111-7000-8000-000000000003";
+const LAYER_ID: &str = "0198c5b6-1111-7000-8000-000000000004";
+const EFFECT_RAINBOW: &str = "0198c5b6-1111-7000-8000-000000000005";
+
+fn scene_document() -> Value {
+    json!({
+        "id": SCENE_ID,
+        "name": "Desk",
+        "kind": "named",
+        "is_default": false,
+        "unassigned_behavior": "off",
+        "layout_id": null,
+        "revision": 42,
+        "zones": [
+            {
+                "id": ZONE_A,
+                "name": "Primary",
+                "role": "primary",
+                "enabled": true,
+                "brightness": 0.8,
+                "color": null,
+                "display_target": null,
+                "members": [],
+                "layout": null,
+                "layers": [{
+                    "id": LAYER_ID,
+                    "source": {
+                        "type": "effect",
+                        "effect_id": EFFECT_RAINBOW,
+                        "controls": {"speed": {"float": 0.6}}
                     },
-                ),
-            )
-            .with_state(Arc::clone(&captured));
+                    "blend": "replace",
+                    "opacity": 1.0
+                }]
+            },
+            {
+                "id": ZONE_B,
+                "name": "Shelf",
+                "role": "custom",
+                "enabled": false,
+                "brightness": 1.0,
+                "color": null,
+                "display_target": null,
+                "members": [],
+                "layout": null,
+                "layers": []
+            }
+        ]
+    })
+}
+
+fn scenes_response(mutation_mode: &str) -> Value {
+    json!({
+        "items": [{
+            "id": SCENE_ID,
+            "name": "Desk",
+            "description": null,
+            "enabled": true,
+            "priority": 0,
+            "mutation_mode": mutation_mode
+        }],
+        "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": false}
+    })
+}
+
+#[tokio::test]
+async fn update_control_targets_the_real_scene_layer() {
+    let captured = Arc::new(Mutex::new(None::<Value>));
+    let router = Router::new()
+        .route(
+            "/api/v1/scene",
+            get(|| async { Json(json!({"data": scene_document()})) }),
+        )
+        .route(
+            "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+            patch(
+                |State(captured): State<Arc<Mutex<Option<Value>>>>,
+                 Path((zone, layer)): Path<(String, String)>,
+                 Json(payload): Json<Value>| async move {
+                    assert_eq!(zone, ZONE_A);
+                    assert_eq!(layer, LAYER_ID);
+                    *captured.lock().await = Some(payload);
+                    Json(json!({"data": {}}))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured));
 
     let client = client_for(spawn_server(router).await);
     client
@@ -693,8 +756,10 @@ async fn update_control_wraps_payload_under_controls() {
         .await
         .expect("update control");
 
-    let payload = captured.lock().await.clone().expect("captured payload");
-    assert_eq!(payload, json!({ "controls": { "speed": 0.5 } }));
+    assert_eq!(
+        captured.lock().await.clone().expect("captured payload"),
+        json!({"values": {"speed": {"float": 0.5}}})
+    );
 }
 
 #[tokio::test]
@@ -708,7 +773,7 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
                     |State(captured): State<Arc<Mutex<Option<Value>>>>,
                      Json(payload): Json<Value>| async move {
                         *captured.lock().await = Some(payload);
-                        Json(json!({ "data": { "created": true } }))
+                        Json(json!({"data": {"created": true}}))
                     },
                 ),
             )
@@ -719,13 +784,14 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
         .toggle_favorite("rainbow", false)
         .await
         .expect("add favorite");
-
-    let payload = captured
-        .lock()
-        .await
-        .clone()
-        .expect("captured favorite payload");
-    assert_eq!(payload, json!({ "effect": "rainbow" }));
+    assert_eq!(
+        captured
+            .lock()
+            .await
+            .clone()
+            .expect("captured favorite payload"),
+        json!({"effect": "rainbow"})
+    );
 
     let error_router = Router::new().route(
         "/api/v1/library/favorites",
@@ -747,69 +813,25 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
         }),
     );
     let failing_client = client_for(spawn_server(error_router).await);
-
-    let error = failing_client.toggle_favorite("rainbow", false).await;
-    assert!(error.is_err());
-}
-
-// ── Scenes & zones ──────────────────────────────────────────────────
-
-const ZONE_A: &str = "11111111-1111-1111-1111-111111111111";
-const ZONE_B: &str = "22222222-2222-2222-2222-222222222222";
-// Zone.effect_id is an EffectId (UUID) on the wire — the same UUID string
-// the REST effect list exposes as `EffectSummary.id`.
-const EFFECT_RAINBOW: &str = "33333333-3333-3333-3333-333333333333";
-
-fn zone_json(id: &str, name: &str, role: &str, effect: Option<&str>, enabled: bool) -> Value {
-    json!({
-        "id": id,
-        "name": name,
-        "description": null,
-        "effect_id": effect,
-        "controls": { "speed": { "float": 0.6 } },
-        "layout": {
-            "id": "layout",
-            "name": "layout",
-            "description": null,
-            "canvas_width": 320,
-            "canvas_height": 200,
-            "zones": [],
-            "spaces": null,
-            "version": 1
-        },
-        "color": null,
-        "role": role,
-        "enabled": enabled,
-        "brightness": 0.8,
-        "controls_version": 3,
-        "layers_version": 7
-    })
+    assert!(
+        failing_client
+            .toggle_favorite("rainbow", false)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
-async fn get_active_scene_maps_zones_and_lock_state() {
-    let router = Router::new().route(
-        "/api/v1/scenes/active",
-        get(|| async {
-            Json(json!({
-                "data": {
-                    "id": "scene-1",
-                    "name": "Desk",
-                    "description": null,
-                    "enabled": true,
-                    "priority": 0,
-                    "kind": "named",
-                    "mutation_mode": "snapshot",
-                    "zones": [
-                        zone_json(ZONE_A, "Primary", "primary", Some(EFFECT_RAINBOW), true),
-                        zone_json(ZONE_B, "Shelf", "custom", None, false),
-                    ],
-                    "zones_revision": 42,
-                    "unassigned_behavior": "off"
-                }
-            }))
-        }),
-    );
+async fn get_active_scene_maps_real_layers_and_saved_mutation_mode() {
+    let router = Router::new()
+        .route(
+            "/api/v1/scene",
+            get(|| async { Json(json!({"data": scene_document()})) }),
+        )
+        .route(
+            "/api/v1/scenes",
+            get(|| async { Json(json!({"data": scenes_response("snapshot")})) }),
+        );
 
     let client = client_for(spawn_server(router).await);
     let scene = client
@@ -818,21 +840,14 @@ async fn get_active_scene_maps_zones_and_lock_state() {
         .expect("fetch active scene")
         .expect("scene should be present");
 
-    assert_eq!(scene.id, "scene-1");
-    assert_eq!(scene.name, "Desk");
+    assert_eq!(scene.id, SCENE_ID);
     assert!(scene.snapshot_locked);
-    assert_eq!(scene.zones_revision, 42);
+    assert_eq!(scene.revision, 42);
     assert!(scene.multi_zone());
-    assert_eq!(scene.zones.len(), 2);
 
     let primary = scene.primary().expect("primary zone");
-    assert_eq!(primary.id, ZONE_A);
-    assert!(primary.is_primary);
+    assert_eq!(primary.layer_id.as_deref(), Some(LAYER_ID));
     assert_eq!(primary.effect_id.as_deref(), Some(EFFECT_RAINBOW));
-    assert!(primary.enabled);
-    assert_eq!(primary.controls_version, 3);
-    assert_eq!(primary.layers_version, 7);
-    assert!((primary.brightness - 0.8).abs() < f32::EPSILON);
     assert_eq!(
         primary
             .controls
@@ -840,82 +855,10 @@ async fn get_active_scene_maps_zones_and_lock_state() {
             .and_then(hypercolor_tui::state::ControlValue::as_f32),
         Some(0.6)
     );
-
-    let shelf = scene.zone(ZONE_B).expect("shelf zone");
-    assert!(!shelf.is_primary);
-    assert!(!shelf.enabled);
-    assert_eq!(shelf.effect_id, None);
 }
 
 #[tokio::test]
-async fn get_active_scene_returns_none_without_active_scene() {
-    let router = Router::new().route(
-        "/api/v1/scenes/active",
-        get(|| async {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({
-                    "error": { "code": "not_found", "message": "scene not found: active" },
-                    "meta": {
-                        "api_version": "1.0",
-                        "request_id": "req_test",
-                        "timestamp": "2026-08-16T00:00:00.000Z"
-                    }
-                })),
-            )
-        }),
-    );
-
-    let client = client_for(spawn_server(router).await);
-    let scene = client.get_active_scene().await.expect("fetch active scene");
-    assert!(scene.is_none());
-}
-
-#[tokio::test]
-async fn get_scenes_maps_summaries() {
-    let router = Router::new().route(
-        "/api/v1/scenes",
-        get(|| async {
-            Json(json!({
-                "data": {
-                    "items": [
-                        {
-                            "id": "scene-1",
-                            "name": "Desk",
-                            "description": "two zones",
-                            "enabled": true,
-                            "priority": 0,
-                            "mutation_mode": "live"
-                        },
-                        {
-                            "id": "scene-2",
-                            "name": "Party",
-                            "description": null,
-                            "enabled": true,
-                            "priority": 1,
-                            "mutation_mode": "snapshot"
-                        }
-                    ],
-                    "pagination": { "offset": 0, "limit": 50, "total": 2, "has_more": false }
-                }
-            }))
-        }),
-    );
-
-    let client = client_for(spawn_server(router).await);
-    let scenes = client.get_scenes().await.expect("fetch scenes");
-
-    assert_eq!(scenes.len(), 2);
-    assert_eq!(scenes[0].id, "scene-1");
-    assert_eq!(scenes[1].name, "Party");
-    assert_eq!(
-        scenes[1].mutation_mode,
-        hypercolor_types::scene::SceneMutationMode::Snapshot
-    );
-}
-
-#[tokio::test]
-async fn apply_effect_sends_zone_id_and_controls() {
+async fn apply_effect_uses_canonical_zone_and_control_values() {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
@@ -926,7 +869,7 @@ async fn apply_effect_sends_zone_id_and_controls() {
                  Json(body): Json<Value>| async move {
                     assert_eq!(id, "rainbow");
                     *captured.lock().await = Some(body);
-                    Json(json!({ "data": {} }))
+                    Json(json!({"data": {}}))
                 },
             ),
         )
@@ -934,92 +877,62 @@ async fn apply_effect_sends_zone_id_and_controls() {
 
     let client = client_for(spawn_server(router).await);
     client
-        .apply_effect("rainbow", Some(&json!({ "speed": 0.5 })), Some(ZONE_B))
+        .apply_effect("rainbow", Some(&json!({"speed": 0.5})), Some(ZONE_B))
         .await
         .expect("apply effect");
 
-    let body = captured.lock().await.clone().expect("captured apply body");
-    assert_eq!(body["zone_id"], json!(ZONE_B));
-    assert_eq!(body["controls"], json!({ "speed": 0.5 }));
+    assert_eq!(
+        captured.lock().await.clone().expect("captured apply body"),
+        json!({
+            "zone": ZONE_B,
+            "controls": {"speed": {"float": 0.5}}
+        })
+    );
 }
 
 #[tokio::test]
-async fn apply_effect_omits_zone_id_for_primary() {
-    let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+async fn zone_mutations_use_live_scene_routes() {
     let router = Router::new()
         .route(
-            "/api/v1/effects/{id}/apply",
-            post(
-                |State(captured): State<Arc<Mutex<Option<Value>>>>,
-                 Json(body): Json<Value>| async move {
-                    *captured.lock().await = Some(body);
-                    Json(json!({ "data": {} }))
+            "/api/v1/scene/zones/{zone}",
+            patch(
+                |Path(zone): Path<String>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                    assert_eq!(zone, ZONE_B);
+                    assert_eq!(
+                        headers
+                            .get(header::IF_MATCH)
+                            .and_then(|value| value.to_str().ok()),
+                        Some("42")
+                    );
+                    assert_eq!(body, json!({"enabled": false}));
+                    Json(json!({"data": {}}))
                 },
             ),
         )
-        .with_state(Arc::clone(&captured));
+        .route(
+            "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+            patch(
+                |Path((zone, layer)): Path<(String, String)>,
+                 headers: HeaderMap,
+                 Json(body): Json<Value>| async move {
+                    assert_eq!(zone, ZONE_B);
+                    assert_eq!(layer, LAYER_ID);
+                    assert!(headers.get(header::IF_MATCH).is_none());
+                    assert_eq!(body, json!({"values": {"speed": {"float": 0.9}}}));
+                    Json(json!({"data": {}}))
+                },
+            ),
+        );
 
     let client = client_for(spawn_server(router).await);
     client
-        .apply_effect("rainbow", None, None)
-        .await
-        .expect("apply effect");
-
-    let body = captured.lock().await.clone().expect("captured apply body");
-    assert_eq!(body, json!({}));
-}
-
-#[tokio::test]
-async fn update_zone_sends_if_match_revision() {
-    let router = Router::new().route(
-        "/api/v1/scenes/{id}/zones/{zone_id}",
-        patch(
-            |Path((scene_id, zone_id)): Path<(String, String)>,
-             headers: HeaderMap,
-             Json(body): Json<Value>| async move {
-                assert_eq!(scene_id, "scene-1");
-                assert_eq!(zone_id, ZONE_B);
-                assert_eq!(
-                    headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()),
-                    Some("42")
-                );
-                assert_eq!(body, json!({ "enabled": false }));
-                Json(json!({ "data": {} }))
-            },
-        ),
-    );
-
-    let client = client_for(spawn_server(router).await);
-    client
-        .update_zone("scene-1", ZONE_B, 42, Some(false), None)
+        .update_zone(ZONE_B, 42, Some(false), None)
         .await
         .expect("update zone");
-}
-
-#[tokio::test]
-async fn patch_zone_controls_targets_legacy_layer_without_if_match() {
-    let router = Router::new().route(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
-        patch(
-            |Path((scene_id, zone_id, layer_id)): Path<(String, String, String)>,
-             headers: HeaderMap,
-             Json(body): Json<Value>| async move {
-                assert_eq!(scene_id, "scene-1");
-                // Legacy layer id == zone id
-                assert_eq!(zone_id, ZONE_B);
-                assert_eq!(layer_id, ZONE_B);
-                assert!(headers.get(header::IF_MATCH).is_none());
-                assert_eq!(body, json!({ "controls": { "speed": 0.9 } }));
-                Json(json!({ "data": {} }))
-            },
-        ),
-    );
-
-    let client = client_for(spawn_server(router).await);
     client
-        .patch_zone_controls("scene-1", ZONE_B, &json!({ "speed": 0.9 }))
+        .patch_zone_controls(ZONE_B, LAYER_ID, &json!({"speed": 0.9}))
         .await
-        .expect("patch zone controls");
+        .expect("patch controls");
 }
 
 #[tokio::test]
@@ -1029,12 +942,12 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
             "/api/v1/scenes/{id}/activate",
             post(|Path(id): Path<String>| async move {
                 assert_eq!(id, "scene-2");
-                Json(json!({ "data": {} }))
+                Json(json!({"data": {}}))
             }),
         )
         .route(
-            "/api/v1/scenes/deactivate",
-            post(|| async { Json(json!({ "data": {} })) }),
+            "/api/v1/scene/deactivate",
+            post(|| async { Json(json!({"data": {}})) }),
         );
 
     let client = client_for(spawn_server(router).await);
@@ -1043,35 +956,56 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
 }
 
 #[tokio::test]
-async fn reset_controls_scopes_to_zone() {
-    let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+async fn reset_controls_replaces_the_layer_without_apply_side_effects() {
+    let captured = Arc::new(Mutex::new(None::<Value>));
     let router = Router::new()
         .route(
-            "/api/v1/effects/active/reset",
-            post(
+            "/api/v1/scene",
+            get(|| async { Json(json!({"data": scene_document()})) }),
+        )
+        .route(
+            "/api/v1/effects/{id}",
+            get(|Path(id): Path<String>| async move {
+                assert_eq!(id, EFFECT_RAINBOW);
+                Json(json!({
+                    "data": {
+                        "id": EFFECT_RAINBOW,
+                        "name": "Rainbow",
+                        "description": "test",
+                        "author": "test",
+                        "category": "ambient",
+                        "source": "native",
+                        "runnable": true,
+                        "tags": [],
+                        "version": "1",
+                        "audio_reactive": false,
+                        "controls": []
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/scene/zones/{zone}/layers/{layer}",
+            put(
                 |State(captured): State<Arc<Mutex<Option<Value>>>>,
+                 Path((zone, layer)): Path<(String, String)>,
                  Json(body): Json<Value>| async move {
+                    assert_eq!(zone, ZONE_A);
+                    assert_eq!(layer, LAYER_ID);
                     *captured.lock().await = Some(body);
-                    Json(json!({ "data": {} }))
+                    Json(json!({"data": {}}))
                 },
             ),
         )
         .with_state(Arc::clone(&captured));
 
     let client = client_for(spawn_server(router).await);
-
-    client
-        .reset_controls(Some(ZONE_B))
-        .await
-        .expect("zone-scoped reset");
-    assert_eq!(
-        captured.lock().await.clone().expect("captured body"),
-        json!({ "zone_id": ZONE_B })
-    );
-
-    client.reset_controls(None).await.expect("primary reset");
-    assert_eq!(
-        captured.lock().await.clone().expect("captured body"),
-        json!({})
-    );
+    client.reset_controls(None).await.expect("reset controls");
+    let body = captured.lock().await.clone().expect("captured reset body");
+    assert_eq!(body["source"]["type"], "effect");
+    assert_eq!(body["source"]["effect_id"], EFFECT_RAINBOW);
+    assert_eq!(body["source"]["controls"], json!({}));
+    assert!(body["source"].get("preset_id").is_none());
+    assert_eq!(body["blend"], "replace");
+    assert_eq!(body["enabled"], true);
 }

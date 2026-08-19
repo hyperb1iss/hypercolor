@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::{Zone, ZoneRole};
+use hypercolor_types::scene::ZoneRole;
 
 use crate::api;
 use crate::api::zones::{OutputAssignment, ZoneOutcome};
@@ -200,18 +200,11 @@ pub(super) fn assign_device_to_zone(
         toasts::toast_error("Device has no channels to add");
         return;
     }
-    let scene_id = scene.id.clone();
-    let revision = scene.zones_revision;
+    let revision = scene.revision;
     let device_name = device.name.clone();
     spawn_local(async move {
-        match api::zones::assign_devices(
-            &scene_id,
-            &zone_id,
-            assignments,
-            preserve_placement,
-            Some(revision),
-        )
-        .await
+        match api::zones::assign_devices(&zone_id, assignments, preserve_placement, Some(revision))
+            .await
         {
             Ok(ZoneOutcome::Applied(_)) => {
                 toasts::toast_success(&format!("{device_name} added to the zone"));
@@ -320,7 +313,7 @@ fn mint_device_zones(
 /// The non-target zone that currently owns a device's outputs, or
 /// "unassigned" if no zone holds any. Drives the location hint in the
 /// picker label so the user sees where the move comes from.
-fn device_location(groups: &[Zone], device_id: &str, target: &str) -> String {
+fn device_location(groups: &[api::LiveZoneView], device_id: &str, target: &str) -> String {
     for group in groups {
         if group.role == ZoneRole::Display {
             continue;
@@ -343,7 +336,7 @@ fn device_location(groups: &[Zone], device_id: &str, target: &str) -> String {
 /// Display name for a zone: the user's typed name, or "Default zone" for an
 /// unnamed `Primary` group, so it never surfaces a raw role string. Shared
 /// with the device card's move-to-zone picker.
-pub(super) fn zone_display_name(group: &Zone) -> String {
+pub(super) fn zone_display_name(group: &api::LiveZoneView) -> String {
     let trimmed = group.name.trim();
     if group.role == ZoneRole::Primary
         && (trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary"))

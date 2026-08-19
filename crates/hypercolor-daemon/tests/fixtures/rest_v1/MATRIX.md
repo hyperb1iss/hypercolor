@@ -9,10 +9,10 @@ The enforcing suite is `crates/hypercolor-daemon/tests/rest_v1_compat_tests.rs`.
 This document and that file are edited together. A row here without a test there
 is a claim, not a fence.
 
-**Reading this document:** it records reality, not intent. Several rows describe
-behavior that is wrong on purpose (fabricated pagination, three parallel ETag
-implementations). Those are marked, and each names the wave that corrects it.
-The error surface is not among them: one rendering serves every route.
+**Reading this document:** it records reality, not intent. Rows describing
+transitional behavior, such as fabricated pagination, are marked with the wave
+that corrects them. The error surface is not among them: one rendering serves
+every route.
 
 ---
 
@@ -253,13 +253,11 @@ the same effective power state directly.
 | GET | `/api/v1/output` | Empty | `200`, enveloped `{power, brightness}` | `power` is `running` \| `paused`; a destructive stop and a session sleep both read as `paused`. `brightness` is a float on `0.0..=1.0`, not a percentage |
 | PATCH | `/api/v1/output` | `{power?, brightness?}` | `200`, enveloped whole resource | Partial: either field or both. A document setting **neither** is `422 validation_error`, not a no-op. Brightness outside `0.0..=1.0` is `422` with `details.field = "brightness"`, and it is validated **before** power moves. Unknown fields are refused by the decoder, so they arrive as an unenveloped axum rejection (§1.3) |
 | POST | `/api/v1/effects/{id}/apply` | Empty or apply options | `200`, enveloped | `{id}` accepts an effect id or name |
-| PATCH | `/api/v1/effects/active/controls` | `{controls: {…}}` | `200`, enveloped `{effect, applied, rejected}` | **No `controls_version`, no ETag, and `If-Match` is not read at all**, while the `{id}` sibling has all three |
-| PUT | `/api/v1/effects/active/controls/{name}/binding` | A bare `ControlBinding` object (`{sensor, sensor_min, sensor_max, target_min, target_max, deadband?, smoothing?}`), **not** wrapped in a `binding` key | `200`, enveloped | |
-| POST | `/api/v1/effects/active/reset` | Empty | `200`, enveloped | |
-| GET/POST | `/api/v1/scenes/{id}/zones/{zone_id}/layers` | Layer spec on POST | `200`/`201`, enveloped, ETag | Layer stacks and zone CRUD share the `/zones/{zone_id}` prefix |
-| PATCH | `/api/v1/scenes/{id}/zones/{zone_id}/layers/order` | `{layer_ids: […]}` | `200`, enveloped, ETag | |
-| PUT/DELETE | `/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}` | Layer spec on PUT | `200`, enveloped, ETag | |
-| PATCH | `/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls` | `{controls: {…}}` | `200`, enveloped, ETag | |
+| GET | `/api/v1/scene` | Empty | `200`, enveloped full live scene | Carries one `revision` and every zone's real layer ids |
+| PATCH | `/api/v1/scene/zones/{zone}/layers/{layer}/controls` | `{values: {…}, clear_bindings?: […]}` | `200`, enveloped zone resource | Unguarded value write; a replaced layer id returns 404 |
+| GET/POST | `/api/v1/scene/zones/{zone}/layers` | Layer creation shape on POST | `200`/`201`, enveloped zone resource, ETag | Structural writes honor the scene `revision` |
+| PATCH | `/api/v1/scene/zones/{zone}/layers/order` | `{order: […]}` | `200`, enveloped zone resource, ETag | |
+| PUT/DELETE | `/api/v1/scene/zones/{zone}/layers/{layer}` | Layer creation shape on PUT | `200`, enveloped zone resource, ETag | PUT mints a fresh layer id |
 | GET | `/api/v1/config` | Empty | `200`, enveloped whole config | Secret-classified sections render as `{redacted: true}`: every `drivers` entry, plus any top-level section the build does not model |
 | GET | `/api/v1/config/keys/{key}` | Dotted key as one **path segment** | `200`, enveloped `{key, value}` | `key` echoes the *normalized* key; a 404 message echoes the caller's raw key; a malformed key (empty segment) is `400 bad_request` |
 | PUT | `/api/v1/config/keys/{key}` | **The value itself** as the JSON body; `?live=` (default `true`) gates the live apply | `200`, enveloped `{key, value, live, requires_restart, pending_restart, path}` | The body is typed JSON, so `true` is boolean and `"hello"` is a string. Returns `500 internal_error` when no `ConfigManager` is wired |
@@ -301,23 +299,19 @@ check still yields `healthy`; only a `degraded` check downgrades the whole probe
 
 ### 5.1 ETag and `If-Match`
 
-Three independent implementations exist, one per versioned resource. All three
-use a strong, quoted, bare integer: `ETag: "7"`.
+The live scene has one version token, emitted as a strong, quoted integer:
+`ETag: "7"`.
 
 | Version counter | GET routes emitting the ETag | Mutating routes reading `If-Match` |
 | --- | --- | --- |
-| `controls_version` | `GET /api/v1/effects/active` | `PATCH /api/v1/effects/{id}/controls` |
-| `zones_revision` | `GET /api/v1/scenes/{id}/zones`, `GET /api/v1/scenes/{id}/zones/{zone_id}` | The seven zone mutators (create/update/delete zone, assign/unassign devices, update zone layout, update unassigned behavior) |
-| `layers_version` | `GET /api/v1/scenes/{id}/zones/{zone_id}/layers` | The five layer mutators (create, update, delete, reorder, patch controls) |
 | `revision` (the commit generation) | Every `/api/v1/scene` read | Every structural `/api/v1/scene` write |
 
-Successful mutations echo the **advanced** version in both the ETag and the body.
+Successful structural mutations return the **advanced** version in the ETag.
+The resource body carries the mutation result; clients needing the full tree
+read `/scene` again.
 
-The fourth row is the Spec 78 §1.6 target shape, and it is deliberately not a
-fourth counter: `revision` is the commit generation the sequencer already
-assigns, so one number covers the whole live tree. The first three rows belong
-to the pre-78 routes and die with them in the deletion wave; until then both
-tokens are accepted, each on its own routes.
+The revision is the commit generation the sequencer already assigns, so one
+number covers the whole live tree.
 
 **The `/scene` tree splits its writes by kind, and the split is contractual.**
 Structural writes (scene patch, zone create/patch/delete, zone layout PUT,
@@ -330,7 +324,7 @@ never a silent write onto whatever replaced it, and a patch naming a control
 key an input binding drives answers 409 `control_bound` with the bound keys in
 `error.details.bound` unless the same request clears that binding.
 
-Frozen `If-Match` parsing quirks, identical across all three parsers:
+Frozen `If-Match` parsing quirks:
 
 | Header value | Behavior |
 | --- | --- |
@@ -340,13 +334,13 @@ Frozen `If-Match` parsing quirks, identical across all three parsers:
 | `*` | **No precondition**, not "any existing resource" |
 | `W/"5"` | **400** `malformed_request`, because the `W/` survives the quote trim and fails the integer parse |
 | non-ASCII | `400` `malformed_request`, message `"If-Match header must be ASCII"` |
-| anything else | `400` `malformed_request`, message naming the specific counter |
+| anything else | `400` `malformed_request`, message naming `revision` |
 
 An unreadable header value is a syntax failure, which is why it is a 400 rather
 than the 422 a semantically-rejected request earns.
 
-Note the asymmetry, which is itself pinned: `PATCH /api/v1/effects/active/controls`
-takes no `HeaderMap` and therefore ignores `If-Match` entirely.
+Control writes deliberately ignore `If-Match`; layer identity fences stale
+writes because a replaced layer id returns 404.
 
 ### 5.2 The 412 body
 
@@ -366,14 +360,11 @@ current version, so a client can rebase without a second GET — `ETag` and
 }
 ```
 
-One rendering serves all three counters. Which counter a 412 is about is a
-property of the route, not of the body.
+One rendering serves the scene revision.
 
 | Route family | Counter the route guards |
 | --- | --- |
-| `PATCH /api/v1/effects/{id}/controls` | `controls_version` |
-| Zone mutators under `/api/v1/scenes/{id}/zones…` and `/api/v1/scenes/{id}/unassigned-behavior` | `zones_revision` |
-| Layer mutators under `/api/v1/scenes/{id}/zones/{zone_id}/layers…` | `layers_version` |
+| Structural mutators under `/api/v1/scene…` | `revision` |
 
 ### 5.3 The WebSocket origin rejection
 

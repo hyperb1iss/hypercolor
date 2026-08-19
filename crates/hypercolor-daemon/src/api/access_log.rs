@@ -117,15 +117,7 @@ fn quiet_success_request(method: &Method, path: &str) -> bool {
         return false;
     }
 
-    if matches!(path, "/api/v1/scenes/active") {
-        return true;
-    }
-
-    let segments = path.split('/').collect::<Vec<_>>();
-    matches!(
-        segments.as_slice(),
-        ["", "api", "v1", "scenes", _, "zones", _, "layers"]
-    )
+    matches!(path, "/api/v1/scene")
 }
 
 fn client_addr(request: &Request<Body>) -> Option<String> {
@@ -262,28 +254,20 @@ mod tests {
     }
 
     #[test]
-    fn high_volume_scene_polling_reads_log_at_debug() {
+    fn live_scene_reads_log_at_debug() {
         assert_eq!(
-            select_level(200, &Method::GET, "/api/v1/scenes/active"),
-            Level::DEBUG
-        );
-        assert_eq!(
-            select_level(
-                200,
-                &Method::GET,
-                "/api/v1/scenes/scene-id/zones/zone-id/layers"
-            ),
+            select_level(200, &Method::GET, "/api/v1/scene"),
             Level::DEBUG
         );
     }
 
     #[test]
-    fn scene_layer_writes_still_log_at_info() {
+    fn live_scene_layer_writes_still_log_at_info() {
         assert_eq!(
             select_level(
                 200,
                 &Method::DELETE,
-                "/api/v1/scenes/scene-id/zones/zone-id/layers/layer-id"
+                "/api/v1/scene/zones/zone-id/layers/layer-id"
             ),
             Level::INFO
         );

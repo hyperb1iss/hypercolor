@@ -25,7 +25,7 @@ use super::surface::UNASSIGNED_SURFACE_ID;
 /// Stage only, never the zone tree.
 #[component]
 pub fn CompositionPanel(
-    #[prop(into)] active_scene: Signal<Option<api::ActiveSceneResponse>>,
+    #[prop(into)] active_scene: Signal<Option<api::LiveSceneView>>,
     selected_group_id: ReadSignal<Option<String>>,
     set_selected_group_id: WriteSignal<Option<String>>,
     #[prop(into)] surface_label: Signal<Option<String>>,

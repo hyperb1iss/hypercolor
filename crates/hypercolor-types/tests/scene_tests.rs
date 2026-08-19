@@ -2,7 +2,7 @@
 
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::layer::{LayerSource, SceneLayerId};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget,
     EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope,
@@ -266,7 +266,7 @@ fn render_group_display_target_round_trips_in_scene_json() {
 }
 
 #[test]
-fn render_group_legacy_json_synthesizes_effect_layer() {
+fn render_group_legacy_json_materializes_fresh_effect_layer() {
     let group_id = ZoneId::new();
     let effect_id = EffectId::from(Uuid::now_v7());
     let json = serde_json::json!({
@@ -292,7 +292,7 @@ fn render_group_legacy_json_synthesizes_effect_layer() {
     assert_eq!(group.controls_version, 4);
     assert_eq!(group.layers_version, 0);
     assert_eq!(group.layers.len(), 1);
-    assert_eq!(group.layers[0].id, SceneLayerId::from_uuid(group_id.0));
+    assert_ne!(group.layers[0].id.as_uuid(), group_id.0);
     let LayerSource::Effect {
         effect_id: layer_effect,
         controls,
@@ -303,6 +303,33 @@ fn render_group_legacy_json_synthesizes_effect_layer() {
     };
     assert_eq!(*layer_effect, effect_id);
     assert_eq!(controls.get("speed"), Some(&ControlValue::Float(0.75)));
+}
+
+#[test]
+fn serialized_synthetic_effect_layer_identity_migrates_once() {
+    let zone_id = ZoneId::new();
+    let effect_id = EffectId::new(uuid::Uuid::now_v7());
+    let mut zone = sample_group("Legacy", "desk:main", effect_id);
+    zone.id = zone_id;
+    let mut value = serde_json::to_value(zone).expect("zone should serialize");
+    value["layers"] = serde_json::to_value(vec![SceneLayer::from_effect(
+        SceneLayerId::from_uuid(zone_id.0),
+        effect_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    )])
+    .expect("predecessor layer should serialize");
+
+    let migrated: Zone = serde_json::from_value(value).expect("legacy zone should migrate");
+    let migrated_id = migrated.layers[0].id;
+    assert_ne!(migrated_id.0, zone_id.0);
+
+    let reloaded: Zone = serde_json::from_value(
+        serde_json::to_value(&migrated).expect("migrated zone should serialize"),
+    )
+    .expect("migrated zone should reload");
+    assert_eq!(reloaded.layers[0].id, migrated_id);
 }
 
 #[test]

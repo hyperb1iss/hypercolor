@@ -3,9 +3,10 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use hypercolor_types::api::library::{
-    AddFavoriteRequest, ApplyPresetRequest, PlaylistItemRequest, PlaylistTargetRequest,
-    SavePlaylistRequest, SavePresetRequest,
+    AddFavoriteRequest, PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest,
+    SavePresetRequest,
 };
+use hypercolor_types::api::scene::ApplyEffectRequest;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -447,19 +448,21 @@ async fn execute_presets(
             }
         }
         PresetsCommand::Apply(apply_args) => {
-            let path = format!("/library/presets/{}/apply", urlencoded(&apply_args.preset));
-            let response = client.post(&path, &ApplyPresetRequest::default()).await?;
+            let preset_path = format!("/library/presets/{}", urlencoded(&apply_args.preset));
+            let preset = client.get(&preset_path).await?;
+            let effect_id = extract_str(&preset, "effect_id");
+            let path = format!(
+                "/effects/{}/presets/{}/apply",
+                urlencoded(&effect_id),
+                urlencoded(&apply_args.preset)
+            );
+            let response = client.post(&path, &ApplyEffectRequest::default()).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
-                    let effect = response
-                        .get("effect")
-                        .and_then(|value| value.get("name"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("?");
                     ctx.success(&format!(
-                        "Preset applied: {} -> effect {effect}",
-                        apply_args.preset
+                        "Preset applied: {} -> effect {effect_id}",
+                        apply_args.preset,
                     ));
                 }
             }

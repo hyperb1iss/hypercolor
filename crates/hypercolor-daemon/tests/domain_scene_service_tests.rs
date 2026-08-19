@@ -198,7 +198,9 @@ fn apply_command(effect: &EffectMetadata) -> ApplyEffect {
         controls: HashMap::new(),
         preset_id: None,
         target_zone: None,
+        expected_revision: None,
         transition: RequestedTransition::cut(),
+        wake_output: true,
     }
 }
 

@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use hypercolor_types::event::{LayerHealth, SceneLibraryChangeKind, ZoneChangeKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_ui::ws::messages::{
-    EFFECT_STARTED_EVENTS, EFFECT_STOPPED_EVENTS, OutputPowerReconciler, PerformanceMetrics,
-    SCENE_EVENTS, extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
-    group_has_degraded_layer, is_resync_required, layer_health_key, reset_layer_health_cache,
-    scene_event_affects_active_effect, sequence_scene_event_hint,
+    EFFECT_STARTED_EVENTS, EFFECT_STOPPED_EVENTS, InitialSubscriptionAdmission,
+    OutputPowerReconciler, PerformanceMetrics, SCENE_EVENTS, extract_effect_error_hint,
+    extract_layer_health, extract_scene_event_hint, group_has_degraded_layer,
+    initial_subscription_admission, is_resync_required, layer_health_key,
+    reset_layer_health_cache, scene_event_affects_active_effect, sequence_scene_event_hint,
 };
 
 #[test]
@@ -23,6 +24,25 @@ fn output_power_reconciliation_rejects_an_older_rest_response() {
 
     assert!(!reconciler.accepts(started_fetch));
     assert!(reconciler.accepts(stopped_fetch));
+}
+
+#[test]
+fn initial_subscription_admission_requires_a_real_acknowledgment() {
+    assert_eq!(
+        initial_subscription_admission(&serde_json::json!({ "type": "subscribed" })),
+        InitialSubscriptionAdmission::Admitted
+    );
+    assert_eq!(
+        initial_subscription_admission(&serde_json::json!({
+            "type": "error",
+            "code": "invalid_subscription"
+        })),
+        InitialSubscriptionAdmission::Rejected
+    );
+    assert_eq!(
+        initial_subscription_admission(&serde_json::json!({ "type": "hello" })),
+        InitialSubscriptionAdmission::Pending
+    );
 }
 
 #[test]

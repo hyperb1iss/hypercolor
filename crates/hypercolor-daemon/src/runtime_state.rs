@@ -95,11 +95,20 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
         path: path.to_path_buf(),
         source,
     })?;
-    let snapshot: RuntimeSessionSnapshot =
+    let original: serde_json::Value =
         serde_json::from_str(&raw).map_err(|source| RuntimeSessionError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
+    let snapshot: RuntimeSessionSnapshot =
+        serde_json::from_value(original.clone()).map_err(|source| RuntimeSessionError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let normalized = serde_json::to_value(&snapshot).map_err(RuntimeSessionError::Serialize)?;
+    if normalized != original {
+        save(path, &snapshot)?;
+    }
     Ok(Some(snapshot))
 }
 
@@ -144,8 +153,12 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use tempfile::TempDir;
+    use uuid::Uuid;
 
     use super::{RuntimeSessionError, RuntimeSessionSnapshot, load, save};
+    use hypercolor_core::scene::SceneManager;
+    use hypercolor_types::effect::EffectId;
+    use hypercolor_types::layer::{SceneLayer, SceneLayerId};
     use hypercolor_types::scene::SceneId;
 
     #[test]
@@ -169,6 +182,47 @@ mod tests {
         assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
         assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
         assert_eq!(loaded.manual_paused, expected.manual_paused);
+    }
+
+    #[test]
+    fn runtime_snapshot_persists_a_fresh_legacy_layer_id() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        let manager = SceneManager::with_default();
+        let mut zone = manager
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.groups.first())
+            .cloned()
+            .expect("default scene should have a primary zone");
+        let zone_id = zone.id;
+        zone.layers = vec![SceneLayer::from_effect(
+            SceneLayerId::from_uuid(zone_id.0),
+            EffectId::from(Uuid::now_v7()),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            None,
+        )];
+        let snapshot = RuntimeSessionSnapshot {
+            default_scene_groups: vec![zone],
+            ..RuntimeSessionSnapshot::default()
+        };
+        let payload = serde_json::to_value(snapshot).expect("snapshot should serialize");
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&payload).expect("legacy snapshot should serialize"),
+        )
+        .expect("legacy snapshot should write");
+
+        let loaded = load(&path)
+            .expect("legacy snapshot should migrate")
+            .expect("snapshot should exist");
+        let migrated_id = loaded.default_scene_groups[0].layers[0].id;
+        assert_ne!(migrated_id.as_uuid(), zone_id.0);
+
+        let reloaded = load(&path)
+            .expect("migrated snapshot should reload")
+            .expect("snapshot should exist");
+        assert_eq!(reloaded.default_scene_groups[0].layers[0].id, migrated_id);
     }
 
     #[test]

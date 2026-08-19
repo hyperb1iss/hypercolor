@@ -10,8 +10,7 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::{
-    capture, config, controls, devices, drivers, effects, envelope, layers, output, profiles,
-    scenes_zones, system,
+    capture, config, controls, devices, drivers, effects, envelope, output, profiles, system,
 };
 
 #[derive(OpenApi)]
@@ -30,10 +29,7 @@ use crate::api::{
         devices::get_device,
         effects::list_effects,
         effects::get_effect,
-        effects::get_active_effect,
         effects::list_effect_presets,
-        effects::apply_effect,
-        effects::apply_effect_preset,
         output::get_output,
         output::patch_output,
     ),
@@ -57,9 +53,7 @@ use crate::api::{
             envelope::ApiResponse<hypercolor_types::controls::ControlActionResult>,
             envelope::ApiResponse<effects::EffectListResponse>,
             envelope::ApiResponse<effects::EffectDetailResponse>,
-            envelope::ApiResponse<effects::ActiveEffectResponse>,
             envelope::ApiResponse<effects::EffectPresetListResponse>,
-            envelope::ApiResponse<effects::ApplyEffectResponse>,
             envelope::ApiResponse<hypercolor_types::api::output::OutputResource>,
             envelope::ApiResponse<devices::DeviceBindingsResponse>,
             envelope::ApiResponse<devices::RebindDeviceResponse>,
@@ -67,28 +61,10 @@ use crate::api::{
             devices::IdentifyRequest,
             devices::DiscoverRequest,
             devices::RebindDeviceRequest,
-            effects::UpdateActiveControlsRequest,
             hypercolor_types::api::output::OutputPatchRequest,
             hypercolor_types::api::output::OutputPowerMode,
             hypercolor_types::api::output::OutputResource,
-            layers::BroadcastMediaLayerRequest,
-            layers::BroadcastMediaLayerTarget,
-            layers::BroadcastMediaLayerZoneResponse,
-            layers::BroadcastMediaLayerResponse,
-            layers::CreateLayerRequest,
-            layers::UpdateLayerRequest,
-            layers::LayerOrderRequest,
-            layers::PatchLayerControlsRequest,
-            layers::LayerStackResponse,
             profiles::ApplyProfileRequest,
-            scenes_zones::CreateZoneRequest,
-            scenes_zones::UpdateZoneRequest,
-            scenes_zones::AssignDevicesRequest,
-            scenes_zones::UpdateUnassignedBehaviorRequest,
-            scenes_zones::ZoneListResponse,
-            scenes_zones::ZoneResponse,
-            scenes_zones::ZoneMutationResponse,
-            scenes_zones::UnassignedBehaviorResponse,
             config::ConfigMutationResponse,
             hypercolor_types::config_registry::ApplyPolicy,
             hypercolor_types::config_registry::ConfigKeySchemaEntry,
@@ -149,21 +125,12 @@ use crate::api::{
             hypercolor_types::controls::ControlValueKind,
             hypercolor_types::controls::ControlVisibility,
             hypercolor_types::controls::RejectedControlChange,
-            effects::ApplyEffectRequest,
-            effects::ApplyEffectPresetRequest,
-            effects::TransitionRequest,
             effects::EffectListResponse,
             effects::EffectSummary,
-            effects::ActiveEffectResponse,
             effects::EffectDetailResponse,
             effects::EffectPresetOrigin,
             effects::EffectPresetSummary,
             effects::EffectPresetListResponse,
-            effects::LayoutLinkSummary,
-            effects::EffectLayoutApplyResult,
-            effects::ApplyTransitionResponse,
-            effects::EffectRefSummary,
-            effects::ApplyEffectResponse,
             hypercolor_driver_api::DeviceAuthState,
             hypercolor_driver_api::PairingFlowKind,
             hypercolor_driver_api::PairingFieldDescriptor,
@@ -728,43 +695,6 @@ pub const ROUTES: &[RouteSpec] = &[
     )
     .with_request_body("OutputPatchRequest", true),
     RouteSpec::get("/api/v1/effects", "list_effects", "effects", "List effects"),
-    RouteSpec::get(
-        "/api/v1/effects/active",
-        "get_active_effect",
-        "effects",
-        "Get active effect",
-    ),
-    RouteSpec::get(
-        "/api/v1/effects/active/cover",
-        "get_active_effect_cover",
-        "effects",
-        "Get active effect cover image",
-    ),
-    RouteSpec::patch(
-        "/api/v1/effects/active/controls",
-        "update_active_controls",
-        "effects",
-        "Update active effect controls",
-    )
-    .with_request_body("UpdateActiveControlsRequest", true),
-    RouteSpec::put(
-        "/api/v1/effects/active/controls/{name}/binding",
-        "set_active_control_binding",
-        "effects",
-        "Set active effect control binding",
-    ),
-    RouteSpec::post(
-        "/api/v1/effects/active/reset",
-        "reset_controls",
-        "effects",
-        "Reset active effect controls",
-    ),
-    RouteSpec::post(
-        "/api/v1/effects/stop",
-        "stop_effect",
-        "effects",
-        "Stop active effect",
-    ),
     RouteSpec::post(
         "/api/v1/effects/rescan",
         "rescan_effects",
@@ -795,24 +725,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "effects",
         "Get effect cover image",
     ),
-    RouteSpec::get(
-        "/api/v1/effects/{id}/layout",
-        "get_effect_layout",
-        "effects",
-        "Get effect layout link",
-    ),
-    RouteSpec::put(
-        "/api/v1/effects/{id}/layout",
-        "set_effect_layout",
-        "effects",
-        "Set effect layout link",
-    ),
-    RouteSpec::delete(
-        "/api/v1/effects/{id}/layout",
-        "delete_effect_layout",
-        "effects",
-        "Delete effect layout link",
-    ),
     RouteSpec::post(
         "/api/v1/effects/{id}/apply",
         "apply_effect",
@@ -831,26 +743,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "effects",
         "Apply effect preset",
     ),
-    RouteSpec::patch(
-        "/api/v1/effects/{id}/controls",
-        "update_effect_controls",
-        "effects",
-        "Update effect controls",
-    ),
     RouteSpec::get("/api/v1/scenes", "list_scenes", "scenes", "List scenes"),
     RouteSpec::post("/api/v1/scenes", "create_scene", "scenes", "Create scene"),
-    RouteSpec::get(
-        "/api/v1/scenes/active",
-        "get_active_scene",
-        "scenes",
-        "Get active scene",
-    ),
-    RouteSpec::post(
-        "/api/v1/scenes/deactivate",
-        "deactivate_scene",
-        "scenes",
-        "Deactivate active scene",
-    ),
     RouteSpec::get("/api/v1/scenes/{id}", "get_scene", "scenes", "Get scene"),
     RouteSpec::put(
         "/api/v1/scenes/{id}",
@@ -870,112 +764,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "scenes",
         "Activate scene",
     ),
-    RouteSpec::get(
-        "/api/v1/scenes/{id}/zones",
-        "list_scene_zones",
-        "scenes",
-        "List scene zones",
-    ),
-    RouteSpec::post(
-        "/api/v1/scenes/{id}/zones",
-        "create_scene_zone",
-        "scenes",
-        "Create scene zone",
-    )
-    .with_request_body("CreateZoneRequest", true),
-    RouteSpec::get(
-        "/api/v1/scenes/{id}/zones/{zone_id}",
-        "get_scene_zone",
-        "scenes",
-        "Get scene zone",
-    ),
-    RouteSpec::patch(
-        "/api/v1/scenes/{id}/zones/{zone_id}",
-        "update_scene_zone",
-        "scenes",
-        "Update scene zone",
-    )
-    .with_request_body("UpdateZoneRequest", true),
-    RouteSpec::delete(
-        "/api/v1/scenes/{id}/zones/{zone_id}",
-        "delete_scene_zone",
-        "scenes",
-        "Delete scene zone",
-    ),
-    RouteSpec::put(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layout",
-        "update_scene_zone_layout",
-        "scenes",
-        "Update scene zone layout",
-    )
-    .with_request_body("SpatialLayout", true),
-    RouteSpec::post(
-        "/api/v1/scenes/{id}/zones/{zone_id}/devices",
-        "assign_scene_zone_devices",
-        "scenes",
-        "Assign device zones",
-    )
-    .with_request_body("AssignDevicesRequest", true),
-    RouteSpec::delete(
-        "/api/v1/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}",
-        "unassign_scene_zone_device",
-        "scenes",
-        "Unassign device zone",
-    ),
-    RouteSpec::patch(
-        "/api/v1/scenes/{id}/unassigned-behavior",
-        "update_scene_unassigned_behavior",
-        "scenes",
-        "Update unassigned behavior",
-    )
-    .with_request_body("UpdateUnassignedBehaviorRequest", true),
-    RouteSpec::post(
-        "/api/v1/scenes/{id}/layers/broadcast-media",
-        "broadcast_media_layer",
-        "scenes",
-        "Broadcast one media layer across zones",
-    )
-    .with_request_body("BroadcastMediaLayerRequest", true),
-    RouteSpec::get(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layers",
-        "list_layers",
-        "scenes",
-        "List zone layers",
-    ),
-    RouteSpec::post(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layers",
-        "create_layer",
-        "scenes",
-        "Create zone layer",
-    )
-    .with_request_body("CreateLayerRequest", true),
-    RouteSpec::patch(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layers/order",
-        "reorder_layers",
-        "scenes",
-        "Reorder zone layers",
-    )
-    .with_request_body("LayerOrderRequest", true),
-    RouteSpec::put(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
-        "update_layer",
-        "scenes",
-        "Update zone layer",
-    )
-    .with_request_body("UpdateLayerRequest", true),
-    RouteSpec::delete(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
-        "delete_layer",
-        "scenes",
-        "Delete zone layer",
-    ),
-    RouteSpec::patch(
-        "/api/v1/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
-        "patch_layer_controls",
-        "scenes",
-        "Patch zone layer controls",
-    )
-    .with_request_body("PatchLayerControlsRequest", true),
     RouteSpec::get(
         "/api/v1/profiles",
         "list_profiles",
@@ -1103,12 +891,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "delete_preset",
         "library",
         "Delete preset",
-    ),
-    RouteSpec::post(
-        "/api/v1/library/presets/{id}/apply",
-        "apply_preset",
-        "library",
-        "Apply preset",
     ),
     RouteSpec::get(
         "/api/v1/library/playlists",

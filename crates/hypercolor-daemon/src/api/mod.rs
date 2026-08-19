@@ -17,7 +17,6 @@ pub mod displays;
 pub mod drivers;
 pub mod effects;
 pub mod envelope;
-pub mod layers;
 pub mod layouts;
 pub mod library;
 pub mod local;
@@ -28,7 +27,6 @@ pub mod output;
 pub mod profiles;
 pub mod scene;
 pub mod scenes;
-pub mod scenes_zones;
 pub mod security;
 pub mod simulators;
 pub mod system;
@@ -286,12 +284,6 @@ pub struct AppState {
     /// Persistent path for user-defined logical segment devices.
     pub logical_devices_path: PathBuf,
 
-    /// Persisted effect -> layout associations.
-    pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,
-
-    /// Persistent path for effect -> layout associations.
-    pub effect_layout_links_path: PathBuf,
-
     /// Persisted path for startup runtime-session restoration.
     pub runtime_state_path: PathBuf,
 
@@ -539,8 +531,6 @@ impl AppState {
         let layout_auto_exclusions_path = data_dir.join("layout-auto-exclusions.json");
         let logical_devices = Arc::new(RwLock::new(HashMap::new()));
         let logical_devices_path = data_dir.join("logical-devices.json");
-        let effect_layout_links = Arc::new(RwLock::new(HashMap::new()));
-        let effect_layout_links_path = data_dir.join("effect-layouts.json");
         let runtime_state_path = data_dir.join("runtime-state.json");
         let driver_inventory = Arc::new(
             DriverInventoryStore::open(data_dir.join(DRIVER_INVENTORY_FILENAME))
@@ -644,8 +634,6 @@ impl AppState {
             layout_auto_exclusions_path,
             logical_devices,
             logical_devices_path,
-            effect_layout_links,
-            effect_layout_links_path,
             runtime_state_path,
             power_state,
             output_power_transition: Arc::new(Mutex::new(())),
@@ -739,8 +727,6 @@ impl AppState {
             layout_auto_exclusions_path: daemon.layout_auto_exclusions_path.clone(),
             logical_devices: Arc::clone(&daemon.logical_devices),
             logical_devices_path: daemon.logical_devices_path.clone(),
-            effect_layout_links: Arc::clone(&daemon.effect_layout_links),
-            effect_layout_links_path: daemon.effect_layout_links_path.clone(),
             runtime_state_path: daemon.runtime_state_path.clone(),
             power_state: daemon.power_state.clone(),
             output_power_transition: Arc::clone(&daemon.output_power_transition),
@@ -1258,27 +1244,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         // ── Effects ──────────────────────────────────────────────────
         .route("/effects", axum::routing::get(effects::list_effects))
         .route(
-            "/effects/active",
-            axum::routing::get(effects::get_active_effect),
-        )
-        .route(
-            "/effects/active/cover",
-            axum::routing::get(effects::get_active_effect_cover),
-        )
-        .route(
-            "/effects/active/controls",
-            axum::routing::patch(effects::update_active_controls),
-        )
-        .route(
-            "/effects/active/controls/{name}/binding",
-            axum::routing::put(effects::set_active_control_binding),
-        )
-        .route(
-            "/effects/active/reset",
-            axum::routing::post(effects::reset_controls),
-        )
-        .route("/effects/stop", axum::routing::post(effects::stop_effect))
-        .route(
             "/effects/rescan",
             axum::routing::post(effects::rescan_effects),
         )
@@ -1304,18 +1269,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(effects::apply_effect_preset),
         )
         .route(
-            "/effects/{id}/layout",
-            axum::routing::get(effects::get_effect_layout)
-                .put(effects::set_effect_layout)
-                .delete(effects::delete_effect_layout),
-        )
-        .route(
             "/effects/{id}/apply",
             axum::routing::post(effects::apply_effect),
-        )
-        .route(
-            "/effects/{id}/controls",
-            axum::routing::patch(effects::update_effect_controls),
         )
         // ── The live scene tree (Spec 78 §1) ─────────────────────────
         .route(
@@ -1367,11 +1322,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/scenes",
             axum::routing::get(scenes::list_scenes).post(scenes::create_scene),
         )
-        .route("/scenes/active", axum::routing::get(scenes::get_active_scene))
-        .route(
-            "/scenes/deactivate",
-            axum::routing::post(scenes::deactivate_scene),
-        )
         .route(
             "/scenes/{id}",
             axum::routing::get(scenes::get_scene)
@@ -1381,52 +1331,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/scenes/{id}/activate",
             axum::routing::post(scenes::activate_scene),
-        )
-        .route(
-            "/scenes/{id}/zones",
-            axum::routing::get(scenes_zones::list_zones).post(scenes_zones::create_zone),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}",
-            axum::routing::get(scenes_zones::get_zone)
-                .patch(scenes_zones::update_zone)
-                .delete(scenes_zones::delete_zone),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}/devices",
-            axum::routing::post(scenes_zones::assign_devices),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}",
-            axum::routing::delete(scenes_zones::unassign_device),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}/layout",
-            axum::routing::put(scenes_zones::update_zone_layout),
-        )
-        .route(
-            "/scenes/{id}/unassigned-behavior",
-            axum::routing::patch(scenes_zones::update_unassigned_behavior),
-        )
-        .route(
-            "/scenes/{id}/layers/broadcast-media",
-            axum::routing::post(layers::broadcast_media_layer),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}/layers",
-            axum::routing::get(layers::list_layers).post(layers::create_layer),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}/layers/order",
-            axum::routing::patch(layers::reorder_layers),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}",
-            axum::routing::put(layers::update_layer).delete(layers::delete_layer),
-        )
-        .route(
-            "/scenes/{id}/zones/{zone_id}/layers/{layer_id}/controls",
-            axum::routing::patch(layers::patch_layer_controls),
         )
         // ── Profiles ─────────────────────────────────────────────────
         .route(
@@ -1484,10 +1388,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(library::get_preset)
                 .put(library::update_preset)
                 .delete(library::delete_preset),
-        )
-        .route(
-            "/library/presets/{id}/apply",
-            axum::routing::post(library::apply_preset),
         )
         .route(
             "/library/playlists",
@@ -1585,7 +1485,9 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     // for a route that no longer exists — every route-deletion fence in
     // the program is only as strong as this. Nesting resolves the inner
     // fallback first, so the SPA never sees an API path.
-    let api = api.fallback(api_route_not_found);
+    let api = api
+        .fallback(api_route_not_found)
+        .method_not_allowed_fallback(api_route_not_found);
     let mut router = Router::new()
         .nest("/api/v1", api)
         .route("/health", axum::routing::get(system::health_check));

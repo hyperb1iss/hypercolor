@@ -898,7 +898,7 @@ impl App {
             }
             Action::UpdateControl(control_id, value) => {
                 let json_value = control_value_to_json(value);
-                if let Some((scene_id, zone_id)) = self.zone_patch_target() {
+                if let Some((zone_id, layer_id)) = self.zone_patch_target() {
                     // Optimistic local update so re-renders show the new
                     // value immediately; zone_changed confirms.
                     self.update_local_zone_control(&zone_id, control_id, value.clone());
@@ -909,7 +909,7 @@ impl App {
                             let mut controls = serde_json::Map::new();
                             controls.insert(id, json_value);
                             let body = serde_json::Value::Object(controls);
-                            match client.patch_zone_controls(&scene_id, &zone_id, &body).await {
+                            match client.patch_zone_controls(&zone_id, &layer_id, &body).await {
                                 Ok(()) => Ok(Vec::new()), // silent success
                                 Err(error) => {
                                     let scene = client.get_active_scene().await.ok().flatten();
@@ -1008,15 +1008,14 @@ impl App {
                 let Some(scene) = self.state.active_scene.as_deref() else {
                     return;
                 };
-                let scene_id = scene.id.clone();
-                let revision = scene.zones_revision;
+                let revision = scene.revision;
                 let enabled = *enabled;
                 self.spawn_actions({
                     let client = self.client.clone();
                     let zone_id = zone_id.clone();
                     async move {
                         let result = client
-                            .update_zone(&scene_id, &zone_id, revision, Some(enabled), None)
+                            .update_zone(&zone_id, revision, Some(enabled), None)
                             .await;
                         // Refetch either way: success confirms, failure
                         // (e.g. 412 stale revision) resyncs.
@@ -1257,19 +1256,17 @@ impl App {
         ));
     }
 
-    /// The currently targeted zone as `(id, name)` when it is NOT the
-    /// primary zone. Primary targeting uses the legacy endpoints.
+    /// The currently targeted non-primary zone as `(id, name)`.
+    /// Primary targeting relies on the canonical apply route's default.
     fn non_primary_target(&self) -> Option<(String, String)> {
         let zone = self.state.target_zone()?;
         (!zone.is_primary).then(|| (zone.id.clone(), zone.name.clone()))
     }
 
-    /// Scene + zone ids for zone-scoped control mutations, when the target
-    /// is a non-primary zone.
+    /// Zone and real effect-layer ids for control mutations.
     fn zone_patch_target(&self) -> Option<(String, String)> {
-        let scene = self.state.active_scene.as_deref()?;
         let zone = self.state.target_zone()?;
-        (!zone.is_primary).then(|| (scene.id.clone(), zone.id.clone()))
+        Some((zone.id.clone(), zone.layer_id.clone()?))
     }
 
     /// Optimistically write a control value into the local copy of a zone.

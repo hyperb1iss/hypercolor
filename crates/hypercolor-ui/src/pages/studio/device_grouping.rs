@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use hypercolor_types::scene::Zone;
+use crate::api::LiveZoneView;
 use hypercolor_types::spatial::Output;
 
 /// Device-registry metadata the grouping needs. The caller builds this
@@ -85,7 +85,10 @@ pub fn sort_device_rows(rows: &mut [ZoneDeviceRow]) {
 /// Every registry device that has LEDs and whose id is the `device_id`
 /// of no placed `Output` anywhere in the scene.
 #[must_use]
-pub fn unassigned_device_rows(groups: &[Zone], devices: &[DeviceMeta]) -> Vec<ZoneDeviceRow> {
+pub fn unassigned_device_rows(
+    groups: &[LiveZoneView],
+    devices: &[DeviceMeta],
+) -> Vec<ZoneDeviceRow> {
     let placed: HashSet<&str> = groups
         .iter()
         .flat_map(|group| group.layout.zones.iter())

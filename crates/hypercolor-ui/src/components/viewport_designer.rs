@@ -13,8 +13,7 @@
 //! spec sketches (overlay.rs, controls_bar.rs, etc.).
 //!
 //! Related files:
-//!   - `api::effects::update_effect_controls` for the PATCH path with
-//!     If-Match optimistic concurrency
+//!   - `api::effects::update_effect_controls` for the layer PATCH path
 //!   - `components::control_panel::viewport_picker` for the inline
 //!     quick-adjust picker the modal complements (not replaces)
 
@@ -27,8 +26,8 @@ use serde_json::json;
 use hypercolor_leptos_ext::events::{Change, Input};
 use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 
-use crate::api::effects::{UpdateControlsOutcome, update_effect_controls};
-use crate::toasts::{toast_error, toast_info, toast_success};
+use crate::api::effects::update_effect_controls;
+use crate::toasts::{toast_error, toast_success};
 
 /// Authoring mode the modal was opened against.
 ///
@@ -53,9 +52,6 @@ pub struct ViewportDraftCommon {
     pub viewport: ViewportRect,
     pub fit_mode: FitMode,
     pub brightness: f32,
-    /// Server-side controls_version captured at open time or bumped
-    /// after each successful PATCH. Used as `If-Match`.
-    pub controls_version: u64,
 }
 
 /// Mode-specific draft state. A single flat struct would let invalid
@@ -153,29 +149,12 @@ pub fn ViewportDesignerModal(
             leptos::task::spawn_local(async move {
                 let snapshot = draft.get_untracked();
                 let controls = draft_to_controls_payload(&snapshot);
-                let outcome = update_effect_controls(
-                    &effect_id,
-                    &controls,
-                    Some(snapshot.common.controls_version),
-                )
-                .await;
+                let outcome = update_effect_controls(&effect_id, &controls).await;
                 apply_pending.set(false);
                 match outcome {
-                    Ok(UpdateControlsOutcome::Applied { new_version }) => {
-                        set_draft.update(|d| d.common.controls_version = new_version);
+                    Ok(()) => {
                         toast_success("Viewport applied.");
                         on_close.run(ViewportDesignerResult::Applied);
-                    }
-                    Ok(UpdateControlsOutcome::Stale { current }) => {
-                        // Rebase the draft's token so a follow-up
-                        // Apply after the user's choice doesn't 412
-                        // again on the same value. The user still
-                        // sees the reconciliation hint — they can
-                        // click Apply again to force-overwrite.
-                        set_draft.update(|d| d.common.controls_version = current);
-                        toast_info(
-                            "Another client changed this effect. Re-apply to overwrite, or cancel to discard your edits.",
-                        );
                     }
                     Err(err) => {
                         toast_error(&format!("Couldn't apply viewport: {err}"));

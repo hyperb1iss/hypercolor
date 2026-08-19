@@ -57,7 +57,6 @@ use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
-use crate::effect_layouts;
 use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
@@ -478,22 +477,6 @@ impl DaemonState {
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         info!("Simulated display store ready");
 
-        // ── Effect/Layout Association Store ──────────────────────────
-        let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
-        let persisted_links = match effect_layouts::load(&effect_layout_links_path) {
-            Ok(entries) => entries,
-            Err(error) => {
-                warn!(
-                    path = %effect_layout_links_path.display(),
-                    %error,
-                    "Failed to load effect/layout associations; starting with empty store"
-                );
-                HashMap::new()
-            }
-        };
-        let effect_layout_links = Arc::new(RwLock::new(persisted_links));
-        info!(path = %effect_layout_links_path.display(), "Effect/layout association store ready");
-
         // ── Layout Store ─────────────────────────────────────────────
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
         let mut persisted_layouts = match crate::layout_store::load(&layouts_path) {
@@ -680,8 +663,6 @@ impl DaemonState {
             display_frames: Arc::new(RwLock::new(
                 crate::display_frames::DisplayFrameRuntime::new(),
             )),
-            effect_layout_links,
-            effect_layout_links_path,
             layouts_path,
             layouts,
             layout_auto_exclusions,
