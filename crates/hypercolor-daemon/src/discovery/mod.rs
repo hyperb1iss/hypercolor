@@ -1,6 +1,6 @@
 //! Shared device discovery runtime for daemon startup and API-triggered scans.
 
-mod auto_layout;
+pub(crate) mod auto_layout;
 mod device_helpers;
 mod lifecycle;
 mod scan;

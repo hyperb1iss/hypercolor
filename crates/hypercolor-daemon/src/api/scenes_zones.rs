@@ -67,11 +67,12 @@ pub async fn create_zone(
     match zone::create_zone(
         state.as_ref(),
         zone::CreateZone {
-            scene_id,
+            scene: scene_id.into(),
             name: body.name,
             color: body.color,
             fallback_canvas,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -122,10 +123,11 @@ pub async fn update_zone(
     match zone::update_zone(
         state.as_ref(),
         zone::UpdateZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id,
             patch: zone_update_patch(body),
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -155,9 +157,10 @@ pub async fn delete_zone(
     let removed = match zone::delete_zone(
         state.as_ref(),
         zone::DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -222,6 +225,7 @@ pub async fn assign_devices(
             assignments: body.device_zones,
             placement,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -255,6 +259,7 @@ pub async fn unassign_device(
             zone_id,
             output_id: device_zone_id,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -296,6 +301,7 @@ pub async fn update_zone_layout(
             zone_id,
             layout,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -329,6 +335,7 @@ pub async fn update_unassigned_behavior(
             scene_id,
             behavior: body.unassigned_behavior,
             expected_revision,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )

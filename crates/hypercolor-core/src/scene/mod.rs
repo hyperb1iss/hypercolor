@@ -79,6 +79,12 @@ pub enum LayerMutationError {
     InvalidIndex { index: usize, len: usize },
     /// The supplied order is not an exact permutation of current layer ids.
     InvalidOrder,
+    /// The patch writes control keys an input binding already drives.
+    ///
+    /// A manual write the next sensor resolution would silently
+    /// overwrite is an error, not a race. The caller either drops the
+    /// key or clears its binding in the same request.
+    ControlBound { keys: Vec<String> },
 }
 
 /// Error variants for structural render-group mutations.
@@ -1455,6 +1461,64 @@ impl SceneManager {
                     errors: vec![format!("layer {layer_id} is not an effect layer")],
                 });
             };
+            controls.extend(updates);
+            Ok(())
+        })
+    }
+
+    /// Write control values and remove named input bindings in one
+    /// mutation (Spec 78 §1.6).
+    ///
+    /// The two halves are inseparable: a value write to a bound key is
+    /// refused with [`LayerMutationError::ControlBound`] unless the same
+    /// request clears that binding, so a caller recovering from the
+    /// refusal never leaves the layer half-written.
+    ///
+    /// # Errors
+    ///
+    /// [`LayerMutationError::ControlBound`] when a written key keeps a
+    /// binding this request does not clear, plus the usual missing
+    /// scene, zone, layer, and stale-version refusals.
+    pub fn patch_scene_layer_controls_and_bindings(
+        &mut self,
+        scene_id: SceneId,
+        group_id: ZoneId,
+        layer_id: SceneLayerId,
+        updates: HashMap<String, ControlValue>,
+        clear_bindings: &[String],
+        expected_version: Option<u64>,
+    ) -> Result<(&Zone, u64), LayerMutationError> {
+        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
+            let Some(layer) = group.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+                return Err(LayerMutationError::LayerMissing { layer_id });
+            };
+            let LayerSource::Effect {
+                controls,
+                control_bindings,
+                ..
+            } = &mut layer.source
+            else {
+                return Err(LayerMutationError::InvalidLayer {
+                    errors: vec![format!("layer {layer_id} is not an effect layer")],
+                });
+            };
+
+            let mut bound: Vec<String> = updates
+                .keys()
+                .filter(|key| {
+                    control_bindings.contains_key(*key)
+                        && !clear_bindings.iter().any(|cleared| cleared == *key)
+                })
+                .cloned()
+                .collect();
+            if !bound.is_empty() {
+                bound.sort();
+                return Err(LayerMutationError::ControlBound { keys: bound });
+            }
+
+            for key in clear_bindings {
+                control_bindings.remove(key);
+            }
             controls.extend(updates);
             Ok(())
         })

@@ -320,8 +320,26 @@ use a strong, quoted, bare integer: `ETag: "7"`.
 | `controls_version` | `GET /api/v1/effects/active` | `PATCH /api/v1/effects/{id}/controls` |
 | `zones_revision` | `GET /api/v1/scenes/{id}/zones`, `GET /api/v1/scenes/{id}/zones/{zone_id}` | The seven zone mutators (create/update/delete zone, assign/unassign devices, update zone layout, update unassigned behavior) |
 | `layers_version` | `GET /api/v1/scenes/{id}/zones/{zone_id}/layers` | The five layer mutators (create, update, delete, reorder, patch controls) |
+| `revision` (the commit generation) | Every `/api/v1/scene` read | Every structural `/api/v1/scene` write |
 
 Successful mutations echo the **advanced** version in both the ETag and the body.
+
+The fourth row is the Spec 78 §1.6 target shape, and it is deliberately not a
+fourth counter: `revision` is the commit generation the sequencer already
+assigns, so one number covers the whole live tree. The first three rows belong
+to the pre-78 routes and die with them in the deletion wave; until then both
+tokens are accepted, each on its own routes.
+
+**The `/scene` tree splits its writes by kind, and the split is contractual.**
+Structural writes (scene patch, zone create/patch/delete, zone layout PUT,
+member assign/unassign, layer create/replace/delete/reorder, clear) honor an
+optional `If-Match` against `revision`. Control-value writes
+(`PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`) honor **none** —
+a guarded slider drag self-invalidates on every tick, so layer identity does
+the fencing instead. A patch naming a layer that no longer exists answers 404,
+never a silent write onto whatever replaced it, and a patch naming a control
+key an input binding drives answers 409 `control_bound` with the bound keys in
+`error.details.bound` unless the same request clears that binding.
 
 Frozen `If-Match` parsing quirks, identical across all three parsers:
 

@@ -974,7 +974,10 @@ fn scale_rgb(color: [u8; 3], brightness: f32) -> [u8; 3] {
     [scaled.r, scaled.g, scaled.b]
 }
 
-async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -> String {
+pub(crate) async fn resolved_layout_device_id(
+    state: &AppState,
+    device_info: &DeviceInfo,
+) -> String {
     if let Some(layout_device_id) = {
         let lifecycle = state.lifecycle_manager.lock().await;
         lifecycle

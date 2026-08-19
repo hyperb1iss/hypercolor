@@ -10,6 +10,32 @@ use tower::ServiceExt;
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+// The live scene tree intentionally stays out of the transitional catalog.
+// Its shared types gain schemas when the complete post-resource-model catalog
+// is published atomically, so keep this gap exact until then.
+const DEFERRED_SCENE_TREE_OPERATIONS: &[(&str, &str)] = &[
+    ("delete", "/api/v1/scene/zones/{zone}"),
+    ("delete", "/api/v1/scene/zones/{zone}/layers/{layer}"),
+    ("delete", "/api/v1/scene/zones/{zone}/members/{member}"),
+    ("get", "/api/v1/scene"),
+    ("get", "/api/v1/scene/zones/{zone}"),
+    ("get", "/api/v1/scene/zones/{zone}/layers"),
+    ("patch", "/api/v1/scene"),
+    ("patch", "/api/v1/scene/zones/{zone}"),
+    ("patch", "/api/v1/scene/zones/{zone}/layers/order"),
+    (
+        "patch",
+        "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+    ),
+    ("post", "/api/v1/scene/clear"),
+    ("post", "/api/v1/scene/deactivate"),
+    ("post", "/api/v1/scene/zones"),
+    ("post", "/api/v1/scene/zones/{zone}/layers"),
+    ("post", "/api/v1/scene/zones/{zone}/members"),
+    ("put", "/api/v1/scene/zones/{zone}/layers/{layer}"),
+    ("put", "/api/v1/scene/zones/{zone}/layout"),
+];
+
 fn isolated_state() -> AppState {
     let _lock = DATA_DIR_LOCK
         .lock()
@@ -269,7 +295,7 @@ fn router_operations() -> BTreeSet<(String, String)> {
 }
 
 #[test]
-fn every_static_router_operation_is_cataloged() {
+fn only_the_deferred_scene_tree_operations_are_uncataloged() {
     let catalog = ROUTES
         .iter()
         .map(|route| (route.method.to_owned(), route.path.to_owned()))
@@ -277,11 +303,15 @@ fn every_static_router_operation_is_cataloged() {
     let missing = router_operations()
         .difference(&catalog)
         .cloned()
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
+    let expected = DEFERRED_SCENE_TREE_OPERATIONS
+        .iter()
+        .map(|(method, path)| ((*method).to_owned(), (*path).to_owned()))
+        .collect::<BTreeSet<_>>();
 
-    assert!(
-        missing.is_empty(),
-        "router operations missing from OpenAPI catalog: {missing:?}"
+    assert_eq!(
+        missing, expected,
+        "OpenAPI gaps must remain exactly the deferred scene tree"
     );
 }
 

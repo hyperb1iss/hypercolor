@@ -85,13 +85,21 @@ enum ResolveLayoutLinkError {
     AmbiguousName(String),
 }
 
-pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
-    let output_sleeping = state.power_state.borrow().sleeping();
-    let render_paused = state.render_loop.read().await.state() == RenderLoopState::Paused;
-    if !output_sleeping && !render_paused {
-        return;
+/// Bring output back to running so a freshly applied effect is visible.
+///
+/// Reports whether output is running once the attempt settles, which is
+/// the post-commit outcome the apply response carries (Spec 78 §2.3).
+pub(crate) async fn wake_output_for_effect_start(state: &AppState) -> bool {
+    if output_is_running(state).await {
+        return true;
     }
     crate::domain::output::set_power(state, OutputPowerMode::Running).await;
+    output_is_running(state).await
+}
+
+async fn output_is_running(state: &AppState) -> bool {
+    let sleeping = state.power_state.borrow().sleeping();
+    !sleeping && state.render_loop.read().await.state() != RenderLoopState::Paused
 }
 
 pub(crate) fn schedule_network_output_reconnect(state: &AppState) {

@@ -142,11 +142,12 @@ fn drain_events(
 
 fn create_command(scene_id: SceneId, name: &str) -> CreateZone {
     CreateZone {
-        scene_id,
+        scene: scene_id.into(),
         name: name.to_owned(),
         color: None,
         fallback_canvas: (640, 480),
         expected_revision: None,
+        expected_scene_revision: None,
     }
 }
 
@@ -281,13 +282,14 @@ async fn a_cosmetic_zone_patch_ignores_the_revision_precondition() {
     let written = update_zone(
         &state,
         UpdateZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
                 name: Some("Desk Left".to_owned()),
                 ..blank_patch()
             },
             expected_revision: Some(0),
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -311,13 +313,14 @@ async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
     let error = update_zone(
         &state,
         UpdateZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
                 make_primary: Some(true),
                 ..blank_patch()
             },
             expected_revision: Some(0),
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -347,9 +350,10 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     let removed = delete_zone(
         &state,
         DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: created.zone.id,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -391,9 +395,10 @@ async fn delete_zone_refuses_the_primary_zone() {
     let error = delete_zone(
         &state,
         DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: primary_id,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -413,9 +418,10 @@ async fn delete_zone_refuses_an_unknown_zone() {
     let error = delete_zone(
         &state,
         DeleteZone {
-            scene_id,
+            scene: scene_id.into(),
             zone_id: ZoneId::new(),
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -452,6 +458,7 @@ async fn assign_outputs_moves_them_into_the_target_zone() {
             ],
             placement: OutputPlacement::AutoGrid,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -484,6 +491,7 @@ async fn unassign_output_drops_it_out_of_the_zone() {
             assignments: vec![OutputAssignment::New(Box::new(output("strimer")))],
             placement: OutputPlacement::AutoGrid,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -497,6 +505,7 @@ async fn unassign_output_drops_it_out_of_the_zone() {
             zone_id: created.zone.id,
             output_id: "strimer".to_owned(),
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -525,6 +534,7 @@ async fn unassign_output_refuses_one_the_zone_does_not_hold() {
             zone_id: created.zone.id,
             output_id: "ghost".to_owned(),
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -559,6 +569,7 @@ async fn set_zone_layout_refuses_a_layout_that_changes_the_output_set() {
             zone_id: created.zone.id,
             layout,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -589,6 +600,7 @@ async fn set_zone_layout_repositions_the_outputs_the_zone_owns() {
             assignments: vec![OutputAssignment::New(Box::new(output("strimer")))],
             placement: OutputPlacement::AutoGrid,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -605,6 +617,7 @@ async fn set_zone_layout_repositions_the_outputs_the_zone_owns() {
             zone_id: created.zone.id,
             layout,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
@@ -628,6 +641,7 @@ async fn set_unassigned_behavior_announces_a_scene_settings_change() {
             scene_id,
             behavior: UnassignedBehavior::Hold,
             expected_revision: None,
+            expected_scene_revision: None,
         },
         MutationContext::api(),
     )
