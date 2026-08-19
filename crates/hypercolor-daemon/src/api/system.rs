@@ -3030,12 +3030,28 @@ mod tests {
 
         assert!(anonymous["data"]["identity"]["instance_id"].is_string());
         assert!(anonymous["data"].get("status").is_none());
+        let read_screen = read["data"]["status"]["input"]["sources"]
+            .as_array()
+            .and_then(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source["platform"]["type"] == "macos_screen")
+            })
+            .expect("read status should include the macOS screen source");
+        let control_screen = control["data"]["status"]["input"]["sources"]
+            .as_array()
+            .and_then(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source["platform"]["type"] == "macos_screen")
+            })
+            .expect("control status should include the macOS screen source");
         assert_eq!(
-            read["data"]["status"]["input"]["sources"][0]["platform"]["tahoe_selection"]["source_id"],
+            read_screen["platform"]["tahoe_selection"]["source_id"],
             "session_scoped"
         );
         assert_eq!(
-            control["data"]["status"]["input"]["sources"][0]["platform"]["tahoe_selection"]["source_id"],
+            control_screen["platform"]["tahoe_selection"]["source_id"],
             "macos:session:multiple-windows:w42:a18:com.secret.private"
         );
     }

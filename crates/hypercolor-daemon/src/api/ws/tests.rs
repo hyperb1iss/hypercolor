@@ -5482,14 +5482,14 @@ async fn command_response_from_http_unwraps_error_envelope() {
 }
 
 #[tokio::test]
-async fn dispatch_command_routes_to_status() {
+async fn dispatch_command_routes_to_system() {
     let state = Arc::new(AppState::new());
     let message = dispatch_command(
         &state,
         RequestAuthContext::unsecured(),
         "cmd_status".to_owned(),
         "GET".to_owned(),
-        "/status".to_owned(),
+        "/system".to_owned(),
         None,
     )
     .await;
@@ -5503,8 +5503,9 @@ async fn dispatch_command_routes_to_status() {
         } => {
             assert_eq!(id, "cmd_status");
             assert_eq!(status, 200);
-            let payload = data.expect("status command should return payload");
-            assert!(payload.get("running").is_some());
+            let payload = data.expect("system command should return payload");
+            assert!(payload.get("identity").is_some());
+            assert!(payload.get("status").is_some());
             assert!(error.is_none());
         }
         _ => panic!("expected command response"),
@@ -5519,7 +5520,7 @@ async fn dispatch_command_rejects_invalid_method() {
         RequestAuthContext::unsecured(),
         "cmd_bad_method".to_owned(),
         "BREW".to_owned(),
-        "/status".to_owned(),
+        "/system".to_owned(),
         None,
     )
     .await;
@@ -5551,7 +5552,7 @@ async fn dispatch_command_preserves_secured_ws_auth_context() {
         RequestAuthContext::read_only(),
         "cmd_status".to_owned(),
         "GET".to_owned(),
-        "/status".to_owned(),
+        "/system".to_owned(),
         None,
     )
     .await;
@@ -5639,7 +5640,7 @@ async fn dispatch_command_requires_auth_context_when_security_is_enabled() {
         RequestAuthContext::unsecured(),
         "cmd_status".to_owned(),
         "GET".to_owned(),
-        "/status".to_owned(),
+        "/capture/monitors".to_owned(),
         None,
     )
     .await;
