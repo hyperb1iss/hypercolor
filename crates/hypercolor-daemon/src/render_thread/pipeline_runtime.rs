@@ -10,10 +10,8 @@ use hypercolor_core::bus::DisplayGroupOutputRoute;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::engine::FpsTier;
-use hypercolor_core::input::browser::BrowserInputRegistrySnapshot;
 use hypercolor_core::input::routing::{
-    ConsumerIncarnation, InteractionRouteContext, InteractionRouteRequest, InteractionRouteSource,
-    InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouter, RoutedInteraction,
 };
 use hypercolor_core::input::screen::{
     PixelExtent, ResolvedScreenPublicationDescriptor, ScreenBranchDeliveryState, ScreenBranchLease,
@@ -22,8 +20,7 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     DataSourceKind, InputData, InputGraphSnapshot, InputSourceSlot, InteractionData,
-    MotionAggregate, PointerMode, SourceFreshness, SourceKind, SourceState,
-    SourceStatusAvailability, SourceStatusHandle,
+    MotionAggregate, PointerMode, SourceKind,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
@@ -71,7 +68,7 @@ use super::sparkleflinger::{
     SparkleFlingerSamplingPreparation,
 };
 use super::{RenderThreadState, micros_u32};
-use crate::interaction_routing::InteractionRoutingControl;
+use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
 use crate::scene_transactions::{LayoutActivationControl, LayoutTransactionRejection};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
@@ -203,34 +200,17 @@ struct CachedInputRoute {
     slot: InputSourceSlot,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AvailabilityFingerprint {
-    structural_graph_generation: u64,
-    session_generation: u64,
-    effective: SourceStatusAvailability,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CachedInteractionAvailability {
-    incarnation: SourceIncarnation,
-    fingerprint: AvailabilityFingerprint,
-    revision: u64,
-}
-
 struct InputRouteCache {
     reader: InputPublicationReader,
     interaction_routing: InteractionRoutingControl,
     graph_generation: Option<u64>,
-    browser_registry_generation: Option<u64>,
     routes: Vec<CachedInputRoute>,
     audio_routes: Vec<usize>,
     screen_routes: Vec<usize>,
     media_routes: Vec<usize>,
     network_routes: Vec<usize>,
     sensor_routes: Vec<usize>,
-    interaction_sources: Vec<InteractionRouteSource>,
-    interaction_statuses: Vec<SourceStatusHandle>,
-    interaction_availability: Vec<CachedInteractionAvailability>,
+    interaction_catalog: InteractionRouteCatalog,
     interaction_router: InteractionRouter,
     routed_interaction: RoutedInteraction,
     screen_publication_route: Option<ScreenPublicationRoute>,
@@ -260,16 +240,13 @@ impl InputRouteCache {
             reader,
             interaction_routing,
             graph_generation: None,
-            browser_registry_generation: None,
             routes: Vec::new(),
             audio_routes: Vec::new(),
             screen_routes: Vec::new(),
             media_routes: Vec::new(),
             network_routes: Vec::new(),
             sensor_routes: Vec::new(),
-            interaction_sources: Vec::new(),
-            interaction_statuses: Vec::new(),
-            interaction_availability: Vec::new(),
+            interaction_catalog: InteractionRouteCatalog::default(),
             interaction_router: InteractionRouter::default(),
             routed_interaction: RoutedInteraction::new(AUTHORITATIVE_INPUT_CONSUMER),
             screen_publication_route: None,
@@ -284,14 +261,12 @@ impl InputRouteCache {
             self.rebuild_routes(&graph);
         }
         let browser_registry = self.interaction_routing.browser_registry_snapshot();
-        if graph_changed || self.browser_registry_generation != Some(browser_registry.generation())
-        {
-            self.rebuild_interaction_sources(&graph, &browser_registry);
-        }
+        self.interaction_catalog
+            .refresh(&graph, &browser_registry, Instant::now());
 
         inputs.prepare_for_sample(None);
         self.route_latest_into(&graph, inputs);
-        self.route_interaction_into(&state.event_bus, &graph, &browser_registry, inputs);
+        self.route_interaction_into(&state.event_bus, inputs);
     }
 
     fn read_screen(
@@ -355,39 +330,21 @@ impl InputRouteCache {
             .map(ScreenBranchLease::descriptor)
     }
 
-    fn route_interaction_into(
-        &mut self,
-        event_bus: &HypercolorBus,
-        graph: &InputGraphSnapshot,
-        browser_registry: &BrowserInputRegistrySnapshot,
-        inputs: &mut FrameInputs,
-    ) {
-        self.refresh_interaction_availability_revisions();
+    fn route_interaction_into(&mut self, event_bus: &HypercolorBus, inputs: &mut FrameInputs) {
         let routing = self.interaction_routing.snapshot();
-        let request = InteractionRouteRequest {
-            policy: routing.daemon_policy,
-            browser_source: routing
-                .authoritative_browser
-                .as_ref()
-                .map(|owner| SourceIncarnation::browser_child(owner.publication_id.get())),
-        };
-        self.interaction_router.resolve_into(
+        self.interaction_catalog.resolve_into(
+            &mut self.interaction_router,
             AUTHORITATIVE_INPUT_CONSUMER,
-            request,
-            &self.interaction_sources,
-            InteractionRouteContext {
-                config_generation: routing.config_generation,
-                source_graph_generation: graph.generation(),
-                browser_registry_generation: browser_registry.generation(),
-                now_ms: hypercolor_core::input::input_mono_ms(),
-            },
+            routing.daemon_request(),
+            routing.config_generation,
+            hypercolor_core::input::input_mono_ms(),
             &mut self.routed_interaction,
         );
         std::mem::swap(
             &mut inputs.interaction,
             &mut self.routed_interaction.interaction,
         );
-        inputs.input_availability = aggregate_interaction_availability(
+        inputs.input_availability = selected_input_availability(
             self.routed_interaction
                 .diagnostics
                 .selected
@@ -408,17 +365,21 @@ impl InputRouteCache {
         if self.graph_generation != Some(graph.generation()) {
             self.rebuild_routes(&graph);
         }
-        self.interaction_availability()
+        let browser = self.interaction_routing.browser_registry_snapshot();
+        let now = Instant::now();
+        self.interaction_catalog.refresh(&graph, &browser, now);
+        self.interaction_availability(now)
     }
 
-    fn interaction_availability(&self) -> InputSourceAvailability {
-        let handles = self
-            .routed_interaction
-            .diagnostics
-            .selected
-            .iter()
-            .filter_map(|source| source.status.as_ref());
-        aggregate_interaction_availability(handles, Instant::now())
+    fn interaction_availability(&self, now: Instant) -> InputSourceAvailability {
+        selected_input_availability(
+            self.routed_interaction
+                .diagnostics
+                .selected
+                .iter()
+                .filter_map(|source| source.status.as_ref()),
+            now,
+        )
     }
 
     fn route_latest_into(&mut self, graph: &InputGraphSnapshot, inputs: &mut FrameInputs) {
@@ -487,64 +448,6 @@ impl InputRouteCache {
         self.graph_generation = Some(graph.generation());
     }
 
-    fn rebuild_interaction_sources(
-        &mut self,
-        graph: &InputGraphSnapshot,
-        browser_registry: &BrowserInputRegistrySnapshot,
-    ) {
-        let previous_availability = std::mem::take(&mut self.interaction_availability);
-        self.interaction_sources.clear();
-        self.interaction_statuses.clear();
-        for slot in graph.slots() {
-            let status = slot.status().clone();
-            let descriptor = Arc::clone(&status.snapshot().source_id);
-            if let Some(mut source) =
-                InteractionRouteSource::manager_slot(descriptor, 1, slot.clone())
-            {
-                let availability =
-                    cached_availability(source.incarnation, &status, &previous_availability);
-                source.availability_revision = availability.revision;
-                self.interaction_sources.push(source);
-                self.interaction_statuses.push(status);
-                self.interaction_availability.push(availability);
-            }
-        }
-        for child in browser_registry.children() {
-            let status = child.status().clone();
-            let incarnation = SourceIncarnation::browser_child(child.publication_id().get());
-            let availability = cached_availability(incarnation, &status, &previous_availability);
-            self.interaction_sources.push(InteractionRouteSource::new(
-                incarnation,
-                Arc::<str>::from(child.source_id()),
-                InteractionRouteSourceClass::Browser,
-                availability.revision,
-                Arc::new(child.clone()),
-            ));
-            self.interaction_statuses.push(status);
-            self.interaction_availability.push(availability);
-        }
-        self.browser_registry_generation = Some(browser_registry.generation());
-    }
-
-    fn refresh_interaction_availability_revisions(&mut self) {
-        for ((source, status), availability) in self
-            .interaction_sources
-            .iter_mut()
-            .zip(&self.interaction_statuses)
-            .zip(&mut self.interaction_availability)
-        {
-            let fingerprint = availability_fingerprint(status);
-            if availability.fingerprint != fingerprint {
-                availability.fingerprint = fingerprint;
-                availability.revision = availability
-                    .revision
-                    .checked_add(1)
-                    .expect("interaction availability revision exhausted");
-            }
-            source.availability_revision = availability.revision;
-        }
-    }
-
     fn clear_typed_routes(&mut self) {
         self.audio_routes.clear();
         self.screen_routes.clear();
@@ -554,69 +457,9 @@ impl InputRouteCache {
     }
 }
 
-fn availability_fingerprint(status: &SourceStatusHandle) -> AvailabilityFingerprint {
-    let status = status.snapshot();
-    AvailabilityFingerprint {
-        structural_graph_generation: status.source_graph_generation,
-        session_generation: status.session_generation,
-        effective: SourceStatusAvailability {
-            kind: status.kind,
-            configured: status.configured,
-            consented: status.consented,
-            demanded: status.demanded,
-            state: status.state,
-            freshness: status.freshness,
-            retired: status.retired,
-        },
-    }
-}
-
-fn cached_availability(
-    incarnation: SourceIncarnation,
-    status: &SourceStatusHandle,
-    previous: &[CachedInteractionAvailability],
-) -> CachedInteractionAvailability {
-    previous
-        .iter()
-        .find(|cached| cached.incarnation == incarnation)
-        .copied()
-        .unwrap_or(CachedInteractionAvailability {
-            incarnation,
-            fingerprint: availability_fingerprint(status),
-            revision: 1,
-        })
-}
-
 fn reset_audio_vector(values: &mut Vec<f32>, len: usize) {
     values.resize(len, 0.0);
     values.fill(0.0);
-}
-
-fn aggregate_interaction_availability<'a>(
-    handles: impl IntoIterator<Item = &'a SourceStatusHandle>,
-    now: Instant,
-) -> InputSourceAvailability {
-    let mut availability = InputSourceAvailability::default();
-    for handle in handles {
-        let source = handle.availability_at(now);
-        if source.retired
-            || source.kind != SourceKind::Interaction
-            || !(source.configured && source.consented && source.demanded)
-        {
-            continue;
-        }
-
-        availability.routed = true;
-        let healthy = matches!(source.state, SourceState::Live | SourceState::Degraded);
-        availability.healthy |= healthy;
-        availability.degraded |= source.state == SourceState::Degraded;
-        availability.fresh |= healthy
-            && matches!(
-                source.freshness,
-                SourceFreshness::Fresh | SourceFreshness::NotApplicable
-            );
-    }
-    availability
 }
 
 impl FrameInputs {
@@ -2352,10 +2195,10 @@ mod tests {
 
     use super::{
         EffectDeltaClock, FrameClockState, FrameInputs, InputRouteCache, OutputFrameSource,
-        OutputReuseKey, OutputReuseState, PipelineRuntime, aggregate_interaction_availability,
-        authoritative_input_demand, should_publish_preview_frame,
+        OutputReuseKey, OutputReuseState, PipelineRuntime, authoritative_input_demand,
+        should_publish_preview_frame,
     };
-    use crate::interaction_routing::InteractionRoutingControl;
+    use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
     use crate::render_thread::input_publication::{InputPublicationDemand, InputPublicationReader};
     use crate::render_thread::scene_snapshot::EffectDemand;
 
@@ -2643,12 +2486,12 @@ mod tests {
             routes.rebuild_routes(graph);
         }
         let registry = routes.interaction_routing.browser_registry_snapshot();
-        if graph_changed || routes.browser_registry_generation != Some(registry.generation()) {
-            routes.rebuild_interaction_sources(graph, &registry);
-        }
+        routes
+            .interaction_catalog
+            .refresh(graph, &registry, Instant::now());
         inputs.prepare_for_sample(None);
         routes.route_latest_into(graph, inputs);
-        routes.route_interaction_into(event_bus, graph, &registry, inputs);
+        routes.route_interaction_into(event_bus, inputs);
     }
 
     #[test]
@@ -2666,8 +2509,7 @@ mod tests {
             .expect("eligible source should begin");
         assert!(session.mark_event_driven_live_without_deadline(1));
 
-        let idle =
-            aggregate_interaction_availability(std::slice::from_ref(&handle), Instant::now());
+        let idle = selected_input_availability(std::slice::from_ref(&handle), Instant::now());
         assert_eq!(
             idle,
             hypercolor_core::effect::InputSourceAvailability {
@@ -2683,7 +2525,7 @@ mod tests {
             "interaction worker stopped",
             true,
         )));
-        let failed = aggregate_interaction_availability(&[handle], Instant::now());
+        let failed = selected_input_availability(&[handle], Instant::now());
         assert_eq!(
             failed,
             hypercolor_core::effect::InputSourceAvailability {
@@ -2708,7 +2550,7 @@ mod tests {
             .expect("statusless interaction source should start");
         let graph = manager.input_graph_handle().snapshot();
 
-        let availability = aggregate_interaction_availability(
+        let availability = selected_input_availability(
             graph.slots().iter().map(InputSourceSlot::status),
             Instant::now(),
         );

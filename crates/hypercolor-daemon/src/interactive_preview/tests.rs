@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::{EffectEntry, EffectRegistry};
+use hypercolor_core::input::routing::{ConsumerIncarnation, SourceIncarnation};
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputSource,
     BrowserPreviewId, InputManager, InputSource,
@@ -27,9 +28,9 @@ use tokio_util::sync::CancellationToken;
 use super::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
     InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget,
-    PreviewCapacityLedger, PreviewLaneCommand, PreviewLaneId, PreviewResourceLedger,
-    ResolvedPreviewScene, advance_deadline, duration_millis_u32, preview_input_demand,
-    request_preview_lane_update,
+    PreviewCapacityLedger, PreviewLaneCommand, PreviewLaneId, PreviewLaneInput,
+    PreviewResourceLedger, ResolvedPreviewScene, advance_deadline, duration_millis_u32,
+    preview_input_demand, request_preview_lane_update,
 };
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::preview_runtime::PreviewPixelFormat;
@@ -89,6 +90,49 @@ impl PreviewTestRig {
             ))
             .expect("browser preview should attach")
     }
+}
+
+#[test]
+fn preview_lane_routes_one_exact_browser_publication_with_coherent_generations() {
+    let mut browser = BrowserInputSource::new();
+    browser.start().expect("browser input should start");
+    let handle = browser.handle();
+    let attachment = handle
+        .attach(BrowserInputChildKey::new(
+            BrowserConnectionIncarnation::new(41),
+            BrowserPreviewId::new("catalog-lane"),
+        ))
+        .expect("browser preview should attach");
+    let manager = InputManager::new();
+    let graph = manager.input_graph_handle();
+    let routing = InteractionRoutingControl::new(
+        handle.registry(),
+        19,
+        InteractionRoutePolicy::Host,
+        InteractionRoutePolicy::Browser,
+    );
+    let consumer = ConsumerIncarnation::new(23);
+    let graph_generation = graph.snapshot().generation();
+    let browser_generation = routing.browser_registry_snapshot().generation();
+    let mut input = PreviewLaneInput::new(graph, routing, attachment.publication_id(), consumer);
+
+    input.read();
+
+    assert_eq!(input.routed.diagnostics.consumer, consumer);
+    assert_eq!(input.routed.diagnostics.config_generation, 19);
+    assert_eq!(
+        input.routed.diagnostics.source_graph_generation,
+        graph_generation
+    );
+    assert_eq!(
+        input.routed.diagnostics.browser_registry_generation,
+        browser_generation
+    );
+    assert_eq!(input.routed.diagnostics.selected.len(), 1);
+    assert_eq!(
+        input.routed.diagnostics.selected[0].incarnation,
+        SourceIncarnation::browser_child(attachment.publication_id().get())
+    );
 }
 
 fn lane_resource_bytes(spec: InteractivePreviewSpec) -> u64 {

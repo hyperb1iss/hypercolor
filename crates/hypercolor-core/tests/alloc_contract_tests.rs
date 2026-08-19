@@ -16,8 +16,8 @@ use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_buil
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_frames};
 use hypercolor_core::input::routing::{
-    ConsumerIncarnation, InteractionRouteContext, InteractionRouteRequest, InteractionRouteSource,
-    InteractionRouter, RoutedInteraction,
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouteRequest, InteractionRouter,
+    RoutedInteraction,
 };
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::CaptureRotation;
@@ -28,10 +28,11 @@ use hypercolor_core::input::screen::wayland::{
 use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput, TemporalSmoother};
 use hypercolor_core::input::{
     AudioSource, AudioSourceRole, BrowserConnectionIncarnation, BrowserInputChildKey,
-    BrowserInputEdge, BrowserInputSource, BrowserPreviewId, InputData, InputManager, InputSource,
-    InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole, ManagedSourceRole,
-    MotionAggregate, ScreenData, ScreenSource, ScreenSourceRole, SourceKind, SourceRoleBinding,
-    SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
+    BrowserInputEdge, BrowserInputRegistrySnapshot, BrowserInputSource, BrowserPreviewId,
+    InputData, InputGraphSnapshot, InputManager, InputSource, InteractionBatch, InteractionData,
+    InteractionSource, InteractionSourceRole, ManagedSourceRole, MotionAggregate, ScreenData,
+    ScreenSource, ScreenSourceRole, SourceKind, SourceRoleBinding, SourceSessionWriter,
+    SourceStatusHandle, SourceStatusWriter,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_core::types::event::TimedInputEvent;
@@ -561,21 +562,28 @@ fn steady_browser_sampling_control() -> (Stats, Stats) {
 
 fn router_resolution_round(
     manager: &mut InputManager,
+    catalog: &mut InteractionRouteCatalog,
     router: &mut InteractionRouter,
     consumer: ConsumerIncarnation,
-    sources: &[InteractionRouteSource],
-    context: InteractionRouteContext,
+    graph: &InputGraphSnapshot,
+    browser: &BrowserInputRegistrySnapshot,
     output: &mut RoutedInteraction,
 ) -> Stats {
     let mut region = Region::new(GLOBAL);
     region.reset();
     for _ in 0..128 {
         black_box(&mut *manager).sample_sources(1.0 / 60.0);
-        black_box(&mut *router).resolve_into(
+        black_box(&mut *catalog).refresh(
+            black_box(graph),
+            black_box(browser),
+            black_box(Instant::now()),
+        );
+        black_box(&mut *catalog).resolve_into(
+            black_box(&mut *router),
             black_box(consumer),
             InteractionRouteRequest::host(),
-            black_box(sources),
-            black_box(context),
+            0,
+            0,
             black_box(&mut *output),
         );
     }
@@ -601,48 +609,49 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
             }),
         ))),
     );
+    let browser_source = BrowserInputSource::new();
+    let browser_registry = browser_source.handle().registry();
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::interaction(Box::new(browser_source)),
+    );
     manager
         .start_all()
         .expect("allocation interaction source should start");
     manager.sample_sources(1.0 / 60.0);
     let graph = manager.input_graph_handle().snapshot();
-    let sources = graph
-        .slots()
-        .iter()
-        .filter_map(|slot| {
-            InteractionRouteSource::manager_slot("allocation-interaction", 1, slot.clone())
-        })
-        .collect::<Vec<_>>();
+    let browser = browser_registry.snapshot();
     let consumer = ConsumerIncarnation::new(1);
-    let context = InteractionRouteContext {
-        source_graph_generation: graph.generation(),
-        ..InteractionRouteContext::default()
-    };
+    let mut catalog = InteractionRouteCatalog::default();
+    catalog.refresh(&graph, &browser, Instant::now());
     let mut router = InteractionRouter::default();
     let mut output = RoutedInteraction::new(consumer);
-    router.resolve_into(
+    catalog.resolve_into(
+        &mut router,
         consumer,
         InteractionRouteRequest::host(),
-        &sources,
-        context,
+        0,
+        0,
         &mut output,
     );
 
     let first = router_resolution_round(
         &mut manager,
+        &mut catalog,
         &mut router,
         consumer,
-        &sources,
-        context,
+        &graph,
+        &browser,
         &mut output,
     );
     assert_eq!(output.interaction.batch.motion.dx, 0.25);
     let second = router_resolution_round(
         &mut manager,
+        &mut catalog,
         &mut router,
         consumer,
-        &sources,
-        context,
+        &graph,
+        &browser,
         &mut output,
     );
     assert_eq!(output.interaction.batch.motion.dx, 0.25);

@@ -2,12 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use hypercolor_types::config::InteractionRoutePolicy;
 
 use super::{
-    InputData, InputEventRead, InputSourceSlot, InteractionData, InteractionSourceOrigin,
-    InteractionTransientTotals, SourceStatusHandle,
+    BrowserInputRegistrySnapshot, InputData, InputEventRead, InputGraphSnapshot, InputSourceSlot,
+    InteractionData, InteractionSourceOrigin, InteractionTransientTotals, SourceStatus,
+    SourceStatusAvailability, SourceStatusHandle,
 };
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
@@ -251,6 +253,201 @@ impl InteractionRouteSource {
             availability_revision,
             Arc::new(slot),
         ))
+    }
+}
+
+/// Canonical routable-source catalog retained by one interaction consumer.
+///
+/// The catalog owns source enumeration and availability revisions. Route state,
+/// cursors, press provenance, and synthesized releases remain consumer-local in
+/// [`InteractionRouter`].
+#[derive(Default)]
+pub struct InteractionRouteCatalog {
+    source_graph_generation: Option<u64>,
+    browser_registry_generation: Option<u64>,
+    sources: Vec<InteractionRouteSource>,
+    availability: Vec<CatalogAvailability>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AvailabilityFingerprint {
+    source_graph_generation: u64,
+    session_generation: u64,
+    effective: SourceStatusAvailability,
+}
+
+struct CatalogAvailability {
+    incarnation: SourceIncarnation,
+    status: SourceStatusHandle,
+    fingerprint: AvailabilityFingerprint,
+    revision: u64,
+}
+
+impl InteractionRouteCatalog {
+    /// Synchronize the catalog with one coherent graph and browser-registry pair.
+    pub fn refresh(
+        &mut self,
+        graph: &InputGraphSnapshot,
+        browser: &BrowserInputRegistrySnapshot,
+        now: Instant,
+    ) {
+        if self.source_graph_generation != Some(graph.generation())
+            || self.browser_registry_generation != Some(browser.generation())
+        {
+            self.rebuild(graph, browser, now);
+        } else {
+            self.refresh_availability(now);
+        }
+    }
+
+    /// Sources in deterministic manager-graph then browser-registry order.
+    #[must_use]
+    pub fn sources(&self) -> &[InteractionRouteSource] {
+        &self.sources
+    }
+
+    /// Resolve one consumer against the exact generations represented here.
+    pub fn resolve_into(
+        &self,
+        router: &mut InteractionRouter,
+        consumer: ConsumerIncarnation,
+        request: InteractionRouteRequest,
+        config_generation: u64,
+        now_ms: u64,
+        output: &mut RoutedInteraction,
+    ) {
+        router.resolve_into(
+            consumer,
+            request,
+            &self.sources,
+            InteractionRouteContext {
+                config_generation,
+                source_graph_generation: self
+                    .source_graph_generation
+                    .expect("interaction route catalog must be refreshed before resolution"),
+                browser_registry_generation: self
+                    .browser_registry_generation
+                    .expect("interaction route catalog must be refreshed before resolution"),
+                now_ms,
+            },
+            output,
+        );
+    }
+
+    fn rebuild(
+        &mut self,
+        graph: &InputGraphSnapshot,
+        browser: &BrowserInputRegistrySnapshot,
+        now: Instant,
+    ) {
+        let previous = std::mem::take(&mut self.availability);
+        self.sources.clear();
+        let source_count = graph.slots().len().saturating_add(browser.children().len());
+        self.sources.reserve(source_count);
+        self.availability.reserve(source_count);
+
+        for slot in graph.slots() {
+            let status = slot.status().clone();
+            let snapshot = status.snapshot_at(now);
+            let Some(mut source) = InteractionRouteSource::manager_slot(
+                Arc::clone(&snapshot.source_id),
+                1,
+                slot.clone(),
+            ) else {
+                continue;
+            };
+            let availability = catalog_availability(
+                source.incarnation,
+                status,
+                availability_fingerprint(&snapshot),
+                &previous,
+            );
+            source.availability_revision = availability.revision;
+            self.sources.push(source);
+            self.availability.push(availability);
+        }
+
+        for child in browser.children() {
+            let status = child.status().clone();
+            let snapshot = status.snapshot_at(now);
+            let incarnation = SourceIncarnation::browser_child(child.publication_id().get());
+            let availability = catalog_availability(
+                incarnation,
+                status,
+                availability_fingerprint(&snapshot),
+                &previous,
+            );
+            self.sources.push(InteractionRouteSource::new(
+                incarnation,
+                Arc::<str>::from(child.source_id()),
+                InteractionRouteSourceClass::Browser,
+                availability.revision,
+                Arc::new(child.clone()),
+            ));
+            self.availability.push(availability);
+        }
+
+        self.source_graph_generation = Some(graph.generation());
+        self.browser_registry_generation = Some(browser.generation());
+    }
+
+    fn refresh_availability(&mut self, now: Instant) {
+        for (source, availability) in self.sources.iter_mut().zip(&mut self.availability) {
+            debug_assert_eq!(source.incarnation, availability.incarnation);
+            let snapshot = availability.status.snapshot_at(now);
+            let fingerprint = availability_fingerprint(&snapshot);
+            if availability.fingerprint != fingerprint {
+                availability.fingerprint = fingerprint;
+                availability.revision = availability
+                    .revision
+                    .checked_add(1)
+                    .expect("interaction availability revision exhausted");
+            }
+            source.availability_revision = availability.revision;
+        }
+    }
+}
+
+fn catalog_availability(
+    incarnation: SourceIncarnation,
+    status: SourceStatusHandle,
+    fingerprint: AvailabilityFingerprint,
+    previous: &[CatalogAvailability],
+) -> CatalogAvailability {
+    let revision = previous
+        .iter()
+        .find(|cached| cached.incarnation == incarnation)
+        .map_or(1, |cached| {
+            if cached.fingerprint == fingerprint {
+                cached.revision
+            } else {
+                cached
+                    .revision
+                    .checked_add(1)
+                    .expect("interaction availability revision exhausted")
+            }
+        });
+    CatalogAvailability {
+        incarnation,
+        status,
+        fingerprint,
+        revision,
+    }
+}
+
+fn availability_fingerprint(status: &SourceStatus) -> AvailabilityFingerprint {
+    AvailabilityFingerprint {
+        source_graph_generation: status.source_graph_generation,
+        session_generation: status.session_generation,
+        effective: SourceStatusAvailability {
+            kind: status.kind,
+            configured: status.configured,
+            consented: status.consented,
+            demanded: status.demanded,
+            state: status.state,
+            freshness: status.freshness,
+            retired: status.retired,
+        },
     }
 }
 
