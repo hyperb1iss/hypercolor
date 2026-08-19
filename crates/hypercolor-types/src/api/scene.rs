@@ -55,8 +55,11 @@ pub struct SceneDocument {
     pub layout_id: Option<LayoutId>,
     #[serde(default)]
     pub activation_brightness: Option<f32>,
+    #[serde(default = "default_scene_transition")]
     pub transition: TransitionSpec,
+    #[serde(default)]
     pub priority: ScenePriority,
+    #[serde(default = "default_scene_enabled")]
     pub enabled: bool,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
@@ -67,6 +70,18 @@ pub struct SceneDocument {
     pub revision: u64,
     /// Every authored zone with its full stack, declaration order.
     pub zones: Vec<ZoneResource>,
+}
+
+fn default_scene_transition() -> TransitionSpec {
+    TransitionSpec {
+        duration_ms: 1000,
+        easing: crate::scene::EasingFunction::Linear,
+        color_interpolation: crate::scene::ColorInterpolation::Oklab,
+    }
+}
+
+const fn default_scene_enabled() -> bool {
+    true
 }
 
 /// One authored zone inside the live document (Spec 78 §1.3).

@@ -12,6 +12,7 @@ use hypercolor_types::api::scene::{
     ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, SideEffectOutcome,
     TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
+use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority};
 use serde_json::json;
 
 fn representative_document() -> serde_json::Value {
@@ -56,6 +57,14 @@ fn the_document_decodes_a_daemon_shaped_payload() {
     let document: SceneDocument =
         serde_json::from_value(representative_document()).expect("document decodes");
     assert_eq!(document.revision, 41);
+    assert_eq!(document.transition.duration_ms, 1000);
+    assert_eq!(document.transition.easing, EasingFunction::Linear);
+    assert_eq!(
+        document.transition.color_interpolation,
+        ColorInterpolation::Oklab
+    );
+    assert_eq!(document.priority, ScenePriority::USER);
+    assert!(document.enabled);
     assert_eq!(document.zones.len(), 1);
     let zone = &document.zones[0];
     assert_eq!(zone.members[0].segment.as_deref(), Some("ch1"));
