@@ -52,12 +52,14 @@ pub use status::{
     classify_source_resource_scan,
 };
 pub use traits::{
-    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource,
-    InteractionBatch, InteractionData, InteractionDegradation, InteractionDiagnostics,
-    KeyboardData, MotionAggregate, MouseData, PointerMode, ProtectedSourceAuthorizationAction,
-    ResolvedProtectedSourceAction, ScreenData, ScreenSourcePickerAction, ScreenZoneColors,
+    AudioSource, AudioSourceRole, CapabilityActionDisposition, CapabilityActionIdentity,
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, InteractionBatch,
+    InteractionData, InteractionDegradation, InteractionDiagnostics, InteractionSource,
+    InteractionSourceRole, KeyboardData, ManagedSourceKey, ManagedSourceRole, MotionAggregate,
+    MouseData, PointerMode, ProtectedSourceAuthorizationAction, ResolvedProtectedSourceAction,
+    ScreenData, ScreenSource, ScreenSourcePickerAction, ScreenSourceRole, ScreenZoneColors,
     ScrollAggregate, SourceCapabilityConflict, SourceCapabilityContext, SourceDiagnosticArtifact,
-    SourceDiagnosticArtifactAction,
+    SourceDiagnosticArtifactAction, SourceRole, SourceRoleBinding,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]

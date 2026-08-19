@@ -67,7 +67,9 @@ use crate::input::screen::{
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
 };
-use crate::input::traits::{InputData, InputSource};
+use crate::input::traits::{
+    InputData, InputSource, ScreenSource, ScreenSourceRole, SourceRoleBinding,
+};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
@@ -1708,6 +1710,12 @@ impl InputSource for WindowsScreenCaptureInput {
         self.reconfigure(config.clone())
     }
 }
+
+impl SourceRoleBinding for WindowsScreenCaptureInput {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for WindowsScreenCaptureInput {}
 
 fn resolve_windows_publication_branch(
     source: &WindowsPublicationSource,

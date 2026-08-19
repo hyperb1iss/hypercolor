@@ -162,7 +162,10 @@ pub use windows::WindowsScreenCaptureFixture;
 #[cfg(target_os = "windows")]
 pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
 
-use crate::input::traits::{InputData, InputSource, ScreenData, ScreenZoneColors};
+use crate::input::traits::{
+    InputData, InputSource, ScreenData, ScreenSource, ScreenSourceRole, ScreenZoneColors,
+    SourceRoleBinding,
+};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
@@ -1421,6 +1424,12 @@ impl InputSource for ScreenCaptureInput {
         Some(&mut self.status)
     }
 }
+
+impl SourceRoleBinding for ScreenCaptureInput {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for ScreenCaptureInput {}
 
 fn admit_analysis_work(
     plan: ScreenAnalysisWorkPlan,

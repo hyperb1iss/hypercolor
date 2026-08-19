@@ -15,12 +15,13 @@ use hypercolor_core::input::screen::{
     ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorPolicy,
 };
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
-    InputManager, InputSource, MediaSource, NetSource, ScreenData, ScreenReconfigurationConflict,
-    SourceCapabilityConflict, SourceCapabilityContext, SourceFreshness, SourceIssue, SourceKind,
-    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
-    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
-    SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
+    AudioReconfigurationConflict, BrowserInputSource, DataSourceKind, INPUT_EVENT_RING_CAPACITY,
+    InputData, InputManager, InputSource, ManagedSourceKey, ManagedSourceRole, MediaSource,
+    NetSource, ScreenData, ScreenReconfigurationConflict, SourceCapabilityConflict,
+    SourceCapabilityContext, SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth,
+    SourceSessionSlot, SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle,
+    SourceStatusReporter, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
+    classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
@@ -1099,6 +1100,18 @@ fn input_data_none_variant() {
     // Verify None variant can be created and matched.
     let data = InputData::None;
     assert!(matches!(data, InputData::None));
+}
+
+#[test]
+fn managed_data_role_exposes_one_typed_key_and_common_source() {
+    let mut source = ManagedSourceRole::Data(Box::new(NetSource::new()));
+
+    assert_eq!(
+        source.key(),
+        ManagedSourceKey::Data(DataSourceKind::Network)
+    );
+    assert_eq!(source.source().name(), "net");
+    assert!(!source.source_mut().is_running());
 }
 
 // ── InputManager Tests ─────────────────────────────────────────────────────

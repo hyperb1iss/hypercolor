@@ -22,7 +22,10 @@ use evdev::{
 use tracing::{debug, info, trace, warn};
 
 use crate::input::input_mono_ms;
-use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
+use crate::input::traits::{
+    InputData, InputSource, InteractionData, InteractionSource, InteractionSourceRole,
+    MotionAggregate, PointerMode, SourceRoleBinding,
+};
 use crate::input::{
     LegacyWheelProjector, SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle,
     SourceStatusReporter, classify_source_resource_scan,
@@ -586,6 +589,12 @@ impl InputSource for EvdevHostInput {
         Vec::new()
     }
 }
+
+impl SourceRoleBinding for EvdevHostInput {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for EvdevHostInput {}
 
 // ── Worker internals ───────────────────────────────────────────────────────
 

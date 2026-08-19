@@ -146,6 +146,61 @@ pub type SourceDiagnosticArtifact = Box<dyn Any + Send>;
 pub type SourceDiagnosticArtifactAction =
     Arc<dyn Fn() -> anyhow::Result<SourceDiagnosticArtifact> + Send + Sync>;
 
+mod source_role {
+    pub trait Sealed {}
+}
+
+/// Closed marker vocabulary for mutually exclusive input-source roles.
+pub trait SourceRole: source_role::Sealed + Send + Sync + 'static {}
+
+/// Marker for sources that publish audio samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioSourceRole;
+
+/// Marker for sources that publish screen samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScreenSourceRole;
+
+/// Marker for sources that publish interaction samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InteractionSourceRole;
+
+/// Marker for sources that publish general data samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DataSourceRole;
+
+impl source_role::Sealed for AudioSourceRole {}
+impl source_role::Sealed for ScreenSourceRole {}
+impl source_role::Sealed for InteractionSourceRole {}
+impl source_role::Sealed for DataSourceRole {}
+
+impl SourceRole for AudioSourceRole {}
+impl SourceRole for ScreenSourceRole {}
+impl SourceRole for InteractionSourceRole {}
+impl SourceRole for DataSourceRole {}
+
+/// Bind one concrete source type to exactly one managed role.
+pub trait SourceRoleBinding {
+    type Role: SourceRole;
+}
+
+/// Exhaustive general-data source categories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataSourceKind {
+    Media,
+    Network,
+    Sensors,
+}
+
+/// Stable identity used to find or replace one managed source role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedSourceKey {
+    Audio,
+    Screen,
+    Interaction(InteractionSourceOrigin),
+    Data(DataSourceKind),
+}
+
 // ── InputData ──────────────────────────────────────────────────────────────
 
 /// A single sample from an input source.
@@ -1049,5 +1104,60 @@ pub trait InputSource: Send {
 
     fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
         None
+    }
+}
+
+/// Audio-specific source contract.
+pub trait AudioSource: InputSource + SourceRoleBinding<Role = AudioSourceRole> {}
+
+/// Screen-specific source contract.
+pub trait ScreenSource: InputSource + SourceRoleBinding<Role = ScreenSourceRole> {}
+
+/// Interaction-specific source contract.
+pub trait InteractionSource: InputSource + SourceRoleBinding<Role = InteractionSourceRole> {}
+
+/// General-data source contract.
+pub trait DataSource: InputSource + SourceRoleBinding<Role = DataSourceRole> {
+    fn data_source_kind(&self) -> DataSourceKind;
+}
+
+/// Exclusive owned storage for every source role accepted by the manager.
+pub enum ManagedSourceRole {
+    Audio(Box<dyn AudioSource>),
+    Screen(Box<dyn ScreenSource>),
+    Interaction(Box<dyn InteractionSource>),
+    Data(Box<dyn DataSource>),
+}
+
+impl ManagedSourceRole {
+    #[must_use]
+    pub fn key(&self) -> ManagedSourceKey {
+        match self {
+            Self::Audio(_) => ManagedSourceKey::Audio,
+            Self::Screen(_) => ManagedSourceKey::Screen,
+            Self::Interaction(source) => {
+                ManagedSourceKey::Interaction(source.interaction_source_origin())
+            }
+            Self::Data(source) => ManagedSourceKey::Data(source.data_source_kind()),
+        }
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &dyn InputSource {
+        match self {
+            Self::Audio(source) => source.as_ref(),
+            Self::Screen(source) => source.as_ref(),
+            Self::Interaction(source) => source.as_ref(),
+            Self::Data(source) => source.as_ref(),
+        }
+    }
+
+    pub fn source_mut(&mut self) -> &mut dyn InputSource {
+        match self {
+            Self::Audio(source) => source.as_mut(),
+            Self::Screen(source) => source.as_mut(),
+            Self::Interaction(source) => source.as_mut(),
+            Self::Data(source) => source.as_mut(),
+        }
     }
 }

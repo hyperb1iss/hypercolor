@@ -28,7 +28,9 @@ use hypercolor_types::media::MediaState;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::SourceSessionWriter;
-use super::traits::{InputData, InputSource};
+use super::traits::{
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, SourceRoleBinding,
+};
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
@@ -1891,6 +1893,16 @@ impl InputSource for MediaSource {
 
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
+    }
+}
+
+impl SourceRoleBinding for MediaSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for MediaSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Media
     }
 }
 

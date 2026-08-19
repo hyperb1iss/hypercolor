@@ -35,7 +35,8 @@ use tracing::{debug, info, warn};
 
 use crate::input::keymap::{KeyNameResult, scancode_key_name};
 use crate::input::traits::{
-    InputData, InputSource, InteractionData, InteractionDegradation, MotionAggregate, PointerMode,
+    InputData, InputSource, InteractionData, InteractionDegradation, InteractionSource,
+    InteractionSourceRole, MotionAggregate, PointerMode, SourceRoleBinding,
 };
 use crate::input::{
     LegacyWheelProjector, SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle,
@@ -707,6 +708,12 @@ impl InputSource for WindowsHostInput {
         Vec::new()
     }
 }
+
+impl SourceRoleBinding for WindowsHostInput {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for WindowsHostInput {}
 
 // ── Folding ────────────────────────────────────────────────────────────────
 

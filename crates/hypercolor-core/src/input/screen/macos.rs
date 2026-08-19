@@ -59,8 +59,8 @@ use crate::input::SourceKind;
 use crate::input::status::SourceSessionSlot;
 use crate::input::traits::{
     CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource,
-    ProtectedSourceAuthorizationAction, ScreenSourcePickerAction, SourceCapabilityContext,
-    SourceDiagnosticArtifactAction,
+    ProtectedSourceAuthorizationAction, ScreenSource, ScreenSourcePickerAction, ScreenSourceRole,
+    SourceCapabilityContext, SourceDiagnosticArtifactAction, SourceRoleBinding,
 };
 use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 
@@ -1761,6 +1761,12 @@ impl InputSource for MacosScreenCaptureInput {
         }))
     }
 }
+
+impl SourceRoleBinding for MacosScreenCaptureInput {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for MacosScreenCaptureInput {}
 
 fn protected_action_identity(
     owner: MacosCapabilityOwner,

@@ -50,8 +50,8 @@ use crate::input::screen::{
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
 use crate::input::traits::{
-    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource,
-    ScreenSourcePickerAction,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource, ScreenSource,
+    ScreenSourcePickerAction, ScreenSourceRole, SourceRoleBinding,
 };
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
@@ -2409,6 +2409,12 @@ impl InputSource for WaylandScreenCaptureInput {
         Some(self.detached_reselect_action())
     }
 }
+
+impl SourceRoleBinding for WaylandScreenCaptureInput {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for WaylandScreenCaptureInput {}
 
 fn clear_restore_token(settings: &SharedSettings, token_sink: Option<&RestoreTokenSink>) {
     let _session_guard = settings

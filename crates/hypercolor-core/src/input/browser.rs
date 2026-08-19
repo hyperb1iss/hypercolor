@@ -23,7 +23,10 @@ use crate::input::routing::{
     InteractionRouteRead, InteractionRouteSlot, InteractionRouteSnapshot,
     ReusedInteractionRouteRead,
 };
-use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
+use crate::input::traits::{
+    InputData, InputSource, InteractionData, InteractionSource, InteractionSourceRole,
+    MotionAggregate, PointerMode, SourceRoleBinding,
+};
 use crate::input::{
     InteractionSourceOrigin, LegacyWheelProjector, SourceKind, SourceStatusHandle,
     SourceStatusReporter,
@@ -1220,6 +1223,12 @@ impl InputSource for BrowserInputSource {
         }
     }
 }
+
+impl SourceRoleBinding for BrowserInputSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for BrowserInputSource {}
 
 fn merge_transient_delta(data: &mut InteractionData, transients: InteractionTransientTotals) {
     data.batch.motion.dx += finite_f32(transients.dx);

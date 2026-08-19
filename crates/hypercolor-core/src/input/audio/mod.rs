@@ -37,7 +37,9 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use libpulse_binding as pulse;
 
 use crate::input::status::SourceStatusPolicy;
-use crate::input::traits::{InputData, InputSource};
+use crate::input::traits::{
+    AudioSource, AudioSourceRole, InputData, InputSource, SourceRoleBinding,
+};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use crate::types::event::TimedInputEvent;
@@ -1411,6 +1413,12 @@ impl InputSource for AudioInput {
         self.set_capture_active_state(active)
     }
 }
+
+impl SourceRoleBinding for AudioInput {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for AudioInput {}
 
 impl Drop for AudioInput {
     fn drop(&mut self) {

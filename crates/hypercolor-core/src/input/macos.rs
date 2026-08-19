@@ -18,8 +18,8 @@ use tracing::{info, warn};
 use crate::input::keymap::{macos_key_name, macos_media_key_name};
 use crate::input::traits::{
     CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource, InteractionData,
-    InteractionDegradation, MotionAggregate, PointerMode, ProtectedSourceAuthorizationAction,
-    SourceCapabilityContext,
+    InteractionDegradation, InteractionSource, InteractionSourceRole, MotionAggregate, PointerMode,
+    ProtectedSourceAuthorizationAction, SourceCapabilityContext, SourceRoleBinding,
 };
 use crate::input::{
     LegacyWheelProjector, SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle,
@@ -1053,6 +1053,12 @@ impl InputSource for MacosHostInput {
         Ok(())
     }
 }
+
+impl SourceRoleBinding for MacosHostInput {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for MacosHostInput {}
 
 fn protected_action_identity(
     owner: MacosCapabilityOwner,
