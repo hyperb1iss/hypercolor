@@ -55,26 +55,24 @@ The error envelope is `{ error: { code, message, details }, meta }`, where `deta
 
 Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 
-| Prefix                          | Purpose                                                  |
-| ------------------------------- | -------------------------------------------------------- |
-| `/effects`                      | Effect catalog, detail, apply, install, rescan            |
-| `/effects/{id}/apply`           | Replace one live zone stack with an effect                |
-| `/scene`                        | Read or patch the complete live scene document            |
-| `/scene/zones`                  | Live zone, member, layout, layer, and control mutations   |
-| `/devices`                      | Connected devices, discover, identify, pair, attachments |
-| `/devices/{id}/logical-devices` | Per-device logical segmentation                          |
-| `/logical-devices`              | Global logical device CRUD                               |
-| `/attachments/templates`        | Attachment template CRUD + categories/vendors            |
-| `/scenes`                       | Scene CRUD + snapshot + `{id}/activate`                  |
-| `/library/favorites`            | Favorites CRUD                                           |
-| `/library/presets`              | User preset management + `{id}/apply`                    |
-| `/library/playlists`            | Playlist CRUD + activate/stop                            |
-| `/layouts`                      | Spatial layout CRUD + active + preview + `{id}/apply`    |
-| `/config`                       | Show/get/set/reset system config values                  |
-| `/output`                       | Global output power and brightness get/patch             |
-| `/status`                       | Daemon status (aliased as `/state`)                      |
-| `/server`                       | Server identity                                          |
-| `/diagnose`                     | System diagnostics                                       |
+| Prefix                      | Purpose                                                 |
+| --------------------------- | ------------------------------------------------------- |
+| `/effects`                  | Effect catalog, detail, apply, install, rescan          |
+| `/effects/{id}/apply`       | Replace one live zone stack with an effect              |
+| `/scene`                    | Read or patch the complete live scene document          |
+| `/scene/zones`              | Live zone, member, layout, layer, and control mutations |
+| `/devices`                  | Connected devices, discovery, pairing, segments         |
+| `/devices/{id}/attachments` | Embedded attachment bindings and validation             |
+| `/attachments/templates`    | Attachment template collection                          |
+| `/scenes`                   | Scene CRUD + snapshot + `{id}/activate`                 |
+| `/library/favorites`        | Favorites CRUD                                          |
+| `/library/presets`          | User preset management + `{id}/apply`                   |
+| `/library/playlists`        | Playlist CRUD + activate/deactivate                     |
+| `/layouts`                  | Spatial layout CRUD + active + preview + `{id}/apply`   |
+| `/config`                   | Show/get/set/reset system config values                 |
+| `/output`                   | Global output power and brightness get/patch            |
+| `/system`                   | Public identity plus authorized daemon status           |
+| `/diagnose`                 | System diagnostics                                      |
 
 ## WebSocket Protocol
 
@@ -91,7 +89,10 @@ Single endpoint at `/api/v1/ws`. Five of the fifteen topics:
 **Subscribe on connect:**
 
 ```json
-{ "type": "subscribe", "topics": [{ "topic": "events" }, { "topic": "metrics" }] }
+{
+  "type": "subscribe",
+  "topics": [{ "topic": "events" }, { "topic": "metrics" }]
+}
 ```
 
 **Backpressure**: Slow consumers get dropped frames, not memory growth. The WS handler sends a `Backpressure` server message (JSON) with `dropped_frames`, `topic`, `recommendation: "reduce_fps"`, and `suggested_fps` so the UI can auto-throttle.
@@ -187,24 +188,24 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 
 16 tools exposed via Model Context Protocol for AI control:
 
-| Tool                | Purpose                                                          |
-| ------------------- | ---------------------------------------------------------------- |
-| `set_effect`        | Apply effect by name/query (fuzzy match) with optional controls  |
-| `list_effects`      | Browse effect catalog with category/audio_reactive filters       |
-| `stop_effect`       | Stop the active effect and clear its controls (destructive)      |
-| `set_color`         | Apply a solid color effect                                       |
-| `set_output_power`  | Pause or resume output without discarding effect state           |
-| `get_devices`       | List connected devices                                           |
-| `set_brightness`    | Set global brightness (0-100 percent)                            |
-| `get_status`        | Current daemon state snapshot                                    |
-| `activate_scene`    | Activate a scene by name/ID                                      |
-| `list_scenes`       | List all scenes                                                  |
-| `create_scene`      | Create a new scene                                               |
-| `get_audio_state`   | Audio analysis snapshot                                          |
-| `get_sensor_data`   | System telemetry snapshot or one named sensor reading            |
-| `set_display_face`  | Assign an HTML display face to a display device                  |
-| `get_layout`        | Get the active spatial layout                                    |
-| `diagnose`          | Full-system diagnostics                                          |
+| Tool               | Purpose                                                         |
+| ------------------ | --------------------------------------------------------------- |
+| `set_effect`       | Apply effect by name/query (fuzzy match) with optional controls |
+| `list_effects`     | Browse effect catalog with category/audio_reactive filters      |
+| `stop_effect`      | Stop the active effect and clear its controls (destructive)     |
+| `set_color`        | Apply a solid color effect                                      |
+| `set_output_power` | Pause or resume output without discarding effect state          |
+| `get_devices`      | List connected devices                                          |
+| `set_brightness`   | Set global brightness (0-100 percent)                           |
+| `get_status`       | Current daemon state snapshot                                   |
+| `activate_scene`   | Activate a scene by name/ID                                     |
+| `list_scenes`      | List all scenes                                                 |
+| `create_scene`     | Create a new scene                                              |
+| `get_audio_state`  | Audio analysis snapshot                                         |
+| `get_sensor_data`  | System telemetry snapshot or one named sensor reading           |
+| `set_display_face` | Assign an HTML display face to a display device                 |
+| `get_layout`       | Get the active spatial layout                                   |
+| `diagnose`         | Full-system diagnostics                                         |
 
 Every tool declares its own `read_only` and `destructive` annotations; a tool
 is destructive when it discards state the caller cannot recover.
