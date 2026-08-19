@@ -818,7 +818,8 @@ after the launcher gate. The spines may develop in parallel, but edits to
 
 **Files:** `core/src/input/status.rs`, `core/src/input/traits.rs`, macOS
 input and capture crates, daemon input-status API and WebSocket mapping,
-`hypercolor-types` API types, UI status consumers.
+`hypercolor-types` API types, CLI action text, UI status consumers,
+generated SDKs, and the macOS input/capture spec.
 **Depends on:** none.
 **Parallel:** yes, with L1 until either touches shared type files.
 
@@ -830,6 +831,10 @@ Implementation:
 - Cross the seam through one versioned opaque diagnostics envelope with
   bounded neutral display fields. Core stores and relays the envelope
   without knowing its payload shape.
+- Require each platform crate to construct its typed snapshot, opaque
+  payload, presentation values, and privacy redaction. Core may collect
+  typed primitives but must not author platform JSON keys or display
+  fields.
 - Replace `CurrentMacosProcess`, `set_macos_*`, and macOS screenshot
   action types with neutral capability actions implemented at the
   platform boundary.
@@ -841,6 +846,11 @@ Verify:
 - Core, macOS input, macOS capture, daemon API, and UI status tests pass.
 - Oversized, unknown-version, and malformed diagnostic payloads remain
   bounded and cannot break neutral status delivery.
+- OpenAPI carries every representable bound, generated SDK checks are
+  clean, and session-scoped capture identifiers never cross the platform
+  boundary.
+- Diagnostic artifact timeouts remain owned by the requesting consumer;
+  no detached adapter worker can outlive a timed-out request.
 
 #### I2: Split `InputSource` roles and convert `InputManager`
 
@@ -853,13 +863,21 @@ Implementation:
 
 - Introduce object-safe `DataSource`, `AudioSource`, `ScreenSource`, and
   `InteractionSource` traits plus exclusive `ManagedSourceRole` storage.
+- Give `DataSource` an exhaustive `DataSourceKind` for media, network,
+  and sensors, mapped once into scheduling and status `SourceKind` values.
+  Sensors must participate in the same graph publication and cadence path;
+  the current manager-owned sensor watch is deleted rather than retained as
+  a second data plane.
 - Replace `is_*`, `CaptureDomain`, erased subtrait methods, and both
   `SourceKind::Interaction` fallbacks with typed registration.
 - Collapse the three generation-fenced plan/commit/retire lanes onto one
   generic role swap. Register sensors as `Data` with honest status and
   failure reporting.
 - Complete the `InputManager` portion of spec 76 §6.3 in this package,
-  including private mutation publication and owned snapshots.
+  including private mutation publication and owned snapshots. This package
+  intentionally pulls `InputManager` ahead of the older conversion order in
+  spec 76; it does not wait for `SceneManager`, `SpatialEngine`, or
+  `EffectRegistry` conversion.
 
 Verify:
 
@@ -871,9 +889,9 @@ Verify:
 
 #### I3: Extract one host-input fold
 
-**Files:** new neutral host event vocabulary in `hypercolor-types`,
-`core/src/input/host_fold.rs`, evdev adapter, Windows input crate, macOS
-input crate, interaction-router consumers and tests.
+**Files:** new neutral host event vocabulary in `hypercolor-types`, new
+`hypercolor-linux-input` crate, `core/src/input/host_fold.rs`, Windows input
+crate, macOS input crate, interaction-router consumers and tests.
 **Depends on:** I2 and F1.
 **Parallel:** yes, with L1/L2 after I2 lands.
 
@@ -882,6 +900,9 @@ Implementation:
 - Make each backend a pure ordered producer of neutral raw edges, repeat
   evidence, device identity, motion, scroll, topology generation, and
   state gaps.
+- Move Linux evdev discovery, device ownership, and raw event acquisition
+  out of core and into `hypercolor-linux-input`. Core must not retain a
+  target-gated evdev module after the fold lands.
 - Move held state, repeat classification, release synthesis, epochs, and
   snapshots into one fold with no mutable platform hooks.
 - Unify the interaction consumer catalog now duplicated by pipeline and

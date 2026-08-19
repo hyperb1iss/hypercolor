@@ -1,6 +1,6 @@
 # 76 - macOS Screen Capture and Host Input
 
-**Status:** Implementation-ready, revision 27; GPU-only amendment approved
+**Status:** Implemented, revision 28; cross-platform boundary amendment applied
 **Author:** Nova
 **Date:** 2026-08-10
 **Platform floor:** macOS 15.2 Sequoia
@@ -395,8 +395,10 @@ same nonzero code to its caller.
 
 The winning daemon starts the native record watch before constructing the input
 graph, regardless of input or capture configuration. It publishes the active
-owner and conflict on the daemon system-status surface, mirrors the conflict in
-any constructed `SourcePlatformStatus`, and emits one ownership bus event. It
+owner and conflict on the daemon system-status surface, supplies the same
+identity through the neutral source-capability context, and emits one ownership
+bus event. Each macOS adapter includes the conflict in its platform-owned
+diagnostics envelope without introducing a platform variant into core. It
 coalesces an identical active owner, active epoch, contender owner, executable,
 and designated-requirement tuple until either ownership or contender identity
 changes. Repeated identical writes cannot create another state transition or
@@ -1515,62 +1517,25 @@ source has become invalid. Invalidation clears freshness immediately.
 
 ### 13.3 Status and metrics
 
-`hypercolor-core::input::status` owns the platform state structs so the adapters
-can publish them without depending on daemon API types. The source status
-surface publishes the state directly rather than asking clients to reconstruct
-it from generic issues:
+`hypercolor-core::input::status` owns only the neutral source lifecycle,
+freshness, issue, action issue, and diagnostics-envelope contracts. The macOS
+input and capture crates own their typed status snapshots, JSON field names,
+machine values, privacy rules, and presentation-ready display values.
 
-```rust
-pub enum MacosCapabilityOwner {
-    AppSidecar,
-    App,
-    LaunchdService,
-    HomebrewService,
-    Broker,
-    Standalone,
-}
+Each adapter builds a bounded `SourceDiagnosticsEnvelope` with a versioned
+schema name, at most 24 neutral display fields, and an opaque payload capped at
+16 KiB. Core stores and relays the envelope without parsing its payload. The
+daemon exposes the same neutral envelope in `InputSourceStatus`, and OpenAPI
+describes every representable bound. The web UI renders only the display fields
+and never treats display text or opaque payload data as control state.
 
-pub struct MacosDaemonOwnerConflict {
-    pub active: MacosCapabilityOwner,
-    pub contender: MacosCapabilityOwner,
-    pub observed_at_ms: u64,
-}
-
-pub struct MacosInputPlatformStatus {
-    pub keyboard: MacosProtectedSourceState,
-    pub pointer: MacosProtectedSourceState,
-    pub keyboard_tcc: MacosAuthorizationState,
-    pub keyboard_owner: MacosCapabilityOwner,
-    pub pointer_owner: MacosCapabilityOwner,
-    pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
-}
-
-pub struct MacosScreenPlatformStatus {
-    pub state: MacosProtectedSourceState,
-    pub tcc: MacosAuthorizationState,
-    pub owner: MacosCapabilityOwner,
-    pub selection: MacosSelectionState,
-    pub tahoe_selection: Option<MacosTahoeSelectionCapabilities>,
-    pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
-}
-
-pub enum SourcePlatformStatus {
-    MacosInput(MacosInputPlatformStatus),
-    MacosScreen(MacosScreenPlatformStatus),
-}
-```
-
-`SourceStatus` gains `platform: Option<Arc<SourcePlatformStatus>>`. Every
-constructor, writer update, and retired snapshot carries or clears `platform`
-explicitly. The daemon's `api/system.rs::InputSourceStatus`
-gains `platform: Option<InputSourcePlatformStatus>`, where the daemon-local
-serde enum is tagged as `macos_input` or `macos_screen` and derives `ToSchema`.
-`input_source_status` maps the core enum field by field, including
-`tahoe_selection` on the daemon-local `macos_screen` variant and
-`owner_conflict` on both macOS variants. This diagnostic payload stays
-daemon-local, matching the existing system-status boundary; the web UI
-deserializes a tolerant local subset. REST and OpenAPI fixtures cover both
-variants, absence on other platforms, and unknown future fields.
+Authorization and restart controls use neutral `action_issue` codes such as
+`authorization_required`, `authorization_denied`, `authorization_revoked`, and
+`process_restart_required`. Operational screen-selection persistence is decoded
+only by `hypercolor-macos-capture`, which owns that payload shape. Session-scoped
+Tahoe identifiers are redacted by the platform producer before the envelope
+crosses into core. REST, OpenAPI, UI, and SDK fixtures cover bounded decoding,
+unknown versions, malformed payloads, presentation values, and redaction.
 
 The owner arbiter is daemon state, not input-source state. `AppState` owns its
 latest snapshot from startup even when no source exists, and
@@ -1785,8 +1750,9 @@ The existing input settings page gains native macOS state and actions:
 When the platform publishes `NeedsProcessRestart`, the UI offers `Restart
 capture owner` and names the process that will restart. It never renders the
 state as another permission denial. Keyboard, pointer, and screen cards read
-their published platform states directly; they do not infer authorization,
-selection, or ownership from generic status text.
+neutral lifecycle and action-issue codes for behavior. Their advanced
+disclosures render bounded platform display fields without interpreting opaque
+payload data.
 
 The UI distinguishes:
 
@@ -1810,7 +1776,7 @@ endpoint routes to the macOS system picker. WebSocket events announce state
 changes so the UI never polls.
 
 `choose_daemon_owner` is never a daemon REST action. A browser-only session
-receives `requires_app_ui` and cannot mutate autostart or stop a process. Inside
+receives `requires_ui` and cannot mutate autostart or stop a process. Inside
 `Hypercolor.app`, the same UI invokes a native Tauri command implemented by the
 local app coordinator. The CLI invokes the local coordinator directly. Both
 paths consume the durable journal and never proxy the operation through the
@@ -1825,7 +1791,7 @@ broker.
 
 The CLI gains equivalent explicit commands where the process topology permits
 them and prints which process owns the grant. A headless command that cannot
-present the picker returns a typed `requires_app_ui` remediation instead of
+present the picker returns a typed `requires_ui` remediation instead of
 attempting private UI.
 
 ## 15. Security and privacy
@@ -1839,8 +1805,9 @@ rules:
    consented consumer route explicitly exposes a derived form.
 4. Logs never contain key names, typed text, window titles, application names,
    raw pixels, or screenshot paths by default.
-5. Diagnostics redact selected content labels unless the request is local and
-   authenticated under the existing daemon policy.
+5. Diagnostics never publish private session-scoped source identifiers. The
+   platform producer applies redaction before core or daemon code sees the
+   envelope.
 6. The system picker is mandatory for user-selected content.
 7. Hypercolor excludes its own UI from display capture when ScreenCaptureKit
    can express the exclusion without changing the selected source.
@@ -1905,14 +1872,14 @@ start_app_sidecar
 start_launchd_service
 start_homebrew_service
 select_screen_source
-requires_app_ui
+requires_ui
 app_broker_required
 choose_daemon_owner
 ```
 
 `app_broker_required` means the direct launchd service cannot own the requested
 protected capability and no authenticated broker has completed reverse
-bootstrap. `requires_app_ui` means the owner is valid but the next action, such
+bootstrap. `requires_ui` means the owner is valid but the next action, such
 as presenting the system picker or registering the broker, must run in
 `Hypercolor.app`. `restart_homebrew_service` invokes
 `brew services restart hypercolor` for the recorded Homebrew owner.
@@ -1923,7 +1890,7 @@ authority.
 does not hold the guard. Its remedy is topology-specific: `start_app_sidecar`
 invokes the app supervisor, `start_launchd_service` invokes
 `hypercolor service start`, and `start_homebrew_service` invokes
-`brew services start hypercolor`. A browser receives `requires_app_ui` for all
+`brew services start hypercolor`. A browser receives `requires_ui` for all
 three actions. Only the local app or CLI coordinator executes them.
 `choose_daemon_owner` means two or more installed autostart topologies contended
 for the single-instance guard and requires one explicit owner choice.
@@ -2068,7 +2035,7 @@ Repository integration tests prove:
   surviving coordinator returns the synchronous result and reconnect reads the
   matching system status;
 - daemon-owner choice is absent from REST, OpenAPI, WebSocket, and MCP control
-  surfaces. Browser-only invocation returns `requires_app_ui`, while the native
+  surfaces. Browser-only invocation returns `requires_ui`, while the native
   app command and local CLI complete the same journaled choice;
 - an unavailable persisted external owner publishes
   `macos_daemon_owner_offline` with the matching `start_app_sidecar`,

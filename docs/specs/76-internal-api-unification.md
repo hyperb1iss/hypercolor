@@ -1,6 +1,6 @@
 # Spec 76: Internal API Unification
 
-**Status:** LOCKED rev 5 (2026-08-15) — converged after five cross-model review rounds (finding trajectory 29 → 12 → 2 → 2 → 1; full dispositions in §10).
+**Status:** LOCKED rev 6 (2026-08-19), with the Design 72 input-manager sequence reconciliation recorded in §10.
 **Findings base:** `docs/review/tech-debt-review-2026-08-15.md` — six-lane audit with file:line receipts. Local audit artifact (`docs/review/` is gitignored); receipts were verified against the tree on 2026-08-15 and line numbers should be re-checked at execution time.
 **Authorship model:** Fable writes and owns the contracts here and holds final signoff. Opus 5 workers execute mechanical refactors and tests per wave. Codex reviews inline per PR.
 
@@ -402,7 +402,11 @@ pub struct SceneService(Arc<SceneServiceInner>);   // lock INSIDE; intent method
 impl SceneService { pub fn subscribe(&self) -> SceneEventReceiver; }   // observation only — the EventSink is PRIVATE, injected at construction
 ```
 
-Mutations publish internally; callers cannot forge, reorder, or double-publish. Conversion order: SceneManager → SpatialEngine → EffectRegistry → InputManager. `SessionWatcher`/`usb_hotplug` side-buses become bus lanes or documented internal transports.
+Mutations publish internally; callers cannot forge, reorder, or double-publish.
+Design 72 I2 pulls `InputManager` forward so its platform-boundary work can
+land without waiting for the other managers. The remaining conversion order
+is SceneManager, SpatialEngine, then EffectRegistry. `SessionWatcher` and
+`usb_hotplug` side buses become bus lanes or documented internal transports.
 
 ### 6.4 Domain contexts
 
@@ -578,3 +582,4 @@ Dependency graph: 0 → everything; **1.1 → 2.0** (the canonical ControlValue'
 - **Round 5 (2026-08-15):** final micro-check. `IpText`/`MacText` PASS; one factual correction adopted verbatim from the reviewer (serde_json emits `null` for non-finite floats rather than erroring — the invariant holds, with the corrected mechanism). **Converged: rev 5 locked.** Convergence trajectory: 29 findings → 12 → 2 → 2 sub-points → 1 factual citation.
 - **Round 7 (2026-08-16, doctrine replacement):** owner directive replaced the §0 compat doctrine with the lockstep doctrine — hypercolor is pre-1.0 greenfield with one user; in-repo clients ship in lockstep, wire shapes change freely with pins and clients updated in-PR, persisted state migrates forward once (harness or hand-migration) with no legacy readers in the tree, and no compat layer merges without a scheduled deletion. Wave C1 schedules the deletion of every transitional shim merged under the old doctrine (`domain::legacy`, `into_v1_response`, `ApiError` legacy rendering, color `compat.rs`, TS audio re-export, `migrate_config`, driver-inventory legacy import; the legacy Zone codec deletes in 5.1). §§1.2, 1.6, 2.1, 3.3, 4.3–4.5, 5, 5.1, 7.2 updated accordingly.
 - **Round 6 (2026-08-16, implementation reconciliation):** corrections forced by the tree during wave 0.8 and wave 1.1, folded back so spec and code agree. §1: `std` feature dropped (std-only until a no_std consumer exists). §1.3: `Oklch::{to_linear, lerp}` and `LinearRgba::to_oklch` added — shortest-path Oklch interpolation exists in-tree and is load-bearing. §1.4: per-type accepted hex digit counts made explicit. §1.5: `PixelBlendMode` is the kernel's real alpha-composable set (`ColorDodge`/`Difference`, not the sketch's `Lighten`/`Darken`). §5/§8.2: WS tag inventory corrected to the code's enumeration (0x04 unassigned; RPC tags 0x80/0x81 exist in leptos-ext and are pinned). Phase 0 execution rulings folded into contracts: §3.1's preserved set gains the `include` list plus the validation-skip escape-hatch rule (wave 0.1); §3.4 gains the residue-by-design retirement contract and superseded-import-yields-the-winner rule (wave 0.9).
+- **Round 8 (2026-08-19, boundary execution reconciliation):** Design 72 I2 pulls `InputManager` ahead of the remaining manager conversions so typed input roles, one generic swap lane, and sensor graph publication land as one coherent boundary change. The remaining conversion order stays SceneManager, SpatialEngine, then EffectRegistry.
