@@ -20,11 +20,9 @@ test.describe("REST API", () => {
       const health = await readJson(healthResponse);
       expect(health.status).toBe("healthy");
 
-      const status = await readEnvelope(await api.get("/api/v1/status"));
-      expect(status.running).toBe(true);
-      expect(status.version).toBeTruthy();
-
-      expect((await api.get("/api/v1/server")).ok()).toBeTruthy();
+      const system = await readEnvelope(await api.get("/api/v1/system"));
+      expect(system.status.running).toBe(true);
+      expect(system.identity.version).toBeTruthy();
       expect((await api.post("/api/v1/diagnose")).ok()).toBeTruthy();
       expect((await api.get("/api/v1/system/sensors")).ok()).toBeTruthy();
     } finally {
@@ -71,8 +69,8 @@ test.describe("REST API", () => {
 
       expect((await api.post("/api/v1/scene/clear")).ok()).toBeTruthy();
 
-      const status = await readEnvelope(await api.get("/api/v1/status"));
-      expect(status.active_effect).toBeNull();
+      const system = await readEnvelope(await api.get("/api/v1/system"));
+      expect(system.status.active_effect).toBeNull();
     } finally {
       await api.dispose();
     }

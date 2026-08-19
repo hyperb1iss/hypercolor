@@ -120,10 +120,11 @@ if ($processes) {
 Write-Section "API"
 $diagnose = $null
 try {
-    $status = Invoke-RestMethod -Uri "$Api/api/v1/status" -TimeoutSec 2
-    Write-Check "Daemon status" $true "$Api/api/v1/status"
-    if ($status.data.version) {
-        Write-Host "       version=$($status.data.version)"
+    $system = Invoke-RestMethod -Uri "$Api/api/v1/system" -TimeoutSec 2
+    $status = $system.data.status
+    Write-Check "Daemon status" $true "$Api/api/v1/system"
+    if ($system.data.identity.version) {
+        Write-Host "       version=$($system.data.identity.version)"
     }
 } catch {
     Write-Check "Daemon status" $false $_.Exception.Message
