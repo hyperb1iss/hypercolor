@@ -7,7 +7,6 @@ use crate::api::common::Pagination;
 use crate::attachment::{ComponentBinding, ComponentSlot, ComponentSuggestedZone};
 use crate::device::{DeviceOrigin, DriverPresentation};
 use crate::pairing::{DeviceAuthSummary, PairDeviceStatus};
-use crate::spatial::{LedTopology, NormalizedPosition};
 
 /// Query parameters for `GET /api/v1/devices`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,10 +195,13 @@ pub struct IdentifyAttachmentResponse {
 /// Request body for `PUT /api/v1/devices/{id}/attachments`.
 ///
 /// The binding list replaces the device's attachments wholesale.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateAttachmentsRequest {
     #[serde(default)]
     pub bindings: Vec<ComponentBinding>,
+    /// Validate and resolve the profile without applying any side effects.
+    #[serde(default)]
+    pub validate_only: bool,
 }
 
 /// Response for `GET /api/v1/devices/{id}/attachments`.
@@ -250,34 +252,6 @@ pub struct ComponentBindingSummary {
     pub instances: u32,
     pub led_offset: u32,
     pub effective_led_count: u32,
-}
-
-/// Response for `POST /api/v1/devices/{id}/attachments/preview`.
-///
-/// Resolves a candidate binding set into the zones it would produce,
-/// without persisting anything.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ComponentPreviewResponse {
-    pub device_id: String,
-    pub device_name: String,
-    #[serde(default)]
-    pub zones: Vec<ComponentPreviewZone>,
-}
-
-/// One zone a candidate binding set would produce, expanded per instance.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ComponentPreviewZone {
-    pub slot_id: String,
-    pub binding_index: usize,
-    pub instance: u32,
-    pub template_id: String,
-    pub template_name: String,
-    pub name: String,
-    pub led_start: u32,
-    pub led_count: u32,
-    pub topology: LedTopology,
-    #[serde(default)]
-    pub led_positions: Vec<NormalizedPosition>,
 }
 
 /// Response for `DELETE /api/v1/devices/{id}/attachments`.

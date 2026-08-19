@@ -414,7 +414,7 @@ async fn attachment_template_item_and_facet_routes_are_absent() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "end-to-end API flow covers preview, save, fetch, and delete behavior together"
+    reason = "end-to-end API flow covers validation, save, fetch, and delete together"
 )]
 async fn device_attachment_profile_flow_persists_and_clears() {
     let guard = TestDataDirGuard::new().await;
@@ -426,7 +426,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
     create_template(&app, template_id, "Profile Test Strip", 12).await;
     set_active_layout_for_device(&state, device_id).await;
 
-    let preview_body = json!({
+    let update_body = json!({
         "bindings": [{
             "slot_id": "main",
             "template_id": template_id,
@@ -435,38 +435,73 @@ async fn device_attachment_profile_flow_persists_and_clears() {
             "led_offset": 0
         }]
     });
-    let preview_response = send_json(
+    let logical_device_count = state.logical_devices.read().await.len();
+    let layout_before = state.spatial_engine.read().await.layout().clone();
+    let mut events = state.event_bus.subscribe_all();
+    let validation_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
-        preview_body.clone(),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": update_body["bindings"].clone(),
+            "validate_only": true
+        }),
     )
     .await;
-    assert_eq!(preview_response.status(), StatusCode::OK);
-    let preview_json = body_json(preview_response).await;
+    assert_eq!(validation_response.status(), StatusCode::OK);
+    let validation_json = body_json(validation_response).await;
     assert_eq!(
-        preview_json["data"]["zones"]
+        validation_json["data"]["suggested_zones"]
             .as_array()
-            .expect("zones should be an array")
+            .expect("suggested_zones should be an array")
             .len(),
         2
     );
-    assert_eq!(preview_json["data"]["zones"][0]["led_start"], 0);
-    assert_eq!(preview_json["data"]["zones"][1]["led_start"], 12);
-    assert_eq!(preview_json["data"]["zones"][0]["led_count"], 12);
+    assert_eq!(
+        validation_json["data"]["suggested_zones"][0]["led_start"],
+        0
+    );
+    assert_eq!(
+        validation_json["data"]["suggested_zones"][1]["led_start"],
+        12
+    );
+    assert_eq!(
+        validation_json["data"]["suggested_zones"][0]["led_count"],
+        12
+    );
     assert!(
-        preview_json["data"]["zones"][0]["name"]
+        validation_json["data"]["suggested_zones"][0]["name"]
             .as_str()
             .expect("zone name should be a string")
             .contains("Desk Edge"),
         "zone name should include the binding name"
     );
+    assert_eq!(validation_json["data"]["needs_layout_update"], true);
+    assert!(!guard.attachment_profiles_path().exists());
+    assert_eq!(
+        state.logical_devices.read().await.len(),
+        logical_device_count
+    );
+    assert_eq!(state.spatial_engine.read().await.layout(), layout_before);
+    assert!(state.usb_protocol_configs.config(device_id).await.is_none());
+    assert!(events.try_recv().is_err());
+
+    let unpersisted_response = send_empty(
+        &app,
+        "GET",
+        format!("/api/v1/devices/{device_id}/attachments"),
+    )
+    .await;
+    assert_eq!(unpersisted_response.status(), StatusCode::OK);
+    let unpersisted_json = body_json(unpersisted_response).await;
+    assert_eq!(unpersisted_json["data"]["bindings"], json!([]));
 
     let overlap_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
         json!({
+            "validate_only": true,
             "bindings": [
                 {
                     "slot_id": "main",
@@ -492,7 +527,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
         &app,
         "PUT",
         format!("/api/v1/devices/{device_id}/attachments"),
-        preview_body,
+        update_body,
     )
     .await;
     assert_eq!(update_response.status(), StatusCode::OK);
@@ -581,23 +616,26 @@ async fn multiple_same_slot_bindings_are_named_and_suggested_distinctly() {
         ]
     });
 
-    let preview_response = send_json(
+    let validation_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
-        body.clone(),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": body["bindings"].clone(),
+            "validate_only": true
+        }),
     )
     .await;
-    assert_eq!(preview_response.status(), StatusCode::OK);
-    let preview_json = body_json(preview_response).await;
-    let preview_zones = preview_json["data"]["zones"]
+    assert_eq!(validation_response.status(), StatusCode::OK);
+    let validation_json = body_json(validation_response).await;
+    let validation_zones = validation_json["data"]["suggested_zones"]
         .as_array()
-        .expect("zones should be an array");
-    assert_eq!(preview_zones.len(), 2);
-    assert_eq!(preview_zones[0]["led_start"], 0);
-    assert_eq!(preview_zones[1]["led_start"], 12);
-    assert_eq!(preview_zones[0]["name"], "Stacked Strip 1");
-    assert_eq!(preview_zones[1]["name"], "Stacked Strip 2");
+        .expect("suggested_zones should be an array");
+    assert_eq!(validation_zones.len(), 2);
+    assert_eq!(validation_zones[0]["led_start"], 0);
+    assert_eq!(validation_zones[1]["led_start"], 12);
+    assert_eq!(validation_zones[0]["name"], "Stacked Strip 1");
+    assert_eq!(validation_zones[1]["name"], "Stacked Strip 2");
 
     let update_response = send_json(
         &app,
@@ -733,11 +771,14 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
     assert!(slots.iter().any(|slot| slot["id"] == "atx-strimer"));
     assert!(slots.iter().any(|slot| slot["id"] == "gpu-strimer"));
 
+    let logical_device_count = state.logical_devices.read().await.len();
+    let mut events = state.event_bus.subscribe_all();
     let gpu_only_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
         json!({
+            "validate_only": true,
             "bindings": [{
                 "slot_id": "gpu-strimer",
                 "template_id": "lian-li-gpu-strimer-4x27",
@@ -749,8 +790,21 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
     .await;
     assert_eq!(gpu_only_response.status(), StatusCode::OK);
     let gpu_only_json = body_json(gpu_only_response).await;
-    assert_eq!(gpu_only_json["data"]["zones"][0]["led_start"], 5_120);
-    assert_eq!(gpu_only_json["data"]["zones"][0]["led_count"], 108);
+    assert_eq!(
+        gpu_only_json["data"]["suggested_zones"][0]["led_start"],
+        5_120
+    );
+    assert_eq!(
+        gpu_only_json["data"]["suggested_zones"][0]["led_count"],
+        108
+    );
+    assert!(state.usb_protocol_configs.config(device_id).await.is_none());
+    assert_eq!(
+        state.logical_devices.read().await.len(),
+        logical_device_count
+    );
+    assert!(!guard.attachment_profiles_path().exists());
+    assert!(events.try_recv().is_err());
 
     let full_response = send_json(
         &app,

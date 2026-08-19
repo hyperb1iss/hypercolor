@@ -454,7 +454,10 @@ pub fn WiringPanel(
                                                                         });
                                                                         offset += count;
                                                                     }
-                                                                    api::update_device_attachments(&did, &api::UpdateAttachmentsRequest { bindings }).await
+                                                                    api::update_device_attachments(&did, &api::UpdateAttachmentsRequest {
+                                                                        bindings,
+                                                                        validate_only: false,
+                                                                    }).await
                                                                 }.await;
                                                                 set_save_in_flight.set(false);
                                                                 match result {
