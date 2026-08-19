@@ -82,8 +82,8 @@ use super::protocol::{
 
 fn assert_manifested_json_payload(schema: &str, data: &serde_json::Value) {
     let manifest = json_payload_manifest();
-    let schema = &manifest[schema];
-    let required = schema["required_fields"]
+    let entry = &manifest[schema];
+    let required = entry["required_fields"]
         .as_array()
         .expect("required fields are an array")
         .iter()
@@ -93,7 +93,7 @@ fn assert_manifested_json_payload(schema: &str, data: &serde_json::Value) {
         .iter()
         .copied()
         .chain(
-            schema["optional_fields"]
+            entry["optional_fields"]
                 .as_object()
                 .expect("optional fields are an object")
                 .keys()
@@ -2087,7 +2087,7 @@ async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
         .expect("direct preview message")
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn relay_screen_zones_paces_each_connection_and_sends_the_latest_frame() {
     let state = Arc::new(AppState::new());
     let subscriptions = SubscriptionState::default()
@@ -2130,12 +2130,12 @@ async fn relay_screen_zones_paces_each_connection_and_sends_the_latest_frame() {
         tokio::task::yield_now().await;
     }
 
+    tokio::time::advance(Duration::from_millis(99)).await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(40), preview_rx.recv())
-            .await
-            .is_err(),
+        preview_rx.try_recv().is_none(),
         "the connection's 10 fps cadence must not inherit a faster producer cadence"
     );
+    tokio::time::advance(Duration::from_millis(1)).await;
     let latest = receive_direct_preview(&preview_rx).await;
     let latest = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&latest)
         .expect("paced screen zones frame decodes");

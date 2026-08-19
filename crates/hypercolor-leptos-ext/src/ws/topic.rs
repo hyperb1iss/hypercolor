@@ -304,12 +304,12 @@ pub const fn tags_disjoint(tag_sets: &[&[u8]]) -> bool {
 ///     reserved [0x0b, 0x0f, 0x10];
 ///     topic Events => "events" {
 ///         key: unkeyed, config: (), patch: NoPatch, schema: no_schema,
-///         tags: [], control: false,
+///         tags: [], control: false, backpressure: Lossless,
 ///     }
 ///     topic DisplayPreview => "display_preview" {
 ///         key: DeviceKey, config: DisplayPreviewConfig, patch: DisplayPreviewPatch,
 ///         schema: display_preview_schema,
-///         tags: [0x07], control: false,
+///         tags: [0x07], control: false, backpressure: LatestWins,
 ///     }
 /// }
 /// ```
