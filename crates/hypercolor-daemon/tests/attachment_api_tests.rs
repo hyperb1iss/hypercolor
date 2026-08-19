@@ -333,7 +333,7 @@ async fn register_recording_backend(
 }
 
 #[tokio::test]
-async fn attachment_catalog_and_metadata_endpoints_work() {
+async fn attachment_template_collection_lists_builtin_metadata() {
     let _guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new());
     let app = test_app_with_state(state);
@@ -351,51 +351,10 @@ async fn attachment_catalog_and_metadata_endpoints_work() {
         "generic-argb-fan-6-leds"
     );
     assert_eq!(list_json["data"]["items"][0]["vendor"], "Generic");
-
-    let detail_response = send_empty(
-        &app,
-        "GET",
-        "/api/v1/attachments/templates/generic-argb-fan-6-leds",
-    )
-    .await;
-    assert_eq!(detail_response.status(), StatusCode::OK);
-    let detail_json = body_json(detail_response).await;
-    assert_eq!(detail_json["data"]["origin"], "built_in");
-    assert_eq!(
-        detail_json["data"]["led_positions"]
-            .as_array()
-            .expect("led_positions should be an array")
-            .len(),
-        6
-    );
-
-    let categories_response = send_empty(&app, "GET", "/api/v1/attachments/categories").await;
-    assert_eq!(categories_response.status(), StatusCode::OK);
-    let categories_json = body_json(categories_response).await;
-    assert!(
-        categories_json["data"]["items"]
-            .as_array()
-            .expect("items should be an array")
-            .iter()
-            .any(|item| item["category"] == "fan"),
-        "expected at least one fan category entry"
-    );
-
-    let vendors_response = send_empty(&app, "GET", "/api/v1/attachments/vendors").await;
-    assert_eq!(vendors_response.status(), StatusCode::OK);
-    let vendors_json = body_json(vendors_response).await;
-    assert!(
-        vendors_json["data"]["items"]
-            .as_array()
-            .expect("items should be an array")
-            .iter()
-            .any(|item| item["vendor"] == "Generic"),
-        "expected Generic vendor to be present"
-    );
 }
 
 #[tokio::test]
-async fn user_template_crud_persists_to_overridden_data_dir() {
+async fn user_template_create_persists_to_overridden_data_dir() {
     let guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new());
     let app = test_app_with_state(state);
@@ -414,64 +373,50 @@ async fn user_template_crud_persists_to_overridden_data_dir() {
     assert_eq!(create_json["data"]["origin"], "user");
     assert!(template_path.exists(), "template file should be persisted");
 
-    let update_response = send_json(
-        &app,
-        "PUT",
-        format!("/api/v1/attachments/templates/{template_id}"),
-        json!({
-            "id": template_id,
-            "name": "Test Custom Strip Updated",
-            "vendor": "Test Vendor",
-            "category": "strip",
-            "description": "Updated strip template",
-            "default_size": {
-                "width": 0.5,
-                "height": 0.1
-            },
-            "topology": {
-                "type": "strip",
-                "count": 12,
-                "direction": "left_to_right"
-            },
-            "compatible_slots": [],
-            "tags": ["updated", "strip"]
-        }),
-    )
-    .await;
-    assert_eq!(update_response.status(), StatusCode::OK);
-
-    let get_response = send_empty(
+    let list_response = send_empty(
         &app,
         "GET",
-        format!("/api/v1/attachments/templates/{template_id}"),
+        format!("/api/v1/attachments/templates?q={template_id}"),
     )
     .await;
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let get_json = body_json(get_response).await;
-    assert_eq!(get_json["data"]["name"], "Test Custom Strip Updated");
-    assert_eq!(get_json["data"]["tags"], json!(["updated", "strip"]));
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["items"][0]["id"], template_id);
+    assert_eq!(list_json["data"]["items"][0]["name"], "Test Custom Strip");
+}
 
-    let delete_response = send_empty(
-        &app,
-        "DELETE",
-        format!("/api/v1/attachments/templates/{template_id}"),
-    )
-    .await;
-    assert_eq!(delete_response.status(), StatusCode::OK);
-    let delete_json = body_json(delete_response).await;
-    assert_eq!(delete_json["data"]["deleted"], true);
-    assert!(
-        !template_path.exists(),
-        "template file should be removed after delete"
-    );
+#[tokio::test]
+async fn attachment_template_item_and_facet_routes_are_absent() {
+    let _guard = TestDataDirGuard::new().await;
+    let app = test_app_with_state(Arc::new(AppState::new()));
+
+    for (method, path) in [
+        (
+            "GET",
+            "/api/v1/attachments/templates/generic-argb-fan-6-leds",
+        ),
+        (
+            "PUT",
+            "/api/v1/attachments/templates/generic-argb-fan-6-leds",
+        ),
+        (
+            "DELETE",
+            "/api/v1/attachments/templates/generic-argb-fan-6-leds",
+        ),
+        ("GET", "/api/v1/attachments/categories"),
+        ("GET", "/api/v1/attachments/vendors"),
+    ] {
+        let response = send_empty(&app, method, path).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+    }
 }
 
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "end-to-end API flow covers preview, save, conflict, and delete behavior together"
+    reason = "end-to-end API flow covers preview, save, fetch, and delete behavior together"
 )]
-async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_deletes() {
+async fn device_attachment_profile_flow_persists_and_clears() {
     let guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new());
     let app = test_app_with_state(Arc::clone(&state));
@@ -598,16 +543,6 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
         "suggested zone name should preserve the binding name"
     );
 
-    let delete_template_while_bound = send_empty(
-        &app,
-        "DELETE",
-        format!("/api/v1/attachments/templates/{template_id}"),
-    )
-    .await;
-    assert_eq!(delete_template_while_bound.status(), StatusCode::CONFLICT);
-    let conflict_json = body_json(delete_template_while_bound).await;
-    assert_eq!(conflict_json["error"]["code"], "conflict");
-
     let delete_profile_response = send_empty(
         &app,
         "DELETE",
@@ -617,23 +552,6 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
     assert_eq!(delete_profile_response.status(), StatusCode::OK);
     let delete_profile_json = body_json(delete_profile_response).await;
     assert_eq!(delete_profile_json["data"]["deleted"], true);
-
-    let delete_template_response = send_empty(
-        &app,
-        "DELETE",
-        format!("/api/v1/attachments/templates/{template_id}"),
-    )
-    .await;
-    assert_eq!(delete_template_response.status(), StatusCode::OK);
-    let delete_template_json = body_json(delete_template_response).await;
-    assert_eq!(delete_template_json["data"]["deleted"], true);
-    assert!(
-        !guard
-            .attachments_dir()
-            .join(format!("{template_id}.toml"))
-            .exists(),
-        "template should be removed after the profile is cleared"
-    );
 }
 
 #[tokio::test]
