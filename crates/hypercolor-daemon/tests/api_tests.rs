@@ -1616,6 +1616,35 @@ async fn status_reports_stale_source_health_without_captured_contents() {
 }
 
 #[tokio::test]
+async fn diagnose_default_set_includes_memory_as_a_finding() {
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/diagnose")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let finding = json["data"]["checks"]
+        .as_array()
+        .expect("diagnose checks should be an array")
+        .iter()
+        .find(|check| check["name"] == "servo_memory")
+        .expect("default diagnostics should include Servo memory");
+    assert_eq!(finding["category"], "memory");
+    assert!(matches!(
+        finding["status"].as_str(),
+        Some("pass" | "warning" | "fail")
+    ));
+}
+
+#[tokio::test]
 async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     let state = Arc::new(isolated_state());
     let (source, session) =

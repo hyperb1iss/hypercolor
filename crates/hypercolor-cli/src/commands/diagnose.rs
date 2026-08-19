@@ -12,7 +12,7 @@ use crate::output::{OutputContext, OutputFormat};
 /// Run system diagnostics and health checks.
 #[derive(Debug, Args)]
 pub struct DiagnoseArgs {
-    /// Run specific checks only (repeatable; includes `macos_screen_parity`).
+    /// Run specific checks only (repeatable; includes `memory` and `macos_screen_parity`).
     #[arg(long)]
     pub check: Vec<String>,
 

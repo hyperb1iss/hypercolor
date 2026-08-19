@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::{Extension, Json};
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
@@ -16,7 +16,6 @@ use crate::api::security::RequestAuthContext;
 use crate::api::system::{InputStatus, actionable_input_diagnostics, input_status_snapshot};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
-use crate::domain::DomainError;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 
 pub use hypercolor_types::api::diagnose::DiagnoseRequest;
@@ -226,6 +225,7 @@ pub(crate) async fn run_diagnostics(
                 "devices".to_owned(),
                 "config".to_owned(),
                 "input".to_owned(),
+                "memory".to_owned(),
             ]
         });
 
@@ -431,6 +431,7 @@ pub(crate) async fn run_diagnostics(
                     }));
                 }
             }
+            "memory" => checks.push(servo_memory_check().await),
             "macos_screen_parity" => {
                 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
                 match super::macos_screen_parity::run_macos_screen_parity(&state).await {
@@ -802,14 +803,15 @@ fn round_2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
-/// `POST /api/v1/diagnose/memory` — Capture Servo memory profiler output.
-pub async fn memory_diagnostics() -> Response {
-    // Windows withholds the report rather than serving it: the embedded
-    // memory reporter can abort the daemon there.
+async fn servo_memory_check() -> DiagnoseCheck {
     #[cfg(all(feature = "servo", target_os = "windows"))]
     {
-        DomainError::not_found(crate::domain::ResourceKind::Diagnostic, "servo-memory")
-            .into_response()
+        DiagnoseCheck {
+            category: "memory".to_owned(),
+            name: "servo_memory".to_owned(),
+            status: "warning".to_owned(),
+            detail: "Servo memory reporting is disabled on Windows".to_owned(),
+        }
     }
 
     #[cfg(all(feature = "servo", not(target_os = "windows")))]
@@ -817,22 +819,42 @@ pub async fn memory_diagnostics() -> Response {
         match tokio::task::spawn_blocking(hypercolor_core::effect::servo_memory_report_snapshot)
             .await
         {
-            Ok(Ok(snapshot)) => ApiResponse::ok(snapshot),
-            Ok(Err(error)) => DomainError::Internal(anyhow::anyhow!(
-                "Failed to collect Servo memory report: {error}"
-            ))
-            .into_response(),
-            Err(error) => DomainError::Internal(anyhow::anyhow!(
-                "Servo memory diagnostics worker task failed: {error}"
-            ))
-            .into_response(),
+            Ok(Ok(snapshot)) => DiagnoseCheck {
+                category: "memory".to_owned(),
+                name: "servo_memory".to_owned(),
+                status: "pass".to_owned(),
+                detail: format!(
+                    "processes={}, reports={}, explicit_bytes={}, non_explicit_bytes={}",
+                    snapshot.processes.len(),
+                    snapshot.totals.report_count,
+                    snapshot.totals.explicit_bytes,
+                    snapshot.totals.non_explicit_bytes
+                ),
+            },
+            Ok(Err(error)) => servo_memory_failure(error.to_string()),
+            Err(error) => servo_memory_failure(format!("worker task failed: {error}")),
         }
     }
 
     #[cfg(not(feature = "servo"))]
     {
-        DomainError::not_found(crate::domain::ResourceKind::Diagnostic, "servo-memory")
-            .into_response()
+        DiagnoseCheck {
+            category: "memory".to_owned(),
+            name: "servo_memory".to_owned(),
+            status: "warning".to_owned(),
+            detail: "Servo memory reporting is unavailable in this build".to_owned(),
+        }
+    }
+}
+
+#[cfg(all(feature = "servo", not(target_os = "windows")))]
+fn servo_memory_failure(detail: String) -> DiagnoseCheck {
+    let unavailable = detail.contains("Servo worker is not running");
+    DiagnoseCheck {
+        category: "memory".to_owned(),
+        name: "servo_memory".to_owned(),
+        status: if unavailable { "warning" } else { "fail" }.to_owned(),
+        detail,
     }
 }
 
@@ -841,6 +863,20 @@ mod tests {
     use crate::performance::{FrameTimeline, LatestFrameMetrics, OutputFrameSourceKind};
 
     use super::{render_frame_liveness_status, render_led_freshness_status};
+
+    #[cfg(all(feature = "servo", not(target_os = "windows")))]
+    use super::servo_memory_failure;
+
+    #[cfg(all(feature = "servo", not(target_os = "windows")))]
+    #[test]
+    fn servo_memory_failure_is_a_named_diagnostic_finding() {
+        let finding = servo_memory_failure("memory callback failed".to_owned());
+
+        assert_eq!(finding.category, "memory");
+        assert_eq!(finding.name, "servo_memory");
+        assert_eq!(finding.status, "fail");
+        assert_eq!(finding.detail, "memory callback failed");
+    }
 
     #[test]
     fn render_frame_liveness_fails_stale_running_frame() {
