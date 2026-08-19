@@ -462,6 +462,7 @@ impl DaemonState {
     }
 
     async fn restore_runtime_session(&self, config: &HypercolorConfig) {
+        let scene_mode = config.daemon.start_scene.trim();
         let snapshot = match runtime_state::load(&self.runtime_state_path) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -470,9 +471,21 @@ impl DaemonState {
                     %error,
                     "Failed to load runtime session snapshot"
                 );
-                return;
+                None
             }
         };
+
+        if let Some(snapshot) = snapshot.as_ref()
+            && snapshot.manual_paused
+        {
+            restore_manual_pause(&self.power_state, [0, 0, 0]);
+        }
+
+        if !scene_mode.eq_ignore_ascii_case("last") {
+            self.activate_configured_start_scene(scene_mode).await;
+            return;
+        }
+
         let Some(snapshot) = snapshot else {
             debug!(
                 path = %self.runtime_state_path.display(),
@@ -480,13 +493,6 @@ impl DaemonState {
             );
             return;
         };
-        if snapshot.manual_paused {
-            restore_manual_pause(&self.power_state, [0, 0, 0]);
-        }
-        let scene_mode = config.daemon.start_scene.trim();
-        if !scene_mode.eq_ignore_ascii_case("last") {
-            return;
-        }
         set_global_brightness(&self.power_state, snapshot.global_brightness);
         {
             let mut settings = self.device_settings.write().await;
@@ -530,6 +536,105 @@ impl DaemonState {
         if let Err(error) = self.apply_runtime_session_snapshot(snapshot).await {
             warn!(%error, "Failed to restore runtime session snapshot");
         }
+    }
+
+    async fn activate_configured_start_scene(&self, selector: &str) {
+        if selector.is_empty() {
+            return;
+        }
+
+        let target = {
+            let scenes = self.scene_manager.read().await;
+            let scene_id = if selector.eq_ignore_ascii_case("default") {
+                Some(SceneId::DEFAULT)
+            } else if let Ok(uuid) = selector.parse::<uuid::Uuid>() {
+                Some(SceneId(uuid))
+            } else {
+                let matches = scenes
+                    .list()
+                    .into_iter()
+                    .filter(|scene| scene.name.eq_ignore_ascii_case(selector))
+                    .map(|scene| scene.id)
+                    .collect::<Vec<_>>();
+                match matches.as_slice() {
+                    [scene_id] => Some(*scene_id),
+                    [] => None,
+                    _ => {
+                        warn!(selector, candidates = ?matches, "Configured startup scene is ambiguous");
+                        return;
+                    }
+                }
+            };
+            let Some(scene_id) = scene_id else {
+                warn!(selector, "Configured startup scene was not found");
+                return;
+            };
+            let Some(scene) = scenes.get(&scene_id) else {
+                warn!(selector, scene_id = %scene_id, "Configured startup scene was not found");
+                return;
+            };
+            (
+                scene.id,
+                scene.name.clone(),
+                scene.layout_id.clone(),
+                scene.activation_brightness,
+                scenes.active_scene_id().copied(),
+            )
+        };
+
+        let (scene_id, scene_name, layout_id, activation_brightness, previous_scene_id) = target;
+        if previous_scene_id == Some(scene_id) {
+            return;
+        }
+
+        let current_scene = {
+            let mut scenes = self.scene_manager.write().await;
+            if let Err(error) = scenes.activate(&scene_id, None) {
+                warn!(selector, scene_id = %scene_id, %error, "Failed to activate configured startup scene");
+                return;
+            }
+            scenes.active_scene().cloned()
+        };
+
+        if let Some(layout_id) = layout_id {
+            let layout = self.layouts.read().await.get(layout_id.as_str()).cloned();
+            match layout {
+                Some(layout) => match SpatialEngine::try_new(layout.clone()) {
+                    Ok(prepared) => {
+                        *self.spatial_engine.write().await = prepared;
+                        self.scene_manager
+                            .write()
+                            .await
+                            .sync_primary_group_layout(&layout);
+                    }
+                    Err(error) => {
+                        warn!(%layout_id, %error, "Rejected configured startup scene layout");
+                    }
+                },
+                None => {
+                    warn!(%layout_id, "Configured startup scene layout was not found");
+                }
+            }
+        }
+
+        if let Some(brightness) = activation_brightness {
+            set_global_brightness(&self.power_state, brightness);
+            let mut settings = self.device_settings.write().await;
+            settings.set_global_brightness(brightness);
+            if let Err(error) = settings.save() {
+                warn!(%error, "Failed to persist configured startup scene brightness");
+            }
+        }
+
+        if let Some(current_scene) = current_scene {
+            self.event_bus
+                .publish(crate::domain::scene::active_scene_changed_event(
+                    previous_scene_id,
+                    &current_scene,
+                    SceneChangeReason::DaemonStart,
+                ));
+        }
+        info!(scene_id = %scene_id, scene_name, "Activated configured startup scene");
     }
 
     async fn apply_runtime_session_snapshot(

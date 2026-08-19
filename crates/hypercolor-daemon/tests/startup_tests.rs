@@ -43,6 +43,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
+use hypercolor_types::identity::LayoutId;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
@@ -1539,6 +1540,87 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         .expect("default scene should exist");
     assert_eq!(default_scene.groups, vec![default_group]);
     drop(scenes);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot() {
+    let guard = TestDataDirGuard::new().await;
+    let selected_layout = SpatialLayout {
+        id: "startup_evening".into(),
+        name: "Startup Evening".into(),
+        description: None,
+        canvas_width: 512,
+        canvas_height: 256,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    layout_store::save(
+        &guard.layouts_path(),
+        &std::collections::HashMap::from([(selected_layout.id.clone(), selected_layout.clone())]),
+    )
+    .expect("layout store should save");
+    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
+    let mut named_scene = hypercolor_core::scene::make_scene("Evening");
+    let named_scene_id = named_scene.id;
+    named_scene.layout_id = Some(LayoutId::new(&selected_layout.id).expect("valid layout id"));
+    named_scene.activation_brightness = Some(0.35);
+    store.replace_named_scenes([named_scene]);
+    store.save().expect("scene store should save");
+
+    let mut config = default_config();
+    config.daemon.start_scene = "evening".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+
+    assert!(!guard.runtime_state_path().exists());
+    state.start().await.expect("start should succeed");
+
+    assert_eq!(
+        state.scene_manager.read().await.active_scene_id(),
+        Some(&named_scene_id)
+    );
+    assert!((current_global_brightness(&state.power_state) - 0.35).abs() < f32::EPSILON);
+    assert_eq!(
+        state.spatial_engine.read().await.layout().id,
+        selected_layout.id
+    );
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_activates_configured_scene_id() {
+    let guard = TestDataDirGuard::new().await;
+    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
+    let named_scene = hypercolor_core::scene::make_scene("Focus");
+    let named_scene_id = named_scene.id;
+    store.replace_named_scenes([named_scene]);
+    store.save().expect("scene store should save");
+
+    let mut config = default_config();
+    config.daemon.start_scene = named_scene_id.to_string();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+
+    state.start().await.expect("start should succeed");
+
+    assert_eq!(
+        state.scene_manager.read().await.active_scene_id(),
+        Some(&named_scene_id)
+    );
 
     state.shutdown().await.expect("shutdown should succeed");
 }
