@@ -1507,11 +1507,12 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
 async fn output_sleep_keeps_reactive_input_capture_live() {
     let mut state = make_render_state(
         active_builtin_effect("audio_pulse", HashMap::new()),
-        SpatialEngine::new(test_layout(Vec::new())),
+        SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     state.power_state = power_state;
+    let frame_rx = state.event_bus.frame_receiver();
 
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     {
@@ -1531,6 +1532,10 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
     }
     let mut render_thread = RenderThread::spawn(state.clone());
     wait_for_audio_capture_transition(&transitions, true).await;
+    wait_until("initial populated output frame", || {
+        !frame_rx.borrow().zones.is_empty()
+    })
+    .await;
 
     power_tx.send_replace(OutputPowerState {
         session_sleeping: true,
@@ -1538,7 +1543,10 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
         off_output_behavior: OffOutputBehavior::Release,
         ..OutputPowerState::default()
     });
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_until("release sleep to clear output", || {
+        frame_rx.borrow().zones.is_empty()
+    })
+    .await;
     assert_eq!(
         *transitions.lock().expect("transition log should lock"),
         [false, true],

@@ -1382,6 +1382,14 @@ async fn run_pump(
         schedule.collect_due(Instant::now(), &mut due_sources);
         manager.sample_source_kinds(&due_sources);
     }
+
+    // Cancellation can win the wake-up race after the authoritative renderer
+    // clears its demand, so shutdown must explicitly release capture hardware.
+    let mut manager = manager.lock().await;
+    capture_demand.reconcile(
+        &mut manager,
+        CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false),
+    );
     debug!("input publication worker exited");
 }
 
