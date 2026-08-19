@@ -421,9 +421,13 @@ marked.
 
 ### Audio, media, sensors
 
-1. Promote media's provider idiom to the named pattern; macOS media is a
-   self-contained provider plus one factory arm, not dead-code cfg
-   patches in shared files.
+1. Promote media's provider idiom to the named pattern. Apple exposes
+   supported APIs for publishing the current application's Now Playing
+   state, but no public system-global reader for other applications.
+   macOS media is therefore a self-contained set of explicit Automation
+   adapters for supported, running, scriptable players plus one factory
+   arm. It never binds private `MediaRemote` symbols or claims universal
+   now-playing coverage.
 2. Sensors become a normal source under `ManagedSourceRole::Data`, plus
    `SourceKind::Sensors`; today a panicked sensor thread leaves a
    permanently stale snapshot with no health surface.
@@ -1157,23 +1161,60 @@ Verify:
 - `rg -n 'pulse|coreaudio|screen.*audio' crates/hypercolor-core/src/input/audio`
   finds seam vocabulary and documentation only.
 
-#### E3: Add the macOS media provider
+#### E3: Add opt-in macOS app-specific media adapters
 
 **Files:** new `hypercolor-macos-media` crate, workspace manifests, core
-media factory arm, media fixtures and status tests.
-**Depends on:** I2.
+media factory arm, app and daemon privacy metadata and entitlements,
+signing and packaging fixtures, packaging privacy contracts in design 46
+and spec 76, and media status tests.
+**Depends on:** I2 plus a signed Apple Events ownership and consent canary
+for every supported macOS owner topology.
 **Parallel:** yes, with E1 and E4.
 
 Implementation:
 
-- Implement `MediaMetadataProvider` without adding cfg-shaped variants to
-  shared artwork or session types.
+- macOS has no supported system-global Now Playing reader. Implement
+  `MediaMetadataProvider` through public, app-specific Automation adapters.
+  The initial capability set covers Music and an optional installed Spotify
+  adapter. Each adapter must validate the target's current scripting
+  capability rather than treating a third-party dictionary as an operating
+  system guarantee.
+- Never launch a player as a side effect of polling. Scan capable running
+  players independently so one denied or stale target cannot hide another.
+- Namespace player identity by target bundle ID and adapter item ID. Treat
+  metadata, position, duration, playback state, and artwork as per-adapter
+  capabilities rather than a uniform platform promise.
+- Poll through a running process identity and use nonprompting Apple Events
+  permission preflight. Polling reports consent required or denied; only an
+  explicit user authorization action may ask macOS to prompt.
+- Report Automation denial, unsupported capability, no running capable
+  player, and stale application state distinctly through the neutral source
+  status contract.
+- Do not use `MPNowPlayingInfoCenter` as a reader. Apple's public MediaPlayer
+  and Now Playing APIs publish the current application's playback; the
+  system-global `MediaRemote` surface is private and outside the platform
+  layer's dependency policy.
+- Keep platform payloads inside the macOS crate without adding cfg-shaped
+  variants to shared artwork or session types.
+- Add `NSAppleEventsUsageDescription` and
+  `com.apple.security.automation.apple-events` only to signed sender
+  topologies proven by the canary. Ineligible owner topologies report the
+  capability unavailable instead of attempting Apple Events.
 
 Verify:
 
 - Existing provider-session tests plus macOS fixtures prove connect,
-  metadata change, artwork replacement, disconnect, unsupported
-  capability, and stale-session recovery.
+  metadata change, artwork replacement, disconnect, Automation denial,
+  unsupported capability, independent adapter failure, and stale-session
+  recovery.
+- A running-process fixture proves polling never launches Music or Spotify.
+- Permission fixtures prove polling never prompts, explicit authorization
+  uses the exact signed sender identity, and denial or revocation remains
+  recoverable.
+- Packaging fixtures pin the purpose string, entitlement, and eligible owner
+  topologies. Unbundled or ineligible owners publish unavailable status.
+- SDK and symbol checks find no private `MediaRemote` linkage, dynamic
+  loading, or symbol lookup.
 - Shared artwork and session enums have no cfg-shaped fields or variants.
 
 #### E4: Add the macOS session monitor
