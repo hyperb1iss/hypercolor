@@ -140,6 +140,7 @@ struct WorkerContext {
     device_catalog_generation: u64,
     pending: PendingEvents,
     status: Arc<Mutex<Vec<DeviceOpenStatus>>>,
+    status_revision: Arc<AtomicU64>,
     device_count: Arc<AtomicUsize>,
     published_topology: Arc<AtomicU64>,
 }
@@ -148,6 +149,7 @@ impl WorkerContext {
     fn new(
         config: EvdevInputConfig,
         status: Arc<Mutex<Vec<DeviceOpenStatus>>>,
+        status_revision: Arc<AtomicU64>,
         device_count: Arc<AtomicUsize>,
         published_topology: Arc<AtomicU64>,
     ) -> Self {
@@ -158,6 +160,7 @@ impl WorkerContext {
             device_catalog_generation: 0,
             pending: PendingEvents::new(),
             status,
+            status_revision,
             device_count,
             published_topology,
         }
@@ -196,6 +199,7 @@ pub struct EvdevInputSession {
     finished: mpsc::Receiver<()>,
     worker: Option<JoinHandle<()>>,
     status: Arc<Mutex<Vec<DeviceOpenStatus>>>,
+    status_revision: Arc<AtomicU64>,
     device_count: Arc<AtomicUsize>,
     device_catalog_generation: Arc<AtomicU64>,
     state: Arc<Mutex<EvdevWorkerState>>,
@@ -212,6 +216,7 @@ impl EvdevInputSession {
         }
 
         let status = Arc::new(Mutex::new(Vec::new()));
+        let status_revision = Arc::new(AtomicU64::new(0));
         let device_count = Arc::new(AtomicUsize::new(0));
         let device_catalog_generation = Arc::new(AtomicU64::new(0));
         let state = Arc::new(Mutex::new(EvdevWorkerState::Running));
@@ -223,6 +228,7 @@ impl EvdevInputSession {
             thread::Builder::new().name("hypercolor-evdev-input".to_owned()),
             {
                 let status = Arc::clone(&status);
+                let status_revision = Arc::clone(&status_revision);
                 let device_count = Arc::clone(&device_count);
                 let device_catalog_generation = Arc::clone(&device_catalog_generation);
                 let state = Arc::clone(&state);
@@ -234,6 +240,7 @@ impl EvdevInputSession {
                         &ready_tx,
                         &state,
                         status,
+                        status_revision,
                         device_count,
                         device_catalog_generation,
                     );
@@ -249,6 +256,7 @@ impl EvdevInputSession {
                 finished: finished_rx,
                 worker: Some(worker),
                 status,
+                status_revision,
                 device_count,
                 device_catalog_generation,
                 state,
@@ -285,6 +293,12 @@ impl EvdevInputSession {
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    /// Revision of the latest per-node discovery results.
+    #[must_use]
+    pub fn device_status_revision(&self) -> u64 {
+        self.status_revision.load(Ordering::Acquire)
     }
 
     /// Liveness of the acquisition worker.
@@ -362,10 +376,17 @@ fn run_worker(
     ready_tx: &mpsc::SyncSender<EvdevInputResult<()>>,
     worker_state: &Mutex<EvdevWorkerState>,
     status: Arc<Mutex<Vec<DeviceOpenStatus>>>,
+    status_revision: Arc<AtomicU64>,
     device_count: Arc<AtomicUsize>,
     device_catalog_generation: Arc<AtomicU64>,
 ) {
-    let mut context = WorkerContext::new(config, status, device_count, device_catalog_generation);
+    let mut context = WorkerContext::new(
+        config,
+        status,
+        status_revision,
+        device_count,
+        device_catalog_generation,
+    );
     rescan_devices(&mut context);
     if context.deliver(&mut sink).is_err() {
         set_worker_failure(worker_state, "evdev input publication panicked".to_owned());
@@ -406,7 +427,12 @@ fn rescan_devices(context: &mut WorkerContext) {
         Ok(paths) => paths,
         Err(error) => {
             warn!(%error, "failed to enumerate evdev input nodes");
-            mark_status_failed(&context.status, Path::new("/dev/input"), error.to_string());
+            mark_status_failed(
+                &context.status,
+                &context.status_revision,
+                Path::new("/dev/input"),
+                error.to_string(),
+            );
             return;
         }
     };
@@ -529,7 +555,7 @@ fn rescan_devices(context: &mut WorkerContext) {
             "evdev input nodes are unreadable; install the Hypercolor udev rules"
         );
     }
-    replace_status(&context.status, statuses);
+    replace_status(&context.status, &context.status_revision, statuses);
     if catalog_changed {
         context.device_catalog_changed();
     } else {
@@ -569,7 +595,7 @@ fn poll_devices(context: &mut WorkerContext) {
                 Some(HostInputGapReason::ReadFailed),
             );
         }
-        mark_status_failed(&context.status, &path, error);
+        mark_status_failed(&context.status, &context.status_revision, &path, error);
     }
     context.device_catalog_changed();
 }
@@ -801,25 +827,46 @@ const fn is_non_keyboard_key(code: KeyCode) -> bool {
         || (code >= 0x2c0 && code < 0x2e0)
 }
 
-fn replace_status(status: &Mutex<Vec<DeviceOpenStatus>>, replacement: Vec<DeviceOpenStatus>) {
-    match status.lock() {
-        Ok(mut guard) => *guard = replacement,
-        Err(poisoned) => *poisoned.into_inner() = replacement,
-    }
-}
-
-fn mark_status_failed(status: &Mutex<Vec<DeviceOpenStatus>>, path: &Path, error: String) {
+fn replace_status(
+    status: &Mutex<Vec<DeviceOpenStatus>>,
+    revision: &AtomicU64,
+    replacement: Vec<DeviceOpenStatus>,
+) {
     let mut guard = status
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *guard != replacement {
+        *guard = replacement;
+        revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn mark_status_failed(
+    status: &Mutex<Vec<DeviceOpenStatus>>,
+    revision: &AtomicU64,
+    path: &Path,
+    error: String,
+) {
+    let mut guard = status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let next = DeviceOpenState::Failed(error);
+    let changed;
     if let Some(entry) = guard.iter_mut().find(|entry| entry.path == path) {
-        entry.state = DeviceOpenState::Failed(error);
+        changed = entry.state != next;
+        if changed {
+            entry.state = next;
+        }
     } else {
         guard.push(DeviceOpenStatus {
             path: path.to_path_buf(),
             label: path.display().to_string(),
-            state: DeviceOpenState::Failed(error),
+            state: next,
         });
+        changed = true;
+    }
+    if changed {
+        revision.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -896,6 +943,7 @@ mod tests {
         let mut context = WorkerContext::new(
             config,
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(AtomicU64::new(0)),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicU64::new(0)),
         );
@@ -917,11 +965,42 @@ mod tests {
         let mut context = WorkerContext::new(
             config,
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(AtomicU64::new(0)),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicU64::new(0)),
         );
 
         assert!(context.deliver(&mut |_| {}).is_ok());
+    }
+
+    #[test]
+    fn device_status_revision_advances_only_for_changed_snapshots() {
+        let status = Mutex::new(Vec::new());
+        let revision = AtomicU64::new(0);
+        let opened = vec![DeviceOpenStatus {
+            path: PathBuf::from("/dev/input/event0"),
+            label: "fixture".to_owned(),
+            state: DeviceOpenState::Opened,
+        }];
+
+        replace_status(&status, &revision, opened.clone());
+        assert_eq!(revision.load(Ordering::Acquire), 1);
+        replace_status(&status, &revision, opened);
+        assert_eq!(revision.load(Ordering::Acquire), 1);
+        mark_status_failed(
+            &status,
+            &revision,
+            Path::new("/dev/input/event0"),
+            "read failed".to_owned(),
+        );
+        assert_eq!(revision.load(Ordering::Acquire), 2);
+        mark_status_failed(
+            &status,
+            &revision,
+            Path::new("/dev/input/event0"),
+            "read failed".to_owned(),
+        );
+        assert_eq!(revision.load(Ordering::Acquire), 2);
     }
 
     #[test]

@@ -12,8 +12,10 @@ use super::{
     next_buffer_capacity, queue_device_resolution,
 };
 use crate::devices::DeviceResolution;
-use crate::shared::{
-    PendingEvents, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent,
+use crate::shared::{PendingEvents, RawDeviceDescriptor, RawDeviceKind};
+use hypercolor_types::host_input::{
+    HostInputBatch, HostInputCapabilities, HostInputDevice, HostInputEvent, HostKeyIdentity,
+    HostKeySignal, HostRepeatEvidence,
 };
 
 fn device(source_id: &str, kind: RawDeviceKind, generation: u64) -> Arc<RawDeviceDescriptor> {
@@ -24,6 +26,22 @@ fn device(source_id: &str, kind: RawDeviceKind, generation: u64) -> Arc<RawDevic
         kind,
         session_generation: 1,
         device_generation: generation,
+        host_device: Arc::new(HostInputDevice {
+            source_id: Arc::from(source_id),
+            label: Arc::from(source_id),
+            capabilities: match kind {
+                RawDeviceKind::Keyboard => HostInputCapabilities {
+                    keyboard: true,
+                    pointer: false,
+                },
+                RawDeviceKind::Mouse => HostInputCapabilities {
+                    keyboard: false,
+                    pointer: true,
+                },
+            },
+            session_generation: 1,
+            device_generation: generation,
+        }),
     })
 }
 
@@ -146,19 +164,23 @@ fn first_data_discovery_queues_arrival_before_the_record() {
     let mut pending = PendingEvents::new();
 
     queue_device_resolution(&mut pending, &resolution);
-    pending.push(RawInputEvent::Key {
-        device: discovered,
-        make_code: 0x1e,
-        prefix: crate::shared::RawKeyPrefix::None,
-        vkey: 0,
-        pressed: true,
+    pending.push(HostInputEvent::Key {
+        device: Some(Arc::clone(&discovered.host_device)),
+        identity: HostKeyIdentity {
+            key: Arc::from("a"),
+            physical_code: Arc::from("windows:set1:none:1e"),
+        },
+        signal: HostKeySignal::Edge {
+            pressed: true,
+            repeat: HostRepeatEvidence::Unknown,
+        },
     });
 
     let mut order = Vec::new();
-    pending.deliver(1, 1, None, &mut |batch: RawInputBatch<'_>| {
+    pending.deliver(1, 1, None, &mut |batch: HostInputBatch<'_>| {
         order.extend(batch.events.iter().map(|event| match event {
-            RawInputEvent::DeviceArrived { .. } => "arrival",
-            RawInputEvent::Key { .. } => "key",
+            HostInputEvent::DeviceArrived { .. } => "arrival",
+            HostInputEvent::Key { .. } => "key",
             _ => "other",
         }));
     });
@@ -182,8 +204,8 @@ fn handle_replacement_queues_removal_before_new_arrival() {
     let mut order = Vec::new();
     pending.deliver(1, 1, None, &mut |batch| {
         order.extend(batch.events.iter().map(|event| match event {
-            RawInputEvent::DeviceRemoved { .. } => "removal",
-            RawInputEvent::DeviceArrived { .. } => "arrival",
+            HostInputEvent::DeviceRemoved { .. } => "removal",
+            HostInputEvent::DeviceArrived { .. } => "arrival",
             _ => "other",
         }));
     });

@@ -33,6 +33,11 @@ impl EvdevInputSession {
     }
 
     #[must_use]
+    pub const fn device_status_revision(&self) -> u64 {
+        0
+    }
+
+    #[must_use]
     pub fn worker_state(&self) -> EvdevWorkerState {
         EvdevWorkerState::Failed("evdev host input is unavailable".to_owned())
     }

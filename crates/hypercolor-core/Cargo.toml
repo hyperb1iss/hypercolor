@@ -50,6 +50,7 @@ hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 # the capture crate supplies stubs when DXGI is unavailable.
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
 hypercolor-macos-input = { workspace = true }
+hypercolor-linux-input = { workspace = true }
 hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
@@ -107,7 +108,6 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 libpulse-binding = { workspace = true }
 ashpd = { workspace = true }
 pipewire = { workspace = true }
-evdev = { workspace = true }
 zbus = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

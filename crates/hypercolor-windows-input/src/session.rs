@@ -25,9 +25,8 @@ use crate::decode::ScreenRect;
 use crate::metrics::physical_monitor_topology;
 use crate::probe::interactive_session_state;
 use crate::pump::{Pump, StopSignal, WM_HYPERCOLOR_STOP};
-use crate::shared::{
-    RawInputBatch, RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState,
-};
+use crate::shared::{RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState};
+use hypercolor_types::host_input::HostInputBatch;
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 /// How long `start()` waits for the worker to finish initializing.
@@ -91,7 +90,7 @@ impl RawInputSession {
     /// never deliver a message.
     pub fn start(
         config: RawInputConfig,
-        sink: impl FnMut(RawInputBatch<'_>) + Send + 'static,
+        sink: impl FnMut(HostInputBatch<'_>) + Send + 'static,
     ) -> RawInputResult<Self> {
         if interactive_session_state() == SessionState::NoInteractiveSession {
             return Err(RawInputError::NoInteractiveSession);
@@ -264,7 +263,7 @@ impl Drop for RawInputSession {
 fn run_worker(
     config: RawInputConfig,
     generation: u64,
-    mut sink: impl FnMut(RawInputBatch<'_>),
+    mut sink: impl FnMut(HostInputBatch<'_>),
     stop: &StopSignal,
     window: &Mutex<isize>,
     device_count: &AtomicUsize,

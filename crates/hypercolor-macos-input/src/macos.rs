@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use hypercolor_types::event::PointerScrollPhase;
+use hypercolor_types::host_input::HostInputBatch;
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use objc2_app_kit::NSEvent;
 use objc2_core_foundation::{
@@ -19,13 +21,14 @@ use objc2_core_graphics::{
     CGPreflightListenEventAccess, CGRequestListenEventAccess,
 };
 
-use crate::queue::{DEFAULT_QUEUE_CAPACITY, EventQueue};
+use crate::queue::{DEFAULT_QUEUE_CAPACITY, EventQueue, MacosQueuedInputEvent};
 use crate::{
-    EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
-    MacosInputEvent, MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult,
-    MacosModifierFlags, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
-    MacosWorkerDegradation, MacosWorkerState, decode_button_event, decode_media_key,
-    decode_momentum_phase, decode_scroll_phase, event_masks,
+    EffectiveEventMasks, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
+    MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult, MacosModifierFlags,
+    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState, decode_button_event,
+    decode_media_key, decode_momentum_phase, decode_scroll_phase, event_masks,
+    normalize_button_event, normalize_key_event, normalize_modifier_event, normalize_motion_event,
+    normalize_scroll_event,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -179,7 +182,7 @@ impl MacosInputSession {
     /// Start the requested event taps and block until their run loop is ready.
     pub fn start(
         config: MacosInputConfig,
-        sink: impl FnMut(MacosInputBatch<'_>) -> MacosInputPublicationOutcome + Send + 'static,
+        sink: impl FnMut(HostInputBatch<'_>) -> MacosInputPublicationOutcome + Send + 'static,
     ) -> MacosInputResult<Self> {
         if !config.keyboard && !config.pointer {
             return Err(MacosInputError::NothingToCapture);
@@ -640,9 +643,10 @@ fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason, callbac
         .queue
         .diagnostics()
         .record_tap_disable(repeated, reason);
-    context
-        .queue
-        .enqueue_at(MacosInputEvent::StateGap { reason }, callback_entry);
+    context.queue.enqueue_at(
+        MacosQueuedInputEvent::gap(reason.host_reason()),
+        callback_entry,
+    );
     // Always re-enable, including on repeated disables. A disabled tap
     // fires no callbacks, so refusing here would be permanent capture
     // death with no recovery trigger anywhere. The retry cadence is
@@ -664,30 +668,31 @@ fn decode_native_event(
     event_type: CGEventType,
     event: &CGEvent,
     context: &TapContext,
-) -> Option<MacosInputEvent> {
+) -> Option<MacosQueuedInputEvent> {
     if event_type == CGEventType::KeyDown || event_type == CGEventType::KeyUp {
-        return Some(MacosInputEvent::Key {
-            virtual_keycode: u16::try_from(CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::KeyboardEventKeycode,
-            ))
-            .ok()?,
-            pressed: event_type == CGEventType::KeyDown,
-            autorepeat: CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::KeyboardEventAutorepeat,
-            ) != 0,
-        });
+        let virtual_keycode = u16::try_from(CGEvent::integer_value_field(
+            Some(event),
+            CGEventField::KeyboardEventKeycode,
+        ))
+        .ok()?;
+        return normalize_key_event(
+            virtual_keycode,
+            event_type == CGEventType::KeyDown,
+            CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventAutorepeat) != 0,
+        )
+        .map(MacosQueuedInputEvent::Event);
     }
     if event_type == CGEventType::FlagsChanged {
-        return Some(MacosInputEvent::ModifierFlags {
-            virtual_keycode: u16::try_from(CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::KeyboardEventKeycode,
-            ))
-            .ok()?,
-            flags: MacosModifierFlags::from_bits(CGEvent::flags(Some(event)).bits()),
-        });
+        let virtual_keycode = u16::try_from(CGEvent::integer_value_field(
+            Some(event),
+            CGEventField::KeyboardEventKeycode,
+        ))
+        .ok()?;
+        return normalize_modifier_event(
+            virtual_keycode,
+            MacosModifierFlags::from_bits(CGEvent::flags(Some(event)).bits()),
+        )
+        .map(MacosQueuedInputEvent::Event);
     }
     if event_type == SYSTEM_DEFINED_EVENT {
         // The tap thread never spins an autorelease pool of its own, and
@@ -703,11 +708,7 @@ fn decode_native_event(
             };
             let data1 = i64::try_from(native.data1()).ok()?;
             if let Some(media) = decode_media_key(native.subtype().0, data1) {
-                return Some(MacosInputEvent::MediaKey {
-                    nx_key_type: media.nx_key_type,
-                    pressed: media.pressed,
-                    repeat: media.repeat,
-                });
+                return Some(MacosQueuedInputEvent::Event(media));
             }
             context
                 .queue
@@ -724,7 +725,9 @@ fn decode_native_event(
         ))
         .ok()?,
     ) {
-        return Some(MacosInputEvent::Button { button, pressed });
+        return Some(MacosQueuedInputEvent::Event(normalize_button_event(
+            button, pressed,
+        )));
     }
     if matches!(
         event_type,
@@ -734,13 +737,9 @@ fn decode_native_event(
             | CGEventType::OtherMouseDragged
     ) {
         let location = CGEvent::location(Some(event));
-        return Some(MacosInputEvent::Motion {
+        return Some(MacosQueuedInputEvent::Motion {
             x: location.x,
             y: location.y,
-            delta_x: CGEvent::integer_value_field(Some(event), CGEventField::MouseEventDeltaX)
-                as f64,
-            delta_y: CGEvent::integer_value_field(Some(event), CGEventField::MouseEventDeltaY)
-                as f64,
         });
     }
     if event_type == CGEventType::ScrollWheel {
@@ -766,22 +765,16 @@ fn decode_native_event(
             context,
             decode_momentum_phase,
         );
-        let unit = if CGEvent::integer_value_field(
-            Some(event),
-            CGEventField::ScrollWheelEventIsContinuous,
-        ) != 0
-        {
-            MacosScrollUnit::Pixels
-        } else {
-            MacosScrollUnit::Notches
-        };
-        return Some(MacosInputEvent::Wheel {
-            fixed_delta_x: q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis2),
-            fixed_delta_y: q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis1),
-            unit,
+        let continuous =
+            CGEvent::integer_value_field(Some(event), CGEventField::ScrollWheelEventIsContinuous)
+                != 0;
+        return Some(MacosQueuedInputEvent::Event(normalize_scroll_event(
+            q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis2),
+            q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis1),
+            continuous,
             phase,
             momentum_phase,
-        });
+        )));
     }
     None
 }
@@ -811,22 +804,23 @@ fn q16_16_field(event: &CGEvent, field: CGEventField) -> i64 {
 fn decode_phase(
     raw: i64,
     context: &TapContext,
-    decode: impl FnOnce(i64) -> Option<MacosScrollPhase>,
-) -> MacosScrollPhase {
+    decode: impl FnOnce(i64) -> Option<PointerScrollPhase>,
+) -> PointerScrollPhase {
     decode(raw).unwrap_or_else(|| {
         context.queue.diagnostics().record_invalid_scroll_phase();
-        MacosScrollPhase::None
+        PointerScrollPhase::None
     })
 }
 
 fn drain_batches(
     config: MacosInputConfig,
     mut desktop: MacosVirtualDesktop,
-    mut sink: impl FnMut(MacosInputBatch<'_>) -> MacosInputPublicationOutcome,
+    mut sink: impl FnMut(HostInputBatch<'_>) -> MacosInputPublicationOutcome,
     queue: &EventQueue,
     state: &Mutex<MacosWorkerState>,
     control: &RunLoopControl,
 ) {
+    let mut queued_events = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY + 2);
     let mut events = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY + 2);
     let mut callback_entries = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY);
     let mut next_topology_check = Instant::now() + TOPOLOGY_INTERVAL;
@@ -878,16 +872,28 @@ fn drain_batches(
             next_topology_check = now + TOPOLOGY_INTERVAL;
         }
 
+        queued_events.clear();
         events.clear();
         callback_entries.clear();
         let at_ms = (config.clock)();
-        queue.drain_into(&mut events, &mut callback_entries);
+        queue.drain_into(&mut queued_events, &mut callback_entries);
+        let mut pointer = None;
+        for event in &queued_events {
+            match event {
+                MacosQueuedInputEvent::Event(event) => events.push(event.clone()),
+                MacosQueuedInputEvent::Motion { x, y } => {
+                    let (event, snapshot) = normalize_motion_event(desktop, *x, *y);
+                    events.push(event);
+                    pointer = Some(snapshot);
+                }
+            }
+        }
         if !events.is_empty() {
-            let outcome = sink(MacosInputBatch {
-                epoch: config.epoch,
-                at_ms,
+            let outcome = sink(HostInputBatch {
                 events: &events,
-                virtual_desktop: desktop,
+                pointer,
+                at_ms,
+                device_catalog_generation: 0,
             });
             if outcome == MacosInputPublicationOutcome::Published {
                 queue

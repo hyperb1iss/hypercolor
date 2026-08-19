@@ -118,6 +118,26 @@ impl HostInputFold {
     /// Drain transient state into one frame snapshot.
     #[must_use]
     pub fn sample_and_drain(&mut self) -> HostInputSample {
+        self.sample_inner(true)
+    }
+
+    /// Sample folded state without draining discrete events.
+    #[must_use]
+    pub fn sample(&mut self) -> InteractionData {
+        self.sample_inner(false).interaction
+    }
+
+    /// Drain discrete events without sampling transient frame state.
+    #[must_use]
+    pub fn drain_events(&self) -> Vec<TimedInputEvent> {
+        let mut state = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.events.drain(..).collect()
+    }
+
+    fn sample_inner(&mut self, drain_events: bool) -> HostInputSample {
         let mut state = self
             .shared
             .lock()
@@ -143,7 +163,11 @@ impl HostInputFold {
             self.last_state_key = Some(state_key);
         }
         interaction.generation = self.generation;
-        let events = state.events.drain(..).collect();
+        let events = if drain_events {
+            state.events.drain(..).collect()
+        } else {
+            Vec::new()
+        };
         HostInputSample {
             interaction,
             events,
@@ -224,7 +248,7 @@ struct HostInputFoldState {
     virtual_cursor_y: f32,
     pointer: Option<HostPointerSnapshot>,
     pointer_present: bool,
-    coordinate_space_generation: Option<u64>,
+    coordinate_space_generations: BTreeMap<Arc<str>, u64>,
     absolute_baselines: BTreeMap<Arc<str>, (f32, f32, u64)>,
     wheel_projectors: BTreeMap<Arc<str>, LegacyWheelProjector>,
     diagnostics: HostInputFoldDiagnostics,
@@ -247,7 +271,7 @@ impl HostInputFoldState {
             virtual_cursor_y: 0.0,
             pointer: None,
             pointer_present: false,
-            coordinate_space_generation: None,
+            coordinate_space_generations: BTreeMap::new(),
             absolute_baselines: BTreeMap::new(),
             wheel_projectors: BTreeMap::new(),
             diagnostics: HostInputFoldDiagnostics::default(),
@@ -264,7 +288,7 @@ impl HostInputFoldState {
         self.motion = MotionAggregate::default();
         self.pointer = None;
         self.pointer_present = false;
-        self.coordinate_space_generation = None;
+        self.coordinate_space_generations.clear();
         self.absolute_baselines.clear();
         self.wheel_projectors.clear();
         self.diagnostics = HostInputFoldDiagnostics::default();
@@ -273,7 +297,7 @@ impl HostInputFoldState {
     fn fold_batch(&mut self, source_id: &Arc<str>, batch: HostInputBatch<'_>) {
         self.diagnostics.device_catalog_generation = batch.device_catalog_generation;
         if let Some(pointer) = batch.pointer {
-            self.observe_coordinate_space(pointer.coordinate_space_generation);
+            self.observe_coordinate_space(source_id, pointer.coordinate_space_generation);
             self.pointer = Some(pointer);
             self.pointer_present = true;
         }
@@ -334,21 +358,34 @@ impl HostInputFoldState {
                 );
             }
             HostInputEvent::DeviceArrived { device } => {
-                self.devices
+                let previous = self
+                    .devices
                     .insert(Arc::clone(&device.source_id), Arc::clone(device));
+                let same_incarnation = previous.as_ref().is_some_and(|previous| {
+                    previous.session_generation == device.session_generation
+                        && previous.device_generation == device.device_generation
+                });
                 self.pointer_present |= device.capabilities.pointer;
-                self.absolute_baselines.remove(&device.source_id);
-                self.wheel_projectors.remove(&device.source_id);
+                if !same_incarnation {
+                    if previous.is_some() {
+                        self.synthesize_releases(&device.source_id, at_ms);
+                    }
+                    self.absolute_baselines.remove(&device.source_id);
+                    self.coordinate_space_generations.remove(&device.source_id);
+                    self.wheel_projectors.remove(&device.source_id);
+                }
             }
             HostInputEvent::StateGap { device, .. } => {
                 self.diagnostics.state_gaps = self.diagnostics.state_gaps.saturating_add(1);
                 if let Some(device) = device {
                     self.synthesize_releases(&device.source_id, at_ms);
                     self.absolute_baselines.remove(&device.source_id);
+                    self.coordinate_space_generations.remove(&device.source_id);
                     self.wheel_projectors.remove(&device.source_id);
                 } else {
                     self.synthesize_all_releases(at_ms);
                     self.absolute_baselines.clear();
+                    self.coordinate_space_generations.clear();
                     self.wheel_projectors.clear();
                 }
             }
@@ -356,6 +393,7 @@ impl HostInputFoldState {
                 self.devices.remove(&device.source_id);
                 self.synthesize_releases(&device.source_id, at_ms);
                 self.absolute_baselines.remove(&device.source_id);
+                self.coordinate_space_generations.remove(&device.source_id);
                 self.wheel_projectors.remove(&device.source_id);
                 self.pointer_present = self
                     .devices
@@ -522,7 +560,7 @@ impl HostInputFoldState {
                 norm_y,
                 coordinate_space_generation,
             } => {
-                self.observe_coordinate_space(coordinate_space_generation);
+                self.observe_coordinate_space(source_id, coordinate_space_generation);
                 let next = (
                     norm_x.clamp(0.0, 1.0),
                     norm_y.clamp(0.0, 1.0),
@@ -595,19 +633,19 @@ impl HostInputFoldState {
         });
     }
 
-    fn observe_coordinate_space(&mut self, generation: u64) {
-        if self.coordinate_space_generation == Some(generation) {
+    fn observe_coordinate_space(&mut self, source_id: &Arc<str>, generation: u64) {
+        if self.coordinate_space_generations.get(source_id) == Some(&generation) {
             return;
         }
         if self
-            .coordinate_space_generation
-            .replace(generation)
+            .coordinate_space_generations
+            .insert(Arc::clone(source_id), generation)
             .is_some()
         {
             self.diagnostics.coordinate_space_resets =
                 self.diagnostics.coordinate_space_resets.saturating_add(1);
         }
-        self.absolute_baselines.clear();
+        self.absolute_baselines.remove(source_id);
     }
 
     fn synthesize_all_releases(&mut self, at_ms: u64) {

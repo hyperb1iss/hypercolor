@@ -6,11 +6,9 @@
 
 pub mod audio;
 pub mod browser;
-#[cfg(target_os = "linux")]
 pub mod evdev;
 mod graph;
 mod host_fold;
-pub mod keymap;
 pub mod macos;
 pub mod media;
 pub mod net;
@@ -28,7 +26,6 @@ pub use browser::{
     BrowserInputPublicationId, BrowserInputRegistryError, BrowserInputRegistryHandle,
     BrowserInputRegistrySnapshot, BrowserInputSource, BrowserPreviewId,
 };
-#[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,

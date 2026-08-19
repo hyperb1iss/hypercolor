@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use hypercolor_types::host_input::HostInputGapReason;
 use hypercolor_types::source_status::{
     SourceDiagnosticsDisplayField, SourceDiagnosticsEnvelope, SourceDiagnosticsEnvelopeError,
 };
@@ -268,7 +269,6 @@ pub fn input_diagnostics_envelope(
 pub struct MacosInputConfig {
     pub keyboard: bool,
     pub pointer: bool,
-    pub epoch: u64,
     pub clock: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
@@ -277,7 +277,6 @@ impl std::fmt::Debug for MacosInputConfig {
         f.debug_struct("MacosInputConfig")
             .field("keyboard", &self.keyboard)
             .field("pointer", &self.pointer)
-            .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
 }
@@ -312,37 +311,6 @@ impl MacosModifierFlags {
     }
 }
 
-/// Pointer button reported by a Core Graphics event tap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MacosPointerButton {
-    Left,
-    Right,
-    Middle,
-    Other(u16),
-}
-
-/// Unit of the signed 16.16 values in a wheel event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MacosScrollUnit {
-    /// Physical wheel notches before core scales them into `Line120` units.
-    Notches,
-    /// Continuous trackpad or Magic Mouse movement in pixels.
-    Pixels,
-}
-
-/// Gesture phase attached to exact scroll motion.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum MacosScrollPhase {
-    #[default]
-    None,
-    Began,
-    Stationary,
-    Changed,
-    Ended,
-    Cancelled,
-    MayBegin,
-}
-
 /// Why native state can no longer be treated as a complete edge stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacosInputGapReason {
@@ -355,51 +323,17 @@ pub enum MacosInputGapReason {
     QueueOverflow,
 }
 
-/// One decoded edge or ordered state barrier.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MacosInputEvent {
-    Key {
-        virtual_keycode: u16,
-        pressed: bool,
-        autorepeat: bool,
-    },
-    ModifierFlags {
-        virtual_keycode: u16,
-        flags: MacosModifierFlags,
-    },
-    Button {
-        button: MacosPointerButton,
-        pressed: bool,
-    },
-    Motion {
-        x: f64,
-        y: f64,
-        delta_x: f64,
-        delta_y: f64,
-    },
-    Wheel {
-        fixed_delta_x: i64,
-        fixed_delta_y: i64,
-        unit: MacosScrollUnit,
-        phase: MacosScrollPhase,
-        momentum_phase: MacosScrollPhase,
-    },
-    MediaKey {
-        nx_key_type: u16,
-        pressed: bool,
-        repeat: bool,
-    },
-    StateGap {
-        reason: MacosInputGapReason,
-    },
-}
-
-/// Decoded subtype-8 media-key payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MacosMediaKey {
-    pub nx_key_type: u16,
-    pub pressed: bool,
-    pub repeat: bool,
+impl MacosInputGapReason {
+    pub(crate) const fn host_reason(self) -> HostInputGapReason {
+        match self {
+            Self::QueueOverflow => HostInputGapReason::QueueOverflow,
+            Self::PermissionRevoked => HostInputGapReason::PermissionLost,
+            Self::TapDisabledTimeout | Self::TapDisabledUserInput | Self::SessionInterrupted => {
+                HostInputGapReason::SessionInterrupted
+            }
+            Self::WorkerExited | Self::SourceStopped => HostInputGapReason::WorkerStopped,
+        }
+    }
 }
 
 /// Union of active macOS display bounds for one topology generation.
@@ -451,15 +385,6 @@ impl MacosVirtualDesktop {
         let ny = ((y - self.origin_y) / self.height).clamp(0.0, 1.0);
         (nx, ny)
     }
-}
-
-/// One coherent native queue drain.
-#[derive(Debug)]
-pub struct MacosInputBatch<'a> {
-    pub epoch: u64,
-    pub at_ms: u64,
-    pub events: &'a [MacosInputEvent],
-    pub virtual_desktop: MacosVirtualDesktop,
 }
 
 /// Whether a native input batch reached the canonical core publication state.

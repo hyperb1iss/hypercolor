@@ -331,6 +331,144 @@ fn motion_projection_separates_device_catalog_and_coordinate_generations() {
 }
 
 #[test]
+fn independent_pointer_spaces_do_not_reset_each_others_baselines() {
+    let mut fold = HostInputFold::new(16);
+    let sink = fold.begin_session(
+        "pointer",
+        HostInputCapabilities {
+            keyboard: false,
+            pointer: true,
+        },
+    );
+    let tablet = device("tablet", false, true, 1);
+    let first = [HostInputEvent::Motion {
+        device: Some(Arc::clone(&tablet)),
+        motion: HostPointerMotion::Absolute {
+            norm_x: 0.1,
+            norm_y: 0.2,
+            coordinate_space_generation: 41,
+        },
+    }];
+    let _ = sink.publish(HostInputBatch {
+        events: &first,
+        pointer: Some(HostPointerSnapshot {
+            x: 10.0,
+            y: 20.0,
+            norm_x: 0.1,
+            norm_y: 0.2,
+            coordinate_space_generation: 9,
+        }),
+        at_ms: 50,
+        device_catalog_generation: 1,
+    });
+    let second = [HostInputEvent::Motion {
+        device: Some(tablet),
+        motion: HostPointerMotion::Absolute {
+            norm_x: 0.4,
+            norm_y: 0.6,
+            coordinate_space_generation: 41,
+        },
+    }];
+    let _ = sink.publish(HostInputBatch {
+        events: &second,
+        pointer: Some(HostPointerSnapshot {
+            x: 11.0,
+            y: 21.0,
+            norm_x: 0.11,
+            norm_y: 0.21,
+            coordinate_space_generation: 9,
+        }),
+        at_ms: 51,
+        device_catalog_generation: 1,
+    });
+
+    let sample = fold.sample_and_drain();
+    assert!((sample.interaction.batch.motion.dx - 0.3).abs() < f32::EPSILON);
+    assert!((sample.interaction.batch.motion.dy - 0.4).abs() < f32::EPSILON);
+    assert_eq!(fold.diagnostics().coordinate_space_resets, 0);
+}
+
+#[test]
+fn metadata_refresh_preserves_same_incarnation_pointer_state() {
+    let mut fold = HostInputFold::new(16);
+    let sink = fold.begin_session(
+        "pointer",
+        HostInputCapabilities {
+            keyboard: false,
+            pointer: true,
+        },
+    );
+    let original = device("tablet", false, true, 1);
+    let first = [
+        HostInputEvent::DeviceArrived {
+            device: Arc::clone(&original),
+        },
+        HostInputEvent::Motion {
+            device: Some(Arc::clone(&original)),
+            motion: HostPointerMotion::Absolute {
+                norm_x: 0.1,
+                norm_y: 0.2,
+                coordinate_space_generation: 7,
+            },
+        },
+        HostInputEvent::Scroll {
+            device: Some(Arc::clone(&original)),
+            delta_x_q16_16: 0,
+            delta_y_q16_16: 1_i64 << 15,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
+            physical_code: Arc::from("test:scroll"),
+        },
+    ];
+    publish(&sink, &first, 60);
+
+    let refreshed = Arc::new(HostInputDevice {
+        source_id: Arc::clone(&original.source_id),
+        label: Arc::from("renamed tablet"),
+        capabilities: original.capabilities,
+        session_generation: original.session_generation,
+        device_generation: original.device_generation,
+    });
+    let second = [
+        HostInputEvent::DeviceArrived {
+            device: Arc::clone(&refreshed),
+        },
+        HostInputEvent::Motion {
+            device: Some(Arc::clone(&refreshed)),
+            motion: HostPointerMotion::Absolute {
+                norm_x: 0.4,
+                norm_y: 0.6,
+                coordinate_space_generation: 7,
+            },
+        },
+        HostInputEvent::Scroll {
+            device: Some(refreshed),
+            delta_x_q16_16: 0,
+            delta_y_q16_16: 1_i64 << 15,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
+            physical_code: Arc::from("test:scroll"),
+        },
+    ];
+    publish(&sink, &second, 61);
+
+    let sample = fold.sample_and_drain();
+    assert!((sample.interaction.batch.motion.dx - 0.3).abs() < f32::EPSILON);
+    assert!((sample.interaction.batch.motion.dy - 0.4).abs() < f32::EPSILON);
+    assert_eq!(
+        sample
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, InputEvent::MouseWheel { .. }))
+            .count(),
+        1,
+        "two precise halves produce one accumulated legacy wheel step"
+    );
+}
+
+#[test]
 fn relative_motion_owns_the_virtual_cursor_projection() {
     let mut fold = HostInputFold::new(8);
     let sink = fold.begin_session(
@@ -395,6 +533,47 @@ fn stale_publishers_are_inert_after_session_rotation() {
         fold.sample_and_drain().interaction.keyboard.pressed_keys,
         ["a"]
     );
+}
+
+#[test]
+fn snapshot_and_event_drains_remain_independent() {
+    let mut fold = HostInputFold::new(8);
+    let sink = fold.begin_session(
+        "host",
+        HostInputCapabilities {
+            keyboard: true,
+            pointer: false,
+        },
+    );
+    publish(
+        &sink,
+        &[HostInputEvent::Key {
+            device: None,
+            identity: HostKeyIdentity {
+                key: Arc::from("a"),
+                physical_code: Arc::from("test:a"),
+            },
+            signal: HostKeySignal::Edge {
+                pressed: true,
+                repeat: HostRepeatEvidence::NotRepeat,
+            },
+        }],
+        80,
+    );
+
+    let snapshot = fold.sample();
+    assert_eq!(snapshot.keyboard.pressed_keys, ["a"]);
+    assert_eq!(snapshot.keyboard.recent_keys, ["a"]);
+    let events = fold.drain_events();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0].event,
+        InputEvent::Key {
+            state: InputButtonState::Pressed,
+            ..
+        }
+    ));
+    assert!(fold.drain_events().is_empty());
 }
 
 #[test]

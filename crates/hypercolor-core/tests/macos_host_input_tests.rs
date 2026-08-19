@@ -5,8 +5,12 @@ use hypercolor_core::types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit,
 };
 use hypercolor_macos_input::{
-    MacosInputBatch, MacosInputEvent, MacosInputGapReason, MacosModifierFlags, MacosPointerButton,
-    MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
+    MacosModifierFlags, MacosVirtualDesktop, normalize_button_event, normalize_key_event,
+    normalize_media_key_event, normalize_modifier_event, normalize_motion_event,
+    normalize_scroll_event,
+};
+use hypercolor_types::host_input::{
+    HostInputBatch, HostInputEvent, HostInputGapReason, HostPointerButton, HostPointerSnapshot,
 };
 
 fn desktop(topology_generation: u64) -> MacosVirtualDesktop {
@@ -16,17 +20,41 @@ fn desktop(topology_generation: u64) -> MacosVirtualDesktop {
 
 fn fold(
     input: &mut MacosHostInput,
-    events: &[MacosInputEvent],
+    events: &[HostInputEvent],
 ) -> (
     hypercolor_core::input::InteractionData,
     Vec<hypercolor_core::types::event::TimedInputEvent>,
 ) {
-    input.fold_and_snapshot(MacosInputBatch {
-        epoch: input.epoch(),
-        at_ms: 100,
+    input.fold_and_snapshot(HostInputBatch {
         events,
-        virtual_desktop: desktop(1),
+        pointer: None,
+        at_ms: 100,
+        device_catalog_generation: 0,
     })
+}
+
+fn fold_with_pointer(
+    input: &mut MacosHostInput,
+    events: &[HostInputEvent],
+    pointer: HostPointerSnapshot,
+) -> (
+    hypercolor_core::input::InteractionData,
+    Vec<hypercolor_core::types::event::TimedInputEvent>,
+) {
+    input.fold_and_snapshot(HostInputBatch {
+        events,
+        pointer: Some(pointer),
+        at_ms: 100,
+        device_catalog_generation: 0,
+    })
+}
+
+fn key(virtual_keycode: u16, pressed: bool, repeat: bool) -> HostInputEvent {
+    normalize_key_event(virtual_keycode, pressed, repeat).expect("fixture key is supported")
+}
+
+fn modifier(virtual_keycode: u16, flags: MacosModifierFlags) -> HostInputEvent {
+    normalize_modifier_event(virtual_keycode, flags).expect("fixture modifier is supported")
 }
 
 fn key_states(events: &[hypercolor_core::types::event::TimedInputEvent]) -> Vec<InputButtonState> {
@@ -43,31 +71,10 @@ fn key_states(events: &[hypercolor_core::types::event::TimedInputEvent]) -> Vec<
 fn native_repeat_and_impossible_edges_preserve_canonical_state() {
     let mut input = MacosHostInput::new(true, false);
     let events = [
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: false,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: true,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: false,
-            autorepeat: false,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: false,
-            autorepeat: false,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: true,
-        },
+        key(0x00, true, false),
+        key(0x00, true, true),
+        key(0x00, false, false),
+        key(0x00, false, false),
     ];
 
     let (data, folded) = fold(&mut input, &events);
@@ -81,10 +88,9 @@ fn native_repeat_and_impossible_edges_preserve_canonical_state() {
             InputButtonState::Repeated,
             InputButtonState::Released,
             InputButtonState::Released,
-            InputButtonState::Repeated,
         ]
     );
-    assert_eq!(input.fold_diagnostics().impossible_key_edges, 2);
+    assert_eq!(input.fold_diagnostics().impossible_key_edges, 1);
 }
 
 #[test]
@@ -93,30 +99,12 @@ fn modifier_flags_keep_sides_distinct_and_toggle_caps_lock() {
     let shift = MacosModifierFlags::SHIFT;
     let caps = MacosModifierFlags::ALPHA_SHIFT;
     let events = [
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x38,
-            flags: shift,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x3c,
-            flags: shift,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x38,
-            flags: shift,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x3c,
-            flags: MacosModifierFlags::default(),
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x39,
-            flags: caps,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x39,
-            flags: MacosModifierFlags::default(),
-        },
+        modifier(0x38, shift),
+        modifier(0x3c, shift),
+        modifier(0x38, shift),
+        modifier(0x3c, MacosModifierFlags::default()),
+        modifier(0x39, caps),
+        modifier(0x39, MacosModifierFlags::default()),
     ];
 
     let (data, folded) = fold(&mut input, &events);
@@ -139,15 +127,8 @@ fn modifier_flags_keep_sides_distinct_and_toggle_caps_lock() {
 fn media_keys_and_extra_buttons_use_canonical_names() {
     let mut input = MacosHostInput::new(true, true);
     let events = [
-        MacosInputEvent::MediaKey {
-            nx_key_type: 16,
-            pressed: true,
-            repeat: false,
-        },
-        MacosInputEvent::Button {
-            button: MacosPointerButton::Other(3),
-            pressed: true,
-        },
+        normalize_media_key_event(16, true, false).expect("fixture media key is supported"),
+        normalize_button_event(HostPointerButton::new("button4"), true),
     ];
 
     let (data, folded) = fold(&mut input, &events);
@@ -167,13 +148,13 @@ fn media_keys_and_extra_buttons_use_canonical_names() {
 #[test]
 fn physical_wheel_emits_exact_axes_then_legacy_vertical_shadow() {
     let mut input = MacosHostInput::new(false, true);
-    let events = [MacosInputEvent::Wheel {
-        fixed_delta_x: Q16_16_SCALE,
-        fixed_delta_y: -2 * Q16_16_SCALE,
-        unit: MacosScrollUnit::Notches,
-        phase: MacosScrollPhase::Changed,
-        momentum_phase: MacosScrollPhase::None,
-    }];
+    let events = [normalize_scroll_event(
+        Q16_16_SCALE,
+        -2 * Q16_16_SCALE,
+        false,
+        PointerScrollPhase::Changed,
+        PointerScrollPhase::None,
+    )];
 
     let (_, folded) = fold(&mut input, &events);
 
@@ -200,13 +181,13 @@ fn physical_wheel_emits_exact_axes_then_legacy_vertical_shadow() {
 #[test]
 fn subunit_wheel_motion_carries_fractional_remainder() {
     let mut input = MacosHostInput::new(false, true);
-    let wheel = [MacosInputEvent::Wheel {
-        fixed_delta_x: 0,
-        fixed_delta_y: 1,
-        unit: MacosScrollUnit::Notches,
-        phase: MacosScrollPhase::None,
-        momentum_phase: MacosScrollPhase::None,
-    }];
+    let wheel = [normalize_scroll_event(
+        0,
+        1,
+        false,
+        PointerScrollPhase::None,
+        PointerScrollPhase::None,
+    )];
     let mut legacy_total = 0;
 
     for _ in 0..547 {
@@ -226,13 +207,13 @@ fn subunit_wheel_motion_carries_fractional_remainder() {
 #[test]
 fn continuous_scroll_preserves_pixels_and_phases_without_legacy_shadow() {
     let mut input = MacosHostInput::new(false, true);
-    let events = [MacosInputEvent::Wheel {
-        fixed_delta_x: 3 * Q16_16_SCALE,
-        fixed_delta_y: -4 * Q16_16_SCALE,
-        unit: MacosScrollUnit::Pixels,
-        phase: MacosScrollPhase::Began,
-        momentum_phase: MacosScrollPhase::MayBegin,
-    }];
+    let events = [normalize_scroll_event(
+        3 * Q16_16_SCALE,
+        -4 * Q16_16_SCALE,
+        true,
+        PointerScrollPhase::Began,
+        PointerScrollPhase::MayBegin,
+    )];
 
     let (_, folded) = fold(&mut input, &events);
 
@@ -251,27 +232,15 @@ fn continuous_scroll_preserves_pixels_and_phases_without_legacy_shadow() {
 #[test]
 fn motion_normalizes_negative_origins_and_resets_on_topology_change() {
     let mut input = MacosHostInput::new(false, true);
-    let first = [MacosInputEvent::Motion {
-        x: -100.0,
-        y: 0.0,
-        delta_x: 90.0,
-        delta_y: 90.0,
-    }];
-    let second = [MacosInputEvent::Motion {
-        x: 100.0,
-        y: 50.0,
-        delta_x: 20.0,
-        delta_y: -10.0,
-    }];
+    let (first_event, first_pointer) = normalize_motion_event(desktop(1), -100.0, 0.0);
+    let (second_event, second_pointer) = normalize_motion_event(desktop(1), 100.0, 50.0);
+    let first = [first_event];
+    let second = [second_event.clone()];
 
-    let (first_data, _) = fold(&mut input, &first);
-    let (second_data, _) = fold(&mut input, &second);
-    let (reset_data, _) = input.fold_and_snapshot(MacosInputBatch {
-        epoch: input.epoch(),
-        at_ms: 101,
-        events: &second,
-        virtual_desktop: desktop(2),
-    });
+    let (first_data, _) = fold_with_pointer(&mut input, &first, first_pointer);
+    let (second_data, _) = fold_with_pointer(&mut input, &second, second_pointer);
+    let (reset_event, reset_pointer) = normalize_motion_event(desktop(2), 100.0, 50.0);
+    let (reset_data, _) = fold_with_pointer(&mut input, &[reset_event], reset_pointer);
 
     assert_eq!(first_data.mouse.mode, PointerMode::Absolute);
     assert_eq!((first_data.mouse.x, first_data.mouse.y), (-100, 0));
@@ -279,39 +248,27 @@ fn motion_normalizes_negative_origins_and_resets_on_topology_change() {
         (first_data.mouse.norm_x, first_data.mouse.norm_y),
         (0.25, 0.5)
     );
-    assert!((second_data.batch.motion.dx - 0.05).abs() < f32::EPSILON);
-    assert!((second_data.batch.motion.dy + 0.05).abs() < f32::EPSILON);
+    assert!((second_data.batch.motion.dx - 0.5).abs() < f32::EPSILON);
+    assert!((second_data.batch.motion.dy - 0.25).abs() < f32::EPSILON);
     assert_eq!(reset_data.batch.motion.dx, 0.0);
     assert_eq!(reset_data.batch.motion.dy, 0.0);
-    assert_eq!(input.fold_diagnostics().topology_resets, 2);
+    assert_eq!(input.fold_diagnostics().coordinate_space_resets, 1);
 }
 
 #[test]
-fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
+fn state_gap_synthesizes_releases() {
     let mut input = MacosHostInput::new(true, true);
     let held = [
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: false,
-        },
-        MacosInputEvent::Button {
-            button: MacosPointerButton::Left,
-            pressed: true,
-        },
+        key(0x00, true, false),
+        normalize_button_event(HostPointerButton::left(), true),
     ];
     fold(&mut input, &held);
-    let gap = [MacosInputEvent::StateGap {
-        reason: MacosInputGapReason::QueueOverflow,
+    let gap = [HostInputEvent::StateGap {
+        device: None,
+        reason: HostInputGapReason::QueueOverflow,
     }];
 
     let (data, releases) = fold(&mut input, &gap);
-    let (_, stale) = input.fold_and_snapshot(MacosInputBatch {
-        epoch: input.epoch().wrapping_add(1),
-        at_ms: 102,
-        events: &held,
-        virtual_desktop: desktop(1),
-    });
 
     assert!(data.keyboard.pressed_keys.is_empty());
     assert!(data.mouse.buttons.is_empty());
@@ -326,7 +283,6 @@ fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
             ..
         }
     )));
-    assert!(stale.is_empty());
     assert_eq!(input.fold_diagnostics().state_gaps, 1);
 }
 
@@ -336,13 +292,14 @@ mod fixtures {
     use std::sync::Arc;
 
     use hypercolor_core::input::{
-        CapabilityActionDisposition, InputData, InputManager, InputSource, MacosHostInput,
-        MacosInputFixtureBackend, ManagedSourceRole, SourceCapabilityConflict,
+        CapabilityActionDisposition, InputData, InputManager, InputSource, InteractionSource,
+        MacosHostInput, MacosInputFixtureBackend, ManagedSourceRole, SourceCapabilityConflict,
         SourceCapabilityContext, SourceState, SourceStatus,
     };
-    use hypercolor_macos_input::{MacosInputEvent, event_masks};
+    use hypercolor_macos_input::{event_masks, normalize_button_event};
+    use hypercolor_types::host_input::HostPointerButton;
 
-    use super::desktop;
+    use super::{desktop, key};
 
     fn capability_context(
         owner: &'static str,
@@ -437,10 +394,7 @@ mod fixtures {
 
         fixture
             .publish(
-                &[MacosInputEvent::Button {
-                    button: hypercolor_macos_input::MacosPointerButton::Left,
-                    pressed: true,
-                }],
+                &[normalize_button_event(HostPointerButton::left(), true)],
                 100,
             )
             .expect("pointer batch publishes");
@@ -475,15 +429,7 @@ mod fixtures {
         assert_ne!(fixture.active_epoch(), Some(first_epoch));
         assert!(
             !fixture
-                .publish_with_epoch(
-                    first_epoch,
-                    &[MacosInputEvent::Key {
-                        virtual_keycode: 0x00,
-                        pressed: true,
-                        autorepeat: false,
-                    }],
-                    200,
-                )
+                .publish_with_epoch(first_epoch, &[key(0x00, true, false)], 200,)
                 .expect("stale publication is rejected without an error")
         );
 
@@ -655,7 +601,7 @@ mod fixtures {
         let status = source
             .source_status_handle()
             .expect("macOS host source exposes status");
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(Box::new(source)))
             .expect("macOS host fixture should match its declared role");

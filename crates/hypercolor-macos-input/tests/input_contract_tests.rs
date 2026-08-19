@@ -1,10 +1,16 @@
 use std::sync::Arc;
 
 use hypercolor_macos_input::{
-    MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent, MacosInputGapReason,
-    MacosModifierFlags, MacosPointerButton, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
+    MacosInputConfig, MacosInputError, MacosModifierFlags, MacosVirtualDesktop,
     NX_SUBTYPE_AUX_CONTROL_BUTTONS, decode_button_event, decode_media_key, decode_momentum_phase,
-    decode_scroll_phase, event_masks, input_monitoring_granted, request_input_monitoring,
+    decode_scroll_phase, event_masks, input_monitoring_granted, normalize_button_event,
+    normalize_key_event, normalize_modifier_event, normalize_motion_event, normalize_scroll_event,
+    request_input_monitoring,
+};
+use hypercolor_types::event::{PointerScrollPhase, PointerScrollUnit};
+use hypercolor_types::host_input::{
+    HostInputBatch, HostInputEvent, HostKeySignal, HostPointerButton, HostPointerMotion,
+    HostRepeatEvidence,
 };
 
 #[test]
@@ -12,13 +18,12 @@ fn config_debug_omits_the_injected_clock() {
     let config = MacosInputConfig {
         keyboard: true,
         pointer: false,
-        epoch: 42,
         clock: Arc::new(|| 7),
     };
 
     assert_eq!(
         format!("{config:?}"),
-        "MacosInputConfig { keyboard: true, pointer: false, epoch: 42, .. }"
+        "MacosInputConfig { keyboard: true, pointer: false, .. }"
     );
     assert_eq!((config.clock)(), 7);
 }
@@ -43,22 +48,30 @@ fn media_decoder_accepts_only_valid_subtype_eight_payloads() {
     let pressed = (16_i64 << 16) | (0x0a_i64 << 8) | 1;
     let released = (18_i64 << 16) | (0x0b_i64 << 8);
 
+    let Some(HostInputEvent::Key {
+        identity, signal, ..
+    }) = decode_media_key(NX_SUBTYPE_AUX_CONTROL_BUTTONS, pressed)
+    else {
+        panic!("valid media key should normalize");
+    };
+    assert_eq!(identity.key.as_ref(), "MediaPlayPause");
     assert_eq!(
-        decode_media_key(NX_SUBTYPE_AUX_CONTROL_BUTTONS, pressed),
-        Some(hypercolor_macos_input::MacosMediaKey {
-            nx_key_type: 16,
+        signal,
+        HostKeySignal::Edge {
             pressed: true,
-            repeat: true,
-        })
+            repeat: HostRepeatEvidence::Repeat,
+        }
     );
-    assert_eq!(
+    assert!(matches!(
         decode_media_key(NX_SUBTYPE_AUX_CONTROL_BUTTONS, released),
-        Some(hypercolor_macos_input::MacosMediaKey {
-            nx_key_type: 18,
-            pressed: false,
-            repeat: false,
+        Some(HostInputEvent::Key {
+            signal: HostKeySignal::Edge {
+                pressed: false,
+                repeat: HostRepeatEvidence::NotRepeat
+            },
+            ..
         })
-    );
+    ));
     assert_eq!(decode_media_key(7, pressed), None);
     assert_eq!(decode_media_key(8, 16_i64 << 16), None);
     assert_eq!(decode_media_key(8, -1), None);
@@ -67,38 +80,38 @@ fn media_decoder_accepts_only_valid_subtype_eight_payloads() {
 #[test]
 fn button_decoder_preserves_numbered_extras() {
     assert_eq!(
-        decode_button_event(1, 0),
-        Some((MacosPointerButton::Left, true))
+        decode_button_event(1, 0).map(|(button, edge)| (button.as_str().to_owned(), edge)),
+        Some(("left".to_owned(), true))
     );
     assert_eq!(
-        decode_button_event(4, 1),
-        Some((MacosPointerButton::Right, false))
+        decode_button_event(4, 1).map(|(button, edge)| (button.as_str().to_owned(), edge)),
+        Some(("right".to_owned(), false))
     );
     assert_eq!(
-        decode_button_event(25, 2),
-        Some((MacosPointerButton::Middle, true))
+        decode_button_event(25, 2).map(|(button, edge)| (button.as_str().to_owned(), edge)),
+        Some(("middle".to_owned(), true))
     );
     assert_eq!(
-        decode_button_event(26, 7),
-        Some((MacosPointerButton::Other(7), false))
+        decode_button_event(26, 7).map(|(button, edge)| (button.as_str().to_owned(), edge)),
+        Some(("button8".to_owned(), false))
     );
     assert_eq!(decode_button_event(5, 0), None);
 }
 
 #[test]
 fn scroll_phases_use_core_graphics_native_values() {
-    assert_eq!(decode_scroll_phase(0), Some(MacosScrollPhase::None));
-    assert_eq!(decode_scroll_phase(1), Some(MacosScrollPhase::Began));
-    assert_eq!(decode_scroll_phase(2), Some(MacosScrollPhase::Changed));
-    assert_eq!(decode_scroll_phase(4), Some(MacosScrollPhase::Ended));
-    assert_eq!(decode_scroll_phase(8), Some(MacosScrollPhase::Cancelled));
-    assert_eq!(decode_scroll_phase(128), Some(MacosScrollPhase::MayBegin));
+    assert_eq!(decode_scroll_phase(0), Some(PointerScrollPhase::None));
+    assert_eq!(decode_scroll_phase(1), Some(PointerScrollPhase::Began));
+    assert_eq!(decode_scroll_phase(2), Some(PointerScrollPhase::Changed));
+    assert_eq!(decode_scroll_phase(4), Some(PointerScrollPhase::Ended));
+    assert_eq!(decode_scroll_phase(8), Some(PointerScrollPhase::Cancelled));
+    assert_eq!(decode_scroll_phase(128), Some(PointerScrollPhase::MayBegin));
     assert_eq!(decode_scroll_phase(16), None);
 
-    assert_eq!(decode_momentum_phase(0), Some(MacosScrollPhase::None));
-    assert_eq!(decode_momentum_phase(1), Some(MacosScrollPhase::Began));
-    assert_eq!(decode_momentum_phase(2), Some(MacosScrollPhase::Changed));
-    assert_eq!(decode_momentum_phase(3), Some(MacosScrollPhase::Ended));
+    assert_eq!(decode_momentum_phase(0), Some(PointerScrollPhase::None));
+    assert_eq!(decode_momentum_phase(1), Some(PointerScrollPhase::Began));
+    assert_eq!(decode_momentum_phase(2), Some(PointerScrollPhase::Changed));
+    assert_eq!(decode_momentum_phase(3), Some(PointerScrollPhase::Ended));
     assert_eq!(decode_momentum_phase(4), None);
 }
 
@@ -138,56 +151,57 @@ fn virtual_desktop_rejects_nonfinite_and_empty_bounds() {
 }
 
 #[test]
-fn batch_carries_the_complete_plain_rust_vocabulary() {
-    let events = [
-        MacosInputEvent::Key {
-            virtual_keycode: 0,
-            pressed: true,
-            autorepeat: false,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x38,
-            flags: MacosModifierFlags::SHIFT,
-        },
-        MacosInputEvent::Button {
-            button: MacosPointerButton::Middle,
-            pressed: true,
-        },
-        MacosInputEvent::Motion {
-            x: -10.0,
-            y: 30.0,
-            delta_x: 2.0,
-            delta_y: -1.0,
-        },
-        MacosInputEvent::Wheel {
-            fixed_delta_x: 1 << 15,
-            fixed_delta_y: -(1 << 16),
-            unit: MacosScrollUnit::Pixels,
-            phase: MacosScrollPhase::Changed,
-            momentum_phase: MacosScrollPhase::Began,
-        },
-        MacosInputEvent::MediaKey {
-            nx_key_type: 16,
-            pressed: true,
-            repeat: false,
-        },
-        MacosInputEvent::StateGap {
-            reason: MacosInputGapReason::QueueOverflow,
-        },
-    ];
+fn normalizers_emit_the_complete_shared_vocabulary() {
     let desktop =
         MacosVirtualDesktop::new(0.0, 0.0, 100.0, 100.0, 2).expect("fixture bounds are valid");
-    let batch = MacosInputBatch {
-        epoch: 4,
-        at_ms: 55,
+    let (motion, pointer) = normalize_motion_event(desktop, 25.0, 75.0);
+    let events = [
+        normalize_key_event(0, true, false).expect("key normalizes"),
+        normalize_modifier_event(0x38, MacosModifierFlags::SHIFT).expect("modifier normalizes"),
+        normalize_button_event(HostPointerButton::middle(), true),
+        motion,
+        normalize_scroll_event(
+            1 << 15,
+            -(1 << 16),
+            true,
+            PointerScrollPhase::Changed,
+            PointerScrollPhase::Began,
+        ),
+    ];
+    let batch = HostInputBatch {
         events: &events,
-        virtual_desktop: desktop,
+        pointer: Some(pointer),
+        at_ms: 55,
+        device_catalog_generation: 0,
     };
 
-    assert_eq!(batch.epoch, 4);
     assert_eq!(batch.at_ms, 55);
     assert_eq!(batch.events, events);
-    assert_eq!(batch.virtual_desktop, desktop);
+    assert_eq!(batch.pointer, Some(pointer));
+    assert!(matches!(
+        batch.events[1],
+        HostInputEvent::Key {
+            signal: HostKeySignal::AggregateState { active: true, .. },
+            ..
+        }
+    ));
+    assert!(matches!(
+        batch.events[3],
+        HostInputEvent::Motion {
+            motion: HostPointerMotion::Absolute {
+                coordinate_space_generation: 2,
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(matches!(
+        batch.events[4],
+        HostInputEvent::Scroll {
+            unit: PointerScrollUnit::Pixels,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -207,7 +221,6 @@ fn empty_session_is_rejected_before_platform_access() {
         MacosInputConfig {
             keyboard: false,
             pointer: false,
-            epoch: 1,
             clock: Arc::new(|| 0),
         },
         |_| hypercolor_macos_input::MacosInputPublicationOutcome::Published,

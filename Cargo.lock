@@ -5066,7 +5066,6 @@ dependencies = [
  "criterion",
  "dirs 6.0.0",
  "dpi",
- "evdev",
  "fast_image_resize",
  "futures-core",
  "futures-util",
@@ -5079,6 +5078,7 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-hal",
  "hypercolor-linux-gpu-interop",
+ "hypercolor-linux-input",
  "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
  "hypercolor-macos-input",
@@ -5636,6 +5636,7 @@ dependencies = [
 name = "hypercolor-windows-input"
 version = "0.3.2"
 dependencies = [
+ "hypercolor-types",
  "hypercolor-worker-retention",
  "stats_alloc",
  "thiserror 2.0.18",
