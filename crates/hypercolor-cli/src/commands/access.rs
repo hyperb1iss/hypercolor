@@ -70,7 +70,7 @@ fn grant_owner_label(owner: &str) -> &str {
 ///
 /// Returns an error when the daemon is unavailable or the active topology
 /// cannot execute the requested action. Headless picker failures preserve the
-/// daemon's typed `requires_app_ui` response.
+/// daemon's typed `requires_ui` response.
 pub async fn execute(args: &AccessArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     let response = match args.command {
         AccessCommand::ChooseScreenSource => {

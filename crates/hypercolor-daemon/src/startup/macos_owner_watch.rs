@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Context;
 use arc_swap::ArcSwapOption;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::input::{InputManager, MacosCapabilityOwner, MacosDaemonOwnerConflict};
+use hypercolor_core::input::{InputManager, SourceCapabilityConflict};
 use hypercolor_types::event::{
     HypercolorEvent, MacosDaemonHandoverPhaseEvent, MacosDaemonOwnerConflictEvent,
     MacosDaemonOwnerEvent, MacosDaemonOwnerRecoveryRequiredEvent,
@@ -260,11 +260,11 @@ fn publish_owner_snapshot_with(
         snapshot,
         designated_requirement_hash,
     } = publication;
-    input_manager.set_macos_daemon_ownership(
-        capability_owner(snapshot.active_owner),
-        snapshot.conflict.map(|conflict| MacosDaemonOwnerConflict {
-            active: capability_owner(conflict.active_owner),
-            contender: capability_owner(conflict.contender_owner),
+    input_manager.set_source_capability_identity(
+        capability_owner_id(snapshot.active_owner),
+        snapshot.conflict.map(|conflict| SourceCapabilityConflict {
+            active: Arc::from(capability_owner_id(conflict.active_owner)),
+            contender: Arc::from(capability_owner_id(conflict.contender_owner)),
             observed_at_ms: conflict.observed_at_ms,
         }),
         designated_requirement_hash,
@@ -359,12 +359,12 @@ impl From<&MacosOwnerRecord> for MacosOwnerIdentityFingerprint {
     }
 }
 
-const fn capability_owner(owner: MacosDaemonOwner) -> MacosCapabilityOwner {
+const fn capability_owner_id(owner: MacosDaemonOwner) -> &'static str {
     match owner {
-        MacosDaemonOwner::AppSidecar => MacosCapabilityOwner::AppSidecar,
-        MacosDaemonOwner::DirectLaunchd => MacosCapabilityOwner::LaunchdService,
-        MacosDaemonOwner::Homebrew => MacosCapabilityOwner::HomebrewService,
-        MacosDaemonOwner::Standalone => MacosCapabilityOwner::Standalone,
+        MacosDaemonOwner::AppSidecar => "app_sidecar",
+        MacosDaemonOwner::DirectLaunchd => "launchd_service",
+        MacosDaemonOwner::Homebrew => "homebrew_service",
+        MacosDaemonOwner::Standalone => "standalone",
     }
 }
 

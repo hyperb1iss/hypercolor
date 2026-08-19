@@ -332,16 +332,40 @@ fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
 
 #[cfg(feature = "macos-native-fixtures")]
 mod fixtures {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use hypercolor_core::input::{
-        InputData, InputManager, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
-        MacosDaemonOwnerConflict, MacosHostInput, MacosInputFixtureBackend,
-        MacosProtectedSourceState, SourcePlatformStatus, SourceState,
+        CapabilityActionDisposition, InputData, InputManager, InputSource, MacosHostInput,
+        MacosInputFixtureBackend, SourceCapabilityConflict, SourceCapabilityContext, SourceState,
+        SourceStatus,
     };
     use hypercolor_macos_input::{MacosInputEvent, event_masks};
 
     use super::desktop;
+
+    fn capability_context(
+        owner: &'static str,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<&str>,
+    ) -> SourceCapabilityContext {
+        SourceCapabilityContext {
+            owner: Arc::from(owner),
+            conflict,
+            identity_hash: identity_hash.map(Arc::from),
+            features: BTreeMap::new(),
+        }
+    }
+
+    fn diagnostics_payload(snapshot: &SourceStatus) -> &serde_json::Value {
+        let diagnostics = snapshot
+            .diagnostics
+            .as_deref()
+            .expect("fixture should publish macOS input diagnostics");
+        assert_eq!(diagnostics.schema(), "macos.input");
+        assert_eq!(diagnostics.version(), 1);
+        diagnostics.payload()
+    }
 
     #[test]
     fn denied_keyboard_permission_keeps_pointer_capture_live() {
@@ -362,20 +386,44 @@ mod fixtures {
         assert_eq!(status.snapshot().state, SourceState::Degraded);
         assert_eq!(status.snapshot().resource_count, 1);
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard"], "needs_user_action");
+        assert_eq!(platform["pointer"], "live");
+        assert_eq!(platform["keyboard_tcc"], "not_determined");
+        assert_eq!(platform["keyboard_owner"], "standalone");
+        assert_eq!(platform["pointer_owner"], "standalone");
         assert_eq!(
-            platform.keyboard,
-            MacosProtectedSourceState::NeedsUserAction
+            snapshot
+                .diagnostics
+                .as_deref()
+                .expect("fixture should publish macOS input diagnostics")
+                .display()
+                .iter()
+                .map(|field| {
+                    (
+                        field.key.as_str(),
+                        field.label.as_str(),
+                        field.value.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("keyboard", "Keyboard", "Needs authorization"),
+                ("pointer", "Pointer", "Live"),
+                ("authorization", "Authorization", "Not determined"),
+                ("owner", "Owner", "Standalone"),
+                ("secure_input", "Secure input", "Inactive"),
+            ]
         );
-        assert_eq!(platform.pointer, MacosProtectedSourceState::Live);
         assert_eq!(
-            platform.keyboard_tcc,
-            MacosAuthorizationState::NotDetermined
+            snapshot
+                .action_issue
+                .as_ref()
+                .expect("authorization action issue is published")
+                .code
+                .as_ref(),
+            "authorization_required"
         );
-        assert_eq!(platform.keyboard_owner, MacosCapabilityOwner::Standalone);
-        assert_eq!(platform.pointer_owner, MacosCapabilityOwner::Standalone);
         assert_eq!(
             status
                 .snapshot()
@@ -471,15 +519,19 @@ mod fixtures {
             "macos_input_tap_create_failed"
         );
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard"], "needs_process_restart");
+        assert_eq!(platform["pointer"], "failed");
+        assert_eq!(platform["keyboard_tcc"], "authorized");
         assert_eq!(
-            platform.keyboard,
-            MacosProtectedSourceState::NeedsProcessRestart
+            snapshot
+                .action_issue
+                .as_ref()
+                .expect("restart action issue is published")
+                .code
+                .as_ref(),
+            "process_restart_required"
         );
-        assert_eq!(platform.pointer, MacosProtectedSourceState::Failed);
-        assert_eq!(platform.keyboard_tcc, MacosAuthorizationState::Authorized);
     }
 
     #[test]
@@ -492,35 +544,51 @@ mod fixtures {
             .expect("macOS host source exposes status");
 
         source
-            .set_macos_daemon_ownership(
-                MacosCapabilityOwner::AppSidecar,
-                Some(MacosDaemonOwnerConflict {
-                    active: MacosCapabilityOwner::AppSidecar,
-                    contender: MacosCapabilityOwner::HomebrewService,
+            .set_capability_context(&capability_context(
+                "app_sidecar",
+                Some(SourceCapabilityConflict {
+                    active: Arc::from("app_sidecar"),
+                    contender: Arc::from("homebrew_service"),
                     observed_at_ms: 42,
                 }),
-                Some(Arc::from("designated-app-sidecar")),
-            )
+                Some("designated-app-sidecar"),
+            ))
             .expect("owner update should publish");
 
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
-        assert_eq!(platform.keyboard_owner, MacosCapabilityOwner::AppSidecar);
-        assert_eq!(platform.pointer_owner, MacosCapabilityOwner::AppSidecar);
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard_owner"], "app_sidecar");
+        assert_eq!(platform["pointer_owner"], "app_sidecar");
+        assert_eq!(platform["owner_conflict"]["active"], "app_sidecar");
+        assert_eq!(platform["owner_conflict"]["contender"], "homebrew_service");
+        assert_eq!(platform["owner_conflict"]["observed_at_ms"], 42);
         assert_eq!(
-            platform.owner_conflict.as_deref(),
-            Some(&MacosDaemonOwnerConflict {
-                active: MacosCapabilityOwner::AppSidecar,
-                contender: MacosCapabilityOwner::HomebrewService,
-                observed_at_ms: 42,
-            })
+            platform["owner_designated_requirement_hash"],
+            "designated-app-sidecar"
         );
-        assert_eq!(
-            platform.owner_designated_requirement_hash.as_deref(),
-            Some("designated-app-sidecar")
-        );
+    }
+
+    #[test]
+    fn invalid_platform_diagnostics_do_not_block_neutral_status() {
+        let backend =
+            MacosInputFixtureBackend::new(true, true, event_masks(true, true), true, desktop(1));
+        let (mut source, _) = MacosHostInput::new_deterministic_fixture(true, true, backend);
+        let status = source
+            .source_status_handle()
+            .expect("macOS host source exposes status");
+        let oversized_identity = "x".repeat(17 * 1024);
+
+        source
+            .set_capability_context(&capability_context(
+                "app_sidecar",
+                None,
+                Some(&oversized_identity),
+            ))
+            .expect("invalid diagnostics should degrade without failing status publication");
+
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.source_id.as_ref(), "macos_host_input");
+        assert!(snapshot.diagnostics.is_none());
     }
 
     #[test]
@@ -558,26 +626,24 @@ mod fixtures {
             .expect("source should consume action result");
 
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
-        assert_eq!(platform.keyboard_tcc, MacosAuthorizationState::Authorized);
-        assert_eq!(platform.keyboard, MacosProtectedSourceState::ReadyIdle);
-        assert!(platform.authorization_last_transition_at.is_some());
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard_tcc"], "authorized");
+        assert_eq!(platform["keyboard"], "ready_idle");
+        assert!(platform["authorization_last_transition_age_ms"].is_number());
         assert_eq!(
-            platform.executable_architecture,
+            platform["executable_architecture"],
             if cfg!(target_arch = "aarch64") {
-                hypercolor_core::input::MacosArchitecture::AppleSilicon
+                "apple_silicon"
             } else {
-                hypercolor_core::input::MacosArchitecture::Intel
+                "intel"
             }
         );
         if cfg!(target_os = "macos") {
-            assert!(platform.host_architecture.is_some());
-            assert!(platform.translated_process.is_some());
+            assert!(platform["host_architecture"].is_string());
+            assert!(platform["translated_process"].is_boolean());
         } else {
-            assert_eq!(platform.host_architecture, None);
-            assert_eq!(platform.translated_process, None);
+            assert!(platform["host_architecture"].is_null());
+            assert!(platform["translated_process"].is_null());
         }
     }
 
@@ -592,7 +658,7 @@ mod fixtures {
         let mut manager = InputManager::new();
         manager.add_source(Box::new(source));
         manager
-            .set_macos_daemon_ownership(MacosCapabilityOwner::Broker, None, None)
+            .set_source_capability_context(capability_context("broker", None, None))
             .expect("owner update should publish");
 
         let action = manager
@@ -600,17 +666,21 @@ mod fixtures {
             .expect("manager should preserve the explicit request");
         assert!(matches!(
             action,
-            hypercolor_core::input::ResolvedProtectedSourceAction::RequiresAppUi {
-                active_owner: MacosCapabilityOwner::Broker,
-            }
+            hypercolor_core::input::ResolvedProtectedSourceAction::RequiresUi { ref identity }
+                if identity.owner() == "broker"
+                    && identity.disposition() == CapabilityActionDisposition::RequiresUi
         ));
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard_tcc"], "not_determined");
         assert_eq!(
-            platform.keyboard_tcc,
-            MacosAuthorizationState::NotDetermined
+            snapshot
+                .action_issue
+                .as_ref()
+                .expect("authorization action remains required")
+                .code
+                .as_ref(),
+            "authorization_required"
         );
     }
 }

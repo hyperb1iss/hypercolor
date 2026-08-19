@@ -6,22 +6,24 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use hypercolor_macos_input::{
+    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
     MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent, MacosInputGapReason,
-    MacosInputPublicationOutcome, MacosInputSession, MacosModifierFlags, MacosPointerButton,
-    MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop, MacosWorkerDegradation,
-    MacosWorkerState, input_monitoring_granted, request_input_monitoring,
+    MacosInputPublicationOutcome, MacosInputSession, MacosInputStatusSnapshot, MacosModifierFlags,
+    MacosPointerButton, MacosProtectedSourceState, MacosScrollPhase, MacosScrollUnit,
+    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState, input_diagnostics_envelope,
+    input_monitoring_granted, request_input_monitoring,
 };
 use tracing::{info, warn};
 
 use crate::input::keymap::{macos_key_name, macos_media_key_name};
 use crate::input::traits::{
-    InputData, InputSource, InteractionData, InteractionDegradation, MotionAggregate, PointerMode,
-    ProtectedSourceAuthorizationAction,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource, InteractionData,
+    InteractionDegradation, MotionAggregate, PointerMode, ProtectedSourceAuthorizationAction,
+    SourceCapabilityContext,
 };
 use crate::input::{
-    LegacyWheelProjector, MacosAuthorizationState, MacosCapabilityOwner, MacosInputPlatformStatus,
-    MacosProtectedSourceState, MacosTimingStatus, SourceIssue, SourceKind, SourcePlatformStatus,
-    SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+    LegacyWheelProjector, SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle,
+    SourceStatusReporter,
 };
 use crate::types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
@@ -33,26 +35,20 @@ const AUTHORIZATION_NONE: u8 = 0;
 const AUTHORIZATION_GRANTED: u8 = 1;
 const AUTHORIZATION_DENIED: u8 = 2;
 
-fn native_process_architecture() -> (
-    Option<crate::input::MacosArchitecture>,
-    crate::input::MacosArchitecture,
-    Option<bool>,
-) {
+fn native_process_architecture() -> (Option<MacosArchitecture>, MacosArchitecture, Option<bool>) {
     let executable = if cfg!(target_arch = "aarch64") {
-        crate::input::MacosArchitecture::AppleSilicon
+        MacosArchitecture::AppleSilicon
     } else {
-        crate::input::MacosArchitecture::Intel
+        MacosArchitecture::Intel
     };
     #[cfg(target_os = "macos")]
     {
         let capabilities = hypercolor_macos_capture::MacosScreenCaptureSession::capabilities().ok();
         let host = capabilities.map(|capabilities| match capabilities.host_architecture {
             hypercolor_macos_capture::MacosHostArchitecture::AppleSilicon => {
-                crate::input::MacosArchitecture::AppleSilicon
+                MacosArchitecture::AppleSilicon
             }
-            hypercolor_macos_capture::MacosHostArchitecture::Intel => {
-                crate::input::MacosArchitecture::Intel
-            }
+            hypercolor_macos_capture::MacosHostArchitecture::Intel => MacosArchitecture::Intel,
         });
         let translated = capabilities.map(|capabilities| capabilities.translated_process);
         (host, executable, translated)
@@ -134,10 +130,10 @@ pub struct MacosHostInput {
     keyboard_tcc: MacosAuthorizationState,
     authorization_last_transition_at: Option<Instant>,
     owner: MacosCapabilityOwner,
-    owner_conflict: Option<Arc<crate::input::MacosDaemonOwnerConflict>>,
+    owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
     owner_designated_requirement_hash: Option<Arc<str>>,
-    host_architecture: Option<crate::input::MacosArchitecture>,
-    executable_architecture: crate::input::MacosArchitecture,
+    host_architecture: Option<MacosArchitecture>,
+    executable_architecture: MacosArchitecture,
     translated_process: Option<bool>,
     authorization_result: Arc<AtomicU8>,
     #[cfg(feature = "macos-native-fixtures")]
@@ -370,7 +366,7 @@ impl MacosHostInput {
     fn set_daemon_ownership(
         &mut self,
         owner: MacosCapabilityOwner,
-        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+        conflict: Option<MacosDaemonOwnerConflict>,
         designated_requirement_hash: Option<Arc<str>>,
     ) -> anyhow::Result<()> {
         self.owner = owner;
@@ -545,51 +541,35 @@ impl MacosHostInput {
                 )
             })
             .unwrap_or((None, None, 0));
+        // Read from the session's health-tick cache: probing Carbon here would
+        // put an FFI call on the render thread at frame rate.
+        let secure_input_active = native.is_some_and(|diagnostics| diagnostics.secure_input_active);
+        let diagnostics = MacosInputStatusSnapshot {
+            keyboard,
+            pointer,
+            keyboard_tcc: self.keyboard_tcc,
+            secure_input_active,
+            keyboard_owner: self.owner,
+            pointer_owner: self.owner,
+            owner_conflict: self.owner_conflict.as_deref().cloned(),
+            authorization_last_transition_age_ms: self.authorization_last_transition_at.map(
+                |transition| u64::try_from(transition.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ),
+            owner_designated_requirement_hash: self.owner_designated_requirement_hash.clone(),
+            host_architecture: self.host_architecture,
+            executable_architecture: self.executable_architecture,
+            translated_process: self.translated_process,
+            capture_session_generation,
+            topology_generation,
+            native_diagnostics: native,
+            folded_state_gaps,
+        };
         self.status
-            .set_platform(Some(SourcePlatformStatus::MacosInput(
-                MacosInputPlatformStatus {
-                    keyboard,
-                    pointer,
-                    keyboard_tcc: self.keyboard_tcc,
-                    // Read from the session's health-tick cache: probing
-                    // Carbon here would put an FFI call on the render
-                    // thread at frame rate.
-                    secure_input_active: native
-                        .is_some_and(|diagnostics| diagnostics.secure_input_active),
-                    keyboard_owner: self.owner,
-                    pointer_owner: self.owner,
-                    owner_conflict: self.owner_conflict.clone(),
-                    authorization_last_transition_at: self.authorization_last_transition_at,
-                    owner_designated_requirement_hash: self
-                        .owner_designated_requirement_hash
-                        .clone(),
-                    host_architecture: self.host_architecture,
-                    executable_architecture: self.executable_architecture,
-                    translated_process: self.translated_process,
-                    capture_session_generation,
-                    topology_generation,
-                    queue_capacity: native.map(|diagnostics| diagnostics.queue_capacity),
-                    queue_depth: native.map(|diagnostics| diagnostics.queue_depth),
-                    input_events_received: native.map(|diagnostics| diagnostics.events_received),
-                    input_events_published: native.map(|diagnostics| diagnostics.events_published),
-                    input_events_dropped: native.map(|diagnostics| diagnostics.dropped_events),
-                    tap_disabled_timeout: native
-                        .map(|diagnostics| diagnostics.tap_disabled_timeout),
-                    tap_disabled_user_input: native
-                        .map(|diagnostics| diagnostics.tap_disabled_user_input),
-                    tap_reenabled: native.map(|diagnostics| diagnostics.tap_reenabled),
-                    state_gaps: native
-                        .map(|diagnostics| diagnostics.state_gaps)
-                        .or((folded_state_gaps > 0).then_some(folded_state_gaps)),
-                    callback_to_publication_timing: native.map(|diagnostics| MacosTimingStatus {
-                        sample_count: diagnostics.callback_to_publication_sample_count,
-                        total_ns: diagnostics.callback_to_publication_total_ns,
-                        max_ns: diagnostics.callback_to_publication_max_ns,
-                        p95_ns: diagnostics.callback_to_publication_p95_ns,
-                        p99_ns: diagnostics.callback_to_publication_p99_ns,
-                    }),
-                },
-            )))?;
+            .set_action_issue(protected_input_action_issue(keyboard))?;
+        let diagnostics = input_diagnostics_envelope(&diagnostics)
+            .inspect_err(|error| tracing::warn!(%error, "dropping invalid macOS input diagnostics"))
+            .ok();
+        self.status.set_diagnostics(diagnostics)?;
         Ok(())
     }
 
@@ -836,18 +816,61 @@ impl MacosHostInput {
     }
 }
 
+fn protected_input_action_issue(state: MacosProtectedSourceState) -> Option<SourceIssue> {
+    match state {
+        MacosProtectedSourceState::NeedsUserAction => Some(
+            SourceIssue::new(
+                "authorization_required",
+                "Input Monitoring authorization is required",
+                true,
+            )
+            .with_remediation("Authorize Input Monitoring"),
+        ),
+        MacosProtectedSourceState::PermissionDenied => Some(
+            SourceIssue::new(
+                "authorization_denied",
+                "Input Monitoring authorization was denied",
+                true,
+            )
+            .with_remediation("Authorize Input Monitoring"),
+        ),
+        MacosProtectedSourceState::Revoked => Some(
+            SourceIssue::new(
+                "authorization_revoked",
+                "Input Monitoring authorization was revoked",
+                true,
+            )
+            .with_remediation("Authorize Input Monitoring"),
+        ),
+        MacosProtectedSourceState::NeedsProcessRestart => Some(
+            SourceIssue::new(
+                "process_restart_required",
+                "Input Monitoring authorization requires a process restart",
+                true,
+            )
+            .with_remediation("Restart the active Hypercolor process"),
+        ),
+        _ => None,
+    }
+}
+
 impl InputSource for MacosHostInput {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn set_macos_daemon_ownership(
-        &mut self,
-        owner: MacosCapabilityOwner,
-        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
-        designated_requirement_hash: Option<Arc<str>>,
-    ) -> anyhow::Result<()> {
-        self.set_daemon_ownership(owner, conflict, designated_requirement_hash)
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        let Some(owner) = MacosCapabilityOwner::from_id(&context.owner) else {
+            return Ok(());
+        };
+        let conflict = context.conflict.as_ref().and_then(|conflict| {
+            Some(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::from_id(&conflict.active)?,
+                contender: MacosCapabilityOwner::from_id(&conflict.contender)?,
+                observed_at_ms: conflict.observed_at_ms,
+            })
+        });
+        self.set_daemon_ownership(owner, conflict, context.identity_hash.clone())
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
@@ -947,7 +970,7 @@ impl InputSource for MacosHostInput {
         let result = Arc::clone(&self.authorization_result);
         #[cfg(feature = "macos-native-fixtures")]
         let fixture = self.fixture.clone();
-        Some(ProtectedSourceAuthorizationAction::current_macos_process(
+        Some(ProtectedSourceAuthorizationAction::new(
             Arc::new(move || {
                 #[cfg(feature = "macos-native-fixtures")]
                 let granted = fixture
@@ -976,6 +999,7 @@ impl InputSource for MacosHostInput {
                 );
                 Ok(granted)
             }),
+            protected_action_identity(self.owner, false),
         ))
     }
 
@@ -1028,6 +1052,28 @@ impl InputSource for MacosHostInput {
         self.refresh_platform_status()?;
         Ok(())
     }
+}
+
+fn protected_action_identity(
+    owner: MacosCapabilityOwner,
+    presentation_required: bool,
+) -> CapabilityActionIdentity {
+    let requires_ui = matches!(
+        owner,
+        MacosCapabilityOwner::App | MacosCapabilityOwner::Broker
+    ) || presentation_required
+        && matches!(
+            owner,
+            MacosCapabilityOwner::LaunchdService | MacosCapabilityOwner::HomebrewService
+        );
+    CapabilityActionIdentity::new(
+        owner.as_str(),
+        if requires_ui {
+            CapabilityActionDisposition::RequiresUi
+        } else {
+            CapabilityActionDisposition::Local
+        },
+    )
 }
 
 fn publish_macos_batch(

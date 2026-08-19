@@ -16,16 +16,15 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
-    InputManager, InputSource, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
-    MacosDaemonOwnerConflict, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities, MediaSource, NetSource,
-    ScreenData, ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind,
-    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
-    SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    InputManager, InputSource, MediaSource, NetSource, ScreenData, ScreenReconfigurationConflict,
+    SourceCapabilityConflict, SourceCapabilityContext, SourceFreshness, SourceIssue, SourceKind,
+    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
+    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
     SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
+use hypercolor_types::source_status::{SourceDiagnosticsDisplayField, SourceDiagnosticsEnvelope};
 use std::collections::VecDeque;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -47,22 +46,14 @@ struct StatusAwareScreenSource {
     session_sink: Arc<Mutex<Option<SourceSessionWriter>>>,
 }
 
-#[derive(Debug, PartialEq)]
-struct RetainedMacosState {
-    owner: MacosCapabilityOwner,
-    conflict: Option<MacosDaemonOwnerConflict>,
-    designated_requirement_hash: Option<Arc<str>>,
-    metal4: bool,
-}
-
-struct MacosStateAwareSource {
-    state: Arc<Mutex<RetainedMacosState>>,
+struct CapabilityStateAwareSource {
+    state: Arc<Mutex<SourceCapabilityContext>>,
     running: bool,
 }
 
-impl InputSource for MacosStateAwareSource {
+impl InputSource for CapabilityStateAwareSource {
     fn name(&self) -> &'static str {
-        "MacosStateAware"
+        "CapabilityStateAware"
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
@@ -82,21 +73,11 @@ impl InputSource for MacosStateAwareSource {
         self.running
     }
 
-    fn set_macos_daemon_ownership(
-        &mut self,
-        owner: MacosCapabilityOwner,
-        conflict: Option<MacosDaemonOwnerConflict>,
-        designated_requirement_hash: Option<Arc<str>>,
-    ) -> anyhow::Result<()> {
-        let mut state = self.state.lock().expect("macOS state lock");
-        state.owner = owner;
-        state.conflict = conflict;
-        state.designated_requirement_hash = designated_requirement_hash;
-        Ok(())
-    }
-
-    fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
-        self.state.lock().expect("macOS state lock").metal4 = metal4;
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        self.state
+            .lock()
+            .expect("capability state lock")
+            .clone_from(context);
         Ok(())
     }
 }
@@ -1067,44 +1048,42 @@ fn screen_source_produces_zone_colors() {
 }
 
 #[test]
-fn late_source_inherits_retained_macos_process_state() {
-    let conflict = MacosDaemonOwnerConflict {
-        active: MacosCapabilityOwner::LaunchdService,
-        contender: MacosCapabilityOwner::AppSidecar,
+fn late_source_inherits_retained_capability_context_in_either_update_order() {
+    let conflict = SourceCapabilityConflict {
+        active: Arc::from("service_host"),
+        contender: Arc::from("ui_host"),
         observed_at_ms: 73,
     };
-    let state = Arc::new(Mutex::new(RetainedMacosState {
-        owner: MacosCapabilityOwner::Standalone,
-        conflict: None,
-        designated_requirement_hash: None,
-        metal4: false,
-    }));
+    let state = Arc::new(Mutex::new(SourceCapabilityContext::default()));
     let mut manager = InputManager::new();
     manager
-        .set_macos_daemon_ownership(
-            MacosCapabilityOwner::LaunchdService,
-            Some(conflict.clone()),
-            Some(Arc::from("designated-launchd")),
-        )
-        .expect("manager retains macOS ownership before registration");
+        .set_source_capability_feature("accelerated_path", true)
+        .expect("manager retains a feature before registration");
     manager
-        .set_macos_metal4_capability(true)
-        .expect("manager retains Metal 4 before registration");
+        .set_source_capability_identity(
+            "service_host",
+            Some(conflict.clone()),
+            Some(Arc::from("identity-hash")),
+        )
+        .expect("manager retains capability identity before registration");
 
-    manager.add_source(Box::new(MacosStateAwareSource {
+    manager.add_source(Box::new(CapabilityStateAwareSource {
         state: Arc::clone(&state),
         running: false,
     }));
 
-    assert_eq!(
-        *state.lock().expect("macOS state lock"),
-        RetainedMacosState {
-            owner: MacosCapabilityOwner::LaunchdService,
-            conflict: Some(conflict),
-            designated_requirement_hash: Some(Arc::from("designated-launchd")),
-            metal4: true,
-        }
-    );
+    let retained = state.lock().expect("capability state lock").clone();
+    assert_eq!(retained.owner.as_ref(), "service_host");
+    assert_eq!(retained.conflict, Some(conflict));
+    assert_eq!(retained.identity_hash.as_deref(), Some("identity-hash"));
+    assert_eq!(retained.features.get("accelerated_path"), Some(&true));
+
+    manager
+        .set_source_capability_identity("ui_host", None, None)
+        .expect("identity update should preserve retained features");
+    let updated = state.lock().expect("capability state lock").clone();
+    assert_eq!(updated.owner.as_ref(), "ui_host");
+    assert_eq!(updated.features.get("accelerated_path"), Some(&true));
 }
 
 #[test]
@@ -2591,13 +2570,14 @@ fn wayland_picker_action_is_detached_and_names_the_platform_backend() {
     let action = manager
         .resolved_screen_source_picker_action()
         .expect("Wayland source exposes a detached picker request");
-    let hypercolor_core::input::ResolvedProtectedSourceAction::Local { action, owner } = action
+    let hypercolor_core::input::ResolvedProtectedSourceAction::Local { action, identity } = action
     else {
         panic!("Wayland picker must execute in its platform backend");
     };
+    assert_eq!(identity.owner(), "platform_backend");
     assert_eq!(
-        owner,
-        hypercolor_core::input::ProtectedSourceActionOwner::PlatformBackend
+        identity.disposition(),
+        hypercolor_core::input::CapabilityActionDisposition::Local
     );
     action.execute().expect("detached picker request succeeds");
     assert_eq!(
@@ -3422,72 +3402,22 @@ fn source_backend_updates_preserve_lifecycle_and_deduplicate() {
 }
 
 #[test]
-fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
+fn source_diagnostics_updates_preserve_lifecycle_and_deduplicate() {
     let (writer, handle) = test_status_writer();
     let before = handle.snapshot();
-    let platform = SourcePlatformStatus::MacosScreen(MacosScreenPlatformStatus {
-        state: MacosProtectedSourceState::NeedsSelection,
-        tcc: MacosAuthorizationState::Authorized,
-        owner: MacosCapabilityOwner::AppSidecar,
-        selection: MacosSelectionState::None,
-        selection_diagnostic_label: None,
-        selection_revision: 0,
-        tahoe: MacosTahoeCapabilities {
-            host_architecture: MacosArchitecture::AppleSilicon,
-            translated_process: false,
-            content_tone_mapping_info: true,
-            metal4: false,
-        },
-        tahoe_selection: None,
-        owner_conflict: None,
-        authorization_last_transition_at: None,
-        owner_designated_requirement_hash: None,
-        executable_architecture: MacosArchitecture::AppleSilicon,
-        stream_state: Arc::from("inactive"),
-        capture_session_generation: None,
-        topology_generation: None,
-        resource_generation: None,
-        publication_plan_generation: None,
-        pixel_format: None,
-        dynamic_range: None,
-        color_space: None,
-        transfer_function: None,
-        display_scale_bits: None,
-        native_width: None,
-        native_height: None,
-        queue_depth: 8,
-        admitted_native_bytes: 0,
-        pinned_generations: None,
-        frames_received: 0,
-        frames_published: 0,
-        frames_superseded: 0,
-        frames_malformed: 0,
-        frames_dropped: Arc::from([]),
-        frames_stale: 0,
-        publication_path: Some(Arc::from("cpu")),
-        fallback_reason: None,
-        timing: MacosScreenTimingStatus::default(),
-        callback_total_ns: 0,
-        callback_max_ns: 0,
-        retain_total_ns: 0,
-        retain_max_ns: 0,
-        conversion_total_ns: 0,
-        conversion_max_ns: 0,
-        cpu_reduction_total_ns: 0,
-        cpu_reduction_max_ns: 0,
-        native_import_total_ns: 0,
-        native_import_max_ns: 0,
-        native_reduction_submit_total_ns: 0,
-        native_reduction_submit_max_ns: 0,
-        publication_total_ns: 0,
-        publication_max_ns: 0,
-    });
+    let diagnostics = SourceDiagnosticsEnvelope::try_new(
+        "fixture.backend",
+        1,
+        vec![SourceDiagnosticsDisplayField::new("mode", "Mode", "live")],
+        serde_json::json!({"private_shape": {"generation": 7}}),
+    )
+    .expect("fixture diagnostics should be bounded");
 
     writer
-        .set_platform(Some(platform.clone()))
-        .expect("platform update should succeed");
+        .set_diagnostics(Some(diagnostics.clone()))
+        .expect("diagnostics update should succeed");
     let updated = handle.snapshot();
-    assert_eq!(updated.platform.as_deref(), Some(&platform));
+    assert_eq!(updated.diagnostics.as_deref(), Some(&diagnostics));
     assert_eq!(updated.state, before.state);
     assert_eq!(
         updated.source_graph_generation,
@@ -3496,14 +3426,43 @@ fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
     assert_eq!(updated.session_generation, before.session_generation);
 
     writer
-        .set_platform(Some(platform))
-        .expect("same platform status should be a no-op");
+        .set_diagnostics(Some(diagnostics))
+        .expect("same diagnostics should be a no-op");
     assert!(Arc::ptr_eq(&updated, &handle.snapshot()));
 
     writer
-        .set_platform(None)
-        .expect("platform status should clear");
-    assert!(handle.snapshot().platform.is_none());
+        .set_diagnostics(None)
+        .expect("diagnostics should clear");
+    assert!(handle.snapshot().diagnostics.is_none());
+}
+
+#[test]
+fn source_action_issue_updates_preserve_lifecycle_and_deduplicate() {
+    let (writer, handle) = test_status_writer();
+    let before = handle.snapshot();
+    let issue = SourceIssue::new("authorization_required", "authorization is required", true);
+
+    writer
+        .set_action_issue(Some(issue.clone()))
+        .expect("action issue update should succeed");
+    let updated = handle.snapshot();
+    assert_eq!(updated.action_issue.as_ref(), Some(&issue));
+    assert_eq!(updated.state, before.state);
+    assert_eq!(
+        updated.source_graph_generation,
+        before.source_graph_generation
+    );
+    assert_eq!(updated.session_generation, before.session_generation);
+
+    writer
+        .set_action_issue(Some(issue))
+        .expect("same action issue should be a no-op");
+    assert!(Arc::ptr_eq(&updated, &handle.snapshot()));
+
+    writer
+        .set_action_issue(None)
+        .expect("action issue should clear");
+    assert!(handle.snapshot().action_issue.is_none());
 }
 
 #[test]

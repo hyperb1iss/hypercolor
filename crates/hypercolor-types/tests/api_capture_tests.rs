@@ -6,11 +6,11 @@ use hypercolor_types::api::capture::{
 fn capture_action_contracts_serialize_stable_owner_names() {
     let authorization = CaptureAuthorizationResponse {
         authorized: true,
-        grant_owner: ProtectedSourceGrantOwner::AppSidecar,
+        grant_owner: ProtectedSourceGrantOwner::new("app_sidecar"),
     };
     let picker = CapturePickerResponse {
         picking: true,
-        grant_owner: ProtectedSourceGrantOwner::PlatformBackend,
+        grant_owner: ProtectedSourceGrantOwner::new("platform_backend"),
     };
 
     assert_eq!(
@@ -20,6 +20,18 @@ fn capture_action_contracts_serialize_stable_owner_names() {
     assert_eq!(
         serde_json::to_value(picker).expect("picker should serialize"),
         serde_json::json!({"picking": true, "grant_owner": "platform_backend"})
+    );
+}
+
+#[test]
+fn capture_action_contract_accepts_future_owner_names() {
+    let owner: ProtectedSourceGrantOwner =
+        serde_json::from_str("\"future_ui_host\"").expect("future owner should deserialize");
+
+    assert_eq!(owner.as_str(), "future_ui_host");
+    assert_eq!(
+        serde_json::to_string(&owner).expect("future owner should serialize"),
+        "\"future_ui_host\""
     );
 }
 

@@ -5,33 +5,66 @@
 //! the render loop consumes per frame.
 
 use super::graph::InteractionSourceOrigin;
-use super::status::{
-    MacosCapabilityOwner, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
-};
+use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
 use crate::types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
+use std::any::Any;
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
-/// Process class that executes one detached protected-source action.
+/// Whether a detached capability action can execute in the current process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProtectedSourceActionExecutor {
-    /// The macOS process hosting the source executes the action locally.
-    CurrentMacosProcess,
-    /// The active platform backend executes the action locally.
-    PlatformBackend,
+pub enum CapabilityActionDisposition {
+    Local,
+    RequiresUi,
 }
 
-/// Exact process identity that owns a successfully executed protected action.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProtectedSourceActionOwner {
-    /// The authoritative macOS daemon topology for the current process.
-    Macos(MacosCapabilityOwner),
-    /// The active non-macOS capture backend.
-    PlatformBackend,
+/// Opaque backend identity attached to one detached capability action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityActionIdentity {
+    owner: Arc<str>,
+    disposition: CapabilityActionDisposition,
+}
+
+impl CapabilityActionIdentity {
+    #[must_use]
+    pub fn new(owner: impl Into<Arc<str>>, disposition: CapabilityActionDisposition) -> Self {
+        Self {
+            owner: owner.into(),
+            disposition,
+        }
+    }
+
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn disposition(&self) -> CapabilityActionDisposition {
+        self.disposition
+    }
+}
+
+/// Neutral process context forwarded to platform capability sources.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceCapabilityContext {
+    pub owner: Arc<str>,
+    pub conflict: Option<SourceCapabilityConflict>,
+    pub identity_hash: Option<Arc<str>>,
+    pub features: BTreeMap<Arc<str>, bool>,
+}
+
+/// Opaque ownership conflict reported by the platform composition root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceCapabilityConflict {
+    pub active: Arc<str>,
+    pub contender: Arc<str>,
+    pub observed_at_ms: u64,
 }
 
 /// Whether a detached protected-source action can execute in this process.
@@ -40,37 +73,32 @@ pub enum ResolvedProtectedSourceAction<A> {
     Local {
         /// Detached callback owned by the resolved executor.
         action: A,
-        /// Exact owner of the resulting grant or selection.
-        owner: ProtectedSourceActionOwner,
+        /// Backend-authored identity of the resulting grant or selection.
+        identity: CapabilityActionIdentity,
     },
-    /// The active topology cannot present the required native UI.
-    RequiresAppUi {
-        /// Authoritative macOS daemon topology that rejected local execution.
-        active_owner: MacosCapabilityOwner,
-    },
+    /// The active topology requires a UI-capable process.
+    RequiresUi { identity: CapabilityActionIdentity },
 }
 
 /// Explicit local authorization request detached from input-graph locks.
 #[derive(Clone)]
 pub struct ProtectedSourceAuthorizationAction {
     callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
-    executor: ProtectedSourceActionExecutor,
+    identity: CapabilityActionIdentity,
 }
 
 impl ProtectedSourceAuthorizationAction {
-    pub(crate) fn current_macos_process(
+    pub(crate) fn new(
         callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
+        identity: CapabilityActionIdentity,
     ) -> Self {
-        Self {
-            callback,
-            executor: ProtectedSourceActionExecutor::CurrentMacosProcess,
-        }
+        Self { callback, identity }
     }
 
-    /// Return the process class that owns callback execution.
+    /// Return the backend-authored action identity.
     #[must_use]
-    pub const fn executor(&self) -> ProtectedSourceActionExecutor {
-        self.executor
+    pub const fn identity(&self) -> &CapabilityActionIdentity {
+        &self.identity
     }
 
     /// Execute the detached authorization request.
@@ -87,33 +115,21 @@ impl ProtectedSourceAuthorizationAction {
 #[derive(Clone)]
 pub struct ScreenSourcePickerAction {
     callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
-    executor: ProtectedSourceActionExecutor,
+    identity: CapabilityActionIdentity,
 }
 
 impl ScreenSourcePickerAction {
-    pub(crate) fn current_macos_process(
+    pub(crate) fn new(
         callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+        identity: CapabilityActionIdentity,
     ) -> Self {
-        Self {
-            callback,
-            executor: ProtectedSourceActionExecutor::CurrentMacosProcess,
-        }
+        Self { callback, identity }
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn platform_backend(
-        callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
-    ) -> Self {
-        Self {
-            callback,
-            executor: ProtectedSourceActionExecutor::PlatformBackend,
-        }
-    }
-
-    /// Return the process class that owns callback execution.
+    /// Return the backend-authored action identity.
     #[must_use]
-    pub const fn executor(&self) -> ProtectedSourceActionExecutor {
-        self.executor
+    pub const fn identity(&self) -> &CapabilityActionIdentity {
+        &self.identity
     }
 
     /// Execute the detached picker request.
@@ -126,18 +142,9 @@ impl ScreenSourcePickerAction {
     }
 }
 
-#[cfg(target_os = "macos")]
-pub type MacosScreenshotReferenceAction = Arc<
-    dyn Fn() -> anyhow::Result<
-            std::sync::mpsc::Receiver<
-                Result<
-                    hypercolor_macos_capture::MacosScreenshotReferenceCapture,
-                    hypercolor_macos_capture::MacosCaptureError,
-                >,
-            >,
-        > + Send
-        + Sync,
->;
+pub type SourceDiagnosticArtifact = Box<dyn Any + Send>;
+pub type SourceDiagnosticArtifactAction =
+    Arc<dyn Fn() -> anyhow::Result<SourceDiagnosticArtifact> + Send + Sync>;
 
 // ── InputData ──────────────────────────────────────────────────────────────
 
@@ -1011,18 +1018,8 @@ pub trait InputSource: Send {
         self.reconfigure_screen_capture(config)
     }
 
-    /// Mirror the active macOS daemon topology into source status.
-    fn set_macos_daemon_ownership(
-        &mut self,
-        _owner: crate::input::MacosCapabilityOwner,
-        _conflict: Option<crate::input::MacosDaemonOwnerConflict>,
-        _designated_requirement_hash: Option<Arc<str>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Publish whether the active renderer device exposes required Metal 4 facilities.
-    fn set_macos_metal4_capability(&mut self, _metal4: bool) -> anyhow::Result<()> {
+    /// Apply the active process capability context to this source.
+    fn set_capability_context(&mut self, _context: &SourceCapabilityContext) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -1050,8 +1047,7 @@ pub trait InputSource: Send {
         None
     }
 
-    #[cfg(target_os = "macos")]
-    fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+    fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
         None
     }
 }

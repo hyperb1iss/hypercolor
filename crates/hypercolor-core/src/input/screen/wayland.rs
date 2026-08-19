@@ -49,7 +49,10 @@ use crate::input::screen::{
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
-use crate::input::traits::{InputData, InputSource, ScreenSourcePickerAction};
+use crate::input::traits::{
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource,
+    ScreenSourcePickerAction,
+};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
@@ -1794,22 +1797,25 @@ impl WaylandScreenCaptureInput {
                 worker.command_tx.clone(),
             )
         });
-        ScreenSourcePickerAction::platform_backend(Arc::new(move || {
-            if worker
-                .as_ref()
-                .is_some_and(|(portal_pending, _)| portal_pending.load(Ordering::SeqCst))
-            {
-                debug!("Portal source picker is already open; ignoring re-pick request");
-                return Ok(());
-            }
-            clear_restore_token(&settings, token_sink.as_ref());
-            if let Some((_, command_tx)) = &worker {
-                command_tx
-                    .send(WorkerCommand::Reselect)
-                    .map_err(|_| anyhow!("Wayland capture worker rejected source reselect"))?;
-            }
-            Ok(())
-        }))
+        ScreenSourcePickerAction::new(
+            Arc::new(move || {
+                if worker
+                    .as_ref()
+                    .is_some_and(|(portal_pending, _)| portal_pending.load(Ordering::SeqCst))
+                {
+                    debug!("Portal source picker is already open; ignoring re-pick request");
+                    return Ok(());
+                }
+                clear_restore_token(&settings, token_sink.as_ref());
+                if let Some((_, command_tx)) = &worker {
+                    command_tx
+                        .send(WorkerCommand::Reselect)
+                        .map_err(|_| anyhow!("Wayland capture worker rejected source reselect"))?;
+                }
+                Ok(())
+            }),
+            CapabilityActionIdentity::new("platform_backend", CapabilityActionDisposition::Local),
+        )
     }
 
     fn portal_pending(&self) -> bool {

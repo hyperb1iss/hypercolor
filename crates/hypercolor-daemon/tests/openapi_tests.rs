@@ -202,7 +202,9 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["components"]["schemas"]["CaptureAuthorizationResponse"].is_object());
     assert!(body["components"]["schemas"]["CapturePickerResponse"].is_object());
     assert!(body["components"]["schemas"]["CaptureMonitor"].is_object());
-    assert!(body["components"]["schemas"]["ProtectedSourceGrantOwner"].is_object());
+    let grant_owner = &body["components"]["schemas"]["ProtectedSourceGrantOwner"];
+    assert_eq!(grant_owner["type"], "string");
+    assert!(grant_owner.get("enum").is_none());
 
     for route in ROUTES {
         let operation = &body["paths"][route.path][route.method];

@@ -44,25 +44,20 @@ pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};
 pub use scroll::{LegacyWheelProjector, Q16_16_SCALE, q16_16_to_f64};
 pub use sensor::SensorPoller;
 pub use status::{
-    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
-    MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities,
-    MacosTahoeSelectionCapabilities, MacosTimingStatus, ScreenCaptureDiagnostics,
-    ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness, SourceIssue, SourceKind,
-    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
+    ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
+    SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
     SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError, SourceStatusHandle,
     SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };
-#[cfg(target_os = "macos")]
-pub use traits::MacosScreenshotReferenceAction;
 pub use traits::{
-    InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
-    InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode,
-    ProtectedSourceActionExecutor, ProtectedSourceActionOwner, ProtectedSourceAuthorizationAction,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource,
+    InteractionBatch, InteractionData, InteractionDegradation, InteractionDiagnostics,
+    KeyboardData, MotionAggregate, MouseData, PointerMode, ProtectedSourceAuthorizationAction,
     ResolvedProtectedSourceAction, ScreenData, ScreenSourcePickerAction, ScreenZoneColors,
-    ScrollAggregate,
+    ScrollAggregate, SourceCapabilityConflict, SourceCapabilityContext, SourceDiagnosticArtifact,
+    SourceDiagnosticArtifactAction,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
@@ -351,10 +346,7 @@ pub struct InputManager {
     source_status_registry: SourceStatusRegistry,
     event_scratch: Vec<TimedInputEvent>,
     audio_capture_active: Option<bool>,
-    macos_capability_owner: MacosCapabilityOwner,
-    macos_owner_conflict: Option<MacosDaemonOwnerConflict>,
-    macos_owner_designated_requirement_hash: Option<Arc<str>>,
-    macos_metal4: bool,
+    source_capability_context: SourceCapabilityContext,
     screen_capture_demand: Option<ScreenCaptureDemand>,
     screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
     screen_publication_source_snapshot: Vec<(u64, u64)>,
@@ -621,10 +613,10 @@ impl InputManager {
             source_status_registry: SourceStatusRegistry::new(),
             event_scratch: Vec::with_capacity(INPUT_EVENT_RING_CAPACITY),
             audio_capture_active: None,
-            macos_capability_owner: MacosCapabilityOwner::Standalone,
-            macos_owner_conflict: None,
-            macos_owner_designated_requirement_hash: None,
-            macos_metal4: false,
+            source_capability_context: SourceCapabilityContext {
+                owner: Arc::from("standalone"),
+                ..SourceCapabilityContext::default()
+            },
             screen_capture_demand: None,
             screen_publication_demand: None,
             screen_publication_source_snapshot: Vec::new(),
@@ -2072,41 +2064,59 @@ impl InputManager {
         Ok(())
     }
 
-    /// Mirror the active macOS daemon topology into every native source.
+    /// Apply the active process capability context to every native source.
     ///
     /// # Errors
     ///
     /// Returns an error if a source can no longer publish status.
-    pub fn set_macos_daemon_ownership(
+    pub fn set_source_capability_context(
         &mut self,
-        owner: MacosCapabilityOwner,
-        conflict: Option<MacosDaemonOwnerConflict>,
-        designated_requirement_hash: Option<Arc<str>>,
+        context: SourceCapabilityContext,
     ) -> anyhow::Result<()> {
-        self.macos_capability_owner = owner;
-        self.macos_owner_conflict.clone_from(&conflict);
-        self.macos_owner_designated_requirement_hash
-            .clone_from(&designated_requirement_hash);
+        self.source_capability_context.clone_from(&context);
         for source in &mut self.sources {
-            source.set_macos_daemon_ownership(
-                owner,
-                conflict.clone(),
-                designated_requirement_hash.clone(),
-            )?;
+            source.set_capability_context(&context)?;
         }
         self.publish_source_status_registry();
         Ok(())
     }
 
-    /// Publish the active renderer device's Metal 4 capability into macOS source status.
+    /// Update capability identity without discarding retained feature probes.
     ///
     /// # Errors
     ///
     /// Returns an error if a source can no longer publish status.
-    pub fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
-        self.macos_metal4 = metal4;
+    pub fn set_source_capability_identity(
+        &mut self,
+        owner: impl Into<Arc<str>>,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<Arc<str>>,
+    ) -> anyhow::Result<()> {
+        self.source_capability_context.owner = owner.into();
+        self.source_capability_context.conflict = conflict;
+        self.source_capability_context.identity_hash = identity_hash;
         for source in &mut self.sources {
-            source.set_macos_metal4_capability(metal4)?;
+            source.set_capability_context(&self.source_capability_context)?;
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    /// Publish one backend capability flag into source status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a source can no longer publish status.
+    pub fn set_source_capability_feature(
+        &mut self,
+        name: impl Into<Arc<str>>,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        self.source_capability_context
+            .features
+            .insert(name.into(), enabled);
+        for source in &mut self.sources {
+            source.set_capability_context(&self.source_capability_context)?;
         }
         self.publish_source_status_registry();
         Ok(())
@@ -2124,32 +2134,12 @@ impl InputManager {
     fn resolve_protected_source_action<A>(
         &self,
         action: A,
-        executor: ProtectedSourceActionExecutor,
-        presentation_required: bool,
+        identity: CapabilityActionIdentity,
     ) -> ResolvedProtectedSourceAction<A> {
-        if executor == ProtectedSourceActionExecutor::PlatformBackend {
-            return ResolvedProtectedSourceAction::Local {
-                action,
-                owner: ProtectedSourceActionOwner::PlatformBackend,
-            };
+        if identity.disposition() == CapabilityActionDisposition::RequiresUi {
+            return ResolvedProtectedSourceAction::RequiresUi { identity };
         }
-
-        let active_owner = self.macos_capability_owner;
-        let requires_app_ui = matches!(
-            active_owner,
-            MacosCapabilityOwner::App | MacosCapabilityOwner::Broker
-        ) || presentation_required
-            && matches!(
-                active_owner,
-                MacosCapabilityOwner::LaunchdService | MacosCapabilityOwner::HomebrewService
-            );
-        if requires_app_ui {
-            return ResolvedProtectedSourceAction::RequiresAppUi { active_owner };
-        }
-        ResolvedProtectedSourceAction::Local {
-            action,
-            owner: ProtectedSourceActionOwner::Macos(active_owner),
-        }
+        ResolvedProtectedSourceAction::Local { action, identity }
     }
 
     /// Resolve the explicit Input Monitoring request against this process.
@@ -2158,8 +2148,8 @@ impl InputManager {
         &self,
     ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
         let action = self.input_authorization_action()?;
-        let executor = action.executor();
-        Some(self.resolve_protected_source_action(action, executor, false))
+        let identity = action.identity().clone();
+        Some(self.resolve_protected_source_action(action, identity))
     }
 
     /// Resolve the explicit Screen Recording request without retaining the
@@ -2177,8 +2167,8 @@ impl InputManager {
         &self,
     ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
         let action = self.screen_authorization_action()?;
-        let executor = action.executor();
-        Some(self.resolve_protected_source_action(action, executor, false))
+        let identity = action.identity().clone();
+        Some(self.resolve_protected_source_action(action, identity))
     }
 
     /// Resolve the native picker action without retaining the input-manager
@@ -2196,16 +2186,15 @@ impl InputManager {
         &self,
     ) -> Option<ResolvedProtectedSourceAction<ScreenSourcePickerAction>> {
         let action = self.screen_source_picker_action()?;
-        let executor = action.executor();
-        Some(self.resolve_protected_source_action(action, executor, true))
+        let identity = action.identity().clone();
+        Some(self.resolve_protected_source_action(action, identity))
     }
 
-    #[cfg(target_os = "macos")]
     #[must_use]
-    pub fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+    pub fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
         self.sources
             .iter()
-            .find_map(|source| source.macos_screenshot_reference_action())
+            .find_map(|source| source.diagnostic_artifact_action())
     }
 
     /// Ask screen sources to discard their persisted selection and re-prompt.
@@ -2259,15 +2248,8 @@ impl InputManager {
         source_graph_generation: u64,
     ) -> ManagedInputSource {
         source
-            .set_macos_daemon_ownership(
-                self.macos_capability_owner,
-                self.macos_owner_conflict.clone(),
-                self.macos_owner_designated_requirement_hash.clone(),
-            )
-            .expect("new source accepts retained macOS ownership status");
-        source
-            .set_macos_metal4_capability(self.macos_metal4)
-            .expect("new source accepts retained macOS Metal 4 status");
+            .set_capability_context(&self.source_capability_context)
+            .expect("new source accepts retained capability status");
         let id = self.next_source_slot_id;
         self.next_source_slot_id = self
             .next_source_slot_id

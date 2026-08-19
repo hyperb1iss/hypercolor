@@ -38,7 +38,6 @@ wgpu = [
 ]
 screen-capture = [
     "wgpu",
-    "dep:hypercolor-macos-capture",
     "dep:hypercolor-macos-gpu-interop",
     "hypercolor-macos-gpu-interop/screen-capture",
 ]
@@ -111,7 +110,7 @@ sysinfo = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
 dispatch2 = "0.3.1"
-hypercolor-macos-capture = { workspace = true, optional = true }
+hypercolor-macos-capture = { workspace = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-input = { workspace = true }
 objc2 = { workspace = true }

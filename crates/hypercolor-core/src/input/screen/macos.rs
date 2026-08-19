@@ -10,12 +10,16 @@ use hypercolor_macos_capture::{
     MacosCaptureCapabilities as NativeCaptureCapabilities, MacosCaptureContentStyle,
     MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat, MacosCaptureSelection,
     MacosColorPrimaries, MacosCpuSourceView, MacosFrameDropReason, MacosFrameEvent,
-    MacosFrameMailbox, MacosFrameStatus, MacosHostArchitecture as NativeHostArchitecture,
-    MacosProtectedSourceState as NativeProtectedSourceState, MacosStreamRequest,
+    MacosFrameMailbox, MacosFrameStatus, MacosHostArchitecture,
+    MacosProtectedSourceState as NativeProtectedSourceState, MacosScreenAuthorizationState,
+    MacosScreenOwnerConflict, MacosScreenSelectionSnapshot, MacosScreenStatusSnapshot,
+    MacosScreenTahoeSelectionStatus, MacosScreenTahoeStatus, MacosScreenTimingStatus,
+    MacosSourceTimingStatus, MacosStreamRequest,
     MacosTahoeSelectionCapabilities as NativeTahoeSelectionCapabilities, MacosTransferFunction,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use hypercolor_macos_capture::{MacosRuntimeCapability, MacosTahoeRuntimeProbes};
+use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
 use tokio::sync::oneshot;
 
 #[cfg(target_os = "macos")]
@@ -53,17 +57,12 @@ use super::{
 #[cfg(any(target_os = "macos", feature = "macos-capture-fixtures"))]
 use crate::input::SourceKind;
 use crate::input::status::SourceSessionSlot;
-#[cfg(target_os = "macos")]
-use crate::input::traits::MacosScreenshotReferenceAction;
 use crate::input::traits::{
-    InputData, InputSource, ProtectedSourceAuthorizationAction, ScreenSourcePickerAction,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource,
+    ProtectedSourceAuthorizationAction, ScreenSourcePickerAction, SourceCapabilityContext,
+    SourceDiagnosticArtifactAction,
 };
-use crate::input::{
-    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
-    MacosScreenPlatformStatus, MacosScreenTimingStatus, MacosSelectionState,
-    MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, MacosTimingStatus,
-    SourcePlatformStatus, SourceStatusHandle, SourceStatusReporter,
-};
+use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 
 #[cfg(target_os = "macos")]
 mod surface_pool;
@@ -192,7 +191,7 @@ impl AtomicTimingHistogram {
         maximum
     }
 
-    fn snapshot(&self) -> MacosTimingStatus {
+    fn snapshot(&self) -> MacosSourceTimingStatus {
         self.snapshot_with_hooks(|| {}, || {})
     }
 
@@ -200,7 +199,7 @@ impl AtomicTimingHistogram {
         &self,
         mut retrying: impl FnMut(),
         mut after_p95: impl FnMut(),
-    ) -> MacosTimingStatus {
+    ) -> MacosSourceTimingStatus {
         loop {
             let generation = self.generation.load(Ordering::Acquire);
             if generation & 1 == 1 {
@@ -216,7 +215,7 @@ impl AtomicTimingHistogram {
             let p99_ns = self.percentile_upper_bound_ns(99, sample_count, max_ns);
             std::sync::atomic::fence(Ordering::Acquire);
             if self.generation.load(Ordering::Relaxed) == generation {
-                return MacosTimingStatus {
+                return MacosSourceTimingStatus {
                     sample_count,
                     total_ns,
                     max_ns,
@@ -347,7 +346,7 @@ trait MacosCaptureControl: Send + Sync {
     fn begin_stream_request(&self, request: MacosStreamRequest) -> anyhow::Result<StreamRequest>;
     fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities>;
     fn host_capabilities(&self) -> NativeCaptureCapabilities;
-    fn authorization(&self) -> MacosAuthorizationState;
+    fn authorization(&self) -> MacosScreenAuthorizationState;
     fn diagnostics(&self) -> MacosCaptureCallbackDiagnostics;
     fn captured_at(&self, display_time: u64) -> anyhow::Result<Instant>;
 
@@ -441,13 +440,13 @@ impl MacosCaptureControl for NativeCaptureControl {
         self.host_capabilities
     }
 
-    fn authorization(&self) -> MacosAuthorizationState {
+    fn authorization(&self) -> MacosScreenAuthorizationState {
         if MacosScreenCaptureSession::screen_authorized() {
-            MacosAuthorizationState::Authorized
+            MacosScreenAuthorizationState::Authorized
         } else if self.session.status() == NativeProtectedSourceState::PermissionDenied {
-            MacosAuthorizationState::Denied
+            MacosScreenAuthorizationState::Denied
         } else {
-            MacosAuthorizationState::NotDetermined
+            MacosScreenAuthorizationState::NotDetermined
         }
     }
 
@@ -855,9 +854,9 @@ pub struct MacosScreenCaptureInput {
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
     owner: MacosCapabilityOwner,
-    owner_conflict: Option<Arc<crate::input::MacosDaemonOwnerConflict>>,
+    owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
     owner_designated_requirement_hash: Option<Arc<str>>,
-    authorization: MacosAuthorizationState,
+    authorization: MacosScreenAuthorizationState,
     authorization_last_transition_at: Option<Instant>,
     metal4: bool,
 }
@@ -927,7 +926,7 @@ impl MacosScreenCaptureInput {
         control: Arc<dyn MacosCaptureControl>,
         telemetry: Arc<MacosScreenRuntimeTelemetry>,
     ) -> Self {
-        let consented = control.authorization() == MacosAuthorizationState::Authorized;
+        let consented = control.authorization() == MacosScreenAuthorizationState::Authorized;
         let authorization = control.authorization();
         let mut source = Self {
             config,
@@ -1044,98 +1043,95 @@ impl MacosScreenCaptureInput {
                 .capture_to_converted_publication_timing
                 .snapshot(),
         };
+        let selection = self.control.selection();
+        let host_capabilities = self.control.host_capabilities();
+        let tahoe = map_tahoe_capabilities(host_capabilities, self.metal4);
+        let tahoe_selection = self
+            .control
+            .tahoe_selection_capabilities()
+            .map(map_tahoe_selection_capabilities);
         self.status
-            .set_platform(Some(SourcePlatformStatus::MacosScreen(
-                MacosScreenPlatformStatus {
-                    state: map_protected_state(state),
-                    tcc: authorization,
-                    owner: self.owner,
-                    selection: map_selection(self.control.selection()),
-                    selection_diagnostic_label: selection_diagnostic_label(
-                        self.control.selection(),
-                    ),
-                    selection_revision: self.control.selection_revision(),
-                    tahoe: map_tahoe_capabilities(self.control.host_capabilities(), self.metal4),
-                    tahoe_selection: self
-                        .control
-                        .tahoe_selection_capabilities()
-                        .map(map_tahoe_selection_capabilities),
-                    owner_conflict: self.owner_conflict.clone(),
-                    authorization_last_transition_at: self.authorization_last_transition_at,
-                    owner_designated_requirement_hash: self
-                        .owner_designated_requirement_hash
-                        .clone(),
-                    executable_architecture: executable_architecture(),
-                    stream_state: Arc::from(stream_state_name(state)),
-                    capture_session_generation: source
-                        .as_ref()
-                        .map(|source| source.epoch.session_generation),
-                    topology_generation: source
-                        .as_ref()
-                        .map(|source| source.epoch.topology_generation),
-                    resource_generation: source.as_ref().map(|source| source.resource_generation),
-                    publication_plan_generation: nonzero_telemetry(
-                        self.telemetry
-                            .publication_plan_generation
-                            .load(Ordering::Acquire),
-                    ),
-                    pixel_format: source
-                        .as_ref()
-                        .map(|source| Arc::from(pixel_format_name(source.pixel_format))),
-                    dynamic_range: source.as_ref().and_then(|source| {
-                        source
-                            .colorimetry
-                            .dynamic_range()
-                            .map(|range| Arc::from(dynamic_range_name(range)))
-                    }),
-                    color_space: source.as_ref().map(|source| {
-                        Arc::from(color_space_name(source.colorimetry.color_space()))
-                    }),
-                    transfer_function: source.as_ref().map(|source| {
-                        Arc::from(transfer_function_name(
-                            source.colorimetry.transfer_function(),
-                        ))
-                    }),
-                    display_scale_bits: source.as_ref().map(|source| source.display_scale_bits),
-                    native_width: source
-                        .as_ref()
-                        .map(|source| source.geometry.native_extent().width()),
-                    native_height: source
-                        .as_ref()
-                        .map(|source| source.geometry.native_extent().height()),
-                    queue_depth: hypercolor_macos_capture::MACOS_STREAM_QUEUE_DEPTH,
-                    admitted_native_bytes: self
-                        .telemetry
-                        .admitted_native_bytes
-                        .load(Ordering::Acquire),
-                    pinned_generations: Some(
-                        self.telemetry.pinned_generations.load(Ordering::Acquire),
-                    ),
-                    frames_received: diagnostics.frames_received,
-                    frames_published: diagnostics.frames_published,
-                    frames_superseded: diagnostics.superseded_deliveries,
-                    frames_malformed: diagnostics.malformed_frames,
-                    frames_dropped: frame_drop_counters(&diagnostics),
-                    frames_stale: self.telemetry.stale_frames.load(Ordering::Acquire),
-                    publication_path: self.telemetry.publication_path(),
-                    fallback_reason: lock(&self.telemetry.fallback_reason).clone(),
-                    timing,
-                    callback_total_ns: timing.callback.total_ns,
-                    callback_max_ns: timing.callback.max_ns,
-                    retain_total_ns: timing.retain.total_ns,
-                    retain_max_ns: timing.retain.max_ns,
-                    conversion_total_ns: timing.conversion.total_ns,
-                    conversion_max_ns: timing.conversion.max_ns,
-                    cpu_reduction_total_ns: timing.cpu_reduction.total_ns,
-                    cpu_reduction_max_ns: timing.cpu_reduction.max_ns,
-                    native_import_total_ns: timing.native_import.total_ns,
-                    native_import_max_ns: timing.native_import.max_ns,
-                    native_reduction_submit_total_ns: timing.native_reduction_submit.total_ns,
-                    native_reduction_submit_max_ns: timing.native_reduction_submit.max_ns,
-                    publication_total_ns: timing.publication.total_ns,
-                    publication_max_ns: timing.publication.max_ns,
-                },
-            )))?;
+            .set_action_issue(protected_screen_action_issue(state))?;
+        let status = MacosScreenStatusSnapshot {
+            state,
+            authorization,
+            owner: Arc::from(self.owner.as_str()),
+            selection: MacosScreenSelectionSnapshot {
+                revision: self.control.selection_revision(),
+                selection,
+            },
+            tahoe,
+            tahoe_selection,
+            owner_conflict: self
+                .owner_conflict
+                .as_ref()
+                .map(|conflict| MacosScreenOwnerConflict {
+                    active: Arc::from(conflict.active.as_str()),
+                    contender: Arc::from(conflict.contender.as_str()),
+                    observed_at_ms: conflict.observed_at_ms,
+                }),
+            authorization_last_transition_age_ms: self.authorization_last_transition_at.map(
+                |transition| u64::try_from(transition.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ),
+            owner_designated_requirement_hash: self.owner_designated_requirement_hash.clone(),
+            executable_architecture: executable_architecture(),
+            capture_session_generation: source
+                .as_ref()
+                .map(|source| source.epoch.session_generation),
+            topology_generation: source
+                .as_ref()
+                .map(|source| source.epoch.topology_generation),
+            resource_generation: source.as_ref().map(|source| source.resource_generation),
+            publication_plan_generation: nonzero_telemetry(
+                self.telemetry
+                    .publication_plan_generation
+                    .load(Ordering::Acquire),
+            ),
+            pixel_format: source
+                .as_ref()
+                .map(|source| Arc::from(pixel_format_name(source.pixel_format))),
+            dynamic_range: source.as_ref().and_then(|source| {
+                source
+                    .colorimetry
+                    .dynamic_range()
+                    .map(|range| Arc::from(dynamic_range_name(range)))
+            }),
+            color_space: source
+                .as_ref()
+                .map(|source| Arc::from(color_space_name(source.colorimetry.color_space()))),
+            transfer_function: source.as_ref().map(|source| {
+                Arc::from(transfer_function_name(
+                    source.colorimetry.transfer_function(),
+                ))
+            }),
+            display_scale: source
+                .as_ref()
+                .map(|source| f64::from_bits(source.display_scale_bits)),
+            native_width: source
+                .as_ref()
+                .map(|source| source.geometry.native_extent().width()),
+            native_height: source
+                .as_ref()
+                .map(|source| source.geometry.native_extent().height()),
+            queue_depth: hypercolor_macos_capture::MACOS_STREAM_QUEUE_DEPTH,
+            admitted_native_bytes: self.telemetry.admitted_native_bytes.load(Ordering::Acquire),
+            pinned_generations: self.telemetry.pinned_generations.load(Ordering::Acquire),
+            frames_received: diagnostics.frames_received,
+            frames_published: diagnostics.frames_published,
+            frames_superseded: diagnostics.superseded_deliveries,
+            frames_malformed: diagnostics.malformed_frames,
+            frames_dropped: frame_drop_counters(&diagnostics).to_vec(),
+            frames_stale: self.telemetry.stale_frames.load(Ordering::Acquire),
+            publication_path: self.telemetry.publication_path(),
+            fallback_reason: lock(&self.telemetry.fallback_reason).clone(),
+            timing,
+        };
+        let diagnostics = hypercolor_macos_capture::screen_diagnostics_envelope(&status)
+            .inspect_err(
+                |error| tracing::warn!(%error, "dropping invalid macOS screen diagnostics"),
+            )
+            .ok();
+        self.status.set_diagnostics(diagnostics)?;
         Ok(())
     }
 
@@ -1144,7 +1140,7 @@ impl MacosScreenCaptureInput {
     }
 
     fn refresh_policy_for(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
-        let consented = self.control.authorization() == MacosAuthorizationState::Authorized;
+        let consented = self.control.authorization() == MacosScreenAuthorizationState::Authorized;
         self.status
             .set_policy(true, consented, demand.is_active())?;
         Ok(())
@@ -1302,25 +1298,64 @@ impl MacosScreenCaptureInput {
     }
 }
 
+fn protected_screen_action_issue(state: NativeProtectedSourceState) -> Option<SourceIssue> {
+    match state {
+        NativeProtectedSourceState::NeedsUserAction => Some(
+            SourceIssue::new(
+                "authorization_required",
+                "Screen Recording authorization is required",
+                true,
+            )
+            .with_remediation("Authorize Screen Recording"),
+        ),
+        NativeProtectedSourceState::PermissionDenied => Some(
+            SourceIssue::new(
+                "authorization_denied",
+                "Screen Recording authorization was denied",
+                true,
+            )
+            .with_remediation("Authorize Screen Recording"),
+        ),
+        NativeProtectedSourceState::Revoked => Some(
+            SourceIssue::new(
+                "authorization_revoked",
+                "Screen Recording authorization was revoked",
+                true,
+            )
+            .with_remediation("Authorize Screen Recording"),
+        ),
+        NativeProtectedSourceState::NeedsProcessRestart => Some(
+            SourceIssue::new(
+                "process_restart_required",
+                "Screen Recording authorization requires a process restart",
+                true,
+            )
+            .with_remediation("Restart the active Hypercolor process"),
+        ),
+        _ => None,
+    }
+}
+
 impl InputSource for MacosScreenCaptureInput {
     fn name(&self) -> &'static str {
         "macos_screen_capture"
     }
 
-    fn set_macos_daemon_ownership(
-        &mut self,
-        owner: MacosCapabilityOwner,
-        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
-        designated_requirement_hash: Option<Arc<str>>,
-    ) -> anyhow::Result<()> {
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        let Some(owner) = MacosCapabilityOwner::from_id(&context.owner) else {
+            return Ok(());
+        };
+        let conflict = context.conflict.as_ref().and_then(|conflict| {
+            Some(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::from_id(&conflict.active)?,
+                contender: MacosCapabilityOwner::from_id(&conflict.contender)?,
+                observed_at_ms: conflict.observed_at_ms,
+            })
+        });
         self.owner = owner;
         self.owner_conflict = conflict.map(Arc::new);
-        self.owner_designated_requirement_hash = designated_requirement_hash;
-        self.refresh_platform_status()
-    }
-
-    fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
-        self.metal4 = metal4;
+        self.owner_designated_requirement_hash = context.identity_hash.clone();
+        self.metal4 = context.features.get("metal4").copied().unwrap_or(false);
         self.refresh_platform_status()
     }
 
@@ -1699,26 +1734,54 @@ impl InputSource for MacosScreenCaptureInput {
 
     fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
         let control = Arc::clone(&self.control);
-        Some(ProtectedSourceAuthorizationAction::current_macos_process(
+        Some(ProtectedSourceAuthorizationAction::new(
             Arc::new(move || {
                 control.request_authorization();
-                Ok(control.authorization() == MacosAuthorizationState::Authorized)
+                Ok(control.authorization() == MacosScreenAuthorizationState::Authorized)
             }),
+            protected_action_identity(self.owner, false),
         ))
     }
 
     fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
         let control = Arc::clone(&self.control);
-        Some(ScreenSourcePickerAction::current_macos_process(Arc::new(
-            move || control.present_picker(),
-        )))
+        Some(ScreenSourcePickerAction::new(
+            Arc::new(move || control.present_picker()),
+            protected_action_identity(self.owner, true),
+        ))
     }
 
     #[cfg(target_os = "macos")]
-    fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+    fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
         let control = Arc::clone(&self.control);
-        Some(Arc::new(move || control.capture_screenshot_reference()))
+        Some(Arc::new(move || {
+            control
+                .capture_screenshot_reference()
+                .map(|receiver| Box::new(receiver) as crate::input::SourceDiagnosticArtifact)
+        }))
     }
+}
+
+fn protected_action_identity(
+    owner: MacosCapabilityOwner,
+    presentation_required: bool,
+) -> CapabilityActionIdentity {
+    let requires_ui = matches!(
+        owner,
+        MacosCapabilityOwner::App | MacosCapabilityOwner::Broker
+    ) || presentation_required
+        && matches!(
+            owner,
+            MacosCapabilityOwner::LaunchdService | MacosCapabilityOwner::HomebrewService
+        );
+    CapabilityActionIdentity::new(
+        owner.as_str(),
+        if requires_ui {
+            CapabilityActionDisposition::RequiresUi
+        } else {
+            CapabilityActionDisposition::Local
+        },
+    )
 }
 
 #[cfg(all(test, feature = "macos-capture-fixtures"))]
@@ -3185,63 +3248,10 @@ fn scaled_coordinate(value: f64, scale: f64) -> anyhow::Result<i32> {
     Ok(value as i32)
 }
 
-const fn map_protected_state(state: NativeProtectedSourceState) -> MacosProtectedSourceState {
-    match state {
-        NativeProtectedSourceState::Disabled => MacosProtectedSourceState::Disabled,
-        NativeProtectedSourceState::NeedsUserAction => MacosProtectedSourceState::NeedsUserAction,
-        NativeProtectedSourceState::PermissionDenied => MacosProtectedSourceState::PermissionDenied,
-        NativeProtectedSourceState::NeedsProcessRestart => {
-            MacosProtectedSourceState::NeedsProcessRestart
-        }
-        NativeProtectedSourceState::NeedsSelection => MacosProtectedSourceState::NeedsSelection,
-        NativeProtectedSourceState::ReadyIdle => MacosProtectedSourceState::ReadyIdle,
-        NativeProtectedSourceState::Starting => MacosProtectedSourceState::Starting,
-        NativeProtectedSourceState::Live => MacosProtectedSourceState::Live,
-        NativeProtectedSourceState::Interrupted => MacosProtectedSourceState::Interrupted,
-        NativeProtectedSourceState::Revoked => MacosProtectedSourceState::Revoked,
-        NativeProtectedSourceState::Failed => MacosProtectedSourceState::Failed,
-    }
-}
-
-fn map_selection(selection: MacosCaptureSelection) -> MacosSelectionState {
-    match selection {
-        MacosCaptureSelection::None => MacosSelectionState::None,
-        MacosCaptureSelection::Display { source_id } => MacosSelectionState::Display { source_id },
-        MacosCaptureSelection::SessionScoped { content_style } => {
-            let content_style = match content_style {
-                MacosCaptureContentStyle::Window => "window",
-                MacosCaptureContentStyle::MultipleWindows => "multiple_windows",
-                MacosCaptureContentStyle::Application => "application",
-                MacosCaptureContentStyle::MultipleApplications => "multiple_applications",
-                MacosCaptureContentStyle::Mixed => "mixed",
-            };
-            MacosSelectionState::SessionScoped {
-                content_style: Arc::from(content_style),
-            }
-        }
-    }
-}
-
-fn selection_diagnostic_label(selection: MacosCaptureSelection) -> Option<Arc<str>> {
-    match selection {
-        MacosCaptureSelection::None => None,
-        MacosCaptureSelection::Display { .. } => Some(Arc::from("display")),
-        MacosCaptureSelection::SessionScoped { content_style } => {
-            Some(Arc::from(match content_style {
-                MacosCaptureContentStyle::Window => "window",
-                MacosCaptureContentStyle::MultipleWindows => "multiple_windows",
-                MacosCaptureContentStyle::Application => "application",
-                MacosCaptureContentStyle::MultipleApplications => "multiple_applications",
-                MacosCaptureContentStyle::Mixed => "mixed",
-            }))
-        }
-    }
-}
-
 fn map_tahoe_selection_capabilities(
     capabilities: NativeTahoeSelectionCapabilities,
-) -> MacosTahoeSelectionCapabilities {
-    MacosTahoeSelectionCapabilities {
+) -> MacosScreenTahoeSelectionStatus {
+    MacosScreenTahoeSelectionStatus {
         source_id: capabilities.source_id,
         capture_session_generation: capabilities.capture_session_generation,
         hdr_capture: capabilities.hdr_capture,
@@ -3252,41 +3262,23 @@ fn map_tahoe_selection_capabilities(
 fn map_tahoe_capabilities(
     capabilities: NativeCaptureCapabilities,
     metal4: bool,
-) -> MacosTahoeCapabilities {
-    MacosTahoeCapabilities {
-        host_architecture: match capabilities.host_architecture {
-            NativeHostArchitecture::AppleSilicon => MacosArchitecture::AppleSilicon,
-            NativeHostArchitecture::Intel => MacosArchitecture::Intel,
-        },
+) -> MacosScreenTahoeStatus {
+    MacosScreenTahoeStatus {
+        host_architecture: capabilities.host_architecture,
         translated_process: capabilities.translated_process,
         content_tone_mapping_info: capabilities.tahoe.content_tone_mapping_info.is_present(),
         metal4,
     }
 }
 
-const fn executable_architecture() -> MacosArchitecture {
+const fn executable_architecture() -> MacosHostArchitecture {
     #[cfg(target_arch = "aarch64")]
     {
-        MacosArchitecture::AppleSilicon
+        MacosHostArchitecture::AppleSilicon
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        MacosArchitecture::Intel
-    }
-}
-
-const fn stream_state_name(state: NativeProtectedSourceState) -> &'static str {
-    match state {
-        NativeProtectedSourceState::Starting | NativeProtectedSourceState::Live => "active",
-        NativeProtectedSourceState::Interrupted
-        | NativeProtectedSourceState::Revoked
-        | NativeProtectedSourceState::Failed => "stopped",
-        NativeProtectedSourceState::Disabled
-        | NativeProtectedSourceState::NeedsUserAction
-        | NativeProtectedSourceState::PermissionDenied
-        | NativeProtectedSourceState::NeedsProcessRestart
-        | NativeProtectedSourceState::NeedsSelection
-        | NativeProtectedSourceState::ReadyIdle => "inactive",
+        MacosHostArchitecture::Intel
     }
 }
 
@@ -3300,8 +3292,8 @@ const fn timing_status(
     max_ns: u64,
     p95_ns: u64,
     p99_ns: u64,
-) -> MacosTimingStatus {
-    MacosTimingStatus {
+) -> MacosSourceTimingStatus {
+    MacosSourceTimingStatus {
         sample_count,
         total_ns,
         max_ns,
@@ -3419,7 +3411,7 @@ impl Default for FixtureControl {
             defer_next_stream_request: AtomicBool::new(false),
             tahoe_selection: Mutex::new(None),
             host_capabilities: Mutex::new(NativeCaptureCapabilities::from_runtime(
-                NativeHostArchitecture::AppleSilicon,
+                MacosHostArchitecture::AppleSilicon,
                 true,
                 MacosTahoeRuntimeProbes {
                     content_tone_mapping_info_symbol: MacosRuntimeCapability::Present,
@@ -3517,14 +3509,16 @@ impl MacosCaptureControl for FixtureControl {
         *lock(&self.host_capabilities)
     }
 
-    fn authorization(&self) -> MacosAuthorizationState {
+    fn authorization(&self) -> MacosScreenAuthorizationState {
         match self.status() {
             NativeProtectedSourceState::PermissionDenied | NativeProtectedSourceState::Revoked => {
-                MacosAuthorizationState::Denied
+                MacosScreenAuthorizationState::Denied
             }
-            NativeProtectedSourceState::NeedsUserAction => MacosAuthorizationState::NotDetermined,
-            NativeProtectedSourceState::Disabled => MacosAuthorizationState::Unknown,
-            _ => MacosAuthorizationState::Authorized,
+            NativeProtectedSourceState::NeedsUserAction => {
+                MacosScreenAuthorizationState::NotDetermined
+            }
+            NativeProtectedSourceState::Disabled => MacosScreenAuthorizationState::Unknown,
+            _ => MacosScreenAuthorizationState::Authorized,
         }
     }
 

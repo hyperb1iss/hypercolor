@@ -3,16 +3,20 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ProtectedSourceGrantOwner {
-    AppSidecar,
-    App,
-    LaunchdService,
-    HomebrewService,
-    Broker,
-    Standalone,
-    PlatformBackend,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct ProtectedSourceGrantOwner(String);
+
+impl ProtectedSourceGrantOwner {
+    #[must_use]
+    pub fn new(owner: impl Into<String>) -> Self {
+        Self(owner.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

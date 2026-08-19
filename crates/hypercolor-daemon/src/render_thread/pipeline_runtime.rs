@@ -2189,7 +2189,8 @@ impl PipelineRuntime {
             .input_manager
             .lock()
             .await
-            .set_macos_metal4_capability(
+            .set_source_capability_feature(
+                "metal4",
                 pipeline.render.sparkleflinger.macos_metal4_capability(),
             )?;
         Ok(pipeline)

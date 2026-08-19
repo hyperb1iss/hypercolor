@@ -28,5 +28,6 @@ pub mod scene;
 pub mod sensor;
 pub mod server;
 pub mod session;
+pub mod source_status;
 pub mod spatial;
 pub mod viewport;

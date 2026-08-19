@@ -228,7 +228,7 @@ pub(crate) async fn run_macos_screen_parity(
         })?;
     let screenshot_action = {
         let input = state.input_manager.lock().await;
-        input.macos_screenshot_reference_action()
+        input.diagnostic_artifact_action()
     };
     let screenshot_action = screenshot_action.ok_or_else(|| {
         MacosScreenParityDiagnosticError::unsupported(
@@ -246,7 +246,19 @@ pub(crate) async fn run_macos_screen_parity(
     }
     let layout_hash = layout_sha256(first_layout.as_ref())?;
 
-    let screenshot_rx = screenshot_action().map_err(|error| map_screenshot_action_error(&error))?;
+    let screenshot_rx = screenshot_action()
+        .map_err(|error| map_screenshot_action_error(&error))?
+        .downcast::<
+            std::sync::mpsc::Receiver<
+                Result<MacosScreenshotReferenceCapture, MacosCaptureError>,
+            >,
+        >()
+        .map(|receiver| *receiver)
+        .map_err(|_| {
+            MacosScreenParityDiagnosticError::failed(
+                "the screen source returned an unsupported diagnostic artifact",
+            )
+        })?;
     let screenshot_capture = receive_screenshot_capture(screenshot_rx, deadline).await?;
     validate_capture_identity(&first.publication, &screenshot_capture)?;
 

@@ -14,6 +14,7 @@ mod native;
 #[cfg(target_os = "macos")]
 mod screenshot;
 mod session;
+mod source_status;
 mod stream_contract;
 #[cfg(any(target_os = "macos", test))]
 mod worker;
@@ -51,6 +52,12 @@ pub use mailbox::MacosFrameMailbox;
 pub use session::{
     MacosCaptureCadence, MacosCaptureContentStyle, MacosCaptureSelection, MacosCaptureSelector,
     MacosStreamRequest,
+};
+pub use source_status::{
+    MacosScreenAuthorizationState, MacosScreenDiagnosticsDecodeError, MacosScreenOwnerConflict,
+    MacosScreenSelectionSnapshot, MacosScreenStatusSnapshot, MacosScreenTahoeSelectionStatus,
+    MacosScreenTahoeStatus, MacosScreenTimingStatus, MacosSourceTimingStatus,
+    screen_diagnostics_envelope, screen_selection_snapshot,
 };
 pub use stream_contract::{
     MacosCaptureCapabilities, MacosCaptureDynamicRange, MacosConfiguredStream,

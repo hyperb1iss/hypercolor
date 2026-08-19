@@ -17,10 +17,12 @@ pub use decode::{
 pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use process::current_process_audit_token_identity;
 pub use shared::{
-    EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
-    MacosInputEvent, MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult,
-    MacosMediaKey, MacosModifierFlags, MacosPointerButton, MacosScrollPhase, MacosScrollUnit,
-    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState,
+    EffectiveEventMasks, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
+    MacosDaemonOwnerConflict, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics,
+    MacosInputError, MacosInputEvent, MacosInputGapReason, MacosInputPublicationOutcome,
+    MacosInputResult, MacosInputStatusSnapshot, MacosMediaKey, MacosModifierFlags,
+    MacosPointerButton, MacosProtectedSourceState, MacosScrollPhase, MacosScrollUnit,
+    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState, input_diagnostics_envelope,
 };
 
 #[cfg(target_os = "macos")]

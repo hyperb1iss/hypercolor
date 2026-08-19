@@ -17,7 +17,9 @@ unwrap_used = "deny"
 
 [dependencies]
 crossbeam-queue = { workspace = true }
+hypercolor-types = { workspace = true }
 hypercolor-worker-retention = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

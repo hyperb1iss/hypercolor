@@ -6,31 +6,38 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_selection_state_api_type_0_type import (
-    MacosSelectionStateApiType0Type,
-)
-
-T = TypeVar("T", bound="MacosSelectionStateApiType0")
+T = TypeVar("T", bound="SourceDiagnosticsDisplayField")
 
 
 @_attrs_define
-class MacosSelectionStateApiType0:
-    """
+class SourceDiagnosticsDisplayField:
+    """One platform-authored, presentation-safe diagnostic value.
+
     Attributes:
-        type_ (MacosSelectionStateApiType0Type):
+        key (str):
+        label (str):
+        value (str):
     """
 
-    type_: MacosSelectionStateApiType0Type
+    key: str
+    label: str
+    value: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        type_ = self.type_.value
+        key = self.key
+
+        label = self.label
+
+        value = self.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "type": type_,
+                "key": key,
+                "label": label,
+                "value": value,
             }
         )
 
@@ -39,14 +46,20 @@ class MacosSelectionStateApiType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        type_ = MacosSelectionStateApiType0Type(d.pop("type"))
+        key = d.pop("key")
 
-        macos_selection_state_api_type_0 = cls(
-            type_=type_,
+        label = d.pop("label")
+
+        value = d.pop("value")
+
+        source_diagnostics_display_field = cls(
+            key=key,
+            label=label,
+            value=value,
         )
 
-        macos_selection_state_api_type_0.additional_properties = d
-        return macos_selection_state_api_type_0
+        source_diagnostics_display_field.additional_properties = d
+        return source_diagnostics_display_field
 
     @property
     def additional_keys(self) -> list[str]:

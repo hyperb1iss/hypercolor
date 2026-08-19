@@ -20,6 +20,8 @@ default = []
 capture-fixtures = []
 
 [dependencies]
+hypercolor-types = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
