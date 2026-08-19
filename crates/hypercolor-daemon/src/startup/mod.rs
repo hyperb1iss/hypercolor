@@ -184,7 +184,7 @@ pub struct DaemonState {
     pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
 
     /// Input orchestrator — audio and screen capture sampling sources.
-    pub input_manager: Arc<Mutex<InputManager>>,
+    pub input_manager: InputManager,
 
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,

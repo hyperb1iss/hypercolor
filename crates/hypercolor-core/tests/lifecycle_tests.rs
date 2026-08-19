@@ -15,9 +15,9 @@ use hypercolor_core::device::{
     LifecycleAction,
 };
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
-    ManagedSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceState, SourceStatusHandle,
-    SourceStatusReporter,
+    InputData, InputManager, InputSource, InteractionSource, InteractionSourceOrigin,
+    InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, SourceIssue, SourceKind,
+    SourceRoleBinding, SourceState, SourceStatusHandle, SourceStatusReporter, SourceSwapTarget,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -393,16 +393,24 @@ fn replacement_stops_worker_and_fences_every_late_publication() {
     manager.start_all().expect("source starts");
     let accepted_before = probe.accepted_publications.load(Ordering::SeqCst);
 
-    let Ok(retired) = manager.replace_source(
-        0,
-        managed_fault_source(FaultInputSource::new(
-            "replacement",
-            InputWorkerFault::Stable,
-            Arc::new(InputLifecycleProbe::default()),
-        )),
-    ) else {
-        panic!("registered source is replaced");
-    };
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("registered source has one exact replacement target");
+    let mut replacement = Some(managed_fault_source(FaultInputSource::new(
+        "replacement",
+        InputWorkerFault::Stable,
+        Arc::new(InputLifecycleProbe::default()),
+    )));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("replacement binds to the planned role");
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("replacement graph fences remain current");
+    retirement.retire();
     std::thread::sleep(Duration::from_millis(20));
 
     assert!(status.snapshot().retired);
@@ -411,7 +419,6 @@ fn replacement_stops_worker_and_fences_every_late_publication() {
         probe.accepted_publications.load(Ordering::SeqCst),
         accepted_before
     );
-    drop(retired);
 }
 
 #[allow(clippy::similar_names)]

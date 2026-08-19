@@ -1,6 +1,6 @@
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, mpsc};
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
@@ -20,12 +20,13 @@ use hypercolor_core::input::{
     InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
     ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind, SourceRoleBinding,
 };
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 
 use super::{
-    EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL, ExactScreenTransitionPurpose, InputPublicationCadence,
-    InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationPump, InputPublicationReader, InputPublicationSchedule, InputPublicationStatus,
+    EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL, ExactScreenTransitionOutcome,
+    ExactScreenTransitionPurpose, InputPublicationCadence, InputPublicationConsumer,
+    InputPublicationDemand, InputPublicationDemandHandle, InputPublicationPump,
+    InputPublicationReader, InputPublicationSchedule, InputPublicationStatus,
     InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL, cadence_interval,
     exact_screen_failure_retry_at, run_exact_screen_transition,
 };
@@ -41,6 +42,18 @@ struct CountingSource {
     running: bool,
 }
 
+struct BlockingStartInteractionSource {
+    entered: mpsc::SyncSender<()>,
+    release: mpsc::Receiver<()>,
+    running: bool,
+}
+
+struct BlockingCapabilityInteractionSource {
+    armed: Arc<AtomicBool>,
+    entered: mpsc::SyncSender<()>,
+    release: mpsc::Receiver<()>,
+}
+
 struct ScreenDemandSource {
     demand: ScreenCaptureDemand,
     transitions: Arc<StdMutex<Vec<ScreenCaptureDemand>>>,
@@ -48,6 +61,7 @@ struct ScreenDemandSource {
     runtime: Arc<StdMutex<Vec<ScreenRuntimeAllocation>>>,
     preparation_started: Option<Arc<Notify>>,
     preparation_release: Option<Arc<Notify>>,
+    preparation_attempts: Option<Arc<AtomicUsize>>,
     preparation_failures: Option<Arc<AtomicUsize>>,
     retirement_started: Option<Arc<Notify>>,
     retirement_release: Option<Arc<Notify>>,
@@ -99,6 +113,7 @@ impl ScreenDemandSource {
             runtime: Arc::new(StdMutex::new(Vec::new())),
             preparation_started: None,
             preparation_release: None,
+            preparation_attempts: None,
             preparation_failures: None,
             retirement_started: None,
             retirement_release: None,
@@ -109,6 +124,11 @@ impl ScreenDemandSource {
     fn with_preparation_gate(mut self, started: Arc<Notify>, release: Arc<Notify>) -> Self {
         self.preparation_started = Some(started);
         self.preparation_release = Some(release);
+        self
+    }
+
+    fn with_preparation_attempts(mut self, attempts: Arc<AtomicUsize>) -> Self {
+        self.preparation_attempts = Some(attempts);
         self
     }
 
@@ -189,6 +209,9 @@ impl ScreenSource for ScreenDemandSource {
         &mut self,
         ticket: ScreenWorkerPreparationTicket,
     ) -> anyhow::Result<ScreenWorkerPreparation> {
+        if let Some(attempts) = &self.preparation_attempts {
+            attempts.fetch_add(1, Ordering::AcqRel);
+        }
         let runtime = Arc::clone(&self.runtime);
         let abort_runtime = Arc::clone(&self.runtime);
         let preparation_started = self.preparation_started.clone();
@@ -322,6 +345,82 @@ impl SourceRoleBinding for CountingSource {
 impl InteractionSource for CountingSource {
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.capture_active.store(active, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl InputSource for BlockingStartInteractionSource {
+    fn name(&self) -> &'static str {
+        "blocking_start_interaction"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.entered
+            .send(())
+            .expect("startup observer should remain connected");
+        self.release
+            .recv()
+            .expect("startup release should remain connected");
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for BlockingStartInteractionSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for BlockingStartInteractionSource {}
+
+impl InputSource for BlockingCapabilityInteractionSource {
+    fn name(&self) -> &'static str {
+        "blocking_capability_interaction"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        true
+    }
+}
+
+impl SourceRoleBinding for BlockingCapabilityInteractionSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for BlockingCapabilityInteractionSource {
+    fn set_capability_context(
+        &mut self,
+        _context: &hypercolor_core::input::SourceCapabilityContext,
+    ) -> anyhow::Result<()> {
+        if self.armed.load(Ordering::Acquire) {
+            self.entered
+                .send(())
+                .expect("capability observer should remain connected");
+            self.release
+                .recv()
+                .expect("capability release should remain connected");
+        }
         Ok(())
     }
 }
@@ -730,30 +829,26 @@ fn source_reactivation_starts_with_one_cadence_window() {
 #[tokio::test]
 async fn pump_waits_for_live_demand_then_samples_without_render_frames() {
     let samples = Arc::new(AtomicUsize::new(0));
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::interaction(Box::new(
             CountingSource::new(Arc::clone(&samples)),
         )))
         .expect("counting source should register");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
     let _demand = demands.register(
         InputPublicationConsumer::Authoritative,
         InputPublicationDemand::all_sources(60, extent(640, 480)),
     );
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands)
+    let mut pump = InputPublicationPump::start(manager.clone(), demands)
         .await
         .expect("publication pump should start");
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(samples.load(Ordering::Relaxed), 0);
 
-    manager
-        .lock()
-        .await
-        .start_all()
-        .expect("counting source should start");
+    manager.start_all().expect("counting source should start");
     tokio::time::timeout(Duration::from_millis(500), async {
         while samples.load(Ordering::Relaxed) < 2 {
             tokio::task::yield_now().await;
@@ -772,14 +867,14 @@ async fn pump_waits_for_live_demand_then_samples_without_render_frames() {
 #[tokio::test]
 async fn dropping_the_pump_aborts_its_worker() {
     let samples = Arc::new(AtomicUsize::new(0));
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::interaction(Box::new(
             CountingSource::new(Arc::clone(&samples)),
         )))
         .expect("counting source should register");
     manager.start_all().expect("counting source should start");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
     let _demand = demands.register(
         InputPublicationConsumer::Authoritative,
@@ -806,19 +901,16 @@ async fn dropping_the_pump_aborts_its_worker() {
 #[tokio::test]
 async fn pump_sleeps_with_zero_typed_demand() {
     let samples = Arc::new(AtomicUsize::new(0));
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::interaction(Box::new(
             CountingSource::new(Arc::clone(&samples)),
         )))
         .expect("counting source should register");
     manager.start_all().expect("counting source should start");
-    let mut pump = InputPublicationPump::start(
-        Arc::new(Mutex::new(manager)),
-        InputPublicationDemandHandle::new(),
-    )
-    .await
-    .expect("publication pump should start");
+    let mut pump = InputPublicationPump::start(manager, InputPublicationDemandHandle::new())
+        .await
+        .expect("publication pump should start");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(samples.load(Ordering::Relaxed), 0);
@@ -829,9 +921,9 @@ async fn pump_sleeps_with_zero_typed_demand() {
 
 #[tokio::test]
 async fn zero_demand_graph_change_shuts_down_new_source() {
-    let manager = Arc::new(Mutex::new(InputManager::new()));
+    let manager = InputManager::new();
     let mut pump =
-        InputPublicationPump::start(Arc::clone(&manager), InputPublicationDemandHandle::new())
+        InputPublicationPump::start(manager.clone(), InputPublicationDemandHandle::new())
             .await
             .expect("publication pump should start");
     tokio::time::sleep(Duration::from_millis(25)).await;
@@ -843,8 +935,6 @@ async fn zero_demand_graph_change_shuts_down_new_source() {
     source.start().expect("counting source should start");
 
     manager
-        .lock()
-        .await
         .add_source(ManagedSourceRole::interaction(Box::new(source)))
         .expect("prestarted counting source should register");
 
@@ -863,7 +953,7 @@ async fn zero_demand_graph_change_shuts_down_new_source() {
 #[tokio::test]
 async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
     let samples = Arc::new(AtomicUsize::new(0));
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::interaction(Box::new(
             CountingSource::new(Arc::clone(&samples)),
@@ -871,9 +961,9 @@ async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
         .expect("counting source should register");
     manager.start_all().expect("counting source should start");
     let graph = manager.input_graph_handle();
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump should start");
 
@@ -906,16 +996,16 @@ async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
 #[tokio::test]
 async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(
             ScreenDemandSource::new(Arc::clone(&transitions)),
         )))
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump starts");
     let large = ScreenCaptureDemand::active(extent(5_120, 2_160));
@@ -937,16 +1027,16 @@ async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active()
 #[tokio::test]
 async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(
             ScreenDemandSource::new(Arc::clone(&transitions)),
         )))
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -978,7 +1068,7 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
             .output_extent(),
         extent(7_680, 4_320)
     );
-    assert!(manager.lock().await.source_graph_generation() > 0);
+    assert!(manager.source_graph_generation() > 0);
 
     drop(registration);
     tokio::time::timeout(Duration::from_millis(500), async {
@@ -999,14 +1089,14 @@ async fn reader_exposes_exact_cpu_surface_without_legacy_screen_data() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let source = ScreenDemandSource::new(Arc::clone(&transitions));
     let runtime = Arc::clone(&source.runtime);
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(source)))
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump starts");
     let reader = pump.reader();
@@ -1087,14 +1177,14 @@ async fn failed_exact_replacement_preserves_retirement_barrier_across_demand_cha
         Arc::clone(&retirement_started),
         Arc::clone(&retirement_release),
     );
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(source)))
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1145,14 +1235,14 @@ async fn persistent_exact_failure_uses_bounded_retry_cadence_after_retirement() 
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
     );
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(source)))
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump starts");
     let _registration = demands.register(
@@ -1183,7 +1273,7 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
         Arc::clone(&preparation_started),
         Arc::clone(&preparation_release),
     );
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(source)))
         .expect("screen demand source should register");
@@ -1193,9 +1283,9 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
         )))
         .expect("counting source should register");
     manager.start_all().expect("input sources start");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1209,10 +1299,7 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
     tokio::time::timeout(Duration::from_millis(500), preparation_started.notified())
         .await
         .expect("worker preparation should begin");
-    let manager_guard = tokio::time::timeout(Duration::from_millis(100), manager.lock())
-        .await
-        .expect("worker preparation must not hold the input manager lock");
-    drop(manager_guard);
+    assert!(manager.source_graph_generation() > 0);
     tokio::time::timeout(Duration::from_millis(500), async {
         while samples.load(Ordering::Relaxed) < 2 {
             tokio::task::yield_now().await;
@@ -1234,10 +1321,84 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
     pump.shutdown().await.expect("publication pump stops");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_screen_busy_commit_retains_one_preparation_until_lifecycle_release() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let preparation_started = Arc::new(Notify::new());
+    let preparation_release = Arc::new(Notify::new());
+    let preparation_attempts = Arc::new(AtomicUsize::new(0));
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let source = ScreenDemandSource::new(Arc::clone(&transitions))
+        .with_preparation_gate(
+            Arc::clone(&preparation_started),
+            Arc::clone(&preparation_release),
+        )
+        .with_preparation_attempts(Arc::clone(&preparation_attempts));
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("screen demand source should register");
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            BlockingCapabilityInteractionSource {
+                armed: Arc::clone(&armed),
+                entered: entered_tx,
+                release: release_rx,
+            },
+        )))
+        .expect("blocking capability source should register");
+    manager.start_all().expect("input sources start");
+    let demands = InputPublicationDemandHandle::new();
+    let commit_pause = demands.pause_next_exact_screen_commit();
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let publications = pump.reader().screen_publications();
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+    );
+
+    tokio::time::timeout(Duration::from_millis(500), preparation_started.notified())
+        .await
+        .expect("worker preparation should begin once");
+    assert_eq!(preparation_attempts.load(Ordering::Acquire), 1);
+    armed.store(true, Ordering::Release);
+    let blocker = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.set_source_capability_identity("held-owner", None, None))
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("capability update should own lifecycle state");
+    preparation_release.notify_one();
+    commit_pause.wait_until_reached().await;
+    commit_pause.release();
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert_eq!(preparation_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(publications.committed_state().branch_count(), 0);
+
+    release_tx
+        .send(())
+        .expect("capability update should release lifecycle state");
+    blocker
+        .join()
+        .expect("capability thread should finish")
+        .expect("capability update should succeed");
+    wait_for_exact_extent(&publications, extent(1_920, 1_080)).await;
+    assert_eq!(preparation_attempts.load(Ordering::Acquire), 1);
+
+    drop(registration);
+    pump.shutdown().await.expect("publication pump stops");
+}
+
 #[tokio::test]
 async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(
             ScreenDemandSource::new(Arc::clone(&transitions)),
@@ -1250,7 +1411,7 @@ async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
     );
     let publications = reader.screen_publications();
     let graph_generation = reader.graph_snapshot().generation();
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = manager;
     let demands = InputPublicationDemandHandle::new();
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
@@ -1260,7 +1421,7 @@ async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
     let stale_revision = stale.revision();
     let commit_pause = demands.pause_next_exact_screen_commit();
     let transition = tokio::spawn(run_exact_screen_transition(
-        Arc::clone(&manager),
+        manager.clone(),
         reader,
         demands.clone(),
         stale,
@@ -1281,26 +1442,44 @@ async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
         .await
         .expect("exact transition task should not panic")
         .expect("stale transition should abort cleanly");
-    assert!(committed.is_none());
+    assert!(matches!(
+        committed,
+        ExactScreenTransitionOutcome::Completed(None)
+    ));
     assert_eq!(publications.committed_state().branch_count(), 0);
 }
 
 #[tokio::test]
-async fn pump_rejects_a_stale_demand_after_waiting_for_the_manager() {
+async fn pump_rejects_a_superseded_demand_while_lifecycle_is_busy() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
-    let mut manager = InputManager::new();
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::screen(Box::new(
             ScreenDemandSource::new(Arc::clone(&transitions)),
         )))
         .expect("screen demand source should register");
-    manager.start_all().expect("screen source starts");
-    let manager = Arc::new(Mutex::new(manager));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            BlockingStartInteractionSource {
+                entered: entered_tx,
+                release: release_rx,
+                running: false,
+            },
+        )))
+        .expect("blocking interaction source should register");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own lifecycle state");
     let demands = InputPublicationDemandHandle::new();
-    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
         .await
         .expect("publication pump starts");
-    let manager_guard = manager.lock().await;
     let stale_extent = extent(7_680, 4_320);
     let current_extent = extent(1_280, 720);
     let registration = demands.register(
@@ -1308,8 +1487,19 @@ async fn pump_rejects_a_stale_demand_after_waiting_for_the_manager() {
         InputPublicationDemand::default().with_screen(60, stale_extent),
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        transitions
+            .lock()
+            .expect("screen transitions lock")
+            .is_empty(),
+        "busy capture reconciliation must wait without applying demand"
+    );
     registration.update(InputPublicationDemand::default().with_screen(60, current_extent));
-    drop(manager_guard);
+    release_tx.send(()).expect("startup should resume");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
 
     wait_for_screen_demand(&transitions, ScreenCaptureDemand::active(current_extent)).await;
     assert!(
@@ -1322,6 +1512,63 @@ async fn pump_rejects_a_stale_demand_after_waiting_for_the_manager() {
     drop(registration);
     wait_for_screen_demand(&transitions, ScreenCaptureDemand::Inactive).await;
     pump.shutdown().await.expect("publication pump stops");
+}
+
+#[tokio::test]
+async fn pump_cancellation_while_lifecycle_is_busy_prevents_late_mutation() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            BlockingStartInteractionSource {
+                entered: entered_tx,
+                release: release_rx,
+                running: false,
+            },
+        )))
+        .expect("blocking interaction source should register");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own lifecycle state");
+    let demands = InputPublicationDemandHandle::new();
+    let _registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(1_280, 720)),
+    );
+    let mut pump = InputPublicationPump::start(manager, demands)
+        .await
+        .expect("publication pump should start without lifecycle ownership");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    tokio::time::timeout(Duration::from_millis(500), pump.shutdown())
+        .await
+        .expect("pump cancellation must not wait for lifecycle ownership")
+        .expect("publication pump should stop");
+    release_tx.send(()).expect("startup should resume");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
+    tokio::task::yield_now().await;
+
+    assert!(
+        transitions
+            .lock()
+            .expect("screen transitions lock")
+            .is_empty(),
+        "a cancelled pump must not apply demand after lifecycle release"
+    );
 }
 
 async fn wait_for_screen_demand(

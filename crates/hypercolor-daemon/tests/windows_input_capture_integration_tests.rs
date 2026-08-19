@@ -154,7 +154,7 @@ fn render_state(input_manager: InputManager, screen_capture_configured: bool) ->
         zone_layout_previews: Arc::new(ZoneLayoutPreviewStore::default()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
-        input_manager: Arc::new(Mutex::new(input_manager)),
+        input_manager,
         interaction_routing: InteractionRoutingControl::default(),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -182,7 +182,7 @@ async fn stop_render_thread(state: &RenderThreadState, render_thread: &mut Rende
         .shutdown()
         .await
         .expect("fixture render thread shuts down");
-    state.input_manager.lock().await.stop_all();
+    state.input_manager.stop_all();
 }
 
 async fn wait_until(description: &str, condition: impl Fn() -> bool) {

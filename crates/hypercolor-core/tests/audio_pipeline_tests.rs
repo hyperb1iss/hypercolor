@@ -749,7 +749,7 @@ fn failed_audio_reconfiguration_preserves_committed_backend() {
     let handle = input
         .source_status_handle()
         .expect("audio status should exist");
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .add_source(ManagedSourceRole::audio(Box::new(input)))
         .expect("audio source should register");

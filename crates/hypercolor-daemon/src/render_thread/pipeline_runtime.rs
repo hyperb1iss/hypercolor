@@ -2335,9 +2335,10 @@ mod tests {
     };
     use hypercolor_core::input::{
         DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphSnapshot, InputManager,
-        InputSource, InputSourceSlot, InteractionData, InteractionSource, InteractionSourceRole,
-        ManagedSourceRole, MotionAggregate, Q16_16_SCALE, ScrollAggregate, SourceIssue, SourceKind,
-        SourceRoleBinding, SourceStatusWriter,
+        InputSource, InputSourceSlot, InteractionData, InteractionSource, InteractionSourceOrigin,
+        InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, MotionAggregate, Q16_16_SCALE,
+        ScrollAggregate, SourceIssue, SourceKind, SourceRoleBinding, SourceStatusWriter,
+        SourceSwapTarget,
     };
     use hypercolor_core::spatial::{
         SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
@@ -2696,7 +2697,7 @@ mod tests {
 
     #[test]
     fn statusless_interaction_source_is_routed_through_its_graph_slot() {
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(Box::new(
                 EventOnceSource::new("KeyA"),
@@ -2725,7 +2726,7 @@ mod tests {
 
     #[test]
     fn authoritative_route_selects_host_exact_browser_and_merge_with_releases() {
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(Box::new(
                 FixedInteractionSource::new("KeyA", 7),
@@ -2827,7 +2828,7 @@ mod tests {
     #[test]
     fn sensor_source_is_routed_after_warming_up_without_a_graph_change() {
         let snapshot = Arc::new(SystemSnapshot::empty());
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::data(Box::new(WarmingSensorSource::new(
                 Arc::clone(&snapshot),
@@ -2858,7 +2859,7 @@ mod tests {
 
     #[test]
     fn source_replacement_and_availability_changes_invalidate_reuse_identity() {
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(Box::new(
                 FixedInteractionSource::new("KeyA", 7),
@@ -2888,14 +2889,28 @@ mod tests {
         assert_ne!(inactive_reuse, live_reuse);
         assert!(!inputs.input_availability.routed);
 
-        let replacement = manager.replace_source(
-            0,
-            ManagedSourceRole::interaction(Box::new(FixedInteractionSource::new("KeyB", 7))),
-        );
-        assert!(replacement.is_ok(), "replacement index should exist");
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("host source has one exact replacement target");
+        let mut replacement = Some(ManagedSourceRole::interaction(Box::new(
+            FixedInteractionSource::new("KeyB", 7),
+        )));
+        replacement
+            .as_mut()
+            .expect("replacement exists")
+            .source_mut()
+            .start()
+            .expect("replacement source starts before graph commit");
+        let mut prepared = plan
+            .prepare(&mut replacement)
+            .expect("replacement binds to the planned host role");
         manager
-            .start_all()
-            .expect("replacement source should start");
+            .commit_source_swap(&mut prepared)
+            .expect("replacement graph fences remain current")
+            .retire();
         manager
             .set_interaction_capture_active(true)
             .expect("replacement demand should activate");
@@ -2913,7 +2928,7 @@ mod tests {
 
     #[test]
     fn browser_transients_and_wheel_are_delivered_once_across_superseded_publications() {
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         let browser_source = BrowserInputSource::new();
         let browser = browser_source.handle();
         manager

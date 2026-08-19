@@ -226,10 +226,7 @@ pub(crate) async fn run_macos_screen_parity(
                 "macOS screen parity requires the active Metal render thread",
             )
         })?;
-    let screenshot_action = {
-        let input = state.input_manager.lock().await;
-        input.diagnostic_artifact_action()
-    };
+    let screenshot_action = state.input_manager.diagnostic_artifact_action();
     let screenshot_action = screenshot_action.ok_or_else(|| {
         MacosScreenParityDiagnosticError::unsupported(
             "no active macOS screen capture exposes screenshot references",

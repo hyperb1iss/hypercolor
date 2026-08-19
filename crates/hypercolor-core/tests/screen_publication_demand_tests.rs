@@ -455,7 +455,7 @@ fn manager_fixture() -> (
 
 #[tokio::test]
 async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let demand = demand(
         &manager,
         5,
@@ -508,7 +508,7 @@ async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
 
 #[tokio::test]
 async fn unchanged_demand_replans_once_after_source_revision_advances() {
-    let (mut manager, _, worker) = manager_fixture();
+    let (manager, _, worker) = manager_fixture();
     let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let prepared = manager
         .begin_screen_publication_transition(demand.clone())
@@ -704,7 +704,7 @@ async fn one_adapter_sums_consumers_across_owned_capture_source_ids() {
 
 #[tokio::test]
 async fn demand_race_aborts_candidate_and_preserves_committed_authority() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let active = demand(&manager, 4, [branch(ScreenPublicationKind::Surface)]);
     let prepared = manager
         .begin_screen_publication_transition(active.clone())
@@ -849,7 +849,7 @@ async fn source_revision_race_aborts_detached_preparation() {
 
 #[tokio::test]
 async fn worker_failure_aborts_candidate_before_manager_commit() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     worker.fail_preparation.store(true, Ordering::Release);
     let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let before = hub.committed_state();
@@ -878,7 +878,7 @@ async fn worker_failure_aborts_candidate_before_manager_commit() {
 
 #[test]
 fn explicit_abort_cancels_unpolled_workers_and_preserves_active_plan() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let before = hub.committed_state();
     let abort = manager
@@ -950,7 +950,7 @@ async fn cancelling_worker_await_aborts_activation_before_cleanup() {
 
 #[tokio::test]
 async fn empty_demand_retires_worker_and_reclaims_after_reader_release() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let active = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let prepared = manager
         .begin_screen_publication_transition(active.clone())

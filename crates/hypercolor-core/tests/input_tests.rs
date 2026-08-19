@@ -24,7 +24,7 @@ use hypercolor_core::input::{
     SourceResourceScanHealth, SourceRoleBinding, SourceSessionSlot, SourceSessionWriter,
     SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
     SourceSwapConflict, SourceSwapTarget, SourceTimestampField, TerminalFailureLatch,
-    classify_source_resource_scan,
+    TryInputManagerIntent, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
@@ -34,7 +34,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 fn managed_audio(source: impl AudioSource + 'static) -> ManagedSourceRole {
@@ -1263,9 +1263,327 @@ fn managed_role_keys_do_not_change_after_registration() {
 
 // ── InputManager Tests ─────────────────────────────────────────────────────
 
+struct BlockingStartAudioSource {
+    started: mpsc::SyncSender<()>,
+    release: mpsc::Receiver<()>,
+    running: bool,
+}
+
+impl InputSource for BlockingStartAudioSource {
+    fn name(&self) -> &'static str {
+        "BlockingStartAudio"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.started
+            .send(())
+            .expect("start observer should remain connected");
+        self.release
+            .recv()
+            .expect("start release should remain connected");
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for BlockingStartAudioSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for BlockingStartAudioSource {}
+
+struct CountingMediaSource {
+    samples: Arc<AtomicUsize>,
+    running: bool,
+}
+
+impl InputSource for CountingMediaSource {
+    fn name(&self) -> &'static str {
+        "CountingMedia"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.samples.fetch_add(1, Ordering::AcqRel);
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for CountingMediaSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for CountingMediaSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Media
+    }
+}
+
+#[test]
+fn cloned_handles_serialize_concurrent_intents_and_publish_one_graph() {
+    let manager = InputManager::new();
+    let barrier = Arc::new(Barrier::new(3));
+    let media_manager = manager.clone();
+    let media_barrier = Arc::clone(&barrier);
+    let media = std::thread::spawn(move || {
+        media_barrier.wait();
+        media_manager
+            .add_source(managed_data(MediaSource::new()))
+            .expect("media intent should register");
+    });
+    let network_manager = manager.clone();
+    let network_barrier = Arc::clone(&barrier);
+    let network = std::thread::spawn(move || {
+        network_barrier.wait();
+        network_manager
+            .add_source(managed_data(NetSource::new()))
+            .expect("network intent should register");
+    });
+
+    barrier.wait();
+    media.join().expect("media intent thread should finish");
+    network.join().expect("network intent thread should finish");
+
+    let graph = manager.input_graph_handle().snapshot();
+    assert_eq!(manager.source_count(), 2);
+    assert_eq!(graph.generation(), 2);
+    assert_eq!(graph.slots().len(), 2);
+    assert_eq!(
+        manager
+            .source_status_registry()
+            .snapshot()
+            .source_graph_generation(),
+        2
+    );
+}
+
+#[test]
+fn lock_free_handles_remain_readable_while_source_start_is_blocked() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let graph = manager.input_graph_handle();
+    let registry = manager.source_status_registry();
+    let before = graph.snapshot();
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("source start should block at the fixture gate");
+    let during = graph.snapshot();
+    assert_eq!(during.generation(), before.generation());
+    assert_eq!(during.slots()[0].id(), before.slots()[0].id());
+    assert_eq!(
+        registry.snapshot().source_graph_generation(),
+        before.generation()
+    );
+
+    release_tx
+        .send(())
+        .expect("blocked source start should be released");
+    starter
+        .join()
+        .expect("source start thread should finish")
+        .expect("source start should succeed");
+    let after = graph.snapshot();
+    assert_eq!(after.generation(), before.generation() + 1);
+    assert_eq!(after.slots()[0].id(), before.slots()[0].id());
+}
+
+#[test]
+fn try_sampling_is_busy_then_rejects_stale_work_without_source_calls() {
+    let samples = Arc::new(AtomicUsize::new(0));
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_data(CountingMediaSource {
+            samples: Arc::clone(&samples),
+            running: false,
+        }))
+        .expect("counting source should register");
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own the lifecycle gate");
+
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Media, 0.01)], || true),
+        TryInputManagerIntent::Busy
+    ));
+    assert_eq!(samples.load(Ordering::Acquire), 0);
+
+    release_tx.send(()).expect("startup should resume");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Media, 0.01)], || false),
+        TryInputManagerIntent::Stale
+    ));
+    assert_eq!(samples.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Media, 0.01)], || true),
+        TryInputManagerIntent::Applied(())
+    ));
+    assert_eq!(samples.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn lifecycle_release_subscription_wakes_only_after_the_owner_releases() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own the lifecycle gate");
+
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Audio, 0.01)], || true),
+        TryInputManagerIntent::Busy
+    ));
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            manager.wait_for_lifecycle_release_after_busy(),
+        )
+        .await
+        .is_err(),
+        "a busy subscriber must not wake before lifecycle release"
+    );
+
+    release_tx.send(()).expect("startup should resume");
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        manager.wait_for_lifecycle_release_after_busy(),
+    )
+    .await
+    .expect("lifecycle release should wake the subscriber");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
+}
+
+#[test]
+fn source_commit_freshness_runs_only_after_lifecycle_ownership() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_data(MediaSource::new()))
+        .expect("media source should register");
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Data(DataSourceKind::Media),
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("media replacement should plan");
+    let mut replacement = Some(managed_data(MediaSource::new()));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("media replacement should prepare");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own the lifecycle gate");
+    let predicate_calls = AtomicUsize::new(0);
+
+    assert!(matches!(
+        manager.try_commit_source_swap_if(&mut prepared, || {
+            predicate_calls.fetch_add(1, Ordering::AcqRel);
+            true
+        }),
+        TryInputManagerIntent::Busy
+    ));
+    assert_eq!(predicate_calls.load(Ordering::Acquire), 0);
+
+    release_tx.send(()).expect("startup should resume");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
+    assert!(matches!(
+        manager.try_commit_source_swap_if(&mut prepared, || {
+            predicate_calls.fetch_add(1, Ordering::AcqRel);
+            false
+        }),
+        TryInputManagerIntent::Stale
+    ));
+    assert_eq!(predicate_calls.load(Ordering::Acquire), 1);
+    assert!(prepared.has_replacement());
+    prepared.discard();
+}
+
 #[test]
 fn manager_starts_empty() {
-    let mut mgr = InputManager::new();
+    let mgr = InputManager::new();
     let samples = mgr.sample_all();
     assert!(samples.is_empty());
 }
@@ -1289,7 +1607,7 @@ fn multiple_screen_sources_register_but_keyed_swap_planning_rejects_ambiguity() 
 
 #[test]
 fn manager_rejects_status_kind_mismatch_without_mutating_graph() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let graph_generation = manager.source_graph_generation();
     let source_count = manager.source_count();
 
@@ -1312,7 +1630,7 @@ fn manager_rejects_status_kind_mismatch_without_mutating_graph() {
 
 #[test]
 fn manager_default_is_empty() {
-    let mut mgr = InputManager::default();
+    let mgr = InputManager::default();
     let samples = mgr.sample_all();
     assert!(samples.is_empty());
     assert_eq!(mgr.source_count(), 0);
@@ -1438,7 +1756,7 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
 
 #[test]
 fn screen_swap_persistence_failure_preserves_candidate_and_graph() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let graph_generation = manager.source_graph_generation();
     let plan = manager
         .plan_screen_source_swap(true, None)
@@ -1464,7 +1782,7 @@ fn screen_swap_persistence_failure_preserves_candidate_and_graph() {
 
 #[test]
 fn screen_swap_rechecks_candidate_lifecycle_before_persistence() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let plan = manager
         .plan_screen_source_swap(true, None)
         .expect("absent screen source should plan");
@@ -1501,7 +1819,7 @@ fn screen_swap_rechecks_candidate_lifecycle_before_persistence() {
 
 #[test]
 fn statusless_audio_swap_invalidates_capture_cache_for_compatibility_demand() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let plan = manager
         .plan_source_swap(
             ManagedSourceKey::Audio,
@@ -1759,7 +2077,7 @@ fn removed_source_fences_worker_owned_session() {
 
 #[test]
 fn manager_constructs_screen_analysis_inside_its_total_byte_fence() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let resource = ScreenAdmissionCapacity::new(1_000_000, 900_000);
     let total = ScreenAdmissionCapacity::new(600_000, 500_000);
     let publication = ScreenAdmissionCapacity::new(400_000, 300_000);
@@ -1806,7 +2124,7 @@ fn stale_capacity_preparations_cannot_overwrite_a_committed_split() {
     let total = ScreenAdmissionCapacity::new(100, 100);
 
     for commit_newer_first in [true, false] {
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .set_screen_capacity_plan(physical, total, total)
             .expect("empty manager should accept its capacity policy");
@@ -2200,7 +2518,7 @@ fn prepared_audio_enable_while_demanded_registers_a_live_source() {
         source: AudioSourceType::Microphone,
         ..AudioPipelineConfig::default()
     };
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let prepared = manager
         .plan_audio_runtime_config(true, &config, "audio-active", true)
         .expect("absent audio source should support preparation")
@@ -2353,7 +2671,7 @@ fn prepared_audio_reconfiguration_rejects_changed_capture_demand() {
         source: AudioSourceType::None,
         ..AudioPipelineConfig::default()
     };
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .set_audio_capture_active(false)
         .expect("initial demand should be cached");
@@ -2386,7 +2704,7 @@ fn disabling_absent_audio_fences_an_older_enable_plan() {
         source: AudioSourceType::Microphone,
         ..AudioPipelineConfig::default()
     };
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let initial_generation = manager.source_graph_generation();
     let older_enable = manager
         .plan_audio_runtime_config(true, &enabled, "audio-enabled", false)
@@ -3509,7 +3827,7 @@ fn manager_tracks_and_removes_host_capture_sources() {
 
 #[test]
 fn absent_host_commit_fences_an_older_enable_plan() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let host_key =
         ManagedSourceKey::Interaction(hypercolor_core::input::InteractionSourceOrigin::Host);
     let stale_enable = manager
@@ -5091,4 +5409,5 @@ fn source_status_handles_and_publishers_are_send_and_sync() {
     assert_send_sync::<hypercolor_core::input::SourceStatusWriter>();
     assert_send_sync::<hypercolor_core::input::SourceSessionWriter>();
     assert_send_sync::<hypercolor_core::input::SourceStatusSubscription>();
+    assert_send_sync::<InputManager>();
 }

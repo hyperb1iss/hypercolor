@@ -561,7 +561,7 @@ async fn recv_sensor_snapshot(
 
 fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
     let session_slot = SourceSessionSlot::new();
-    let mut input_manager = InputManager::new();
+    let input_manager = InputManager::new();
     input_manager
         .add_source(ManagedSourceRole::interaction(Box::new(
             StatusEventTestSource::new(session_slot.clone()),
@@ -574,7 +574,7 @@ fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
     let screen_capacity_status = input_manager.screen_capacity_status_handle();
 
     let mut state = AppState::new();
-    state.input_manager = Arc::new(tokio::sync::Mutex::new(input_manager));
+    state.input_manager = input_manager;
     state.screen_capacity_status = screen_capacity_status;
     state.input_status = input_status;
     (Arc::new(state), session_slot)
@@ -1566,17 +1566,18 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
     initial.polled_at_ms = 1_000;
     let sensor_snapshot = Arc::new(StdMutex::new(Arc::new(initial)));
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager
+        state
+            .input_manager
             .add_source(ManagedSourceRole::data(Box::new(MutableSensorSource {
                 snapshot: Arc::clone(&sensor_snapshot),
                 running: false,
             })))
             .expect("mutable sensor source should register");
-        input_manager
+        state
+            .input_manager
             .start_all()
             .expect("mutable sensor source starts");
-        input_manager.sample_sources(0.0);
+        state.input_manager.sample_sources(0.0);
     }
 
     let initial_subscriptions = SubscriptionState::default();
@@ -1602,8 +1603,6 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
 
     state
         .input_manager
-        .lock()
-        .await
         .add_source(ManagedSourceRole::interaction(Box::new(
             StatusEventTestSource::with_id("unrelated-graph-source", SourceSessionSlot::new()),
         )))
@@ -1621,7 +1620,7 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
     *sensor_snapshot
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
-    state.input_manager.lock().await.sample_sources(0.0);
+    state.input_manager.sample_sources(0.0);
 
     let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
         .await
@@ -1653,17 +1652,18 @@ async fn relay_sensors_discovers_source_added_while_subscribed() {
     snapshot.cpu_load_percent = 61.0;
     snapshot.polled_at_ms = 3_000;
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager
+        state
+            .input_manager
             .add_source(ManagedSourceRole::data(Box::new(MutableSensorSource {
                 snapshot: Arc::new(StdMutex::new(Arc::new(snapshot))),
                 running: false,
             })))
             .expect("late sensor source should register");
-        input_manager
+        state
+            .input_manager
             .start_all()
             .expect("late sensor source starts");
-        input_manager.sample_sources(0.0);
+        state.input_manager.sample_sources(0.0);
     }
 
     let payload = recv_sensor_snapshot(&mut json_rx, 3_000).await;
@@ -1677,17 +1677,18 @@ async fn relay_sensors_reacquires_replaced_source_while_subscribed() {
     let mut initial = SystemSnapshot::empty();
     initial.polled_at_ms = 4_000;
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager
+        state
+            .input_manager
             .add_source(ManagedSourceRole::data(Box::new(MutableSensorSource {
                 snapshot: Arc::new(StdMutex::new(Arc::new(initial))),
                 running: false,
             })))
             .expect("initial sensor source should register");
-        input_manager
+        state
+            .input_manager
             .start_all()
             .expect("initial sensor source starts");
-        input_manager.sample_sources(0.0);
+        state.input_manager.sample_sources(0.0);
     }
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -1703,8 +1704,8 @@ async fn relay_sensors_reacquires_replaced_source_while_subscribed() {
     replacement_snapshot.cpu_load_percent = 72.0;
     replacement_snapshot.polled_at_ms = 5_000;
     let retirement = {
-        let mut input_manager = state.input_manager.lock().await;
-        let plan = input_manager
+        let plan = state
+            .input_manager
             .plan_source_swap(
                 ManagedSourceKey::Data(DataSourceKind::Sensors),
                 SourceSwapTarget::Present { running: false },
@@ -1717,17 +1718,18 @@ async fn relay_sensors_reacquires_replaced_source_while_subscribed() {
         let mut prepared = plan
             .prepare(&mut replacement)
             .expect("sensor replacement should prepare");
-        input_manager
+        state
+            .input_manager
             .commit_source_swap(&mut prepared)
             .expect("sensor replacement should commit")
     };
     retirement.retire();
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager
+        state
+            .input_manager
             .start_all()
             .expect("replacement sensor source starts");
-        input_manager.sample_sources(0.0);
+        state.input_manager.sample_sources(0.0);
     }
 
     let payload = recv_sensor_snapshot(&mut json_rx, 5_000).await;
@@ -3742,13 +3744,14 @@ async fn input_status_publisher_rebuilds_watchers_after_graph_change() {
         .expect("event bus should remain open");
 
     {
-        let mut manager = state.input_manager.lock().await;
-        manager
+        state
+            .input_manager
             .add_source(ManagedSourceRole::interaction(Box::new(
                 StatusEventTestSource::with_id("status-event-added", SourceSessionSlot::new()),
             )))
             .expect("added status event source should register");
-        manager
+        state
+            .input_manager
             .start_all()
             .expect("new status event source should start");
     }

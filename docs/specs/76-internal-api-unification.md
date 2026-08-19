@@ -408,6 +408,9 @@ land without waiting for the other managers. The remaining conversion order
 is SceneManager, SpatialEngine, then EffectRegistry. `SessionWatcher` and
 `usb_hotplug` side buses become bus lanes or documented internal transports.
 
+**Status (2026-08-19):** `InputManager` is complete. `SceneManager`,
+`SpatialEngine`, and `EffectRegistry` remain pending in that order.
+
 ### 6.4 Domain contexts
 
 `SceneContext`, `DeviceContext`, `EffectContext`, `OutputContext`, `PlatformContext` — `#[derive(Clone)]` handle structs. `DaemonState`/`AppState`/`RenderThreadState`/`DaemonDriverHost` become context holders; one construction path; the 22-arg constructor and the 74-line manual mirror die. Service receivers narrow from `&AppState` to per-domain contexts here (§2.2).

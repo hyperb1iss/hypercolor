@@ -88,7 +88,7 @@ impl SourceRoleBinding for PlannedScreenSource {
 
 #[test]
 fn status_handle_tracks_policy_and_live_physical_reservations() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let status = manager.screen_capacity_status_handle();
     let coordinator = manager.screen_admission_coordinator();
     let resource = ScreenAdmissionCapacity::new(1_000, 800);
@@ -133,7 +133,7 @@ fn status_handle_tracks_policy_and_live_physical_reservations() {
 
 #[test]
 fn concurrent_status_readers_observe_complete_physical_snapshots() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let capacity = ScreenAdmissionCapacity::new(10_000, 8_000);
     manager
         .set_screen_capacity_plan(capacity, capacity, capacity)
@@ -183,7 +183,7 @@ fn concurrent_status_readers_observe_complete_physical_snapshots() {
 
 #[test]
 fn concurrent_status_readers_never_observe_torn_capacity_transitions() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let steps = Arc::new([
         (
             ScreenAdmissionCapacity::new(10_000, 8_000),

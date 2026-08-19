@@ -2579,10 +2579,7 @@ pub(super) async fn relay_sensors(
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
-    let graph = {
-        let input_manager = state.input_manager.lock().await;
-        input_manager.input_graph_handle()
-    };
+    let graph = state.input_manager.input_graph_handle();
     let mut graph_generation = graph.subscribe_generation();
     let mut sensor_slot_id = None;
     let mut sensor_rx = None;

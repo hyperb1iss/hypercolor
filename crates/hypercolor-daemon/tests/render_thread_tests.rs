@@ -1150,7 +1150,7 @@ fn make_render_state(
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
-        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        input_manager: InputManager::new(),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
@@ -1283,7 +1283,7 @@ async fn render_thread_publishes_discrete_input_events() {
 
     let release_events = Arc::new(AtomicBool::new(false));
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::interaction(Box::new(
                 EventOnlySource::new(
@@ -1398,7 +1398,7 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
     }
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
                 audio,
@@ -1470,7 +1470,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::audio(Box::new(
                 DemandGatedMockAudioSource::new(audio, Arc::clone(&transitions)),
@@ -1547,7 +1547,7 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
 
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::audio(Box::new(
                 DemandGatedMockAudioSource::new(AudioData::silence(), Arc::clone(&transitions)),
@@ -2199,7 +2199,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     let mut audio = AudioData::silence();
     audio.rms_level = 0.7;
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::audio(Box::new(
                 DemandGatedMockAudioSource::new(audio, Arc::clone(&transitions)),
@@ -2298,7 +2298,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     };
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 DemandGatedMockScreenSource::new(screen_data, Arc::clone(&transitions)),
@@ -2399,7 +2399,7 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
 
     tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
-            if state.input_manager.lock().await.source_graph_generation() >= 3 {
+            if state.input_manager.source_graph_generation() >= 3 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2418,7 +2418,7 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
         letterbox: [0; 4],
     };
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 DemandGatedMockScreenSource::new(screen_data, Arc::clone(&transitions)),
@@ -2902,7 +2902,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
-        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        input_manager: InputManager::new(),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
@@ -3203,7 +3203,7 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
     state.screen_capture_configured = true;
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(MockScreenSource::new(
                 vec![
@@ -3299,7 +3299,7 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     };
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 MockScreenPreviewSource::new(screen_data),
@@ -3409,7 +3409,7 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     let source_stalled = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 StallableScreenPreviewSource::new(screen_data, Arc::clone(&source_stalled)),
@@ -3562,7 +3562,7 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
     let source_stalled = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 StallableScreenPreviewSource::new(screen_data, Arc::clone(&source_stalled)),
@@ -3699,7 +3699,7 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
     };
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 MockScreenPreviewSource::new(screen_data),
@@ -3804,7 +3804,7 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
     let advance_sequence = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 SequencedScreenPreviewSource::new(
@@ -3963,7 +3963,7 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
     let advance_sequence = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(
                 SequencedScreenPreviewSource::new(screens, Arc::clone(&advance_sequence)),
@@ -4097,7 +4097,7 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
     state.screen_capture_configured = true;
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::screen(Box::new(MockScreenSource::new(
                 vec![
@@ -4304,7 +4304,7 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
     assert_eq!(state.event_bus.spectrum_receiver_count(), 0);
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
                 audio,
@@ -4365,7 +4365,7 @@ async fn render_thread_reuses_published_spectrum_bins_between_frames() {
     }
 
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
                 audio,
@@ -4643,7 +4643,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
-        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        input_manager: InputManager::new(),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,

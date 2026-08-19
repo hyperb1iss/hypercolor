@@ -294,7 +294,7 @@ pub struct RenderThreadState {
     pub scene_manager: Arc<RwLock<SceneManager>>,
 
     /// Input orchestrator owned by the dedicated publication pump and demand control.
-    pub input_manager: Arc<Mutex<InputManager>>,
+    pub input_manager: InputManager,
 
     /// Coherent route policy and authoritative browser-source selection.
     pub interaction_routing: InteractionRoutingControl,
@@ -386,7 +386,7 @@ impl RenderThread {
                     }
                 };
                 let mut input_pump = match runtime.block_on(InputPublicationPump::start(
-                    Arc::clone(&state.input_manager),
+                    state.input_manager.clone(),
                     pump_demands,
                 )) {
                     Ok(pump) => pump,

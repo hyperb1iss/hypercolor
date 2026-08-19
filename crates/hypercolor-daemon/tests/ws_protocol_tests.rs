@@ -552,7 +552,7 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     snapshot.ram_used_percent = 64.0;
     snapshot.polled_at_ms = 8_901;
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         input_manager
             .add_source(ManagedSourceRole::data(Box::new(FixedSensorSource {
                 snapshot: Arc::new(snapshot),

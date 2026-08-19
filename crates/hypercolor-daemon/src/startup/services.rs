@@ -391,12 +391,10 @@ impl DaemonState {
             };
         let (built_input_manager, browser_input) = build_input_manager(config, &config_manager)?;
         #[cfg(target_os = "macos")]
-        let mut built_input_manager = built_input_manager;
-        #[cfg(target_os = "macos")]
         if let Some(publication) = macos_owner_publication {
             super::macos_owner_watch::publish_owner_snapshot(
                 &macos_daemon_ownership,
-                &mut built_input_manager,
+                &built_input_manager,
                 &event_bus,
                 publication,
             )?;
@@ -409,10 +407,10 @@ impl DaemonState {
         );
         let input_status = built_input_manager.source_status_registry();
         let screen_capacity_status = built_input_manager.screen_capacity_status_handle();
-        let input_manager = Arc::new(Mutex::new(built_input_manager));
+        let input_manager = built_input_manager;
         #[cfg(target_os = "macos")]
         let macos_owner_watch = pending_macos_owner_watch
-            .map(|watch| watch.attach(Arc::clone(&input_manager)))
+            .map(|watch| watch.attach(input_manager.clone()))
             .transpose()?;
         info!(
             audio_enabled = config.audio.enabled,
@@ -705,7 +703,7 @@ pub(crate) fn build_input_manager(
     config: &HypercolorConfig,
     config_manager: &Arc<ConfigManager>,
 ) -> Result<(InputManager, hypercolor_core::input::BrowserInputHandle)> {
-    let mut input_manager = InputManager::new();
+    let input_manager = InputManager::new();
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let capacity_plan = screen_capacity_plan(&config.capture)?;
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

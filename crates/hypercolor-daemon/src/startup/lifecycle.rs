@@ -68,12 +68,9 @@ impl DaemonState {
         );
 
         // Start configured input sources.
-        {
-            let mut input_manager = self.input_manager.lock().await;
-            input_manager
-                .start_all()
-                .context("failed to start input sources")?;
-        }
+        self.input_manager
+            .start_all()
+            .context("failed to start input sources")?;
         if self.input_status_event_publisher.is_none() {
             self.input_status_event_publisher = Some(InputStatusEventPublisher::start(
                 self.input_status.clone(),
@@ -141,7 +138,7 @@ impl DaemonState {
             zone_layout_previews: Arc::clone(&self.zone_layout_previews),
             render_loop: Arc::clone(&self.render_loop),
             scene_manager: Arc::clone(&self.scene_manager),
-            input_manager: Arc::clone(&self.input_manager),
+            input_manager: self.input_manager.clone(),
             interaction_routing: self.interaction_routing.clone(),
             power_state: self.power_state.subscribe(),
             device_settings: Arc::clone(&self.device_settings),
@@ -158,10 +155,7 @@ impl DaemonState {
             RenderThread::try_spawn(rt_state)
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
-        let input_graph = {
-            let input_manager = self.input_manager.lock().await;
-            input_manager.input_graph_handle()
-        };
+        let input_graph = self.input_manager.input_graph_handle();
         let input_demands = self
             .render_thread
             .as_ref()
@@ -344,10 +338,7 @@ impl DaemonState {
         );
 
         // 4. Stop input sources.
-        {
-            let mut input_manager = self.input_manager.lock().await;
-            input_manager.stop_all();
-        }
+        self.input_manager.detach_all_sources().retire();
         info!("Input sources stopped");
         drop(self.input_status_event_publisher.take());
 

@@ -194,7 +194,7 @@ pub struct AppState {
     pub api_extensions: Vec<Arc<dyn ApiExtension>>,
 
     /// Live input graph shared with the daemon render thread.
-    pub input_manager: Arc<Mutex<InputManager>>,
+    pub input_manager: InputManager,
 
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,
@@ -530,7 +530,7 @@ impl AppState {
             HypercolorConfig::default().input.daemon_route,
             HypercolorConfig::default().input.preview_route,
         );
-        let mut standalone_input_manager = InputManager::new();
+        let standalone_input_manager = InputManager::new();
         standalone_input_manager
             .add_source(ManagedSourceRole::interaction(Box::new(
                 browser_input_source,
@@ -538,7 +538,7 @@ impl AppState {
             .expect("standalone browser input source should register");
         let input_status = standalone_input_manager.source_status_registry();
         let screen_capacity_status = standalone_input_manager.screen_capacity_status_handle();
-        let input_manager = Arc::new(Mutex::new(standalone_input_manager));
+        let input_manager = standalone_input_manager;
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
@@ -719,7 +719,7 @@ impl AppState {
             data_dir,
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
-            input_manager: Arc::clone(&daemon.input_manager),
+            input_manager: daemon.input_manager.clone(),
             screen_capacity_status: daemon.screen_capacity_status.clone(),
             #[cfg(target_os = "macos")]
             capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),

@@ -1307,10 +1307,7 @@ fn config_path(state: &AppState) -> PathBuf {
 }
 
 pub(crate) async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
-    let graph = {
-        let input_manager = state.input_manager.lock().await;
-        input_manager.input_graph_handle()
-    };
+    let graph = state.input_manager.input_graph_handle();
     graph
         .snapshot()
         .latest_data_source(DataSourceKind::Sensors)
@@ -2167,17 +2164,18 @@ mod tests {
     }
 
     async fn install_sensor_snapshot(state: &AppState, snapshot: Arc<SystemSnapshot>) {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager
+        state
+            .input_manager
             .add_source(ManagedSourceRole::data(Box::new(FixedSensorSource {
                 snapshot,
                 running: false,
             })))
             .expect("fixed sensor source should register");
-        input_manager
+        state
+            .input_manager
             .start_all()
             .expect("fixed sensor source starts");
-        input_manager.sample_sources(0.0);
+        state.input_manager.sample_sources(0.0);
     }
 
     #[tokio::test]
@@ -2504,8 +2502,6 @@ mod tests {
         }
         state
             .input_manager
-            .lock()
-            .await
             .set_screen_capacity_plan(
                 ScreenAdmissionCapacity::new(2_000_000, 2_000_000),
                 ScreenAdmissionCapacity::new(123, 456),

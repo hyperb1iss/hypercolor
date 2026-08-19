@@ -367,10 +367,7 @@ fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, 
             .with_config_manager(Some(Arc::clone(&manager))),
     );
     {
-        let mut input_manager = state
-            .input_manager
-            .try_lock()
-            .expect("isolated input manager should be uncontended");
+        let input_manager = &state.input_manager;
         let capacity = input_manager.screen_resource_capacity();
         input_manager
             .set_screen_capacity_plan(capacity, capacity, capacity)
@@ -1586,8 +1583,6 @@ async fn status_derives_audio_availability_from_registered_sources() {
     let (source, _) = ObservableInputSource::new("available_audio", false, Duration::from_secs(1));
     state
         .input_manager
-        .lock()
-        .await
         .add_source(ManagedSourceRole::audio(Box::new(source)))
         .expect("observable audio source should register");
     let app = test_app_with_state(state);
@@ -1622,7 +1617,7 @@ async fn status_reports_stale_source_health_without_captured_contents() {
     let (source, _) =
         ObservableInputSource::new("stale_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
+        let manager = &state.input_manager;
         manager
             .add_source(ManagedSourceRole::audio(Box::new(source)))
             .expect("stale audio source should register");
@@ -1692,12 +1687,12 @@ async fn diagnose_default_set_includes_memory_as_a_finding() {
 }
 
 #[tokio::test]
-async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
+async fn input_status_and_diagnose_observe_failure_from_lock_free_handles() {
     let state = Arc::new(isolated_state());
     let (source, session) =
         ObservableInputSource::new("failed_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
+        let manager = &state.input_manager;
         manager
             .set_screen_capacity_plan(
                 ScreenAdmissionCapacity::new(2_000_000, 1_500_000),
@@ -1711,7 +1706,7 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
         manager.start_all().expect("test input graph should start");
     }
 
-    let mut manager_guard = state.input_manager.lock().await;
+    let manager_guard = &state.input_manager;
     let (demanded_stopped, _) =
         ObservableInputSource::new("demanded_stopped_audio", true, Duration::from_secs(30));
     manager_guard
@@ -1793,7 +1788,6 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .await
     .expect("diagnose must not wait for the input manager")
     .expect("diagnose request should succeed");
-    drop(manager_guard);
 
     let json = body_json(response).await;
     let checks = json["data"]["checks"]
@@ -2123,7 +2117,7 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             1,
@@ -2358,7 +2352,7 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         !manager.path().exists(),
         "invalid capture config must not reach persistent storage"
     );
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager.has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
@@ -2380,7 +2374,7 @@ async fn config_set_rejects_capture_resource_plan_before_persistence() {
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
     assert!(!manager.path().exists());
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager.has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
@@ -2405,7 +2399,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["data"]["live"], true);
-        assert!(state.input_manager.lock().await.has_screen_source());
+        assert!(state.input_manager.has_screen_source());
     }
 
     let response = app
@@ -2420,7 +2414,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["live"], true);
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager.has_screen_source());
 
     let persisted = fs::read_to_string(manager.path()).expect("capture config should persist");
     let persisted: HypercolorConfig =
@@ -2459,7 +2453,7 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             2,
@@ -2509,7 +2503,7 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert!(
             input_manager
                 .source_names()
@@ -2554,7 +2548,7 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             1,
@@ -2597,7 +2591,7 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             1,
@@ -2812,10 +2806,7 @@ fn reset_fixture_state_from(
     let mut state = isolated_state();
     state.config_manager = Some(Arc::clone(&config_manager));
     {
-        let mut input_manager = state
-            .input_manager
-            .try_lock()
-            .expect("isolated input manager should be uncontended");
+        let input_manager = &state.input_manager;
         let capacity = input_manager.screen_resource_capacity();
         input_manager
             .set_screen_capacity_plan(capacity, capacity, capacity)

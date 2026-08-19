@@ -70,9 +70,10 @@ use crate::input::audio::{AudioInput, AudioPreparationRequest, PreparedAudioReco
 use crate::types::audio::AudioPipelineConfig;
 use crate::types::event::TimedInputEvent;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock, TryLockError};
 use std::time::Instant;
 use thiserror::Error;
+use tokio::sync::watch;
 
 use tracing::{error, info};
 
@@ -105,6 +106,72 @@ pub struct AudioRuntimeConfigPlan {
 pub struct PreparedAudioSourceSwap {
     source_swap: PreparedSourceSwap,
     failure_signal: Option<Arc<std::sync::atomic::AtomicU8>>,
+}
+
+/// Result of a nonblocking input-manager intent.
+#[derive(Debug)]
+#[must_use = "nonblocking input-manager intents must handle busy and stale outcomes"]
+pub enum TryInputManagerIntent<T> {
+    /// Another lifecycle transaction currently owns the manager.
+    Busy,
+    /// The caller's lock-free freshness predicate rejected the intent.
+    Stale,
+    /// Lifecycle ownership was acquired and the intent ran.
+    Applied(T),
+}
+
+/// Desired capture state for every manager-owned capture domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputCaptureDemand {
+    audio_active: bool,
+    screen: ScreenCaptureDemand,
+    interaction_active: bool,
+}
+
+impl InputCaptureDemand {
+    /// Construct one atomic capture-demand intent.
+    #[must_use]
+    pub const fn new(
+        audio_active: bool,
+        screen: ScreenCaptureDemand,
+        interaction_active: bool,
+    ) -> Self {
+        Self {
+            audio_active,
+            screen,
+            interaction_active,
+        }
+    }
+}
+
+/// Per-domain results and the exact graph generation after capture reconciliation.
+pub struct InputCaptureDemandApplication {
+    source_graph_generation: u64,
+    audio: InputCaptureDomainApplication,
+    screen: InputCaptureDomainApplication,
+    interaction: InputCaptureDomainApplication,
+}
+
+/// One capture domain's observed graph generation and application result.
+pub type InputCaptureDomainApplication = (u64, anyhow::Result<()>);
+
+impl InputCaptureDemandApplication {
+    /// Split the application into its final generation and domain results.
+    pub fn into_parts(
+        self,
+    ) -> (
+        u64,
+        InputCaptureDomainApplication,
+        InputCaptureDomainApplication,
+        InputCaptureDomainApplication,
+    ) {
+        (
+            self.source_graph_generation,
+            self.audio,
+            self.screen,
+            self.interaction,
+        )
+    }
 }
 
 /// Exact screen swap state captured while briefly holding the input manager lock.
@@ -191,6 +258,20 @@ pub enum ScreenCapacityPreparationError {
     /// The active publication state cannot fit the candidate remainder.
     #[error(transparent)]
     Publication(#[from] screen::ScreenPlanError),
+}
+
+/// Failure while atomically planning capacity and source state for screen capture.
+#[derive(Debug, thiserror::Error)]
+pub enum ScreenSourceSwapPlanningError {
+    /// The candidate analysis or publication plan exceeds available capacity.
+    #[error(transparent)]
+    Capacity(#[from] ScreenCapacityPreparationError),
+    /// Screen capacity admission is required but has not been installed.
+    #[error("screen capacity admission is not installed")]
+    CapacityUnavailable,
+    /// The typed screen source cannot be planned against the current graph.
+    #[error(transparent)]
+    Source(#[from] SourceSwapConflict),
 }
 
 /// A concurrent input-graph transition invalidated prepared screen state.
@@ -394,6 +475,27 @@ pub struct SourceRetirement {
     source_graph_generation: u64,
 }
 
+/// Sources detached from the canonical graph for retirement without its lock.
+#[must_use = "detached sources must be retired outside the input manager lock"]
+pub struct SourceRetirementBatch {
+    sources: Vec<ManagedInputSource>,
+    source_graph_generation: u64,
+}
+
+impl SourceRetirementBatch {
+    /// Stop every detached source and permanently retire its status.
+    pub fn retire(mut self) {
+        for source in &mut self.sources {
+            source.set_active_consumer_count(0);
+            source.stop();
+            if let Err(error) = source.retire_source_status(self.source_graph_generation) {
+                error!(source = source.name(), %error, "Failed to retire input source status");
+            }
+            info!(source = source.name(), "Retired input source");
+        }
+    }
+}
+
 impl SourceRetirement {
     /// Stop the detached source and permanently retire its status.
     pub fn retire(mut self) {
@@ -519,7 +621,7 @@ impl PreparedScreenSourceSwap {
 /// One-shot infallible graph move issued only after every screen fence validates.
 #[must_use = "screen source swap commits must be installed exactly once"]
 pub struct ScreenSourceSwapCommit<'a> {
-    manager: &'a mut InputManager,
+    shared: Arc<InputManagerShared>,
     prepared: &'a mut PreparedScreenSourceSwap,
     current: Option<usize>,
 }
@@ -528,15 +630,19 @@ impl ScreenSourceSwapCommit<'_> {
     /// Move prepared state, install live config, then publish one visibility fence.
     #[must_use = "detached sources must be retired outside the input manager lock"]
     pub fn commit(self, install_live_config: impl FnOnce()) -> SourceRetirement {
+        let mut inner = lock_mutex(&self.shared.inner);
+        let state = inner
+            .state
+            .as_mut()
+            .expect("compound screen commit retains attached manager state");
         if let Some(capacity) = self.prepared.capacity.take() {
-            self.manager.commit_screen_capacity_unpublished(capacity);
+            state.commit_screen_capacity_unpublished(capacity);
         }
-        let retirement = self
-            .manager
-            .commit_source_swap_unpublished(&mut self.prepared.source_swap, self.current);
-        self.manager.screen_capture_demand = Some(self.prepared.capture_demand);
+        let retirement =
+            state.commit_source_swap_unpublished(&mut self.prepared.source_swap, self.current);
+        state.screen_capture_demand = Some(self.prepared.capture_demand);
         install_live_config();
-        self.manager.publish_source_status_registry();
+        state.publish_source_status_registry();
         retirement
     }
 }
@@ -618,7 +724,27 @@ impl PreparedAudioSourceSwap {
 ///     // route Audio / Screen data into the pipeline...
 /// }
 /// ```
+#[derive(Clone)]
 pub struct InputManager {
+    shared: Arc<InputManagerShared>,
+}
+
+struct InputManagerShared {
+    inner: Mutex<InputManagerInner>,
+    lifecycle: RwLock<()>,
+    lifecycle_release_revision: watch::Sender<u64>,
+    input_graph: InputGraphHandle,
+    source_status_registry: SourceStatusRegistry,
+    screen_publication_hub: Arc<screen::ScreenPublicationHub>,
+    screen_admission: screen::ScreenByteAdmissionCoordinator,
+    screen_capacity_status: screen::ScreenCapacityStatusHandle,
+}
+
+struct InputManagerInner {
+    state: Option<InputManagerState>,
+}
+
+struct InputManagerState {
     sources: Vec<ManagedInputSource>,
     source_graph_generation: u64,
     next_source_slot_id: u64,
@@ -640,6 +766,103 @@ pub struct InputManager {
     screen_capacity_enforced: bool,
     screen_capacity_generation: u64,
     interaction_capture_active: Option<bool>,
+}
+
+fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct LifecycleReadGuard<'a> {
+    guard: Option<std::sync::RwLockReadGuard<'a, ()>>,
+    release_revision: &'a watch::Sender<u64>,
+}
+
+impl Drop for LifecycleReadGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        publish_lifecycle_release(self.release_revision);
+    }
+}
+
+struct LifecycleWriteGuard<'a> {
+    guard: Option<std::sync::RwLockWriteGuard<'a, ()>>,
+    release_revision: &'a watch::Sender<u64>,
+}
+
+impl Drop for LifecycleWriteGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        publish_lifecycle_release(self.release_revision);
+    }
+}
+
+fn publish_lifecycle_release(release_revision: &watch::Sender<u64>) {
+    if release_revision.receiver_count() > 0 {
+        release_revision.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+}
+
+impl InputManagerShared {
+    fn read_lifecycle(&self) -> LifecycleReadGuard<'_> {
+        LifecycleReadGuard {
+            guard: Some(read_lock(&self.lifecycle)),
+            release_revision: &self.lifecycle_release_revision,
+        }
+    }
+
+    fn write_lifecycle(&self) -> LifecycleWriteGuard<'_> {
+        LifecycleWriteGuard {
+            guard: Some(
+                self.lifecycle
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ),
+            release_revision: &self.lifecycle_release_revision,
+        }
+    }
+
+    fn try_write_lifecycle(&self) -> Option<LifecycleWriteGuard<'_>> {
+        let guard = match self.lifecycle.try_write() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some(LifecycleWriteGuard {
+            guard: Some(guard),
+            release_revision: &self.lifecycle_release_revision,
+        })
+    }
+}
+
+struct DetachedInputManager<'a> {
+    shared: &'a InputManagerShared,
+    state: Option<InputManagerState>,
+}
+
+impl DetachedInputManager<'_> {
+    fn state(&mut self) -> &mut InputManagerState {
+        self.state
+            .as_mut()
+            .expect("detached input manager retains inner state")
+    }
+}
+
+impl Drop for DetachedInputManager<'_> {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .take()
+            .expect("detached input manager restores inner state once");
+        let replaced = lock_mutex(&self.shared.inner).state.replace(state);
+        debug_assert!(replaced.is_none());
+    }
 }
 
 struct ManagedInputSource {
@@ -687,10 +910,6 @@ impl ManagedInputSource {
             slot,
             compatibility_status,
         }
-    }
-
-    fn into_source(self) -> ManagedSourceRole {
-        self.source
     }
 
     fn key(&self) -> ManagedSourceKey {
@@ -889,6 +1108,672 @@ impl AsMut<dyn ManagedSource> for ManagedInputSource {
 }
 
 impl InputManager {
+    /// Create an empty cloneable input service.
+    #[must_use]
+    pub fn new() -> Self {
+        let state = InputManagerState::new();
+        let (lifecycle_release_revision, _) = watch::channel(0);
+        let shared = InputManagerShared {
+            input_graph: state.input_graph_handle(),
+            source_status_registry: state.source_status_registry(),
+            screen_publication_hub: state.screen_publication_hub(),
+            screen_admission: state.screen_admission_coordinator(),
+            screen_capacity_status: state.screen_capacity_status_handle(),
+            inner: Mutex::new(InputManagerInner { state: Some(state) }),
+            lifecycle: RwLock::new(()),
+            lifecycle_release_revision,
+        };
+        Self {
+            shared: Arc::new(shared),
+        }
+    }
+
+    fn with_inner<R>(&self, operation: impl FnOnce(&mut InputManagerState) -> R) -> R {
+        let _lifecycle = self.shared.read_lifecycle();
+        let mut inner = lock_mutex(&self.shared.inner);
+        operation(
+            inner
+                .state
+                .as_mut()
+                .expect("input manager state is attached under lifecycle read access"),
+        )
+    }
+
+    fn with_detached_inner<R>(&self, operation: impl FnOnce(&mut InputManagerState) -> R) -> R {
+        let _lifecycle = self.shared.write_lifecycle();
+        let state = lock_mutex(&self.shared.inner)
+            .state
+            .take()
+            .expect("input manager state is attached before lifecycle detachment");
+        let mut detached = DetachedInputManager {
+            shared: &self.shared,
+            state: Some(state),
+        };
+        operation(detached.state())
+    }
+
+    fn try_with_detached_inner_if<R>(
+        &self,
+        is_current: impl FnOnce() -> bool,
+        operation: impl FnOnce(&mut InputManagerState) -> R,
+    ) -> TryInputManagerIntent<R> {
+        let Some(_lifecycle) = self.shared.try_write_lifecycle() else {
+            return TryInputManagerIntent::Busy;
+        };
+        if !is_current() {
+            return TryInputManagerIntent::Stale;
+        }
+        let state = lock_mutex(&self.shared.inner)
+            .state
+            .take()
+            .expect("input manager state is attached after lifecycle acquisition");
+        let mut detached = DetachedInputManager {
+            shared: &self.shared,
+            state: Some(state),
+        };
+        TryInputManagerIntent::Applied(operation(detached.state()))
+    }
+
+    /// Wait for lifecycle availability after a nonblocking intent returns busy.
+    ///
+    /// The method subscribes before immediately probing write ownership. A
+    /// successful probe closes the release-before-subscribe race without an
+    /// await; a second busy result waits for the owning guard's release.
+    pub async fn wait_for_lifecycle_release_after_busy(&self) {
+        let mut revision = self.shared.lifecycle_release_revision.subscribe();
+        if let Some(guard) = self.shared.try_write_lifecycle() {
+            drop(guard);
+            return;
+        }
+        revision
+            .changed()
+            .await
+            .expect("input manager retains the lifecycle release publisher");
+    }
+
+    pub fn add_source(&self, source: ManagedSourceRole) -> Result<(), SourceRegistrationError> {
+        self.with_inner(|inner| inner.add_source(source))
+    }
+
+    pub fn plan_source_swap(
+        &self,
+        key: ManagedSourceKey,
+        target: SourceSwapTarget,
+    ) -> Result<SourceSwapPlan, SourceSwapConflict> {
+        self.with_inner(|inner| inner.plan_source_swap(key, target))
+    }
+
+    pub fn commit_source_swap(
+        &self,
+        prepared: &mut PreparedSourceSwap,
+    ) -> Result<SourceRetirement, SourceSwapConflict> {
+        self.with_inner(|inner| inner.commit_source_swap(prepared))
+    }
+
+    /// Try one generation-fenced source commit after a lock-free freshness check.
+    ///
+    /// `is_current` runs only after exclusive lifecycle ownership is acquired.
+    /// It must perform lock-free reads only and must not call back into this manager.
+    pub fn try_commit_source_swap_if(
+        &self,
+        prepared: &mut PreparedSourceSwap,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<Result<SourceRetirement, SourceSwapConflict>> {
+        self.try_with_detached_inner_if(is_current, |state| state.commit_source_swap(prepared))
+    }
+
+    #[must_use]
+    pub fn input_graph_handle(&self) -> InputGraphHandle {
+        self.shared.input_graph.clone()
+    }
+
+    #[must_use]
+    pub fn source_status_registry(&self) -> SourceStatusRegistry {
+        self.shared.source_status_registry.clone()
+    }
+
+    #[must_use]
+    pub fn source_graph_generation(&self) -> u64 {
+        self.with_inner(|inner| inner.source_graph_generation())
+    }
+
+    #[must_use]
+    pub fn source_count(&self) -> usize {
+        self.with_inner(|inner| inner.source_count())
+    }
+
+    #[must_use]
+    pub fn source_names(&self) -> Vec<String> {
+        self.with_inner(|inner| inner.source_names())
+    }
+
+    pub fn sample_sources(&self, delta_secs: f32) {
+        self.with_detached_inner(|inner| inner.sample_sources(delta_secs));
+    }
+
+    pub fn sample_source_kinds(&self, due_sources: &[(SourceKind, f32)]) {
+        self.with_detached_inner(|inner| inner.sample_source_kinds(due_sources));
+    }
+
+    /// Try sampling due sources after validating caller-owned lock-free state.
+    ///
+    /// `is_current` runs only after exclusive lifecycle ownership is acquired.
+    /// It must perform lock-free reads only and must not call back into this manager.
+    pub fn try_sample_source_kinds_if(
+        &self,
+        due_sources: &[(SourceKind, f32)],
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<()> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.sample_source_kinds(due_sources);
+        })
+    }
+
+    pub fn sample_all(&self) -> Vec<InputData> {
+        self.with_detached_inner(InputManagerState::sample_all)
+    }
+
+    pub fn sample_all_with_delta_secs(&self, delta_secs: f32) -> Vec<InputData> {
+        self.with_detached_inner(|inner| inner.sample_all_with_delta_secs(delta_secs))
+    }
+
+    #[must_use]
+    pub fn drain_events(&self) -> Vec<TimedInputEvent> {
+        self.with_detached_inner(InputManagerState::drain_events)
+    }
+
+    pub fn sample_and_drain_with_delta_secs(
+        &self,
+        delta_secs: f32,
+    ) -> (Vec<InputData>, Vec<TimedInputEvent>) {
+        self.with_detached_inner(|inner| inner.sample_and_drain_with_delta_secs(delta_secs))
+    }
+
+    pub fn set_interaction_capture_active(&self, active: bool) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_interaction_capture_active(active))
+    }
+
+    pub fn start_all(&self) -> anyhow::Result<()> {
+        self.with_detached_inner(InputManagerState::start_all)
+    }
+
+    pub fn stop_all(&self) {
+        self.with_detached_inner(InputManagerState::stop_all);
+    }
+
+    /// Detach every source and publish the empty graph for shutdown.
+    pub fn detach_all_sources(&self) -> SourceRetirementBatch {
+        let _lifecycle = self.shared.write_lifecycle();
+        let mut inner = lock_mutex(&self.shared.inner);
+        let state = inner
+            .state
+            .as_mut()
+            .expect("input manager state is attached during shutdown detachment");
+        let source_graph_generation = state.bump_source_graph_generation();
+        let sources = std::mem::take(&mut state.sources);
+        state.invalidate_capture_domains((true, true, true));
+        state.publish_source_status_registry();
+        SourceRetirementBatch {
+            sources,
+            source_graph_generation,
+        }
+    }
+
+    pub fn plan_audio_runtime_config(
+        &self,
+        enabled: bool,
+        config: &AudioPipelineConfig,
+        display_name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<AudioRuntimeConfigPlan> {
+        self.with_inner(|inner| {
+            inner.plan_audio_runtime_config(enabled, config, display_name, capture_active)
+        })
+    }
+
+    /// Try planning an audio replacement after a lock-free freshness check.
+    pub fn try_plan_audio_runtime_config_if(
+        &self,
+        enabled: bool,
+        config: &AudioPipelineConfig,
+        display_name: &str,
+        capture_active: bool,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<anyhow::Result<AudioRuntimeConfigPlan>> {
+        self.try_with_detached_inner_if(is_current, |inner| {
+            inner.plan_audio_runtime_config(enabled, config, display_name, capture_active)
+        })
+    }
+
+    pub fn set_audio_capture_active(&self, active: bool) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_audio_capture_active(active))
+    }
+
+    pub fn set_screen_capture_demand(&self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_screen_capture_demand(demand))
+    }
+
+    /// Try applying every capture domain inside one lifecycle transaction.
+    ///
+    /// Domain failures do not prevent later domains from running. Each domain
+    /// retains its existing rollback behavior. `is_current` runs after exclusive
+    /// lifecycle ownership is acquired and must perform lock-free reads only.
+    pub fn try_apply_capture_demand_if(
+        &self,
+        demand: InputCaptureDemand,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<InputCaptureDemandApplication> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            let audio_generation = state.source_graph_generation();
+            let audio = state.set_audio_capture_active(demand.audio_active);
+            let screen_generation = state.source_graph_generation();
+            let screen = state.set_screen_capture_demand(demand.screen);
+            let interaction_generation = state.source_graph_generation();
+            let interaction = state.set_interaction_capture_active(demand.interaction_active);
+            InputCaptureDemandApplication {
+                source_graph_generation: state.source_graph_generation(),
+                audio: (audio_generation, audio),
+                screen: (screen_generation, screen),
+                interaction: (interaction_generation, interaction),
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn screen_publication_hub(&self) -> Arc<screen::ScreenPublicationHub> {
+        Arc::clone(&self.shared.screen_publication_hub)
+    }
+
+    #[must_use]
+    pub fn screen_admission_coordinator(&self) -> screen::ScreenByteAdmissionCoordinator {
+        self.shared.screen_admission.clone()
+    }
+
+    #[must_use]
+    pub fn screen_capacity_status_handle(&self) -> screen::ScreenCapacityStatusHandle {
+        self.shared.screen_capacity_status.clone()
+    }
+
+    pub fn prepare_screen_capture_input(
+        &self,
+        config: screen::CaptureConfig,
+        requested_extent: screen::PixelExtent,
+    ) -> Result<screen::ScreenCaptureInput, screen::ScreenAnalysisAdmissionError> {
+        screen::ScreenCaptureInput::with_requested_extent_and_admission(
+            config,
+            requested_extent,
+            self.screen_admission_coordinator(),
+        )
+    }
+
+    pub fn set_screen_resource_capacity(
+        &self,
+        capacity: screen::ScreenAdmissionCapacity,
+    ) -> Result<(), screen::ScreenByteAdmissionError> {
+        self.with_inner(|inner| inner.set_screen_resource_capacity(capacity))
+    }
+
+    pub fn set_screen_capacity_plan(
+        &self,
+        resource: screen::ScreenAdmissionCapacity,
+        total: screen::ScreenAdmissionCapacity,
+        publication: screen::ScreenAdmissionCapacity,
+    ) -> Result<(), screen::ScreenByteAdmissionError> {
+        self.with_inner(|inner| inner.set_screen_capacity_plan(resource, total, publication))
+    }
+
+    #[must_use]
+    pub fn screen_resource_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.with_inner(|inner| inner.screen_resource_capacity())
+    }
+
+    #[must_use]
+    pub fn screen_total_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.with_inner(|inner| inner.screen_total_capacity())
+    }
+
+    #[must_use]
+    pub fn screen_publication_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.with_inner(|inner| inner.screen_publication_capacity())
+    }
+
+    pub fn screen_analysis_resource_plan(
+        &self,
+    ) -> anyhow::Result<Option<screen::ScreenAnalysisResourcePlan>> {
+        self.with_inner(|inner| inner.screen_analysis_resource_plan())
+    }
+
+    pub fn screen_analysis_work_plan(
+        &self,
+    ) -> anyhow::Result<Option<screen::ScreenAnalysisWorkPlan>> {
+        self.with_inner(|inner| inner.screen_analysis_work_plan())
+    }
+
+    #[must_use]
+    pub fn screen_analysis_compute_capacity(
+        &self,
+    ) -> Option<screen::ScreenAnalysisComputeCapacity> {
+        self.with_inner(|inner| inner.screen_analysis_compute_capacity())
+    }
+
+    #[must_use]
+    pub fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.with_inner(|inner| inner.screen_capture_demand())
+    }
+
+    pub fn prepare_screen_capacity(
+        &self,
+        analysis_peak_bytes: u64,
+    ) -> Result<Option<ScreenCapacityPreparation>, ScreenCapacityPreparationError> {
+        self.with_inner(|inner| inner.prepare_screen_capacity(analysis_peak_bytes))
+    }
+
+    pub fn prepare_screen_capacity_plan(
+        &self,
+        total_capacity: screen::ScreenAdmissionCapacity,
+        analysis_peak_bytes: u64,
+    ) -> Result<Option<ScreenCapacityPreparation>, ScreenCapacityPreparationError> {
+        self.with_inner(|inner| {
+            inner.prepare_screen_capacity_plan(total_capacity, analysis_peak_bytes)
+        })
+    }
+
+    pub fn validate_screen_capacity(
+        &self,
+        preparation: &ScreenCapacityPreparation,
+    ) -> Result<(), ScreenReconfigurationConflict> {
+        self.with_inner(|inner| inner.validate_screen_capacity(preparation))
+    }
+
+    pub fn commit_screen_capacity(
+        &self,
+        preparation: ScreenCapacityPreparation,
+    ) -> Result<(), ScreenReconfigurationConflict> {
+        self.with_inner(|inner| inner.commit_screen_capacity(preparation))
+    }
+
+    #[must_use]
+    pub fn screen_publication_resolution_revision(&self) -> u64 {
+        self.with_inner(InputManagerState::screen_publication_resolution_revision)
+    }
+
+    #[must_use]
+    pub fn screen_publication_commitment_is_current(&self) -> bool {
+        self.with_detached_inner(InputManagerState::screen_publication_commitment_is_current)
+    }
+
+    /// Try probing exact-screen commitment after a lock-free freshness check.
+    pub fn try_screen_publication_commitment_is_current_if(
+        &self,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<bool> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.screen_publication_commitment_is_current()
+        })
+    }
+
+    pub fn begin_screen_publication_transition(
+        &self,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> Result<
+        Option<screen::ScreenPublicationPreparation>,
+        screen::ScreenPublicationTransitionError,
+    > {
+        self.with_detached_inner(|inner| inner.begin_screen_publication_transition(demand))
+    }
+
+    /// Try beginning an exact-screen transition after a lock-free freshness check.
+    pub fn try_begin_screen_publication_transition_if(
+        &self,
+        demand: &ScreenPublicationDemandSnapshot,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<
+        Result<
+            Option<screen::ScreenPublicationPreparation>,
+            screen::ScreenPublicationTransitionError,
+        >,
+    > {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.begin_screen_publication_transition(demand.clone())
+        })
+    }
+
+    pub fn commit_screen_publication_transition(
+        &self,
+        prepared: screen::PreparedScreenPublicationPlan,
+        observed_demand_revision: screen::InputPublicationDemandRevision,
+    ) -> Result<
+        screen::CommittedScreenPublicationTransition,
+        screen::ScreenPublicationTransitionFailure,
+    > {
+        self.with_detached_inner(|inner| {
+            inner.commit_screen_publication_transition(prepared, observed_demand_revision)
+        })
+    }
+
+    /// Try committing an exact-screen transition after a lock-free freshness check.
+    pub fn try_commit_screen_publication_transition_if(
+        &self,
+        prepared: &mut Option<screen::PreparedScreenPublicationPlan>,
+        observed_demand_revision: screen::InputPublicationDemandRevision,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<
+        Result<
+            screen::CommittedScreenPublicationTransition,
+            screen::ScreenPublicationTransitionFailure,
+        >,
+    > {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.commit_screen_publication_transition(
+                prepared
+                    .take()
+                    .expect("prepared screen publication plan is consumed once"),
+                observed_demand_revision,
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn has_screen_source(&self) -> bool {
+        self.with_inner(|inner| inner.has_screen_source())
+    }
+
+    pub fn plan_screen_source_swap(
+        &self,
+        enabled: bool,
+        capacity: Option<ScreenCapacityPreparation>,
+    ) -> Result<ScreenSourceSwapPlan, SourceSwapConflict> {
+        self.with_inner(|inner| inner.plan_screen_source_swap(enabled, capacity))
+    }
+
+    /// Try planning a screen replacement after a lock-free freshness check.
+    pub fn try_plan_screen_source_swap_if(
+        &self,
+        enabled: bool,
+        capacity: Option<ScreenCapacityPreparation>,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<Result<ScreenSourceSwapPlan, SourceSwapConflict>> {
+        self.try_with_detached_inner_if(is_current, |inner| {
+            inner.plan_screen_source_swap(enabled, capacity)
+        })
+    }
+
+    /// Try planning screen capacity and source replacement in one lifecycle transaction.
+    pub fn try_plan_screen_source_swap_with_capacity_if(
+        &self,
+        enabled: bool,
+        total_capacity: screen::ScreenAdmissionCapacity,
+        analysis_peak_bytes: u64,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<Result<ScreenSourceSwapPlan, ScreenSourceSwapPlanningError>> {
+        self.try_with_detached_inner_if(is_current, |inner| {
+            let capacity =
+                inner.prepare_screen_capacity_plan(total_capacity, analysis_peak_bytes)?;
+            if enabled && capacity.is_none() {
+                return Err(ScreenSourceSwapPlanningError::CapacityUnavailable);
+            }
+            Ok(inner.plan_screen_source_swap(enabled, capacity)?)
+        })
+    }
+
+    pub fn commit_screen_source_swap<E>(
+        &self,
+        prepared: &mut PreparedScreenSourceSwap,
+        persist_and_install: impl FnOnce(ScreenSourceSwapCommit<'_>) -> Result<SourceRetirement, E>,
+    ) -> Result<SourceRetirement, ScreenSourceSwapCommitError<E>> {
+        let _lifecycle = self.shared.write_lifecycle();
+        let current = {
+            let mut inner = lock_mutex(&self.shared.inner);
+            let state = inner
+                .state
+                .as_mut()
+                .expect("compound screen validation retains attached manager state");
+            let current = state
+                .validate_prepared_source_swap(&mut prepared.source_swap)
+                .map_err(ScreenReconfigurationConflict::from)?;
+            if state.current_screen_capture_demand() != prepared.expected_capture_demand {
+                return Err(ScreenReconfigurationConflict::CaptureDemandChanged.into());
+            }
+            if prepared
+                .source_swap
+                .replacement
+                .as_ref()
+                .is_some_and(|source| {
+                    source.as_screen().is_none_or(|source| {
+                        source.screen_capture_demand() != prepared.capture_demand
+                    })
+                })
+            {
+                return Err(ScreenReconfigurationConflict::InvalidReplacementDemand.into());
+            }
+            if let Some(capacity) = &prepared.capacity {
+                state.validate_screen_capacity(capacity)?;
+            }
+            current
+        };
+        persist_and_install(ScreenSourceSwapCommit {
+            shared: Arc::clone(&self.shared),
+            prepared,
+            current,
+        })
+        .map_err(ScreenSourceSwapCommitError::Persistence)
+    }
+
+    #[must_use]
+    pub fn has_interaction_source(&self) -> bool {
+        self.with_inner(|inner| inner.has_interaction_source())
+    }
+
+    #[must_use]
+    pub fn interaction_diagnostics(&self) -> Vec<InteractionDiagnostics> {
+        self.with_inner(|inner| inner.interaction_diagnostics())
+    }
+
+    #[must_use]
+    pub fn has_host_capture_source(&self) -> bool {
+        self.with_inner(|inner| inner.has_host_capture_source())
+    }
+
+    pub fn reconfigure_screen_capture(&self, config: &screen::CaptureConfig) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.reconfigure_screen_capture(config))
+    }
+
+    pub fn reconfigure_screen_processing(
+        &self,
+        config: &screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.reconfigure_screen_processing(config))
+    }
+
+    pub fn set_source_capability_context(
+        &self,
+        context: SourceCapabilityContext,
+    ) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_source_capability_context(context))
+    }
+
+    pub fn set_source_capability_identity(
+        &self,
+        owner: impl Into<Arc<str>>,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<Arc<str>>,
+    ) -> anyhow::Result<()> {
+        let owner = owner.into();
+        self.with_detached_inner(|inner| {
+            inner.set_source_capability_identity(owner, conflict, identity_hash)
+        })
+    }
+
+    /// Try publishing retained capability identity without waiting on lifecycle ownership.
+    pub fn try_set_source_capability_identity(
+        &self,
+        owner: impl Into<Arc<str>>,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<Arc<str>>,
+    ) -> TryInputManagerIntent<anyhow::Result<()>> {
+        let owner = owner.into();
+        self.try_with_detached_inner_if(
+            || true,
+            |state| state.set_source_capability_identity(owner, conflict, identity_hash),
+        )
+    }
+
+    pub fn set_source_capability_feature(
+        &self,
+        name: impl Into<Arc<str>>,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        let name = name.into();
+        self.with_detached_inner(|inner| inner.set_source_capability_feature(name, enabled))
+    }
+
+    #[must_use]
+    pub fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.with_inner(|inner| inner.input_authorization_action())
+    }
+
+    #[must_use]
+    pub fn resolved_input_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        self.with_inner(|inner| inner.resolved_input_authorization_action())
+    }
+
+    #[must_use]
+    pub fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.with_inner(|inner| inner.screen_authorization_action())
+    }
+
+    #[must_use]
+    pub fn resolved_screen_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        self.with_inner(|inner| inner.resolved_screen_authorization_action())
+    }
+
+    #[must_use]
+    pub fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        self.with_inner(|inner| inner.screen_source_picker_action())
+    }
+
+    #[must_use]
+    pub fn resolved_screen_source_picker_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ScreenSourcePickerAction>> {
+        self.with_inner(|inner| inner.resolved_screen_source_picker_action())
+    }
+
+    #[must_use]
+    pub fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
+        self.with_inner(|inner| inner.diagnostic_artifact_action())
+    }
+
+    pub fn reselect_screen_source(&self) -> anyhow::Result<()> {
+        self.with_detached_inner(InputManagerState::reselect_screen_source)
+    }
+}
+
+impl InputManagerState {
     /// Create an empty manager with no sources.
     #[must_use]
     pub fn new() -> Self {
@@ -1133,39 +2018,6 @@ impl InputManager {
         Ok(first)
     }
 
-    /// Replace one source without changing registration order.
-    ///
-    /// Returns the retired previous source, or the supplied source unchanged if
-    /// `index` is outside the current graph.
-    pub fn replace_source(
-        &mut self,
-        index: usize,
-        source: ManagedSourceRole,
-    ) -> Result<ManagedSourceRole, ManagedSourceRole> {
-        if index >= self.sources.len() {
-            return Err(source);
-        }
-        let source_graph_generation = self.bump_source_graph_generation();
-        let previous_domains = managed_source_capture_domains(self.sources[index].key());
-        let replacement_domains = managed_source_capture_domains(source.key());
-        let replacement = self.create_managed_source(source, source_graph_generation);
-        let mut previous = std::mem::replace(&mut self.sources[index], replacement);
-        if previous_domains.1 {
-            previous.set_active_consumer_count(0);
-        }
-        previous.stop();
-        if let Err(error) = previous.retire_source_status(source_graph_generation) {
-            error!(source = previous.name(), %error, "Failed to retire replaced input source status");
-        }
-        self.invalidate_capture_domains((
-            previous_domains.0 || replacement_domains.0,
-            previous_domains.1 || replacement_domains.1,
-            previous_domains.2 || replacement_domains.2,
-        ));
-        self.publish_source_status_registry();
-        Ok(previous.into_source())
-    }
-
     /// Clone the lock-free immutable input graph retained by render consumers.
     #[must_use]
     pub fn input_graph_handle(&self) -> InputGraphHandle {
@@ -1326,7 +2178,6 @@ impl InputManager {
         for source in &mut self.sources {
             source.set_source_graph_generation(source_graph_generation);
         }
-        self.publish_source_status_registry();
 
         for source_index in 0..self.sources.len() {
             let start_result = self.sources[source_index].start();
@@ -1347,7 +2198,7 @@ impl InputManager {
                     started.stop();
                 }
                 self.invalidate_capture_domains((true, true, true));
-                self.publish_screen_capacity_status();
+                self.publish_source_status_registry();
                 return Err(err);
             }
             info!(
@@ -1355,7 +2206,7 @@ impl InputManager {
                 "Started input source"
             );
         }
-        self.publish_screen_capacity_status();
+        self.publish_source_status_registry();
         Ok(())
     }
 
@@ -1472,19 +2323,6 @@ impl InputManager {
     #[must_use]
     pub fn screen_capacity_status_handle(&self) -> screen::ScreenCapacityStatusHandle {
         self.screen_capacity_status.clone()
-    }
-
-    /// Construct compatibility screen analysis inside this manager's byte fence.
-    pub fn prepare_screen_capture_input(
-        &self,
-        config: screen::CaptureConfig,
-        requested_extent: screen::PixelExtent,
-    ) -> Result<screen::ScreenCaptureInput, screen::ScreenAnalysisAdmissionError> {
-        screen::ScreenCaptureInput::with_requested_extent_and_admission(
-            config,
-            requested_extent,
-            self.screen_admission_coordinator(),
-        )
     }
 
     /// Set the process and backend byte fences shared by all screen resources.
@@ -2094,50 +2932,6 @@ impl InputManager {
             },
             capacity,
         })
-    }
-
-    /// Persist and install one prepared screen source behind a single visibility fence.
-    ///
-    /// The callback receives an opaque one-shot continuation only after every
-    /// manager-owned fence validates. It must make durable persistence its last
-    /// fallible action, invoke the continuation, then install live configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns without consuming the candidate when any fence or persistence fails.
-    pub fn commit_screen_source_swap<E>(
-        &mut self,
-        prepared: &mut PreparedScreenSourceSwap,
-        persist_and_install: impl FnOnce(ScreenSourceSwapCommit<'_>) -> Result<SourceRetirement, E>,
-    ) -> Result<SourceRetirement, ScreenSourceSwapCommitError<E>> {
-        let current = self
-            .validate_prepared_source_swap(&mut prepared.source_swap)
-            .map_err(ScreenReconfigurationConflict::from)?;
-        if self.current_screen_capture_demand() != prepared.expected_capture_demand {
-            return Err(ScreenReconfigurationConflict::CaptureDemandChanged.into());
-        }
-        if prepared
-            .source_swap
-            .replacement
-            .as_ref()
-            .is_some_and(|source| {
-                source
-                    .as_screen()
-                    .is_none_or(|source| source.screen_capture_demand() != prepared.capture_demand)
-            })
-        {
-            return Err(ScreenReconfigurationConflict::InvalidReplacementDemand.into());
-        }
-        if let Some(capacity) = &prepared.capacity {
-            self.validate_screen_capacity(capacity)?;
-        }
-        let retirement = persist_and_install(ScreenSourceSwapCommit {
-            manager: self,
-            prepared,
-            current,
-        })
-        .map_err(ScreenSourceSwapCommitError::Persistence)?;
-        Ok(retirement)
     }
 
     /// Whether any registered source captures host interaction.
@@ -2820,7 +3614,7 @@ mod host_source_swap_tests {
             Arc::new(AtomicBool::new(false)),
         ));
         old.start().expect("old host source starts");
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(old))
             .expect("old host source registers");
@@ -2861,7 +3655,7 @@ mod host_source_swap_tests {
         let old_stopped = Arc::new(AtomicBool::new(false));
         let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
         old.start().expect("old host source starts");
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(old))
             .expect("old host source registers");
@@ -2903,7 +3697,7 @@ mod host_source_swap_tests {
         let candidate_stopped = Arc::new(AtomicBool::new(false));
         let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
         old.start().expect("old host source starts");
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(old))
             .expect("old host source registers");
@@ -2948,7 +3742,7 @@ mod host_source_swap_tests {
         let old_stopped = Arc::new(AtomicBool::new(false));
         let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
         old.start().expect("old host source starts");
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(old))
             .expect("old host source registers");
@@ -2984,7 +3778,7 @@ mod host_source_swap_tests {
             Arc::new(AtomicBool::new(false)),
         ));
         old.start().expect("old host source starts");
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .add_source(ManagedSourceRole::interaction(old))
             .expect("old host source registers");

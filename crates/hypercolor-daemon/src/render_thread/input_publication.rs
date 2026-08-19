@@ -18,14 +18,15 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
+    TryInputManagerIntent,
 };
-use tokio::sync::{Mutex, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant as TokioInstant, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::capture_demand::{CaptureDemand, CaptureDemandState};
+use super::capture_demand::{CaptureDemand, CaptureDemandReconcile, CaptureDemandState};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 // Staleness probe for a committed exact screen plan; capped by how long a
@@ -471,8 +472,30 @@ struct InputPublicationDemandRegistry {
     latest: ArcSwap<InputPublicationDemandSnapshot>,
     revision_tx: watch::Sender<InputPublicationDemandRevision>,
     revision_gate: SyncMutex<()>,
+    revision_gate_release_tx: watch::Sender<u64>,
     #[cfg(test)]
     commit_test_hook: SyncMutex<Option<ExactScreenCommitTestHook>>,
+}
+
+enum TryDemandCommit<T> {
+    Busy,
+    Stale,
+    Committed(T),
+}
+
+struct DemandRevisionGateGuard<'a> {
+    guard: Option<std::sync::MutexGuard<'a, ()>>,
+    release_tx: &'a watch::Sender<u64>,
+}
+
+impl Drop for DemandRevisionGateGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        if self.release_tx.receiver_count() > 0 {
+            self.release_tx
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -510,12 +533,14 @@ impl InputPublicationDemandHandle {
     #[must_use]
     pub fn new() -> Self {
         let (revision_tx, _) = watch::channel(InputPublicationDemandRevision::default());
+        let (revision_gate_release_tx, _) = watch::channel(0);
         Self {
             registry: Arc::new(InputPublicationDemandRegistry {
                 next_id: AtomicU64::new(1),
                 latest: ArcSwap::from_pointee(InputPublicationDemandSnapshot::default()),
                 revision_tx,
                 revision_gate: SyncMutex::new(()),
+                revision_gate_release_tx,
                 #[cfg(test)]
                 commit_test_hook: SyncMutex::new(None),
             }),
@@ -585,17 +610,30 @@ impl InputPublicationDemandHandle {
         self.registry.revision_tx.subscribe()
     }
 
-    fn commit_if_revision<T>(
+    async fn wait_for_revision_gate_release_after_busy(&self) {
+        let mut revision = self.registry.revision_gate_release_tx.subscribe();
+        if let Some(guard) = self.registry.try_lock_revision_gate() {
+            drop(guard);
+            return;
+        }
+        revision
+            .changed()
+            .await
+            .expect("input publication demand retains the revision gate publisher");
+    }
+
+    fn try_commit_if_revision<T>(
         &self,
         expected: InputPublicationDemandRevision,
         commit: impl FnOnce() -> T,
-    ) -> Option<T> {
-        let _revision_guard = self
-            .registry
-            .revision_gate
-            .lock()
-            .expect("input publication revision gate is healthy");
-        (self.registry.latest.load().revision() == expected).then(commit)
+    ) -> TryDemandCommit<T> {
+        let Some(_revision_guard) = self.registry.try_lock_revision_gate() else {
+            return TryDemandCommit::Busy;
+        };
+        if self.registry.latest.load().revision() != expected {
+            return TryDemandCommit::Stale;
+        }
+        TryDemandCommit::Committed(commit())
     }
 
     #[cfg(test)]
@@ -638,11 +676,31 @@ impl Default for InputPublicationDemandHandle {
 }
 
 impl InputPublicationDemandRegistry {
+    fn lock_revision_gate(&self) -> DemandRevisionGateGuard<'_> {
+        DemandRevisionGateGuard {
+            guard: Some(
+                self.revision_gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ),
+            release_tx: &self.revision_gate_release_tx,
+        }
+    }
+
+    fn try_lock_revision_gate(&self) -> Option<DemandRevisionGateGuard<'_>> {
+        let guard = match self.revision_gate.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(DemandRevisionGateGuard {
+            guard: Some(guard),
+            release_tx: &self.revision_gate_release_tx,
+        })
+    }
+
     fn update_entries(&self, update: impl Fn(&mut Vec<InputPublicationDemandEntry>)) {
-        let _revision_guard = self
-            .revision_gate
-            .lock()
-            .expect("input publication revision gate is healthy");
+        let _revision_guard = self.lock_revision_gate();
         self.latest.rcu(|current| {
             let mut entries = current.entries.to_vec();
             update(&mut entries);
@@ -842,16 +900,13 @@ pub(crate) struct InputPublicationPump {
 
 impl InputPublicationPump {
     pub(crate) async fn start(
-        manager: Arc<Mutex<InputManager>>,
+        manager: InputManager,
         demands: InputPublicationDemandHandle,
     ) -> Result<Self> {
-        let reader = {
-            let manager = manager.lock().await;
-            InputPublicationReader::new(
-                manager.input_graph_handle(),
-                manager.screen_publication_hub(),
-            )
-        };
+        let reader = InputPublicationReader::new(
+            manager.input_graph_handle(),
+            manager.screen_publication_hub(),
+        );
         let cancel = CancellationToken::new();
         let (ready_tx, ready_rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(InputPublicationStatus::Starting);
@@ -1005,12 +1060,16 @@ fn exact_screen_failure_retry_at(
 struct ExactScreenTransitionTask {
     key: ExactScreenTransitionKey,
     purpose: ExactScreenTransitionPurpose,
-    task: AbortOnDropTask<Result<Option<CommittedScreenPublicationTransition>>>,
+    task: AbortOnDropTask<Result<ExactScreenTransitionOutcome>>,
+}
+
+enum ExactScreenTransitionOutcome {
+    Completed(Option<CommittedScreenPublicationTransition>),
 }
 
 impl ExactScreenTransitionTask {
     fn spawn(
-        manager: Arc<Mutex<InputManager>>,
+        manager: InputManager,
         reader: InputPublicationReader,
         demands: InputPublicationDemandHandle,
         demand: ScreenPublicationDemandSnapshot,
@@ -1029,64 +1088,115 @@ impl ExactScreenTransitionTask {
 
     async fn join(
         self,
-    ) -> std::result::Result<
-        Result<Option<CommittedScreenPublicationTransition>>,
-        tokio::task::JoinError,
-    > {
+    ) -> std::result::Result<Result<ExactScreenTransitionOutcome>, tokio::task::JoinError> {
         self.task.join().await
     }
 }
 
 async fn run_exact_screen_transition(
-    manager: Arc<Mutex<InputManager>>,
+    manager: InputManager,
     reader: InputPublicationReader,
     demands: InputPublicationDemandHandle,
     demand: ScreenPublicationDemandSnapshot,
-) -> Result<Option<CommittedScreenPublicationTransition>> {
+) -> Result<ExactScreenTransitionOutcome> {
     let revision = demand.revision();
     let graph_generation = demand.graph_generation().get();
-    let mut input_manager = manager.lock().await;
     if demands.snapshot().revision() != revision
         || reader.graph_snapshot().generation() != graph_generation
     {
-        return Ok(None);
+        return Ok(ExactScreenTransitionOutcome::Completed(None));
     }
-    let preparation = input_manager
-        .begin_screen_publication_transition(demand)
-        .context("exact screen publication plan was rejected")?;
-    drop(input_manager);
-    let Some(preparation) = preparation else {
-        return Ok(None);
+    let preparation = loop {
+        let preparation = manager.try_begin_screen_publication_transition_if(&demand, || {
+            demands.snapshot().revision() == revision
+                && reader.graph_snapshot().generation() == graph_generation
+        });
+        let mut demand_changes = demands.subscribe_revision();
+        let mut graph_changes = reader.graph.subscribe_generation();
+        match preparation {
+            TryInputManagerIntent::Busy => {
+                tokio::select! {
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                    _ = graph_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                }
+            }
+            TryInputManagerIntent::Stale => {
+                return Ok(ExactScreenTransitionOutcome::Completed(None));
+            }
+            TryInputManagerIntent::Applied(preparation) => {
+                break preparation.context("exact screen publication plan was rejected")?;
+            }
+        }
     };
-    let prepared = preparation
-        .await_workers()
-        .await
-        .context("exact screen publication worker preparation failed")?;
+    let Some(preparation) = preparation else {
+        return Ok(ExactScreenTransitionOutcome::Completed(None));
+    };
+    let mut prepared = Some(
+        preparation
+            .await_workers()
+            .await
+            .context("exact screen publication worker preparation failed")?,
+    );
     if demands.snapshot().revision() != revision
         || reader.graph_snapshot().generation() != graph_generation
     {
-        return Ok(None);
-    }
-    let mut input_manager = manager.lock().await;
-    if demands.snapshot().revision() != revision
-        || reader.graph_snapshot().generation() != graph_generation
-    {
-        return Ok(None);
+        return Ok(ExactScreenTransitionOutcome::Completed(None));
     }
     #[cfg(test)]
     demands.wait_at_exact_screen_commit_test_hook().await;
-    let Some(committed) = demands.commit_if_revision(revision, || {
-        input_manager.commit_screen_publication_transition(prepared, revision)
-    }) else {
-        return Ok(None);
+    let committed = loop {
+        let mut demand_changes = demands.subscribe_revision();
+        let mut graph_changes = reader.graph.subscribe_generation();
+        match demands.try_commit_if_revision(revision, || {
+            manager.try_commit_screen_publication_transition_if(&mut prepared, revision, || {
+                reader.graph_snapshot().generation() == graph_generation
+            })
+        }) {
+            TryDemandCommit::Busy => {
+                tokio::select! {
+                    () = demands.wait_for_revision_gate_release_after_busy() => {}
+                    _ = demand_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                    _ = graph_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                }
+            }
+            TryDemandCommit::Stale => {
+                return Ok(ExactScreenTransitionOutcome::Completed(None));
+            }
+            TryDemandCommit::Committed(TryInputManagerIntent::Busy) => {
+                tokio::select! {
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                    _ = graph_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                }
+            }
+            TryDemandCommit::Committed(TryInputManagerIntent::Stale) => {
+                return Ok(ExactScreenTransitionOutcome::Completed(None));
+            }
+            TryDemandCommit::Committed(TryInputManagerIntent::Applied(committed)) => {
+                break committed;
+            }
+        }
     };
     committed
         .context("exact screen publication plan commit failed")
-        .map(Some)
+        .map(|committed| ExactScreenTransitionOutcome::Completed(Some(committed)))
 }
 
 async fn run_pump(
-    manager: Arc<Mutex<InputManager>>,
+    manager: InputManager,
     reader: InputPublicationReader,
     demands: InputPublicationDemandHandle,
     cancel: CancellationToken,
@@ -1130,7 +1240,7 @@ async fn run_pump(
                 reader.graph_snapshot().generation(),
             );
             match transition.join().await {
-                Ok(Ok(committed)) => {
+                Ok(Ok(ExactScreenTransitionOutcome::Completed(committed))) => {
                     if exact_screen_failure_streak > 0 {
                         info!(
                             suppressed_failures = exact_screen_failure_streak,
@@ -1222,18 +1332,22 @@ async fn run_pump(
         let desired_capture = demand.capture_demand();
         let mut graph = reader.graph_snapshot();
         if !capture_demand.is_current(graph.generation(), desired_capture) {
-            let manager_lock = manager.lock();
-            tokio::pin!(manager_lock);
-            let mut input_manager = tokio::select! {
-                () = cancel.cancelled() => break,
-                _ = demand_changes.changed() => continue,
-                manager = &mut manager_lock => manager,
-            };
-            if demands.snapshot().revision() != demand.revision() {
-                continue;
+            let reconcile = capture_demand.reconcile(&manager, desired_capture, || {
+                demands.snapshot().revision() == demand.revision()
+            });
+            match reconcile {
+                CaptureDemandReconcile::Applied => {}
+                CaptureDemandReconcile::Busy => {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = manager.wait_for_lifecycle_release_after_busy() => {}
+                        _ = demand_changes.changed() => {}
+                        _ = graph_changes.changed() => {}
+                    }
+                    continue;
+                }
+                CaptureDemandReconcile::Stale => continue,
             }
-            capture_demand.reconcile(&mut input_manager, desired_capture);
-            drop(input_manager);
             graph = reader.graph_snapshot();
         }
         let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
@@ -1273,7 +1387,7 @@ async fn run_pump(
                 }
             };
             exact_screen_transition = Some(ExactScreenTransitionTask::spawn(
-                Arc::clone(&manager),
+                manager.clone(),
                 reader.clone(),
                 demands.clone(),
                 exact_demand,
@@ -1345,14 +1459,6 @@ async fn run_pump(
             continue;
         }
 
-        let manager_lock = manager.lock();
-        tokio::pin!(manager_lock);
-        let mut manager = tokio::select! {
-            () = cancel.cancelled() => break,
-            _ = demand_changes.changed() => continue,
-            _ = graph_changes.changed() => continue,
-            manager = &mut manager_lock => manager,
-        };
         if demands.snapshot().revision() != demand.revision() {
             continue;
         }
@@ -1365,12 +1471,43 @@ async fn run_pump(
             && last_commitment_probe.elapsed() >= COMMITMENT_PROBE_INTERVAL
         {
             last_commitment_probe = Instant::now();
-            if !manager.screen_publication_commitment_is_current() {
-                applied_exact_screen = None;
+            let commitment = manager.try_screen_publication_commitment_is_current_if(|| {
+                demands.snapshot().revision() == demand.revision()
+                    && reader.graph_snapshot().generation() == graph.generation()
+            });
+            match commitment {
+                TryInputManagerIntent::Applied(false) => applied_exact_screen = None,
+                TryInputManagerIntent::Applied(true) => {}
+                TryInputManagerIntent::Busy => {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = manager.wait_for_lifecycle_release_after_busy() => {}
+                        _ = demand_changes.changed() => {}
+                        _ = graph_changes.changed() => {}
+                    }
+                    continue;
+                }
+                TryInputManagerIntent::Stale => continue,
             }
         }
-        schedule.collect_due(Instant::now(), &mut due_sources);
-        manager.sample_source_kinds(&due_sources);
+        let mut committed_schedule = schedule.clone();
+        committed_schedule.collect_due(Instant::now(), &mut due_sources);
+        let sampling = manager.try_sample_source_kinds_if(&due_sources, || {
+            demands.snapshot().revision() == demand.revision()
+                && reader.graph_snapshot().generation() == graph.generation()
+        });
+        match sampling {
+            TryInputManagerIntent::Applied(()) => schedule = committed_schedule,
+            TryInputManagerIntent::Busy => {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {}
+                    _ = graph_changes.changed() => {}
+                }
+            }
+            TryInputManagerIntent::Stale => continue,
+        }
     }
 
     // Cancellation can win the wake-up race after the authoritative renderer
@@ -1425,7 +1562,7 @@ struct SourceCadence {
     next_sample_at: Option<Instant>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct InputPublicationSchedule {
     sources: [SourceCadence; SOURCE_KINDS.len()],
 }
