@@ -2586,7 +2586,6 @@ async fn wait_for_display_device_change(
                     HypercolorEvent::DeviceConnected { .. }
                         | HypercolorEvent::DeviceDisconnected { .. }
                         | HypercolorEvent::DeviceStateChanged { .. }
-                        | HypercolorEvent::DeviceRebound { .. }
                 ) =>
             {
                 return true;

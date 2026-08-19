@@ -1,13 +1,10 @@
 //! Device endpoints — `/api/v1/devices/*`.
 //!
 //! Core CRUD, identify flows, and shared helpers live here. Attachment,
-//! pairing, discovery, and logical-device endpoints are split into sibling
-//! submodules.
+//! pairing, and discovery endpoints are split into sibling submodules.
 
 mod attachments;
-mod bindings;
 mod discovery;
-mod logical;
 mod pairing;
 
 use std::collections::HashMap;
@@ -30,26 +27,17 @@ use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
-use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::devices::{IdentifyAttachmentRequest, ListDevicesQuery};
 
 pub use attachments::{
-    ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
-    DeleteAttachmentsResponse, DeviceComponentsResponse, DeviceComponentsUpdateResponse,
-    UpdateAttachmentsRequest, delete_attachments, get_attachments, preview_attachments,
+    ComponentBindingSummary, DeleteAttachmentsResponse, DeviceComponentsResponse,
+    DeviceComponentsUpdateResponse, UpdateAttachmentsRequest, delete_attachments, get_attachments,
     update_attachments,
 };
-pub use bindings::{get_device_bindings, rebind_device};
 pub use discovery::{DiscoverRequest, discover_devices};
-pub use logical::{
-    CreateLogicalDeviceRequest, DeleteLogicalDeviceResponse, ListLogicalDevicesQuery,
-    LogicalDeviceListResponse, LogicalDeviceSummary, UpdateLogicalDeviceRequest,
-    create_logical_device, delete_logical_device, get_logical_device, list_device_logical_devices,
-    list_logical_devices, update_logical_device,
-};
 pub use pairing::{
     DeletePairingResponse, GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing,
     pair_device,
@@ -62,10 +50,9 @@ pub use pairing::{
 // re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
 pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
-    DeleteDeviceResponse, DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse,
-    DeviceSummary, IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest,
-    IdentifySegmentResponse, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
-    SegmentSummary, SegmentTopologySummary, UnresolvedBindingSummary, UpdateDeviceRequest,
+    DeleteDeviceResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
+    IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest, IdentifySegmentResponse,
+    SegmentSummary, SegmentTopologySummary, UpdateDeviceRequest,
 };
 
 const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
@@ -240,27 +227,6 @@ pub async fn list_devices(
             has_more,
         },
     })
-}
-
-/// `GET /api/v1/devices/metrics` — List current per-device output telemetry.
-pub async fn list_device_metrics(State(state): State<Arc<AppState>>) -> Response {
-    let snapshot = state.device_metrics.load_full();
-    ApiResponse::ok(DeviceMetricsSnapshot {
-        taken_at_ms: snapshot.taken_at_ms,
-        items: snapshot.items.clone(),
-    })
-}
-
-/// `GET /api/v1/devices/debug/queues` — Inspect backend output queue diagnostics.
-pub async fn debug_output_queues(State(state): State<Arc<AppState>>) -> Response {
-    let manager = state.backend_manager.lock().await;
-    ApiResponse::ok(manager.debug_snapshot())
-}
-
-/// `GET /api/v1/devices/debug/routing` — Inspect layout/backend routing diagnostics.
-pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Response {
-    let manager = state.backend_manager.lock().await;
-    ApiResponse::ok(manager.routing_snapshot())
 }
 
 /// `GET /api/v1/devices/:id` — Get a single device.
