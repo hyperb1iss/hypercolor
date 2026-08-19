@@ -99,7 +99,7 @@ pub async fn get_display_frame(
     };
 
     let Some(frame) = state.display_frames.read().await.frame(device_id) else {
-        return DomainError::not_found(ResourceKind::DisplayPreview, device_id).into_response();
+        return DomainError::not_found(ResourceKind::DisplayFrame, device_id).into_response();
     };
 
     let etag = format_display_frame_etag(device_id, frame.frame_number);

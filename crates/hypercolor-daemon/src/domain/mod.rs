@@ -65,7 +65,7 @@ pub enum ResourceKind {
     Device,
     LogicalDevice,
     Display,
-    DisplayPreview,
+    DisplayFrame,
     SimulatedDisplay,
     Driver,
     Profile,
@@ -97,7 +97,7 @@ impl std::fmt::Display for ResourceKind {
             Self::Device => "device",
             Self::LogicalDevice => "logical device",
             Self::Display => "display",
-            Self::DisplayPreview => "display preview",
+            Self::DisplayFrame => "display frame",
             Self::SimulatedDisplay => "simulated display",
             Self::Driver => "driver",
             Self::Profile => "profile",
@@ -794,7 +794,7 @@ mod tests {
                 | ResourceKind::Device
                 | ResourceKind::LogicalDevice
                 | ResourceKind::Display
-                | ResourceKind::DisplayPreview
+                | ResourceKind::DisplayFrame
                 | ResourceKind::SimulatedDisplay
                 | ResourceKind::Driver
                 | ResourceKind::Profile
@@ -824,7 +824,7 @@ mod tests {
             ResourceKind::Device,
             ResourceKind::LogicalDevice,
             ResourceKind::Display,
-            ResourceKind::DisplayPreview,
+            ResourceKind::DisplayFrame,
             ResourceKind::SimulatedDisplay,
             ResourceKind::Driver,
             ResourceKind::Profile,
