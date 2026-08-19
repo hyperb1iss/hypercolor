@@ -131,11 +131,10 @@ Do not ask Bliss to paste logs first. The dev environment should query the daemo
 just diagnose -- --json
 hypercolor diagnose --system -j
 curl -s -X POST http://127.0.0.1:9420/api/v1/diagnose -H 'content-type: application/json' -d '{"system":true}'
-curl -s http://127.0.0.1:9420/api/v1/status
-curl -s http://127.0.0.1:9420/api/v1/devices/metrics
+curl -s http://127.0.0.1:9420/api/v1/system
 ```
 
-`/api/v1/diagnose` returns checks plus `snapshot.render`, `snapshot.usb`, and `snapshot.device_output`. The WebSocket `metrics` channel and `/api/v1/status` expose the same latest-frame fields for live UI/agent inspection.
+`/api/v1/diagnose` returns checks plus `snapshot.render`, `snapshot.usb`, and `snapshot.device_output`. The WebSocket `metrics` channel and authenticated `/api/v1/system` status expose the same latest-frame fields for live UI/agent inspection.
 
 Key LED-frame fields:
 

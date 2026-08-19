@@ -23,7 +23,8 @@ For “device jank”, “USB jank”, or “all USB devices stutter” reports,
 ```bash
 just diagnose -- --json
 hypercolor diagnose --system -j
-curl -s http://127.0.0.1:9420/api/v1/devices/metrics
+curl -s -X POST http://127.0.0.1:9420/api/v1/diagnose \
+  -H 'content-type: application/json' -d '{"system":true}'
 ```
 
 Use the data to place the bug:

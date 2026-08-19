@@ -23,7 +23,6 @@ All responses use the standard Hypercolor envelope (`data` + `meta`, or
 | `DELETE` | `/devices/{id_or_name}`          | Remove a tracked device                  |
 | `POST`   | `/devices/discover`              | Start discovery scan                     |
 | `POST`   | `/devices/{id_or_name}/identify` | Trigger identify pattern                 |
-| `GET`    | `/devices/debug/queues`          | Inspect backend output queue diagnostics |
 
 ### List query params
 

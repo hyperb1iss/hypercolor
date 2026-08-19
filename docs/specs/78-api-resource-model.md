@@ -12,7 +12,7 @@
 **Goals**
 
 1. One model on the wire: the scene tree (active scene → zones → layer stacks → controls) is the only mutation vocabulary for what renders. The pre-multi-zone singleton vocabulary is deleted, not aliased.
-2. A surface a human can hold in their head: 80 paths (from 111), one name per concept, one request shape per operation class, verbs with exactly one meaning each. Appendix A is the normative inventory.
+2. A surface a human can hold in their head: 82 paths (from 111), one name per concept, one request shape per operation class, verbs with exactly one meaning each. Appendix A is the normative inventory.
 3. Convenience without parallelism: high-traffic gestures (apply an effect, stop the show, set brightness) stay one call, defined as documented sugar over the canonical model and returning canonical resources.
 4. Significantly less code: dead routes, dead types, second implementations, and hand-mirrored shapes deleted across daemon and all in-repo clients.
 
@@ -272,9 +272,9 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 **Downstream check (blocks only the logical-devices deletion in 78.5):** confirm the internal repo (consumes OSS as the `oss/` submodule) and hypercolor-hass/Python SDK have no logical-devices dependency and nothing beyond §3.3's migration for profiles. Python client regenerates post-78; breaking changes named in release notes per doctrine.
 
-**Interaction with Spec 76 sequencing (as of lock, 2026-08-17):** every 78 prerequisite has landed — 2.0, 2.1, 2.3b, C1b (#195), the full 3.2 arc (#193/#196/#203), config authority (#184/#190), and 2.4 (#200). 78.0 and 78.1 are dispatchable immediately. Wave 3.1 status per §7.3; the remaining `drivers+system` batch may run on either side of 78's waves. **Wave 3.3 executes after 78.5** — the OpenAPI catalog is born against Appendix A's 80 paths, never the pre-78 surface, using the §7.2 implementation. Spec 76's remaining phases interleave by surface: Phase 5 (types restructure) follows the 78 route waves, since both churn `types::api` and the restructure should move the post-78 shapes once; wave 4.4 (store batches) coordinates with 78.4 by store — the profile import owns `profiles.json`'s retirement, 4.4 owns the rest; Phases 6/7 (engine, benchmark-gated) are surface-disjoint and may run in parallel with any 78 wave.
+**Interaction with Spec 76 sequencing (as of lock, 2026-08-17):** every 78 prerequisite has landed: 2.0, 2.1, 2.3b, C1b (#195), the full 3.2 arc (#193/#196/#203), config authority (#184/#190), and 2.4 (#200). 78.0 and 78.1 are dispatchable immediately. Wave 3.1 status per §7.3; the remaining `drivers+system` batch may run on either side of 78's waves. **Wave 3.3 executes after 78.5.** The OpenAPI catalog is born against Appendix A's 82 paths, never the pre-78 surface, using the §7.2 implementation. Spec 76's remaining phases interleave by surface: Phase 5 (types restructure) follows the 78 route waves, since both churn `types::api` and the restructure should move the post-78 shapes once; wave 4.4 (store batches) coordinates with 78.4 by store. The profile import owns `profiles.json`'s retirement, while 4.4 owns the rest. Phases 6/7 (engine, benchmark-gated) are surface-disjoint and may run in parallel with any 78 wave.
 
-**Estimated effect:** 111 → 80 paths (Appendix A: 115 operations); net deletion 8 to 12k LOC across daemon + clients (dead handlers and types, the 14-route scene nesting, profiles domain, MCP second implementations, hand mirrors 3.1 no longer grows contracts for, fake-layer client code, WASM filtering, N+1 hydration).
+**Estimated effect:** 111 → 82 paths (Appendix A: 117 operations); net deletion 8 to 12k LOC across daemon + clients (dead handlers and types, the 14-route scene nesting, profiles domain, MCP second implementations, hand mirrors 3.1 no longer grows contracts for, fake-layer client code, WASM filtering, N+1 hydration).
 
 ---
 
@@ -291,6 +291,8 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ## 10. Review history
 
+- **Rev 9 (2026-08-19, execution amendment):** preserve `POST /input/authorize` and `POST /capture/authorize`, the protected authorization actions required by Specs 76 and 77. Appendix A and its generated target manifest therefore converge at 82 paths / 117 operations. No Spec 78 resource route is restored.
+
 - **Rev 8 (2026-08-17, 78.1 execution reconciliation):** two wording fixes surfaced by wave 78.1's reviews. §1.2's membership id is unique within its zone (the zone-scoped route needs no more; `Output.id` is layout-scoped, so the rev-7 "globally unique" claim was unfulfillable). §5.5 gains the shared-vocabulary carve-out: pre-spec enums keep their canonical serde form on the new surface. Contract intent unchanged in both.
 
 - **Rev 7 (2026-08-17, owner amendment):** the effect-to-layout link is deleted (§9 decision 8, raised by the owner reviewing the promoted link types): the three `/effects/{id}/layout` routes, the `effect-layouts.json` store, apply's step-4 resolution and its `{ layout_id, applied }` outcome, and the playlist exemption that existed only because of it. Appendix A drops to 80 paths / 115 operations. `Scene.layout_id` is the sole effect-adjacent layout association.
@@ -304,7 +306,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ---
 
-## Appendix A — Normative route inventory (80 paths, 115 operations)
+## Appendix A: Normative route inventory (82 paths, 117 operations)
 
 Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, which the convergence test matches by path without asserting a JSON shape) and `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources (`/preview` was on this list until wave 3.2c deleted the page). Config rows landed via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
 
@@ -314,6 +316,8 @@ Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, w
 | `/api/v1/system` | GET | ⚡ merges `/server` + `/status` |
 | `/api/v1/system/sensors` | GET | |
 | `/api/v1/system/audio-devices` | GET | ⚡ from `/audio/devices` |
+| `/api/v1/input/authorize` | POST | protected Input Monitoring authorization |
+| `/api/v1/capture/authorize` | POST | protected screen-capture authorization |
 | `/api/v1/output` | GET, PATCH | ⚡ power + brightness |
 | `/api/v1/config` | GET | 4.3 |
 | `/api/v1/config/schema` | GET | 4.3 |

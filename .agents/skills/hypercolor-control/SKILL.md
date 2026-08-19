@@ -68,7 +68,8 @@ When diagnosing a running daemon, query telemetry before asking for pasted logs:
 just diagnose
 just diagnose -- --json
 hypercolor diagnose --system -j
-curl -s http://127.0.0.1:9420/api/v1/devices/metrics
+curl -s -X POST http://127.0.0.1:9420/api/v1/diagnose \
+  -H 'content-type: application/json' -d '{"system":true}'
 ```
 
 Use `just windows-diagnose` only when Windows service/PawnIO/SMBus environment state matters; the daemon render/output telemetry itself is cross-platform.

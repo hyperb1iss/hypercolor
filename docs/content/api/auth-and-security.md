@@ -143,12 +143,13 @@ control authority even when the TCP peer is loopback:
 
 - `POST /api/v1/input/authorize`
 - `POST /api/v1/capture/authorize`
-- `POST /api/v1/capture/source/pick`
+- `PUT /api/v1/capture/source`
 - `GET /api/v1/capture/monitors`
 - WebSocket subscriptions to `screen_canvas`, `screen_zones`, or `input_events`
 
-The ordinary status endpoint remains available, but capture selection IDs are
-redacted unless the request has protected control authority.
+The system endpoint remains available. Its public identity needs no key, its
+status block needs read authority, and capture selection IDs stay redacted
+unless the request has protected control authority.
 
 An authenticated control-tier key grants that authority. A read key, a missing
 key, an `Origin` header, Fetch Metadata, and the peer IP do not. Trusted
@@ -301,11 +302,15 @@ from being allowed to reach the daemon at all. Exempt paths are not rate
 limited, which is deliberate: a single page load pulls more asset requests
 than the read limit allows.
 
-Two routes bypass the security stack entirely (no auth, no rate limiting) so
-health checks and instance discovery work regardless of configuration:
+The health route bypasses the security stack entirely so liveness checks work
+regardless of configuration:
 
 - `GET /health`: liveness probe.
-- `GET /api/v1/server`: server identity for multi-daemon clients.
+
+`GET /api/v1/system` still passes network policy and read rate limiting. On a
+keyed daemon, an anonymous remote request receives only the public `identity`;
+a valid read or control key adds the `status` block. Any supplied invalid key
+returns `401 unauthorized`.
 
 Two more are exempt because a browser cannot authenticate them. A page loads
 its scripts, stylesheets, and fonts through tags that carry no `Authorization`

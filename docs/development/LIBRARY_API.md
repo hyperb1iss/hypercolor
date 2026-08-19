@@ -61,7 +61,7 @@ Errors use:
 | `DELETE` | `/library/playlists/{id_or_name}`          | Delete playlist                      |
 | `POST`   | `/library/playlists/{id_or_name}/activate` | Start playlist runtime               |
 | `GET`    | `/library/playlists/active`                | Inspect active playlist runtime      |
-| `POST`   | `/library/playlists/stop`                  | Stop active playlist runtime         |
+| `POST`   | `/library/playlists/deactivate`            | Deactivate playlist runtime          |
 
 ## ID vs Name Resolution
 
@@ -172,7 +172,7 @@ Preset responses are strongly typed enums, for example:
 
 ### Apply Preset
 
-`POST /api/v1/effects/{effect}/presets/{preset_id}/apply`
+`POST /api/v1/effects/{effect}/presets/{preset}/apply`
 
 The preset id comes from `GET /effects/{effect}/presets` or from the saved
 preset resource. The optional request body may name a target `zone`. Applying a
@@ -241,11 +241,12 @@ Returns:
 - `playlist.started_at_ms`
 - `state` (`running`)
 
-### Stop Runtime
+### Deactivate Runtime
 
-`POST /api/v1/library/playlists/stop`
+`POST /api/v1/library/playlists/deactivate`
 
-Stops only the playlist scheduler runtime. The last activated effect remains active until changed or stopped through effect endpoints.
+Deactivates only the playlist scheduler runtime. The last activated effect
+remains active until another effect replaces it or the scene is cleared.
 
 ## Ordering and Lifecycle Guarantees
 

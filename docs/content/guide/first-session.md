@@ -59,7 +59,7 @@ hypercolor status --watch
 The same information is available via the API if you want to script against it:
 
 ```bash
-curl http://localhost:9420/api/v1/status | jq .data
+curl http://localhost:9420/api/v1/system | jq .data.status
 ```
 
 ## 3. Discover and connect devices
@@ -315,7 +315,7 @@ hypercolor effects activate audio-pulse
 If the effect doesn't react, the most common cause is that the audio capture device is wrong. First confirm the daemon sees an audio source at all; `status` exposes an `audio_available` flag:
 
 ```bash
-curl http://localhost:9420/api/v1/status | jq '.data.audio_available'
+curl http://localhost:9420/api/v1/system | jq '.data.status.audio_available'
 ```
 
 Then list the capture devices the daemon can see and check which one it picked up:
