@@ -29,7 +29,7 @@ from .models.effect import (
 )
 from .models.layout import Layout, LayoutSummary
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
-from .models.scene import ActivateSceneResult, Scene, SceneDocument
+from .models.scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
 from .models.system import HealthStatus, OutputState, SystemState
 from .models.zone import Zone
 
@@ -281,7 +281,7 @@ class SyncHypercolorClient:
     def get_scenes(self, **filters: Any) -> list[Scene]:
         return self._run(self._client.get_scenes(**filters))
 
-    def get_scene(self, scene_id: str) -> Scene:
+    def get_scene(self, scene_id: str) -> SceneDocument:
         return self._run(self._client.get_scene(scene_id))
 
     def get_live_scene(self) -> SceneDocument:
@@ -327,19 +327,15 @@ class SyncHypercolorClient:
     def update_scene(
         self,
         scene_id: str,
-        name: str,
+        document: SceneDocument | ReplaceSceneRequest,
         *,
-        description: str | None = None,
-        enabled: bool | None = None,
-        mutation_mode: str | None = None,
-    ) -> Scene:
+        if_match: int | None = None,
+    ) -> SceneDocument:
         return self._run(
             self._client.update_scene(
                 scene_id,
-                name,
-                description=description,
-                enabled=enabled,
-                mutation_mode=mutation_mode,
+                document,
+                if_match=if_match,
             )
         )
 

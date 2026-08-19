@@ -94,7 +94,7 @@ from .models.library import (
     Preset,
 )
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
-from .models.scene import ActivateSceneResult, Scene, SceneDocument
+from .models.scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
 from .models.system import HealthStatus, OutputState, SystemState
 from .models.zone import Zone
 from .websocket import HypercolorEventStream
@@ -649,9 +649,9 @@ class HypercolorClient:
             Scene,
         )
 
-    async def get_scene(self, scene_id: str) -> Scene:
-        """Fetch a single scene."""
-        return await self._request_model("GET", f"/scenes/{_quote_path(scene_id)}", Scene)
+    async def get_scene(self, scene_id: str) -> SceneDocument:
+        """Fetch a complete stored scene document."""
+        return await self._request_model("GET", f"/scenes/{_quote_path(scene_id)}", SceneDocument)
 
     async def get_live_scene(self) -> SceneDocument:
         """Return the full live scene tree."""
@@ -728,27 +728,23 @@ class HypercolorClient:
     async def update_scene(
         self,
         scene_id: str,
-        name: str,
+        document: SceneDocument | ReplaceSceneRequest,
         *,
-        description: str | None = None,
-        enabled: bool | None = None,
-        mutation_mode: str | None = None,
-    ) -> Scene:
-        """Update a scene.
-
-        The daemon replaces ``name`` and ``description`` wholesale — echo
-        the existing description back when renaming or it is cleared.
-        """
-        body = _drop_none(
-            {
-                "name": name,
-                "description": description,
-                "enabled": enabled,
-                "mutation_mode": mutation_mode,
-            }
+        if_match: int | None = None,
+    ) -> SceneDocument:
+        """Replace a complete stored scene document."""
+        replacement = (
+            ReplaceSceneRequest.from_document(document)
+            if isinstance(document, SceneDocument)
+            else document
         )
+        body = msgspec.to_builtins(replacement)
         return await self._request_model(
-            "PUT", f"/scenes/{_quote_path(scene_id)}", Scene, body=body
+            "PUT",
+            f"/scenes/{_quote_path(scene_id)}",
+            SceneDocument,
+            body=body,
+            headers=_if_match_headers(if_match),
         )
 
     async def delete_scene(self, scene_id: str) -> MutationResult:

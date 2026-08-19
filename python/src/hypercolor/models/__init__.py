@@ -46,11 +46,13 @@ from .effect import (
 from .layout import Layout, LayoutSummary
 from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
 from .profile import ApplyProfileResult, Profile, ProfileSummary
-from .scene import ActivateSceneResult, Scene, SceneDocument
+from .scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
 from .system import HealthStatus, OutputState, RenderLoopStatus, ServerIdentity, SystemState
 from .zone import (
     DisplayTarget,
+    ReplaceSceneLayerRequest,
+    ReplaceZoneRequest,
     SceneLayer,
     Zone,
     ZoneMember,
@@ -110,6 +112,9 @@ __all__ = [
     "Profile",
     "ProfileSummary",
     "RenderLoopStatus",
+    "ReplaceSceneLayerRequest",
+    "ReplaceSceneRequest",
+    "ReplaceZoneRequest",
     "Scene",
     "SceneDocument",
     "SceneLayer",

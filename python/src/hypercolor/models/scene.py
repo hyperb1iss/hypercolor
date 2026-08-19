@@ -7,7 +7,7 @@ from typing import Any
 import msgspec
 
 from .common import NamedRef
-from .zone import Zone
+from .zone import ReplaceZoneRequest, Zone
 
 
 class Scene(msgspec.Struct, kw_only=True):
@@ -28,14 +28,27 @@ class Scene(msgspec.Struct, kw_only=True):
 
 
 class SceneDocument(msgspec.Struct, kw_only=True):
-    """The complete live scene tree returned by ``GET /api/v1/scene``."""
+    """A complete scene tree returned by live and stored-scene reads."""
 
     id: str
     name: str
+    description: str | None = None
     kind: str = "named"
     is_default: bool = False
     unassigned_behavior: str | dict[str, Any] = "off"
     layout_id: str | None = None
+    activation_brightness: float | None = None
+    transition: dict[str, Any] = msgspec.field(
+        default_factory=lambda: {
+            "duration_ms": 1000,
+            "easing": "Linear",
+            "color_interpolation": "Oklab",
+        }
+    )
+    priority: int = 50
+    enabled: bool = True
+    metadata: dict[str, str] = msgspec.field(default_factory=dict)
+    mutation_mode: str = "live"
     revision: int = 0
     zones: list[Zone] = msgspec.field(default_factory=list)
 
@@ -49,6 +62,44 @@ class SceneDocument(msgspec.Struct, kw_only=True):
         """Look up a zone by id."""
 
         return next((zone for zone in self.zones if zone.id == zone_id), None)
+
+
+class ReplaceSceneRequest(msgspec.Struct, kw_only=True):
+    """Whole-document body accepted by ``PUT /api/v1/scenes/{id}``."""
+
+    name: str
+    kind: str
+    transition: dict[str, Any]
+    priority: int
+    enabled: bool
+    id: str | None = None
+    description: str | None = None
+    unassigned_behavior: str | dict[str, Any] = "off"
+    layout_id: str | None = None
+    activation_brightness: float | None = None
+    metadata: dict[str, str] = msgspec.field(default_factory=dict)
+    mutation_mode: str = "live"
+    zones: list[ReplaceZoneRequest] = msgspec.field(default_factory=list)
+
+    @classmethod
+    def from_document(cls, document: SceneDocument) -> ReplaceSceneRequest:
+        """Strip response-only fields from a complete scene document."""
+
+        return cls(
+            id=document.id,
+            name=document.name,
+            description=document.description,
+            kind=document.kind,
+            unassigned_behavior=document.unassigned_behavior,
+            layout_id=document.layout_id,
+            activation_brightness=document.activation_brightness,
+            transition=document.transition,
+            priority=document.priority,
+            enabled=document.enabled,
+            metadata=document.metadata,
+            mutation_mode=document.mutation_mode,
+            zones=[ReplaceZoneRequest.from_zone(zone) for zone in document.zones],
+        )
 
 
 class ActivateSceneResult(msgspec.Struct, kw_only=True):

@@ -11,6 +11,7 @@ import respx
 
 from hypercolor.client import HypercolorClient
 from hypercolor.exceptions import HypercolorPreconditionError
+from hypercolor.models.scene import SceneDocument
 
 SCENE_ID = "0193d2c0-0000-7000-8000-00000000aaaa"
 ZONE_ID = "0193d2c0-0000-7000-8000-000000000001"
@@ -19,6 +20,7 @@ LAYER_ID = "0193d2c0-0000-7000-8000-000000000002"
 ZONE = {
     "id": ZONE_ID,
     "name": "Desk",
+    "description": "Main desk lighting",
     "role": "primary",
     "enabled": True,
     "brightness": 0.8,
@@ -48,6 +50,7 @@ ZONE = {
     "layers": [
         {
             "id": LAYER_ID,
+            "name": "Aurora",
             "source": {
                 "type": "effect",
                 "effect_id": "aurora",
@@ -59,6 +62,7 @@ ZONE = {
             "opacity": 1.0,
             "transform": {},
             "adjust": {},
+            "bindings": [],
             "enabled": True,
         }
     ],
@@ -67,10 +71,21 @@ ZONE = {
 LIVE_SCENE = {
     "id": SCENE_ID,
     "name": "Battlestation",
+    "description": "Daily desk scene",
     "kind": "named",
     "is_default": False,
     "unassigned_behavior": "off",
     "layout_id": None,
+    "activation_brightness": 0.75,
+    "transition": {
+        "duration_ms": 1000,
+        "easing": "Linear",
+        "color_interpolation": "Oklab",
+    },
+    "priority": 50,
+    "enabled": True,
+    "metadata": {"room": "office"},
+    "mutation_mode": "live",
     "revision": 12,
     "zones": [ZONE],
 }
@@ -130,6 +145,45 @@ async def test_get_live_scene_uses_canonical_singleton(client: HypercolorClient)
 
     assert scene.revision == 12
     assert scene.zones[0].layers[0].id == LAYER_ID
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_stored_scene_get_returns_complete_document(client: HypercolorClient) -> None:
+    respx.get(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
+    )
+
+    scene = await client.get_scene(SCENE_ID)
+
+    assert scene.description == "Daily desk scene"
+    assert scene.activation_brightness == 0.75
+    assert scene.transition["color_interpolation"] == "Oklab"
+    assert scene.metadata == {"room": "office"}
+    assert scene.zones[0].description == "Main desk lighting"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_stored_scene_put_replaces_the_complete_document(
+    client: HypercolorClient,
+) -> None:
+    route = respx.put(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
+    )
+    scene = msgspec.convert(LIVE_SCENE, type=SceneDocument)
+
+    updated = await client.update_scene(SCENE_ID, scene, if_match=scene.revision)
+
+    request = route.calls[0].request
+    replacement = json.loads(request.content)
+    assert request.headers["if-match"] == '"12"'
+    assert "is_default" not in replacement
+    assert "revision" not in replacement
+    assert replacement == {
+        key: value for key, value in LIVE_SCENE.items() if key not in {"is_default", "revision"}
+    }
+    assert updated.zones[0].layers[0].id == LAYER_ID
 
 
 @respx.mock

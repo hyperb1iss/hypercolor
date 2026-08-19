@@ -148,12 +148,17 @@ test.describe("REST API", () => {
       const activeScene = await readEnvelope(await api.get("/api/v1/scene"));
       expect(activeScene.id).toBe(sceneId);
 
+      const storedScene = await readEnvelope(await api.get(`/api/v1/scenes/${sceneId}`));
+      const replacement = { ...storedScene };
+      delete replacement.is_default;
+      delete replacement.revision;
+      replacement.name = updatedSceneName;
+      replacement.mutation_mode = "snapshot";
+
       const updatedScene = await readEnvelope(
         await api.put(`/api/v1/scenes/${sceneId}`, {
-          data: {
-            name: updatedSceneName,
-            mutation_mode: "snapshot",
-          },
+          headers: { "If-Match": `"${storedScene.revision}"` },
+          data: replacement,
         }),
       );
       expect(updatedScene.name).toBe(updatedSceneName);
