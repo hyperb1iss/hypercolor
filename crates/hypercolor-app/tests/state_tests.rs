@@ -230,7 +230,7 @@ fn state_update_applies_dynamic_tray_changes() {
 }
 
 #[test]
-fn websocket_snapshot_clears_stale_pause_and_effect_state() {
+fn websocket_snapshot_refreshes_runtime_state_and_preserves_effect() {
     let mut state = AppState {
         running: true,
         paused: true,
@@ -252,7 +252,13 @@ fn websocket_snapshot_clears_stale_pause_and_effect_state() {
     assert!(!state.paused);
     assert_eq!(state.brightness, 64);
     assert_eq!(state.device_count, 3);
-    assert!(state.current_effect.is_none());
+    assert_eq!(
+        state
+            .current_effect
+            .as_ref()
+            .map(|effect| effect.id.as_str()),
+        Some("old")
+    );
 }
 
 #[test]
