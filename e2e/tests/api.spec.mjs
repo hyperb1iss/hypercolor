@@ -311,7 +311,7 @@ test.describe("REST API", () => {
       expect(updatedPlaylist.name).toBe(updatedPlaylistName);
 
       expect((await api.post(`/api/v1/library/playlists/${playlistId}/activate`)).ok()).toBeTruthy();
-      expect((await api.post("/api/v1/library/playlists/stop")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/library/playlists/deactivate")).ok()).toBeTruthy();
 
       await readEnvelope(
         await api.patch("/api/v1/output", {
@@ -327,7 +327,7 @@ test.describe("REST API", () => {
       if (presetId) {
         await api.delete(`/api/v1/library/presets/${presetId}`);
       }
-      await api.post("/api/v1/library/playlists/stop");
+      await api.post("/api/v1/library/playlists/deactivate");
       await api.post("/api/v1/scene/clear");
       await api.dispose();
     }
