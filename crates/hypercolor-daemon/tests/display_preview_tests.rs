@@ -86,7 +86,7 @@ async fn body_bytes(response: axum::response::Response) -> axum::body::Bytes {
 fn preview_request(device_id: DeviceId) -> Request<Body> {
     Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/displays/{device_id}/preview.jpg"))
+        .uri(format!("/api/v1/displays/{device_id}/frame"))
         .body(Body::empty())
         .expect("request should build")
 }
@@ -164,7 +164,7 @@ async fn display_preview_honors_if_none_match_with_304() {
 
     let conditional = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/displays/{device_id}/preview.jpg"))
+        .uri(format!("/api/v1/displays/{device_id}/frame"))
         .header(http::header::IF_NONE_MATCH, etag.clone())
         .body(Body::empty())
         .expect("conditional request should build");
@@ -212,7 +212,7 @@ async fn display_preview_serves_fresh_body_when_frame_advances() {
 
     let conditional = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/displays/{device_id}/preview.jpg"))
+        .uri(format!("/api/v1/displays/{device_id}/frame"))
         .header(http::header::IF_NONE_MATCH, stale_etag)
         .body(Body::empty())
         .expect("conditional request should build");
@@ -270,7 +270,7 @@ async fn display_preview_if_none_match_beats_if_modified_since() {
 
     let conditional = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/displays/{device_id}/preview.jpg"))
+        .uri(format!("/api/v1/displays/{device_id}/frame"))
         .header(http::header::IF_NONE_MATCH, "\"stale-etag\"")
         .header(http::header::IF_MODIFIED_SINCE, last_modified)
         .body(Body::empty())

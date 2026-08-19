@@ -82,7 +82,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(displays)
 }
 
-/// `GET /api/v1/displays/{id}/preview.jpg` — latest composited frame for a display.
+/// `GET /api/v1/displays/{id}/frame` — latest composited frame for a display.
 ///
 /// Honors `If-None-Match` (ETag derived from the monotonic frame counter) and
 /// `If-Modified-Since` (derived from the capture timestamp) so polling clients
