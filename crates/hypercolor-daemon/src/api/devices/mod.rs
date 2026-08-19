@@ -64,9 +64,13 @@ pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
     DeleteDeviceResponse, DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse,
     DeviceSummary, IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest,
-    IdentifyZoneResponse, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
-    UnresolvedBindingSummary, UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
+    IdentifySegmentResponse, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
+    SegmentSummary, SegmentTopologySummary, UnresolvedBindingSummary, UpdateDeviceRequest,
 };
+
+pub use identify_segment as identify_zone;
+pub type ZoneSummary = SegmentSummary;
+pub type ZoneTopologySummary = SegmentTopologySummary;
 
 const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];
@@ -74,6 +78,30 @@ const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];
 #[derive(Debug)]
 enum ResolveDeviceError {
     AmbiguousName(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DeviceListIncludes {
+    attachments: bool,
+}
+
+impl DeviceListIncludes {
+    fn parse(raw: Option<&str>) -> Result<Self, DomainError> {
+        let mut includes = Self::default();
+        for token in raw.unwrap_or_default().split(',') {
+            match token.trim() {
+                "" => {}
+                "attachments" => includes.attachments = true,
+                other => {
+                    return Err(DomainError::validation_field(
+                        "include",
+                        format!("unknown expansion '{other}'; expected attachments"),
+                    ));
+                }
+            }
+        }
+        Ok(includes)
+    }
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -88,7 +116,8 @@ enum ResolveDeviceError {
         ("status" = Option<String>, Query, description = "Filter by device status"),
         ("backend_id" = Option<String>, Query, description = "Filter by output backend route"),
         ("driver" = Option<String>, Query, description = "Filter by owning driver module"),
-        ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search")
+        ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search"),
+        ("include" = Option<String>, Query, description = "Comma-separated expansions: attachments")
     ),
     responses(
         (
@@ -108,6 +137,10 @@ pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListDevicesQuery>,
 ) -> Response {
+    let includes = match DeviceListIncludes::parse(query.include.as_deref()) {
+        Ok(includes) => includes,
+        Err(error) => return error.into_response(),
+    };
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
         return DomainError::validation("limit must be between 1 and 200").into_response();
@@ -163,14 +196,14 @@ pub async fn list_devices(
             })
         })
         .collect();
-    let mut items: Vec<DeviceSummary> = Vec::with_capacity(filtered_devices.len());
+    let mut items: Vec<(DeviceSummary, DeviceInfo)> = Vec::with_capacity(filtered_devices.len());
     for tracked in filtered_devices {
         let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
         let metadata = state
             .device_registry
             .metadata_for_id(&tracked.info.id)
             .await;
-        items.push(
+        items.push((
             summarize_device_for_response(
                 &state,
                 &tracked.info,
@@ -180,15 +213,30 @@ pub async fn list_devices(
                 metadata.as_ref(),
             )
             .await,
-        );
+            tracked.info.clone(),
+        ));
     }
-    items.sort_by_cached_key(|item| item.name.to_lowercase());
+    items.sort_by_cached_key(|(summary, _)| summary.name.to_lowercase());
 
     let total = items.len();
-    let paged_items: Vec<DeviceSummary> = items.into_iter().skip(offset).take(limit).collect();
+    let mut paged_items: Vec<(DeviceSummary, DeviceInfo)> =
+        items.into_iter().skip(offset).take(limit).collect();
+    if includes.attachments {
+        let profiles = state.attachment_profiles.read().await;
+        let registry = state.attachment_registry.read().await;
+        for (summary, info) in &mut paged_items {
+            let profile = profiles.get_or_default(info);
+            summary.attachments = Some(attachments::summarize_attachment_profile(
+                info, profile, &registry,
+            ));
+        }
+    }
     let has_more = offset.saturating_add(limit) < total;
     ApiResponse::ok(DeviceListResponse {
-        items: paged_items,
+        items: paged_items
+            .into_iter()
+            .map(|(summary, _)| summary)
+            .collect(),
         pagination: Pagination {
             offset,
             limit,
@@ -550,14 +598,14 @@ pub async fn identify_device(
     })
 }
 
-/// `POST /api/v1/devices/:id/zones/:zone_id/identify` — Flash a single zone.
+/// `POST /api/v1/devices/:id/segments/:segment/identify` — Flash one segment.
 #[allow(
     clippy::too_many_lines,
     reason = "the handler intentionally keeps validation, direct-control orchestration, and response shaping together"
 )]
-pub async fn identify_zone(
+pub async fn identify_segment(
     State(state): State<Arc<AppState>>,
-    Path((id, zone_id)): Path<(String, String)>,
+    Path((id, segment)): Path<(String, String)>,
     body: Option<Json<IdentifyRequest>>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
@@ -569,7 +617,7 @@ pub async fn identify_zone(
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
-    let zone_index = match resolve_zone_index(&tracked.info, &zone_id) {
+    let zone_index = match resolve_zone_index(&tracked.info, &segment) {
         Ok(index) => index,
         Err(error) => return error.into_response(),
     };
@@ -632,16 +680,16 @@ pub async fn identify_zone(
         return error.into_response();
     }
 
-    let zone_name = tracked.info.zones[zone_index].name.clone();
+    let segment_name = tracked.info.zones[zone_index].name.clone();
     tracing::info!(
         device_id = %device_id,
         device = %tracked.info.name,
-        zone = %zone_name,
-        zone_index,
+        segment = %segment_name,
+        segment_index = zone_index,
         backend = %backend_id,
         duration_ms,
         color = ?identify_rgb,
-        "Zone identify flash started"
+        "Segment identify flash started"
     );
     tokio::spawn(run_identify_flash(
         Arc::clone(&state),
@@ -654,10 +702,10 @@ pub async fn identify_zone(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifyZoneResponse {
+    ApiResponse::ok(IdentifySegmentResponse {
         device_id: device_id.to_string(),
-        zone_id,
-        zone_name,
+        segment,
+        segment_name,
         identifying: true,
         duration_ms,
         color,
@@ -869,18 +917,19 @@ pub(super) async fn summarize_device_for_response(
         connection: device_connection_summary(info, metadata),
         total_leds: info.total_led_count(),
         auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await,
-        zones: info
+        segments: info
             .zones
             .iter()
             .enumerate()
-            .map(|(i, z)| ZoneSummary {
-                id: format!("zone_{i}"),
+            .map(|(i, z)| SegmentSummary {
+                id: format!("segment_{i}"),
                 name: z.name.clone(),
                 led_count: z.led_count,
                 topology: format!("{:?}", z.topology).to_lowercase(),
-                topology_hint: Some(summarize_zone_topology(&z.topology)),
+                topology_hint: Some(summarize_segment_topology(&z.topology)),
             })
             .collect(),
+        attachments: None,
     }
 }
 
@@ -1088,25 +1137,25 @@ pub(crate) async fn activate_reenabled_layout_device(
     }
 }
 
-fn summarize_zone_topology(topology: &DeviceTopologyHint) -> ZoneTopologySummary {
+fn summarize_segment_topology(topology: &DeviceTopologyHint) -> SegmentTopologySummary {
     match topology {
-        DeviceTopologyHint::Strip => ZoneTopologySummary::Strip,
-        DeviceTopologyHint::Matrix { rows, cols } => ZoneTopologySummary::Matrix {
+        DeviceTopologyHint::Strip => SegmentTopologySummary::Strip,
+        DeviceTopologyHint::Matrix { rows, cols } => SegmentTopologySummary::Matrix {
             rows: *rows,
             cols: *cols,
         },
-        DeviceTopologyHint::Ring { count } => ZoneTopologySummary::Ring { count: *count },
-        DeviceTopologyHint::Point => ZoneTopologySummary::Point,
+        DeviceTopologyHint::Ring { count } => SegmentTopologySummary::Ring { count: *count },
+        DeviceTopologyHint::Point => SegmentTopologySummary::Point,
         DeviceTopologyHint::Display {
             width,
             height,
             circular,
-        } => ZoneTopologySummary::Display {
+        } => SegmentTopologySummary::Display {
             width: *width,
             height: *height,
             circular: *circular,
         },
-        DeviceTopologyHint::Custom => ZoneTopologySummary::Custom,
+        DeviceTopologyHint::Custom => SegmentTopologySummary::Custom,
     }
 }
 

@@ -208,7 +208,7 @@ async fn sync_usb_protocol_config(
     }
 }
 
-fn summarize_attachment_profile(
+pub(super) fn summarize_attachment_profile(
     device: &DeviceInfo,
     mut profile: DeviceComponentProfile,
     registry: &hypercolor_core::attachment::ComponentRegistry,

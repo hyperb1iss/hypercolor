@@ -40,17 +40,17 @@ fn ring_zone(
     }
 }
 
-fn sample_zone_summary(id: &str, name: &str, led_count: u32) -> api::ZoneSummary {
-    api::ZoneSummary {
+fn sample_zone_summary(id: &str, name: &str, led_count: u32) -> api::SegmentSummary {
+    api::SegmentSummary {
         id: id.to_owned(),
         name: name.to_owned(),
         led_count,
         topology: "ring".to_owned(),
-        topology_hint: Some(api::ZoneTopologySummary::Ring { count: led_count }),
+        topology_hint: Some(api::SegmentTopologySummary::Ring { count: led_count }),
     }
 }
 
-fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::DeviceSummary {
+fn sample_device_summary(name: &str, segments: Vec<api::SegmentSummary>) -> api::DeviceSummary {
     api::DeviceSummary {
         id: "physical:prism8".to_owned(),
         layout_device_id: "usb:prism8:test".to_owned(),
@@ -80,7 +80,8 @@ fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::Devic
         },
         total_leds: 20,
         auth: None,
-        zones,
+        segments,
+        attachments: None,
     }
 }
 
@@ -353,9 +354,9 @@ fn effective_zone_display_uses_physical_device_channel_override() {
     assert_eq!(display.default_label, "Prism 8 · Radiator");
     assert_eq!(
         display.identify_target,
-        Some(layout_utils::ZoneIdentifyTarget::Device {
+        Some(layout_utils::ZoneIdentifyTarget::Segment {
             device_id: "physical:prism8".to_owned(),
-            zone_id: "channel-1".to_owned(),
+            segment: "channel-1".to_owned(),
         })
     );
 }

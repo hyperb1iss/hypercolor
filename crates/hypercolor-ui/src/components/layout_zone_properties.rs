@@ -233,8 +233,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     .get_untracked()
                     .and_then(Result::ok)
                     .unwrap_or_default();
-                let attachment_profiles =
-                    zone_display_ctx.attachment_profiles.get().unwrap_or_default();
+                let attachment_profiles = zone_display_ctx.attachment_profiles.get();
                 let zone_display =
                     crate::layout_utils::effective_zone_display(&zone, &devices, &attachment_profiles);
 
@@ -483,10 +482,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                transition-colors btn-press"
                                         title="Identify output"
                                         on:click=move |_| match target.clone() {
-                                            crate::layout_utils::ZoneIdentifyTarget::Device { device_id, zone_id } => {
+                                            crate::layout_utils::ZoneIdentifyTarget::Segment { device_id, segment } => {
                                                 spawn_identify(
                                                     "output",
-                                                    async move { crate::api::identify_zone(&device_id, &zone_id).await },
+                                                    async move { crate::api::identify_segment(&device_id, &segment).await },
                                                 );
                                             }
                                             crate::layout_utils::ZoneIdentifyTarget::Attachment {
@@ -522,7 +521,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         let did = reset_device_id.clone();
                                         let zn = reset_zone_name.clone();
                                         let dname = reset_device_name.clone();
-                                        let zone_summary: Option<crate::api::ZoneSummary> = ctx
+                                        let zone_summary: Option<crate::api::SegmentSummary> = ctx
                                             .devices_resource
                                             .get_untracked()
                                             .and_then(|r| r.ok())
@@ -531,7 +530,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                     .find(|d| d.layout_device_id == did)
                                                     .and_then(|d| {
                                                         zn.as_ref().and_then(|name| {
-                                                            d.zones.iter().find(|z| z.name == *name).cloned()
+                                                            d.segments
+                                                                .iter()
+                                                                .find(|z| z.name == *name)
+                                                                .cloned()
                                                         })
                                                     })
                                             });

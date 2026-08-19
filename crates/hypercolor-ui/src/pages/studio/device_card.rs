@@ -16,7 +16,7 @@ use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::zones::ZoneOutcome;
-use crate::api::{self, DeviceSummary, ZoneTopologySummary};
+use crate::api::{self, DeviceSummary, SegmentTopologySummary};
 use crate::channel_names;
 use crate::components::device_card::{
     brand_colors, brand_label, brand_vendor, classify_brand, classify_device, device_class_icon,
@@ -215,9 +215,9 @@ pub fn StudioDeviceCard(
         })
         .unwrap_or_default();
 
-    let total_components = device.zones.len();
+    let total_components = device.segments.len();
     let component_rows: Vec<ComponentRow> = device
-        .zones
+        .segments
         .iter()
         .map(|channel| {
             let display_name =
@@ -1027,15 +1027,15 @@ fn group_digits(value: u64) -> String {
     out
 }
 
-/// A device's display resolution in pixels, from the first zone the
-/// daemon tags with a `Display` topology hint — `None` for an ordinary
-/// LED device, whose zones are strips, rings, and matrices.
+/// A device's display resolution in pixels, from the first segment the
+/// daemon tags with a `Display` topology hint. Ordinary LED segments are
+/// strips, rings, and matrices.
 fn display_resolution(device: &DeviceSummary) -> Option<(u32, u32)> {
     device
-        .zones
+        .segments
         .iter()
         .find_map(|zone| match zone.topology_hint {
-            Some(ZoneTopologySummary::Display { width, height, .. }) => Some((width, height)),
+            Some(SegmentTopologySummary::Display { width, height, .. }) => Some((width, height)),
             _ => None,
         })
 }

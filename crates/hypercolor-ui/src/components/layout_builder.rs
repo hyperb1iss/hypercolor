@@ -241,7 +241,7 @@ mod editor_session;
 mod library_provider;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
-use editor_session::{LayoutEditorSession, attachment_profiles_resource};
+use editor_session::{LayoutEditorSession, embedded_attachment_profiles};
 pub(crate) use library_provider::{LayoutEditorProvider, LayoutEditorState};
 
 /// The `/layout` page header — the saved-layout picker, rename / new
@@ -866,7 +866,7 @@ pub(crate) fn ZoneLayoutProvider(
 
     session.provide_editor_context(push_preview);
 
-    let attachment_profiles = attachment_profiles_resource(layout, devices_ctx.devices_resource);
+    let attachment_profiles = embedded_attachment_profiles(devices_ctx.devices_resource);
     provide_context(LayoutZoneDisplayContext {
         attachment_profiles,
     });

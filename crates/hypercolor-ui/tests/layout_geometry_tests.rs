@@ -5,11 +5,15 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use hypercolor_types::spatial::{StripDirection, ZoneShape};
-use hypercolor_ui::api::{ZoneSummary, ZoneTopologySummary};
+use hypercolor_ui::api::{SegmentSummary, SegmentTopologySummary};
 use hypercolor_ui::layout_geometry::{self, ResizeHandle, SizeAxis};
 
-fn zone_summary(name: &str, led_count: u32, topology_hint: ZoneTopologySummary) -> ZoneSummary {
-    ZoneSummary {
+fn zone_summary(
+    name: &str,
+    led_count: u32,
+    topology_hint: SegmentTopologySummary,
+) -> SegmentSummary {
+    SegmentSummary {
         id: format!("zone-{name}"),
         name: name.to_owned(),
         led_count,
@@ -32,7 +36,7 @@ fn default_layout_preserves_aspect_above_legacy_u16_dimensions() {
     let zone = zone_summary(
         "Display",
         0,
-        ZoneTopologySummary::Display {
+        SegmentTopologySummary::Display {
             width: 480,
             height: 480,
             circular: false,
@@ -49,19 +53,23 @@ fn default_layout_preserves_aspect_above_legacy_u16_dimensions() {
     assert!((rendered_aspect(defaults.size, 131_072, 65_536) - 1.0).abs() < 0.01);
 }
 
-fn push2_zone_summaries() -> Vec<ZoneSummary> {
+fn push2_zone_summaries() -> Vec<SegmentSummary> {
     vec![
-        zone_summary("Pads", 64, ZoneTopologySummary::Matrix { rows: 8, cols: 8 }),
-        zone_summary("Buttons Above", 8, ZoneTopologySummary::Strip),
-        zone_summary("Buttons Below", 8, ZoneTopologySummary::Strip),
-        zone_summary("Scene Launch", 8, ZoneTopologySummary::Strip),
-        zone_summary("Transport", 4, ZoneTopologySummary::Custom),
-        zone_summary("White Buttons", 37, ZoneTopologySummary::Custom),
-        zone_summary("Touch Strip", 31, ZoneTopologySummary::Strip),
+        zone_summary(
+            "Pads",
+            64,
+            SegmentTopologySummary::Matrix { rows: 8, cols: 8 },
+        ),
+        zone_summary("Buttons Above", 8, SegmentTopologySummary::Strip),
+        zone_summary("Buttons Below", 8, SegmentTopologySummary::Strip),
+        zone_summary("Scene Launch", 8, SegmentTopologySummary::Strip),
+        zone_summary("Transport", 4, SegmentTopologySummary::Custom),
+        zone_summary("White Buttons", 37, SegmentTopologySummary::Custom),
+        zone_summary("Touch Strip", 31, SegmentTopologySummary::Strip),
         zone_summary(
             "Display",
             0,
-            ZoneTopologySummary::Display {
+            SegmentTopologySummary::Display {
                 width: 960,
                 height: 160,
                 circular: false,
@@ -101,7 +109,7 @@ fn basilisk_v3_uses_signal_sparse_layout_instead_of_flat_matrix() {
     let zone = zone_summary(
         "Main",
         11,
-        ZoneTopologySummary::Matrix { rows: 1, cols: 11 },
+        SegmentTopologySummary::Matrix { rows: 1, cols: 11 },
     );
 
     let defaults =
@@ -122,7 +130,7 @@ fn square_lcd_defaults_preserve_square_rendered_aspect_on_default_canvas() {
     let zone = zone_summary(
         "Display",
         0,
-        ZoneTopologySummary::Display {
+        SegmentTopologySummary::Display {
             width: 480,
             height: 480,
             circular: true,

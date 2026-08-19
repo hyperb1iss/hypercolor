@@ -5674,7 +5674,7 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
 }
 
 #[tokio::test]
-async fn list_devices_includes_structured_zone_topology_hints() {
+async fn list_devices_includes_structured_segment_topology_hints() {
     let state = Arc::new(isolated_state());
     let id = DeviceId::new();
     let info = DeviceInfo {
@@ -5723,11 +5723,13 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         json["data"]["items"][0]["layout_device_id"],
         "wled:matrix-panel"
     );
-    let zone = &json["data"]["items"][0]["zones"][0];
-    assert_eq!(zone["name"], "Panel");
-    assert_eq!(zone["topology_hint"]["type"], "matrix");
-    assert_eq!(zone["topology_hint"]["rows"], 6);
-    assert_eq!(zone["topology_hint"]["cols"], 16);
+    let segment = &json["data"]["items"][0]["segments"][0];
+    assert_eq!(segment["id"], "segment_0");
+    assert_eq!(segment["name"], "Panel");
+    assert_eq!(segment["topology_hint"]["type"], "matrix");
+    assert_eq!(segment["topology_hint"]["rows"], 6);
+    assert_eq!(segment["topology_hint"]["cols"], 16);
+    assert!(json["data"]["items"][0].get("zones").is_none());
 }
 
 #[tokio::test]
@@ -12088,6 +12090,24 @@ async fn list_devices_rejects_invalid_status_filter() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn list_devices_rejects_unknown_expansions() {
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices?include=attachments,unknown")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(json["error"]["details"]["field"], "include");
 }
 
 #[tokio::test]

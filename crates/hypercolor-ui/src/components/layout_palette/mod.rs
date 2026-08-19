@@ -92,7 +92,7 @@ pub fn LayoutPalette() -> impl IntoView {
         let devices = stable_devices.get();
         let collapsed = collapsed_devices.get();
         for dev in &devices {
-            if dev.zones.len() > 1 && !collapsed.contains(&dev.layout_device_id) {
+            if dev.segments.len() > 1 && !collapsed.contains(&dev.layout_device_id) {
                 fetch_attachments_for(state, dev.id.clone());
             }
         }

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 
-use crate::api::{self, ZoneSummary};
+use crate::api::{self, SegmentSummary};
 use crate::channel_names;
 use crate::layout_geometry;
 use crate::style_utils::uuid_v4_hex;
@@ -17,9 +17,9 @@ pub type ZoneCache = std::collections::HashMap<(String, Option<String>), Output>
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZoneIdentifyTarget {
-    Device {
+    Segment {
         device_id: String,
-        zone_id: String,
+        segment: String,
     },
     Attachment {
         device_id: String,
@@ -63,7 +63,7 @@ pub fn create_default_zone(
     device_id: &str,
     channel_device_id: &str,
     device_name: &str,
-    zone: Option<&ZoneSummary>,
+    zone: Option<&SegmentSummary>,
     total_leds: usize,
     canvas_width: u32,
     canvas_height: u32,
@@ -171,7 +171,7 @@ pub fn add_all_device_zones(
     device_id: &str,
     channel_device_id: &str,
     device_name: &str,
-    zones: &[ZoneSummary],
+    zones: &[SegmentSummary],
     total_leds: usize,
     layout: &Signal<Option<SpatialLayout>>,
     set_layout: &crate::components::layout_builder::LayoutWriteHandle,
@@ -422,9 +422,9 @@ fn effective_device_zone_display(
     device: &api::DeviceSummary,
 ) -> EffectiveZoneDisplay {
     let matched_zone = resolve_device_zone_summary(device, zone.zone_name.as_deref());
-    let identify_target = matched_zone.map(|matched_zone| ZoneIdentifyTarget::Device {
+    let identify_target = matched_zone.map(|matched_zone| ZoneIdentifyTarget::Segment {
         device_id: device.id.clone(),
-        zone_id: matched_zone.id.clone(),
+        segment: matched_zone.id.clone(),
     });
 
     let Some(slot_alias) = zone.zone_name.as_deref() else {
@@ -503,9 +503,9 @@ fn effective_attachment_zone_display(
 fn resolve_device_zone_summary<'a>(
     device: &'a api::DeviceSummary,
     slot_alias: Option<&str>,
-) -> Option<&'a api::ZoneSummary> {
+) -> Option<&'a api::SegmentSummary> {
     let slot_alias = slot_alias?;
-    device.zones.iter().find(|zone| {
+    device.segments.iter().find(|zone| {
         zone.id == slot_alias || zone_name_matches_slot_alias(Some(slot_alias), Some(&zone.name))
     })
 }

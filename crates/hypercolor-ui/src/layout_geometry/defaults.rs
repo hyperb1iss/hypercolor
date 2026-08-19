@@ -6,7 +6,7 @@ use hypercolor_types::spatial::{
     SamplingMode, StripDirection, Winding, ZoneShape,
 };
 
-use crate::api::{ZoneSummary, ZoneTopologySummary};
+use crate::api::{SegmentSummary, SegmentTopologySummary};
 
 use super::{GRID_EPSILON, normalize_zone_size_for_editor};
 
@@ -91,7 +91,7 @@ impl VisualUnits {
 
 pub fn default_zone_visuals(
     device_name: &str,
-    zone: Option<&ZoneSummary>,
+    zone: Option<&SegmentSummary>,
     total_leds: usize,
     canvas_width: u32,
     canvas_height: u32,
@@ -137,18 +137,18 @@ pub fn default_zone_visuals(
     }
 
     match topology_hint {
-        Some(ZoneTopologySummary::Strip) => {
+        Some(SegmentTopologySummary::Strip) => {
             strip_defaults(led_count, StripDirection::LeftToRight, None, canvas_aspect)
         }
-        Some(ZoneTopologySummary::Matrix { rows, cols }) => {
+        Some(SegmentTopologySummary::Matrix { rows, cols }) => {
             matrix_defaults(rows, cols, None, canvas_aspect)
         }
-        Some(ZoneTopologySummary::Ring { count }) => ring_defaults(count, None, canvas_aspect),
-        Some(ZoneTopologySummary::Point) => point_defaults(canvas_aspect),
-        Some(ZoneTopologySummary::Display { width, height, .. }) => {
+        Some(SegmentTopologySummary::Ring { count }) => ring_defaults(count, None, canvas_aspect),
+        Some(SegmentTopologySummary::Point) => point_defaults(canvas_aspect),
+        Some(SegmentTopologySummary::Display { width, height, .. }) => {
             matrix_defaults(height, width, Some("lcd-display"), canvas_aspect)
         }
-        Some(ZoneTopologySummary::Custom) | None => {
+        Some(SegmentTopologySummary::Custom) | None => {
             if led_count <= 1 {
                 point_defaults(canvas_aspect)
             } else {
@@ -166,7 +166,7 @@ pub fn default_zone_visuals(
 pub fn seeded_device_layout(
     device_id: &str,
     device_name: &str,
-    zones: &[ZoneSummary],
+    zones: &[SegmentSummary],
     canvas_width: u32,
     canvas_height: u32,
     display_order_start: i32,
@@ -402,7 +402,7 @@ fn signal_visual_defaults(
     None
 }
 
-fn looks_like_push2(device_name: &str, zones: &[ZoneSummary]) -> bool {
+fn looks_like_push2(device_name: &str, zones: &[SegmentSummary]) -> bool {
     let normalized_name = device_name.to_ascii_lowercase();
     if !normalized_name.contains("push 2") {
         return false;
@@ -430,7 +430,7 @@ fn push2_zone_order() -> &'static [&'static str] {
     ]
 }
 
-fn push2_zone_topology(zone: &ZoneSummary) -> LedTopology {
+fn push2_zone_topology(zone: &SegmentSummary) -> LedTopology {
     match zone.name.as_str() {
         "Pads" => LedTopology::Matrix {
             width: 8,
@@ -467,29 +467,29 @@ fn push2_zone_topology(zone: &ZoneSummary) -> LedTopology {
             start_corner: Corner::TopLeft,
         },
         _ => match zone.topology_hint.as_ref() {
-            Some(ZoneTopologySummary::Strip) => LedTopology::Strip {
+            Some(SegmentTopologySummary::Strip) => LedTopology::Strip {
                 count: zone.led_count.max(1),
                 direction: StripDirection::LeftToRight,
             },
-            Some(ZoneTopologySummary::Matrix { rows, cols }) => LedTopology::Matrix {
+            Some(SegmentTopologySummary::Matrix { rows, cols }) => LedTopology::Matrix {
                 width: *cols,
                 height: *rows,
                 serpentine: false,
                 start_corner: Corner::TopLeft,
             },
-            Some(ZoneTopologySummary::Ring { count }) => LedTopology::Ring {
+            Some(SegmentTopologySummary::Ring { count }) => LedTopology::Ring {
                 count: *count,
                 start_angle: -FRAC_PI_2,
                 direction: Winding::Clockwise,
             },
-            Some(ZoneTopologySummary::Point) => LedTopology::Point,
-            Some(ZoneTopologySummary::Display { width, height, .. }) => LedTopology::Matrix {
+            Some(SegmentTopologySummary::Point) => LedTopology::Point,
+            Some(SegmentTopologySummary::Display { width, height, .. }) => LedTopology::Matrix {
                 width: *width,
                 height: *height,
                 serpentine: false,
                 start_corner: Corner::TopLeft,
             },
-            Some(ZoneTopologySummary::Custom) | None => LedTopology::Custom {
+            Some(SegmentTopologySummary::Custom) | None => LedTopology::Custom {
                 positions: grid_points(&[(0, 0)], VisualUnits::new(1.0, 1.0)),
             },
         },

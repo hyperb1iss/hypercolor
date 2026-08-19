@@ -25,6 +25,10 @@ pub struct ListDevicesQuery {
     /// Free-text filter over device name and model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub q: Option<String>,
+    /// Comma-separated summary expansions. The only supported value is
+    /// `attachments`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<String>,
 }
 
 /// Response for `GET /api/v1/devices`.
@@ -52,7 +56,9 @@ pub struct DeviceSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<DeviceAuthSummary>,
     #[serde(default)]
-    pub zones: Vec<ZoneSummary>,
+    pub segments: Vec<SegmentSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<DeviceComponentsResponse>,
 }
 
 /// Transport details for one device.
@@ -70,21 +76,21 @@ pub struct DeviceConnectionSummary {
     pub hostname: Option<String>,
 }
 
-/// One LED zone of a device (hardware topology, not scene render groups).
+/// One LED segment of a device (hardware topology, not scene render zones).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct ZoneSummary {
+pub struct SegmentSummary {
     pub id: String,
     pub name: String,
     pub led_count: u32,
     pub topology: String,
     #[serde(default)]
-    pub topology_hint: Option<ZoneTopologySummary>,
+    pub topology_hint: Option<SegmentTopologySummary>,
 }
 
-/// Structured topology hint for a device zone.
+/// Structured topology hint for a device segment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ZoneTopologySummary {
+pub enum SegmentTopologySummary {
     Strip,
     Matrix {
         rows: u32,
@@ -145,12 +151,12 @@ pub struct IdentifyDeviceResponse {
     pub color: Option<String>,
 }
 
-/// Response for `POST /api/v1/devices/{id}/zones/{zone_id}/identify`.
+/// Response for `POST /api/v1/devices/{id}/segments/{segment}/identify`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentifyZoneResponse {
+pub struct IdentifySegmentResponse {
     pub device_id: String,
-    pub zone_id: String,
-    pub zone_name: String,
+    pub segment: String,
+    pub segment_name: String,
     pub identifying: bool,
     pub duration_ms: u64,
     pub color: Option<String>,
@@ -201,7 +207,7 @@ pub struct UpdateAttachmentsRequest {
 /// `slots` are the controller's physical attachment points, `bindings`
 /// what is attached to them, and `suggested_zones` the layout zones the
 /// attachments imply.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceComponentsResponse {
     pub device_id: String,
     pub device_name: String,
@@ -218,7 +224,7 @@ pub struct DeviceComponentsResponse {
 /// Same body as the GET plus `needs_layout_update`, which reports that
 /// the active layout targets this device and no longer matches the LED
 /// ranges the new bindings describe.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceComponentsUpdateResponse {
     pub device_id: String,
     pub device_name: String,
@@ -233,7 +239,7 @@ pub struct DeviceComponentsUpdateResponse {
 
 /// One resolved attachment binding, with the template it instantiates and
 /// the LED range it occupies on the controller.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ComponentBindingSummary {
     pub slot_id: String,
     pub template_id: String,

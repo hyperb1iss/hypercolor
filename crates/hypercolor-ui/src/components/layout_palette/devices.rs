@@ -72,14 +72,14 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
         driver_identifier_label(identifier).unwrap_or_else(|| identifier.to_string())
     });
     let fallback_leds = dev.total_leds as usize;
-    let has_multi_zones = dev.zones.len() > 1;
-    let zone_count = dev.zones.len();
+    let has_multi_zones = dev.segments.len() > 1;
+    let zone_count = dev.segments.len();
 
     // --- Single-zone handling ---
     let single_zone_summary = (!has_multi_zones)
-        .then(|| dev.zones.first().cloned())
+        .then(|| dev.segments.first().cloned())
         .flatten();
-    let single_topo = (!has_multi_zones).then(|| topology_icon(dev.zones.first()));
+    let single_topo = (!has_multi_zones).then(|| topology_icon(dev.segments.first()));
 
     // Layout membership for single-zone device
     let single_zone_in_layout = {
@@ -169,8 +169,8 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
     let header_device_id = device_id.clone();
     let header_physical_device_id = physical_device_id.clone();
     let channel_override_device_id = physical_device_id.clone();
-    let mut entries: Vec<(Option<api::ZoneSummary>, String, usize)> = if has_multi_zones {
-        dev.zones
+    let mut entries: Vec<(Option<api::SegmentSummary>, String, usize)> = if has_multi_zones {
+        dev.segments
             .iter()
             .cloned()
             .map(|zone| {
@@ -386,7 +386,7 @@ fn render_multizone_header_actions(
     let toggle_all_did = actions.layout_device_id.to_owned();
     let toggle_all_channel_did = actions.channel_device_id.to_owned();
     let toggle_all_dname = actions.dev.name.clone();
-    let toggle_all_zones = actions.dev.zones.clone();
+    let toggle_all_zones = actions.dev.segments.clone();
     let vis_did = actions.layout_device_id.to_owned();
 
     // Device-level visibility: are ALL zones for this device hidden?
@@ -543,7 +543,7 @@ fn render_singlezone_header_actions(
     toggle_rgb: String,
     single_topo: Option<AnyView>,
     single_zone_in_layout: Signal<bool>,
-    single_zone_summary: Option<api::ZoneSummary>,
+    single_zone_summary: Option<api::SegmentSummary>,
     fallback_leds: usize,
 ) -> AnyView {
     let layout = state.layout;

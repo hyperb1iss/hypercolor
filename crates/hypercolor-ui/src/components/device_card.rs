@@ -312,7 +312,7 @@ pub fn DeviceCard(
     let icon = device_class_icon(&device_class);
     let type_label = device_class_label(&device_class);
     let device_name = device.name.clone();
-    let zone_count = device.zones.len();
+    let zone_count = device.segments.len();
     let total_leds = device.total_leds;
     let conn_type = connection_type(&device);
     let conn_icon = connection_icon(&device);
@@ -341,7 +341,7 @@ pub fn DeviceCard(
         "110, 180, 255",
     ];
     let zone_previews: Vec<(&'static str, usize, &'static str)> = device
-        .zones
+        .segments
         .iter()
         .take(5)
         .enumerate()

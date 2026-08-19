@@ -10,7 +10,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use super::LayoutWriteHandle;
 use super::editor_session::{
-    LayoutEditorSession, LayoutZoneDisplayContext, attachment_profiles_resource,
+    LayoutEditorSession, LayoutZoneDisplayContext, embedded_attachment_profiles,
 };
 
 fn preferred_replacement_layout(
@@ -153,7 +153,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
 
     session.provide_editor_context(push_preview);
 
-    let attachment_profiles = attachment_profiles_resource(layout, ctx.devices_resource);
+    let attachment_profiles = embedded_attachment_profiles(ctx.devices_resource);
     provide_context(LayoutZoneDisplayContext {
         attachment_profiles,
     });

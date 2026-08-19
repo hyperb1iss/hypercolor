@@ -389,7 +389,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         .and_then(Result::ok)
                                         .unwrap_or_default();
                                     let attachment_profiles =
-                                        zone_display_ctx.attachment_profiles.get().unwrap_or_default();
+                                        zone_display_ctx.attachment_profiles.get();
                                     zones_by_id.with(|map| {
                                         let zone = map.get(&zid)?;
                                         // A generic ARGB controller is just raw channels until

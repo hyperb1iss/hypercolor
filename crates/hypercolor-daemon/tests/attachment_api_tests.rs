@@ -1057,3 +1057,47 @@ async fn attachment_identify_separates_missing_slots_from_unusable_selections() 
         "No enabled bindings in slot 'main'"
     );
 }
+
+#[tokio::test]
+async fn device_list_embeds_attachments_only_when_requested() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+
+    create_template(&app, "embedded-list-strip", "Embedded List Strip", 12).await;
+    let update = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "embedded-list-strip",
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+
+    let default_response = send_empty(&app, "GET", "/api/v1/devices").await;
+    assert_eq!(default_response.status(), StatusCode::OK);
+    let default_json = body_json(default_response).await;
+    assert!(
+        default_json["data"]["items"][0]
+            .get("attachments")
+            .is_none()
+    );
+
+    let expanded_response = send_empty(&app, "GET", "/api/v1/devices?include=attachments").await;
+    assert_eq!(expanded_response.status(), StatusCode::OK);
+    let expanded_json = body_json(expanded_response).await;
+    let device = &expanded_json["data"]["items"][0];
+    assert_eq!(device["attachments"]["device_id"], device_id.to_string());
+    assert_eq!(
+        device["attachments"]["bindings"][0]["template_id"],
+        "embedded-list-strip"
+    );
+}

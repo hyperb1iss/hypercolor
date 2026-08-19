@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use utoipa::ToSchema;
 
 use crate::device::{DeviceInfo, DeviceTopologyHint};
 use crate::spatial::LedTopology;
@@ -110,7 +111,7 @@ fn slot_alias_key(raw: &str) -> String {
 }
 
 /// Template category used for filtering and UI grouping.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ToSchema)]
 pub enum ComponentCategory {
     /// Standard fan lighting ring or fan frame.
     Fan,
@@ -211,7 +212,7 @@ pub enum ComponentOrigin {
 }
 
 /// Default visual footprint for placing an attachment in the layout editor.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ComponentCanvasSize {
     /// Width as a normalized fraction of the canvas.
     pub width: f32,
@@ -362,7 +363,7 @@ impl Default for ComponentTemplateManifest {
 }
 
 /// One physical controller attachment point.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ComponentSlot {
     /// Stable slot identifier.
     pub id: String,
@@ -417,7 +418,7 @@ impl ComponentSlot {
 }
 
 /// Binding from a controller slot to a chosen attachment template.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ComponentBinding {
     /// Slot receiving the attachment.
     pub slot_id: String,
@@ -448,7 +449,7 @@ impl ComponentBinding {
 }
 
 /// Attachment-derived zone suggestion for layout import and preview flows.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ComponentSuggestedZone {
     /// Source slot ID on the physical controller.
     pub slot_id: String,
