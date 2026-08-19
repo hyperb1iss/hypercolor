@@ -16,7 +16,7 @@ use hypercolor_types::control::{
 use hypercolor_types::controls as driver;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{self, GradientStop};
-use hypercolor_types::identity::{BackendId, IdParseError, LayoutId, OutputRef, ProfileId};
+use hypercolor_types::identity::{BackendId, IdParseError, LayoutId, OutputRef};
 use hypercolor_types::viewport::ViewportRect;
 
 fn driver_samples() -> Vec<driver::ControlValue> {
@@ -296,7 +296,6 @@ fn backend_id_grammar_forbids_colons_and_uppercase() {
 #[test]
 fn string_ids_reject_garbage_but_admit_persisted_forms() {
     assert!(LayoutId::new("default").is_ok());
-    assert!(ProfileId::new("prof_01H9XYZ").is_ok());
     assert!(LayoutId::new("").is_err());
     assert!(LayoutId::new(" padded ").is_err());
     assert!(LayoutId::new("has\ncontrol").is_err());

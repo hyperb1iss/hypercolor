@@ -190,17 +190,14 @@ fn scene_events_have_scene_category() {
             scene_id: "s1".into(),
             scene_name: "Gaming".into(),
             trigger_type: "manual".into(),
-            profile_id: "p1".into(),
         },
         HypercolorEvent::SceneTransitionStarted {
-            scene_id: "s1".into(),
-            from_profile: None,
-            to_profile: "p1".into(),
+            from_scene_id: None,
+            to_scene_id: "s1".into(),
             duration_ms: 500,
         },
         HypercolorEvent::SceneTransitionComplete {
             scene_id: "s1".into(),
-            profile_id: "p1".into(),
         },
         HypercolorEvent::SceneEnabled {
             scene_id: "s1".into(),
@@ -312,19 +309,6 @@ fn system_events_have_system_category() {
             new_target: 30,
             measured: 59.8,
         },
-        HypercolorEvent::ProfileLoaded {
-            profile_id: "p1".into(),
-            profile_name: "Gaming".into(),
-            trigger: ChangeTrigger::User,
-        },
-        HypercolorEvent::ProfileSaved {
-            profile_id: "p1".into(),
-            profile_name: "Gaming".into(),
-            is_new: true,
-        },
-        HypercolorEvent::ProfileDeleted {
-            profile_id: "p1".into(),
-        },
         HypercolorEvent::ConfigChanged {
             key: "daemon.fps".into(),
             old_value: Some(serde_json::json!(60)),
@@ -419,7 +403,6 @@ fn automation_events_have_automation_category() {
             scene_id: "s1".into(),
             scene_name: "Evening".into(),
             schedule_expr: "0 20 * * *".into(),
-            profile_id: "p2".into(),
         },
         HypercolorEvent::ContextChanged {
             context_type: ContextType::TimeOfDay,
@@ -747,7 +730,6 @@ fn normal_priority_is_default() {
             scene_id: "s1".into(),
             scene_name: "Test".into(),
             trigger_type: "manual".into(),
-            profile_id: "p1".into(),
         },
         HypercolorEvent::Paused,
         HypercolorEvent::Resumed,
@@ -1180,7 +1162,6 @@ fn effect_stop_reason_serde() {
 fn change_trigger_serde() {
     let triggers = vec![
         ChangeTrigger::User,
-        ChangeTrigger::Profile,
         ChangeTrigger::Scene,
         ChangeTrigger::Api,
         ChangeTrigger::Cli,

@@ -57,7 +57,6 @@ pub struct TransitionRef {
 #[serde(rename_all = "snake_case")]
 pub enum ChangeTrigger {
     User,
-    Profile,
     Scene,
     Api,
     Cli,
@@ -772,7 +771,7 @@ pub enum HypercolorEvent {
     /// A new effect has been loaded and rendering has begun.
     EffectStarted {
         effect: EffectRef,
-        /// What caused the start: user selection, profile load, scene trigger, etc.
+        /// What caused the start: user selection, scene trigger, API call, etc.
         trigger: ChangeTrigger,
         /// The effect previously running *in the same zone*, if any.
         previous: Option<EffectRef>,
@@ -856,28 +855,23 @@ pub enum HypercolorEvent {
     },
 
     // ── Scene Events ────────────────────────────────────────────────
-    /// A scene was triggered and its associated profile is being applied.
+    /// A scene was activated.
     SceneActivated {
         scene_id: String,
         scene_name: String,
         /// `"schedule"` | `"webhook"` | `"event"` | `"device"` | `"input"` | `"manual"`
         trigger_type: String,
-        profile_id: String,
     },
 
     /// A scene transition has begun (crossfade in progress).
     SceneTransitionStarted {
-        scene_id: String,
-        from_profile: Option<String>,
-        to_profile: String,
+        from_scene_id: Option<String>,
+        to_scene_id: String,
         duration_ms: u32,
     },
 
-    /// A scene transition completed (new profile fully active).
-    SceneTransitionComplete {
-        scene_id: String,
-        profile_id: String,
-    },
+    /// A scene transition completed.
+    SceneTransitionComplete { scene_id: String },
 
     /// A scene was enabled or disabled.
     SceneEnabled { scene_id: String, enabled: bool },
@@ -1001,23 +995,6 @@ pub enum HypercolorEvent {
         measured: f32,
     },
 
-    /// A profile was applied (all its settings are now active).
-    ProfileLoaded {
-        profile_id: String,
-        profile_name: String,
-        trigger: ChangeTrigger,
-    },
-
-    /// A profile was saved (created or updated).
-    ProfileSaved {
-        profile_id: String,
-        profile_name: String,
-        is_new: bool,
-    },
-
-    /// A profile was deleted.
-    ProfileDeleted { profile_id: String },
-
     /// A collection in the persisted effect library changed.
     ///
     /// The local-change hint for observers that mirror persisted
@@ -1112,8 +1089,6 @@ pub enum HypercolorEvent {
         scene_name: String,
         /// The cron expression or solar event that matched.
         schedule_expr: String,
-        /// The profile that will be applied.
-        profile_id: String,
     },
 
     /// Environmental or application context changed, potentially
@@ -1244,9 +1219,6 @@ impl HypercolorEvent {
 
             Self::FrameRendered { .. }
             | Self::FpsChanged { .. }
-            | Self::ProfileLoaded { .. }
-            | Self::ProfileSaved { .. }
-            | Self::ProfileDeleted { .. }
             | Self::LibraryStoreChanged { .. }
             | Self::ConfigChanged { .. }
             | Self::ShutdownRequested { .. }

@@ -54,7 +54,7 @@ fn canvas_transfer_paths_still_resolve() {
 /// Byte colors serialize as struct maps with `r`/`g`/`b`/`a` keys. The
 /// kernel gates serde behind a feature while canvas derived it
 /// unconditionally, so this pins the shape across the swap. Persisted
-/// scenes, profiles, and presets read these bytes.
+/// scenes and presets read these bytes.
 #[test]
 fn byte_color_json_shape_is_unchanged() {
     let rgba = Rgba::new(42, 128, 255, 200);
