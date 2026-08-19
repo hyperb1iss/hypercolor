@@ -62,7 +62,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[ApiErrorBody | ApiResponseEffectDetailResponse]:
-    """`GET /api/v1/effects/:id` — Get a single effect's metadata.
+    """`GET /api/v1/effects/{id}` — Get a single effect's metadata.
 
     Args:
         id (str):
@@ -91,7 +91,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> ApiErrorBody | ApiResponseEffectDetailResponse | None:
-    """`GET /api/v1/effects/:id` — Get a single effect's metadata.
+    """`GET /api/v1/effects/{id}` — Get a single effect's metadata.
 
     Args:
         id (str):
@@ -115,7 +115,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[ApiErrorBody | ApiResponseEffectDetailResponse]:
-    """`GET /api/v1/effects/:id` — Get a single effect's metadata.
+    """`GET /api/v1/effects/{id}` — Get a single effect's metadata.
 
     Args:
         id (str):
@@ -142,7 +142,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> ApiErrorBody | ApiResponseEffectDetailResponse | None:
-    """`GET /api/v1/effects/:id` — Get a single effect's metadata.
+    """`GET /api/v1/effects/{id}` — Get a single effect's metadata.
 
     Args:
         id (str):
