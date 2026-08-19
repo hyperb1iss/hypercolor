@@ -277,14 +277,6 @@ fn router_operations() -> BTreeSet<(String, String)> {
         router = &router[index + call.len()..];
     }
 
-    let screenshot_index = source
-        .find(".nest_service(")
-        .expect("effect screenshot service should be mounted");
-    let screenshot_service = balanced_call(&source[screenshot_index..]);
-    operations.insert((
-        "get".to_owned(),
-        format!("/api/v1{}", quoted_path(screenshot_service)),
-    ));
     operations
 }
 

@@ -570,6 +570,47 @@ async fn deleted_scene_singleton_routes_leave_nothing_behind() {
 }
 
 #[tokio::test]
+async fn deleted_dead_resource_routes_leave_nothing_behind() {
+    let (state, _tmp) = isolated_state();
+    let app = test_app(&state);
+    let removed = [
+        ("GET", "/api/v1/attachments/categories"),
+        ("GET", "/api/v1/attachments/templates/template-id"),
+        ("PUT", "/api/v1/attachments/templates/template-id"),
+        ("DELETE", "/api/v1/attachments/templates/template-id"),
+        ("GET", "/api/v1/attachments/vendors"),
+        ("GET", "/api/v1/devices/bindings"),
+        ("POST", "/api/v1/devices/rebind"),
+        ("GET", "/api/v1/devices/debug/queues"),
+        ("GET", "/api/v1/devices/debug/routing"),
+        ("GET", "/api/v1/devices/metrics"),
+        (
+            "POST",
+            "/api/v1/devices/device-id/attachments/preview",
+        ),
+        ("GET", "/api/v1/devices/device-id/logical-devices"),
+        ("POST", "/api/v1/devices/device-id/logical-devices"),
+        ("GET", "/api/v1/logical-devices"),
+        ("GET", "/api/v1/logical-devices/logical-id"),
+        ("PUT", "/api/v1/logical-devices/logical-id"),
+        ("DELETE", "/api/v1/logical-devices/logical-id"),
+        ("POST", "/api/v1/diagnose/memory"),
+        ("GET", "/api/v1/effects/screenshots"),
+        ("GET", "/api/v1/system/sensors/sensor-label"),
+    ];
+
+    for (method, path) in removed {
+        let response = send(&app, empty_request(method, path)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{method} {path} should be absent"
+        );
+        assert_error_envelope(&body_json(response).await, "not_found");
+    }
+}
+
+#[tokio::test]
 async fn config_key_reads_keep_their_key_value_body() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);

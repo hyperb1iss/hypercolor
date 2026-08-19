@@ -1115,26 +1115,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::discover_devices),
         )
         .route(
-            "/devices/metrics",
-            axum::routing::get(devices::list_device_metrics),
-        )
-        .route(
-            "/devices/bindings",
-            axum::routing::get(devices::get_device_bindings),
-        )
-        .route(
-            "/devices/rebind",
-            axum::routing::post(devices::rebind_device),
-        )
-        .route(
-            "/devices/debug/queues",
-            axum::routing::get(devices::debug_output_queues),
-        )
-        .route(
-            "/devices/debug/routing",
-            axum::routing::get(devices::debug_device_routing),
-        )
-        .route(
             "/devices/{id}",
             axum::routing::get(devices::get_device)
                 .put(devices::update_device)
@@ -1149,15 +1129,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(devices::get_attachments)
                 .put(devices::update_attachments)
                 .delete(devices::delete_attachments),
-        )
-        .route(
-            "/devices/{id}/attachments/preview",
-            axum::routing::post(devices::preview_attachments),
-        )
-        .route(
-            "/devices/{id}/logical-devices",
-            axum::routing::get(devices::list_device_logical_devices)
-                .post(devices::create_logical_device),
         )
         .route(
             "/devices/{id}/identify",
@@ -1210,35 +1181,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/simulators/displays/{id}/frame",
             axum::routing::get(simulators::get_simulated_display_frame),
         )
-        .route(
-            "/logical-devices",
-            axum::routing::get(devices::list_logical_devices),
-        )
-        .route(
-            "/logical-devices/{id}",
-            axum::routing::get(devices::get_logical_device)
-                .put(devices::update_logical_device)
-                .delete(devices::delete_logical_device),
-        )
         // ── Attachments ──────────────────────────────────────────────
         .route(
             "/attachments/templates",
             axum::routing::get(attachments::list_templates)
                 .post(attachments::create_template),
-        )
-        .route(
-            "/attachments/templates/{id}",
-            axum::routing::get(attachments::get_template)
-                .put(attachments::update_template)
-                .delete(attachments::delete_template),
-        )
-        .route(
-            "/attachments/categories",
-            axum::routing::get(attachments::list_categories),
-        )
-        .route(
-            "/attachments/vendors",
-            axum::routing::get(attachments::list_vendors),
         )
         // ── Output ───────────────────────────────────────────────────
         .route(
@@ -1254,10 +1201,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/effects/install",
             axum::routing::post(effects::install_effect),
-        )
-        .nest_service(
-            "/effects/screenshots",
-            ServeDir::new(hypercolor_core::effect::bundled_screenshots_root()),
         )
         .route(
             "/effects/{id}/cover",
@@ -1409,10 +1352,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/status", axum::routing::get(system::get_status_route))
         .route("/system/sensors", axum::routing::get(system::get_sensors))
         .route(
-            "/system/sensors/{label}",
-            axum::routing::get(system::get_sensor),
-        )
-        .route(
             "/system/audio-devices",
             axum::routing::get(system::list_audio_devices),
         )
@@ -1462,10 +1401,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Diagnostics ──────────────────────────────────────────────
         .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
-        .route(
-            "/diagnose/memory",
-            axum::routing::post(diagnose::memory_diagnostics),
-        )
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));
     let mut api = api;

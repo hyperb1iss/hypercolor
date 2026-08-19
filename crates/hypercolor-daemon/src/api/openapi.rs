@@ -392,12 +392,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "List system sensors",
     ),
     RouteSpec::get(
-        "/api/v1/system/sensors/{label}",
-        "get_sensor",
-        "system",
-        "Get one system sensor",
-    ),
-    RouteSpec::get(
         "/api/v1/devices",
         "list_devices",
         "devices",
@@ -410,37 +404,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "Start device discovery",
     )
     .with_request_body("DiscoverRequest", false),
-    RouteSpec::get(
-        "/api/v1/devices/metrics",
-        "list_device_metrics",
-        "devices",
-        "List device metrics",
-    ),
-    RouteSpec::get(
-        "/api/v1/devices/bindings",
-        "get_device_bindings",
-        "devices",
-        "List unresolved layout bindings and re-bind candidates",
-    ),
-    RouteSpec::post(
-        "/api/v1/devices/rebind",
-        "rebind_device",
-        "devices",
-        "Re-bind an orphaned layout binding onto an attached claimed device",
-    )
-    .with_request_body("RebindDeviceRequest", true),
-    RouteSpec::get(
-        "/api/v1/devices/debug/queues",
-        "debug_output_queues",
-        "devices",
-        "Debug device output queues",
-    ),
-    RouteSpec::get(
-        "/api/v1/devices/debug/routing",
-        "debug_device_routing",
-        "devices",
-        "Debug device output routing",
-    ),
     RouteSpec::get(
         "/api/v1/devices/{id}",
         "get_device",
@@ -483,24 +446,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "delete_attachments",
         "devices",
         "Delete device attachments",
-    ),
-    RouteSpec::post(
-        "/api/v1/devices/{id}/attachments/preview",
-        "preview_attachments",
-        "devices",
-        "Preview device attachments",
-    ),
-    RouteSpec::get(
-        "/api/v1/devices/{id}/logical-devices",
-        "list_device_logical_devices",
-        "devices",
-        "List logical devices for one physical device",
-    ),
-    RouteSpec::post(
-        "/api/v1/devices/{id}/logical-devices",
-        "create_logical_device",
-        "devices",
-        "Create logical device for one physical device",
     ),
     RouteSpec::post(
         "/api/v1/devices/{id}/identify",
@@ -612,30 +557,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "Get simulated display frame",
     ),
     RouteSpec::get(
-        "/api/v1/logical-devices",
-        "list_logical_devices",
-        "devices",
-        "List logical devices",
-    ),
-    RouteSpec::get(
-        "/api/v1/logical-devices/{id}",
-        "get_logical_device",
-        "devices",
-        "Get logical device",
-    ),
-    RouteSpec::put(
-        "/api/v1/logical-devices/{id}",
-        "update_logical_device",
-        "devices",
-        "Update logical device",
-    ),
-    RouteSpec::delete(
-        "/api/v1/logical-devices/{id}",
-        "delete_logical_device",
-        "devices",
-        "Delete logical device",
-    ),
-    RouteSpec::get(
         "/api/v1/attachments/templates",
         "list_templates",
         "attachments",
@@ -646,36 +567,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "create_template",
         "attachments",
         "Create attachment template",
-    ),
-    RouteSpec::get(
-        "/api/v1/attachments/templates/{id}",
-        "get_template",
-        "attachments",
-        "Get attachment template",
-    ),
-    RouteSpec::put(
-        "/api/v1/attachments/templates/{id}",
-        "update_template",
-        "attachments",
-        "Update attachment template",
-    ),
-    RouteSpec::delete(
-        "/api/v1/attachments/templates/{id}",
-        "delete_template",
-        "attachments",
-        "Delete attachment template",
-    ),
-    RouteSpec::get(
-        "/api/v1/attachments/categories",
-        "list_categories",
-        "attachments",
-        "List attachment categories",
-    ),
-    RouteSpec::get(
-        "/api/v1/attachments/vendors",
-        "list_vendors",
-        "attachments",
-        "List attachment vendors",
     ),
     RouteSpec::get(
         "/api/v1/output",
@@ -702,12 +593,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "install_effect",
         "effects",
         "Install effect",
-    ),
-    RouteSpec::get(
-        "/api/v1/effects/screenshots",
-        "get_effect_screenshot",
-        "effects",
-        "Serve bundled effect screenshots",
     ),
     RouteSpec::get(
         "/api/v1/effects/{id}",
@@ -978,12 +863,6 @@ pub const ROUTES: &[RouteSpec] = &[
         "run_diagnostics",
         "diagnostics",
         "Run daemon diagnostics",
-    ),
-    RouteSpec::post(
-        "/api/v1/diagnose/memory",
-        "memory_diagnostics",
-        "diagnostics",
-        "Run memory diagnostics",
     ),
     RouteSpec::get(
         "/api/v1/ws",
