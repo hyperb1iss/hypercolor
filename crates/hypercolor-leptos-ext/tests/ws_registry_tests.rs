@@ -85,23 +85,14 @@ fn configless_topics_carry_no_config_stanza() {
         .collect();
     assert_eq!(
         configless,
-        vec![
-            "events",
-            "frame_events",
-            "screen_zones",
-            "sensors",
-            "input_events"
-        ]
+        vec!["events", "frame_events", "sensors", "input_events"]
     );
 }
 
 #[test]
 fn default_configs_are_the_frozen_wire_defaults() {
     for (topic, expected) in [
-        (
-            TopicId::Frames,
-            json!({"fps": 30, "format": "binary", "zones": ["all"]}),
-        ),
+        (TopicId::Frames, json!({"fps": 30, "zones": ["all"]})),
         (TopicId::Spectrum, json!({"fps": 30, "bins": 64})),
         (
             TopicId::Canvas,
@@ -111,6 +102,7 @@ fn default_configs_are_the_frozen_wire_defaults() {
             TopicId::ScreenCanvas,
             json!({"fps": 15, "format": "rgb", "width": 0, "height": 0}),
         ),
+        (TopicId::ScreenZones, json!({"fps": 15})),
         (
             TopicId::WebViewportCanvas,
             json!({"fps": 15, "format": "rgb", "width": 0, "height": 0}),
