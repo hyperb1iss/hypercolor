@@ -328,7 +328,7 @@ client-assigned and echoed back so concurrent commands can be correlated.
   "id": "cmd-001",
   "method": "POST",
   "path": "/api/v1/effects/borealis/apply",
-  "body": { "controls": { "speed": 7 } }
+  "body": { "controls": { "speed": { "float": 7.0 } } }
 }
 ```
 
@@ -483,7 +483,8 @@ Common event names include `effect_started`, `effect_stopped`,
 
 Zone-addressed events use `zone_id`. Lifecycle events also carry `zone_name`;
 `zone_changed` carries `scene_id`, `role`, and `kind`; and
-`scene_settings_changed` carries `zones_revision`. Saved scenes on disk still
+`scene_settings_changed` carries the live scene document's single `revision`.
+Saved scenes on disk still
 store the concept as `groups`, while the public wire uses zone vocabulary.
 
 ### metrics

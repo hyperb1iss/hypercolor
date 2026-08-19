@@ -141,9 +141,16 @@ A **Selected surfaces** scope, adding to an arbitrary multi-select of zones, is 
 
 ## How edits are saved
 
-Every change to the stack, whether adding, removing, reordering, toggling, or retuning a slider, is a guarded write against the daemon. The panel sends the stack's current version as an `If-Match` precondition. If someone else (another client, the CLI, an agent) changed the same stack first, the write is rejected as stale rather than silently overwriting their work; the panel reloads the stack, tells you it reloaded, and you reapply your change. Nothing is lost.
+Every structural stack change sends the live scene document's current
+`revision` as an `If-Match` precondition. If another client changes the scene
+first, the write is rejected as stale rather than silently overwriting their
+work. The panel reloads the document and asks you to reapply the change.
+Control-value patches are unguarded and apply in commit order against the real
+layer id.
 
-This is the same optimistic-concurrency model the rest of Studio uses. For the developer-level detail on `layers_version`, `If-Match`, and the stale-outcome flow, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).
+This is the same one-revision concurrency model the rest of Studio uses. For
+the developer-level detail on `SceneDocument.revision`, `If-Match`, and the
+stale-outcome flow, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).
 
 ## Where to go next
 

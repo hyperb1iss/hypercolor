@@ -93,7 +93,7 @@ Via REST:
 ```bash
 curl -X POST http://localhost:9420/api/v1/effects/borealis/apply \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 50, "intensity": 75}}'
+  -d '{"controls": {"speed": {"float": 50.0}, "intensity": {"float": 75.0}}}'
 ```
 
 ## 4. Tweak controls in real time
@@ -111,12 +111,20 @@ hypercolor effects reset
 Via REST:
 
 ```bash
-curl -X PATCH http://localhost:9420/api/v1/effects/active/controls \
+scene=$(curl -s http://localhost:9420/api/v1/scene)
+zone_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].id')
+layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
+
+curl -X PATCH \
+  "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 30, "palette": "Midnight"}}'
+  -d '{"values": {"speed": {"float": 30.0}, "palette": {"enum": "Midnight"}}}'
 ```
 
-The render loop picks up new values on the next frame. It targets up to 60 fps and adapts down across five tiers under load, so a change lands in roughly 17 to 100 ms depending on the active tier.
+The control route uses the real layer id from the live scene document and never
+takes `If-Match`. The render loop picks up new values on the next frame. It
+targets up to 60 fps and adapts down across five tiers under load, so a change
+lands in roughly 17 to 100 ms depending on the active tier.
 
 ## 5. Try the TUI
 
@@ -139,7 +147,9 @@ hypercolor effects stop
 Or via REST:
 
 ```bash
-curl -X POST http://localhost:9420/api/v1/effects/stop
+curl -X POST http://localhost:9420/api/v1/scene/clear \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 ## What's next

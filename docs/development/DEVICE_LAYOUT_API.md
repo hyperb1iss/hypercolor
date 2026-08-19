@@ -230,41 +230,14 @@ Behavior:
 All fields are optional. Default logical devices cannot change
 `led_start`/`led_count`.
 
-## Effect -> Layout Associations
+## Scene Layout Selection
 
-Bind effects to saved layouts so activating an effect can also activate a
-specific spatial layout.
+Layout selection belongs to scenes. The live scene document exposes an optional
+`layout_id`, and stored scenes carry the same field. Activating that scene
+deliberately selects its referenced layout.
 
-### Endpoint map
-
-| Method   | Path                           | Purpose                                 |
-| -------- | ------------------------------ | --------------------------------------- |
-| `GET`    | `/effects/{id_or_name}/layout` | Get the associated layout for an effect |
-| `PUT`    | `/effects/{id_or_name}/layout` | Associate an effect with a layout       |
-| `DELETE` | `/effects/{id_or_name}/layout` | Remove an effect/layout association     |
-
-### Set payload
-
-`PUT /effects/{id_or_name}/layout`
-
-```json
-{
-  "layout_id": "layout_1234-or-layout-name"
-}
-```
-
-Notes:
-
-- `layout_id` accepts either canonical layout ID or case-insensitive layout
-  name.
-- Ambiguous layout names return `409 conflict`.
-- Associations are user-defined and persisted to `effect-layouts.json`.
-
-### Apply behavior
-
-`POST /effects/{id_or_name}/apply`
-
-- If the effect has an associated layout and that layout still exists, the
-  API applies it automatically via `spatial_engine.update_layout(...)`.
-- The effect apply response includes a `layout` object indicating whether the
-  association resolved and was applied.
+Effects do not own layout associations. The old
+`/effects/{id_or_name}/layout` routes and `effect-layouts.json` store are
+removed. Any existing `effect-layouts.json` file is deliberately left orphaned
+and is not migrated. Set the stored scene's `layout_id` explicitly when that
+scene should use a named layout.

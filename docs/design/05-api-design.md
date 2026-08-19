@@ -2,6 +2,10 @@
 
 > Every surface Hypercolor speaks through: REST, WebSocket, MCP, and local desktop integrations.
 
+> **Status:** Historical design snapshot. The canonical resource model in
+> [Spec 78](../specs/78-api-resource-model.md) supersedes the REST and
+> WebSocket examples in this document.
+
 ---
 
 ## Table of Contents

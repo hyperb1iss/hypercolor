@@ -193,7 +193,6 @@ hypercolor effects activate plasma-engine --param hue_shift=120 --param density=
 | `-p`, `--param <KEY=VALUE>` | | Arbitrary control value. Repeatable. Values parse as JSON when valid, otherwise as a string. |
 | `--speed <0-100>` | | Speed-control shorthand. |
 | `--intensity <0-100>` | | Intensity-control shorthand. |
-| `--transition <MS>` | `0` | Reserved for effect crossfades. Only `0` is accepted today. |
 
 {% callout(type="tip") %}
 `--param` values are parsed as JSON first. So `--param density=0.8` sends a
@@ -212,18 +211,15 @@ hypercolor effects reset                  # Restore controls to defaults
 hypercolor effects rescan                 # Re-scan the library for new effects
 ```
 
-`effects patch` updates the live effect without re-applying it; it targets
-`PATCH /api/v1/effects/active/controls` and requires at least one `--param`.
+`effects patch` updates the live effect without re-applying it. The CLI reads
+`GET /api/v1/scene`, resolves the real zone and layer ids, then calls
+`PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`. The command requires
+at least one `--param`. `effects reset` follows the same path with the effect's
+default values, and `effects stop` calls `POST /api/v1/scene/clear`.
+
 Run `hypercolor effects rescan` after dropping a freshly built HTML effect into
-the effects directory so the daemon picks it up.
-
-Effects can be pinned to a specific spatial layout:
-
-```bash
-hypercolor effects layout show borealis           # Show the linked layout
-hypercolor effects layout set borealis desk-ring  # Pin to a layout
-hypercolor effects layout clear borealis          # Remove the association
-```
+the effects directory so the daemon picks it up. Spatial layout selection lives
+on scenes through `scene.layout_id`; effects do not carry layout associations.
 
 {{ img(path="img/ui/effects.webp", alt="The effects gallery in the Hypercolor web UI") }}
 
