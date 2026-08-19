@@ -63,8 +63,8 @@ pub fn build_prompt_definitions() -> Vec<PromptDefinition> {
         },
         PromptDefinition {
             name: "setup_automation".into(),
-            title: "Set Up Lighting Automation".into(),
-            description: "Guided workflow to create automated lighting schedules and scenes. Walks through trigger selection, profile assignment, and transition settings.".into(),
+            title: "Plan Lighting Automation".into(),
+            description: "Guided workflow to prepare reusable scenes for an external automation system. Hypercolor does not schedule or trigger scenes itself.".into(),
             arguments: vec![
                 PromptArgument {
                     name: "description".into(),
@@ -227,7 +227,7 @@ fn build_setup_automation_messages(arguments: &Value) -> Value {
     };
 
     json!({
-        "description": "Create automated lighting rules and schedules",
+        "description": "Prepare reusable scenes for external automation",
         "messages": [
             {
                 "role": "user",
@@ -241,7 +241,7 @@ fn build_setup_automation_messages(arguments: &Value) -> Value {
                 "content": {
                     "type": "resource",
                     "resource": {
-                        "uri": "hypercolor://profiles",
+                        "uri": "hypercolor://scenes",
                         "mimeType": "application/json"
                     }
                 }
@@ -260,7 +260,7 @@ fn build_setup_automation_messages(arguments: &Value) -> Value {
                 "role": "user",
                 "content": {
                     "type": "text",
-                    "text": "Based on the available profiles and current state, help me create an automation rule. Ask about:\n1. When should it trigger? (time of day, solar event, device connection, etc.)\n2. What should happen? (apply a profile, set a specific effect, adjust brightness)\n3. Any conditions? (only on weekdays, only when a device is connected)\n4. Transition style? (instant, slow fade, etc.)\n\nThen use create_scene to create the automation."
+                    "text": "Hypercolor does not schedule or trigger scenes. Based on the available scenes and current state, help me define a reusable scene for an external automation system. Ask what lighting state the scene should represent, then use create_scene if a new scene is needed. Explain that the external system must call activate_scene when its own conditions match."
                 }
             }
         ]

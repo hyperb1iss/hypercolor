@@ -1,7 +1,5 @@
 //! Scene-related MCP tools: `activate_scene`, `list_scenes`, `create_scene`.
 
-use std::collections::HashMap;
-
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
@@ -50,7 +48,7 @@ pub(super) fn build_list_scenes() -> ToolDefinition {
     ToolDefinition {
         name: "list_scenes".into(),
         title: "List Scenes".into(),
-        description: "List all available lighting scenes with their names, descriptions, and trigger configurations.".into(),
+        description: "List all available lighting scenes with their names, descriptions, and activation state.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -73,9 +71,7 @@ pub(super) fn build_create_scene() -> ToolDefinition {
     ToolDefinition {
         name: "create_scene".into(),
         title: "Create Scene".into(),
-        description:
-            "Create a new lighting scene from the current state or a specified configuration."
-                .into(),
+        description: "Create a reusable lighting scene.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -86,22 +82,6 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                 "description": {
                     "type": "string",
                     "description": "What this scene does"
-                },
-                "profile_id": {
-                    "type": "string",
-                    "description": "Profile ID to associate with this scene"
-                },
-                "trigger": {
-                    "type": "object",
-                    "description": "Trigger configuration",
-                    "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": ["schedule", "sunset", "sunrise", "device_connect", "device_disconnect", "audio_beat", "webhook"],
-                            "description": "Trigger type"
-                        }
-                    },
-                    "required": ["type"]
                 },
                 "enabled": {
                     "type": "boolean",
@@ -115,7 +95,7 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                     "default": "live"
                 }
             },
-            "required": ["name", "profile_id", "trigger"],
+            "required": ["name"],
             "additionalProperties": false
         }),
         output_schema: default_output_schema(),
@@ -242,29 +222,6 @@ pub(super) async fn handle_create_scene_with_state(
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("name".into()))?;
-    let profile_id = params
-        .get("profile_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("profile_id".into()))?;
-
-    {
-        let profiles = state.profiles.read().await;
-        if profiles.get(profile_id).is_none() {
-            return Err(ToolError::InvalidParam {
-                param: "profile_id".into(),
-                reason: format!("profile '{profile_id}' not found"),
-            });
-        }
-    }
-
-    let trigger = params
-        .get("trigger")
-        .ok_or_else(|| ToolError::MissingParam("trigger".into()))?;
-    let trigger_type = trigger
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("trigger.type".into()))?;
-
     let enabled = params
         .get("enabled")
         .and_then(Value::as_bool)
@@ -280,11 +237,6 @@ pub(super) async fn handle_create_scene_with_state(
         }
     };
 
-    let metadata = HashMap::from([
-        ("profile_id".to_owned(), profile_id.to_owned()),
-        ("trigger_type".to_owned(), trigger_type.to_owned()),
-    ]);
-
     let created = create_scene(
         state,
         CreateScene {
@@ -295,7 +247,7 @@ pub(super) async fn handle_create_scene_with_state(
                 .map(ToOwned::to_owned),
             enabled: Some(enabled),
             mutation_mode: Some(mutation_mode),
-            metadata,
+            metadata: Default::default(),
         },
         MutationContext::mcp(),
     )

@@ -50,9 +50,9 @@ pub fn build_resource_definitions() -> Vec<ResourceDefinition> {
             priority: 0.8,
         },
         ResourceDefinition {
-            uri: "hypercolor://profiles".into(),
-            name: "Saved Profiles".into(),
-            description: "All saved lighting profiles with their names, descriptions, associated effects, brightness settings, and device targets.".into(),
+            uri: "hypercolor://scenes".into(),
+            name: "Saved Scenes".into(),
+            description: "All reusable lighting scenes with their names, descriptions, mutation modes, and activation state.".into(),
             mime_type: "application/json".into(),
             priority: 0.6,
         },
@@ -74,7 +74,7 @@ pub fn read_resource(uri: &str) -> Option<Value> {
         "hypercolor://state" => Some(read_state()),
         "hypercolor://devices" => Some(read_devices()),
         "hypercolor://effects" => Some(read_effects()),
-        "hypercolor://profiles" => Some(read_profiles()),
+        "hypercolor://scenes" => Some(read_scenes()),
         "hypercolor://audio" => Some(read_audio()),
         _ => None,
     }
@@ -86,7 +86,7 @@ pub async fn read_resource_with_state(uri: &str, state: &AppState) -> Option<Val
         "hypercolor://state" => Some(read_state_with_state(state).await),
         "hypercolor://devices" => Some(read_devices_with_state(state).await),
         "hypercolor://effects" => Some(read_effects_with_state(state).await),
-        "hypercolor://profiles" => Some(read_profiles_with_state(state).await),
+        "hypercolor://scenes" => Some(read_scenes_with_state(state).await),
         "hypercolor://audio" => Some(read_audio_with_state(state)),
         _ => None,
     }
@@ -99,7 +99,7 @@ pub fn is_valid_resource_uri(uri: &str) -> bool {
         "hypercolor://state"
             | "hypercolor://devices"
             | "hypercolor://effects"
-            | "hypercolor://profiles"
+            | "hypercolor://scenes"
             | "hypercolor://audio"
     )
 }
@@ -117,7 +117,6 @@ fn read_state() -> Value {
             "actual": 0.0
         },
         "effect": null,
-        "profile": null,
         "devices": {
             "connected": 0,
             "total": 0,
@@ -152,10 +151,9 @@ fn read_effects() -> Value {
     })
 }
 
-fn read_profiles() -> Value {
-    // Would enumerate from profile manager
+fn read_scenes() -> Value {
     json!({
-        "profiles": [],
+        "scenes": [],
         "total": 0
     })
 }
@@ -315,25 +313,29 @@ async fn read_effects_with_state(state: &AppState) -> Value {
     })
 }
 
-async fn read_profiles_with_state(state: &AppState) -> Value {
-    let profiles = state.profiles.read().await;
-    let payload = profiles
-        .values()
-        .map(|profile| {
+async fn read_scenes_with_state(state: &AppState) -> Value {
+    let scene_manager = state.scene_manager.read().await;
+    let active_scene_id = scene_manager.active_scene_id().copied();
+    let payload = scene_manager
+        .list()
+        .into_iter()
+        .filter(|scene| scene.kind != hypercolor_types::scene::SceneKind::Ephemeral)
+        .map(|scene| {
             json!({
-                "id": profile.id,
-                "name": profile.name,
-                "description": profile.description,
-                "brightness": profile.brightness,
-                "primary": profile.primary,
-                "displays": profile.displays,
-                "layout_id": profile.layout_id
+                "id": scene.id.to_string(),
+                "name": scene.name,
+                "description": scene.description,
+                "enabled": scene.enabled,
+                "mutation_mode": scene.mutation_mode,
+                "layout_id": scene.layout_id,
+                "activation_brightness": scene.activation_brightness,
+                "active": Some(scene.id) == active_scene_id
             })
         })
         .collect::<Vec<_>>();
 
     json!({
-        "profiles": payload,
+        "scenes": payload,
         "total": payload.len()
     })
 }

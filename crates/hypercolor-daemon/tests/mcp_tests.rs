@@ -20,10 +20,8 @@ use hypercolor_daemon::mcp::resources::{
     build_resource_definitions, is_valid_resource_uri, read_resource, read_resource_with_state,
 };
 use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool_with_state};
-use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store::SceneStore;
-use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -49,33 +47,6 @@ use uuid::Uuid;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-struct LayoutAcknowledger(tokio::task::JoinHandle<()>);
-
-impl Drop for LayoutAcknowledger {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger {
-    LayoutAcknowledger(tokio::spawn(async move {
-        let _consumer = queue.consumer();
-        loop {
-            for transaction in queue.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        transaction.accept_and_commit_for_test();
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => queue
-                        .push(transaction)
-                        .expect("test transaction queue should remain open"),
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    }))
-}
 
 async fn spawn_router(router: axum::Router) -> (Client, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -501,29 +472,6 @@ async fn seed_multi_zone_primary_assignment(
     primary_layout
 }
 
-async fn insert_test_profile(
-    state: &Arc<AppState>,
-    id: &str,
-    name: &str,
-    effect: Option<&EffectMetadata>,
-) {
-    let mut profiles = state.profiles.write().await;
-    let mut controls = HashMap::new();
-    if effect.is_some() {
-        controls.insert("speed".to_owned(), ControlValue::Float(12.0));
-    }
-    let mut profile = Profile::named(id, name);
-    profile.description = Some(format!("{name} profile"));
-    profile.brightness = Some(75);
-    profile.primary = effect.map(|metadata| ProfilePrimary {
-        effect_id: metadata.id,
-        controls,
-        active_preset_id: None,
-    });
-    profile.layout_id = None;
-    profiles.insert(profile).expect("seed profile");
-}
-
 fn scenes_path(state: &AppState) -> PathBuf {
     state
         .runtime_state_path
@@ -641,7 +589,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 16);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -714,6 +662,11 @@ async fn mcp_http_resources_and_prompts_roundtrip() {
         .as_array()
         .expect("resource list array");
     assert_eq!(resources.len(), 5);
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["uri"] == "hypercolor://scenes")
+    );
 
     let read_response = post_json(
         &client,
@@ -875,17 +828,12 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
 async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
-    insert_test_profile(&state, "focus-profile", "Focus Profile", None).await;
 
     let create_result = execute_tool_with_state(
         "create_scene",
         &json!({
             "name": "Focus",
-            "description": "Deep work lighting",
-            "profile_id": "focus-profile",
-            "trigger": {
-                "type": "schedule"
-            }
+            "description": "Deep work lighting"
         }),
         state.as_ref(),
     )
@@ -906,14 +854,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     let store = SceneStore::load(&scenes_path(state.as_ref())).expect("scene store should load");
     assert_eq!(store.len(), 1);
     let stored_scene = store.list().next().expect("named scene should persist");
-    assert_eq!(
-        stored_scene.metadata.get("profile_id"),
-        Some(&"focus-profile".to_owned())
-    );
-    assert_eq!(
-        stored_scene.metadata.get("trigger_type"),
-        Some(&"schedule".to_owned())
-    );
+    assert!(stored_scene.metadata.is_empty());
 
     let mut events = state.event_bus.subscribe_all();
     let activate_result = execute_tool_with_state(
@@ -1234,17 +1175,12 @@ async fn stateful_set_color_refuses_a_transition_it_cannot_apply() {
 async fn stateful_set_effect_conflicts_when_snapshot_scene_is_active() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
-    insert_test_profile(&state, "focus-profile", "Focus Profile", None).await;
     insert_test_effect(&state, "Aurora").await;
 
     let create_result = execute_tool_with_state(
         "create_scene",
         &json!({
             "name": "Focus",
-            "profile_id": "focus-profile",
-            "trigger": {
-                "type": "schedule"
-            },
             "mutation_mode": "snapshot"
         }),
         state.as_ref(),
@@ -1539,93 +1475,10 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
     assert_eq!(active_group.layout, expected_layout);
 }
 
-#[tokio::test]
-async fn stateful_set_profile_persists_runtime_snapshot() {
-    let (state, _tmp) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let effect = insert_test_effect(&state, "Movie Night").await;
-    insert_test_profile(&state, "movie-profile", "Movie Profile", Some(&effect)).await;
-
-    let result = execute_tool_with_state(
-        "set_profile",
-        &json!({
-            "query": "movie profile"
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("set_profile should succeed");
-    assert_eq!(result["applied"], true);
-    assert_eq!(result["profile"]["id"], "movie-profile");
-
-    let snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
-    assert_eq!(snapshot.default_scene_groups.len(), 1);
-    assert_eq!(snapshot.default_scene_groups[0].effect_id, Some(effect.id));
-    assert_eq!(
-        snapshot.default_scene_groups[0].controls.get("speed"),
-        Some(&ControlValue::Float(12.0))
-    );
-}
-
-#[tokio::test]
-async fn stateful_set_profile_preserves_primary_assignment_when_custom_zones_exist() {
-    let (state, _tmp) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let _layout_acknowledger = spawn_layout_acknowledger(state.scene_transactions.clone());
-    let existing = insert_test_effect(&state, "Current").await;
-    let effect = insert_test_effect(&state, "Movie Night").await;
-    let expected_layout = seed_multi_zone_primary_assignment(&state, &existing).await;
-    let profile_layout = test_layout(
-        "profile-layout",
-        vec![
-            test_device_zone("primary-zone"),
-            test_device_zone("custom-zone"),
-        ],
-    );
-    {
-        let mut layouts = state.layouts.write().await;
-        layouts.insert(profile_layout.id.clone(), profile_layout.clone());
-    }
-    {
-        let mut profiles = state.profiles.write().await;
-        let mut profile = Profile::named("movie-profile", "Movie Profile");
-        profile.primary = Some(ProfilePrimary {
-            effect_id: effect.id,
-            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(12.0))]),
-            active_preset_id: None,
-        });
-        profile.layout_id = Some(profile_layout.id);
-        profiles.insert(profile).expect("seed profile");
-    }
-
-    execute_tool_with_state(
-        "set_profile",
-        &json!({
-            "query": "movie profile"
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("set_profile should succeed");
-
-    let active_group = {
-        let manager = state.scene_manager.read().await;
-        manager
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .cloned()
-            .expect("primary group should exist after MCP set_profile")
-    };
-    assert_eq!(active_group.effect_id, Some(effect.id));
-    assert_eq!(active_group.layout, expected_layout);
-}
-
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 16);
     assert!(
         tools
             .iter()
@@ -1720,10 +1573,8 @@ fn deleted_phantom_parameters_stay_deleted() {
         ("diagnose", "checks"),
         ("stop_effect", "transition_ms"),
         ("create_scene", "transition_ms"),
-        ("set_profile", "transition_ms"),
-        // Nested, so the closed-schema sweep cannot see it: the
-        // handler reads trigger.type and nothing else.
-        ("create_scene", "trigger.cron"),
+        ("create_scene", "profile_id"),
+        ("create_scene", "trigger"),
     ];
 
     let tools = build_tool_definitions();
@@ -1793,7 +1644,6 @@ fn tool_annotations_report_what_each_tool_actually_does() {
         "set_effect",
         "set_color",
         "activate_scene",
-        "set_profile",
         "set_display_face",
     ] {
         assert_eq!(annotation(name), (false, true), "{name}");
@@ -1915,7 +1765,11 @@ fn resource_definitions_are_readable() {
             .all(|resource| resource.uri.starts_with("hypercolor://"))
     );
     assert!(is_valid_resource_uri("hypercolor://state"));
+    assert!(is_valid_resource_uri("hypercolor://scenes"));
+    assert!(!is_valid_resource_uri("hypercolor://profiles"));
     assert!(read_resource("hypercolor://state").is_some());
+    assert!(read_resource("hypercolor://scenes").is_some());
+    assert!(read_resource("hypercolor://profiles").is_none());
     assert!(read_resource("hypercolor://nope").is_none());
 }
 
@@ -1972,6 +1826,12 @@ fn prompt_definitions_and_messages_are_valid() {
     let messages = get_prompt_messages("mood_lighting", &json!({ "mood": "cozy evening" }))
         .expect("prompt should build messages");
     assert!(messages["messages"].is_array());
+    let automation = get_prompt_messages("setup_automation", &json!({}))
+        .expect("automation prompt should build messages");
+    let encoded = automation.to_string();
+    assert!(encoded.contains("hypercolor://scenes"));
+    assert!(!encoded.contains("hypercolor://profiles"));
+    assert!(encoded.contains("does not schedule or trigger scenes"));
 }
 
 #[tokio::test]
