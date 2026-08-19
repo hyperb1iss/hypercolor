@@ -36,7 +36,7 @@ pub(super) struct ResolvedComponentBinding {
     pub(super) effective_led_count: u32,
 }
 
-/// `GET /api/v1/devices/:id/attachments` — Get a device attachment profile.
+/// `GET /api/v1/devices/{id}/attachments` — Get a device attachment profile.
 pub async fn get_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -64,7 +64,7 @@ pub async fn get_attachments(
     ))
 }
 
-/// `PUT /api/v1/devices/:id/attachments` — Save a device attachment profile.
+/// `PUT /api/v1/devices/{id}/attachments` — Save a device attachment profile.
 pub async fn update_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -125,7 +125,7 @@ pub async fn update_attachments(
     })
 }
 
-/// `DELETE /api/v1/devices/:id/attachments` — Remove a stored attachment profile.
+/// `DELETE /api/v1/devices/{id}/attachments` — Remove a stored attachment profile.
 pub async fn delete_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

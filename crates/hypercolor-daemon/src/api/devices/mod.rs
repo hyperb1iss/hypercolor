@@ -229,7 +229,7 @@ pub async fn list_devices(
     })
 }
 
-/// `GET /api/v1/devices/:id` — Get a single device.
+/// `GET /api/v1/devices/{id}` — Get a single device.
 #[utoipa::path(
     get,
     path = "/api/v1/devices/{id}",
@@ -277,7 +277,7 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     )
 }
 
-/// `PUT /api/v1/devices/:id` — Update a device's metadata.
+/// `PUT /api/v1/devices/{id}` — Update a device's metadata.
 pub async fn update_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -393,7 +393,7 @@ pub async fn update_device(
     )
 }
 
-/// `DELETE /api/v1/devices/:id` — Remove a device from tracking.
+/// `DELETE /api/v1/devices/{id}` — Remove a device from tracking.
 pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -445,7 +445,7 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     })
 }
 
-/// `POST /api/v1/devices/:id/identify` — Flash identification pattern.
+/// `POST /api/v1/devices/{id}/identify` — Flash identification pattern.
 pub async fn identify_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -560,7 +560,7 @@ pub async fn identify_device(
     })
 }
 
-/// `POST /api/v1/devices/:id/segments/:segment/identify` — Flash one segment.
+/// `POST /api/v1/devices/{id}/segments/{segment}/identify` — Flash one segment.
 #[allow(
     clippy::too_many_lines,
     reason = "the handler intentionally keeps validation, direct-control orchestration, and response shaping together"
@@ -674,7 +674,7 @@ pub async fn identify_segment(
     })
 }
 
-/// `POST /api/v1/devices/:id/attachments/:slot_id/identify` — Flash a single
+/// `POST /api/v1/devices/{id}/attachments/{slot}/identify` — Flash a single
 /// attachment component within a slot.
 #[allow(
     clippy::too_many_lines,

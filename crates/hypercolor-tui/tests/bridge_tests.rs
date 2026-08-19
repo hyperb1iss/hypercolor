@@ -94,7 +94,7 @@ async fn control_surface_event_refreshes_device_surface() {
         .route("/api/v1/devices", get(devices_handler))
         .route("/api/v1/library/favorites", get(favorites_handler))
         .route(
-            "/api/v1/control-surfaces/{surface_id}",
+            "/api/v1/control-surfaces/{id}",
             get(control_surface_handler),
         )
         .route("/api/v1/ws", get(control_surface_ws_handler))

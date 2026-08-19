@@ -53,7 +53,7 @@ Global output power becomes a first-class daemon concept, bundled and saved pres
 ### Added
 
 - ✨ Add the global output resource at `GET /api/v1/output` and `PATCH /api/v1/output`, backed by `OutputPowerMode` (`running`, `paused`) and `OutputPowerStatus` (`running`, `paused`, `stopped`); pausing holds outputs at their off frame while **preserving live scene state** (978096e)
-- ✨ Add a unified per-effect preset stack: `GET /api/v1/effects/{id}/presets` returns bundled and saved presets as `EffectPresetSummary` with `EffectPresetOrigin` and an `editable` flag, and `POST /api/v1/effects/{id}/presets/{preset_id}/apply` applies one to an optional zone (3c52120, ac2a201)
+- ✨ Add a unified per-effect preset stack: `GET /api/v1/effects/{id}/presets` returns bundled and saved presets as `EffectPresetSummary` with `EffectPresetOrigin` and an `editable` flag, and `POST /api/v1/effects/{id}/presets/{preset}/apply` applies one to an optional zone (3c52120, ac2a201)
 - ✨ Add `TrustedLocalApi` and `TrustedLocalWebSocket` in `crates/hypercolor-daemon/src/api/local.rs`, letting in-process callers run daemon requests at `AccessTier::Control` without a network hop or API key; paths are validated against `/api/v1/*` and absolute URLs, authority headers, and traversal are rejected (e057ce3)
 - ✨ Add stable identifiers for bundled presets via `PresetId::stable(name)` so effect-scoped preset selections remain durable across reloads (ea42c20)
 - ✨ Add Python client methods `get_output()`, `set_output(...)`, `get_effect_presets(effect_id)`, and `apply_effect_preset(...)` on async and sync clients, backed by the canonical `OutputState` model (ac2a201, d642543, f471fa1)

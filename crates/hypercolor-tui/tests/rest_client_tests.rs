@@ -455,7 +455,7 @@ async fn get_control_surface_encodes_full_surface_id() {
     let captured_uri = Arc::new(Mutex::new(None::<String>));
     let router = Router::new()
         .route(
-            "/api/v1/control-surfaces/{surface_id}",
+            "/api/v1/control-surfaces/{id}",
             get(
                 |Path(surface_id): Path<String>,
                  State(captured_uri): State<Arc<Mutex<Option<String>>>>,
@@ -505,7 +505,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
     let captured_action = Arc::new(Mutex::new(None::<Value>));
     let router = Router::new()
         .route(
-            "/api/v1/control-surfaces/{surface_id}/values",
+            "/api/v1/control-surfaces/{id}/values",
             patch(
                 |Path(surface_id): Path<String>,
                  State((captured_patch, _captured_action)): State<CapturedControlPayloads>,
@@ -527,7 +527,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
             ),
         )
         .route(
-            "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+            "/api/v1/control-surfaces/{id}/actions/{action}",
             post(
                 |Path((surface_id, action_id)): Path<(String, String)>,
                  State((_captured_patch, captured_action)): State<CapturedControlPayloads>,

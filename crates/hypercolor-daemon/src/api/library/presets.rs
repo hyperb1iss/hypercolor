@@ -43,7 +43,7 @@ pub async fn list_presets(State(state): State<Arc<AppState>>) -> Response {
     })
 }
 
-/// `GET /api/v1/library/presets/:id` — fetch one preset.
+/// `GET /api/v1/library/presets/{id}` — fetch one preset.
 pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
@@ -110,7 +110,7 @@ pub async fn create_preset(
     ApiResponse::created(preset)
 }
 
-/// `PUT /api/v1/library/presets/:id` — update an existing preset.
+/// `PUT /api/v1/library/presets/{id}` — update an existing preset.
 pub async fn update_preset(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -171,7 +171,7 @@ pub async fn update_preset(
     ApiResponse::ok(preset)
 }
 
-/// `DELETE /api/v1/library/presets/:id` — remove a preset.
+/// `DELETE /api/v1/library/presets/{id}` — remove a preset.
 pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();

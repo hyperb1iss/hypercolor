@@ -104,7 +104,7 @@ pub async fn add_favorite(
     })
 }
 
-/// `DELETE /api/v1/library/favorites/:effect` — remove a favorite by effect id/name.
+/// `DELETE /api/v1/library/favorites/{effect}` — remove a favorite by effect id/name.
 pub async fn remove_favorite(
     State(state): State<Arc<AppState>>,
     Path(effect): Path<String>,

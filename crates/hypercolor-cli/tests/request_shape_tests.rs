@@ -227,7 +227,7 @@ async fn controls_show_full_driver_device_surface_fetches_surface_by_id() -> Res
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/control-surfaces/{surface_id}",
+            "/api/v1/control-surfaces/{id}",
             get(
                 |Path(surface_id): Path<String>,
                  State(captured_uri): State<SharedUri>,
@@ -283,7 +283,7 @@ async fn drivers_set_control_targets_driver_surface() -> Result<()> {
             get(driver_control_surface),
         )
         .route(
-            "/api/v1/control-surfaces/{surface_id}/values",
+            "/api/v1/control-surfaces/{id}/values",
             patch(capture_control_patch),
         )
         .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
@@ -370,7 +370,7 @@ async fn drivers_action_targets_driver_surface() -> Result<()> {
             get(driver_control_surface),
         )
         .route(
-            "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+            "/api/v1/control-surfaces/{id}/actions/{action}",
             post(capture_control_action),
         )
         .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
@@ -456,7 +456,7 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
             get(capture_device_control_surface_list),
         )
         .route(
-            "/api/v1/control-surfaces/{surface_id}/values",
+            "/api/v1/control-surfaces/{id}/values",
             patch(capture_device_control_patch),
         )
         .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
@@ -545,7 +545,7 @@ async fn devices_action_targets_device_surface() -> Result<()> {
             get(capture_device_control_surface_list),
         )
         .route(
-            "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+            "/api/v1/control-surfaces/{id}/actions/{action}",
             post(capture_device_control_action),
         )
         .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));

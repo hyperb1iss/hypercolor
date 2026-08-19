@@ -162,7 +162,7 @@ pub struct IdentifySegmentResponse {
 }
 
 /// Request body for
-/// `POST /api/v1/devices/{id}/attachments/{component_id}/identify`.
+/// `POST /api/v1/devices/{id}/attachments/{slot}/identify`.
 ///
 /// Carries the base identify parameters plus the selectors that narrow
 /// the blink to one attached component instance.
@@ -177,7 +177,7 @@ pub struct IdentifyAttachmentRequest {
 }
 
 /// Response for
-/// `POST /api/v1/devices/{id}/attachments/{component_id}/identify`.
+/// `POST /api/v1/devices/{id}/attachments/{slot}/identify`.
 ///
 /// `instance` is `null` when the request blinked every instance of the
 /// binding rather than one of them.

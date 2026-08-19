@@ -220,7 +220,7 @@ Notes:
 
 ### Activate
 
-`POST /api/v1/library/playlists/{id_or_name}/activate`
+`POST /api/v1/library/playlists/{id}/activate`
 
 Behavior:
 
