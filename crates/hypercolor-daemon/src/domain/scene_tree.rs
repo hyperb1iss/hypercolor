@@ -50,8 +50,8 @@ use crate::domain::{DomainError, MutationContext, ResourceKind};
 /// [`DomainError::NotFound`] when no scene is active, which the
 /// always-a-default invariant makes unreachable in practice.
 pub async fn read_document(state: &AppState) -> Result<SceneDocument, DomainError> {
-    let revision = state.scene_commits.revision();
     let manager = state.scene_manager.read().await;
+    let revision = state.scene_commits.revision();
     let scene = manager
         .active_scene()
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
