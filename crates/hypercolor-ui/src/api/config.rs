@@ -75,7 +75,7 @@ pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
 
 /// Re-open the desktop portal source picker for screen capture.
 pub async fn pick_capture_source() -> Result<(), String> {
-    client::post_empty("/api/v1/capture/source/pick")
+    client::put_json_discard("/api/v1/capture/source", &serde_json::json!({}))
         .await
         .map_err(Into::into)
 }

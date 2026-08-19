@@ -108,7 +108,7 @@ pub async fn get_config_key(
 /// Privacy-bearing config keys. Mutating them starts, retargets, or
 /// enables screen, audio, or host-input capture, so they carry the same
 /// control-credential requirement as the dedicated capture endpoints
-/// (`/capture/source/pick` guards the identical `capture.source` mutation).
+/// (`PUT /capture/source` guards the identical `capture.source` mutation).
 ///
 /// The whole `capture` domain qualifies (screen content is the most
 /// sensitive plane and every leaf feeds the capture reconfiguration

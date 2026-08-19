@@ -173,7 +173,7 @@ async fn protected_capture_routes_reject_remote_clients_before_dispatch() {
     for (method, path) in [
         (Method::POST, "/api/v1/input/authorize"),
         (Method::POST, "/api/v1/capture/authorize"),
-        (Method::POST, "/api/v1/capture/source/pick"),
+        (Method::PUT, "/api/v1/capture/source"),
         (Method::GET, "/api/v1/capture/monitors"),
     ] {
         let mut request = request_from(Ipv4Addr::new(203, 0, 113, 9), method.clone(), path);
@@ -210,7 +210,7 @@ async fn protected_capture_routes_reject_malformed_forwarded_clients() {
     for (method, path) in [
         (Method::POST, "/api/v1/input/authorize"),
         (Method::POST, "/api/v1/capture/authorize"),
-        (Method::POST, "/api/v1/capture/source/pick"),
+        (Method::PUT, "/api/v1/capture/source"),
         (Method::GET, "/api/v1/capture/monitors"),
     ] {
         let mut request = request_from(Ipv4Addr::LOCALHOST, method, path);
@@ -234,7 +234,7 @@ async fn protected_capture_routes_reject_unauthenticated_loopback_clients() {
     for (method, path) in [
         (Method::POST, "/api/v1/input/authorize"),
         (Method::POST, "/api/v1/capture/authorize"),
-        (Method::POST, "/api/v1/capture/source/pick"),
+        (Method::PUT, "/api/v1/capture/source"),
         (Method::GET, "/api/v1/capture/monitors"),
     ] {
         let response = app
@@ -285,7 +285,7 @@ async fn protected_capture_routes_accept_trusted_in_process_control() {
     for (method, path) in [
         (Method::POST, "/api/v1/input/authorize"),
         (Method::POST, "/api/v1/capture/authorize"),
-        (Method::POST, "/api/v1/capture/source/pick"),
+        (Method::PUT, "/api/v1/capture/source"),
         (Method::GET, "/api/v1/capture/monitors"),
     ] {
         let response = api
