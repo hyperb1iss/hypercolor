@@ -26,7 +26,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
 use crate::domain::scene::{
-    MediaAdmissionContext, SceneMutation, commit_scene, zone_changed_event,
+    MediaAdmissionContext, SceneMutation, SceneTarget, commit_scene, zone_changed_event,
 };
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 
@@ -63,7 +63,7 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 /// lands first.
 pub async fn insert_layer(
     state: &AppState,
-    scene_id: SceneId,
+    target: SceneTarget,
     zone_id: ZoneId,
     layer: SceneLayer,
     index: Option<usize>,
@@ -74,6 +74,7 @@ pub async fn insert_layer(
 
     let media_admission = MediaAdmissionContext::for_layer(state, &layer).await;
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = target.resolve(&mutation, "creating a layer in the live scene")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, None) {
@@ -104,7 +105,7 @@ pub async fn insert_layer(
 /// As [`insert_layer`].
 pub async fn remove_layer(
     state: &AppState,
-    scene_id: SceneId,
+    target: SceneTarget,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     expected_revision: Option<u64>,
@@ -113,6 +114,7 @@ pub async fn remove_layer(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = target.resolve(&mutation, "deleting a layer from the live scene")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, None) {
@@ -136,7 +138,7 @@ pub async fn remove_layer(
 /// As [`insert_layer`].
 pub async fn reorder_layers(
     state: &AppState,
-    scene_id: SceneId,
+    target: SceneTarget,
     zone_id: ZoneId,
     layer_ids: Vec<SceneLayerId>,
     expected_revision: Option<u64>,
@@ -145,6 +147,7 @@ pub async fn reorder_layers(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = target.resolve(&mutation, "reordering layers in the live scene")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, None) {
@@ -182,7 +185,7 @@ pub(crate) async fn validate_candidate_media_admission(
 /// As [`insert_layer`].
 pub async fn patch_layer_controls(
     state: &AppState,
-    scene_id: SceneId,
+    target: SceneTarget,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     controls: HashMap<String, ControlValue>,
@@ -192,6 +195,7 @@ pub async fn patch_layer_controls(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
+    let scene_id = target.resolve(&mutation, "patching layer controls in the live scene")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.patch_layer_controls(scene_id, zone_id, layer_id, controls, None) {

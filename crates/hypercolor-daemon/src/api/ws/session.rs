@@ -2018,7 +2018,7 @@ mod zone_layout_preview_race_tests {
         let created = create_zone(
             &state,
             CreateZone {
-                scene_id: SceneId::DEFAULT,
+                target: SceneId::DEFAULT.into(),
                 name: "temporary".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
@@ -2051,7 +2051,7 @@ mod zone_layout_preview_race_tests {
             delete_zone(
                 &delete_state,
                 DeleteZone {
-                    scene_id: SceneId::DEFAULT,
+                    target: SceneId::DEFAULT.into(),
                     zone_id,
                     expected_revision: None,
                 },
