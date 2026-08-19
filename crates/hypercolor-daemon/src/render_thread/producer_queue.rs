@@ -20,7 +20,10 @@ use hypercolor_macos_capture::MacosCaptureFrame;
 use hypercolor_macos_gpu_interop::ImportedMacosScreenFrame;
 #[cfg(all(feature = "wgpu", target_os = "windows"))]
 use hypercolor_windows_gpu_interop::ScreenTextureCopy;
-#[cfg(feature = "wgpu")]
+#[cfg(all(
+    feature = "wgpu",
+    any(test, all(target_os = "macos", feature = "screen-capture"))
+))]
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,13 +32,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// The compositor retires entries in queue order because wgpu submissions on
 /// one queue complete in that same order.
-#[cfg(feature = "wgpu")]
+#[cfg(all(
+    feature = "wgpu",
+    any(test, all(target_os = "macos", feature = "screen-capture"))
+))]
 #[derive(Debug)]
 pub(crate) struct SubmissionRetirementQueue<K, T> {
     entries: VecDeque<(K, Vec<T>)>,
 }
 
-#[cfg(feature = "wgpu")]
+#[cfg(all(
+    feature = "wgpu",
+    any(test, all(target_os = "macos", feature = "screen-capture"))
+))]
 impl<K, T> Default for SubmissionRetirementQueue<K, T> {
     fn default() -> Self {
         Self {
@@ -44,7 +53,10 @@ impl<K, T> Default for SubmissionRetirementQueue<K, T> {
     }
 }
 
-#[cfg(feature = "wgpu")]
+#[cfg(all(
+    feature = "wgpu",
+    any(test, all(target_os = "macos", feature = "screen-capture"))
+))]
 impl<K, T> SubmissionRetirementQueue<K, T> {
     pub(crate) fn retire(&mut self, submission: K, values: Vec<T>) {
         if !values.is_empty() {
@@ -631,6 +643,20 @@ mod tests {
         retirements.release_completed(|_| true);
         assert_eq!(retirements.len(), 0);
         assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn submission_retirement_queue_drains_front_in_order() {
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![()]);
+        retirements.retire(18_u64, vec![()]);
+
+        assert_eq!(retirements.front_submission(), Some(&17));
+        retirements.release_front();
+        assert_eq!(retirements.front_submission(), Some(&18));
+        retirements.release_front();
+        assert_eq!(retirements.front_submission(), None);
     }
 
     #[test]

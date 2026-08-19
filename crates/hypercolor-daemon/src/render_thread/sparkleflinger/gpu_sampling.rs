@@ -324,6 +324,7 @@ impl GpuSamplingPreparation {
 pub(super) enum GpuSampleSource {
     Front,
     Back,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
     Diagnostic,
 }
 
@@ -332,6 +333,7 @@ impl GpuSampleSource {
         match self {
             Self::Front => 0,
             Self::Back => 1,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             Self::Diagnostic => 2,
         }
     }

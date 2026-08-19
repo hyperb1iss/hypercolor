@@ -66,6 +66,7 @@ use hypercolor_macos_gpu_interop::{
     MacosScreenBridge as MacosInteropScreenBridge, MacosScreenStorageIdentity,
     probe_macos_metal4_capabilities,
 };
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ZoneId;
 #[cfg(target_os = "windows")]
@@ -93,8 +94,10 @@ use crate::render_thread::producer_queue::{
 };
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use crate::render_thread::producer_queue::{MacosScreenTextureLease, SubmissionRetirementQueue};
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use crate::render_thread::sparkleflinger::gpu_sampling::GpuSampleSource;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSampleSource, GpuSamplingPlan, GpuSamplingPreparation, GpuSpatialSampler,
+    GpuSamplingPlan, GpuSamplingPreparation, GpuSpatialSampler,
 };
 
 mod compositor;
@@ -2393,6 +2396,7 @@ impl GpuSparkleFlinger {
         }))
     }
 
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
     pub(crate) fn sample_texture_zone_plan(
         &mut self,
         frame: &GpuTextureFrame,

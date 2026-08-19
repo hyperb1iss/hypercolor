@@ -99,7 +99,7 @@ jobs:
       pull-requests: read
     outputs:
       # True for anything that is not a pull request, which is deliberately
-      # broad: it gates the expensive Servo clippy and test steps so pull
+      # broad: it gates the expensive Servo test and doc-test steps so pull
       # requests get the light pass and main and tags get the heavy one. It is
       # NOT a stand-in for "release build", and it must not gate whole jobs —
       # the per-domain outputs below already force true for tags and non-smoke
@@ -644,14 +644,12 @@ jobs:
           cargo build --locked -p hypercolor-daemon -p hypercolor-cli
 
       - name: Clippy core with Servo
-        if: needs.changes.outputs.full == 'true'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-core --features servo --lib --tests
           -- -D warnings
 
       - name: Clippy daemon with Servo
-        if: needs.changes.outputs.full == 'true'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
