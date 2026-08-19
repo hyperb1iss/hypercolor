@@ -28,7 +28,7 @@ async fn active_scene_event_refreshes_daemon_status() {
     };
 
     let router = Router::new()
-        .route("/api/v1/status", get(status_handler))
+        .route("/api/v1/system", get(status_handler))
         .route("/api/v1/effects", get(effects_handler))
         .route("/api/v1/devices", get(devices_handler))
         .route("/api/v1/library/favorites", get(favorites_handler))
@@ -89,7 +89,7 @@ async fn control_surface_event_refreshes_device_surface() {
     };
 
     let router = Router::new()
-        .route("/api/v1/status", get(status_handler))
+        .route("/api/v1/system", get(status_handler))
         .route("/api/v1/effects", get(effects_handler))
         .route("/api/v1/devices", get(devices_handler))
         .route("/api/v1/library/favorites", get(favorites_handler))
@@ -156,12 +156,14 @@ async fn status_handler(State(state): State<TestState>) -> Json<serde_json::Valu
 
     Json(serde_json::json!({
         "data": {
+          "status": {
             "running": true,
             "global_brightness": 42,
             "device_count": 3,
             "active_effect": serde_json::Value::Null,
             "active_scene": scene_name,
             "active_scene_snapshot_locked": snapshot_locked
+          }
         }
     }))
 }

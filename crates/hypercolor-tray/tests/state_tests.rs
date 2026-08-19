@@ -81,6 +81,12 @@ struct ServerResponse {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct SystemResponse {
+    identity: ServerResponse,
+    status: Option<StatusResponse>,
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct EffectListResponse {
     items: Vec<EffectSummary>,
 }
@@ -98,7 +104,8 @@ fn parse_ws_hello_message() {
         "server": {
             "instance_id": "01912345-6789-7abc-def0-123456789abc",
             "instance_name": "desk-pc",
-            "version": "0.1.0"
+            "version": "0.1.0",
+            "auth_required": true
         },
         "version": "1.0",
         "state": {
@@ -132,20 +139,24 @@ fn parse_ws_hello_message() {
 }
 
 #[test]
-fn parse_server_response() {
+fn parse_public_system_identity() {
     let raw = json!({
         "data": {
-            "instance_id": "01912345-6789-7abc-def0-123456789abc",
-            "instance_name": "desk-pc",
-            "version": "0.1.0",
-            "device_count": 2,
-            "auth_required": true
+            "identity": {
+                "instance_id": "01912345-6789-7abc-def0-123456789abc",
+                "instance_name": "desk-pc",
+                "version": "0.1.0",
+                "device_count": 2,
+                "auth_required": true
+            }
         }
     });
 
-    let envelope: ApiEnvelope<ServerResponse> =
-        serde_json::from_value(raw).expect("should parse server response");
-    let server = envelope.data.expect("should have data");
+    let envelope: ApiEnvelope<SystemResponse> =
+        serde_json::from_value(raw).expect("should parse system response");
+    let system = envelope.data.expect("should have data");
+    assert!(system.status.is_none());
+    let server = system.identity;
     assert_eq!(server.instance_id, "01912345-6789-7abc-def0-123456789abc");
     assert_eq!(server.instance_name, "desk-pc");
     assert_eq!(server.version, "0.1.0");
@@ -271,9 +282,15 @@ fn parse_ws_event_active_scene_changed() {
 }
 
 #[test]
-fn parse_status_response() {
+fn parse_authenticated_system_status() {
     let raw = json!({
         "data": {
+          "identity": {
+            "instance_id": "01912345-6789-7abc-def0-123456789abc",
+            "instance_name": "desk-pc",
+            "version": "0.1.0"
+          },
+          "status": {
             "running": true,
             "version": "0.1.0",
             "config_path": "/home/user/.config/hypercolor/hypercolor.toml",
@@ -295,12 +312,17 @@ fn parse_status_response() {
                 "total_frames": 216_000
             },
             "event_bus_subscribers": 1
+          }
         }
     });
 
-    let envelope: ApiEnvelope<StatusResponse> =
-        serde_json::from_value(raw).expect("should parse status");
-    let status = envelope.data.expect("should have data");
+    let envelope: ApiEnvelope<SystemResponse> =
+        serde_json::from_value(raw).expect("should parse system status");
+    let status = envelope
+        .data
+        .expect("should have data")
+        .status
+        .expect("authenticated system response should have status");
     assert!(status.running);
     assert_eq!(status.active_effect.as_deref(), Some("Aurora Borealis"));
     assert_eq!(status.active_scene.as_deref(), Some("Movie Night"));

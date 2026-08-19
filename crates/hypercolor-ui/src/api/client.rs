@@ -539,7 +539,7 @@ mod tests {
         );
 
         begin_native_daemon_verification();
-        assert_eq!(daemon_url("/api/v1/server"), None);
+        assert_eq!(daemon_url("/api/v1/system"), None);
         install_verified_daemon_connection("http://127.0.0.1:9420", Some("protected"));
         assert!(
             super::request(
@@ -550,12 +550,12 @@ mod tests {
         );
         assert_eq!(authorization_token().as_deref(), Some("protected"));
         assert_eq!(
-            daemon_url("/api/v1/server"),
-            Some("http://127.0.0.1:9420/api/v1/server".to_owned())
+            daemon_url("/api/v1/system"),
+            Some("http://127.0.0.1:9420/api/v1/system".to_owned())
         );
         clear_verified_daemon_connection();
         assert_eq!(authorization_token(), None);
-        assert_eq!(daemon_url("/api/v1/server"), None);
+        assert_eq!(daemon_url("/api/v1/system"), None);
         reset_daemon_transport_for_test();
     }
 

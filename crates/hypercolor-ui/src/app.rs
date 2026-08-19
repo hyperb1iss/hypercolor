@@ -130,7 +130,7 @@ pub struct FrameAnalysisContext {
 
 /// Named daemon capabilities (Spec 65 §9.6). Multi-zone Studio affordances
 /// gate on whether their backing capability is advertised by the daemon's
-/// `GET /api/v1/status` response — there is no probe fallback, so an
+/// authenticated `/api/v1/system` status — there is no probe fallback, so an
 /// absent advertisement means the affordance stays hidden.
 #[derive(Clone, Copy)]
 pub struct CapabilitiesContext {

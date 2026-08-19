@@ -30,17 +30,23 @@ pub async fn execute(args: &ServerArgs, client: &DaemonClient, ctx: &OutputConte
 }
 
 async fn execute_info(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/server").await?;
+    let system = client.get("/system").await?;
+    let response = system
+        .get("identity")
+        .ok_or_else(|| anyhow::anyhow!("System response is missing daemon identity"))?;
 
     match ctx.format {
-        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain => {
             println!("{}", extract_str(&response, "version"));
         }
         OutputFormat::Table => {
             println!();
             ctx.info(&format!("Version    {}", extract_str(&response, "version")));
-            ctx.info(&format!("Name       {}", extract_str(&response, "name")));
+            ctx.info(&format!(
+                "Name       {}",
+                extract_str(response, "instance_name")
+            ));
             if let Some(features) = response
                 .get("features")
                 .and_then(serde_json::Value::as_array)
