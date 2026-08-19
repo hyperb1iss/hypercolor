@@ -45,8 +45,13 @@ from .effect import (
 )
 from .layout import Layout, LayoutSummary
 from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
-from .profile import ApplyProfileResult, Profile, ProfileSummary
-from .scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
+from .scene import (
+    ActivateSceneResult,
+    ReplaceSceneRequest,
+    Scene,
+    SceneDocument,
+    SceneLayoutActivationOutcome,
+)
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
 from .system import HealthStatus, OutputState, RenderLoopStatus, ServerIdentity, SystemState
 from .zone import (
@@ -62,7 +67,6 @@ __all__ = [
     "ActivateSceneResult",
     "ApiErrorBody",
     "ApplyEffectResponse",
-    "ApplyProfileResult",
     "AttachmentTemplate",
     "AudioDeviceInfo",
     "AudioDevices",
@@ -109,8 +113,6 @@ __all__ = [
     "PlaylistItem",
     "Preset",
     "PresetApplyResult",
-    "Profile",
-    "ProfileSummary",
     "RenderLoopStatus",
     "ReplaceSceneLayerRequest",
     "ReplaceSceneRequest",
@@ -118,6 +120,7 @@ __all__ = [
     "Scene",
     "SceneDocument",
     "SceneLayer",
+    "SceneLayoutActivationOutcome",
     "ServerIdentity",
     "SideEffectOutcome",
     "SpatialLayout",

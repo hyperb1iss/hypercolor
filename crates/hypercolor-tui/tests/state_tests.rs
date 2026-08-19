@@ -90,7 +90,6 @@ fn daemon_state_serde_roundtrip() {
         fps_actual: 29.5,
         scene_name: Some("Focus".to_string()),
         scene_snapshot_locked: true,
-        profile_name: Some("Gaming".to_string()),
         device_count: 3,
         total_leds: 150,
     };

@@ -100,21 +100,20 @@ Read `confidence` and `alternatives` back to the user when the match is uncertai
 // set_brightness with { "brightness": 35 }
 ```
 
-### 5. Persist it (optional)
+### 5. Prepare it for automation (optional)
 
-To make the calm look reusable, persist it as a scene. The MCP `create_scene` tool is more constrained than "save the current state": it requires `name`, an existing `profile_id`, and a `trigger` object whose `type` is one of `schedule`, `sunset`, `sunrise`, `device_connect`, `device_disconnect`, `audio_beat`, or `webhook`. It is the only non-idempotent tool, so call it once.
+The MCP `create_scene` tool creates a reusable scene with a seeded Primary zone. It takes a name plus optional description, enabled state, and mutation mode. It is the only non-idempotent tool, so call it once. Hypercolor does not schedule scenes, so an external automation system must call `activate_scene` when its own conditions match.
 
 ```json
 // create_scene with
 {
   "name": "Evening Calm",
-  "profile_id": "prof_a1b2c3",
-  "trigger": { "type": "sunset" }
+  "description": "Calm lighting for an external sunset automation"
 }
 ```
 
 {% callout(type="info") %}
-Scenes are whole-rig configurations, not per-room settings. A scene captures the entire setup and the trigger that activates it. Flexible canvas partitions inside a scene are zones, covered in the [Studio docs](@/studio/_index.md).
+Scenes are whole-rig configurations, not per-room settings. Flexible canvas partitions inside a scene are zones, covered in the [Studio docs](@/studio/_index.md). To capture the live runtime state exactly, use `hypercolor scenes snapshot "Evening Calm"` through the CLI.
 {% end %}
 
 The same loop in the CLI, for an agent that shells out rather than speaking MCP:

@@ -362,7 +362,7 @@ fn mark_disconnected(state: &mut AppState) {
     state.scene_snapshot_locked = false;
     state.device_count = 0;
     state.effects.clear();
-    state.profiles.clear();
+    state.scenes.clear();
     state.server_identity = None;
 }
 
@@ -451,8 +451,8 @@ fn handle_menu_event(
         other => {
             if let Some(effect_id) = other.strip_prefix(menu::ids::EFFECT_PREFIX) {
                 let _ = cmd_tx.send(TrayCommand::ApplyEffect(effect_id.to_owned()));
-            } else if let Some(profile_id) = other.strip_prefix(menu::ids::PROFILE_PREFIX) {
-                let _ = cmd_tx.send(TrayCommand::ApplyProfile(profile_id.to_owned()));
+            } else if let Some(scene_id) = other.strip_prefix(menu::ids::SCENE_PREFIX) {
+                let _ = cmd_tx.send(TrayCommand::ActivateScene(scene_id.to_owned()));
             } else if let Some(index) = other.strip_prefix(menu::ids::SERVER_PREFIX)
                 && let Ok(index) = index.parse::<usize>()
             {

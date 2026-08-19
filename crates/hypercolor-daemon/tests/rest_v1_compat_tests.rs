@@ -294,21 +294,6 @@ async fn success_envelope_is_frozen_on_a_representative_get() {
 }
 
 #[tokio::test]
-async fn success_envelope_is_frozen_on_a_201_created() {
-    let (state, _tmp) = isolated_state();
-    let app = test_app(&state);
-
-    let response = send(
-        &app,
-        json_request("POST", "/api/v1/profiles", &json!({ "name": "Compat" })),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::CREATED);
-    assert_envelope(&body_json(response).await);
-}
-
-#[tokio::test]
 async fn health_probe_stays_outside_the_envelope() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
@@ -393,26 +378,6 @@ async fn scenes_list_freezes_the_fabricated_pagination_block() {
     assert_eq!(created.status(), StatusCode::CREATED);
 
     let response = send(&app, get("/api/v1/scenes")).await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_envelope(&json);
-    assert_frozen_list(&json["data"], 1);
-}
-
-#[tokio::test]
-async fn profiles_list_freezes_the_fabricated_pagination_block() {
-    let (state, _tmp) = isolated_state();
-    let app = test_app(&state);
-
-    let created = send(
-        &app,
-        json_request("POST", "/api/v1/profiles", &json!({ "name": "Evening" })),
-    )
-    .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-
-    let response = send(&app, get("/api/v1/profiles")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;

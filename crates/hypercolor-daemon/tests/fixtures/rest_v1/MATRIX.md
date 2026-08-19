@@ -144,9 +144,9 @@ client-side routing work; `/health` has no sub-paths to protect.
 
 ## 2. Frozen list endpoints and the fabricated pagination block
 
-Six list endpoints share one deliberate lie. Each returns **every** row in
-`items` while reporting a `limit` of 50 and `has_more: false`. Five take no
-query extractor at all, and the sixth (`/api/v1/effects`, see below) names no
+Five list endpoints share one deliberate lie. Each returns **every** row in
+`items` while reporting a `limit` of 50 and `has_more: false`. Four take no
+query extractor at all, and the fifth (`/api/v1/effects`, see below) names no
 paging arguments, so `?offset=` and `?limit=` are silently discarded on every
 row.
 
@@ -164,7 +164,6 @@ row.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/api/v1/effects` | `items` | `0` | `50` | count **after** filtering | `false` | honored (below) |
 | GET | `/api/v1/scenes` | `items` | `0` | `50` | real count **after** ephemeral scenes are filtered out | `false` | ignored |
-| GET | `/api/v1/profiles` | `items` | `0` | `50` | real count | `false` | ignored |
 | GET | `/api/v1/library/favorites` | `items` | `0` | `50` | real count | `false` | ignored |
 | GET | `/api/v1/library/presets` | `items` | `0` | `50` | real count | `false` | ignored |
 | GET | `/api/v1/library/playlists` | `items` | `0` | `50` | real count | `false` | ignored |

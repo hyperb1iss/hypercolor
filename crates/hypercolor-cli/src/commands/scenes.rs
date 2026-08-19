@@ -1,4 +1,4 @@
-//! `hyper scenes` -- scene management and automation.
+//! `hyper scenes` -- reusable scene management.
 
 use anyhow::Result;
 use clap::{ArgAction, Args, Subcommand, ValueEnum};
@@ -8,7 +8,7 @@ use hypercolor_types::scene::SceneMutationMode;
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
 
-/// Scene management (automated lighting triggers).
+/// Reusable scene management.
 #[derive(Debug, Args)]
 pub struct ScenesArgs {
     #[command(subcommand)]
@@ -24,6 +24,8 @@ pub enum SceneCommand {
     Active,
     /// Create a new scene.
     Create(SceneCreateArgs),
+    /// Snapshot the current runtime scene.
+    Snapshot(SceneSnapshotArgs),
     /// Manually activate a scene.
     Activate(SceneActivateArgs),
     /// Return to the Default scene.
@@ -67,6 +69,17 @@ pub struct SceneCreateArgs {
     pub mutation_mode: SceneMutationModeArg,
 }
 
+/// Arguments for `scenes snapshot`.
+#[derive(Debug, Args)]
+pub struct SceneSnapshotArgs {
+    /// Scene name.
+    pub name: String,
+
+    /// Scene description.
+    #[arg(long)]
+    pub description: Option<String>,
+}
+
 /// Arguments for `scenes activate`.
 #[derive(Debug, Args)]
 pub struct SceneActivateArgs {
@@ -106,11 +119,33 @@ pub async fn execute(args: &ScenesArgs, client: &DaemonClient, ctx: &OutputConte
         SceneCommand::List => execute_list(client, ctx).await,
         SceneCommand::Active => execute_active(client, ctx).await,
         SceneCommand::Create(create_args) => execute_create(create_args, client, ctx).await,
+        SceneCommand::Snapshot(snapshot_args) => execute_snapshot(snapshot_args, client, ctx).await,
         SceneCommand::Activate(activate_args) => execute_activate(activate_args, client, ctx).await,
         SceneCommand::Deactivate => execute_deactivate(client, ctx).await,
         SceneCommand::Delete(delete_args) => execute_delete(delete_args, client, ctx).await,
         SceneCommand::Info(info_args) => execute_info(info_args, client, ctx).await,
     }
+}
+
+async fn execute_snapshot(
+    args: &SceneSnapshotArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "name": args.name,
+        "description": args.description,
+    });
+    let response = client.post("/scenes/snapshot", &body).await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            ctx.success(&format!("Scene snapshot saved: {}", args.name));
+        }
+    }
+
+    Ok(())
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {

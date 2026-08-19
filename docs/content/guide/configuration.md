@@ -72,7 +72,7 @@ canvas_height    = 480                # Effect canvas height in pixels
 max_devices      = 32                 # Maximum simultaneous device connections
 log_level        = "info"            # trace | debug | info | warn | error
 log_file         = ""                 # Empty = stderr only; path enables file output
-start_profile    = "last"             # "last" | "default" | <profile name>
+start_scene      = "last"             # "last" | "default" | <scene name>
 shutdown_behavior = "hardware_default" # hardware_default | off | static
 shutdown_color   = "#1a1a2e"          # Hex color used when shutdown_behavior = "static"
 ```
@@ -81,7 +81,7 @@ shutdown_color   = "#1a1a2e"          # Hex color used when shutdown_behavior = 
 
 **`canvas_width` / `canvas_height`** are the render canvas dimensions. LED spatial positions are normalized to `[0.0, 1.0]`, so layouts remain valid across different canvas sizes. Canvas resizes take effect at the next frame boundary. Both keys support live reload.
 
-**`start_profile`**: `"last"` restores the profile that was active at shutdown. `"default"` loads a profile named "default". Any other string is treated as a profile name.
+**`start_scene`**: `"last"` restores the scene that was active at shutdown. `"default"` selects the auto-managed Default scene. Any other non-empty string is treated as a saved scene name or id.
 
 **`shutdown_behavior`**: `hardware_default` leaves LEDs on their last hardware frame (most controllers hold it). `off` sends a black frame to every device. `static` sends the color in `shutdown_color`.
 
@@ -126,7 +126,7 @@ json_response       = false   # Use JSON responses instead of SSE framing
 sse_keep_alive_secs = 15      # SSE heartbeat interval
 ```
 
-Once enabled, the MCP server exposes 17 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
+Once enabled, the MCP server exposes 16 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
 
 ---
 

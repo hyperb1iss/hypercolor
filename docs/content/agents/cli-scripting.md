@@ -10,7 +10,7 @@ The `hypercolor` CLI is the second way an agent drives the daemon, alongside the
 The CLI talks to the daemon over its REST API on `:9420`. It does not touch hardware directly, so every command an agent runs goes through the same shared engine state as the web UI and MCP. A change made on the command line is instantly visible everywhere else.
 
 {% callout(type="info") %}
-This is the command-driven sibling of the MCP path. If your agent runtime supports MCP, the [tool reference](@/agents/tools-reference.md) gives a typed, schema-validated surface. Reach for the CLI when you want shell scripting, piping into `jq`, exit-code branching, or coverage of commands MCP does not expose (effect rescan, profiles, layouts, driver controls). For the full human-facing command tree, see the [CLI reference](@/api/cli.md).
+This is the command-driven sibling of the MCP path. If your agent runtime supports MCP, the [tool reference](@/agents/tools-reference.md) gives a typed, schema-validated surface. Reach for the CLI when you want shell scripting, piping into `jq`, exit-code branching, or coverage of commands MCP does not expose (effect rescan, scene snapshots, layouts, driver controls). For the full human-facing command tree, see the [CLI reference](@/api/cli.md).
 {% end %}
 
 ## The agent contract: JSON in, exit codes out 🎯
@@ -241,7 +241,7 @@ hypercolor effects activate aurora
 ## Where to go next
 
 - [MCP setup](@/agents/mcp-setup.md): the typed, schema-validated alternative to shell scripting.
-- [Tools reference](@/agents/tools-reference.md): all 17 MCP tools with arguments and return shapes.
+- [Tools reference](@/agents/tools-reference.md): all 16 MCP tools with arguments and return shapes.
 - [Prompt templates](@/agents/prompt-templates.md): the three shipped prompts agents can invoke.
 - [CLI reference](@/api/cli.md): the complete command tree, human-facing.
 - [REST API reference](@/api/rest.md): the daemon contract the CLI sits on top of.

@@ -12,7 +12,6 @@ pub mod drivers;
 pub mod effects;
 pub mod layouts;
 pub mod library;
-pub mod profiles;
 pub mod scenes;
 pub mod server;
 pub mod servers;

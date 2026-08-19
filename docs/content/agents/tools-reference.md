@@ -1,11 +1,11 @@
 +++
 title = "Tools reference"
-description = "All 17 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
+description = "All 16 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
 weight = 20
 template = "page.html"
 +++
 
-The Hypercolor MCP server exposes **17 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
+The Hypercolor MCP server exposes **16 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
 
 {% callout(type="warning") %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404. Turn it on first in [MCP setup](@/agents/mcp-setup.md), then come back here.
@@ -24,9 +24,9 @@ Every tool carries two annotations the daemon reports to MCP clients, plus two c
 | `destructive` | The tool overwrites state you cannot get back. Reported per tool, not as a blanket value. |
 | `open_world` | Always `false`; the tool set is closed and known. |
 
-Of the 17 tools, **8 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, and `diagnose`. The other 9 mutate state. Every mutating tool advertises `idempotent: true` except one: `create_scene` is the only non-idempotent tool, since each call mints a new scene.
+Of the 16 tools, **8 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, and `diagnose`. The other 8 mutate state. Every mutating tool advertises `idempotent: true` except one: `create_scene` is the only non-idempotent tool, since each call mints a new scene.
 
-Six of the nine mutating tools are destructive: `set_effect`, `set_color`, `stop_effect`, `activate_scene`, `set_profile`, and `set_display_face` each discard something the caller did not supply and cannot recover, such as the running effect's live control values or a display's assigned face. The other three are not: `set_brightness` and `set_output_power` are reversible value writes, and `create_scene` only adds.
+Five of the eight mutating tools are destructive: `set_effect`, `set_color`, `stop_effect`, `activate_scene`, and `set_display_face` each discard something the caller did not supply and cannot recover, such as the running effect's live control values or a display's assigned face. The other three are not: `set_brightness` and `set_output_power` are reversible value writes, and `create_scene` only adds.
 
 {% callout(type="tip") %}
 Read-then-act is the through-line. The server's own instructions tell every client to call `get_status` or read `hypercolor://state` before making changes, and to call `list_effects` before applying visuals. Follow that order and your calls land predictably.
@@ -198,7 +198,7 @@ If no scene matches, the call succeeds with `"activated": false` and a message s
 
 ### list_scenes
 
-List available scenes with names, descriptions, and trigger configuration. Read-only, idempotent. Ephemeral scenes are excluded.
+List available scenes with names, descriptions, mutation modes, and activation state. Read-only, idempotent. Ephemeral scenes are excluded.
 
 - **Optional:** `enabled_only` (boolean, default `false`).
 
@@ -210,9 +210,9 @@ Each entry includes `id`, `name`, `description`, `enabled`, `mutation_mode`, and
 
 ### create_scene
 
-Create a new scene. This is the **only non-idempotent tool**: `read_only: false`, `idempotent: false`. It is more constrained than "save the current state" implies, requiring three arguments.
+Create a new scene. This is the **only non-idempotent tool**: `read_only: false`, `idempotent: false`. The tool creates a reusable scene with a seeded Primary zone. It does not capture the current runtime state and it does not configure automation.
 
-- **Required:** `name` (string); `profile_id` (string): must reference an existing profile, or the call fails with an invalid-parameter error; `trigger` (object): its `type` is one of `schedule`, `sunset`, `sunrise`, `device_connect`, `device_disconnect`, `audio_beat`, `webhook`. The type is recorded on the scene; the daemon has no scheduler behind it yet, so a trigger does not fire on its own and the tool takes no cron expression.
+- **Required:** `name` (string).
 - **Optional:** `description` (string); `enabled` (boolean, default `true`); `mutation_mode` (enum, default `live`): `live` lets runtime effect and display-face actions rewrite the scene, `snapshot` freezes it. There is no transition argument: creating a scene renders nothing.
 
 ```json
@@ -220,8 +220,7 @@ Create a new scene. This is the **only non-idempotent tool**: `read_only: false`
   "name": "create_scene",
   "arguments": {
     "name": "Sunset Warmth",
-    "profile_id": "prof_01J...",
-    "trigger": { "type": "sunset" }
+    "description": "Warm lighting for an external sunset automation"
   }
 }
 ```
@@ -329,23 +328,6 @@ The target effect must be in the `Display` category **and** be an HTML source; a
 ```
 
 To clear a face, pass `"clear": true` and the same `scope`. See [display faces](@/effects/display-faces.md) for authoring the HTML side.
-
----
-
-## Library
-
-### set_profile
-
-Activate a saved profile by name or fuzzy query. A profile captures the complete lighting state: effect, control parameters, device selection, and brightness. Mutates state, idempotent.
-
-- **Required:** `query` (string): profile name or description.
-- **Arguments:** `query` only. Profile apply is immediate, so the tool exposes no fade duration.
-
-```json
-{ "name": "set_profile", "arguments": { "query": "Focus" } }
-```
-
-If no profile matches, the call succeeds with `"applied": false` and an explanatory message rather than erroring. On success the response returns the profile (`id`, `name`, `description`, `primary`, `displays`, `layout_id`), `applied: true`, and any `warnings`.
 
 ---
 

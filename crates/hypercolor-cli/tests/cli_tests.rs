@@ -284,6 +284,12 @@ fn build_cmd() -> clap::Command {
                         ),
                 )
                 .subcommand(
+                    Command::new("snapshot")
+                        .about("Snapshot current scene")
+                        .arg(Arg::new("name").required(true))
+                        .arg(Arg::new("description").long("description")),
+                )
+                .subcommand(
                     Command::new("activate")
                         .about("Activate scene")
                         .arg(Arg::new("name").required(true)),
@@ -298,36 +304,6 @@ fn build_cmd() -> clap::Command {
                 .subcommand(
                     Command::new("info")
                         .about("Scene info")
-                        .arg(Arg::new("name").required(true)),
-                ),
-        )
-        .subcommand(
-            Command::new("profiles")
-                .about("Profile management")
-                .subcommand_required(true)
-                .subcommand(Command::new("list").about("List profiles"))
-                .subcommand(
-                    Command::new("create")
-                        .about("Create profile")
-                        .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("description").long("description"))
-                        .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
-                )
-                .subcommand(
-                    Command::new("apply")
-                        .about("Apply profile")
-                        .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("transition").long("transition").default_value("0")),
-                )
-                .subcommand(
-                    Command::new("delete")
-                        .about("Delete profile")
-                        .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("yes").long("yes").action(ArgAction::SetTrue)),
-                )
-                .subcommand(
-                    Command::new("info")
-                        .about("Profile info")
                         .arg(Arg::new("name").required(true)),
                 ),
         )
@@ -1056,52 +1032,24 @@ fn parse_scenes_delete_with_yes() {
 }
 
 #[test]
-fn parse_profiles_list() {
+fn parse_scenes_snapshot() {
     let cmd = build_cmd();
-    cmd.try_get_matches_from(["hyper", "profiles", "list"])
-        .expect("profiles list should parse");
-}
-
-#[test]
-fn parse_profiles_create() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from([
-        "hyper",
-        "profiles",
-        "create",
-        "late-night",
-        "--description",
-        "Dim aurora",
-    ])
-    .expect("profiles create should parse");
-}
-
-#[test]
-fn parse_profiles_apply() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from([
-        "hyper",
-        "profiles",
-        "apply",
-        "evening",
-        "--transition",
-        "3000",
-    ])
-    .expect("profiles apply should parse");
-}
-
-#[test]
-fn parse_profiles_delete() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from(["hyper", "profiles", "delete", "old-profile", "--yes"])
-        .expect("profiles delete should parse");
-}
-
-#[test]
-fn parse_profiles_info() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from(["hyper", "profiles", "info", "evening"])
-        .expect("profiles info should parse");
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "scenes",
+            "snapshot",
+            "late-night",
+            "--description",
+            "Dim aurora",
+        ])
+        .expect("scenes snapshot should parse");
+    let (_, scenes) = matches.subcommand().expect("should have scenes");
+    let (_, snapshot) = scenes.subcommand().expect("should have snapshot");
+    assert_eq!(
+        snapshot.get_one::<String>("name").map(String::as_str),
+        Some("late-night")
+    );
 }
 
 #[test]

@@ -78,7 +78,7 @@ Events are `HypercolorEvent` variants grouped by `EventCategory` with `EventPrio
 | `DeviceDisconnected`               | Device   | Lifecycle manager             |
 | `DeviceError`                      | Device   | Backend driver                |
 | `SceneActivated`                   | Scene    | Scene manager                 |
-| `ProfileLoaded`                    | System   | API handler                   |
+| `SceneLibraryChanged`              | Scene    | Scene service                 |
 | `ConfigChanged`                    | System   | Config API                    |
 | `FrameRendered`                    | System   | Render thread                 |
 | `FpsChanged`                       | System   | Adaptive FPS                  |

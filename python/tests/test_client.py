@@ -615,35 +615,33 @@ async def test_set_output_refuses_a_patch_that_sets_nothing(
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_apply_profile_quotes_generated_path_parameters(
+async def test_activate_scene_quotes_generated_path_parameters(
     client: HypercolorClient,
 ) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/profiles/movie%2Fnight/apply").mock(
+    route = respx.post("http://hyperia.test:9420/api/v1/scenes/movie%2Fnight/activate").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
                 {
-                    "profile": {
+                    "scene": {
                         "id": "movie/night",
                         "name": "Movie Night",
                     },
-                    "applied": True,
-                    "transition": {"type": "fade", "duration_ms": 500},
+                    "activated": True,
+                    "layout": {"layout_id": "layout-a", "applied": True},
+                    "brightness": {"applied": False},
                 }
             ),
         )
     )
 
-    result = await client.apply_profile(
-        "movie/night",
-        transition={"type": "fade", "duration_ms": 500},
-    )
+    result = await client.activate_scene("movie/night")
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {
-        "transition": {"type": "fade", "duration_ms": 500}
-    }
-    assert result.profile.id == "movie/night"
+    assert route.calls[0].request.content == b""
+    assert result.scene.id == "movie/night"
+    assert result.layout.layout_id == "layout-a"
+    assert result.brightness.applied is False
 
 
 @respx.mock
@@ -1030,7 +1028,7 @@ async def test_library_helpers(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_scene_profile_display_and_diagnostics_helpers(
+async def test_scene_display_and_diagnostics_helpers(
     client: HypercolorClient,
 ) -> None:
     scene_route = respx.post("http://hyperia.test:9420/api/v1/scenes").mock(
@@ -1048,15 +1046,17 @@ async def test_scene_profile_display_and_diagnostics_helpers(
             ),
         )
     )
-    profile_route = respx.post("http://hyperia.test:9420/api/v1/profiles").mock(
+    snapshot_route = respx.post("http://hyperia.test:9420/api/v1/scenes/snapshot").mock(
         return_value=httpx.Response(
             201,
             content=_envelope(
                 {
-                    "id": "profile-a",
+                    "id": "scene-snapshot",
                     "name": "Evening",
                     "description": "soft",
-                    "brightness": 64,
+                    "enabled": True,
+                    "priority": 50,
+                    "mutation_mode": "snapshot",
                 }
             ),
         )
@@ -1112,11 +1112,9 @@ async def test_scene_profile_display_and_diagnostics_helpers(
     )
 
     scene = await client.create_scene("Desk Glow", enabled=True, mutation_mode="live")
-    profile = await client.save_profile(
+    snapshot = await client.snapshot_scene(
         "Evening",
         description="soft",
-        brightness=64,
-        force=True,
     )
     displays = await client.list_displays()
     face = await client.set_display_face(
@@ -1133,12 +1131,11 @@ async def test_scene_profile_display_and_diagnostics_helpers(
         "enabled": True,
         "mutation_mode": "live",
     }
-    assert profile.name == "Evening"
-    assert json.loads(profile_route.calls[0].request.content) == {
+    assert snapshot.name == "Evening"
+    assert snapshot.snapshot_locked is True
+    assert json.loads(snapshot_route.calls[0].request.content) == {
         "name": "Evening",
         "description": "soft",
-        "brightness": 64,
-        "force": True,
     }
     assert displays[0].id == "streamdeck"
     assert json.loads(face_route.calls[0].request.content) == {

@@ -143,6 +143,7 @@ impl PreparedDaemon {
             app_state.install_macos_daemon_session(attestation);
         }
         let app_state = Arc::new(app_state);
+        api::displays::sync_connected_display_surfaces(&app_state).await;
         api::displays::sync_display_preference_overlays(&app_state).await;
         if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
             if let Err(shutdown_error) = daemon_state.shutdown().await {

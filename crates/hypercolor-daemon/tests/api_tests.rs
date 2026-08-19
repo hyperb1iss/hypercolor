@@ -50,12 +50,9 @@ use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
-use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
-use hypercolor_daemon::session::{
-    OutputOverride, OutputPowerState, current_global_brightness, set_global_brightness,
-};
+use hypercolor_daemon::session::{OutputOverride, OutputPowerState};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
 use hypercolor_network::DriverModuleRegistry;
@@ -82,7 +79,6 @@ use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
-use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
     SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
@@ -2650,7 +2646,7 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
 /// settings stand in for anything a driver may persist without the host
 /// modelling the shape.
 const RESET_FIXTURE_CONFIG: &str = r#"
-schema_version = 4
+schema_version = 5
 include = ["desk-overrides.toml", "travel.toml"]
 
 [daemon]
@@ -2678,7 +2674,7 @@ refresh_token = "rt-do-not-lose-me"
 /// Spec 76 §3.1 promises arbitrary extension documents survive a reset, so
 /// the shape that exercises the serialization boundary gets its own fixture.
 const RESET_NESTED_EXTENSION_CONFIG: &str = r#"
-schema_version = 4
+schema_version = 5
 
 [telemetry]
 enabled = true
@@ -2699,7 +2695,7 @@ name = "audit"
 
 /// A driver entry the registered WLED module rejects as invalid.
 const RESET_INVALID_DRIVER_CONFIG: &str = r#"
-schema_version = 4
+schema_version = 5
 
 [drivers.wled]
 enabled = true
@@ -7662,6 +7658,51 @@ async fn list_scenes_excludes_default_scene() {
 }
 
 #[tokio::test]
+async fn snapshot_scene_creates_a_locked_copy_of_the_live_tree() {
+    let state = Arc::new(isolated_state());
+    let active = state
+        .scene_manager
+        .read()
+        .await
+        .active_scene()
+        .cloned()
+        .expect("default scene should be active");
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/snapshot")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Desk capture","description":"Current runtime"}"#,
+                ))
+                .expect("snapshot request"),
+        )
+        .await
+        .expect("snapshot response");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Desk capture");
+    assert_eq!(json["data"]["mutation_mode"], "snapshot");
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("snapshot id")
+        .parse::<Uuid>()
+        .expect("snapshot UUID");
+
+    let manager = state.scene_manager.read().await;
+    let saved = manager
+        .get(&SceneId(scene_id))
+        .expect("snapshot should be stored");
+    assert_eq!(saved.groups, active.groups);
+    assert_eq!(saved.activation_brightness, None);
+    assert_eq!(manager.active_scene_id(), Some(&active.id));
+}
+
+#[tokio::test]
 async fn stored_scene_replace_is_whole_document_versioned_and_identity_safe() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
@@ -7926,298 +7967,6 @@ async fn delete_default_returns_409_or_422() {
             .expect("message should be a string")
             .contains("cannot be deleted"),
     );
-}
-
-#[tokio::test]
-async fn pre_final_profile_shape_is_rejected_on_load() {
-    let state = {
-        let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let data_dir = tempdir.path().join("data");
-        fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-
-        let effect_id = EffectId::new(Uuid::now_v7());
-        let preset_id = PresetId(Uuid::now_v7());
-        let profiles_path = data_dir.join("profiles.json");
-        fs::write(
-            &profiles_path,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "prof_evening": {
-                    "id": "prof_evening",
-                    "name": "Evening",
-                    "effect_id": effect_id,
-                    "effect_name": "solid_color",
-                    "active_preset_id": preset_id,
-                    "controls": {
-                        "speed": { "float": 12.5 }
-                    }
-                }
-            }))
-            .expect("pre-final profile json should serialize"),
-        )
-        .expect("pre-final profile json should be written");
-
-        AppState::new_with_data_dir(data_dir)
-    };
-
-    {
-        let profiles = state.profiles.read().await;
-        assert!(
-            profiles.get("prof_evening").is_none(),
-            "invalid pre-final profiles should be dropped on load"
-        );
-    }
-}
-
-#[tokio::test]
-async fn create_profile_rejects_duplicate_names_without_force_and_force_overwrites() {
-    let state = Arc::new(isolated_state());
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let first_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Gaming Mode","brightness":72}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(first_response.status(), StatusCode::CREATED);
-    let first_json = body_json(first_response).await;
-    let first_id = first_json["data"]["id"]
-        .as_str()
-        .expect("profile id should be present")
-        .to_owned();
-
-    let duplicate_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"gaming mode","brightness":15}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(duplicate_response.status(), StatusCode::CONFLICT);
-    let duplicate_json = body_json(duplicate_response).await;
-    assert_eq!(duplicate_json["error"]["code"], "conflict");
-
-    let forced_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"gaming mode","brightness":15,"force":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(forced_response.status(), StatusCode::OK);
-    let forced_json = body_json(forced_response).await;
-    assert_eq!(forced_json["data"]["id"], first_id);
-    assert_eq!(forced_json["data"]["brightness"], 15);
-
-    let list_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/profiles")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
-}
-
-#[tokio::test]
-async fn profile_lookup_returns_conflict_for_ambiguous_name() {
-    let state = Arc::new(isolated_state());
-    {
-        let mut profiles = state.profiles.write().await;
-        profiles
-            .insert(Profile::named("prof_alpha", "Evening"))
-            .expect("seed first profile");
-        profiles
-            .insert(Profile::named("prof_beta", "evening"))
-            .expect("seed second profile");
-    }
-
-    let app = test_app_with_state(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/profiles/evening")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "conflict");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("ambiguous"),
-    );
-}
-
-#[tokio::test]
-async fn apply_profile_rejects_unimplemented_transition_requests() {
-    let state = Arc::new(isolated_state());
-    {
-        let mut profiles = state.profiles.write().await;
-        profiles
-            .insert(Profile::named("prof_evening", "Evening"))
-            .expect("seed profile");
-    }
-
-    let app = test_app_with_state(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles/prof_evening/apply")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"transition_ms":250}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "validation_error");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("only immediate apply is supported"),
-    );
-}
-
-#[tokio::test]
-async fn apply_profile_conflicts_when_snapshot_scene_is_active() {
-    let state = Arc::new(isolated_state());
-    {
-        let mut profiles = state.profiles.write().await;
-        let mut profile = Profile::named("prof_evening", "Evening");
-        profile.brightness = Some(40);
-        profiles.insert(profile).expect("seed profile");
-    }
-    activate_empty_test_scene_with_mode(&state, "Focus", SceneMutationMode::Snapshot).await;
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles/prof_evening/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "conflict");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("snapshot mode"),
-    );
-}
-
-#[tokio::test]
-async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
-    let state = Arc::new(isolated_state());
-    let current_layout = SpatialLayout {
-        id: "layout_current".to_owned(),
-        name: "Current Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-    let profile_layout = SpatialLayout {
-        id: "layout_profile".to_owned(),
-        name: "Profile Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-    {
-        let mut layouts = state.layouts.write().await;
-        layouts.insert(current_layout.id.clone(), current_layout.clone());
-        layouts.insert(profile_layout.id.clone(), profile_layout);
-    }
-    {
-        let mut spatial = state.spatial_engine.write().await;
-        spatial.update_layout(current_layout.clone());
-    }
-    set_global_brightness(&state.power_state, 0.8);
-    {
-        let mut profiles = state.profiles.write().await;
-        let mut profile = Profile::named("prof_broken", "Broken");
-        profile.brightness = Some(25);
-        profile.primary = Some(ProfilePrimary {
-            effect_id: EffectId::new(Uuid::now_v7()),
-            controls: HashMap::new(),
-            active_preset_id: None,
-        });
-        profile.layout_id = Some("layout_profile".to_owned());
-        profiles.insert(profile).expect("seed profile");
-    }
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles/prof_broken/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let json = body_json(response).await;
-    // An internal failure names itself in tracing, never on the wire.
-    assert_eq!(json["error"]["code"], "internal_error");
-    assert_eq!(json["error"]["message"], "internal error");
-
-    let active_layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().id.clone()
-    };
-    assert_eq!(active_layout, current_layout.id);
-    assert!((current_global_brightness(&state.power_state) - 0.8).abs() < f32::EPSILON);
 }
 
 // ── Layouts ──────────────────────────────────────────────────────────────
@@ -10458,7 +10207,7 @@ async fn error_responses_have_correct_envelope() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/profiles/nonexistent")
+                .uri("/api/v1/scenes/nonexistent")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )

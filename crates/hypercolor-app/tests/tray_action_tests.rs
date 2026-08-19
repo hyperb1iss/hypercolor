@@ -59,8 +59,8 @@ fn daemon_actions_resolve_to_daemon_client_commands() {
         ActionTarget::DaemonCommand(TrayCommand::ApplyEffect("aurora".to_owned()))
     );
     assert_eq!(
-        actions::target_for_action(&MenuAction::ApplyProfile("movie".to_owned())),
-        ActionTarget::DaemonCommand(TrayCommand::ApplyProfile("movie".to_owned()))
+        actions::target_for_action(&MenuAction::ActivateScene("movie".to_owned())),
+        ActionTarget::DaemonCommand(TrayCommand::ActivateScene("movie".to_owned()))
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::SwitchServer(1)),

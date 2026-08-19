@@ -380,7 +380,6 @@ that subscription's config patch.
     "brightness": 80,
     "fps": { "target": 60, "actual": 59.8 },
     "scene": { "id": "scene-01", "name": "Main", "snapshot_locked": false },
-    "profile": { "id": "default", "name": "Default" },
     "layout": { "id": "main", "name": "Main Setup" },
     "device_count": 5,
     "total_leds": 1200
@@ -501,7 +500,7 @@ echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":5
 
 **Source:** `crates/hypercolor-daemon/src/mcp/tools/`
 
-Hypercolor exposes 17 MCP tools for AI assistant integration. These give agents
+Hypercolor exposes 16 MCP tools for AI assistant integration. These give agents
 programmatic control over the lighting system.
 
 ### Tool Inventory
@@ -512,14 +511,14 @@ programmatic control over the lighting system.
 | `list_effects`     | yes       | Browse the effect library with category/audio filters              |
 | `stop_effect`      | no        | Stop the current effect                                            |
 | `set_color`        | no        | Set a static color on devices                                      |
+| `set_output_power` | no        | Pause or resume output without discarding scene state              |
 | `get_devices`      | yes       | List connected devices                                             |
 | `set_brightness`   | no        | Set brightness (0-100)                                             |
 | `get_status`       | yes       | Current daemon state snapshot                                      |
 | `activate_scene`   | no        | Activate a saved scene                                             |
 | `list_scenes`      | yes       | List available scenes                                              |
-| `create_scene`     | no        | Create a new scene from current state                              |
+| `create_scene`     | no        | Create a new scene with a seeded Primary zone                      |
 | `get_audio_state`  | yes       | Audio input and spectrum data                                      |
-| `set_profile`      | no        | Switch device profile                                              |
 | `get_layout`       | yes       | Current layout mapping                                             |
 | `get_sensor_data`  | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)         |
 | `set_display_face` | no        | Assign or clear an HTML display-face effect on a display device    |
@@ -571,8 +570,7 @@ Quick system state snapshot, useful as a first check before deeper
 diagnostics.
 
 **Output includes:** running state, paused state, brightness, FPS
-(target/actual), active effect, active profile, layout, device count, total
-LEDs.
+(target/actual), active effect, active scene, layout, device count, total LEDs.
 
 ---
 

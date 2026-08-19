@@ -1,13 +1,12 @@
 ---
 name: hypercolor-control
-version: 0.1.0
 description: >-
   Use this skill when an agent needs to inspect or control a running
   Hypercolor daemon, browse or activate effects, patch live controls, adjust
-  brightness, manage scenes or profiles, or install built HTML effects from an
+  brightness, manage scenes and snapshots, or install built HTML effects from an
   authoring workspace. Triggers on "hypercolor", "list effects", "apply
   effect", "patch controls", "install effect", "rescan effects", "brightness",
-  "scene", "profile", or any request to control the daemon from Claude Code.
+  "scene", "snapshot scene", or any request to control the daemon from Claude Code.
 ---
 
 # Hypercolor Control
@@ -53,10 +52,9 @@ hypercolor effects rescan
 hypercolor brightness get
 hypercolor brightness set 45
 hypercolor scenes list
+hypercolor scenes snapshot "Evening"
 hypercolor scenes activate "Movie Night"
 hypercolor scenes deactivate
-hypercolor profiles list
-hypercolor profiles apply "Evening"
 hypercolor diagnose --system
 ```
 

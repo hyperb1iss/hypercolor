@@ -82,7 +82,7 @@ hypercolor
 │   ├── rescan
 │   └── layout {show | set | clear}
 ├── brightness        {get | set}
-├── scenes            {list | active | create | activate | deactivate | delete | info}
+├── scenes            {list | active | create | snapshot | activate | deactivate | delete | info}
 ├── devices           Discovery, pairing, hardware control
 │   ├── list
 │   ├── discover
@@ -101,7 +101,6 @@ hypercolor
 │   ├── favorites     {list | add | remove}
 │   ├── presets       {create | list | info | update | apply | delete}
 │   └── playlists     {create | list | info | update | activate | active | stop | delete}
-├── profiles          {list | create | apply | delete | info}
 ├── server            {info | health}
 ├── servers           {discover | adopt}
 ├── service           {start | stop | restart | status | enable | disable | logs}
@@ -242,6 +241,7 @@ finer-grained partition of the canvas.
 hypercolor scenes list
 hypercolor scenes active
 hypercolor scenes create "Movie Night" --description "Dim and warm"
+hypercolor scenes snapshot "Current Rig" --description "Captured live state"
 hypercolor scenes activate "Movie Night"
 hypercolor scenes deactivate          # Return to the Default scene
 hypercolor scenes info "Movie Night"
@@ -255,6 +255,9 @@ hypercolor scenes delete "Movie Night" --yes
 | `--description <TEXT>` | | Human-readable description. |
 | `--enabled <BOOL>` | `true` | Whether the scene starts enabled. |
 | `--mutation-mode <MODE>` | `live` | `live` lets runtime actions rewrite the scene; `snapshot` freezes it. |
+
+`scenes snapshot` captures the current runtime scene into a new snapshot-mode
+scene. It takes a name and optional `--description`.
 
 ## Devices
 
@@ -406,22 +409,6 @@ the form `effect:<name>` or `preset:<name>`, optionally suffixed with
 `:duration_ms` and `:duration_ms:transition_ms`. Playlists loop by default; pass
 `--no-loop` to play through once.
 
-### profiles
-
-A profile saves your **full system state** (active effect, controls, brightness,
-layout) so you can restore it later.
-
-```bash
-hypercolor profiles list
-hypercolor profiles create "My Setup" --description "Desk default"
-hypercolor profiles apply "My Setup"
-hypercolor profiles info "My Setup"
-hypercolor profiles delete "My Setup" --yes
-```
-
-`create` accepts `--force` to overwrite an existing profile. Profile apply is
-immediate; `--transition` is reserved for crossfades and only accepts `0` today.
-
 ## Network
 
 ### server
@@ -506,10 +493,10 @@ hypercolor config profile remove studio
 ```
 
 {% callout(type="info") %}
-There are two unrelated "profile" concepts. **`hypercolor profiles`** saves
-lighting state on the daemon. **`hypercolor config profile`** saves CLI
-connection settings (host, port, key) locally so you can switch which daemon you
-talk to. The global `--profile` flag selects the latter.
+`hypercolor config profile` stores CLI connection settings (host, port, key)
+locally so you can switch which daemon you talk to. The global `--profile` flag
+selects one of those connection profiles. Lighting snapshots live under
+`hypercolor scenes snapshot`.
 {% end %}
 
 ### diagnose

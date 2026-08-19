@@ -12,7 +12,6 @@ use crate::api::AppState;
 mod devices;
 mod displays;
 mod effects;
-mod library;
 mod scenes;
 mod system;
 
@@ -62,7 +61,6 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         system::build_get_audio_state(),
         system::build_get_sensor_data(),
         displays::build_set_display_face(),
-        library::build_set_profile(),
         system::build_get_layout(),
         system::build_diagnose(),
     ]
@@ -133,7 +131,6 @@ pub async fn execute_tool_with_state(
         "get_audio_state" => Ok(system::handle_get_audio_state_with_state(state)),
         "get_sensor_data" => system::handle_get_sensor_data_with_state(params, state).await,
         "set_display_face" => displays::handle_set_display_face_with_state(params, state).await,
-        "set_profile" => library::handle_set_profile_with_state(params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(params, state).await,
         _ => Err(ToolError::NotFound(name.to_owned())),

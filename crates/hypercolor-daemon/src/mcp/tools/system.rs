@@ -21,7 +21,7 @@ pub(super) fn build_get_status() -> ToolDefinition {
     ToolDefinition {
         name: "get_status".into(),
         title: "Get System State".into(),
-        description: "Get the current state of the Hypercolor daemon including: active effect, global brightness, connected device count, active profile, FPS metrics, audio/screen input status, and uptime. Call this first to understand the current setup before making changes.".into(),
+        description: "Get the current state of the Hypercolor daemon including: active effect, global brightness, connected device count, FPS metrics, audio/screen input status, and uptime. Call this first to understand the current setup before making changes.".into(),
         input_schema: json!({
             "type": "object",
             "additionalProperties": false

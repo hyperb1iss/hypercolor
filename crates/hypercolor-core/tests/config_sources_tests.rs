@@ -12,7 +12,7 @@ use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
 fn write_config(dir: &tempfile::TempDir, body: &str) -> std::path::PathBuf {
     let path = dir.path().join("hypercolor.toml");
     let mut file = std::fs::File::create(&path).expect("config file creates");
-    writeln!(file, "schema_version = 4").expect("writes");
+    writeln!(file, "schema_version = 5").expect("writes");
     file.write_all(body.as_bytes()).expect("writes");
     path
 }

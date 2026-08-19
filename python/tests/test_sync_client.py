@@ -119,6 +119,44 @@ def test_sync_client_round_trips_complete_stored_scene() -> None:
     assert updated.activation_brightness == 0.75
 
 
+def test_sync_client_snapshots_the_live_scene() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/scenes/snapshot"
+        assert request.method == "POST"
+        assert json.loads(request.content) == {
+            "name": "Evening",
+            "description": "Soft desk lighting",
+        }
+        return httpx.Response(
+            201,
+            content=msgspec.json.encode(
+                {
+                    "data": {
+                        "id": "scene-snapshot",
+                        "name": "Evening",
+                        "description": "Soft desk lighting",
+                        "enabled": True,
+                        "priority": 50,
+                        "mutation_mode": "snapshot",
+                    },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_scene",
+                        "timestamp": "2026-08-19T00:00:00Z",
+                    },
+                }
+            ),
+        )
+
+    client = SyncHypercolorClient(transport=httpx.MockTransport(handler))
+    try:
+        scene = client.snapshot_scene("Evening", description="Soft desk lighting")
+    finally:
+        client.close()
+
+    assert scene.snapshot_locked is True
+
+
 def test_sync_client_delegates_driver_inventory() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/drivers"

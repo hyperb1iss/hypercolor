@@ -1,6 +1,6 @@
 +++
 title = "MCP server"
-description = "Hypercolor's Model Context Protocol server: 17 tools, 5 resources, 3 prompts over Streamable HTTP. Canonical docs live in Agents."
+description = "Hypercolor's Model Context Protocol server: 16 tools, 5 resources, 3 prompts over Streamable HTTP. Canonical docs live in Agents."
 weight = 80
 +++
 
@@ -16,7 +16,7 @@ shapes, and the prompt templates) lives in the **Agents** section. Start there:
 
 - [Agents & MCP overview](@/agents/_index.md): MCP vs CLI and the three primitives
 - [MCP setup](@/agents/mcp-setup.md): Claude Code / Desktop / Cursor / Zed config
-- [Tools reference](@/agents/tools-reference.md): all 17 tools, full JSON schema
+- [Tools reference](@/agents/tools-reference.md): all 16 tools, full JSON schema
 - [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
 - [Prompt templates](@/agents/prompt-templates.md): the 3 shipped prompts
 {% end %}
@@ -31,8 +31,8 @@ HTTP with optional Server-Sent Events for streaming.
 | --- | --- |
 | Transport | Streamable HTTP (`streamable-http`) |
 | Default URL | `http://localhost:9420/mcp` |
-| Tools | 17 |
-| Resources | 5 (`state`, `devices`, `effects`, `audio`, `profiles`) |
+| Tools | 16 |
+| Resources | 5 (`state`, `devices`, `effects`, `audio`, `scenes`) |
 | Prompts | 3 (`mood_lighting`, `troubleshoot`, `setup_automation`) |
 | Default state | **disabled** |
 
@@ -90,7 +90,7 @@ The three MCP primitives map cleanly onto Hypercolor's engine.
 
 {% mermaid() %}
 graph TD
-  A[MCP client] -->|tools| T[17 tools: set_effect, get_status, ...]
+  A[MCP client] -->|tools| T[16 tools: set_effect, get_status, ...]
   A -->|resources| R[5 resources: hypercolor://state, devices, ...]
   A -->|prompts| P[3 prompts: mood_lighting, troubleshoot, setup_automation]
   T --> E[Daemon engine + event bus]
@@ -109,7 +109,7 @@ per render frame) so it is a summary surface, not a spectrum stream.
 
 **Prompts** are guided workflows: `mood_lighting` (vibe to effect), `troubleshoot`
 (diagnostics-driven fixes, the only prompt with a required argument: `issue`), and
-`setup_automation` (scene and schedule setup).
+`setup_automation` (scenes for external automation).
 
 ### Tool catalog
 
@@ -135,7 +135,6 @@ input schemas, defaults, enums, and a worked call plus response for each tool.
 | `get_audio_state` | Yes | No | Yes |
 | `get_sensor_data` | Yes | No | Yes |
 | `set_display_face` | No | Yes | Yes |
-| `set_profile` | No | Yes | Yes |
 | `get_layout` | Yes | No | Yes |
 | `diagnose` | Yes | No | Yes |
 
@@ -152,7 +151,7 @@ are flexible canvas partitions; the tools follow that vocabulary exactly.
 | `hypercolor://state` | on every state change |
 | `hypercolor://devices` | on device connect/disconnect |
 | `hypercolor://effects` | when effects are added or removed |
-| `hypercolor://profiles` | when profiles change |
+| `hypercolor://scenes` | when scenes change |
 | `hypercolor://audio` | ~10 Hz while audio is active |
 
 ## CLI as the scripting alternative

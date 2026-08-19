@@ -25,13 +25,12 @@ on hypercolor-tui (feature-gated). Nothing in the workspace depends on this crat
 |------------|-------------|
 | `effects` | List, activate, and patch effects |
 | `brightness` | Set device brightness |
-| `scenes` | List and activate scenes |
+| `scenes` | Create, snapshot, list, and activate scenes |
 | `devices` | Show connected devices |
 | `layouts` | Manage spatial layouts |
 | `audio` | Audio input configuration |
 | `access` | Explicit protected input and screen-capture actions |
 | `library` | Manage favorite effects |
-| `profiles` | Save and load profiles |
 | `server` | Daemon connection settings |
 | `servers` | Multi-server management |
 | `service` | Daemon lifecycle and macOS owner selection |
@@ -55,6 +54,7 @@ on hypercolor-tui (feature-gated). Nothing in the workspace depends on this crat
 hypercolor effects list            # List available effects
 hypercolor effects activate <id>   # Activate an effect by name
 hypercolor scenes activate <id>    # Activate a scene
+hypercolor scenes snapshot <name>  # Save the live scene as a snapshot
 hypercolor brightness set 80       # Set global brightness to 80%
 hypercolor status --watch          # Refresh status from ownership/input events
 hypercolor access authorize-input-monitoring

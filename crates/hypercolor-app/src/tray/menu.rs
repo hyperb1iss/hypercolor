@@ -27,8 +27,8 @@ pub mod ids {
     /// Prefix for dynamically generated effect menu items.
     pub const EFFECT_PREFIX: &str = "effect:";
 
-    /// Prefix for dynamically generated profile menu items.
-    pub const PROFILE_PREFIX: &str = "profile:";
+    /// Prefix for dynamically generated scene menu items.
+    pub const SCENE_PREFIX: &str = "scene:";
 
     /// Prefix for dynamically generated server items.
     pub const SERVER_PREFIX: &str = "server:";
@@ -55,7 +55,7 @@ pub enum MenuAction {
     StopEffect,
     Quit,
     ApplyEffect(String),
-    ApplyProfile(String),
+    ActivateScene(String),
     SwitchServer(usize),
     SetBrightness(u8),
 }
@@ -180,8 +180,8 @@ fn dynamic_action_for_menu_id(id: &str) -> Option<MenuAction> {
     if let Some(effect_id) = id.strip_prefix(ids::EFFECT_PREFIX) {
         return Some(MenuAction::ApplyEffect(effect_id.to_owned()));
     }
-    if let Some(profile_id) = id.strip_prefix(ids::PROFILE_PREFIX) {
-        return Some(MenuAction::ApplyProfile(profile_id.to_owned()));
+    if let Some(scene_id) = id.strip_prefix(ids::SCENE_PREFIX) {
+        return Some(MenuAction::ActivateScene(scene_id.to_owned()));
     }
     id.strip_prefix(ids::SERVER_PREFIX)
         .and_then(|index| index.parse::<usize>().ok())
@@ -227,16 +227,16 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
         )));
     }
 
-    if !state.profiles.is_empty() {
+    if !state.scenes.is_empty() {
         entries.push(MenuEntry::Submenu(SubmenuModel::new(
-            "Profiles",
+            "Scenes",
             state
-                .profiles
+                .scenes
                 .iter()
-                .map(|profile| {
+                .map(|scene| {
                     item(
-                        format!("{}{}", ids::PROFILE_PREFIX, profile.id),
-                        profile.name.clone(),
+                        format!("{}{}", ids::SCENE_PREFIX, scene.id),
+                        scene.name.clone(),
                         true,
                     )
                 })

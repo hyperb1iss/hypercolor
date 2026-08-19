@@ -12,6 +12,7 @@ use hypercolor_types::api::scene::{
     ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, SideEffectOutcome,
     TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
+use hypercolor_types::api::scenes::SnapshotSceneRequest;
 use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority};
 use serde_json::json;
 
@@ -102,6 +103,10 @@ fn every_request_type_rejects_unknown_fields() {
         serde_json::from_value::<ReorderLayersRequest>(json!({"orders": []})).is_err(),
         serde_json::from_value::<PatchControlsRequest>(json!({"value": {}})).is_err(),
         serde_json::from_value::<ApplyEffectRequest>(json!({"zone_id": null})).is_err(),
+        serde_json::from_value::<SnapshotSceneRequest>(json!({
+            "name": "Desk", "profile_id": "retired"
+        }))
+        .is_err(),
         serde_json::from_value::<OutputPatchRequest>(json!({"brightness": 0.5, "powr": "paused"}))
             .is_err(),
     ];

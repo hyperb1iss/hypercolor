@@ -32,7 +32,6 @@ pub mod envelope;
 pub mod layouts;
 pub mod library;
 pub mod output;
-pub mod profiles;
 pub mod scene;
 pub mod scenes;
 pub mod simulators;

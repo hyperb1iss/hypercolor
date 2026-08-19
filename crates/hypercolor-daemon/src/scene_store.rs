@@ -9,8 +9,8 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
 use crate::persistence::{
-    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, PersistenceError,
-    serialize_json_pretty,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
+    PersistenceError, serialize_json_pretty,
 };
 
 /// Named-scene snapshot reserved at its owning scene-manager boundary.
@@ -92,16 +92,28 @@ impl SceneStore {
 
     /// Commit a previously reserved snapshot and retain it when it wins.
     pub fn save_reserved(&mut self, pending: SceneStoreSave) -> anyhow::Result<AtomicWriteOutcome> {
+        match self.save_reserved_stage_aware(pending) {
+            AtomicWriteCommitResult::Superseded => Ok(AtomicWriteOutcome::Superseded),
+            AtomicWriteCommitResult::DurableWritten => Ok(AtomicWriteOutcome::Written),
+            AtomicWriteCommitResult::FailedBeforeReplacement(error)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                Err(error).context("failed to persist scenes")
+            }
+        }
+    }
+
+    /// Commit a reserved snapshot without collapsing its durability stage.
+    pub fn save_reserved_stage_aware(
+        &mut self,
+        pending: SceneStoreSave,
+    ) -> AtomicWriteCommitResult {
         let SceneStoreSave { scenes, write } = pending;
         let previous = std::mem::replace(&mut self.scenes, scenes);
-        match write.commit().context("failed to persist scenes") {
-            Ok(AtomicWriteOutcome::Superseded) => {
-                self.scenes = previous;
-                Ok(AtomicWriteOutcome::Superseded)
-            }
-            Ok(AtomicWriteOutcome::Written) => Ok(AtomicWriteOutcome::Written),
-            Err(error) => Err(error),
+        let outcome = write.commit_stage_aware();
+        if matches!(outcome, AtomicWriteCommitResult::Superseded) {
+            self.scenes = previous;
         }
+        outcome
     }
 
     /// Wake a pending retry after a semantic no-op.

@@ -4,7 +4,7 @@
 
 The `hypercolor-tray` binary provides platform-native tray presence for a running Hypercolor
 daemon. It shows current connection status (connected / paused / disconnected) as a tray icon
-and a context menu with direct effect and profile activation, brightness control, pause/resume,
+and a context menu with direct effect and scene activation, brightness control, pause/resume,
 multi-server switching, and an "Open Web UI" action that opens the browser to the daemon's UI.
 
 Architecture: the main thread runs the platform event loop (required by tray-icon); a

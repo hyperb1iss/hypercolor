@@ -42,7 +42,7 @@ The daemon emits three success statuses, depending on the operation:
 | Status | Builder | When |
 | --- | --- | --- |
 | `200 OK` | `ApiResponse::ok` | Read succeeded, or a mutation completed inline. |
-| `201 Created` | `ApiResponse::created` | A new resource was created (scene, profile, layout). |
+| `201 Created` | `ApiResponse::created` | A new resource was created (scene, layout, preset). |
 | `202 Accepted` | `ApiResponse::accepted` | Work was queued and will complete asynchronously. |
 
 All three carry the same `{ data, meta }` body. The status line is the only

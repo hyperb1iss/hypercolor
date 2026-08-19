@@ -993,6 +993,35 @@ pub(crate) fn display_face_layout(
     }
 }
 
+pub(crate) async fn connected_display_surface_layouts(
+    state: &AppState,
+) -> Vec<(DeviceId, String, SpatialLayout)> {
+    state
+        .device_registry
+        .list()
+        .await
+        .into_iter()
+        .filter(|tracked| tracked.state.is_renderable())
+        .filter_map(|tracked| {
+            let surface = display_surface_info(&tracked.info)?;
+            Some((
+                tracked.info.id,
+                tracked.info.name.clone(),
+                display_face_layout(tracked.info.id, tracked.info.name.as_str(), surface),
+            ))
+        })
+        .collect()
+}
+
+pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
+    let displays = connected_display_surface_layouts(state).await;
+    if let Err(error) =
+        crate::domain::display::hydrate_existing_display_surfaces(state, displays).await
+    {
+        warn!(%error, "Failed to hydrate connected display surfaces");
+    }
+}
+
 pub(crate) fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
     for zone in &info.zones {
         if let DeviceTopologyHint::Display {

@@ -10,7 +10,7 @@ use hypercolor_core::types::config::InteractionRoutePolicy;
 #[test]
 fn load_minimal_toml() {
     let toml = r"
-        schema_version = 4
+        schema_version = 5
     ";
 
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
@@ -18,7 +18,7 @@ fn load_minimal_toml() {
 
     let config = ConfigManager::load(tmp.path()).expect("minimal TOML should parse without error");
 
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     // Sections should fall back to their serde defaults
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
@@ -26,6 +26,26 @@ fn load_minimal_toml() {
     assert!(!config.features.wasm_plugins);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn schema_v4_renames_start_profile_before_deserialization() {
+    let config =
+        ConfigManager::parse_toml("schema_version = 4\n[daemon]\nstart_profile = \"Evening\"\n")
+            .expect("schema v4 should migrate");
+
+    assert_eq!(config.schema_version, 5);
+    assert_eq!(config.daemon.start_scene, "Evening");
+}
+
+#[test]
+fn schema_v4_refuses_conflicting_start_keys() {
+    let error = ConfigManager::parse_toml(
+        "schema_version = 4\n[daemon]\nstart_profile = \"A\"\nstart_scene = \"B\"\n",
+    )
+    .expect_err("ambiguous startup targets must be refused");
+
+    assert!(format!("{error:#}").contains("both daemon.start_profile and daemon.start_scene"));
 }
 
 #[test]
@@ -48,7 +68,7 @@ fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
     assert!(rendered.contains("schema_version 3"), "{rendered}");
     // Every edit the hand-migration needs, verbatim. Bumping the version
     // without the routes silently adopts the new daemon_route default.
-    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+    assert!(rendered.contains("schema_version = 5"), "{rendered}");
     assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
     assert!(
         rendered.contains(r#"preview_route = "browser""#),
@@ -59,7 +79,7 @@ fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
 #[test]
 fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
-    fs::write(tmp.path(), "schema_version = 5\n").expect("failed to write future config");
+    fs::write(tmp.path(), "schema_version = 6\n").expect("failed to write future config");
 
     let error = ConfigManager::load(tmp.path())
         .expect_err("a future schema must be refused, never guessed at");
@@ -69,7 +89,7 @@ fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
         rendered.contains(&tmp.path().display().to_string()),
         "{rendered}"
     );
-    assert!(rendered.contains("schema_version 5"), "{rendered}");
+    assert!(rendered.contains("schema_version 6"), "{rendered}");
     assert!(rendered.contains("newer hypercolor"), "{rendered}");
     // A future file is not an old file: no hand-migration is offered.
     assert!(
@@ -84,7 +104,7 @@ fn current_schema_keeps_explicit_route_fields() {
     fs::write(
         tmp.path(),
         concat!(
-            "schema_version = 4\n\n",
+            "schema_version = 5\n\n",
             "[input]\n",
             "daemon_route = \"host\"\n",
             "preview_route = \"merge\"\n",
@@ -94,7 +114,7 @@ fn current_schema_keeps_explicit_route_fields() {
 
     let config = ConfigManager::load(tmp.path()).expect("current-schema config should load");
 
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Merge);
 }
@@ -102,7 +122,7 @@ fn current_schema_keeps_explicit_route_fields() {
 #[test]
 fn load_full_toml_with_overrides() {
     let toml = r#"
-        schema_version = 4
+        schema_version = 5
         include = ["local.toml"]
 
         [daemon]
@@ -157,7 +177,7 @@ fn load_full_toml_with_overrides() {
 #[test]
 fn load_canonicalizes_legacy_audio_device_ids() {
     let toml = r#"
-        schema_version = 4
+        schema_version = 5
 
         [audio]
         device = "mic"
@@ -197,7 +217,7 @@ fn new_with_missing_file_uses_defaults() {
         ConfigManager::new(path).expect("ConfigManager should fall back to defaults gracefully");
     let config = manager.get();
 
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);
@@ -210,7 +230,7 @@ fn new_with_valid_file_loads_it() {
     fs::write(
         &path,
         r"
-        schema_version = 4
+        schema_version = 5
 
         [daemon]
         port = 7777
@@ -327,7 +347,7 @@ fn reload_picks_up_file_changes() {
     fs::write(
         &path,
         r"
-        schema_version = 4
+        schema_version = 5
 
         [daemon]
         port = 9420
@@ -342,7 +362,7 @@ fn reload_picks_up_file_changes() {
     fs::write(
         &path,
         r"
-        schema_version = 4
+        schema_version = 5
 
         [daemon]
         port = 1234
@@ -362,7 +382,7 @@ fn reload_preserves_old_config_on_parse_error() {
     fs::write(
         &path,
         r"
-        schema_version = 4
+        schema_version = 5
 
         [daemon]
         port = 5555
@@ -393,7 +413,7 @@ fn reload_serializes_with_an_inflight_config_writer() {
     fs::write(
         &path,
         r"
-        schema_version = 4
+        schema_version = 5
 
         [daemon]
         port = 7000

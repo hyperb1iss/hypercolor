@@ -55,7 +55,7 @@ while an interactive effect is running. See [input capture](@/guide/input-captur
 define LED topologies, and the sampler resolves canvas pixels to physical LEDs with
 configurable interpolation: nearest, bilinear, area average, or Gaussian.
 
-**AI-native from the start.** The daemon exposes a built-in MCP server with 17 tools,
+**AI-native from the start.** The daemon exposes a built-in MCP server with 16 tools,
 5 resources, and 3 prompt templates. Claude Code, Cursor, and any MCP-compatible assistant
 can control your lights directly. See the [MCP server](@/api/mcp.md) docs to get started.
 
@@ -97,7 +97,7 @@ Choose your path:
 - **Building an effect?** [Creating effects](@/effects/creating-effects.md) walks through
   the TypeScript SDK from scratch.
 - **Integrating with an AI assistant?** The [MCP server](@/api/mcp.md) is off by default;
-  that page shows how to enable it and what the 17 tools do.
+  that page shows how to enable it and what the 16 tools do.
 - **Hardware questions?** [Compatibility](@/hardware/compatibility.md) lists 414 tracked
   devices across 32 vendors, with driver status for each.
 
@@ -111,7 +111,7 @@ Choose your path:
 - [Effects](@/effects/_index.md): The TypeScript SDK, GLSL shaders, native Rust effects,
   the catalog, and publishing.
 - [API](@/api/_index.md): Full REST surface, WebSocket binary frames, CLI reference, and
-  the [MCP server](@/api/mcp.md): 17 tools, 5 resources, and 3 prompt templates.
+  the [MCP server](@/api/mcp.md): 16 tools, 5 resources, and 3 prompt templates.
 - [Hardware](@/hardware/_index.md): Compatibility matrix, USB and SMBus devices, network
   drivers (Hue, Nanoleaf, WLED, Govee), and device quirks.
 - [Troubleshooting](@/troubleshooting/_index.md): Devices not found, audio not reacting,

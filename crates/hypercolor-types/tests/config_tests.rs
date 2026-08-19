@@ -25,7 +25,7 @@ fn daemon_defaults_match_spec() {
     assert_eq!(d.max_devices, 32);
     assert_eq!(d.log_level, LogLevel::Info);
     assert_eq!(d.log_file, "");
-    assert_eq!(d.start_profile, "last");
+    assert_eq!(d.start_scene, "last");
     assert_eq!(d.shutdown_behavior, ShutdownBehavior::HardwareDefault);
     assert_eq!(d.shutdown_color, "#1a1a2e");
 }
@@ -590,7 +590,7 @@ fn display_config_defaults_and_clamps_face_fps_cap() {
 #[test]
 fn full_config_toml_roundtrip() {
     let original = HypercolorConfig {
-        schema_version: 4,
+        schema_version: 5,
         include: vec!["local.toml".into()],
         daemon: DaemonConfig::default(),
         web: WebConfig::default(),
@@ -614,7 +614,7 @@ fn full_config_toml_roundtrip() {
     let toml_str = toml::to_string(&original).expect("serialize HypercolorConfig");
     let restored: HypercolorConfig =
         toml::from_str(&toml_str).expect("deserialize HypercolorConfig");
-    assert_eq!(restored.schema_version, 4);
+    assert_eq!(restored.schema_version, 5);
     assert_eq!(restored.include, vec!["local.toml"]);
     assert_eq!(restored.daemon.port, 9420);
     assert!(restored.web.enabled);
@@ -657,9 +657,9 @@ fn default_config_json_roundtrip() {
 
 #[test]
 fn minimal_toml_fills_defaults() {
-    let minimal = "schema_version = 4\n";
+    let minimal = "schema_version = 5\n";
     let config: HypercolorConfig = toml::from_str(minimal).expect("deserialize minimal config");
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.port, 9420);
     assert!(config.web.enabled);
     assert_eq!(config.mcp.base_path, "/mcp");
@@ -698,7 +698,7 @@ fn servo_gpu_import_mode_toml_roundtrip() {
 fn nested_servo_gpu_import_mode_deserializes() {
     let config: HypercolorConfig = toml::from_str(
         r#"
-schema_version = 4
+schema_version = 5
 
 [rendering.servo_gpu_import]
 mode = "on"
@@ -716,7 +716,7 @@ mode = "on"
 fn media_config_toml_deserializes_stream_policy() {
     let config: HypercolorConfig = toml::from_str(
         r#"
-schema_version = 4
+schema_version = 5
 
 [media]
 max_video_producers = 3
@@ -738,7 +738,7 @@ stream_private_network_allowlist = ["192.168.50.0/24", "fd00::/8"]
 fn driver_registry_toml_deserializes_unknown_driver_settings() {
     let config: HypercolorConfig = toml::from_str(
         r#"
-schema_version = 4
+schema_version = 5
 
 [drivers.openrgb]
 enabled = false
@@ -780,7 +780,7 @@ fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
 #[test]
 fn unknown_fields_ignored() {
     let toml_with_future_field = r#"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 port = 9420
@@ -788,14 +788,14 @@ some_future_field = "hello from the future"
 "#;
     let config: HypercolorConfig =
         toml::from_str(toml_with_future_field).expect("deserialize with unknown fields");
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.port, 9420);
 }
 
 #[test]
 fn override_specific_defaults() {
     let partial = r#"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 port = 8080
@@ -922,7 +922,7 @@ fn input_config_defaults_to_disabled_with_both_kinds_on() {
     assert_eq!(parsed.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(parsed.preview_route, InteractionRoutePolicy::Browser);
 
-    let full: HypercolorConfig = toml::from_str("schema_version = 4").expect("minimal config");
+    let full: HypercolorConfig = toml::from_str("schema_version = 5").expect("minimal config");
     assert!(!full.input.enabled);
     assert_eq!(full.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(full.input.preview_route, InteractionRoutePolicy::Browser);

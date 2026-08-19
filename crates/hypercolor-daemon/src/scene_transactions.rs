@@ -306,8 +306,13 @@ struct SceneTransactionQueueState {
 #[derive(Clone, Default)]
 pub struct SceneTransactionQueue {
     inner: Arc<StdMutex<SceneTransactionQueueState>>,
+    scene_activation_lock: Arc<Mutex<()>>,
     layout_update_lock: Arc<Mutex<()>>,
     next_layout_token: Arc<AtomicU64>,
+}
+
+pub struct SceneActivationGuard {
+    _guard: OwnedMutexGuard<()>,
 }
 
 pub struct LayoutUpdateGuard {
@@ -419,6 +424,12 @@ impl SceneTransactionQueue {
     pub async fn acquire_layout_update_guard(&self) -> LayoutUpdateGuard {
         LayoutUpdateGuard {
             guard: Arc::new(Arc::clone(&self.layout_update_lock).lock_owned().await),
+        }
+    }
+
+    pub async fn acquire_scene_activation_guard(&self) -> SceneActivationGuard {
+        SceneActivationGuard {
+            _guard: Arc::clone(&self.scene_activation_lock).lock_owned().await,
         }
     }
 

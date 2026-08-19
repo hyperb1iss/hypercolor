@@ -613,8 +613,6 @@ pub enum ControlPersistence {
     DriverConfig,
     /// Stored in per-device config.
     DeviceConfig,
-    /// Stored as a profile override.
-    ProfileOverride,
     /// Stored only in runtime memory.
     RuntimeOnly,
     /// Stored in hardware by a driver action or apply transaction.

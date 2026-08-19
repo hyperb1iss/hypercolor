@@ -1074,7 +1074,6 @@ pub(super) struct HelloState {
     pub(super) brightness: u8,
     pub(super) fps: HelloFps,
     pub(super) scene: Option<SceneRef>,
-    pub(super) profile: Option<NameRef>,
     pub(super) layout: Option<NameRef>,
     pub(super) device_count: usize,
     pub(super) total_leds: usize,

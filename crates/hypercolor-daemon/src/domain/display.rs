@@ -302,6 +302,31 @@ pub async fn sync_display_surfaces(
     Ok(outcome.is_some())
 }
 
+/// Refresh native geometry for display zones that already exist in the
+/// active scene, including snapshot scenes.
+///
+/// # Errors
+///
+/// [`DomainError::Conflict`] when a concurrent scene mutation lands first.
+pub async fn hydrate_existing_display_surfaces(
+    state: &AppState,
+    displays: Vec<(DeviceId, String, SpatialLayout)>,
+) -> Result<bool, DomainError> {
+    let outcome = commit_retrying(state, |mutation| {
+        let Some(scene_id) = mutation.scenes().active_scene_id().copied() else {
+            return Ok(None);
+        };
+        let changed = mutation.hydrate_existing_display_surfaces(scene_id, &displays)?;
+        Ok(changed.then_some(()))
+    })
+    .await?;
+
+    if let Some(((), commit)) = outcome.as_ref() {
+        commit.log_if_retrying("Failed to persist display surface geometry");
+    }
+    Ok(outcome.is_some())
+}
+
 /// Drop every scene's display zone for a device, and its runtime default
 /// overlay with them.
 ///

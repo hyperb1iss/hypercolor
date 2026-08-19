@@ -9,7 +9,6 @@ pub enum ScreenId {
     Dashboard,
     EffectBrowser,
     DeviceManager,
-    Profiles,
     Settings,
     Debug,
 }
@@ -22,7 +21,6 @@ impl ScreenId {
             Self::Dashboard => 'D',
             Self::EffectBrowser => 'E',
             Self::DeviceManager => 'V',
-            Self::Profiles => 'P',
             Self::Settings => 'S',
             Self::Debug => 'B',
         }
@@ -35,7 +33,6 @@ impl ScreenId {
             Self::Dashboard => "Dash",
             Self::EffectBrowser => "Effx",
             Self::DeviceManager => "Devs",
-            Self::Profiles => "Prof",
             Self::Settings => "Sttg",
             Self::Debug => "Dbug",
         }
@@ -48,7 +45,6 @@ impl ScreenId {
             Self::Dashboard => "Dashboard",
             Self::EffectBrowser => "Effects",
             Self::DeviceManager => "Devices",
-            Self::Profiles => "Profiles",
             Self::Settings => "Settings",
             Self::Debug => "Debug",
         }
@@ -61,7 +57,6 @@ impl ScreenId {
             Self::Dashboard,
             Self::EffectBrowser,
             Self::DeviceManager,
-            Self::Profiles,
             Self::Settings,
             Self::Debug,
         ]
@@ -74,7 +69,6 @@ impl ScreenId {
             'D' | 'd' => Some(Self::Dashboard),
             'E' | 'e' => Some(Self::EffectBrowser),
             'V' | 'v' => Some(Self::DeviceManager),
-            'P' | 'p' => Some(Self::Profiles),
             'S' | 's' => Some(Self::Settings),
             'B' | 'b' => Some(Self::Debug),
             _ => None,

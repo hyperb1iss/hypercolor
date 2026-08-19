@@ -4,7 +4,7 @@
 
 This crate is the Hypercolor daemon binary. It owns the full runtime: device discovery and
 management, effect composition via SparkleFlinger (up to 60 fps, adaptive across five tiers),
-scene and profile management, spatial LED layout, and user configuration. Everything is exposed
+scene management, spatial LED layout, and user configuration. Everything is exposed
 outward as a REST + WebSocket API on port 9420 (Axum) with a Swagger UI at `/swagger-ui`, an
 MCP server for AI integration, and mDNS advertisement for LAN discovery. On Linux the daemon
 integrates with systemd via sd-notify; on Windows it can run as a Windows Service.
@@ -44,12 +44,12 @@ The daemon serves on `:9420`:
 - `POST /api/v1/scene/clear`: clear one zone or the whole live scene
 - `GET /api/v1/devices` — connected devices
 - `GET|POST|DELETE /api/v1/library/favorites` — favorites CRUD
-- `GET|POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate` — scene management
+- `GET|POST /api/v1/scenes` + `POST /api/v1/scenes/snapshot`: scene management
+- `POST /api/v1/scenes/{id}/activate`: scene activation
 - `GET|POST /api/v1/layouts` — spatial layout CRUD
-- `GET|POST /api/v1/profiles` — profile save/load
 - `WebSocket /api/v1/ws` — real-time events, canvas frames, metrics, spectrum
 - `GET /swagger-ui` — interactive API docs
-- MCP server — 17 tools, 5 resources for AI integration
+- MCP server: 16 tools, 5 resources for AI integration
 
 ## Usage
 

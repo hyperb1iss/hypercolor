@@ -11,7 +11,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tempfile::TempDir;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 fn layout(id: &str, width: u32, height: u32) -> SpatialLayout {
     SpatialLayout {
@@ -42,6 +42,29 @@ fn state(
         Arc::new(RwLock::new(SceneManager::with_default_layout(initial))),
         SceneTransactionQueue::default(),
     )
+}
+
+#[tokio::test]
+async fn scene_activation_guard_serializes_the_post_commit_pipeline() {
+    let queue = SceneTransactionQueue::default();
+    let first = queue.acquire_scene_activation_guard().await;
+    let waiting = Arc::new(Notify::new());
+    let task_waiting = Arc::clone(&waiting);
+    let task_queue = queue.clone();
+    let second = tokio::spawn(async move {
+        task_waiting.notify_one();
+        task_queue.acquire_scene_activation_guard().await
+    });
+
+    waiting.notified().await;
+    tokio::task::yield_now().await;
+    assert!(!second.is_finished());
+
+    drop(first);
+    tokio::time::timeout(Duration::from_secs(1), second)
+        .await
+        .expect("second activation should acquire the released guard")
+        .expect("guard waiter should not panic");
 }
 
 async fn wait_for_pending(queue: &SceneTransactionQueue, expected: usize) {

@@ -50,7 +50,7 @@ Priority is declared in the event type itself, not by the publisher:
 
 - **Critical**: `DaemonShutdown`, `ShutdownRequested`, fatal errors. These must be handled before the bus closes.
 - **High**: `DeviceConnected`, `DeviceDisconnected`, `DeviceError`, layer and effect failures. Delivered with strong guarantees.
-- **Normal**: Most scene, profile, config, and effect events.
+- **Normal**: Most scene, config, and effect events.
 - **Low**: `BeatDetected`, `AudioLevelUpdate`, `FrameRendered`, input events, discovery completions. These are informational; missing one or two is not a problem.
 
 ## Watch: high-frequency data streams

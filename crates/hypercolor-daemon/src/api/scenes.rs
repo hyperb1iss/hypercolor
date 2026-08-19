@@ -30,7 +30,7 @@ const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 // web UI and the TUI.
 pub use hypercolor_types::api::scenes::{
     ActivateSceneResponse, ActivatedSceneRef, CreateSceneRequest, DeleteSceneResponse,
-    ReplaceSceneRequest, SceneListResponse, SceneSummary,
+    ReplaceSceneRequest, SceneListResponse, SceneSummary, SnapshotSceneRequest,
 };
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -89,6 +89,28 @@ pub async fn create_scene(
             enabled: body.enabled,
             mutation_mode: body.mutation_mode,
             metadata: HashMap::new(),
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(created) => created,
+        Err(error) => return error.into_response(),
+    };
+
+    ApiResponse::created(scene_summary(&created.scene))
+}
+
+/// `POST /api/v1/scenes/snapshot` — Save the current runtime scene.
+pub async fn snapshot_scene(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SnapshotSceneRequest>,
+) -> Response {
+    let created = match crate::domain::scene::snapshot_scene(
+        state.as_ref(),
+        crate::domain::scene::SnapshotScene {
+            name: body.name,
+            description: body.description,
         },
         crate::domain::MutationContext::api(),
     )
@@ -229,6 +251,8 @@ pub async fn activate_scene(
             name: activated.scene_name,
         },
         activated: true,
+        layout: activated.layout,
+        brightness: activated.brightness,
     })
 }
 

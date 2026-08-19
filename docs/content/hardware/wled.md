@@ -128,7 +128,7 @@ RUST_LOG=hypercolor_driver_wled=debug hypercolor daemon
 
 ### WLED exits realtime mode unexpectedly
 
-WLED has a built-in realtime timeout. If Hypercolor pauses sending (for example, during a profile switch), WLED reverts to its saved state after the timeout expires. The 2-second keepalive is designed to prevent this during normal operation. If the strip flashes its saved WLED effect mid-session, check for packet loss or a subnet routing change, or increase WLED's realtime timeout setting.
+WLED has a built-in realtime timeout. If Hypercolor pauses sending (for example, during a scene switch), WLED reverts to its saved state after the timeout expires. The 2-second keepalive is designed to prevent this during normal operation. If the strip flashes its saved WLED effect mid-session, check for packet loss or a subnet routing change, or increase WLED's realtime timeout setting.
 
 ## Related pages
 

@@ -1,6 +1,5 @@
 ---
 name: daemon-development
-version: 1.0.0
 description: >-
   This skill should be used when working on the Hypercolor daemon, REST API,
   WebSocket protocol, or render pipeline. Triggers on "daemon route", "API
@@ -27,7 +26,6 @@ The daemon (`hypercolor-daemon`) serves the REST API, WebSocket protocol, and or
 - `scene_manager: Arc<RwLock<SceneManager>>` — scene CRUD, priority stack, transitions
 - `render_loop: Arc<RwLock<RenderLoop>>` — frame timing and pipeline skeleton
 - `spatial_engine: Arc<RwLock<SpatialEngine>>` — maps canvas pixels to LED positions
-- `profiles: Arc<RwLock<ProfileStore>>` — saved lighting configurations
 - `library_store: Arc<dyn LibraryStore>` — favorites, presets, playlists (JSON-backed or in-memory)
 - `credential_store: Arc<CredentialStore>` — AES-256-GCM encrypted network credentials
 - `power_state: watch::Sender<OutputPowerState>` — global brightness and output state
@@ -67,12 +65,11 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 | `/devices/{id}/logical-devices` | Per-device logical segmentation                          |
 | `/logical-devices`              | Global logical device CRUD                               |
 | `/attachments/templates`        | Attachment template CRUD + categories/vendors            |
-| `/scenes`                       | Scene CRUD + `{id}/activate`                             |
+| `/scenes`                       | Scene CRUD + snapshot + `{id}/activate`                  |
 | `/library/favorites`            | Favorites CRUD                                           |
 | `/library/presets`              | User preset management + `{id}/apply`                    |
 | `/library/playlists`            | Playlist CRUD + activate/stop                            |
 | `/layouts`                      | Spatial layout CRUD + active + preview + `{id}/apply`    |
-| `/profiles`                     | Profile save/load + `{id}/apply`                         |
 | `/config`                       | Show/get/set/reset system config values                  |
 | `/output`                       | Global output power and brightness get/patch             |
 | `/status`                       | Daemon status (aliased as `/state`)                      |
@@ -183,13 +180,13 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 ## Configuration
 
 - **Config file**: TOML (`config.toml`), loaded by `ConfigManager` which wraps `ArcSwap<HypercolorConfig>` for lock-free reads
-- **Data storage**: `~/.local/share/hypercolor/` (9 JSON data files: `profiles.json`, `scenes.json`, `layouts.json`, `library.json`, `device-settings.json`, `attachment-profiles.json`, `layout-auto-exclusions.json`, `logical-devices.json`, `runtime-state.json`)
+- **Data storage**: `~/.local/share/hypercolor/` (8 JSON data files: `scenes.json`, `layouts.json`, `library.json`, `device-settings.json`, `attachment-profiles.json`, `layout-auto-exclusions.json`, `logical-devices.json`, `runtime-state.json`)
 - **Hot-reload**: `ConfigManager` uses `Arc<ArcSwap<HypercolorConfig>>` for atomic pointer swap on config change
 - **Encrypted**: Credentials stored via `CredentialStore` using AES-256-GCM encryption (file-backed, not keyring)
 
 ## MCP Server Integration
 
-17 tools exposed via Model Context Protocol for AI control:
+16 tools exposed via Model Context Protocol for AI control:
 
 | Tool                | Purpose                                                          |
 | ------------------- | ---------------------------------------------------------------- |
@@ -207,14 +204,13 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 | `get_audio_state`   | Audio analysis snapshot                                          |
 | `get_sensor_data`   | System telemetry snapshot or one named sensor reading            |
 | `set_display_face`  | Assign an HTML display face to a display device                  |
-| `set_profile`       | Apply a lighting profile                                         |
 | `get_layout`        | Get the active spatial layout                                    |
 | `diagnose`          | Full-system diagnostics                                          |
 
 Every tool declares its own `read_only` and `destructive` annotations; a tool
 is destructive when it discards state the caller cannot recover.
 
-5 resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://profiles`, `hypercolor://audio`. The MCP server uses fuzzy matching for effect/profile names.
+5 resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://scenes`, `hypercolor://audio`. The MCP server uses fuzzy matching for effect and scene names.
 
 ## Detailed References
 

@@ -7,6 +7,7 @@ from typing import Any
 import msgspec
 
 from .common import NamedRef
+from .effect import SideEffectOutcome
 from .zone import ReplaceZoneRequest, Zone
 
 
@@ -102,8 +103,18 @@ class ReplaceSceneRequest(msgspec.Struct, kw_only=True):
         )
 
 
+class SceneLayoutActivationOutcome(msgspec.Struct, kw_only=True):
+    """Outcome of applying a scene's optional named layout."""
+
+    applied: bool
+    layout_id: str | None = None
+    message: str | None = None
+
+
 class ActivateSceneResult(msgspec.Struct, kw_only=True):
     """Response from manually triggering a scene."""
 
     scene: NamedRef
     activated: bool
+    layout: SceneLayoutActivationOutcome
+    brightness: SideEffectOutcome

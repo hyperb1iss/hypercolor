@@ -5,6 +5,22 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Fold saved lighting snapshots into scenes. `POST /api/v1/scenes/snapshot`
+  captures the live scene, scene activation reports layout and brightness
+  outcomes, and `daemon.start_scene` replaces `daemon.start_profile` in config
+  schema version 5.
+- Import legacy `profiles.json` entries into scenes on first startup, then
+  retire the source only after the scene write is durable.
+
+### Removed
+
+- Remove the profile REST routes, CLI commands, shared types, WebSocket fields
+  and events, MCP `set_profile` tool, and `hypercolor://profiles` resource.
+
 ## [0.3.2] - 2026-08-15
 
 Global output power becomes a first-class daemon concept, bundled and saved presets merge into a single effect-scoped stack, and a trusted in-process API bridge lands for local callers. Persistence now reports durability explicitly, and the build system gains a cache-aware wrapper plus a pressure-triggered target GC.

@@ -1806,7 +1806,6 @@ pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
             actual: (capacity_fps * 10.0).round() / 10.0,
         },
         scene: active_scene,
-        profile: None,
         layout: None,
         device_count: devices.len(),
         total_leds,
@@ -1891,7 +1890,7 @@ mod hello_state_tests {
         let hello =
             serde_json::to_value(build_hello_state(&state).await).expect("hello state serializes");
 
-        for singleton in ["effect", "active_preset_id"] {
+        for singleton in ["effect", "active_preset_id", "profile"] {
             assert!(
                 hello.get(singleton).is_none(),
                 "{singleton} is the pre-multi-zone vocabulary; clients read /scene instead"

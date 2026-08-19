@@ -20,8 +20,8 @@ pub mod ids {
     /// Prefix for dynamically generated effect menu items.
     pub const EFFECT_PREFIX: &str = "effect:";
 
-    /// Prefix for dynamically generated profile menu items.
-    pub const PROFILE_PREFIX: &str = "profile:";
+    /// Prefix for dynamically generated scene menu items.
+    pub const SCENE_PREFIX: &str = "scene:";
 
     /// Prefix for dynamically generated server items.
     pub const SERVER_PREFIX: &str = "server:";
@@ -113,15 +113,15 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
         menu.append(&effects_submenu)?;
     }
 
-    // Profiles submenu
-    if !state.profiles.is_empty() {
-        let profiles_submenu = Submenu::new("Profiles", true);
-        for profile in &state.profiles {
-            let item_id = format!("{}{}", ids::PROFILE_PREFIX, profile.id);
-            let item = MenuItem::with_id(MenuId::new(&item_id), &profile.name, true, None);
-            profiles_submenu.append(&item)?;
+    // Scenes submenu
+    if !state.scenes.is_empty() {
+        let scenes_submenu = Submenu::new("Scenes", true);
+        for scene in &state.scenes {
+            let item_id = format!("{}{}", ids::SCENE_PREFIX, scene.id);
+            let item = MenuItem::with_id(MenuId::new(&item_id), &scene.name, true, None);
+            scenes_submenu.append(&item)?;
         }
-        menu.append(&profiles_submenu)?;
+        menu.append(&scenes_submenu)?;
     }
 
     if should_show_servers_menu(state) {

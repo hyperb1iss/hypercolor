@@ -286,11 +286,11 @@ The daemon exposes REST + WebSocket on `:9420` (Axum):
 - `PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`: Update live controls
 - `GET /api/v1/devices`: Connected devices
 - `GET/POST/DELETE /api/v1/library/favorites`: Favorites CRUD
-- `GET/POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate`: Scene management
+- `GET/POST /api/v1/scenes` + `POST /api/v1/scenes/snapshot`: Scene management
+- `POST /api/v1/scenes/{id}/activate`: Scene activation
 - `GET/POST /api/v1/layouts`: Spatial layout CRUD
-- `GET/POST /api/v1/profiles`: Profile save/load
 - `WebSocket /api/v1/ws`: Real-time state (events, canvas frames, metrics, spectrum)
-- **MCP server**: 17 tools, 5 resources, and 3 prompt templates for AI integration
+- **MCP server**: 16 tools, 5 resources, and 3 prompt templates for AI integration
 
 Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
 
@@ -344,7 +344,7 @@ hold detailed deep-dives.
   rgb-effect-design/          # LED color science, HTML canvas effects, palette design
   leptos-ui-development/      # Leptos 0.8 signals, WebSocket binary protocol, SilkCircuit tokens
   daemon-development/         # AppState, REST API, event bus, render pipeline, MCP
-  hypercolor-control/         # Drive a running daemon: apply effects, patch controls, scenes, profiles
+  hypercolor-control/         # Drive a running daemon: apply effects, patch controls, and scenes
 
 .agents/agents/
   driver-porter/              # End-to-end driver porting (research -> spec -> implement -> test)

@@ -131,7 +131,6 @@ live.
     "brightness": 100,
     "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8, "actual": 60.0 },
     "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
-    "profile": null,
     "layout": null,
     "device_count": 3,
     "total_leds": 432
@@ -191,8 +190,8 @@ ask which version negotiated the stream it is reading.
 `subscriptions` shows
 what is already live, only `events` by default.
 
-The `scene`, `profile`, and `layout` fields are nullable: each is `null` when
-nothing is active. The `scene` reference additionally carries
+The `scene` and `layout` fields are nullable: each is `null` when nothing is
+active. The `scene` reference additionally carries
 `snapshot_locked`, which is true while a scene blocks runtime mutation.
 
 ## Topics
@@ -500,9 +499,8 @@ want raw per-frame timing.
 
 Common event names include `effect_started`, `effect_stopped`,
 `effect_control_changed`, `zone_changed`, `device_connected`,
-`device_disconnected`, `active_scene_changed`, `beat_detected`, and
-`profile_loaded`. Profile library mutations emit `profile_saved` and
-`profile_deleted`.
+`device_disconnected`, `active_scene_changed`, `scene_library_changed`, and
+`beat_detected`.
 
 Zone-addressed events use `zone_id`. Lifecycle events also carry `zone_name`;
 `zone_changed` carries `scene_id`, `role`, and `kind`; and

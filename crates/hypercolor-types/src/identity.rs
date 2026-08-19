@@ -204,10 +204,6 @@ fn validate_layout_id(s: &str) -> Result<(), IdParseError> {
     validate_opaque(s, "layout", 128)
 }
 
-fn validate_profile_id(s: &str) -> Result<(), IdParseError> {
-    validate_opaque(s, "profile", 128)
-}
-
 fn validate_layout_device_id(s: &str) -> Result<(), IdParseError> {
     const KIND: &str = "layout device";
     if s.is_empty() {
@@ -263,12 +259,6 @@ string_id!(
     /// Spatial layout identifier — `"default"` or a user slug.
     LayoutId,
     validate = validate_layout_id
-);
-
-string_id!(
-    /// Saved profile identifier (`prof_…` as minted by the store).
-    ProfileId,
-    validate = validate_profile_id
 );
 
 string_id!(

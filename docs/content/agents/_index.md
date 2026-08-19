@@ -1,6 +1,6 @@
 +++
 title = "Agents & MCP"
-description = "Drive Hypercolor with AI agents over MCP and the CLI: 17 tools, 5 resources, 3 prompts, plus a scriptable command line."
+description = "Drive Hypercolor with AI agents over MCP and the CLI: 16 tools, 5 resources, 3 prompts, plus a scriptable command line."
 sort_by = "weight"
 weight = 0
 template = "section.html"
@@ -42,9 +42,9 @@ graph TD
     P -->|reference| R
 {% end %}
 
-**Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **17**: `set_effect`, `list_effects`, `stop_effect`, `set_color`, `set_output_power`, `get_devices`, `set_brightness`, `get_status`, `activate_scene`, `list_scenes`, `create_scene`, `get_audio_state`, `get_sensor_data`, `set_display_face`, `set_profile`, `get_layout`, and `diagnose`. Eight of those are read-only (`get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`); the other nine mutate state, and six of those nine are destructive. See the [tools reference](@/agents/tools-reference.md).
+**Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **16**: `set_effect`, `list_effects`, `stop_effect`, `set_color`, `set_output_power`, `get_devices`, `set_brightness`, `get_status`, `activate_scene`, `list_scenes`, `create_scene`, `get_audio_state`, `get_sensor_data`, `set_display_face`, `get_layout`, and `diagnose`. Eight are read-only (`get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`); the other eight mutate state, and five of those eight are destructive. See the [tools reference](@/agents/tools-reference.md).
 
-**Resources** are browsable, read-only views of live state under the `hypercolor://` scheme, the nouns. There are **5**: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://profiles`, and `hypercolor://audio`. An agent reads a resource to orient itself before acting. See the [resources reference](@/agents/resources-reference.md).
+**Resources** are browsable, read-only views of live state under the `hypercolor://` scheme, the nouns. There are **5**: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://scenes`, and `hypercolor://audio`. An agent reads a resource to orient itself before acting. See the [resources reference](@/agents/resources-reference.md).
 
 **Prompts** are guided, parameterized templates a client surfaces as slash commands. There are **3**: `mood_lighting`, `troubleshoot`, and `setup_automation`. Each one encodes a known-good flow so the model does not have to invent it. See [prompt templates](@/agents/prompt-templates.md).
 
@@ -59,7 +59,7 @@ New to agent control? Walk it in order: enable the server, learn the tools, then
 {% end %}
 
 - **[MCP setup](@/agents/mcp-setup.md)**: Turn the server on, then copy-paste connection config for Claude Code, Claude Desktop, Cursor, Zed, and generic MCP clients.
-- **[Tools reference](@/agents/tools-reference.md)**: All 17 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
+- **[Tools reference](@/agents/tools-reference.md)**: All 16 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources, their payload shapes, and how fresh each one is.
 - **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts, their arguments, and when each one fits.
 - **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell: `--json` output, exit codes, env vars, and a state-first workflow.

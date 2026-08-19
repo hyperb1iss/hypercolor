@@ -62,8 +62,10 @@ Press the corresponding letter to switch screens. The active screen is highlight
 | `d` | Dashboard | Now Playing panel, canvas preview, device table, quick actions |
 | `e` | Effects | Three-pane effect browser with search, preview, and controls |
 | `v` | Devices | Connected device list and per-device details |
+| `s` | Settings | TUI settings and preferences |
+| `b` | Debug | Runtime diagnostics and telemetry |
 
-These three screens are what currently ships in the TUI; they are the only entries in the status-bar navigation. The keymap reserves `p`, `s`, and `b` for Profiles, Settings, and Debug, but those views are not mounted yet, so pressing those keys currently does nothing.
+These five screens are the entries in the status-bar navigation. Press `c` to open the scene picker without leaving the active screen.
 
 ## Dashboard screen
 

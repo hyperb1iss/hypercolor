@@ -702,23 +702,33 @@ impl ConfigManager {
     ///
     /// This is THE config parser: file loads, tooling, and tests all run
     /// the same parse and normalize, so no caller can materialize a
-    /// config that skips them. Only [`CURRENT_SCHEMA_VERSION`] is read:
-    /// older files are refused rather than migrated (migration is
-    /// one-time-forward, so old shapes are hand-migrated per the release
-    /// notes, never read by a legacy path here), and newer files are
-    /// refused rather than guessed at.
+    /// config that skips them. Schema v4 is upgraded in memory by
+    /// renaming `daemon.start_profile` to `daemon.start_scene`; every
+    /// other older or newer schema is refused rather than guessed at.
     ///
     /// # Errors
     ///
     /// Returns an error if the TOML is malformed, does not deserialize
-    /// into [`HypercolorConfig`], or declares any schema version other
-    /// than the current one.
+    /// into [`HypercolorConfig`], declares conflicting v4 start keys, or
+    /// declares any unsupported schema version.
     pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
-        let config = toml::from_str::<HypercolorConfig>(toml_str)
+        let mut document = toml::from_str::<toml::Value>(toml_str)
             .context("failed to parse configuration TOML")?;
-        if config.schema_version != CURRENT_SCHEMA_VERSION {
-            bail!(schema_mismatch_message(config.schema_version));
+        let schema_version = document
+            .get("schema_version")
+            .and_then(toml::Value::as_integer)
+            .and_then(|version| u32::try_from(version).ok())
+            .ok_or_else(|| {
+                anyhow::anyhow!("config schema_version must be a non-negative integer")
+            })?;
+        if schema_version == 4 {
+            migrate_v4_to_v5(&mut document)?;
+        } else if schema_version != CURRENT_SCHEMA_VERSION {
+            bail!(schema_mismatch_message(schema_version));
         }
+        let config: HypercolorConfig = document
+            .try_into()
+            .context("failed to deserialize configuration TOML")?;
         Ok(normalize_config(config))
     }
 
@@ -731,6 +741,28 @@ impl ConfigManager {
     pub fn default_config() -> HypercolorConfig {
         normalize_config(HypercolorConfig::default())
     }
+}
+
+fn migrate_v4_to_v5(document: &mut toml::Value) -> Result<()> {
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("configuration root must be a TOML table"))?;
+    if let Some(daemon) = root.get_mut("daemon").and_then(toml::Value::as_table_mut) {
+        if daemon.contains_key("start_profile") && daemon.contains_key("start_scene") {
+            bail!(
+                "schema v4 config declares both daemon.start_profile and \
+                 daemon.start_scene; keep only start_profile before migration"
+            );
+        }
+        if let Some(start_scene) = daemon.remove("start_profile") {
+            daemon.insert("start_scene".to_owned(), start_scene);
+        }
+    }
+    root.insert(
+        "schema_version".to_owned(),
+        toml::Value::Integer(i64::from(CURRENT_SCHEMA_VERSION)),
+    );
+    Ok(())
 }
 
 #[cfg_attr(target_os = "windows", allow(clippy::unnecessary_wraps))]

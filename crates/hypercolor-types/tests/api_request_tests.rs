@@ -13,7 +13,6 @@ use hypercolor_types::api::displays::{DisplayFaceScope, DisplayFaceScopeQuery};
 use hypercolor_types::api::library::{
     PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest, SavePresetRequest,
 };
-use hypercolor_types::api::profiles::{ApplyProfileRequest, CreateProfileRequest};
 use hypercolor_types::api::scenes::CreateSceneRequest;
 use hypercolor_types::controls::{ControlValue, ControlValueMap};
 use hypercolor_types::pairing::PairDeviceRequest;
@@ -68,12 +67,6 @@ macro_rules! assert_null_and_absent_agree {
 fn absent_and_explicit_null_optional_fields_decode_alike() {
     assert_null_and_absent_agree!(AssetUpdateRequest, json!({}), name, tags);
     assert_null_and_absent_agree!(
-        CreateProfileRequest,
-        json!({ "name": "evening" }),
-        description,
-        brightness,
-    );
-    assert_null_and_absent_agree!(
         CreateSceneRequest,
         json!({ "name": "movie-night" }),
         description,
@@ -122,10 +115,6 @@ fn unset_optional_request_fields_are_absent_not_null() {
     );
     assert_eq!(
         serde_json::to_value(DiscoverRequest::default()).expect("discover request serializes"),
-        json!({})
-    );
-    assert_eq!(
-        serde_json::to_value(ApplyProfileRequest::default()).expect("profile apply serializes"),
         json!({})
     );
 }

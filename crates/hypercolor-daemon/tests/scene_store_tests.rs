@@ -1,7 +1,7 @@
 //! Integration tests for persisted named-scene storage.
 
 use hypercolor_core::scene::{SceneManager, default_primary_group, make_scene};
-use hypercolor_daemon::persistence::AtomicWriteOutcome;
+use hypercolor_daemon::persistence::{AtomicWriteCommitResult, AtomicWriteOutcome};
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
@@ -180,6 +180,35 @@ fn scene_store_rejects_an_overtaken_snapshot() {
         .map(|scene| scene.name.as_str())
         .collect::<Vec<_>>();
     assert_eq!(names, vec!["Newer"]);
+}
+
+#[test]
+fn scene_store_stage_aware_save_restores_state_when_superseded() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let mut store = SceneStore::new(path).expect("scene store");
+    let older_save = store
+        .reserve_save([make_scene("Older")])
+        .expect("reserve older scene snapshot");
+    let newer_save = store
+        .reserve_save([make_scene("Newer")])
+        .expect("reserve newer scene snapshot");
+
+    assert!(matches!(
+        store.save_reserved_stage_aware(newer_save),
+        AtomicWriteCommitResult::DurableWritten
+    ));
+    assert!(matches!(
+        store.save_reserved_stage_aware(older_save),
+        AtomicWriteCommitResult::Superseded
+    ));
+    assert_eq!(
+        store
+            .list()
+            .map(|scene| scene.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Newer"]
+    );
 }
 
 #[cfg(feature = "persistence-test-hooks")]

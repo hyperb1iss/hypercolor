@@ -14,8 +14,6 @@ use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind}
 use hypercolor_daemon::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, PersistenceError, write_atomic,
 };
-#[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::profile_store::{Profile, ProfileStore};
 use hypercolor_daemon::runtime_state::{RuntimeSessionSnapshot, load, reserve_save, save_reserved};
 use hypercolor_types::device::DeviceId;
 #[cfg(feature = "persistence-test-hooks")]
@@ -577,25 +575,6 @@ async fn library_mutation_rolls_back_when_serialization_fails_before_admission()
     let favorites = store.list_favorites().await;
     assert_eq!(favorites.len(), 1);
     assert_eq!(favorites[0].effect_id, retained);
-}
-
-#[cfg(feature = "persistence-test-hooks")]
-#[test]
-fn profile_mutation_rolls_back_when_serialization_fails_before_admission() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("profiles.json");
-    let mut store = ProfileStore::new(path).expect("profile store");
-    store
-        .insert(Profile::named("retained", "Retained"))
-        .expect("seed profile");
-    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
-
-    store
-        .insert(Profile::named("rejected", "Rejected"))
-        .expect_err("serialization failure should reject mutation");
-
-    assert!(store.get("retained").is_some());
-    assert!(store.get("rejected").is_none());
 }
 
 #[cfg(feature = "persistence-test-hooks")]

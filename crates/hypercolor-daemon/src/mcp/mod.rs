@@ -117,7 +117,7 @@ impl ServerHandler for HypercolorMcpServer {
                 Implementation::new("hypercolor", env!("CARGO_PKG_VERSION"))
                     .with_title("Hypercolor RGB Lighting Controller")
                     .with_description(
-                        "AI-powered RGB lighting control for Linux with effects, devices, layouts, profiles, scenes, and diagnostics.",
+                        "AI-powered RGB lighting control for Linux with effects, devices, layouts, scenes, and diagnostics.",
                     )
                     .with_website_url("https://github.com/hyperb1iss/hypercolor"),
             )

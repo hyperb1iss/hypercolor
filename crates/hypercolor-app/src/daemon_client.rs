@@ -19,9 +19,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use crate::state::{
-    ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, EffectSummary,
-    ProfileInfo, ProfileListResponse, ProfileSummary, ServerEntry, ServerResponse, StateUpdate,
-    StatusResponse, TrayCommand, WsEventMessage, WsHello,
+    ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, EffectSummary, SceneInfo,
+    SceneListResponse, SceneSummary, ServerEntry, ServerResponse, StateUpdate, StatusResponse,
+    TrayCommand, WsEventMessage, WsHello,
 };
 
 /// Interval between reconnection attempts when the daemon is unreachable.
@@ -198,19 +198,19 @@ impl DaemonClient {
             })
             .unwrap_or_default();
 
-        let profiles_url = format!("{}/api/v1/profiles", self.base_url);
-        let profiles: Vec<ProfileInfo> =
-            match self.auth_request(self.http.get(&profiles_url)).send().await {
+        let scenes_url = format!("{}/api/v1/scenes", self.base_url);
+        let scenes: Vec<SceneInfo> =
+            match self.auth_request(self.http.get(&scenes_url)).send().await {
                 Ok(response) => {
-                    let profile_resp: Result<ApiEnvelope<ProfileListResponse>, _> =
+                    let scene_resp: Result<ApiEnvelope<SceneListResponse>, _> =
                         response.json().await;
-                    profile_resp
+                    scene_resp
                         .ok()
                         .and_then(|envelope| envelope.data)
                         .map(|list| {
                             list.items
                                 .into_iter()
-                                .map(|item: ProfileSummary| ProfileInfo {
+                                .map(|item: SceneSummary| SceneInfo {
                                     id: item.id,
                                     name: item.name,
                                 })
@@ -219,7 +219,7 @@ impl DaemonClient {
                         .unwrap_or_default()
                 }
                 Err(error) => {
-                    debug!("Failed to fetch profiles: {error}");
+                    debug!("Failed to fetch scenes: {error}");
                     Vec::new()
                 }
             };
@@ -253,7 +253,7 @@ impl DaemonClient {
             scene_snapshot_locked: status.active_scene_snapshot_locked,
             device_count: status.device_count,
             effects,
-            profiles,
+            scenes,
             server_identity: Some(server_identity.clone()),
             servers: self.known_servers.clone(),
             active_server: self.find_server_index(&server_identity.instance_id),
@@ -428,13 +428,13 @@ impl DaemonClient {
                 }
                 false
             }
-            TrayCommand::ApplyProfile(id) => {
-                let url = format!("{}/api/v1/profiles/{}/apply", self.base_url, id);
+            TrayCommand::ActivateScene(id) => {
+                let url = format!("{}/api/v1/scenes/{}/activate", self.base_url, id);
                 if let Err(error) = self
-                    .send_command(self.auth_request(self.http.post(&url)), "apply profile")
+                    .send_command(self.auth_request(self.http.post(&url)), "activate scene")
                     .await
                 {
-                    error!("Failed to apply profile {id}: {error}");
+                    error!("Failed to activate scene {id}: {error}");
                 }
                 false
             }
