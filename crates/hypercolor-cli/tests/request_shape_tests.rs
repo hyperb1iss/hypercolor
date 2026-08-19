@@ -733,10 +733,22 @@ async fn capture_effect_apply(
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
         "data": {
-            "effect": {
-                "id": effect,
-                "name": "Demo Effect",
+            "zone": {
+                "id": "00000000-0000-0000-0000-000000000010",
+                "name": "Primary",
+                "enabled": true,
+                "brightness": 1.0,
+                "members": [],
+                "layers": [{
+                    "id": "00000000-0000-0000-0000-000000000011",
+                    "source": {
+                        "type": "effect",
+                        "effect_id": effect,
+                    },
+                }],
             },
+            "transition": { "type": "cut" },
+            "output": { "applied": true },
         },
     }))
 }
