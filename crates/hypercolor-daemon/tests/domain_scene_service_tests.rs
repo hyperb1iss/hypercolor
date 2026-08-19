@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::effect::EffectEntry;
@@ -43,6 +43,7 @@ use hypercolor_daemon::domain::scene::{
 };
 use hypercolor_daemon::domain::scene_tree::{ClearScene, clear_scene};
 use hypercolor_daemon::domain::{DomainError, MutationContext};
+use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 // ── Harness ──────────────────────────────────────────────────────────────
@@ -550,6 +551,78 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
         );
     }
     assert!(warned);
+}
+
+#[tokio::test]
+async fn activation_applies_a_named_layout_without_reentering_its_guard() {
+    let (state, _tempdir) = isolated_state();
+    let layout_id = LayoutId::new("activation-layout").expect("valid layout id");
+    let layout = SpatialLayout {
+        id: layout_id.to_string(),
+        name: "Activation Layout".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(layout.id.clone(), layout);
+
+    let mut scene = named_scene("layout scene");
+    scene.layout_id = Some(layout_id.clone());
+    let scene_id = scene.id;
+    state
+        .scene_manager
+        .write()
+        .await
+        .create(scene)
+        .expect("scene should be created");
+
+    let activation = activate_scene(
+        &state,
+        ActivateScene {
+            scene_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    );
+    tokio::pin!(activation);
+    let activated = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                result = &mut activation => break result,
+                () = tokio::time::sleep(Duration::from_millis(1)) => {
+                    for transaction in state.scene_transactions.drain() {
+                        match transaction {
+                            SceneTransaction::PrepareLayout(transaction) => {
+                                transaction
+                                    .accept_and_publish_for_test(
+                                        &state.spatial_engine,
+                                        &state.scene_manager,
+                                        || async {},
+                                    )
+                                    .await
+                                    .expect("layout publication should succeed");
+                            }
+                            SceneTransaction::SetScreenCaptureConfigured(_) => {
+                                panic!("activation should not reconfigure screen capture");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("layout activation should not deadlock")
+    .expect("layout activation should succeed");
+
+    assert!(activated.layout.applied);
+    assert_eq!(activated.layout.layout_id, Some(layout_id));
+    assert_eq!(
+        state.spatial_engine.read().await.layout().id,
+        "activation-layout"
+    );
 }
 
 #[tokio::test]

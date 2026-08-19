@@ -760,12 +760,13 @@ async fn admit_persisted_layout_update_under_guard(
     .await
 }
 
-pub(crate) async fn apply_persisted_layout_update_under_guard(
+pub(crate) async fn apply_persisted_layout_update(
     state: &AppState,
-    guard: &LayoutUpdateGuard,
+    guard: LayoutUpdateGuard,
     layout: SpatialLayout,
 ) -> Result<(), LayoutUpdateError> {
-    admit_persisted_layout_update_under_guard(state, guard, layout).await?;
+    admit_persisted_layout_update_under_guard(state, &guard, layout).await?;
+    drop(guard);
     let _ = converge_persisted_layout_update(state).await;
     Ok(())
 }

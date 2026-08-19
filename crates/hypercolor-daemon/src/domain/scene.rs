@@ -1086,8 +1086,7 @@ pub async fn activate_scene(
         admission.estimated_cost_us,
     )
     .await;
-    let layout = apply_activation_layout(state, &layout_guard, layout_id).await;
-    drop(layout_guard);
+    let layout = apply_activation_layout(state, layout_guard, layout_id).await;
     let brightness = apply_activation_brightness(state, activation_brightness).await;
     crate::api::save_runtime_session_snapshot(state).await;
 
@@ -1107,7 +1106,7 @@ pub async fn activate_scene(
 
 async fn apply_activation_layout(
     state: &AppState,
-    guard: &LayoutUpdateGuard,
+    guard: LayoutUpdateGuard,
     layout_id: Option<hypercolor_types::identity::LayoutId>,
 ) -> SceneLayoutActivationOutcome {
     let Some(layout_id) = layout_id else {
@@ -1132,8 +1131,7 @@ async fn apply_activation_layout(
         };
     };
 
-    match crate::api::layouts::apply_persisted_layout_update_under_guard(state, guard, layout).await
-    {
+    match crate::api::layouts::apply_persisted_layout_update(state, guard, layout).await {
         Ok(()) => SceneLayoutActivationOutcome {
             layout_id: Some(layout_id),
             applied: true,
