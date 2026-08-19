@@ -594,19 +594,22 @@ async fn devices_action_targets_device_surface() -> Result<()> {
 }
 
 #[tokio::test]
-async fn profiles_apply_sends_requested_transition_body() -> Result<()> {
+async fn scenes_snapshot_sends_name_and_description() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
-        .route(
-            "/api/v1/profiles/{profile}/apply",
-            post(capture_profile_apply),
-        )
+        .route("/api/v1/scenes/snapshot", post(capture_scene_snapshot))
         .with_state(Arc::clone(&captured_body));
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 
     let cli_result = run_hyper(
         port,
-        &["profiles", "apply", "evening", "--transition", "250"],
+        &[
+            "scenes",
+            "snapshot",
+            "evening",
+            "--description",
+            "Warm evening light",
+        ],
     )
     .await;
 
@@ -618,8 +621,14 @@ async fn profiles_apply_sends_requested_transition_body() -> Result<()> {
         .lock()
         .await
         .clone()
-        .context("server did not capture profile apply request body")?;
-    assert_eq!(body, serde_json::json!({ "transition_ms": 250 }));
+        .context("server did not capture scene snapshot request body")?;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "name": "evening",
+            "description": "Warm evening light",
+        })
+    );
 
     Ok(())
 }
@@ -1063,19 +1072,17 @@ async fn capture_device_control_action(
     }))
 }
 
-async fn capture_profile_apply(
-    Path(profile): Path<String>,
+async fn capture_scene_snapshot(
     State(captured_body): State<SharedBody>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
         "data": {
-            "profile": {
-                "id": profile,
+            "scene": {
+                "id": "0198c5b6-1111-7000-8000-000000000005",
                 "name": "Evening",
             },
-            "applied": true,
         },
     }))
 }

@@ -174,10 +174,6 @@ pub enum Commands {
     #[command(display_order = 20)]
     Library(commands::library::LibraryArgs),
 
-    /// Save and apply full system profiles
-    #[command(display_order = 21)]
-    Profiles(commands::profiles::ProfilesArgs),
-
     // ── Network ───────────────────────────────────────────────
     /// Daemon version, identity, and health
     #[command(display_order = 30)]
@@ -275,7 +271,6 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Drivers(args) => commands::drivers::execute(args, &client, &ctx).await,
         Commands::Effects(args) => commands::effects::execute(args, &client, &ctx).await,
         Commands::Scenes(args) => commands::scenes::execute(args, &client, &ctx).await,
-        Commands::Profiles(args) => commands::profiles::execute(args, &client, &ctx).await,
         Commands::Library(args) => commands::library::execute(args, &client, &ctx).await,
         Commands::Layouts(args) => commands::layouts::execute(args, &client, &ctx).await,
         Commands::Brightness(args) => commands::brightness::execute(args, &client, &ctx).await,
