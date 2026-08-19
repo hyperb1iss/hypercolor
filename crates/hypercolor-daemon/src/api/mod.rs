@@ -1135,11 +1135,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::identify_device),
         )
         .route(
-            "/devices/{id}/zones/{zone_id}/identify",
-            axum::routing::post(devices::identify_zone),
+            "/devices/{id}/segments/{segment}/identify",
+            axum::routing::post(devices::identify_segment),
         )
         .route(
-            "/devices/{id}/attachments/{slot_id}/identify",
+            "/devices/{id}/attachments/{slot}/identify",
             axum::routing::post(devices::identify_attachment),
         )
         .route(

@@ -68,10 +68,6 @@ pub use hypercolor_types::api::devices::{
     SegmentSummary, SegmentTopologySummary, UnresolvedBindingSummary, UpdateDeviceRequest,
 };
 
-pub use identify_segment as identify_zone;
-pub type ZoneSummary = SegmentSummary;
-pub type ZoneTopologySummary = SegmentTopologySummary;
-
 const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];
 

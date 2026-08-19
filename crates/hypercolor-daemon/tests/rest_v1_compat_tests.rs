@@ -584,6 +584,7 @@ async fn deleted_dead_resource_routes_leave_nothing_behind() {
         ("GET", "/api/v1/devices/debug/queues"),
         ("GET", "/api/v1/devices/debug/routing"),
         ("GET", "/api/v1/devices/metrics"),
+        ("POST", "/api/v1/devices/device-id/zones/zone-id/identify"),
         (
             "POST",
             "/api/v1/devices/device-id/attachments/preview",
