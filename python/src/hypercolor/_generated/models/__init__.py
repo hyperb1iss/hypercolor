@@ -104,7 +104,6 @@ from .apply_policy_type_3 import ApplyPolicyType3
 from .apply_policy_type_3_kind import ApplyPolicyType3Kind
 from .apply_policy_type_4 import ApplyPolicyType4
 from .apply_policy_type_4_kind import ApplyPolicyType4Kind
-from .apply_profile_request import ApplyProfileRequest
 from .b_tree_map import BTreeMap
 from .b_tree_map_additional_property import BTreeMapAdditionalProperty
 from .capture_authorization_response import CaptureAuthorizationResponse
@@ -407,7 +406,6 @@ __all__ = (
     "ApplyPolicyType3Kind",
     "ApplyPolicyType4",
     "ApplyPolicyType4Kind",
-    "ApplyProfileRequest",
     "BTreeMap",
     "BTreeMapAdditionalProperty",
     "CaptureAuthorizationResponse",
