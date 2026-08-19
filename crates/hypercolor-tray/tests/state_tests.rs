@@ -288,7 +288,8 @@ fn parse_authenticated_system_status() {
           "identity": {
             "instance_id": "01912345-6789-7abc-def0-123456789abc",
             "instance_name": "desk-pc",
-            "version": "0.1.0"
+            "version": "0.1.0",
+            "auth_required": true
           },
           "status": {
             "running": true,
