@@ -3414,14 +3414,61 @@ fn manager_tracks_and_removes_host_capture_sources() {
     assert!(mgr.has_host_capture_source());
     assert!(mgr.has_interaction_source());
     assert_eq!(mgr.source_count(), 3);
+    let graph_generation = mgr.source_graph_generation();
 
-    mgr.remove_host_capture_sources();
+    let plan = mgr
+        .plan_source_swap(
+            ManagedSourceKey::Interaction(hypercolor_core::input::InteractionSourceOrigin::Host),
+            SourceSwapTarget::Absent,
+        )
+        .expect("unique host source plans");
+    let mut replacement = None;
+    let retirement = mgr
+        .commit_source_swap(&plan, &mut replacement)
+        .expect("host removal commits");
+    assert_eq!(mgr.source_graph_generation(), graph_generation + 1);
     assert!(!mgr.has_host_capture_source());
     assert!(
         mgr.has_interaction_source(),
         "browser injection survives host removal"
     );
     assert_eq!(mgr.source_count(), 2, "browser + audio survive");
+    retirement.retire();
+    assert_eq!(mgr.source_graph_generation(), graph_generation + 1);
+}
+
+#[test]
+fn absent_host_commit_fences_an_older_enable_plan() {
+    let mut manager = InputManager::new();
+    let host_key =
+        ManagedSourceKey::Interaction(hypercolor_core::input::InteractionSourceOrigin::Host);
+    let stale_enable = manager
+        .plan_source_swap(host_key, SourceSwapTarget::Present { running: true })
+        .expect("empty host slot plans an enable");
+    let disable = manager
+        .plan_source_swap(host_key, SourceSwapTarget::Absent)
+        .expect("empty host slot plans a disable");
+    let graph_generation = manager.source_graph_generation();
+    let mut no_replacement = None;
+    let retirement = manager
+        .commit_source_swap(&disable, &mut no_replacement)
+        .expect("absence commit linearizes");
+
+    assert_eq!(manager.source_graph_generation(), graph_generation + 1);
+    retirement.retire();
+
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let mut candidate = CaptureTrackingInteractionSource::new(transitions);
+    candidate.start().expect("host candidate starts");
+    let mut candidate = Some(managed_interaction(candidate));
+
+    assert!(matches!(
+        manager.commit_source_swap(&stale_enable, &mut candidate),
+        Err(SourceSwapConflict::GraphChanged)
+    ));
+    assert!(candidate.is_some(), "stale enable retains its candidate");
+    assert!(!manager.has_host_capture_source());
+    assert_eq!(manager.source_graph_generation(), graph_generation + 1);
 }
 
 #[test]

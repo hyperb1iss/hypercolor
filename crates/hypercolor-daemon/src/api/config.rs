@@ -13,8 +13,8 @@ use utoipa::ToSchema;
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, ScreenReconfigurationConflict, ScreenSource, SourceKind,
-    SourceState,
+    AudioReconfigurationConflict, InteractionSourceOrigin, ManagedSourceKey, ManagedSourceRole,
+    ScreenReconfigurationConflict, ScreenSource, SourceKind, SourceState, SourceSwapTarget,
 };
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
@@ -1347,29 +1347,39 @@ async fn apply_input_config_change(state: &Arc<AppState>, key: Option<&str>) -> 
         return route_changed;
     }
 
-    let had_source = state.input_manager.lock().await.has_host_capture_source();
     let mut replacement = crate::startup::services::build_interaction_source(&input);
     let has_replacement = replacement.is_some();
     if let Some(source) = replacement.as_mut()
         && let Err(error) = source.start()
     {
+        source.stop();
         warn!(%error, "Failed to start live host input source");
-        return had_source || route_changed;
+        return false;
     }
+    let mut replacement = replacement.map(ManagedSourceRole::interaction);
+    let target = if has_replacement {
+        SourceSwapTarget::Present { running: true }
+    } else {
+        SourceSwapTarget::Absent
+    };
+    let host_key = ManagedSourceKey::Interaction(InteractionSourceOrigin::Host);
 
-    let swap = state
-        .input_manager
-        .lock()
-        .await
-        .swap_host_capture_source(&mut replacement);
+    let (had_source, swap) = {
+        let mut input_manager = state.input_manager.lock().await;
+        let had_source = input_manager.has_host_capture_source();
+        let swap = input_manager
+            .plan_source_swap(host_key, target)
+            .and_then(|plan| input_manager.commit_source_swap(&plan, &mut replacement));
+        (had_source, swap)
+    };
     let retirement = match swap {
         Ok(retirement) => retirement,
         Err(error) => {
             if let Some(source) = replacement.as_mut() {
-                source.stop();
+                source.source_mut().stop();
             }
             warn!(%error, "Failed to commit live host input source");
-            return had_source || route_changed;
+            return false;
         }
     };
     retirement.retire();
@@ -1553,9 +1563,10 @@ mod tests {
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
     use hypercolor_core::input::{
-        InputData, InputManager, InputSource, ManagedSourceRole, ScreenReconfigurationConflict,
-        ScreenSource, ScreenSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceState,
-        SourceStatus, SourceStatusHandle, SourceStatusReporter,
+        InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+        ManagedSourceRole, ScreenReconfigurationConflict, ScreenSource, ScreenSourceRole,
+        SourceIssue, SourceKind, SourceRoleBinding, SourceState, SourceStatus, SourceStatusHandle,
+        SourceStatusReporter,
     };
     use hypercolor_types::config::InteractionRoutePolicy;
 
@@ -1566,6 +1577,34 @@ mod tests {
         validate_prepared_capture_status, write_covers,
     };
     use crate::api::AppState;
+
+    struct TestHostSource;
+
+    impl InputSource for TestHostSource {
+        fn name(&self) -> &'static str {
+            "test_host"
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn stop(&mut self) {}
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            false
+        }
+    }
+
+    impl SourceRoleBinding for TestHostSource {
+        type Role = InteractionSourceRole;
+    }
+
+    impl InteractionSource for TestHostSource {}
 
     struct TestScreenSource {
         running: bool,
@@ -1869,6 +1908,44 @@ mod tests {
             state.input_manager.lock().await.source_graph_generation(),
             graph_generation
         );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_host_topology_reports_live_apply_failure() {
+        let mut state = AppState::new();
+        let config_path = std::env::temp_dir().join(format!(
+            "hypercolor-input-config-{}-{}.toml",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should follow Unix epoch")
+                .as_nanos()
+        ));
+        state.config_manager = Some(Arc::new(
+            ConfigManager::new(config_path).expect("test config manager should initialize"),
+        ));
+        {
+            let mut input_manager = state.input_manager.lock().await;
+            for _ in 0..2 {
+                input_manager
+                    .add_source(ManagedSourceRole::interaction(Box::new(TestHostSource)))
+                    .expect("test host source registers");
+            }
+        }
+        let state = Arc::new(state);
+        let (source_count, graph_generation) = {
+            let input_manager = state.input_manager.lock().await;
+            (
+                input_manager.source_count(),
+                input_manager.source_graph_generation(),
+            )
+        };
+
+        assert!(!apply_input_config_change(&state, Some("input.enabled")).await);
+
+        let input_manager = state.input_manager.lock().await;
+        assert_eq!(input_manager.source_count(), source_count);
+        assert_eq!(input_manager.source_graph_generation(), graph_generation);
     }
 
     #[tokio::test]

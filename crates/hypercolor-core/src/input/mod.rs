@@ -232,17 +232,6 @@ pub enum ScreenReconfigurationConflict {
     InvalidReplacement,
 }
 
-/// Rejected host-input source swap.
-#[derive(Debug, Error, Eq, PartialEq)]
-pub enum HostReconfigurationError {
-    /// More than one host source violates the manager's replacement invariant.
-    #[error("more than one host input source is registered")]
-    SourceTopologyChanged,
-    /// The candidate is not a running host interaction source.
-    #[error("prepared host input replacement is invalid")]
-    InvalidReplacement,
-}
-
 /// A typed source cannot enter the graph under ambiguous or conflicting metadata.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum SourceRegistrationError {
@@ -352,27 +341,6 @@ impl SourceRetirement {
             error!(source = source.name(), %error, "Failed to retire input source status");
         }
         info!(source = source.name(), "Retired input source");
-    }
-}
-
-/// Host sources detached by an atomic graph commit.
-#[must_use = "retired host sources must be stopped outside the input manager lock"]
-pub struct HostRuntimeRetirement {
-    source: Option<ManagedInputSource>,
-    source_graph_generation: u64,
-}
-
-impl HostRuntimeRetirement {
-    /// Stop the detached source and retire its status handle.
-    pub fn retire(mut self) {
-        let Some(source) = &mut self.source else {
-            return;
-        };
-        source.stop();
-        if let Err(error) = source.retire_source_status(self.source_graph_generation) {
-            error!(source = source.name(), %error, "Failed to retire host input source status");
-        }
-        info!(source = source.name(), "Retired host input source");
     }
 }
 
@@ -574,8 +542,8 @@ impl ManagedInputSource {
         };
         let session = status
             .begin_session()
-            .expect("validated compatibility host source can begin its session")
-            .expect("manager-bound compatibility host source creates a session");
+            .expect("validated compatibility source can begin its session")
+            .expect("manager-bound compatibility source creates a session");
         session.mark_event_driven_live_without_deadline(1);
     }
 
@@ -835,17 +803,23 @@ impl InputManager {
         replacement: &mut Option<ManagedSourceRole>,
     ) -> Result<SourceRetirement, SourceSwapConflict> {
         let current = self.validate_source_swap(plan, replacement.as_ref())?;
+        let source_graph_generation = self.bump_source_graph_generation();
         if current.is_none() && plan.target == SourceSwapTarget::Absent {
+            self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
+            self.publish_source_status_registry();
             return Ok(SourceRetirement {
                 source: None,
-                source_graph_generation: self.source_graph_generation,
+                source_graph_generation,
             });
         }
 
-        let source_graph_generation = self.bump_source_graph_generation();
-        let prepared = replacement
-            .take()
-            .map(|source| self.create_managed_source(source, source_graph_generation));
+        let prepared = replacement.take().map(|source| {
+            let mut prepared = self.create_managed_source(source, source_graph_generation);
+            if prepared.is_running() {
+                prepared.mark_prestarted_compatibility_live();
+            }
+            prepared
+        });
         let retired = match (current, prepared) {
             (Some(index), Some(prepared)) => {
                 Some(std::mem::replace(&mut self.sources[index], prepared))
@@ -2169,101 +2143,6 @@ impl InputManager {
         })
     }
 
-    /// Atomically replace the registered host source with one pre-started candidate.
-    ///
-    /// The detached source remains running in the returned retirement owner until
-    /// the caller releases it outside the input-manager lock. A rejected candidate
-    /// leaves the current source and graph generation unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the manager does not contain exactly zero or one host
-    /// source, or when the supplied candidate is not a running host interaction
-    /// source.
-    pub fn swap_host_capture_source(
-        &mut self,
-        replacement: &mut Option<Box<dyn InteractionSource>>,
-    ) -> Result<HostRuntimeRetirement, HostReconfigurationError> {
-        let mut host_indices = self
-            .sources
-            .iter()
-            .enumerate()
-            .filter_map(|(index, source)| {
-                (source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host))
-                    .then_some(index)
-            });
-        let current_index = host_indices.next();
-        if host_indices.next().is_some() {
-            return Err(HostReconfigurationError::SourceTopologyChanged);
-        }
-        if replacement.as_ref().is_some_and(|source| {
-            source.interaction_source_origin() != InteractionSourceOrigin::Host
-                || !source.is_running()
-        }) {
-            return Err(HostReconfigurationError::InvalidReplacement);
-        }
-        if current_index.is_none() && replacement.is_none() {
-            return Ok(HostRuntimeRetirement {
-                source: None,
-                source_graph_generation: self.source_graph_generation,
-            });
-        }
-
-        let source_graph_generation = self.bump_source_graph_generation();
-        let prepared = replacement.take().map(|source| {
-            let mut prepared = self.create_managed_source(
-                ManagedSourceRole::interaction(source),
-                source_graph_generation,
-            );
-            prepared.mark_prestarted_compatibility_live();
-            prepared
-        });
-        let retired = match (current_index, prepared) {
-            (Some(index), Some(prepared)) => {
-                Some(std::mem::replace(&mut self.sources[index], prepared))
-            }
-            (Some(index), None) => Some(self.sources.remove(index)),
-            (None, Some(prepared)) => {
-                self.sources.push(prepared);
-                None
-            }
-            (None, None) => unreachable!("empty host swap returned before graph mutation"),
-        };
-        self.interaction_capture_active = None;
-        self.publish_source_status_registry();
-        Ok(HostRuntimeRetirement {
-            source: retired,
-            source_graph_generation,
-        })
-    }
-
-    /// Stop and remove only host hardware capture sources.
-    ///
-    /// Leaves the browser injection source in place so disabling host
-    /// consent never breaks browser-preview input.
-    pub fn remove_host_capture_sources(&mut self) {
-        if !self.sources.iter().any(|source| {
-            source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host)
-        }) {
-            return;
-        }
-        let source_graph_generation = self.bump_source_graph_generation();
-        self.sources.retain_mut(|source| {
-            if source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host) {
-                source.stop();
-                if let Err(error) = source.retire_source_status(source_graph_generation) {
-                    error!(source = source.name(), %error, "Failed to retire host input source status");
-                }
-                info!(source = source.name(), "Removed host capture source");
-                false
-            } else {
-                true
-            }
-        });
-        self.interaction_capture_active = None;
-        self.publish_source_status_registry();
-    }
-
     /// Stop and remove all registered screen sources.
     pub fn remove_screen_sources(&mut self) {
         if !self
@@ -2869,9 +2748,9 @@ mod host_source_swap_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        HostReconfigurationError, InputData, InputManager, InputSource, InteractionSource,
-        InteractionSourceOrigin, InteractionSourceRole, ManagedSourceKey, ManagedSourceRole,
-        SourceRoleBinding, SourceState, SourceSwapConflict, SourceSwapTarget,
+        InputData, InputManager, InputSource, InteractionSource, InteractionSourceOrigin,
+        InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, SourceRoleBinding, SourceState,
+        SourceSwapConflict, SourceSwapTarget,
     };
 
     struct HostSource {
@@ -3024,17 +2903,20 @@ mod host_source_swap_tests {
             .expect("old host source registers");
         let initial_generation = manager.source_graph_generation();
 
-        let mut candidate: Option<Box<dyn InteractionSource>> = Some(Box::new(HostSource::new(
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate: Box<dyn InteractionSource> = Box::new(HostSource::new(
             "candidate-host",
             Arc::clone(&candidate_stopped),
-        )));
-        candidate
-            .as_mut()
-            .expect("candidate exists")
-            .start()
-            .expect("candidate host source starts");
+        ));
+        candidate.start().expect("candidate host source starts");
+        let mut candidate = Some(ManagedSourceRole::interaction(candidate));
         let retirement = manager
-            .swap_host_capture_source(&mut candidate)
+            .commit_source_swap(&plan, &mut candidate)
             .expect("running candidate swaps atomically");
 
         assert!(candidate.is_none());
@@ -3062,18 +2944,63 @@ mod host_source_swap_tests {
             .add_source(ManagedSourceRole::interaction(old))
             .expect("old host source registers");
         let initial_generation = manager.source_graph_generation();
-        let mut candidate: Option<Box<dyn InteractionSource>> = Some(Box::new(HostSource::new(
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate = Some(ManagedSourceRole::interaction(Box::new(HostSource::new(
             "failed-candidate",
             Arc::new(AtomicBool::new(false)),
-        )));
+        ))));
 
         assert!(matches!(
-            manager.swap_host_capture_source(&mut candidate),
-            Err(HostReconfigurationError::InvalidReplacement)
+            manager.commit_source_swap(&plan, &mut candidate),
+            Err(SourceSwapConflict::InvalidReplacementLifecycle {
+                expected_running: true,
+                observed_running: false,
+            })
         ));
         assert!(candidate.is_some());
         assert_eq!(manager.source_names(), ["old-host"]);
         assert_eq!(manager.source_graph_generation(), initial_generation);
         assert!(!old_stopped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn browser_candidate_rejection_preserves_candidate_and_host_source() {
+        let mut old = Box::new(HostSource::new(
+            "old-host",
+            Arc::new(AtomicBool::new(false)),
+        ));
+        old.start().expect("old host source starts");
+        let mut manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(old))
+            .expect("old host source registers");
+        let initial_generation = manager.source_graph_generation();
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate = Box::new(HostSource::browser("browser-candidate"));
+        candidate.start().expect("browser candidate starts");
+        let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+
+        assert!(matches!(
+            manager.commit_source_swap(&plan, &mut candidate),
+            Err(SourceSwapConflict::InvalidReplacementKey {
+                expected: ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                observed: ManagedSourceKey::Interaction(
+                    InteractionSourceOrigin::BrowserCompatibilityAggregate
+                ),
+            })
+        ));
+        assert!(candidate.is_some());
+        assert_eq!(manager.source_names(), ["old-host"]);
+        assert_eq!(manager.source_graph_generation(), initial_generation);
     }
 }
