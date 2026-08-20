@@ -653,6 +653,7 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
                                     .accept_and_publish_for_test(
                                         &state.spatial_engine,
                                         &state.scene_manager,
+                                        &state.scene_transactions,
                                         || async {},
                                     )
                                     .await
@@ -1399,22 +1400,12 @@ fn library_events(
 /// racing a commit against a hand-rolled writer that no longer exists,
 /// so the property is pinned against the sources instead.
 ///
-/// Three writers are accounted for, each with a reason it cannot commit:
+/// Two runtime writers are accounted for:
 ///
-/// - `render_thread/scene_snapshot.rs` ticks transition progress every
-///   frame. Committing it would mint a scene revision per frame and
-///   invalidate every in-flight candidate, and progress is render-local
-///   state no commit means to own. The reverse direction has a bounded
-///   window — a candidate cloned before a tick and swapped in after it
-///   rewinds progress by the clone-to-commit delta — which the next tick
-///   re-advances, and which §6.1 closes by moving progress out of the
-///   manager entirely.
 /// - `scene_transactions.rs` publishes a prepared layout at the frame
-///   boundary, holding the scene lock and the spatial lock together so
-///   the renderer never sees a layout and a zone set that disagree.
-///   `commit_scene` takes neither the spatial lock nor an `AppState` the
-///   render thread can reach; Spec 76 §6.1 re-points commit at this
-///   transaction rather than the reverse.
+///   boundary, holding the scene lock and the spatial lock together.
+///   The queue carries the canonical commit sequencer and admits the
+///   authored layout update before releasing either lock.
 /// - `startup/lifecycle.rs` holds five, of different kinds. Four are
 ///   pre-init: the persisted-session restore and configured start-scene
 ///   paths run inside `DaemonState::initialize`, before the render thread
@@ -1425,7 +1416,7 @@ fn library_events(
 ///   publication pump, which exists in neither phase, and none has a
 ///   competing writer to order against.
 ///
-/// A sixth entry means some new site can silently discard a commit or be
+/// A fifth entry means some new site can silently discard a commit or be
 /// discarded by one. Route it through `commit_scene` instead of
 /// widening this list, unless it genuinely belongs to one of the three
 /// reasons above.
@@ -1442,11 +1433,10 @@ fn library_events(
 fn no_scene_writer_lives_outside_the_commit_path() {
     /// Every file allowed to take the scene write lock, and how many
     /// times, in production code.
-    const EXPECTED: [(&str, usize); 4] = [
-        ("domain/scene.rs", 1),                 // commit_scene's install
-        ("render_thread/scene_snapshot.rs", 1), // per-frame transition tick
-        ("scene_transactions.rs", 1),           // frame-boundary layout publish
-        ("startup/lifecycle.rs", 5),            // restore x2, configured x2, shutdown deactivate
+    const EXPECTED: [(&str, usize); 3] = [
+        ("domain/scene.rs", 1),       // commit_scene's install
+        ("scene_transactions.rs", 1), // frame-boundary layout publish
+        ("startup/lifecycle.rs", 5),  // restore x2, configured x2, shutdown deactivate
     ];
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

@@ -6,10 +6,13 @@ use std::sync::{Arc, Mutex as StdMutex};
 use thiserror::Error;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, oneshot};
 
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone};
 use hypercolor_types::spatial::SpatialLayout;
+
+use crate::domain::commit::SceneCommitSequencer;
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum LayoutTransactionRejection {
@@ -165,6 +168,7 @@ impl PrepareLayoutTransaction {
         self,
         spatial_engine: &Arc<RwLock<SpatialEngine>>,
         scene_manager: &Arc<RwLock<SceneManager>>,
+        scene_transactions: &SceneTransactionQueue,
         before_publication: F,
     ) -> Result<(), LayoutTransactionRejection>
     where
@@ -193,6 +197,7 @@ impl PrepareLayoutTransaction {
             &expected_layout,
             expected_active_scene_id,
             expected_active_render_groups_revision,
+            scene_transactions,
             |_| {},
         )
         .await;
@@ -303,12 +308,23 @@ struct SceneTransactionQueueState {
     closed: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SceneTransactionQueue {
     inner: Arc<StdMutex<SceneTransactionQueueState>>,
     scene_activation_lock: Arc<Mutex<()>>,
     layout_update_lock: Arc<Mutex<()>>,
     next_layout_token: Arc<AtomicU64>,
+    scene_commits: Arc<SceneCommitSequencer>,
+    event_bus: Arc<HypercolorBus>,
+}
+
+impl Default for SceneTransactionQueue {
+    fn default() -> Self {
+        Self::new(
+            Arc::new(SceneCommitSequencer::new()),
+            Arc::new(HypercolorBus::new()),
+        )
+    }
 }
 
 pub struct SceneActivationGuard {
@@ -338,6 +354,28 @@ impl Drop for SceneTransactionConsumer {
 }
 
 impl SceneTransactionQueue {
+    #[must_use]
+    pub fn new(scene_commits: Arc<SceneCommitSequencer>, event_bus: Arc<HypercolorBus>) -> Self {
+        Self {
+            inner: Arc::default(),
+            scene_activation_lock: Arc::default(),
+            layout_update_lock: Arc::default(),
+            next_layout_token: Arc::default(),
+            scene_commits,
+            event_bus,
+        }
+    }
+
+    fn admit_scene_revision(&self) {
+        self.scene_commits
+            .admit(Arc::clone(&self.event_bus))
+            .release(Vec::new());
+    }
+
+    pub(crate) fn scene_revision(&self) -> u64 {
+        self.scene_commits.revision()
+    }
+
     pub fn push(&self, transaction: SceneTransaction) -> Result<(), LayoutTransactionRejection> {
         let mut state = self
             .inner
@@ -494,20 +532,17 @@ pub(crate) async fn publish_prepared_layout_activation<F>(
     expected_layout: &SpatialLayout,
     expected_active_scene_id: Option<SceneId>,
     expected_active_render_groups_revision: u64,
+    scene_transactions: &SceneTransactionQueue,
     publish_renderer_state: F,
 ) -> Result<(), LayoutTransactionRejection>
 where
     F: FnOnce(SpatialEngine),
 {
-    // FRAME-BOUNDARY WRITER (Spec 76 §2.3, §6.1). This runs on the
-    // render thread and must hold the scene lock and the spatial lock
-    // together, so the renderer never observes a layout and a zone set
-    // that disagree. `commit_scene` takes neither the spatial lock nor
-    // an `AppState` the render thread could reach, so it cannot serve
-    // this swap; §6.1 re-points commit at this transaction instead. The
-    // source-is-current check below is this writer's own
-    // compare-and-swap, and it refuses whenever a commit has moved the
-    // active scene, its resolved zones, or the authoritative layout.
+    // The render thread owns the frame-boundary swap, but the scene
+    // sequencer still owns admission. Holding the scene lock across the
+    // compare-and-swap, authored layout update, and admission makes a
+    // layout publication one ordinary scene revision rather than a
+    // second concurrency domain.
     let mut manager = scene_manager.write().await;
     let mut authoritative_spatial_engine = spatial_engine.write().await;
     let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
@@ -518,6 +553,7 @@ where
     }
 
     manager.sync_primary_group_layout(candidate_spatial_engine.layout().as_ref());
+    scene_transactions.admit_scene_revision();
     *authoritative_spatial_engine = candidate_spatial_engine.clone();
     publish_renderer_state(candidate_spatial_engine);
     Ok(())

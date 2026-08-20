@@ -107,6 +107,7 @@ async fn publish_commit(
     accepted: AcceptedPublication,
     spatial_engine: &Arc<RwLock<SpatialEngine>>,
     scene_manager: &Arc<RwLock<SceneManager>>,
+    queue: &SceneTransactionQueue,
 ) -> Result<(), LayoutTransactionRejection> {
     wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
     let result = publish_prepared_layout_activation(
@@ -116,6 +117,7 @@ async fn publish_commit(
         &accepted.expected_layout,
         accepted.active_scene_id,
         accepted.source_active_render_groups_revision,
+        queue,
         |_| {},
     )
     .await;
@@ -219,7 +221,7 @@ async fn renderer_and_authoritative_state_reuse_the_exact_prepared_sampling_plan
     };
     let renderer_plan = transaction.spatial_engine().sampling_plan();
     let accepted = accept_publication(transaction);
-    publish_commit(accepted, &spatial_engine, &scene_manager)
+    publish_commit(accepted, &spatial_engine, &scene_manager, &queue)
         .await
         .expect("prepared layout should publish");
     update
@@ -281,7 +283,7 @@ async fn render_snapshot_reads_old_generation_while_activation_waits() {
     .await
     .expect("render snapshot should not wait behind layout activation");
 
-    publish_commit(accepted, &spatial_engine, &scene_manager)
+    publish_commit(accepted, &spatial_engine, &scene_manager, &queue)
         .await
         .expect("candidate layout should publish");
     update
@@ -324,7 +326,7 @@ async fn newer_scene_state_supersedes_prepared_layout_before_publication() {
         .invalidate_active_render_groups();
 
     assert_eq!(
-        publish_commit(accepted, &spatial_engine, &scene_manager).await,
+        publish_commit(accepted, &spatial_engine, &scene_manager, &queue).await,
         Err(LayoutTransactionRejection::Superseded)
     );
     assert!(matches!(
@@ -402,7 +404,7 @@ async fn renderer_rejection_preserves_state_and_a_retry_can_commit() {
         panic!("retry transaction should apply a layout");
     };
     let accepted = accept_publication(transaction);
-    publish_commit(accepted, &spatial_engine, &scene_manager)
+    publish_commit(accepted, &spatial_engine, &scene_manager, &queue)
         .await
         .expect("retry layout should publish");
     retry
@@ -655,9 +657,11 @@ async fn persistence_finishes_before_armed_renderer_publication() {
         std::fs::read_to_string(&persisted_path).expect("candidate persisted"),
         candidate.id
     );
-    publish_commit(accepted, &spatial_engine, &scene_manager)
+    assert_eq!(queue.scene_revision(), 0);
+    publish_commit(accepted, &spatial_engine, &scene_manager, &queue)
         .await
         .expect("persisted layout should publish");
+    assert_eq!(queue.scene_revision(), 1);
     update
         .await
         .expect("layout coordinator should not panic")

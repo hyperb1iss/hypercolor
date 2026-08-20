@@ -655,12 +655,10 @@ impl AppState {
 /// silently overwrite whatever landed in between. That swap is the
 /// whole concurrency story: the revision advances in
 /// [`SceneCommitSequencer::admit`](crate::domain::commit::SceneCommitSequencer),
-/// which nothing but this function calls, and every scene mutation the
-/// daemon serves comes through here. The three writers that do not are
-/// named and fenced by `no_scene_writer_lives_outside_the_commit_path`
-/// in the service tests: the render thread's per-frame transition tick,
-/// its frame-boundary layout activation, and the startup and shutdown
-/// paths where no `AppState` exists to commit through.
+/// which this function and the frame-boundary layout transaction call,
+/// and every scene mutation the daemon serves joins that admission
+/// order. The remaining direct writers are named and fenced by
+/// `no_scene_writer_lives_outside_the_commit_path` in the service tests.
 ///
 /// # Errors
 ///

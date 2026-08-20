@@ -85,6 +85,7 @@ pub(crate) async fn service_scene_transactions(
                     &expected_layout,
                     active_scene_id,
                     source_active_render_groups_revision,
+                    &state.scene_transactions,
                     |spatial_engine| {
                         if let Some(prepared_resize) = prepared_resize {
                             render.commit_canvas_resize(prepared_resize);
@@ -308,7 +309,7 @@ pub(crate) async fn execute_frame(
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
         &mut scene.snapshot_cache,
-        &scene.render_state,
+        &mut scene.render_state,
         delta_secs,
     )
     .await;

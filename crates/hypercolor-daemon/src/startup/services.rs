@@ -187,6 +187,7 @@ impl DaemonState {
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
+        let scene_commits = Arc::new(crate::domain::commit::SceneCommitSequencer::new());
         let macos_daemon_ownership = Arc::new(ArcSwapOption::empty());
         #[cfg(target_os = "macos")]
         let mut pending_macos_owner_watch = macos_owner_snapshot
@@ -221,7 +222,8 @@ impl DaemonState {
         info!(path = %asset_library_path.display(), "Asset library ready");
 
         let (power_state, _) = watch::channel(OutputPowerState::default());
-        let scene_transactions = SceneTransactionQueue::default();
+        let scene_transactions =
+            SceneTransactionQueue::new(Arc::clone(&scene_commits), Arc::clone(&event_bus));
         info!("Session power state channel created");
 
         // ── Device Registry ─────────────────────────────────────────────
@@ -615,7 +617,7 @@ impl DaemonState {
             effect_registry,
             scene_manager,
             scene_store,
-            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
+            scene_commits,
             event_bus,
             macos_daemon_ownership,
             #[cfg(target_os = "macos")]

@@ -479,7 +479,6 @@ impl AppState {
             global_brightness: initial_global_brightness,
             ..OutputPowerState::default()
         });
-        let scene_transactions = SceneTransactionQueue::default();
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&data_dir)
                 .expect("default app state should open credential store"),
@@ -498,6 +497,9 @@ impl AppState {
         let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
         let scene_store = Arc::new(RwLock::new(scene_store));
         let event_bus = Arc::new(HypercolorBus::new());
+        let scene_commits = Arc::new(crate::domain::commit::SceneCommitSequencer::new());
+        let scene_transactions =
+            SceneTransactionQueue::new(Arc::clone(&scene_commits), Arc::clone(&event_bus));
         let asset_library = AssetLibrary::open(data_dir.join("assets"))
             .expect("default app state should open asset library");
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
@@ -598,7 +600,7 @@ impl AppState {
             effect_registry,
             scene_manager,
             scene_store,
-            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
+            scene_commits,
             event_bus,
             macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
             asset_library: Arc::new(RwLock::new(asset_library)),

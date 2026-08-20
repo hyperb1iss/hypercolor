@@ -19,6 +19,9 @@ use crate::types::scene::{ColorInterpolation, SceneId, TransitionSpec, ZoneAssig
 /// the transition.
 #[derive(Debug, Clone)]
 pub struct TransitionState {
+    /// Stable activation identity used by render-local frame state.
+    pub epoch: u64,
+
     /// Scene being transitioned away from.
     pub from_scene: SceneId,
 
@@ -63,6 +66,7 @@ impl TransitionState {
         let progress = if spec.duration_ms == 0 { 1.0 } else { 0.0 };
 
         Self {
+            epoch: 0,
             from_scene,
             to_scene,
             spec,
@@ -70,6 +74,12 @@ impl TransitionState {
             from_assignments: from_map,
             to_assignments: to_map,
         }
+    }
+
+    #[must_use]
+    pub const fn with_epoch(mut self, epoch: u64) -> Self {
+        self.epoch = epoch;
+        self
     }
 
     /// Advance the transition by `delta_secs` seconds of wall-clock time.

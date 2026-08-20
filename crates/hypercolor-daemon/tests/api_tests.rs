@@ -1097,12 +1097,14 @@ where
                             applied.push(transaction.spatial_engine().layout().as_ref().clone());
                             let spatial_engine = Arc::clone(&state.spatial_engine);
                             let scene_manager = Arc::clone(&state.scene_manager);
+                            let scene_transactions = state.scene_transactions.clone();
                             let before_publication = before_publication.clone();
                             publications.push(tokio::spawn(async move {
                                 transaction
                                     .accept_and_publish_for_test(
                                         &spatial_engine,
                                         &scene_manager,
+                                        &scene_transactions,
                                         before_publication,
                                     )
                                     .await
@@ -1144,6 +1146,7 @@ async fn run_two_layout_publications_with_gates(
                             .accept_and_publish_for_test(
                                 &state.spatial_engine,
                                 &state.scene_manager,
+                                &state.scene_transactions,
                                 move || async move {
                                     if index == 0 {
                                         entered.notify_one();
@@ -1200,6 +1203,7 @@ async fn run_one_layout_publication_with_gate(
                             .accept_and_publish_for_test(
                                 &state.spatial_engine,
                                 &state.scene_manager,
+                                &state.scene_transactions,
                                 move || async move {
                                     entered.notify_one();
                                     let _permit = release
@@ -1247,6 +1251,7 @@ async fn run_layout_publications(
                             .accept_and_publish_for_test(
                                 &state.spatial_engine,
                                 &state.scene_manager,
+                                &state.scene_transactions,
                                 || async {},
                             )
                             .await

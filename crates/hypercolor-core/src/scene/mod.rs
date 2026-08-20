@@ -133,6 +133,22 @@ pub struct ZoneMetaPatch {
 
 // ── SceneManager ────────────────────────────────────────────────────────
 
+/// Immutable authored scene plan consumed by the render thread.
+///
+/// The generation and every field in this value describe one admitted
+/// control-plane state. Per-frame clocks and transition progress belong
+/// to the renderer and are deliberately absent.
+#[derive(Debug, Clone)]
+pub struct ScenePlanSnapshot {
+    pub generation: u64,
+    pub active_scene_id: Option<SceneId>,
+    pub active_scene_name: Option<String>,
+    pub transition: Option<TransitionState>,
+    pub zones: Arc<[Zone]>,
+    pub zones_revision: u64,
+    pub unassigned_behavior: crate::types::scene::UnassignedBehavior,
+}
+
 /// Central scene lifecycle manager.
 ///
 /// Owns the scene store, the priority stack, and the active transition
@@ -148,6 +164,9 @@ pub struct SceneManager {
 
     /// In-progress transition (if any).
     active_transition: Option<TransitionState>,
+
+    /// Identity source for immutable transition plans.
+    transition_epoch: u64,
 
     /// History of previously active scene IDs, most recent first.
     /// Used for restore-previous semantics.
@@ -173,6 +192,7 @@ impl SceneManager {
             scenes: HashMap::new(),
             priority_stack: PriorityStack::new(),
             active_transition: None,
+            transition_epoch: 0,
             activation_history: Vec::new(),
             active_render_groups: Arc::default(),
             active_render_groups_revision: 0,
@@ -347,13 +367,11 @@ impl SceneManager {
         // Start transition if there's a from-scene.
         if let Some(from_id) = from_state {
             if spec.duration_ms > 0 {
-                self.active_transition = Some(TransitionState::new(
-                    from_id,
-                    to_id,
-                    spec,
-                    from_assignments,
-                    to_assignments,
-                ));
+                self.transition_epoch = self.transition_epoch.saturating_add(1);
+                self.active_transition = Some(
+                    TransitionState::new(from_id, to_id, spec, from_assignments, to_assignments)
+                        .with_epoch(self.transition_epoch),
+                );
             } else {
                 // Instant activation — no transition.
                 self.active_transition = None;
@@ -412,6 +430,23 @@ impl SceneManager {
     #[must_use]
     pub fn active_render_groups_revision(&self) -> u64 {
         self.active_render_groups_revision
+    }
+
+    /// Capture one commit-stable authored plan for lock-free frame work.
+    #[must_use]
+    pub fn plan_snapshot(&self, generation: u64) -> ScenePlanSnapshot {
+        ScenePlanSnapshot {
+            generation,
+            active_scene_id: self.active_scene_id().copied(),
+            active_scene_name: self.active_scene().map(|scene| scene.name.clone()),
+            transition: self.active_transition.clone(),
+            zones: self.active_render_groups(),
+            zones_revision: self.active_render_groups_revision,
+            unassigned_behavior: self
+                .active_scene()
+                .map(|scene| scene.unassigned_behavior.clone())
+                .unwrap_or_default(),
+        }
     }
 
     /// Invalidate caches derived from the active zones when an

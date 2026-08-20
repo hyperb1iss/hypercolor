@@ -165,7 +165,7 @@ impl SceneCommitSequencer {
     ///
     /// Callers hold the scene write lock across this call, which is
     /// what makes admission order and revision order the same order.
-    pub(super) fn admit(self: &Arc<Self>, bus: Arc<HypercolorBus>) -> CommitTicket {
+    pub(crate) fn admit(self: &Arc<Self>, bus: Arc<HypercolorBus>) -> CommitTicket {
         let generation = {
             let mut state = self.locked();
             state.revision = state
@@ -244,7 +244,7 @@ impl CommitTicket {
 
     /// Release the slot, publishing `events` once every older
     /// generation has released too.
-    pub(super) fn release(mut self, events: Vec<HypercolorEvent>) {
+    pub(crate) fn release(mut self, events: Vec<HypercolorEvent>) {
         self.released = true;
         self.sequencer.fill(self.generation, events, &self.bus);
     }
