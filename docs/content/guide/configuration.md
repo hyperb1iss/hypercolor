@@ -9,11 +9,11 @@ Hypercolor reads its main configuration from a single TOML file. The daemon crea
 
 ## Config file location
 
-| Platform | Path |
-|---|---|
-| Linux | `~/.config/hypercolor/hypercolor.toml` |
-| Windows | `%APPDATA%\hypercolor\hypercolor.toml` |
-| macOS | `~/Library/Application Support/hypercolor/hypercolor.toml` |
+| Platform | Path                                                       |
+| -------- | ---------------------------------------------------------- |
+| Linux    | `~/.config/hypercolor/hypercolor.toml`                     |
+| Windows  | `%APPDATA%\hypercolor\hypercolor.toml`                     |
+| macOS    | `~/Library/Application Support/hypercolor/hypercolor.toml` |
 
 On Linux the path follows the XDG Base Directory spec (`$XDG_CONFIG_HOME/hypercolor/`, defaulting to `~/.config/hypercolor/`). Point the daemon at a different file with the `--config` flag:
 
@@ -35,25 +35,25 @@ The daemon creates the file on first run from compile-time defaults, then reads 
 
 The root `HypercolorConfig` struct has these sections:
 
-| Section | What it controls |
-|---|---|
-| `[daemon]` | Render loop, network binding, logging, canvas, lifecycle |
-| `[web]` | Embedded web UI and WebSocket preview server |
-| `[mcp]` | Model Context Protocol server (off by default) |
-| `[effect_engine]` | Renderer selection, hot-reload, extra effect paths |
-| `[rendering]` | Servo GPU import policy |
-| `[media]` | Video/stream producer limits |
-| `[audio]` | Audio capture device and FFT analysis |
-| `[capture]` | Screen capture for ambient lighting |
-| `[input]` | Host keyboard/mouse capture consent and routing |
-| `[display]` | LCD face FPS cap |
-| `[discovery]` | mDNS, scan interval, ROLI Blocks |
-| `[network]` | Remote access modes and client scope |
-| `[drivers.<id>]` | Per-driver enable/settings (keyed by driver ID) |
-| `[dbus]` | D-Bus session bus integration (Linux) |
-| `[tui]` | Terminal UI theme, preview FPS, keybindings |
-| `[session]` | Idle, lock, suspend, and lid lighting behavior (Linux) |
-| `[features]` | Opt-in experimental flags |
+| Section           | What it controls                                         |
+| ----------------- | -------------------------------------------------------- |
+| `[daemon]`        | Render loop, network binding, logging, canvas, lifecycle |
+| `[web]`           | Embedded web UI and WebSocket preview server             |
+| `[mcp]`           | Model Context Protocol server (off by default)           |
+| `[effect_engine]` | Renderer selection, hot-reload, extra effect paths       |
+| `[rendering]`     | Servo GPU import policy                                  |
+| `[media]`         | Video/stream producer limits                             |
+| `[audio]`         | Audio capture device and FFT analysis                    |
+| `[capture]`       | Screen capture for ambient lighting                      |
+| `[input]`         | Host keyboard/mouse capture consent and routing          |
+| `[display]`       | LCD face FPS cap                                         |
+| `[discovery]`     | mDNS, scan interval, ROLI Blocks                         |
+| `[network]`       | Remote access modes and client scope                     |
+| `[drivers.<id>]`  | Per-driver enable/settings (keyed by driver ID)          |
+| `[dbus]`          | D-Bus session bus integration (Linux)                    |
+| `[tui]`           | Terminal UI theme, preview FPS, keybindings              |
+| `[session]`       | Idle, lock, suspend, and lid lighting behavior (Linux)   |
+| `[features]`      | Opt-in experimental flags                                |
 
 ---
 
@@ -126,7 +126,7 @@ json_response       = false   # Use JSON responses instead of SSE framing
 sse_keep_alive_secs = 15      # SSE heartbeat interval
 ```
 
-Once enabled, the MCP server exposes 16 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
+Once enabled, the MCP server exposes 17 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
 
 ---
 
@@ -159,6 +159,7 @@ Add your effect development directory here to get live hot-reload without a daem
 [effect_engine]
 extra_effect_dirs = ["/home/you/dev/my-effects/dist"]
 ```
+
 {% end %}
 
 ---
@@ -343,12 +344,12 @@ instance_name                     = ""              # mDNS instance name (defaul
 
 **Access modes:**
 
-| Mode | Binding | Auth required |
-|---|---|---|
-| `local_only` | Loopback only | No |
-| `lan_trusted` | All interfaces | No (anyone on the LAN can control it) |
-| `lan_protected` | All interfaces | Yes (API key required) |
-| `custom` | All interfaces | Controlled by `allow_unauthenticated_remote_access` and `allowed_clients` |
+| Mode            | Binding        | Auth required                                                             |
+| --------------- | -------------- | ------------------------------------------------------------------------- |
+| `local_only`    | Loopback only  | No                                                                        |
+| `lan_trusted`   | All interfaces | No (anyone on the LAN can control it)                                     |
+| `lan_protected` | All interfaces | Yes (API key required)                                                    |
+| `custom`        | All interfaces | Controlled by `allow_unauthenticated_remote_access` and `allowed_clients` |
 
 {% callout(type="warning") %}
 `lan_trusted` exposes full control to anyone on your network with no authentication. Use `lan_protected` and set `HYPERCOLOR_API_KEY` if you need LAN access with some protection.

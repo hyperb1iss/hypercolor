@@ -181,8 +181,9 @@ API envelope.
 }
 ```
 
-Both fields are optional. Omitting `checks` runs all four default checks.
-Setting `system: true` adds uptime information.
+Both fields are optional. Omitting `checks` runs the six safe default checks:
+`daemon`, `render`, `devices`, `config`, `input`, and `memory`. Setting
+`system: true` adds uptime information.
 
 #### Response
 
@@ -224,18 +225,35 @@ Setting `system: true` adds uptime information.
     "passed": 5,
     "warnings": 0,
     "failed": 0
+  },
+  "snapshot": {
+    "input": { "sources": [], "source_graph_generation": 0 },
+    "render": {
+      "latest_frame": null,
+      "recent_window": { "frames": 0 }
+    },
+    "usb": {},
+    "display_output": {},
+    "device_output": { "items": [] }
   }
 }
 ```
 
+The snapshot above is abridged. Live responses include frame freshness,
+render-window timing, USB actor timing, display encode metrics, and per-device
+output queues.
+
 #### Available Checks
 
-| Check     | Category | What It Tests                                       |
-| --------- | -------- | --------------------------------------------------- |
-| `daemon`  | system   | Daemon version and running status                   |
-| `render`  | render   | Render loop state and performance tier              |
-| `devices` | devices  | Device registry count                               |
-| `config`  | config   | Config manager availability (vs default/test state) |
+| Check                 | Category | What It Tests                                       |
+| --------------------- | -------- | --------------------------------------------------- |
+| `daemon`              | system   | Daemon version and running status                   |
+| `render`              | render   | Render loop state and performance tier              |
+| `devices`             | devices  | Device registry count                               |
+| `config`              | config   | Config manager availability (vs default/test state) |
+| `input`               | input    | Capture source health and actionable failures       |
+| `memory`              | memory   | Servo process memory reporting                      |
+| `macos_screen_parity` | input    | Protected macOS screenshot parity capture           |
 
 #### Status Values
 
@@ -295,14 +313,14 @@ performance metrics, and REST-equivalent command execution.
 
 A few of the fifteen; the full list lives in `protocol/websocket-v1.json`.
 
-| Topic             | Key       | Default      | Description                     | Config Options                                |
-| ----------------- | --------- | ------------ | ------------------------------- | --------------------------------------------- |
-| `events`          | —         | subscribed   | System events and state changes | none                                          |
-| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `zones`                         |
-| `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)         |
-| `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)             |
-| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)                     |
-| `display_preview` | device id | unsubscribed | One display's JPEG output       | `fps` (1-30)                                  |
+| Topic             | Key       | Default      | Description                     | Config Options                        |
+| ----------------- | --------- | ------------ | ------------------------------- | ------------------------------------- |
+| `events`          | —         | subscribed   | System events and state changes | none                                  |
+| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `zones`                 |
+| `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128) |
+| `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)     |
+| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)             |
+| `display_preview` | device id | unsubscribed | One display's JPEG output       | `fps` (1-30)                          |
 
 ### Client → Server Messages
 
@@ -474,69 +492,74 @@ echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":5
 
 **Source:** `crates/hypercolor-daemon/src/mcp/tools/`
 
-Hypercolor exposes 16 MCP tools for AI assistant integration. These give agents
+Hypercolor exposes 17 MCP tools for AI assistant integration. These give agents
 programmatic control over the lighting system.
 
 ### Tool Inventory
 
-| Tool               | Read-Only | Description                                                        |
-| ------------------ | --------- | ------------------------------------------------------------------ |
-| `set_effect`       | no        | Apply a lighting effect (supports fuzzy/natural language matching) |
-| `list_effects`     | yes       | Browse the effect library with category/audio filters              |
-| `stop_effect`      | no        | Stop the current effect                                            |
-| `set_color`        | no        | Set a static color on devices                                      |
-| `set_output_power` | no        | Pause or resume output without discarding scene state              |
-| `get_devices`      | yes       | List connected devices                                             |
-| `set_brightness`   | no        | Set brightness (0-100)                                             |
-| `get_status`       | yes       | Current daemon state snapshot                                      |
-| `activate_scene`   | no        | Activate a saved scene                                             |
-| `list_scenes`      | yes       | List available scenes                                              |
-| `create_scene`     | no        | Create a new scene with a seeded Primary zone                      |
-| `get_audio_state`  | yes       | Audio input and spectrum data                                      |
-| `get_layout`       | yes       | Current layout mapping                                             |
-| `get_sensor_data`  | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)         |
-| `set_display_face` | no        | Assign or clear an HTML display-face effect on a display device    |
-| **`diagnose`**     | **yes**   | **System/device diagnostics**                                      |
+| Tool               | Read-Only | Description                                                     |
+| ------------------ | --------- | --------------------------------------------------------------- |
+| `set_effect`       | no        | Apply a deterministically selected lighting effect              |
+| `list_effects`     | yes       | Browse the effect library with category/audio filters           |
+| `set_color`        | no        | Set a static color on devices                                   |
+| `set_output_power` | no        | Pause or resume output without discarding scene state           |
+| `clear_zone`       | no        | Clear one or every non-display zone                             |
+| `adjust_controls`  | no        | Patch typed controls and clear bindings on one live layer       |
+| `get_devices`      | yes       | List connected devices                                          |
+| `set_brightness`   | no        | Set brightness (0-100)                                          |
+| `get_status`       | yes       | Current daemon state snapshot                                   |
+| `activate_scene`   | no        | Activate a saved scene                                          |
+| `list_scenes`      | yes       | List available scenes                                           |
+| `create_scene`     | no        | Create a new scene with a seeded Primary zone                   |
+| `get_audio_state`  | yes       | Audio input and spectrum data                                   |
+| `get_layout`       | yes       | Current layout mapping                                          |
+| `get_sensor_data`  | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)      |
+| `set_display_face` | no        | Assign or clear an HTML display-face effect on a display device |
+| **`diagnose`**     | **yes**   | **Canonical safe system diagnostics**                           |
 
 ### `diagnose` Tool (Detail)
 
-The most relevant tool for debugging. Runs targeted diagnostics on the system
-or a specific device.
+The most relevant tool for debugging. Runs the canonical safe diagnostic pass
+through the same collector as REST.
 
 **Input:**
 
 ```json
-{
-  "device_id": "optional-device-id",
-  "checks": [
-    "connectivity",
-    "latency",
-    "frame_delivery",
-    "color_accuracy",
-    "protocol",
-    "all"
-  ]
-}
+{}
 ```
 
 **Output:**
 
 ```json
 {
-  "overall_status": "healthy",
-  "findings": [
-    { "severity": "info", "message": "All 5 devices connected and responding" },
-    { "severity": "info", "message": "Frame delivery rate: 59.8/60 fps" }
+  "checks": [
+    {
+      "category": "devices",
+      "name": "output_queues",
+      "status": "pass",
+      "detail": "queues=5, lagging=0, dropped_total=0, errors_total=0"
+    }
   ],
-  "metrics": {
-    "fps": 59.8,
-    "frame_drop_rate": 0.0,
-    "avg_latency_ms": 16.8,
-    "device_error_count": 0,
-    "uptime_seconds": 3600
+  "summary": {
+    "passed": 9,
+    "warnings": 0,
+    "failed": 0
+  },
+  "snapshot": {
+    "input": {},
+    "render": {},
+    "usb": {},
+    "display_output": {},
+    "device_output": { "items": [] }
   }
 }
 ```
+
+The MCP schema is a closed empty object. It rejects `checks`, `device_id`,
+`system`, and every other argument. MCP always runs `daemon`, `render`,
+`devices`, `config`, `input`, and `memory`, forces `system: false`, and never
+exposes the protected `macos_screen_parity` check. REST remains the surface for
+authorized custom check selection.
 
 ### `get_status` Tool
 
@@ -544,7 +567,9 @@ Quick system state snapshot, useful as a first check before deeper
 diagnostics.
 
 **Output includes:** running state, paused state, brightness, FPS
-(target/actual), active effect, active scene, layout, device count, total LEDs.
+(target/capacity/delivered/actual), active effect, effect and scene counts,
+device summary, input health, uptime, and version. The exact same builder serves
+`hypercolor://state`, so the empty tool call and resource are equal.
 
 ---
 

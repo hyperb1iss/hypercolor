@@ -22,7 +22,7 @@ The unit of publication is a `server.json` manifest. It describes who owns the s
 Confirm the live server first. The manifest you submit must match what the daemon actually serves, or clients will hit a dead connection on their first call.
 
 - The daemon exposes the MCP server over **Streamable HTTP** at the base path `/mcp`. It is **off by default**, mounted only when `mcp.enabled = true`. See [MCP setup](@/agents/mcp-setup.md).
-- The surface clients discover through it is **16 tools, 5 resources, and 3 prompts**. The [tools reference](@/agents/tools-reference.md), [resources reference](@/agents/resources-reference.md), and [prompt templates](@/agents/prompt-templates.md) are the authoritative lists.
+- The surface clients discover through it is **17 tools, 5 resources, and 3 prompts**. The [tools reference](@/agents/tools-reference.md), [resources reference](@/agents/resources-reference.md), and [prompt templates](@/agents/prompt-templates.md) are the authoritative lists.
 - The server identifies itself as `hypercolor`, titled "Hypercolor RGB Lighting Controller", with its website set to the GitHub repository. The daemon reports its crate version (`CARGO_PKG_VERSION`) as the server version, so the manifest version should track the release you are publishing.
 
 {% callout(type="warning") %}
@@ -102,12 +102,12 @@ Once published, any MCP client that browses the registry can discover Hypercolor
 
 {% mermaid() %}
 graph TD
-  A[Author server.json] --> B[Validate against schema]
-  B --> C[mcp-publisher login github]
-  C --> D[mcp-publisher publish]
-  D --> E[Registry verifies namespace]
-  E --> F[Listed under io.github.hyperb1iss/hypercolor]
-  F --> G[MCP clients discover the server]
+A[Author server.json] --> B[Validate against schema]
+B --> C[mcp-publisher login github]
+C --> D[mcp-publisher publish]
+D --> E[Registry verifies namespace]
+E --> F[Listed under io.github.hyperb1iss/hypercolor]
+F --> G[MCP clients discover the server]
 {% end %}
 
 ## Keeping the listing honest
@@ -123,7 +123,7 @@ A registry entry is a promise about a live server, so it has to stay true as Hyp
 This page is the publish-side counterpart to the connect-side setup. If you are wiring an assistant to a daemon you already run, you do not need the registry at all.
 
 - **[MCP setup](@/agents/mcp-setup.md)**: Enable the server and connect a client by hand, the path most users actually take.
-- **[Tools reference](@/agents/tools-reference.md)**: The 16 tools a registry client discovers once connected.
+- **[Tools reference](@/agents/tools-reference.md)**: The 17 tools a registry client discovers once connected.
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources, with payload shapes and freshness notes.
 - **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts a connected client can surface as slash commands.
 - **[Agents & MCP overview](@/agents/_index.md)**: The three-primitive model and how MCP and the CLI fit together.

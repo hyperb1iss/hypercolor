@@ -20,25 +20,25 @@ Your path through this guide depends on two questions: **how you're installing**
 
 Not everyone needs to build from source. The right starting point depends on your OS and your goals.
 
-| If you are… | Start here |
-|---|---|
-| A Linux user who wants a quick install | [Choose your install](@/guide/choose-your-install.md) → prebuilt one-liner |
-| On Windows or macOS | [Choose your install](@/guide/choose-your-install.md) → desktop package |
-| Running Arch Linux | [Choose your install](@/guide/choose-your-install.md) → AUR package |
-| A developer hacking on Hypercolor itself | [Installation](@/guide/installation.md) → build from source |
+| If you are…                              | Start here                                                                 |
+| ---------------------------------------- | -------------------------------------------------------------------------- |
+| A Linux user who wants a quick install   | [Choose your install](@/guide/choose-your-install.md) → prebuilt one-liner |
+| On Windows or macOS                      | [Choose your install](@/guide/choose-your-install.md) → desktop package    |
+| Running Arch Linux                       | [Choose your install](@/guide/choose-your-install.md) → AUR package        |
+| A developer hacking on Hypercolor itself | [Installation](@/guide/installation.md) → build from source                |
 
 ### Pick your interface
 
 Hypercolor has six entry points. Understanding which one you want saves a lot of confusion.
 
-| Interface | What it is | When to use it |
-|---|---|---|
-| **Desktop app** | Tauri shell that owns the tray, supervises the daemon, and renders the web UI natively | The recommended starting point on Windows and macOS; available on Linux too |
-| **Web UI** | Leptos app served by the daemon at `http://localhost:9420` | Daily use: browsing effects, tweaking controls, managing layouts |
-| **TUI** | Ratatui terminal dashboard with live LED preview and audio spectrum | SSH sessions, headless setups, or if you live in the terminal |
-| **CLI** | `hypercolor` binary for scripting and quick control | Automation, shell scripts, CI pipelines |
-| **Tray applet** | System tray icon with a brightness submenu and quick actions | Minimal desktop footprint; change effects without opening a window |
-| **REST + WebSocket API** | Daemon's full HTTP interface on `:9420` | Integrations, agents, and anything programmatic |
+| Interface                | What it is                                                                             | When to use it                                                              |
+| ------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **Desktop app**          | Tauri shell that owns the tray, supervises the daemon, and renders the web UI natively | The recommended starting point on Windows and macOS; available on Linux too |
+| **Web UI**               | Leptos app served by the daemon at `http://localhost:9420`                             | Daily use: browsing effects, tweaking controls, managing layouts            |
+| **TUI**                  | Ratatui terminal dashboard with live LED preview and audio spectrum                    | SSH sessions, headless setups, or if you live in the terminal               |
+| **CLI**                  | `hypercolor` binary for scripting and quick control                                    | Automation, shell scripts, CI pipelines                                     |
+| **Tray applet**          | System tray icon with a brightness submenu and quick actions                           | Minimal desktop footprint; change effects without opening a window          |
+| **REST + WebSocket API** | Daemon's full HTTP interface on `:9420`                                                | Integrations, agents, and anything programmatic                             |
 
 [The pieces](@/guide/the-pieces.md) walks through how these connect and which to open first.
 
@@ -78,11 +78,11 @@ This section takes you from zero to a fully configured rig.
 
 {% mermaid() %}
 graph LR
-    subgraph Input
-        A[Audio FFT]
-        B[Screen capture]
-        C[Keyboard / MIDI]
-    end
+subgraph Input
+A[Audio FFT]
+B[Screen capture]
+C[Keyboard / MIDI]
+end
 
     subgraph Engine
         D[Effect renderer<br>Servo · Canvas · GLSL]
@@ -100,6 +100,7 @@ graph LR
     A & B & C --> D
     D --> E --> SF --> F
     F --> G & H & I
+
 {% end %}
 
 Effects render into a virtual RGBA canvas (640×480 by default, tunable). **SparkleFlinger**, the render-thread compositor, latches the newest surface from each active layer at the frame boundary and blends them into one canonical frame per tick. The spatial engine samples that frame at each LED's physical position using normalized `[0.0, 1.0]` coordinates, so effects stay resolution-independent regardless of canvas size. Device output is queued asynchronously so a slow device never stalls the render loop.
@@ -138,7 +139,7 @@ The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/p
 
 **CLI**: the `hypercolor` binary talks to the daemon over HTTP. Every action you can take in the UI is available via the CLI. See the [CLI reference](@/api/cli.md).
 
-**MCP server**: 16 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
+**MCP server**: 17 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
 
 ## Getting help
 

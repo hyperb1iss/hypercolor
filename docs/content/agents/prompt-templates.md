@@ -19,11 +19,11 @@ The daemon advertises prompts as an MCP capability (`enable_prompts()` in the se
 
 Each template encodes the same read-then-act discipline the server's own instructions ask for. Every prompt opens by pulling `hypercolor://state` and other relevant resources before recommending or changing anything, so the assistant is always working from the live picture rather than a guess.
 
-| Prompt | Slash command | Required args | Optional args |
-| --- | --- | --- | --- |
-| `mood_lighting` | `/mood_lighting` | none | `mood`, `audio_reactive` |
-| `troubleshoot` | `/troubleshoot` | `issue` | `device_id` |
-| `setup_automation` | `/setup_automation` | none | `description` |
+| Prompt             | Slash command       | Required args | Optional args            |
+| ------------------ | ------------------- | ------------- | ------------------------ |
+| `mood_lighting`    | `/mood_lighting`    | none          | `mood`, `audio_reactive` |
+| `troubleshoot`     | `/troubleshoot`     | `issue`       | none                     |
+| `setup_automation` | `/setup_automation` | none          | `description`            |
 
 Only `troubleshoot` has a required argument. The other two run fine with no arguments at all, falling back to a sensible default (`mood_lighting` assumes "a cozy vibe", `setup_automation` opens an open-ended automation conversation) and asking follow-up questions from there.
 
@@ -31,53 +31,52 @@ Only `troubleshoot` has a required argument. The other two run fine with no argu
 
 Configure lighting to match a mood, vibe, or activity. The template walks the assistant through effect selection, brightness, and color tuning, grounded in your actual hardware.
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| `mood` | no | Desired mood or vibe, e.g. `relaxing evening`, `energetic party`, `deep focus coding`. If omitted, the prompt defaults to a cozy vibe and asks. |
-| `audio_reactive` | no | Whether to include audio-reactive effects in the suggestions. Values: `yes`, `no`, `auto`. |
+| Argument         | Required | Description                                                                                                                                     |
+| ---------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mood`           | no       | Desired mood or vibe, e.g. `relaxing evening`, `energetic party`, `deep focus coding`. If omitted, the prompt defaults to a cozy vibe and asks. |
+| `audio_reactive` | no       | Whether to include audio-reactive effects in the suggestions. Values: `yes`, `no`, `auto`.                                                      |
 
-The rendered flow opens with your mood, then has the assistant read three resources in sequence: `hypercolor://state`, `hypercolor://effects`, and `hypercolor://devices`. With the live state, the full effect catalog, and the connected devices in context, the closing instruction asks the assistant to weigh which effects suit the device count and spatial layout, offer its top two or three recommendations with reasons, and apply the best match after you confirm.
+The rendered flow opens with your mood, then has the assistant read three resources in sequence: `hypercolor://state`, `hypercolor://effects`, and `hypercolor://devices`. The `audio_reactive` argument constrains selection: `yes` considers only reactive effects, `no` excludes them, and `auto` includes one only when it is the strongest match. With the live state, catalog, and hardware in context, the assistant chooses one deterministic best match and calls `set_effect` exactly once. It then uses the returned zone and layer identities with `adjust_controls` for final tuning.
 
 {% callout(type="tip") %}
-This is the prompt to reach for when a user says something like "make it feel calm in here" or "party mode." Because it reads the effect catalog and device inventory before recommending, it picks effects that actually fit the rig instead of naming something that is not installed. The applied change runs through `set_effect` and `set_brightness` under the hood.
+This is the prompt to reach for when a user says something like "make it feel calm in here" or "party mode." Because it reads the effect catalog and device inventory before choosing, it picks an installed effect that fits the rig. The applied change runs through one `set_effect` call, followed by `adjust_controls` against the returned layer when tuning is needed.
 {% end %}
 
-A typical run, with arguments `mood = "deep focus coding"` and `audio_reactive = "no"`, ends with the assistant proposing a slow ambient effect at reduced brightness, then calling `set_effect` with a low `speed` control and `set_brightness` around 35 once you say go.
+A typical run, with arguments `mood = "deep focus coding"` and `audio_reactive = "no"`, chooses one non-reactive ambient effect, applies it once, and lowers the returned layer's `speed` through `adjust_controls`.
 
 ## troubleshoot
 
 Guided troubleshooting for device connectivity, rendering, or performance problems. This is the only prompt with a required argument, because the assistant needs to know what is actually wrong before it runs diagnostics.
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| `issue` | **yes** | A description of the problem, e.g. `network strip not responding`, `colors look wrong`, `low frame rate`. |
-| `device_id` | no | A specific device ID when the issue is scoped to one device. |
+| Argument | Required | Description                                                                                               |
+| -------- | -------- | --------------------------------------------------------------------------------------------------------- |
+| `issue`  | **yes**  | A description of the problem, e.g. `network strip not responding`, `colors look wrong`, `low frame rate`. |
 
-The flow opens with your issue description, has the assistant read `hypercolor://state` and `hypercolor://devices`, then instructs it to run the `diagnose` tool for a full diagnostic. From the diagnostic findings plus the state and device context, the assistant identifies the root cause, explains it plainly, and gives step-by-step fix instructions. When a fix is something Hypercolor tools can do, like reconnecting a device or adjusting a setting, it offers to apply it directly.
+The flow opens with your issue description, has the assistant read `hypercolor://state` and `hypercolor://devices`, then instructs it to run the zero-argument `diagnose` tool for the canonical safe diagnostic report. From its checks, summary, snapshot, and the resource context, the assistant identifies the root cause and gives concrete remediation steps. It uses only registered Hypercolor tools for actions they support and states plainly when remediation belongs outside Hypercolor.
 
 {% callout(type="info") %}
-The `diagnose` tool returns rich live metrics, including the FPS pair, consecutive frame-budget misses, render-window timing, and per-device output-queue health. The `troubleshoot` prompt is the conversational front end to that data. For symptom-first human troubleshooting outside an agent, see the [troubleshooting section](@/troubleshooting/_index.md), and for the deeper device and audio walkthroughs, [devices not found](@/troubleshooting/devices-not-found.md) and [audio not reacting](@/troubleshooting/audio-not-reacting.md).
+The `diagnose` tool returns the same safe diagnostic payload as the default REST diagnostic pass: `checks`, `summary`, and `snapshot`. The `troubleshoot` prompt is the conversational front end to that report. For symptom-first human troubleshooting outside an agent, see the [troubleshooting section](@/troubleshooting/_index.md), and for the deeper device and audio walkthroughs, [devices not found](@/troubleshooting/devices-not-found.md) and [audio not reacting](@/troubleshooting/audio-not-reacting.md).
 {% end %}
 
 ## setup_automation
 
-Prepare reusable scenes for an external automation system. The template helps the assistant inspect existing scenes, define the lighting state a new scene should represent, and create one when needed.
+Prepare reusable scenes for an external automation system. The template helps the assistant inspect existing scenes and effects, create an empty named scene when needed, activate it, and configure its lighting state.
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| `description` | no | A natural-language description of the desired automation, e.g. `dim lights at 10pm`, `warm colors at sunset`. If omitted, the assistant opens an open-ended automation conversation. |
+| Argument      | Required | Description                                                                                                                                                                          |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `description` | no       | A natural-language description of the desired automation, e.g. `dim lights at 10pm`, `warm colors at sunset`. If omitted, the assistant opens an open-ended automation conversation. |
 
-The flow reads `hypercolor://scenes` and `hypercolor://state`, then asks what lighting state the scene should represent. It calls `create_scene` when a new reusable scene is needed and explains how an external automation system can call `activate_scene` when its own conditions match.
+The flow reads `hypercolor://scenes`, `hypercolor://state`, and `hypercolor://effects`. When a new reusable scene is needed, it calls `create_scene`, activates the scene, chooses one catalog effect, and calls `set_effect` once. It uses the returned zone and layer identities with `adjust_controls` for final tuning.
 
 {% callout(type="warning") %}
-Hypercolor does not schedule or trigger scenes. The `create_scene` tool accepts a name plus optional description, enabled state, and mutation mode. It does not accept trigger or schedule fields. The external system owns those conditions and calls `activate_scene` when they match. See [create_scene in the tools reference](@/agents/tools-reference.md) for the full argument list.
+Hypercolor does not schedule or trigger scenes. The `create_scene` tool accepts a name plus optional description, enabled state, and mutation mode. It creates an empty reusable scene and does not capture the current output. The external system owns trigger conditions and calls `activate_scene` when they match. See [create_scene in the tools reference](@/agents/tools-reference.md) for the full argument list.
 {% end %}
 
 Remember that scenes are whole-rig configurations. Zones are the flexible canvas partitions inside a scene, and scheduling belongs to the external automation system.
 
 ## Using prompts from an agent
 
-Prompts are a convenience layer, not a separate API. Everything a prompt does, an agent can do by hand with the underlying tools and resources, so reach for a prompt when you want a known-good flow and call tools directly when you need precise control. The three templates map cleanly onto the most common agent jobs: set a vibe, fix a problem, schedule something.
+Prompts are a convenience layer, not a separate API. Everything a prompt does, an agent can do by hand with the underlying tools and resources, so reach for a prompt when you want a known-good flow and call tools directly when you need precise control. The three templates map cleanly onto the most common agent jobs: set a vibe, fix a problem, or prepare a scene for an external scheduler.
 
 If you are wiring an assistant up for the first time, the natural path is to enable the server in [MCP setup](@/agents/mcp-setup.md), skim the [tools reference](@/agents/tools-reference.md) to learn the verbs, and let the prompts orchestrate the common cases. For hand-built CLI and MCP playbooks that go beyond the three shipped prompts, the agent-scripting pages in this section walk through complete automation against the daemon.
 
