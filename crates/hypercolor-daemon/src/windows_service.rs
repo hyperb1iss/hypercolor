@@ -4,8 +4,8 @@ use std::ffi::OsString;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::daemon::{self, DaemonExtensionInstaller, DaemonRunOptions};
 use anyhow::{Context, Result, anyhow};
-use hypercolor_daemon::daemon::{self, DaemonRunOptions};
 use windows_service::define_windows_service;
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
@@ -20,7 +20,12 @@ const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 const SERVICE_START_WAIT_HINT: Duration = Duration::from_secs(30);
 const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(20);
 
-static SERVICE_OPTIONS: OnceLock<DaemonRunOptions> = OnceLock::new();
+struct ServiceConfiguration {
+    options: DaemonRunOptions,
+    extension_installers: &'static [&'static dyn DaemonExtensionInstaller],
+}
+
+static SERVICE_CONFIGURATION: OnceLock<ServiceConfiguration> = OnceLock::new();
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -29,10 +34,16 @@ define_windows_service!(ffi_service_main, service_main);
 /// # Errors
 ///
 /// Returns an error when the service dispatcher cannot attach to SCM.
-pub fn run(options: DaemonRunOptions) -> Result<()> {
-    SERVICE_OPTIONS
-        .set(options)
-        .map_err(|_| anyhow!("Windows service options were already initialized"))?;
+pub fn run(
+    options: DaemonRunOptions,
+    extension_installers: &'static [&'static dyn DaemonExtensionInstaller],
+) -> Result<()> {
+    SERVICE_CONFIGURATION
+        .set(ServiceConfiguration {
+            options,
+            extension_installers,
+        })
+        .map_err(|_| anyhow!("Windows service configuration was already initialized"))?;
 
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
         .context("failed to start Hypercolor Windows service dispatcher")
@@ -45,10 +56,10 @@ fn service_main(_arguments: Vec<OsString>) {
 }
 
 fn run_service() -> Result<()> {
-    let options = SERVICE_OPTIONS
+    let configuration = SERVICE_CONFIGURATION
         .get()
-        .cloned()
-        .context("Windows service options were not initialized")?;
+        .context("Windows service configuration was not initialized")?;
+    let options = configuration.options.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
@@ -83,7 +94,11 @@ fn run_service() -> Result<()> {
         Duration::ZERO,
     )?;
 
-    let run_result = runtime.block_on(daemon::run(options, shutdown_rx));
+    let run_result = runtime.block_on(daemon::run_with_extensions(
+        options,
+        shutdown_rx,
+        configuration.extension_installers,
+    ));
     let exit_code = u32::from(run_result.is_err());
     report_status(
         &status_handle,

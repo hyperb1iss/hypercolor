@@ -390,7 +390,7 @@ jobs:
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-daemon --no-default-features \
-            --bin hypercolor-daemon \
+            --lib \
             -E 'test(/(launchd_managed_contenders_exit_zero_without_respawn|held_guard_applies_topology_policy_without_an_owner_record|malformed_diagnostics_never_override_held_guard_policy)/)'
 
       - name: Run macOS status API fixtures

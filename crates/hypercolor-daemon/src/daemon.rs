@@ -116,7 +116,7 @@ impl PreparedDaemon {
             .context("prepared API listener lease was already transferred")
     }
 
-    async fn run_with_extensions(
+    pub(crate) async fn run_with_extensions(
         mut self,
         shutdown_rx: watch::Receiver<bool>,
         extension_installers: &[&dyn DaemonExtensionInstaller],

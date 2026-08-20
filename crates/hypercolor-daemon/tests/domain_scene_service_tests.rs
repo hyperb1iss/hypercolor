@@ -1419,18 +1419,18 @@ fn library_events(
 ///   `commit_scene` takes neither the spatial lock nor an `AppState` the
 ///   render thread can reach; Spec 76 §6.1 re-points commit at this
 ///   transaction rather than the reverse.
-/// - `startup/lifecycle.rs` holds three, of different kinds. Two are
-///   pre-init: both halves of the persisted-session restore run inside
-///   `DaemonState::initialize`, before the render thread starts and
-///   before the API binds. The third is post-teardown: shutdown's
+/// - `startup/lifecycle.rs` holds five, of different kinds. Four are
+///   pre-init: the persisted-session restore and configured start-scene
+///   paths run inside `DaemonState::initialize`, before the render thread
+///   starts and before the API binds. The fifth is post-teardown: shutdown's
 ///   deactivate runs after the render thread has been awaited out, so
 ///   the one cadence reader of scene state is already gone. None can
-///   build an `AppState` — `from_daemon_state` requires a live input
-///   publication pump, which exists in neither phase — and none has a
+///   build an `AppState` because `from_daemon_state` requires a live input
+///   publication pump, which exists in neither phase, and none has a
 ///   competing writer to order against.
 ///
-/// A fourth entry means some new site can silently discard a commit —
-/// or be discarded by one. Route it through `commit_scene` instead of
+/// A sixth entry means some new site can silently discard a commit or be
+/// discarded by one. Route it through `commit_scene` instead of
 /// widening this list, unless it genuinely belongs to one of the three
 /// reasons above.
 ///
@@ -1450,7 +1450,7 @@ fn no_scene_writer_lives_outside_the_commit_path() {
         ("domain/scene.rs", 1),                 // commit_scene's install
         ("render_thread/scene_snapshot.rs", 1), // per-frame transition tick
         ("scene_transactions.rs", 1),           // frame-boundary layout publish
-        ("startup/lifecycle.rs", 3),            // restore x2, shutdown deactivate
+        ("startup/lifecycle.rs", 5), // restore x2, configured x2, shutdown deactivate
     ];
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
