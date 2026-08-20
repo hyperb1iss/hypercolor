@@ -66,7 +66,7 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 | `/attachments/templates`    | Attachment template collection                          |
 | `/scenes`                   | Scene CRUD + snapshot + `{id}/activate`                 |
 | `/library/favorites`        | Favorites CRUD                                          |
-| `/library/presets`          | User preset management + `{id}/apply`                   |
+| `/library/presets`          | User preset CRUD                                        |
 | `/library/playlists`        | Playlist CRUD + activate/deactivate                     |
 | `/layouts`                  | Spatial layout CRUD + active + preview + `{id}/apply`   |
 | `/config`                   | Show/get/set/reset system config values                 |

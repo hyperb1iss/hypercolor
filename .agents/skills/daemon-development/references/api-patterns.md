@@ -158,4 +158,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
 }
 ```
 
-Route modules (`effects`, `devices`, `library`, `layouts`, `scenes`, `config`, `settings`, `system`, `diagnose`, `preview`, `attachments`) export individual handler functions, not sub-routers. Path parameters use `{id}` Axum syntax.
+Route modules (`effects`, `devices`, `library`, `layouts`, `scenes`, `config`,
+`output`, `system`, `diagnose`, `capture`, `displays`, `attachments`) export
+individual handler functions, not sub-routers. Path parameters use `{id}` Axum
+syntax.
