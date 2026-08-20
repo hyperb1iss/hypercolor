@@ -2221,6 +2221,35 @@ fn lock_contention_prevents_transaction_start() {
 }
 
 #[test]
+fn install_lock_lends_its_authority_to_public_layout_mutations() {
+    let directory = tempfile::tempdir().expect("public authority fixture");
+    let store = InstallStore::new(directory.path().join("install"), 64 * 1024);
+    let public = directory.path().join("public");
+    fs::create_dir(&public).expect("public directory");
+    let public = fs::canonicalize(public).expect("canonical public directory");
+    let lock = store.acquire_lock().expect("install lock");
+
+    let authority = lock
+        .open_public_directory(&public)
+        .expect("public directory authority");
+
+    authority
+        .validate_ancestry()
+        .expect("public ancestry remains exact");
+    drop(lock);
+    assert!(matches!(
+        store.acquire_lock(),
+        Err(InstallStoreError::LockContended)
+    ));
+    drop(authority);
+    drop(
+        store
+            .acquire_lock()
+            .expect("authority releases install lock"),
+    );
+}
+
+#[test]
 fn corrupt_and_oversized_journals_fail_before_platform_effects() {
     for contents in [b"not json".to_vec(), vec![b'x'; 1_025]] {
         let fixture = Fixture::new();

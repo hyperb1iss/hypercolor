@@ -3,7 +3,9 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use hypercolor_platform_fs::{DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory};
+use hypercolor_platform_fs::{
+    DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory, PublicDirectoryAuthority,
+};
 
 use super::model::{InstallJournalV1, UnitId, active_target};
 
@@ -234,6 +236,26 @@ pub struct InstallLock {
     directory: ExclusiveDirectory,
 }
 
+impl InstallLock {
+    /// Open one public directory under this transaction's retained authority.
+    ///
+    /// The returned capability shares the install lock and operation gate, so
+    /// public launcher mutations cannot escape the transaction's authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the absolute directory cannot be opened without
+    /// following links or its ancestry cannot be retained exactly.
+    pub fn open_public_directory(
+        &self,
+        directory: &Path,
+    ) -> Result<PublicDirectoryAuthority, InstallStoreError> {
+        self.directory
+            .open_public_directory(directory)
+            .map_err(InstallStoreError::OpenPublicDirectory)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum InstallStoreError {
     #[error("failed to create install state directory: {0}")]
@@ -246,6 +268,8 @@ pub enum InstallStoreError {
     WrongLock,
     #[error("failed to retain the install root authority: {0}")]
     OpenRootAuthority(io::Error),
+    #[error("failed to retain a public layout directory: {0}")]
+    OpenPublicDirectory(io::Error),
     #[error("failed to inspect the immutable unit directory: {0}")]
     InspectUnits(io::Error),
     #[error("the immutable unit path is not a directory")]
