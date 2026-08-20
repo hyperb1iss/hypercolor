@@ -1823,15 +1823,37 @@ fn prompt_definitions_and_messages_are_valid() {
     let prompts = build_prompt_definitions();
     assert_eq!(prompts.len(), 3);
     assert!(is_valid_prompt("mood_lighting"));
-    let messages = get_prompt_messages("mood_lighting", &json!({ "mood": "cozy evening" }))
-        .expect("prompt should build messages");
+    let messages = get_prompt_messages(
+        "mood_lighting",
+        &json!({ "mood": "cozy evening", "audio_reactive": "no" }),
+    )
+    .expect("prompt should build messages");
     assert!(messages["messages"].is_array());
+    let mood = messages.to_string();
+    assert!(mood.contains("Exclude catalog effects marked audio_reactive"));
+    assert!(mood.contains("Call set_effect exactly once"));
+    assert!(mood.contains("adjust_controls"));
+    assert!(!mood.contains("top 2-3"));
+
+    let troubleshoot = get_prompt_messages("troubleshoot", &json!({ "issue": "offline" }))
+        .expect("troubleshoot prompt should build messages")
+        .to_string();
+    assert!(troubleshoot.contains("canonical safe diagnostic report"));
+    assert!(!troubleshoot.contains("reconnecting a device"));
+    assert!(!troubleshoot.contains("adjusting settings"));
+
     let automation = get_prompt_messages("setup_automation", &json!({}))
         .expect("automation prompt should build messages");
     let encoded = automation.to_string();
     assert!(encoded.contains("hypercolor://scenes"));
+    assert!(encoded.contains("hypercolor://effects"));
     assert!(!encoded.contains("hypercolor://profiles"));
     assert!(encoded.contains("does not schedule or trigger scenes"));
+    assert!(encoded.contains("create_scene"));
+    assert!(encoded.contains("Activate that scene"));
+    assert!(encoded.contains("call set_effect once"));
+    assert!(encoded.contains("adjust_controls"));
+    assert!(encoded.contains("does not capture the current output"));
 }
 
 #[tokio::test]
