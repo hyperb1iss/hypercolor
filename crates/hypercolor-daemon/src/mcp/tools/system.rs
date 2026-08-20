@@ -97,7 +97,7 @@ pub(super) fn build_diagnose() -> ToolDefinition {
     ToolDefinition {
         name: "diagnose".into(),
         title: "Diagnose Issues".into(),
-        description: "Run full-system diagnostics. Checks connectivity, protocol health, frame delivery, latency, and error rates across every device. Returns actionable findings with severity levels.".into(),
+        description: "Run the daemon's safe default diagnostics and return canonical checks, summary counts, and the captured status snapshot.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {},

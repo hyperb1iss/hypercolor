@@ -89,7 +89,7 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Whether the scene is active immediately",
+                    "description": "Whether the scene may be activated",
                     "default": true
                 },
                 "mutation_mode": {
