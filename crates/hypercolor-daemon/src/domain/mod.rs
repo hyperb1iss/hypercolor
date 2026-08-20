@@ -812,7 +812,7 @@ mod tests {
             }
         }
 
-        const ALL: [ResourceKind; 24] = [
+        const ALL: [ResourceKind; 25] = [
             ResourceKind::Scene,
             ResourceKind::Zone,
             ResourceKind::Layer,
