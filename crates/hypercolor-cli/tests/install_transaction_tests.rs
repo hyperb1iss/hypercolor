@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use hypercolor_cli::install::{
     InstallAction, InstallCoordinator, InstallCoordinatorError, InstallDisposition,
     InstallJournalV1, InstallModelError, InstallOutcome, InstallPlatform, InstallPlatformError,
-    InstallRequest, InstallStore, InstallStoreError, InstallTransactionId,
+    InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
     MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformState,
-    PlatformTransactionRecord, UnitId, UnitRecord,
+    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
+    UnitRecord,
 };
 
 const PRIOR_ID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -20,6 +21,8 @@ const THIRD_ID: &str = "33333333333333333333333333333333333333333333333333333333
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InjectionKind {
     Fail,
+    FailAfter,
+    DriftAfter,
     PanicAfter,
 }
 
@@ -40,6 +43,9 @@ struct FakePlatform {
     store_root: PathBuf,
     exact_state_valid: bool,
     prior_restored: bool,
+    layout_operation_progress: u16,
+    layout_state_drifted: bool,
+    candidate_launcher_installed: bool,
 }
 
 impl FakePlatform {
@@ -55,6 +61,9 @@ impl FakePlatform {
             store_root: store.root().to_path_buf(),
             exact_state_valid: true,
             prior_restored: false,
+            layout_operation_progress: 0,
+            layout_state_drifted: false,
+            candidate_launcher_installed: false,
         }
     }
 
@@ -62,7 +71,9 @@ impl FakePlatform {
         self.injections.push((action, kind));
     }
 
-    fn begin_effect(&mut self) -> Result<(InstallAction, bool), InstallPlatformError> {
+    fn begin_effect(
+        &mut self,
+    ) -> Result<(InstallAction, Option<InjectionKind>), InstallPlatformError> {
         let journal: InstallJournalV1 = serde_json::from_slice(
             &fs::read(&self.journal_path).expect("effect must observe a durable journal"),
         )
@@ -84,11 +95,21 @@ impl FakePlatform {
                 "injected {action:?} failure"
             )));
         }
-        Ok((action, injection == Some(InjectionKind::PanicAfter)))
+        Ok((action, injection))
     }
 
-    fn finish_effect(action: InstallAction, panic_after: bool) {
-        assert!(!panic_after, "injected crash after {action:?}");
+    fn finish_effect(
+        action: InstallAction,
+        injection: Option<InjectionKind>,
+    ) -> Result<(), InstallPlatformError> {
+        match injection {
+            Some(InjectionKind::PanicAfter) => panic!("injected crash after {action:?}"),
+            Some(InjectionKind::FailAfter | InjectionKind::DriftAfter) => Err(
+                InstallPlatformError::new(format!("injected {action:?} failure after mutation")),
+            ),
+            Some(InjectionKind::Fail) => unreachable!("pre-mutation failure returned from begin"),
+            None => Ok(()),
+        }
     }
 
     fn transaction_record() -> PlatformTransactionRecord {
@@ -98,6 +119,63 @@ impl FakePlatform {
 
     fn assert_record(record: &PlatformTransactionRecord) {
         assert_eq!(record, &Self::transaction_record());
+    }
+
+    fn journal(&self) -> InstallJournalV1 {
+        serde_json::from_slice(&fs::read(&self.journal_path).expect("journal bytes"))
+            .expect("journal JSON")
+    }
+
+    fn active_unit(&self) -> Option<UnitId> {
+        fs::read_link(&self.active_path)
+            .ok()
+            .and_then(|target| target.file_name().map(ToOwned::to_owned))
+            .and_then(|name| UnitId::new(name.to_string_lossy()).ok())
+    }
+
+    fn transitions(prior: &PlatformState, target: &PlatformState) -> PlatformTransitionStates {
+        let prior_unloaded = PlatformState {
+            loaded: false,
+            running_unit: None,
+            ..prior.clone()
+        };
+        let candidate_manager = PlatformState {
+            loaded: target.loaded,
+            running_unit: None,
+            autostart_enabled: prior.autostart_enabled,
+            ..target.clone()
+        };
+        let candidate_autostart = PlatformState {
+            autostart_enabled: target.autostart_enabled,
+            ..candidate_manager.clone()
+        };
+        let prior_manager = PlatformState {
+            loaded: prior.loaded,
+            running_unit: None,
+            autostart_enabled: target.autostart_enabled,
+            ..prior.clone()
+        };
+        let prior_autostart = PlatformState {
+            autostart_enabled: prior.autostart_enabled,
+            ..prior_manager.clone()
+        };
+        PlatformTransitionStates {
+            prior_unloaded,
+            candidate_manager,
+            candidate_autostart,
+            prior_manager,
+            prior_autostart,
+        }
+    }
+
+    fn candidate_active(prior: &PlatformState, target: &PlatformState) -> PlatformState {
+        PlatformState {
+            layout_unit: target.layout_unit.clone(),
+            launcher_unit: target.launcher_unit.clone(),
+            loaded: false,
+            running_unit: None,
+            autostart_enabled: prior.autostart_enabled,
+        }
     }
 
     fn restore_install_permissions(&mut self) {
@@ -126,6 +204,13 @@ impl InstallPlatform for FakePlatform {
             self.deny_active_switch = None;
             self.restore_directory_permissions = true;
         }
+        let active = self.active_unit();
+        if self.layout_operation_progress > 0 && !self.layout_state_drifted {
+            self.state.layout_unit.clone_from(&active);
+        }
+        if self.candidate_launcher_installed {
+            self.state.launcher_unit = active;
+        }
         Ok(self.state.clone())
     }
 
@@ -133,26 +218,62 @@ impl InstallPlatform for FakePlatform {
         &mut self,
         candidate: &UnitRecord,
         prior: &hypercolor_cli::install::InstallationState,
-    ) -> Result<PlatformTransactionRecord, InstallPlatformError> {
+        target: &PlatformState,
+    ) -> Result<PreparedPlatformTransaction, InstallPlatformError> {
         assert_eq!(candidate.id.as_str(), CANDIDATE_ID);
         assert!(candidate.root.is_dir());
         assert_eq!(prior.platform, self.state);
-        Ok(Self::transaction_record())
+        Ok(PreparedPlatformTransaction {
+            record: Self::transaction_record(),
+            transitions: Self::transitions(&prior.platform, target),
+            layout_operation_count: 3,
+        })
     }
 
     fn matches_exact_state(
         &mut self,
         checkpoint: PlatformCheckpoint,
         expected: &PlatformState,
+        layout_operation_index: u16,
         record: &PlatformTransactionRecord,
     ) -> Result<bool, InstallPlatformError> {
         Self::assert_record(record);
+        let journal = self.journal();
         let incarnation_matches = match checkpoint {
             PlatformCheckpoint::PriorOriginal => !self.prior_restored,
             PlatformCheckpoint::PriorRestored => self.prior_restored,
             _ => true,
         };
-        Ok(self.exact_state_valid && incarnation_matches && &self.state == expected)
+        let candidate_launcher = journal.target_platform.launcher_unit.is_some()
+            && matches!(
+                checkpoint,
+                PlatformCheckpoint::CandidateLauncher
+                    | PlatformCheckpoint::CandidateActive
+                    | PlatformCheckpoint::CandidateManager
+                    | PlatformCheckpoint::CandidateAutostart
+                    | PlatformCheckpoint::CandidateRuntime
+                    | PlatformCheckpoint::PriorActiveRestored
+            );
+        Ok(self.exact_state_valid
+            && incarnation_matches
+            && self.layout_operation_progress == layout_operation_index
+            && self.candidate_launcher_installed == candidate_launcher
+            && &self.state == expected)
+    }
+
+    fn validate_transaction_plan(
+        &mut self,
+        prior: &PlatformState,
+        target: &PlatformState,
+        transitions: &PlatformTransitionStates,
+        layout_operation_count: u16,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError> {
+        Self::assert_record(record);
+        if layout_operation_count != 3 || transitions != &Self::transitions(prior, target) {
+            return Err(InstallPlatformError::new("unexpected transition plan"));
+        }
+        Ok(())
     }
 
     fn preflight_authority(
@@ -161,26 +282,12 @@ impl InstallPlatform for FakePlatform {
         prior: &hypercolor_cli::install::InstallationState,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        let (action, panic_after) = self.begin_effect()?;
+        let (action, injection) = self.begin_effect()?;
         assert_eq!(action, InstallAction::PreflightCandidate);
         assert_eq!(candidate.as_str(), CANDIDATE_ID);
         assert_eq!(prior.platform, self.state);
         Self::assert_record(record);
-        Self::finish_effect(action, panic_after);
-        Ok(())
-    }
-
-    fn unload(&mut self, record: &PlatformTransactionRecord) -> Result<(), InstallPlatformError> {
-        let (action, panic_after) = self.begin_effect()?;
-        Self::assert_record(record);
-        assert!(matches!(
-            action,
-            InstallAction::UnloadPrior | InstallAction::UnloadCandidate
-        ));
-        self.state.loaded = false;
-        self.state.running_unit = None;
-        Self::finish_effect(action, panic_after);
-        Ok(())
+        Self::finish_effect(action, injection)
     }
 
     fn wait_for_guard_release(
@@ -188,15 +295,14 @@ impl InstallPlatform for FakePlatform {
         unloaded: &PlatformState,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        let (action, panic_after) = self.begin_effect()?;
+        let (action, injection) = self.begin_effect()?;
         Self::assert_record(record);
         assert!(matches!(
             action,
             InstallAction::ProvePriorGuardReleased | InstallAction::ProveCandidateGuardReleased
         ));
         assert_eq!(&self.state, unloaded);
-        Self::finish_effect(action, panic_after);
-        Ok(())
+        Self::finish_effect(action, injection)
     }
 
     fn install_launcher(
@@ -204,34 +310,99 @@ impl InstallPlatform for FakePlatform {
         unit: Option<&UnitId>,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        let (action, panic_after) = self.begin_effect()?;
+        let (action, injection) = self.begin_effect()?;
         Self::assert_record(record);
         assert!(matches!(
             action,
             InstallAction::InstallCandidateLauncher | InstallAction::RestorePriorLauncher
         ));
-        self.state.launcher_unit = unit.cloned();
-        Self::finish_effect(action, panic_after);
-        Ok(())
+        self.candidate_launcher_installed =
+            action == InstallAction::InstallCandidateLauncher && unit.is_some();
+        self.state.launcher_unit = unit.is_some().then(|| self.active_unit()).flatten();
+        Self::finish_effect(action, injection)
     }
 
-    fn restore_loaded_state(
+    fn install_layout_operation(
+        &mut self,
+        unit: Option<&UnitId>,
+        operation_index: u16,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError> {
+        let (action, injection) = self.begin_effect()?;
+        Self::assert_record(record);
+        assert!(matches!(
+            action,
+            InstallAction::InstallCandidateLayout | InstallAction::RestorePriorLayout
+        ));
+        if action == InstallAction::InstallCandidateLayout {
+            assert_eq!(operation_index, self.layout_operation_progress);
+            self.layout_operation_progress += 1;
+        } else {
+            assert_eq!(operation_index + 1, self.layout_operation_progress);
+            self.layout_operation_progress -= 1;
+        }
+        self.state.layout_unit = unit.is_some().then(|| self.active_unit()).flatten();
+        if injection == Some(InjectionKind::DriftAfter) {
+            self.state.layout_unit = Some(UnitId::new(THIRD_ID).expect("third-state unit ID"));
+            self.layout_state_drifted = true;
+        }
+        Self::finish_effect(action, injection)
+    }
+
+    fn reload_manager(
         &mut self,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        let (action, panic_after) = self.begin_effect()?;
+        let (action, injection) = self.begin_effect()?;
         Self::assert_record(record);
         assert!(matches!(
             action,
-            InstallAction::ReloadCandidate | InstallAction::ReloadPrior
+            InstallAction::ReloadCandidateManager
+                | InstallAction::UnloadCandidateManager
+                | InstallAction::ReloadPriorManager
         ));
-        self.state = expected.clone();
-        if action == InstallAction::ReloadPrior {
+        self.state.clone_from(expected);
+        Self::finish_effect(action, injection)
+    }
+
+    fn restore_autostart(
+        &mut self,
+        expected: &PlatformState,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError> {
+        let (action, injection) = self.begin_effect()?;
+        Self::assert_record(record);
+        assert!(matches!(
+            action,
+            InstallAction::RestoreCandidateAutostart
+                | InstallAction::UnloadCandidateAutostart
+                | InstallAction::RestorePriorAutostart
+        ));
+        self.state.autostart_enabled = expected.autostart_enabled;
+        Self::finish_effect(action, injection)
+    }
+
+    fn restore_runtime(
+        &mut self,
+        expected: &PlatformState,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError> {
+        let (action, injection) = self.begin_effect()?;
+        Self::assert_record(record);
+        assert!(matches!(
+            action,
+            InstallAction::UnloadPrior
+                | InstallAction::RestoreCandidateRuntime
+                | InstallAction::UnloadCandidateRuntime
+                | InstallAction::RestorePriorRuntime
+        ));
+        self.state.loaded = expected.loaded;
+        self.state.running_unit.clone_from(&expected.running_unit);
+        if action == InstallAction::RestorePriorRuntime {
             self.prior_restored = true;
         }
-        Self::finish_effect(action, panic_after);
-        Ok(())
+        Self::finish_effect(action, injection)
     }
 
     fn wait_for_newer_owner(
@@ -239,7 +410,7 @@ impl InstallPlatform for FakePlatform {
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        let (action, panic_after) = self.begin_effect()?;
+        let (action, injection) = self.begin_effect()?;
         Self::assert_record(record);
         assert!(matches!(
             action,
@@ -248,8 +419,7 @@ impl InstallPlatform for FakePlatform {
         if &self.state != expected {
             return Err(InstallPlatformError::new("publication does not match"));
         }
-        Self::finish_effect(action, panic_after);
-        Ok(())
+        Self::finish_effect(action, injection)
     }
 }
 
@@ -291,6 +461,7 @@ impl Fixture {
 
     fn prior_state(&self) -> PlatformState {
         PlatformState {
+            layout_unit: Some(self.prior.id.clone()),
             launcher_unit: Some(self.prior.id.clone()),
             loaded: true,
             running_unit: Some(self.prior.id.clone()),
@@ -303,6 +474,7 @@ impl Fixture {
             transaction_id: InstallTransactionId::new("test-transaction")
                 .expect("valid transaction ID"),
             candidate: self.candidate.clone(),
+            target_policy: InstallTargetPolicy::Preserve,
         }
     }
 
@@ -344,44 +516,136 @@ fn install(fixture: &Fixture, platform: &mut FakePlatform) -> InstallOutcome {
         .expect("install transaction")
 }
 
-fn seed_rollback(fixture: &Fixture, action: InstallAction) -> FakePlatform {
-    let candidate_quiescent = PlatformState {
-        launcher_unit: Some(fixture.candidate.id.clone()),
-        loaded: false,
-        running_unit: None,
-        autostart_enabled: true,
-    };
-    let prior_quiescent = fixture.prior_state().quiescent();
-    let (active, state) = match action {
-        InstallAction::UnloadCandidate => (
-            Some(&fixture.candidate.id),
-            PlatformState {
-                launcher_unit: Some(fixture.candidate.id.clone()),
-                loaded: true,
-                running_unit: Some(fixture.candidate.id.clone()),
-                autostart_enabled: true,
-            },
+fn target_state(
+    prior: &PlatformState,
+    candidate: &UnitId,
+    policy: InstallTargetPolicy,
+) -> PlatformState {
+    let (launcher_unit, loaded, running_unit, autostart_enabled) = match policy {
+        InstallTargetPolicy::Preserve => (
+            prior.launcher_unit.as_ref().map(|_| candidate.clone()),
+            prior.loaded,
+            prior.running_unit.as_ref().map(|_| candidate.clone()),
+            prior.autostart_enabled,
         ),
-        InstallAction::ProveCandidateGuardReleased | InstallAction::RestorePriorActive => {
-            (Some(&fixture.candidate.id), candidate_quiescent.clone())
+        InstallTargetPolicy::EnableOnFirstInstall if prior.launcher_unit.is_none() => {
+            (Some(candidate.clone()), true, Some(candidate.clone()), true)
         }
-        InstallAction::RestorePriorLauncher => (Some(&fixture.prior.id), candidate_quiescent),
-        InstallAction::ReloadPrior => (Some(&fixture.prior.id), prior_quiescent),
+        InstallTargetPolicy::EnableOnFirstInstall => (
+            Some(candidate.clone()),
+            prior.loaded,
+            prior.running_unit.as_ref().map(|_| candidate.clone()),
+            prior.autostart_enabled,
+        ),
+        InstallTargetPolicy::EnabledAndRunning => {
+            (Some(candidate.clone()), true, Some(candidate.clone()), true)
+        }
+        InstallTargetPolicy::Disabled => (Some(candidate.clone()), false, None, false),
+    };
+    PlatformState {
+        layout_unit: Some(candidate.clone()),
+        launcher_unit,
+        loaded,
+        running_unit,
+        autostart_enabled,
+    }
+}
+
+fn new_journal(
+    transaction_id: InstallTransactionId,
+    prior_active_unit: Option<UnitId>,
+    candidate_unit: UnitId,
+    prior_platform: PlatformState,
+    target_policy: InstallTargetPolicy,
+) -> InstallJournalV1 {
+    let target = target_state(&prior_platform, &candidate_unit, target_policy);
+    InstallJournalV1::new(
+        transaction_id,
+        prior_active_unit,
+        candidate_unit,
+        prior_platform.clone(),
+        target_policy,
+        FakePlatform::transitions(&prior_platform, &target),
+        3,
+        FakePlatform::transaction_record(),
+    )
+    .expect("journal")
+}
+
+fn seed_rollback(fixture: &Fixture, action: InstallAction) -> FakePlatform {
+    seed_rollback_for_policy(fixture, action, InstallTargetPolicy::Preserve)
+}
+
+fn seed_rollback_for_policy(
+    fixture: &Fixture,
+    action: InstallAction,
+    target_policy: InstallTargetPolicy,
+) -> FakePlatform {
+    let prior = fixture.prior_state();
+    let target = target_state(&prior, &fixture.candidate.id, target_policy);
+    let transitions = FakePlatform::transitions(&prior, &target);
+    let candidate_active = FakePlatform::candidate_active(&prior, &target);
+    let prior_active_restored = PlatformState {
+        layout_unit: Some(fixture.prior.id.clone()),
+        launcher_unit: Some(fixture.prior.id.clone()),
+        ..candidate_active.clone()
+    };
+    let prior_launcher_restored = PlatformState {
+        launcher_unit: prior.launcher_unit.clone(),
+        ..prior_active_restored.clone()
+    };
+    let prior_layout_restored = PlatformState {
+        layout_unit: prior.layout_unit.clone(),
+        ..prior_launcher_restored.clone()
+    };
+    let (active, state) = match action {
+        InstallAction::UnloadCandidateRuntime => (Some(&fixture.candidate.id), target),
+        InstallAction::UnloadCandidateAutostart => {
+            (Some(&fixture.candidate.id), transitions.candidate_autostart)
+        }
+        InstallAction::UnloadCandidateManager => {
+            (Some(&fixture.candidate.id), transitions.candidate_manager)
+        }
+        InstallAction::ProveCandidateGuardReleased | InstallAction::RestorePriorActive => {
+            (Some(&fixture.candidate.id), candidate_active)
+        }
+        InstallAction::RestorePriorLauncher => (Some(&fixture.prior.id), prior_active_restored),
+        InstallAction::RestorePriorLayout => (Some(&fixture.prior.id), prior_launcher_restored),
+        InstallAction::ReloadPriorManager => (Some(&fixture.prior.id), prior_layout_restored),
+        InstallAction::RestorePriorAutostart => {
+            (Some(&fixture.prior.id), transitions.prior_manager)
+        }
+        InstallAction::RestorePriorRuntime => {
+            (Some(&fixture.prior.id), transitions.prior_autostart)
+        }
         InstallAction::ProvePrior => (Some(&fixture.prior.id), fixture.prior_state()),
         _ => panic!("{action:?} is not a rollback effect"),
     };
-    let mut journal = InstallJournalV1::new(
+    let mut journal = new_journal(
         InstallTransactionId::new("rollback-replay").expect("transaction ID"),
         Some(fixture.prior.id.clone()),
         fixture.candidate.id.clone(),
         fixture.prior_state(),
-        FakePlatform::transaction_record(),
-    )
-    .expect("journal");
+        target_policy,
+    );
     journal.revision = 20;
     journal.disposition = InstallDisposition::Rollback;
     journal.next_action = Some(action);
     journal.failure = Some("seeded forward failure".to_owned());
+    journal.layout_operation_index = if matches!(
+        action,
+        InstallAction::UnloadCandidateRuntime
+            | InstallAction::UnloadCandidateAutostart
+            | InstallAction::UnloadCandidateManager
+            | InstallAction::ProveCandidateGuardReleased
+            | InstallAction::RestorePriorActive
+            | InstallAction::RestorePriorLauncher
+            | InstallAction::RestorePriorLayout
+    ) {
+        3
+    } else {
+        0
+    };
     let lock = fixture.store.acquire_lock().expect("seed rollback lock");
     fixture
         .store
@@ -393,6 +657,16 @@ fn seed_rollback(fixture: &Fixture, action: InstallAction) -> FakePlatform {
         .expect("seed rollback journal");
     drop(lock);
     let mut platform = FakePlatform::new(state, &fixture.store);
+    platform.layout_operation_progress = journal.layout_operation_index;
+    platform.candidate_launcher_installed = matches!(
+        action,
+        InstallAction::UnloadCandidateRuntime
+            | InstallAction::UnloadCandidateAutostart
+            | InstallAction::UnloadCandidateManager
+            | InstallAction::ProveCandidateGuardReleased
+            | InstallAction::RestorePriorActive
+            | InstallAction::RestorePriorLauncher
+    );
     platform.prior_restored = action == InstallAction::ProvePrior;
     platform
 }
@@ -427,11 +701,27 @@ fn successful_install_preserves_write_ahead_order_and_private_journal() {
                 active_target: Some(Path::new("units").join(PRIOR_ID)),
             },
             EffectRecord {
+                action: InstallAction::InstallCandidateLayout,
+                active_target: Some(Path::new("units").join(PRIOR_ID)),
+            },
+            EffectRecord {
+                action: InstallAction::InstallCandidateLayout,
+                active_target: Some(Path::new("units").join(PRIOR_ID)),
+            },
+            EffectRecord {
+                action: InstallAction::InstallCandidateLayout,
+                active_target: Some(Path::new("units").join(PRIOR_ID)),
+            },
+            EffectRecord {
                 action: InstallAction::InstallCandidateLauncher,
                 active_target: Some(Path::new("units").join(PRIOR_ID)),
             },
             EffectRecord {
-                action: InstallAction::ReloadCandidate,
+                action: InstallAction::ReloadCandidateManager,
+                active_target: Some(Path::new("units").join(CANDIDATE_ID)),
+            },
+            EffectRecord {
+                action: InstallAction::RestoreCandidateRuntime,
                 active_target: Some(Path::new("units").join(CANDIDATE_ID)),
             },
             EffectRecord {
@@ -442,7 +732,7 @@ fn successful_install_preserves_write_ahead_order_and_private_journal() {
     );
     let journal = fixture.journal();
     assert_eq!(journal.disposition, InstallDisposition::Committed);
-    assert_eq!(journal.revision, 9);
+    assert_eq!(journal.revision, 14);
     assert_eq!(journal.platform_record, FakePlatform::transaction_record());
     assert_eq!(
         fs::metadata(fixture.store.journal_path())
@@ -456,13 +746,373 @@ fn successful_install_preserves_write_ahead_order_and_private_journal() {
 }
 
 #[test]
+fn requested_target_policy_controls_first_install_without_changing_rollback_state() {
+    let candidate = UnitId::new(CANDIDATE_ID).expect("candidate unit ID");
+    let prior = PlatformState {
+        layout_unit: None,
+        launcher_unit: None,
+        loaded: false,
+        running_unit: None,
+        autostart_enabled: false,
+    };
+
+    for (policy, loaded, running, autostart_enabled) in [
+        (InstallTargetPolicy::EnabledAndRunning, true, true, true),
+        (InstallTargetPolicy::Disabled, false, false, false),
+    ] {
+        let journal = new_journal(
+            InstallTransactionId::new(format!("target-{policy:?}"))
+                .expect("valid target transaction ID"),
+            None,
+            candidate.clone(),
+            prior.clone(),
+            policy,
+        );
+
+        assert_eq!(journal.prior_platform, prior);
+        assert_eq!(journal.target_platform.loaded, loaded);
+        assert_eq!(journal.target_platform.running_unit.is_some(), running);
+        assert_eq!(journal.target_platform.autostart_enabled, autostart_enabled);
+    }
+}
+
+#[test]
+fn persisted_target_policy_rejects_every_corrupt_target_field() {
+    let candidate = UnitId::new(CANDIDATE_ID).expect("candidate unit ID");
+    let prior = PlatformState {
+        layout_unit: Some(UnitId::new(PRIOR_ID).expect("prior layout unit ID")),
+        launcher_unit: Some(UnitId::new(PRIOR_ID).expect("prior unit ID")),
+        loaded: true,
+        running_unit: Some(UnitId::new(PRIOR_ID).expect("prior unit ID")),
+        autostart_enabled: true,
+    };
+
+    for policy in [
+        InstallTargetPolicy::Preserve,
+        InstallTargetPolicy::EnableOnFirstInstall,
+        InstallTargetPolicy::EnabledAndRunning,
+        InstallTargetPolicy::Disabled,
+    ] {
+        let journal = new_journal(
+            InstallTransactionId::new(format!("corrupt-{policy:?}"))
+                .expect("valid corruption transaction ID"),
+            Some(UnitId::new(PRIOR_ID).expect("prior active unit")),
+            candidate.clone(),
+            prior.clone(),
+            policy,
+        );
+        let mut corruptions = Vec::new();
+
+        let mut corrupted = journal.clone();
+        corrupted.target_platform.launcher_unit = None;
+        corruptions.push(corrupted);
+
+        let mut corrupted = journal.clone();
+        corrupted.target_platform.loaded = !corrupted.target_platform.loaded;
+        corruptions.push(corrupted);
+
+        let mut corrupted = journal.clone();
+        corrupted.target_platform.running_unit = if corrupted.target_platform.running_unit.is_some()
+        {
+            None
+        } else {
+            Some(candidate.clone())
+        };
+        corruptions.push(corrupted);
+
+        let mut corrupted = journal;
+        corrupted.target_platform.autostart_enabled = !corrupted.target_platform.autostart_enabled;
+        corruptions.push(corrupted);
+
+        for corrupted in corruptions {
+            let decoded: InstallJournalV1 = serde_json::from_slice(
+                &serde_json::to_vec(&corrupted).expect("encode corrupt persisted journal"),
+            )
+            .expect("decode structurally valid corrupt journal");
+            assert_eq!(
+                decoded.validate(),
+                Err(InstallModelError::InvalidTargetState)
+            );
+        }
+    }
+}
+
+#[test]
+fn persisted_transition_plan_rejects_corrupt_intermediate_states() {
+    let candidate = UnitId::new(CANDIDATE_ID).expect("candidate unit ID");
+    let prior = PlatformState {
+        layout_unit: Some(UnitId::new(PRIOR_ID).expect("prior layout unit ID")),
+        launcher_unit: Some(UnitId::new(PRIOR_ID).expect("prior launcher unit ID")),
+        loaded: true,
+        running_unit: Some(UnitId::new(PRIOR_ID).expect("prior running unit ID")),
+        autostart_enabled: true,
+    };
+    let journal = new_journal(
+        InstallTransactionId::new("corrupt-transitions").expect("transaction ID"),
+        prior.layout_unit.clone(),
+        candidate.clone(),
+        prior,
+        InstallTargetPolicy::Preserve,
+    );
+    let mut corruptions = Vec::new();
+
+    let mut corrupted = journal.clone();
+    corrupted.transition_states.prior_unloaded.loaded = true;
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.transition_states.candidate_manager.running_unit = Some(candidate.clone());
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.transition_states.candidate_autostart.loaded = false;
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.transition_states.prior_manager.running_unit = Some(candidate);
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal;
+    corrupted
+        .transition_states
+        .prior_autostart
+        .autostart_enabled = false;
+    corruptions.push(corrupted);
+
+    for corrupted in corruptions {
+        assert_eq!(
+            corrupted.validate(),
+            Err(InstallModelError::InvalidTransitionStates)
+        );
+    }
+}
+
+#[test]
+fn persisted_layout_cursor_must_match_the_named_journal_action() {
+    let candidate = UnitId::new(CANDIDATE_ID).expect("candidate unit ID");
+    let prior = PlatformState {
+        layout_unit: Some(UnitId::new(PRIOR_ID).expect("prior layout unit ID")),
+        launcher_unit: Some(UnitId::new(PRIOR_ID).expect("prior launcher unit ID")),
+        loaded: true,
+        running_unit: Some(UnitId::new(PRIOR_ID).expect("prior running unit ID")),
+        autostart_enabled: true,
+    };
+    let journal = new_journal(
+        InstallTransactionId::new("corrupt-layout-cursor").expect("transaction ID"),
+        prior.layout_unit.clone(),
+        candidate,
+        prior,
+        InstallTargetPolicy::Preserve,
+    );
+    let mut corruptions = Vec::new();
+
+    let mut corrupted = journal.clone();
+    corrupted.layout_operation_index = 1;
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.next_action = Some(InstallAction::InstallCandidateLayout);
+    corrupted.layout_operation_index = corrupted.layout_operation_count;
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.next_action = Some(InstallAction::InstallCandidateLauncher);
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.disposition = InstallDisposition::Rollback;
+    corrupted.next_action = Some(InstallAction::RestorePriorLayout);
+    corrupted.failure = Some("forward failure".to_owned());
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.disposition = InstallDisposition::Rollback;
+    corrupted.next_action = Some(InstallAction::UnloadCandidateRuntime);
+    corrupted.failure = Some("forward failure".to_owned());
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.disposition = InstallDisposition::Rollback;
+    corrupted.next_action = Some(InstallAction::ReloadPriorManager);
+    corrupted.layout_operation_index = 1;
+    corrupted.failure = Some("forward failure".to_owned());
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal.clone();
+    corrupted.disposition = InstallDisposition::Committed;
+    corrupted.next_action = None;
+    corruptions.push(corrupted);
+
+    let mut corrupted = journal;
+    corrupted.disposition = InstallDisposition::RolledBack;
+    corrupted.next_action = None;
+    corrupted.layout_operation_index = corrupted.layout_operation_count;
+    corrupted.failure = Some("forward failure".to_owned());
+    corruptions.push(corrupted);
+
+    for corrupted in corruptions {
+        assert_eq!(
+            corrupted.validate(),
+            Err(InstallModelError::InvalidLayoutOperationCursor)
+        );
+    }
+}
+
+#[test]
+fn coordinator_applies_explicit_first_install_service_policy() {
+    for (policy, reloads, expected) in [
+        (
+            InstallTargetPolicy::Preserve,
+            0,
+            PlatformState {
+                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
+                launcher_unit: None,
+                loaded: false,
+                running_unit: None,
+                autostart_enabled: false,
+            },
+        ),
+        (
+            InstallTargetPolicy::EnableOnFirstInstall,
+            1,
+            PlatformState {
+                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
+                launcher_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
+                loaded: true,
+                running_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
+                autostart_enabled: true,
+            },
+        ),
+        (
+            InstallTargetPolicy::EnabledAndRunning,
+            1,
+            PlatformState {
+                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
+                launcher_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
+                loaded: true,
+                running_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
+                autostart_enabled: true,
+            },
+        ),
+        (
+            InstallTargetPolicy::Disabled,
+            0,
+            PlatformState {
+                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
+                launcher_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
+                loaded: false,
+                running_unit: None,
+                autostart_enabled: false,
+            },
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("first install fixture");
+        let store = InstallStore::new(directory.path().join("install"), 64 * 1024);
+        let candidate = prepare_unit(&store, CANDIDATE_ID);
+        let prior = PlatformState {
+            layout_unit: None,
+            launcher_unit: None,
+            loaded: false,
+            running_unit: None,
+            autostart_enabled: false,
+        };
+        let mut platform = FakePlatform::new(prior, &store);
+        let outcome = InstallCoordinator::new(&store, &mut platform)
+            .install(InstallRequest {
+                transaction_id: InstallTransactionId::new(format!("first-{policy:?}"))
+                    .expect("first install transaction ID"),
+                candidate: candidate.clone(),
+                target_policy: policy,
+            })
+            .expect("first install transaction");
+
+        assert_eq!(
+            outcome,
+            InstallOutcome::Committed {
+                active_unit: candidate.id.clone()
+            }
+        );
+        assert_eq!(platform.state, expected);
+        assert_eq!(
+            platform
+                .effects
+                .iter()
+                .filter(|effect| effect.action == InstallAction::RestoreCandidateRuntime)
+                .count(),
+            reloads
+        );
+        assert_eq!(
+            platform
+                .effects
+                .iter()
+                .filter(|effect| effect.action == InstallAction::ProveCandidate)
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn enable_on_first_install_preserves_an_existing_disabled_launcher() {
+    let directory = tempfile::tempdir().expect("upgrade fixture");
+    let store = InstallStore::new(directory.path().join("install"), 64 * 1024);
+    let prior = prepare_unit(&store, PRIOR_ID);
+    let candidate = prepare_unit(&store, CANDIDATE_ID);
+    let prior_state = PlatformState {
+        layout_unit: Some(prior.id.clone()),
+        launcher_unit: Some(prior.id.clone()),
+        loaded: false,
+        running_unit: None,
+        autostart_enabled: false,
+    };
+    let lock = store.acquire_lock().expect("upgrade active lock");
+    store
+        .set_active(Some(&prior.id), &lock)
+        .expect("upgrade prior active unit");
+    drop(lock);
+    let mut platform = FakePlatform::new(prior_state, &store);
+
+    let outcome = InstallCoordinator::new(&store, &mut platform)
+        .install(InstallRequest {
+            transaction_id: InstallTransactionId::new("upgrade-disabled")
+                .expect("upgrade transaction ID"),
+            candidate: candidate.clone(),
+            target_policy: InstallTargetPolicy::EnableOnFirstInstall,
+        })
+        .expect("upgrade transaction");
+
+    assert_eq!(
+        outcome,
+        InstallOutcome::Committed {
+            active_unit: candidate.id.clone()
+        }
+    );
+    assert_eq!(
+        platform.state,
+        PlatformState {
+            layout_unit: Some(candidate.id.clone()),
+            launcher_unit: Some(candidate.id),
+            loaded: false,
+            running_unit: None,
+            autostart_enabled: false,
+        }
+    );
+    assert!(!platform.effects.iter().any(|effect| matches!(
+        effect.action,
+        InstallAction::RestoreCandidateAutostart | InstallAction::RestoreCandidateRuntime
+    )));
+}
+
+#[test]
 fn every_platform_forward_failure_rolls_back_exact_prior_state() {
     for action in [
         InstallAction::PreflightCandidate,
         InstallAction::UnloadPrior,
         InstallAction::ProvePriorGuardReleased,
+        InstallAction::InstallCandidateLayout,
         InstallAction::InstallCandidateLauncher,
-        InstallAction::ReloadCandidate,
+        InstallAction::ReloadCandidateManager,
+        InstallAction::RestoreCandidateRuntime,
         InstallAction::ProveCandidate,
     ] {
         let fixture = Fixture::new();
@@ -485,10 +1135,52 @@ fn every_platform_forward_failure_rolls_back_exact_prior_state() {
         ) {
             assert!(!platform.effects.iter().any(|effect| matches!(
                 effect.action,
-                InstallAction::ReloadPrior | InstallAction::ProvePrior
+                InstallAction::RestorePriorRuntime | InstallAction::ProvePrior
             )));
         }
         fixture.assert_sentinels();
+    }
+}
+
+#[test]
+fn candidate_autostart_failure_and_crash_replay_under_disabled_policy() {
+    for injection in [InjectionKind::Fail, InjectionKind::PanicAfter] {
+        let fixture = Fixture::new();
+        let prior = fixture.prior_state();
+        let mut platform = FakePlatform::new(prior.clone(), &fixture.store);
+        platform.inject(InstallAction::RestoreCandidateAutostart, injection);
+        let request = InstallRequest {
+            transaction_id: InstallTransactionId::new(format!("candidate-auto-{injection:?}"))
+                .expect("transaction ID"),
+            candidate: fixture.candidate.clone(),
+            target_policy: InstallTargetPolicy::Disabled,
+        };
+
+        if injection == InjectionKind::Fail {
+            let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+                .install(request)
+                .expect("failed autostart mutation rolls back");
+            assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+            assert_eq!(platform.state, prior);
+        } else {
+            let crashed = catch_unwind(AssertUnwindSafe(|| {
+                drop(InstallCoordinator::new(&fixture.store, &mut platform).install(request));
+            }));
+            assert!(crashed.is_err(), "autostart mutation must inject a crash");
+            let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+                .recover()
+                .expect("recover autostart mutation")
+                .expect("recovered outcome");
+            assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+            assert_eq!(
+                platform
+                    .effects
+                    .iter()
+                    .filter(|effect| { effect.action == InstallAction::RestoreCandidateAutostart })
+                    .count(),
+                1
+            );
+        }
     }
 }
 
@@ -511,8 +1203,10 @@ fn active_switch_failure_rolls_back_without_touching_other_paths() {
 fn crash_after_platform_effect_is_reconciled_without_repeating_mutation() {
     for action in [
         InstallAction::UnloadPrior,
+        InstallAction::InstallCandidateLayout,
         InstallAction::InstallCandidateLauncher,
-        InstallAction::ReloadCandidate,
+        InstallAction::ReloadCandidateManager,
+        InstallAction::RestoreCandidateRuntime,
     ] {
         let fixture = Fixture::new();
         let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
@@ -536,27 +1230,135 @@ fn crash_after_platform_effect_is_reconciled_without_repeating_mutation() {
                 .iter()
                 .filter(|effect| effect.action == action)
                 .count(),
-            1,
+            if action == InstallAction::InstallCandidateLayout {
+                3
+            } else {
+                1
+            },
             "{action:?} must not repeat"
         );
     }
 }
 
 #[test]
+fn layout_error_after_mutation_advances_the_cursor_before_rollback() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = FakePlatform::new(prior.clone(), &fixture.store);
+    platform.inject(
+        InstallAction::InstallCandidateLayout,
+        InjectionKind::FailAfter,
+    );
+
+    let outcome = install(&fixture, &mut platform);
+
+    assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(platform.state, prior);
+    assert_eq!(platform.layout_operation_progress, 0);
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::InstallCandidateLayout)
+            .count(),
+        1
+    );
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::RestorePriorLayout)
+            .count(),
+        1
+    );
+    let journal = fixture.journal();
+    assert_eq!(journal.disposition, InstallDisposition::RolledBack);
+    assert_eq!(journal.layout_operation_index, 0);
+}
+
+#[test]
+fn layout_error_with_third_state_drift_does_not_advance_the_journal() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    platform.inject(
+        InstallAction::InstallCandidateLayout,
+        InjectionKind::DriftAfter,
+    );
+
+    let error = InstallCoordinator::new(&fixture.store, &mut platform)
+        .install(fixture.request())
+        .expect_err("third-state layout drift must fail closed");
+
+    assert!(matches!(
+        error,
+        InstallCoordinatorError::StateDrift {
+            action: InstallAction::InstallCandidateLayout,
+            ..
+        }
+    ));
+    let journal = fixture.journal();
+    assert_eq!(journal.disposition, InstallDisposition::Forward);
+    assert_eq!(
+        journal.next_action,
+        Some(InstallAction::InstallCandidateLayout)
+    );
+    assert_eq!(journal.layout_operation_index, 0);
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::InstallCandidateLayout)
+            .count(),
+        1
+    );
+    assert!(
+        !platform
+            .effects
+            .iter()
+            .any(|effect| effect.action == InstallAction::RestorePriorLayout)
+    );
+}
+
+#[test]
+fn manager_error_after_mutation_rolls_back_from_the_observed_state() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = FakePlatform::new(prior.clone(), &fixture.store);
+    platform.inject(
+        InstallAction::ReloadCandidateManager,
+        InjectionKind::FailAfter,
+    );
+
+    let outcome = install(&fixture, &mut platform);
+
+    assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(platform.state, prior);
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::ReloadCandidateManager)
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn crash_after_active_switch_advances_from_observed_after_state() {
     let fixture = Fixture::new();
-    let mut journal = InstallJournalV1::new(
+    let mut journal = new_journal(
         InstallTransactionId::new("switch-crash").expect("transaction ID"),
         Some(fixture.prior.id.clone()),
         fixture.candidate.id.clone(),
         fixture.prior_state(),
-        FakePlatform::transaction_record(),
-    )
-    .expect("journal");
+        InstallTargetPolicy::Preserve,
+    );
     journal.revision = 3;
     journal.next_action = Some(InstallAction::SwitchToCandidate);
+    journal.layout_operation_index = 3;
     let mut platform = FakePlatform::new(
         PlatformState {
+            layout_unit: Some(fixture.candidate.id.clone()),
             launcher_unit: Some(fixture.candidate.id.clone()),
             loaded: false,
             running_unit: None,
@@ -564,6 +1366,8 @@ fn crash_after_active_switch_advances_from_observed_after_state() {
         },
         &fixture.store,
     );
+    platform.layout_operation_progress = 3;
+    platform.candidate_launcher_installed = true;
     let lock = fixture.store.acquire_lock().expect("seed lock");
     fixture
         .store
@@ -588,7 +1392,8 @@ fn crash_after_active_switch_advances_from_observed_after_state() {
             .map(|effect| effect.action)
             .collect::<Vec<_>>(),
         [
-            InstallAction::ReloadCandidate,
+            InstallAction::ReloadCandidateManager,
+            InstallAction::RestoreCandidateRuntime,
             InstallAction::ProveCandidate
         ]
     );
@@ -689,10 +1494,13 @@ fn rollback_effect_failure_replays_from_write_ahead_action() {
 #[test]
 fn every_platform_rollback_failure_replays_from_exact_before_state() {
     for action in [
-        InstallAction::UnloadCandidate,
+        InstallAction::UnloadCandidateRuntime,
+        InstallAction::UnloadCandidateManager,
         InstallAction::ProveCandidateGuardReleased,
         InstallAction::RestorePriorLauncher,
-        InstallAction::ReloadPrior,
+        InstallAction::RestorePriorLayout,
+        InstallAction::ReloadPriorManager,
+        InstallAction::RestorePriorRuntime,
         InstallAction::ProvePrior,
     ] {
         let fixture = Fixture::new();
@@ -720,6 +1528,130 @@ fn every_platform_rollback_failure_replays_from_exact_before_state() {
         assert_eq!(platform.state, prior);
         assert_eq!(fixture.active_unit(), Some(fixture.prior.id.clone()));
     }
+}
+
+#[test]
+fn rollback_autostart_actions_fail_and_crash_replay_under_disabled_policy() {
+    for action in [
+        InstallAction::UnloadCandidateAutostart,
+        InstallAction::RestorePriorAutostart,
+    ] {
+        for injection in [InjectionKind::Fail, InjectionKind::PanicAfter] {
+            let fixture = Fixture::new();
+            let prior = fixture.prior_state();
+            let mut platform =
+                seed_rollback_for_policy(&fixture, action, InstallTargetPolicy::Disabled);
+            platform.inject(action, injection);
+
+            if injection == InjectionKind::Fail {
+                let error = InstallCoordinator::new(&fixture.store, &mut platform)
+                    .recover()
+                    .expect_err("rollback autostart action must fail once");
+                assert!(matches!(
+                    error,
+                    InstallCoordinatorError::Platform {
+                        action: failed_action,
+                        ..
+                    } if failed_action == action
+                ));
+                let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+                    .recover()
+                    .expect("recover rollback autostart failure")
+                    .expect("rollback outcome");
+                assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+            } else {
+                let crashed = catch_unwind(AssertUnwindSafe(|| {
+                    drop(InstallCoordinator::new(&fixture.store, &mut platform).recover());
+                }));
+                assert!(crashed.is_err(), "{action:?} must inject a crash");
+                let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+                    .recover()
+                    .expect("recover rollback autostart crash")
+                    .expect("rollback outcome");
+                assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+                assert_eq!(
+                    platform
+                        .effects
+                        .iter()
+                        .filter(|effect| effect.action == action)
+                        .count(),
+                    1,
+                    "{action:?} must not repeat"
+                );
+            }
+            assert_eq!(platform.state, prior);
+        }
+    }
+}
+
+#[test]
+fn reverse_layout_error_after_mutation_replays_without_repeating_the_operation() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = seed_rollback(&fixture, InstallAction::RestorePriorLayout);
+    platform.inject(InstallAction::RestorePriorLayout, InjectionKind::FailAfter);
+
+    let error = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect_err("reverse layout operation must report its injected error");
+    assert!(matches!(
+        error,
+        InstallCoordinatorError::Platform {
+            action: InstallAction::RestorePriorLayout,
+            ..
+        }
+    ));
+    assert_eq!(fixture.journal().layout_operation_index, 3);
+    assert_eq!(platform.layout_operation_progress, 2);
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect("recover reverse layout mutation")
+        .expect("rollback outcome");
+    assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(platform.state, prior);
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::RestorePriorLayout)
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn rollback_runtime_error_after_mutation_advances_without_repeating_it() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = seed_rollback(&fixture, InstallAction::RestorePriorRuntime);
+    platform.inject(InstallAction::RestorePriorRuntime, InjectionKind::FailAfter);
+
+    let error = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect_err("rollback runtime operation must report its injected error");
+    assert!(matches!(
+        error,
+        InstallCoordinatorError::Platform {
+            action: InstallAction::RestorePriorRuntime,
+            ..
+        }
+    ));
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect("recover rollback runtime mutation")
+        .expect("rollback outcome");
+    assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(platform.state, prior);
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::RestorePriorRuntime)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -752,9 +1684,12 @@ fn rollback_active_switch_failure_replays_after_directory_is_restored() {
 #[test]
 fn crash_after_rollback_mutation_is_reconciled_without_repeating_it() {
     for action in [
-        InstallAction::UnloadCandidate,
+        InstallAction::UnloadCandidateRuntime,
+        InstallAction::UnloadCandidateManager,
         InstallAction::RestorePriorLauncher,
-        InstallAction::ReloadPrior,
+        InstallAction::RestorePriorLayout,
+        InstallAction::ReloadPriorManager,
+        InstallAction::RestorePriorRuntime,
     ] {
         let fixture = Fixture::new();
         let mut platform = seed_rollback(&fixture, action);
@@ -777,7 +1712,11 @@ fn crash_after_rollback_mutation_is_reconciled_without_repeating_it() {
                 .iter()
                 .filter(|effect| effect.action == action)
                 .count(),
-            1,
+            if action == InstallAction::RestorePriorLayout {
+                3
+            } else {
+                1
+            },
             "{action:?} must not repeat"
         );
     }
@@ -901,14 +1840,13 @@ fn platform_records_are_tagged_bounded_and_round_trip_unchanged() {
 #[test]
 fn oversized_embedded_platform_record_is_rejected_after_bounded_read() {
     let fixture = Fixture::new();
-    let mut journal = InstallJournalV1::new(
+    let mut journal = new_journal(
         InstallTransactionId::new("oversized-record").expect("transaction ID"),
         Some(fixture.prior.id.clone()),
         fixture.candidate.id.clone(),
         fixture.prior_state(),
-        FakePlatform::transaction_record(),
-    )
-    .expect("journal");
+        InstallTargetPolicy::Preserve,
+    );
     journal.platform_record = PlatformTransactionRecord::Linux {
         schema_version: 1,
         payload: vec![0; MAX_PLATFORM_TRANSACTION_RECORD_BYTES + 1],
@@ -936,16 +1874,16 @@ fn oversized_embedded_platform_record_is_rejected_after_bounded_read() {
 #[test]
 fn exact_platform_metadata_drift_fails_closed() {
     let fixture = Fixture::new();
-    let mut journal = InstallJournalV1::new(
+    let mut journal = new_journal(
         InstallTransactionId::new("exact-drift").expect("transaction ID"),
         Some(fixture.prior.id.clone()),
         fixture.candidate.id.clone(),
         fixture.prior_state(),
-        FakePlatform::transaction_record(),
-    )
-    .expect("journal");
+        InstallTargetPolicy::Preserve,
+    );
     journal.revision = 6;
-    journal.next_action = Some(InstallAction::ReloadCandidate);
+    journal.next_action = Some(InstallAction::RestoreCandidateRuntime);
+    journal.layout_operation_index = 3;
     let lock = fixture.store.acquire_lock().expect("seed lock");
     fixture
         .store
@@ -958,6 +1896,7 @@ fn exact_platform_metadata_drift_fails_closed() {
     drop(lock);
     let mut platform = FakePlatform::new(
         PlatformState {
+            layout_unit: Some(fixture.candidate.id.clone()),
             launcher_unit: Some(fixture.candidate.id.clone()),
             loaded: false,
             running_unit: None,
@@ -965,6 +1904,8 @@ fn exact_platform_metadata_drift_fails_closed() {
         },
         &fixture.store,
     );
+    platform.layout_operation_progress = 3;
+    platform.candidate_launcher_installed = true;
     platform.exact_state_valid = false;
 
     let error = InstallCoordinator::new(&fixture.store, &mut platform)
@@ -974,7 +1915,7 @@ fn exact_platform_metadata_drift_fails_closed() {
     assert!(matches!(
         error,
         InstallCoordinatorError::StateDrift {
-            action: InstallAction::ReloadCandidate,
+            action: InstallAction::RestoreCandidateRuntime,
             ..
         }
     ));
@@ -986,16 +1927,16 @@ fn exact_platform_metadata_drift_fails_closed() {
 fn third_state_drift_fails_closed_without_advancing_journal() {
     let fixture = Fixture::new();
     let third = prepare_unit(&fixture.store, THIRD_ID);
-    let mut journal = InstallJournalV1::new(
+    let mut journal = new_journal(
         InstallTransactionId::new("drift").expect("transaction ID"),
         Some(fixture.prior.id.clone()),
         fixture.candidate.id.clone(),
         fixture.prior_state(),
-        FakePlatform::transaction_record(),
-    )
-    .expect("journal");
+        InstallTargetPolicy::Preserve,
+    );
     journal.revision = 4;
-    journal.next_action = Some(InstallAction::ReloadCandidate);
+    journal.next_action = Some(InstallAction::RestoreCandidateRuntime);
+    journal.layout_operation_index = 3;
     let lock = fixture.store.acquire_lock().expect("seed lock");
     fixture
         .store
@@ -1008,6 +1949,7 @@ fn third_state_drift_fails_closed_without_advancing_journal() {
     drop(lock);
     let mut platform = FakePlatform::new(
         PlatformState {
+            layout_unit: Some(fixture.candidate.id.clone()),
             launcher_unit: Some(fixture.candidate.id.clone()),
             loaded: false,
             running_unit: None,
@@ -1023,7 +1965,7 @@ fn third_state_drift_fails_closed_without_advancing_journal() {
     assert!(matches!(
         error,
         InstallCoordinatorError::StateDrift {
-            action: InstallAction::ReloadCandidate,
+            action: InstallAction::RestoreCandidateRuntime,
             ..
         }
     ));

@@ -1,7 +1,7 @@
 use super::model::{
     InstallAction, InstallDisposition, InstallJournalV1, InstallModelError, InstallOutcome,
     InstallRequest, InstallationState, PlatformCheckpoint, PlatformState,
-    PlatformTransactionRecord, UnitId, UnitRecord,
+    PlatformTransactionRecord, PreparedPlatformTransaction, UnitId, UnitRecord,
 };
 use super::store::{InstallStore, InstallStoreError};
 
@@ -14,14 +14,25 @@ pub trait InstallPlatform {
         &mut self,
         candidate: &UnitRecord,
         prior: &InstallationState,
-    ) -> Result<PlatformTransactionRecord, InstallPlatformError>;
+        target: &PlatformState,
+    ) -> Result<PreparedPlatformTransaction, InstallPlatformError>;
 
     fn matches_exact_state(
         &mut self,
         checkpoint: PlatformCheckpoint,
         expected: &PlatformState,
+        layout_operation_index: u16,
         record: &PlatformTransactionRecord,
     ) -> Result<bool, InstallPlatformError>;
+
+    fn validate_transaction_plan(
+        &mut self,
+        prior: &PlatformState,
+        target: &PlatformState,
+        transitions: &super::model::PlatformTransitionStates,
+        layout_operation_count: u16,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError>;
 
     fn preflight_authority(
         &mut self,
@@ -29,8 +40,6 @@ pub trait InstallPlatform {
         prior: &InstallationState,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError>;
-
-    fn unload(&mut self, record: &PlatformTransactionRecord) -> Result<(), InstallPlatformError>;
 
     fn wait_for_guard_release(
         &mut self,
@@ -44,7 +53,26 @@ pub trait InstallPlatform {
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError>;
 
-    fn restore_loaded_state(
+    fn install_layout_operation(
+        &mut self,
+        unit: Option<&UnitId>,
+        operation_index: u16,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError>;
+
+    fn reload_manager(
+        &mut self,
+        expected: &PlatformState,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError>;
+
+    fn restore_autostart(
+        &mut self,
+        expected: &PlatformState,
+        record: &PlatformTransactionRecord,
+    ) -> Result<(), InstallPlatformError>;
+
+    fn restore_runtime(
         &mut self,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
@@ -107,18 +135,36 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             active_unit: prior_active_unit.clone(),
             platform: prior_platform.clone(),
         };
-        let platform_record = self
+        let target_platform = request
+            .target_policy
+            .target_platform(&prior_platform, &request.candidate.id);
+        let prepared_platform = self
             .platform
-            .prepare_transaction(&request.candidate, &prior_state)
+            .prepare_transaction(&request.candidate, &prior_state, &target_platform)
             .map_err(InstallCoordinatorError::PreparePlatform)?;
-        platform_record.validate()?;
+        prepared_platform.record.validate()?;
+        prepared_platform
+            .transitions
+            .validate(&prior_platform, &target_platform)?;
+        self.platform
+            .validate_transaction_plan(
+                &prior_platform,
+                &target_platform,
+                &prepared_platform.transitions,
+                prepared_platform.layout_operation_count,
+                &prepared_platform.record,
+            )
+            .map_err(InstallCoordinatorError::PreparePlatform)?;
 
         let journal = InstallJournalV1::new(
             request.transaction_id,
             prior_active_unit,
             request.candidate.id,
             prior_platform,
-            platform_record,
+            request.target_policy,
+            prepared_platform.transitions,
+            prepared_platform.layout_operation_count,
+            prepared_platform.record,
         )?;
         self.store.write_journal(&journal, &lock)?;
         self.drive_forward(journal, &lock)
@@ -137,6 +183,15 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         journal: InstallJournalV1,
         lock: &super::store::InstallLock,
     ) -> Result<InstallOutcome, InstallCoordinatorError> {
+        self.platform
+            .validate_transaction_plan(
+                &journal.prior_platform,
+                &journal.target_platform,
+                &journal.transition_states,
+                journal.layout_operation_count,
+                &journal.platform_record,
+            )
+            .map_err(InstallCoordinatorError::PreparePlatform)?;
         match journal.disposition {
             InstallDisposition::Forward => self.drive_forward(journal, lock),
             InstallDisposition::Rollback => self.drive_rollback(journal, lock),
@@ -165,6 +220,37 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 return Ok(InstallOutcome::Committed {
                     active_unit: journal.candidate_unit,
                 });
+            }
+
+            if action == InstallAction::InstallCandidateLayout {
+                match self.reconcile_layout_operation(&journal, true, lock) {
+                    Ok(()) => {
+                        journal.layout_operation_index += 1;
+                        let next_action =
+                            if journal.layout_operation_index == journal.layout_operation_count {
+                                next_forward(action)?
+                            } else {
+                                action
+                            };
+                        journal.advance(InstallDisposition::Forward, Some(next_action))?;
+                        self.store.write_journal(&journal, lock)?;
+                    }
+                    Err(StepError::Effect(error)) => {
+                        let failure = truncate_detail(error.to_string());
+                        self.reconcile_forward_layout_progress_after_error(&mut journal, lock)?;
+                        journal.failure = Some(failure);
+                        let next_action = if journal.layout_operation_index == 0 {
+                            InstallAction::ReloadPriorManager
+                        } else {
+                            InstallAction::RestorePriorLayout
+                        };
+                        journal.advance(InstallDisposition::Rollback, Some(next_action))?;
+                        self.store.write_journal(&journal, lock)?;
+                        return self.drive_rollback(journal, lock);
+                    }
+                    Err(StepError::Fatal(error)) => return Err(error),
+                }
+                continue;
             }
 
             match self.reconcile_action(&journal, action, lock) {
@@ -203,6 +289,24 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 });
             }
 
+            if action == InstallAction::RestorePriorLayout {
+                match self.reconcile_layout_operation(&journal, false, lock) {
+                    Ok(()) => {
+                        journal.layout_operation_index -= 1;
+                        let next_action = if journal.layout_operation_index == 0 {
+                            next_rollback(action)?
+                        } else {
+                            action
+                        };
+                        journal.advance(InstallDisposition::Rollback, Some(next_action))?;
+                        self.store.write_journal(&journal, lock)?;
+                    }
+                    Err(StepError::Effect(error)) => return Err(error),
+                    Err(StepError::Fatal(error)) => return Err(error),
+                }
+                continue;
+            }
+
             match self.reconcile_action(&journal, action, lock) {
                 Ok(()) => {
                     journal.advance(InstallDisposition::Rollback, Some(next_rollback(action)?))?;
@@ -211,6 +315,157 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 Err(StepError::Effect(error) | StepError::Fatal(error)) => return Err(error),
             }
         }
+    }
+
+    fn reconcile_layout_operation(
+        &mut self,
+        journal: &InstallJournalV1,
+        installing: bool,
+        lock: &super::store::InstallLock,
+    ) -> Result<(), StepError> {
+        let checkpoints = Checkpoints::new(journal);
+        let current_index = journal.layout_operation_index;
+        let (before, after, before_checkpoint, after_checkpoint, after_index, unit, action) =
+            if installing {
+                let before = if current_index == 0 {
+                    &checkpoints.prior_unloaded
+                } else {
+                    &checkpoints.candidate_layout
+                };
+                let before_checkpoint = if current_index == 0 {
+                    PlatformCheckpoint::PriorUnloaded
+                } else {
+                    PlatformCheckpoint::CandidateLayout
+                };
+                (
+                    before,
+                    &checkpoints.candidate_layout,
+                    before_checkpoint,
+                    PlatformCheckpoint::CandidateLayout,
+                    current_index + 1,
+                    Some(&journal.candidate_unit),
+                    InstallAction::InstallCandidateLayout,
+                )
+            } else {
+                if current_index == 0 {
+                    return Err(StepError::Fatal(
+                        InstallModelError::InvalidLayoutOperationCursor.into(),
+                    ));
+                }
+                let before = if current_index == journal.layout_operation_count {
+                    &checkpoints.prior_launcher_restored
+                } else {
+                    &checkpoints.prior_layout_restored
+                };
+                let before_checkpoint = if current_index == journal.layout_operation_count {
+                    PlatformCheckpoint::PriorLauncherRestored
+                } else {
+                    PlatformCheckpoint::PriorLayoutRestored
+                };
+                (
+                    before,
+                    &checkpoints.prior_layout_restored,
+                    before_checkpoint,
+                    PlatformCheckpoint::PriorLayoutRestored,
+                    current_index - 1,
+                    journal.prior_platform.layout_unit.as_ref(),
+                    InstallAction::RestorePriorLayout,
+                )
+            };
+        let actual = self.inspect_state(lock).map_err(StepError::Fatal)?;
+        let before_matches = self
+            .matches_checkpoint_at(
+                &actual,
+                before,
+                before_checkpoint,
+                current_index,
+                &journal.platform_record,
+            )
+            .map_err(StepError::Fatal)?;
+        let after_matches = self
+            .matches_checkpoint_at(
+                &actual,
+                after,
+                after_checkpoint,
+                after_index,
+                &journal.platform_record,
+            )
+            .map_err(StepError::Fatal)?;
+        if after_matches {
+            return Ok(());
+        }
+        if !before_matches {
+            return Err(StepError::Fatal(state_drift(
+                action,
+                before.clone(),
+                after.clone(),
+                actual,
+            )));
+        }
+        self.platform
+            .install_layout_operation(
+                unit,
+                current_index.min(after_index),
+                &journal.platform_record,
+            )
+            .map_err(|source| StepError::Effect(platform_error(action, source)))?;
+        self.require_state(
+            action,
+            before,
+            after,
+            after_checkpoint,
+            after_index,
+            &journal.platform_record,
+            lock,
+        )
+        .map_err(StepError::Fatal)
+    }
+
+    fn reconcile_forward_layout_progress_after_error(
+        &mut self,
+        journal: &mut InstallJournalV1,
+        lock: &super::store::InstallLock,
+    ) -> Result<(), InstallCoordinatorError> {
+        let checkpoints = Checkpoints::new(journal);
+        let actual = self.inspect_state(lock)?;
+        let current = journal.layout_operation_index;
+        let progressed = current + 1;
+        if self.matches_checkpoint_at(
+            &actual,
+            &checkpoints.candidate_layout,
+            PlatformCheckpoint::CandidateLayout,
+            progressed,
+            &journal.platform_record,
+        )? {
+            journal.layout_operation_index = progressed;
+            return Ok(());
+        }
+        let (before, before_checkpoint) = if current == 0 {
+            (
+                &checkpoints.prior_unloaded,
+                PlatformCheckpoint::PriorUnloaded,
+            )
+        } else {
+            (
+                &checkpoints.candidate_layout,
+                PlatformCheckpoint::CandidateLayout,
+            )
+        };
+        if !self.matches_checkpoint_at(
+            &actual,
+            before,
+            before_checkpoint,
+            current,
+            &journal.platform_record,
+        )? {
+            return Err(state_drift(
+                InstallAction::InstallCandidateLayout,
+                before.clone(),
+                checkpoints.candidate_layout,
+                actual,
+            ));
+        }
+        Ok(())
     }
 
     fn reconcile_action(
@@ -222,18 +477,20 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         let transition = Transition::for_action(journal, action).map_err(StepError::Fatal)?;
         let actual = self.inspect_state(lock).map_err(StepError::Fatal)?;
         let before_matches = self
-            .matches_checkpoint(
+            .matches_checkpoint_at(
                 &actual,
                 &transition.before,
                 transition.before_checkpoint,
+                journal.layout_operation_index,
                 &journal.platform_record,
             )
             .map_err(StepError::Fatal)?;
         let after_matches = self
-            .matches_checkpoint(
+            .matches_checkpoint_at(
                 &actual,
                 &transition.after,
                 transition.after_checkpoint,
+                journal.layout_operation_index,
                 &journal.platform_record,
             )
             .map_err(StepError::Fatal)?;
@@ -268,6 +525,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                     &transition.before,
                     &transition.after,
                     transition.after_checkpoint,
+                    journal.layout_operation_index,
                     &journal.platform_record,
                     lock,
                 )
@@ -293,6 +551,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             &transition.before,
             &transition.after,
             transition.after_checkpoint,
+            journal.layout_operation_index,
             &journal.platform_record,
             lock,
         )
@@ -307,21 +566,40 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         lock: &super::store::InstallLock,
     ) -> Result<(), InstallCoordinatorError> {
         match action {
-            InstallAction::UnloadPrior | InstallAction::UnloadCandidate => self
+            InstallAction::UnloadPrior | InstallAction::UnloadCandidateRuntime => self
                 .platform
-                .unload(&journal.platform_record)
+                .restore_runtime(&after.platform, &journal.platform_record)
+                .map_err(|source| platform_error(action, source)),
+            InstallAction::UnloadCandidateAutostart => self
+                .platform
+                .restore_autostart(&after.platform, &journal.platform_record)
+                .map_err(|source| platform_error(action, source)),
+            InstallAction::UnloadCandidateManager => self
+                .platform
+                .reload_manager(&after.platform, &journal.platform_record)
                 .map_err(|source| platform_error(action, source)),
             InstallAction::InstallCandidateLauncher => self
                 .platform
-                .install_launcher(Some(&journal.candidate_unit), &journal.platform_record)
+                .install_launcher(
+                    journal.target_platform.launcher_unit.as_ref(),
+                    &journal.platform_record,
+                )
                 .map_err(|source| platform_error(action, source)),
             InstallAction::SwitchToCandidate => self
                 .store
                 .set_active(Some(&journal.candidate_unit), lock)
                 .map_err(InstallCoordinatorError::Store),
-            InstallAction::ReloadCandidate | InstallAction::ReloadPrior => self
+            InstallAction::ReloadCandidateManager | InstallAction::ReloadPriorManager => self
                 .platform
-                .restore_loaded_state(&after.platform, &journal.platform_record)
+                .reload_manager(&after.platform, &journal.platform_record)
+                .map_err(|source| platform_error(action, source)),
+            InstallAction::RestoreCandidateAutostart | InstallAction::RestorePriorAutostart => self
+                .platform
+                .restore_autostart(&after.platform, &journal.platform_record)
+                .map_err(|source| platform_error(action, source)),
+            InstallAction::RestoreCandidateRuntime | InstallAction::RestorePriorRuntime => self
+                .platform
+                .restore_runtime(&after.platform, &journal.platform_record)
                 .map_err(|source| platform_error(action, source)),
             InstallAction::RestorePriorActive => self
                 .store
@@ -334,7 +612,9 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                     &journal.platform_record,
                 )
                 .map_err(|source| platform_error(action, source)),
-            InstallAction::ProveCandidate
+            InstallAction::InstallCandidateLayout
+            | InstallAction::RestorePriorLayout
+            | InstallAction::ProveCandidate
             | InstallAction::ProvePrior
             | InstallAction::PreflightCandidate
             | InstallAction::ProvePriorGuardReleased
@@ -352,45 +632,73 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
     ) -> Result<InstallAction, InstallCoordinatorError> {
         let actual = self.inspect_state(lock)?;
         let checkpoints = Checkpoints::new(journal);
-        let action = if self.matches_checkpoint(
-            &actual,
-            &checkpoints.candidate_running,
-            PlatformCheckpoint::CandidateRunning,
-            &journal.platform_record,
-        )? {
-            InstallAction::UnloadCandidate
-        } else if self.matches_checkpoint(
-            &actual,
-            &checkpoints.candidate_active,
-            PlatformCheckpoint::CandidateActive,
-            &journal.platform_record,
-        )? {
-            InstallAction::RestorePriorActive
-        } else if self.matches_checkpoint(
+        let mut candidate_unload = None;
+        for (state, checkpoint, action) in [
+            (
+                &checkpoints.candidate_runtime,
+                PlatformCheckpoint::CandidateRuntime,
+                InstallAction::UnloadCandidateRuntime,
+            ),
+            (
+                &checkpoints.candidate_autostart,
+                PlatformCheckpoint::CandidateAutostart,
+                InstallAction::UnloadCandidateAutostart,
+            ),
+            (
+                &checkpoints.candidate_manager,
+                PlatformCheckpoint::CandidateManager,
+                InstallAction::UnloadCandidateManager,
+            ),
+            (
+                &checkpoints.candidate_active,
+                PlatformCheckpoint::CandidateActive,
+                InstallAction::ProveCandidateGuardReleased,
+            ),
+        ] {
+            if self.matches_checkpoint_at(
+                &actual,
+                state,
+                checkpoint,
+                journal.layout_operation_index,
+                &journal.platform_record,
+            )? {
+                candidate_unload = Some(action);
+                break;
+            }
+        }
+        let action = if let Some(action) = candidate_unload {
+            action
+        } else if self.matches_checkpoint_at(
             &actual,
             &checkpoints.candidate_launcher,
             PlatformCheckpoint::CandidateLauncher,
+            journal.layout_operation_index,
             &journal.platform_record,
         )? {
             InstallAction::RestorePriorLauncher
-        } else if self.matches_checkpoint(
+        } else if journal.layout_operation_index > 0
+            && self.matches_checkpoint_at(
+                &actual,
+                &checkpoints.candidate_layout,
+                PlatformCheckpoint::CandidateLayout,
+                journal.layout_operation_index,
+                &journal.platform_record,
+            )?
+        {
+            InstallAction::RestorePriorLayout
+        } else if self.matches_checkpoint_at(
             &actual,
-            &checkpoints.prior_quiescent,
-            PlatformCheckpoint::PriorQuiescent,
+            &checkpoints.prior_unloaded,
+            PlatformCheckpoint::PriorUnloaded,
+            journal.layout_operation_index,
             &journal.platform_record,
         )? {
-            InstallAction::ReloadPrior
-        } else if self.matches_checkpoint(
-            &actual,
-            &checkpoints.prior,
-            PlatformCheckpoint::PriorRestored,
-            &journal.platform_record,
-        )? {
-            InstallAction::ProvePrior
-        } else if self.matches_checkpoint(
+            InstallAction::ReloadPriorManager
+        } else if self.matches_checkpoint_at(
             &actual,
             &checkpoints.prior,
             PlatformCheckpoint::PriorOriginal,
+            journal.layout_operation_index,
             &journal.platform_record,
         )? {
             InstallAction::FinishRollback
@@ -411,29 +719,42 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         before: &InstallationState,
         after: &InstallationState,
         after_checkpoint: PlatformCheckpoint,
+        layout_operation_index: u16,
         record: &PlatformTransactionRecord,
         lock: &super::store::InstallLock,
     ) -> Result<(), InstallCoordinatorError> {
         let actual = self.inspect_state(lock)?;
-        if self.matches_checkpoint(&actual, after, after_checkpoint, record)? {
+        if self.matches_checkpoint_at(
+            &actual,
+            after,
+            after_checkpoint,
+            layout_operation_index,
+            record,
+        )? {
             Ok(())
         } else {
             Err(state_drift(action, before.clone(), after.clone(), actual))
         }
     }
 
-    fn matches_checkpoint(
+    fn matches_checkpoint_at(
         &mut self,
         actual: &InstallationState,
         expected: &InstallationState,
         checkpoint: PlatformCheckpoint,
+        layout_operation_index: u16,
         record: &PlatformTransactionRecord,
     ) -> Result<bool, InstallCoordinatorError> {
         if actual.active_unit != expected.active_unit || actual.platform != expected.platform {
             return Ok(false);
         }
         self.platform
-            .matches_exact_state(checkpoint, &expected.platform, record)
+            .matches_exact_state(
+                checkpoint,
+                &expected.platform,
+                layout_operation_index,
+                record,
+            )
             .map_err(InstallCoordinatorError::InspectPlatform)
     }
 
@@ -483,130 +804,144 @@ impl Transition {
         action: InstallAction,
     ) -> Result<Self, InstallCoordinatorError> {
         let checkpoints = Checkpoints::new(journal);
-        let (before, after, kind) = match action {
+        let (before, after, before_checkpoint, after_checkpoint, kind) = match action {
             InstallAction::PreflightCandidate => (
                 checkpoints.prior.clone(),
                 checkpoints.prior,
+                PlatformCheckpoint::PriorOriginal,
+                PlatformCheckpoint::PriorOriginal,
                 TransitionKind::Preflight,
             ),
             InstallAction::UnloadPrior => (
                 checkpoints.prior,
-                checkpoints.prior_quiescent,
+                checkpoints.prior_unloaded,
+                PlatformCheckpoint::PriorOriginal,
+                PlatformCheckpoint::PriorUnloaded,
                 TransitionKind::Mutation,
             ),
             InstallAction::ProvePriorGuardReleased => (
-                checkpoints.prior_quiescent.clone(),
-                checkpoints.prior_quiescent,
+                checkpoints.prior_unloaded.clone(),
+                checkpoints.prior_unloaded,
+                PlatformCheckpoint::PriorUnloaded,
+                PlatformCheckpoint::PriorUnloaded,
                 TransitionKind::GuardRelease,
             ),
             InstallAction::InstallCandidateLauncher => (
-                checkpoints.prior_quiescent,
+                checkpoints.candidate_layout,
                 checkpoints.candidate_launcher,
+                PlatformCheckpoint::CandidateLayout,
+                PlatformCheckpoint::CandidateLauncher,
                 TransitionKind::Mutation,
             ),
             InstallAction::SwitchToCandidate => (
                 checkpoints.candidate_launcher,
                 checkpoints.candidate_active,
+                PlatformCheckpoint::CandidateLauncher,
+                PlatformCheckpoint::CandidateActive,
                 TransitionKind::Mutation,
             ),
-            InstallAction::ReloadCandidate => (
+            InstallAction::ReloadCandidateManager => (
                 checkpoints.candidate_active,
-                checkpoints.candidate_running,
+                checkpoints.candidate_manager,
+                PlatformCheckpoint::CandidateActive,
+                PlatformCheckpoint::CandidateManager,
+                TransitionKind::Mutation,
+            ),
+            InstallAction::RestoreCandidateAutostart => (
+                checkpoints.candidate_manager,
+                checkpoints.candidate_autostart,
+                PlatformCheckpoint::CandidateManager,
+                PlatformCheckpoint::CandidateAutostart,
+                TransitionKind::Mutation,
+            ),
+            InstallAction::RestoreCandidateRuntime => (
+                checkpoints.candidate_autostart,
+                checkpoints.candidate_runtime,
+                PlatformCheckpoint::CandidateAutostart,
+                PlatformCheckpoint::CandidateRuntime,
                 TransitionKind::Mutation,
             ),
             InstallAction::ProveCandidate => (
-                checkpoints.candidate_running.clone(),
-                checkpoints.candidate_running,
+                checkpoints.candidate_runtime.clone(),
+                checkpoints.candidate_runtime,
+                PlatformCheckpoint::CandidateRuntime,
+                PlatformCheckpoint::CandidateRuntime,
                 TransitionKind::OwnerPublication,
             ),
-            InstallAction::UnloadCandidate => (
-                checkpoints.candidate_running,
+            InstallAction::UnloadCandidateRuntime => (
+                checkpoints.candidate_runtime,
+                checkpoints.candidate_autostart,
+                PlatformCheckpoint::CandidateRuntime,
+                PlatformCheckpoint::CandidateAutostart,
+                TransitionKind::Mutation,
+            ),
+            InstallAction::UnloadCandidateAutostart => (
+                checkpoints.candidate_autostart,
+                checkpoints.candidate_manager,
+                PlatformCheckpoint::CandidateAutostart,
+                PlatformCheckpoint::CandidateManager,
+                TransitionKind::Mutation,
+            ),
+            InstallAction::UnloadCandidateManager => (
+                checkpoints.candidate_manager,
                 checkpoints.candidate_active,
+                PlatformCheckpoint::CandidateManager,
+                PlatformCheckpoint::CandidateActive,
                 TransitionKind::Mutation,
             ),
             InstallAction::ProveCandidateGuardReleased => (
                 checkpoints.candidate_active.clone(),
                 checkpoints.candidate_active,
+                PlatformCheckpoint::CandidateActive,
+                PlatformCheckpoint::CandidateActive,
                 TransitionKind::GuardRelease,
             ),
             InstallAction::RestorePriorActive => (
                 checkpoints.candidate_active,
-                checkpoints.candidate_launcher,
+                checkpoints.prior_active_restored,
+                PlatformCheckpoint::CandidateActive,
+                PlatformCheckpoint::PriorActiveRestored,
                 TransitionKind::Mutation,
             ),
             InstallAction::RestorePriorLauncher => (
-                checkpoints.candidate_launcher,
-                checkpoints.prior_quiescent,
+                checkpoints.prior_active_restored,
+                checkpoints.prior_launcher_restored,
+                PlatformCheckpoint::PriorActiveRestored,
+                PlatformCheckpoint::PriorLauncherRestored,
                 TransitionKind::Mutation,
             ),
-            InstallAction::ReloadPrior => (
-                checkpoints.prior_quiescent,
+            InstallAction::ReloadPriorManager => (
+                checkpoints.prior_layout_restored,
+                checkpoints.prior_manager,
+                PlatformCheckpoint::PriorLayoutRestored,
+                PlatformCheckpoint::PriorManager,
+                TransitionKind::Mutation,
+            ),
+            InstallAction::RestorePriorAutostart => (
+                checkpoints.prior_manager,
+                checkpoints.prior_autostart,
+                PlatformCheckpoint::PriorManager,
+                PlatformCheckpoint::PriorAutostart,
+                TransitionKind::Mutation,
+            ),
+            InstallAction::RestorePriorRuntime => (
+                checkpoints.prior_autostart,
                 checkpoints.prior,
+                PlatformCheckpoint::PriorAutostart,
+                PlatformCheckpoint::PriorRestored,
                 TransitionKind::Mutation,
             ),
             InstallAction::ProvePrior => (
                 checkpoints.prior.clone(),
                 checkpoints.prior,
+                PlatformCheckpoint::PriorRestored,
+                PlatformCheckpoint::PriorRestored,
                 TransitionKind::OwnerPublication,
             ),
-            InstallAction::Commit | InstallAction::FinishRollback => {
-                return Err(InstallCoordinatorError::InvalidAction(action));
-            }
-        };
-        let (before_checkpoint, after_checkpoint) = match action {
-            InstallAction::PreflightCandidate => (
-                PlatformCheckpoint::PriorOriginal,
-                PlatformCheckpoint::PriorOriginal,
-            ),
-            InstallAction::UnloadPrior => (
-                PlatformCheckpoint::PriorOriginal,
-                PlatformCheckpoint::PriorQuiescent,
-            ),
-            InstallAction::ProvePriorGuardReleased => (
-                PlatformCheckpoint::PriorQuiescent,
-                PlatformCheckpoint::PriorQuiescent,
-            ),
-            InstallAction::InstallCandidateLauncher => (
-                PlatformCheckpoint::PriorQuiescent,
-                PlatformCheckpoint::CandidateLauncher,
-            ),
-            InstallAction::SwitchToCandidate => (
-                PlatformCheckpoint::CandidateLauncher,
-                PlatformCheckpoint::CandidateActive,
-            ),
-            InstallAction::ReloadCandidate => (
-                PlatformCheckpoint::CandidateActive,
-                PlatformCheckpoint::CandidateRunning,
-            ),
-            InstallAction::ProveCandidate => (
-                PlatformCheckpoint::CandidateRunning,
-                PlatformCheckpoint::CandidateRunning,
-            ),
-            InstallAction::UnloadCandidate => (
-                PlatformCheckpoint::CandidateRunning,
-                PlatformCheckpoint::CandidateActive,
-            ),
-            InstallAction::ProveCandidateGuardReleased => (
-                PlatformCheckpoint::CandidateActive,
-                PlatformCheckpoint::CandidateActive,
-            ),
-            InstallAction::RestorePriorActive => (
-                PlatformCheckpoint::CandidateActive,
-                PlatformCheckpoint::CandidateLauncher,
-            ),
-            InstallAction::RestorePriorLauncher => (
-                PlatformCheckpoint::CandidateLauncher,
-                PlatformCheckpoint::PriorQuiescent,
-            ),
-            InstallAction::ReloadPrior => (
-                PlatformCheckpoint::PriorQuiescent,
-                PlatformCheckpoint::PriorRestored,
-            ),
-            InstallAction::ProvePrior => (
-                PlatformCheckpoint::PriorRestored,
-                PlatformCheckpoint::PriorRestored,
-            ),
-            InstallAction::Commit | InstallAction::FinishRollback => {
+            InstallAction::InstallCandidateLayout
+            | InstallAction::RestorePriorLayout
+            | InstallAction::Commit
+            | InstallAction::FinishRollback => {
                 return Err(InstallCoordinatorError::InvalidAction(action));
             }
         };
@@ -622,10 +957,18 @@ impl Transition {
 
 struct Checkpoints {
     prior: InstallationState,
-    prior_quiescent: InstallationState,
+    prior_unloaded: InstallationState,
+    candidate_layout: InstallationState,
     candidate_launcher: InstallationState,
     candidate_active: InstallationState,
-    candidate_running: InstallationState,
+    candidate_manager: InstallationState,
+    candidate_autostart: InstallationState,
+    candidate_runtime: InstallationState,
+    prior_active_restored: InstallationState,
+    prior_launcher_restored: InstallationState,
+    prior_layout_restored: InstallationState,
+    prior_manager: InstallationState,
+    prior_autostart: InstallationState,
 }
 
 impl Checkpoints {
@@ -634,31 +977,100 @@ impl Checkpoints {
             active_unit: journal.prior_active_unit.clone(),
             platform: journal.prior_platform.clone(),
         };
-        let prior_quiescent = InstallationState {
+        let prior_unloaded = InstallationState {
             active_unit: journal.prior_active_unit.clone(),
-            platform: journal.prior_platform.quiescent(),
+            platform: journal.transition_states.prior_unloaded.clone(),
+        };
+        let candidate_layout = InstallationState {
+            active_unit: journal.prior_active_unit.clone(),
+            platform: PlatformState {
+                layout_unit: journal.prior_active_unit.clone(),
+                ..prior_unloaded.platform.clone()
+            },
         };
         let candidate_launcher = InstallationState {
             active_unit: journal.prior_active_unit.clone(),
             platform: PlatformState {
-                launcher_unit: Some(journal.candidate_unit.clone()),
-                ..journal.prior_platform.quiescent()
+                launcher_unit: journal
+                    .target_platform
+                    .launcher_unit
+                    .as_ref()
+                    .and(journal.prior_active_unit.clone()),
+                ..candidate_layout.platform.clone()
             },
         };
         let candidate_active = InstallationState {
             active_unit: Some(journal.candidate_unit.clone()),
-            platform: candidate_launcher.platform.clone(),
+            platform: PlatformState {
+                layout_unit: Some(journal.candidate_unit.clone()),
+                launcher_unit: journal
+                    .target_platform
+                    .launcher_unit
+                    .as_ref()
+                    .map(|_| journal.candidate_unit.clone()),
+                ..candidate_launcher.platform.clone()
+            },
         };
-        let candidate_running = InstallationState {
+        let candidate_manager = InstallationState {
+            active_unit: Some(journal.candidate_unit.clone()),
+            platform: journal.transition_states.candidate_manager.clone(),
+        };
+        let candidate_autostart = InstallationState {
+            active_unit: Some(journal.candidate_unit.clone()),
+            platform: journal.transition_states.candidate_autostart.clone(),
+        };
+        let candidate_runtime = InstallationState {
             active_unit: Some(journal.candidate_unit.clone()),
             platform: journal.target_platform.clone(),
         };
+        let prior_active_restored = InstallationState {
+            active_unit: journal.prior_active_unit.clone(),
+            platform: PlatformState {
+                layout_unit: journal.prior_active_unit.clone(),
+                launcher_unit: journal
+                    .target_platform
+                    .launcher_unit
+                    .as_ref()
+                    .and(journal.prior_active_unit.clone()),
+                ..candidate_active.platform.clone()
+            },
+        };
+        let prior_launcher_restored = InstallationState {
+            active_unit: journal.prior_active_unit.clone(),
+            platform: PlatformState {
+                launcher_unit: journal.prior_platform.launcher_unit.clone(),
+                ..prior_active_restored.platform.clone()
+            },
+        };
+        let prior_layout_restored = InstallationState {
+            active_unit: journal.prior_active_unit.clone(),
+            platform: PlatformState {
+                layout_unit: journal.prior_platform.layout_unit.clone(),
+                ..prior_launcher_restored.platform.clone()
+            },
+        };
+        let prior_manager = InstallationState {
+            active_unit: journal.prior_active_unit.clone(),
+            platform: journal.transition_states.prior_manager.clone(),
+        };
+        let prior_autostart = InstallationState {
+            active_unit: journal.prior_active_unit.clone(),
+            platform: journal.transition_states.prior_autostart.clone(),
+        };
         Self {
             prior,
-            prior_quiescent,
+            prior_unloaded,
+            candidate_layout,
             candidate_launcher,
             candidate_active,
-            candidate_running,
+            candidate_manager,
+            candidate_autostart,
+            candidate_runtime,
+            prior_active_restored,
+            prior_launcher_restored,
+            prior_layout_restored,
+            prior_manager,
+            prior_autostart,
         }
     }
 }
@@ -667,10 +1079,13 @@ fn next_forward(action: InstallAction) -> Result<InstallAction, InstallCoordinat
     match action {
         InstallAction::PreflightCandidate => Ok(InstallAction::UnloadPrior),
         InstallAction::UnloadPrior => Ok(InstallAction::ProvePriorGuardReleased),
-        InstallAction::ProvePriorGuardReleased => Ok(InstallAction::InstallCandidateLauncher),
+        InstallAction::ProvePriorGuardReleased => Ok(InstallAction::InstallCandidateLayout),
+        InstallAction::InstallCandidateLayout => Ok(InstallAction::InstallCandidateLauncher),
         InstallAction::InstallCandidateLauncher => Ok(InstallAction::SwitchToCandidate),
-        InstallAction::SwitchToCandidate => Ok(InstallAction::ReloadCandidate),
-        InstallAction::ReloadCandidate => Ok(InstallAction::ProveCandidate),
+        InstallAction::SwitchToCandidate => Ok(InstallAction::ReloadCandidateManager),
+        InstallAction::ReloadCandidateManager => Ok(InstallAction::RestoreCandidateAutostart),
+        InstallAction::RestoreCandidateAutostart => Ok(InstallAction::RestoreCandidateRuntime),
+        InstallAction::RestoreCandidateRuntime => Ok(InstallAction::ProveCandidate),
         InstallAction::ProveCandidate => Ok(InstallAction::Commit),
         _ => Err(InstallCoordinatorError::InvalidAction(action)),
     }
@@ -678,11 +1093,16 @@ fn next_forward(action: InstallAction) -> Result<InstallAction, InstallCoordinat
 
 fn next_rollback(action: InstallAction) -> Result<InstallAction, InstallCoordinatorError> {
     match action {
-        InstallAction::UnloadCandidate => Ok(InstallAction::ProveCandidateGuardReleased),
+        InstallAction::UnloadCandidateRuntime => Ok(InstallAction::UnloadCandidateAutostart),
+        InstallAction::UnloadCandidateAutostart => Ok(InstallAction::UnloadCandidateManager),
+        InstallAction::UnloadCandidateManager => Ok(InstallAction::ProveCandidateGuardReleased),
         InstallAction::ProveCandidateGuardReleased => Ok(InstallAction::RestorePriorActive),
         InstallAction::RestorePriorActive => Ok(InstallAction::RestorePriorLauncher),
-        InstallAction::RestorePriorLauncher => Ok(InstallAction::ReloadPrior),
-        InstallAction::ReloadPrior => Ok(InstallAction::ProvePrior),
+        InstallAction::RestorePriorLauncher => Ok(InstallAction::RestorePriorLayout),
+        InstallAction::RestorePriorLayout => Ok(InstallAction::ReloadPriorManager),
+        InstallAction::ReloadPriorManager => Ok(InstallAction::RestorePriorAutostart),
+        InstallAction::RestorePriorAutostart => Ok(InstallAction::RestorePriorRuntime),
+        InstallAction::RestorePriorRuntime => Ok(InstallAction::ProvePrior),
         InstallAction::ProvePrior => Ok(InstallAction::FinishRollback),
         _ => Err(InstallCoordinatorError::InvalidAction(action)),
     }

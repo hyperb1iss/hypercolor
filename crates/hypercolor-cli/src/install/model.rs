@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const INSTALL_JOURNAL_SCHEMA_VERSION: u32 = 1;
+pub const INSTALL_JOURNAL_SCHEMA_VERSION: u32 = 2;
 pub const MAX_INSTALL_JOURNAL_BYTES: usize = 64 * 1024;
 pub const MAX_PLATFORM_TRANSACTION_RECORD_BYTES: usize = 12 * 1024;
+pub const MAX_LAYOUT_OPERATIONS: u16 = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
@@ -91,6 +92,7 @@ impl<'de> Deserialize<'de> for InstallTransactionId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformState {
+    pub layout_unit: Option<UnitId>,
     pub launcher_unit: Option<UnitId>,
     pub loaded: bool,
     pub running_unit: Option<UnitId>,
@@ -98,16 +100,6 @@ pub struct PlatformState {
 }
 
 impl PlatformState {
-    #[must_use]
-    pub fn quiescent(&self) -> Self {
-        Self {
-            launcher_unit: self.launcher_unit.clone(),
-            loaded: false,
-            running_unit: None,
-            autostart_enabled: self.autostart_enabled,
-        }
-    }
-
     pub fn validate(&self) -> Result<(), InstallModelError> {
         if self.running_unit.is_some() && !self.loaded {
             return Err(InstallModelError::RunningWithoutLoadedLauncher);
@@ -125,11 +117,82 @@ pub struct InstallationState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformCheckpoint {
     PriorOriginal,
-    PriorQuiescent,
+    PriorUnloaded,
+    CandidateLayout,
     CandidateLauncher,
     CandidateActive,
-    CandidateRunning,
+    CandidateManager,
+    CandidateAutostart,
+    CandidateRuntime,
+    PriorActiveRestored,
+    PriorLauncherRestored,
+    PriorLayoutRestored,
+    PriorManager,
+    PriorAutostart,
     PriorRestored,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformTransitionStates {
+    pub prior_unloaded: PlatformState,
+    pub candidate_manager: PlatformState,
+    pub candidate_autostart: PlatformState,
+    pub prior_manager: PlatformState,
+    pub prior_autostart: PlatformState,
+}
+
+impl PlatformTransitionStates {
+    pub fn validate(
+        &self,
+        prior: &PlatformState,
+        target: &PlatformState,
+    ) -> Result<(), InstallModelError> {
+        for state in [
+            &self.prior_unloaded,
+            &self.candidate_manager,
+            &self.candidate_autostart,
+            &self.prior_manager,
+            &self.prior_autostart,
+        ] {
+            state.validate()?;
+        }
+
+        if self.prior_unloaded.layout_unit != prior.layout_unit
+            || self.prior_unloaded.launcher_unit != prior.launcher_unit
+            || self.prior_unloaded.loaded
+            || self.prior_unloaded.running_unit.is_some()
+            || self.prior_unloaded.autostart_enabled != prior.autostart_enabled
+            || self.candidate_manager.layout_unit != target.layout_unit
+            || self.candidate_manager.launcher_unit != target.launcher_unit
+            || self.candidate_manager.autostart_enabled != prior.autostart_enabled
+            || self.candidate_manager.running_unit.is_some()
+            || self.candidate_autostart.layout_unit != target.layout_unit
+            || self.candidate_autostart.launcher_unit != target.launcher_unit
+            || self.candidate_autostart.loaded != self.candidate_manager.loaded
+            || self.candidate_autostart.running_unit != self.candidate_manager.running_unit
+            || self.candidate_autostart.autostart_enabled != target.autostart_enabled
+            || self.prior_manager.layout_unit != prior.layout_unit
+            || self.prior_manager.launcher_unit != prior.launcher_unit
+            || self.prior_manager.autostart_enabled != target.autostart_enabled
+            || self.prior_manager.running_unit.is_some()
+            || self.prior_autostart.layout_unit != prior.layout_unit
+            || self.prior_autostart.launcher_unit != prior.launcher_unit
+            || self.prior_autostart.loaded != self.prior_manager.loaded
+            || self.prior_autostart.running_unit != self.prior_manager.running_unit
+            || self.prior_autostart.autostart_enabled != prior.autostart_enabled
+        {
+            return Err(InstallModelError::InvalidTransitionStates);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedPlatformTransaction {
+    pub record: PlatformTransactionRecord,
+    pub transitions: PlatformTransitionStates,
+    pub layout_operation_count: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,18 +275,35 @@ pub enum InstallAction {
     PreflightCandidate,
     UnloadPrior,
     ProvePriorGuardReleased,
+    InstallCandidateLayout,
     InstallCandidateLauncher,
     SwitchToCandidate,
-    ReloadCandidate,
+    ReloadCandidateManager,
+    RestoreCandidateAutostart,
+    RestoreCandidateRuntime,
     ProveCandidate,
     Commit,
-    UnloadCandidate,
+    UnloadCandidateRuntime,
+    UnloadCandidateAutostart,
+    UnloadCandidateManager,
     ProveCandidateGuardReleased,
     RestorePriorActive,
     RestorePriorLauncher,
-    ReloadPrior,
+    RestorePriorLayout,
+    ReloadPriorManager,
+    RestorePriorAutostart,
+    RestorePriorRuntime,
     ProvePrior,
     FinishRollback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallTargetPolicy {
+    Preserve,
+    EnableOnFirstInstall,
+    EnabledAndRunning,
+    Disabled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,8 +316,12 @@ pub struct InstallJournalV1 {
     pub next_action: Option<InstallAction>,
     pub prior_active_unit: Option<UnitId>,
     pub candidate_unit: UnitId,
+    pub target_policy: InstallTargetPolicy,
     pub prior_platform: PlatformState,
     pub target_platform: PlatformState,
+    pub transition_states: PlatformTransitionStates,
+    pub layout_operation_count: u16,
+    pub layout_operation_index: u16,
     pub platform_record: PlatformTransactionRecord,
     pub failure: Option<String>,
 }
@@ -248,19 +332,18 @@ impl InstallJournalV1 {
         prior_active_unit: Option<UnitId>,
         candidate_unit: UnitId,
         prior_platform: PlatformState,
+        target_policy: InstallTargetPolicy,
+        transition_states: PlatformTransitionStates,
+        layout_operation_count: u16,
         platform_record: PlatformTransactionRecord,
     ) -> Result<Self, InstallModelError> {
         prior_platform.validate()?;
         platform_record.validate()?;
-        let target_platform = PlatformState {
-            launcher_unit: Some(candidate_unit.clone()),
-            loaded: prior_platform.loaded,
-            running_unit: prior_platform
-                .running_unit
-                .as_ref()
-                .map(|_| candidate_unit.clone()),
-            autostart_enabled: prior_platform.autostart_enabled,
-        };
+        let target_platform = target_policy.target_platform(&prior_platform, &candidate_unit);
+        transition_states.validate(&prior_platform, &target_platform)?;
+        if layout_operation_count == 0 || layout_operation_count > MAX_LAYOUT_OPERATIONS {
+            return Err(InstallModelError::InvalidLayoutOperationCount);
+        }
         Ok(Self {
             schema_version: INSTALL_JOURNAL_SCHEMA_VERSION,
             revision: 1,
@@ -269,8 +352,12 @@ impl InstallJournalV1 {
             next_action: Some(InstallAction::PreflightCandidate),
             prior_active_unit,
             candidate_unit,
+            target_policy,
             prior_platform,
             target_platform,
+            transition_states,
+            layout_operation_count,
+            layout_operation_index: 0,
             platform_record,
             failure: None,
         })
@@ -286,20 +373,58 @@ impl InstallJournalV1 {
             return Err(InstallModelError::ZeroJournalRevision);
         }
         self.prior_platform.validate()?;
-        self.target_platform.validate()?;
         self.platform_record.validate()?;
-        if self.target_platform.launcher_unit.as_ref() != Some(&self.candidate_unit)
-            || self.target_platform.loaded != self.prior_platform.loaded
-            || self
-                .target_platform
-                .running_unit
-                .as_ref()
-                .is_some_and(|unit| unit != &self.candidate_unit)
-            || self.target_platform.running_unit.is_some()
-                != self.prior_platform.running_unit.is_some()
-            || self.target_platform.autostart_enabled != self.prior_platform.autostart_enabled
-        {
+        let expected_target = self
+            .target_policy
+            .target_platform(&self.prior_platform, &self.candidate_unit);
+        if self.target_platform != expected_target {
             return Err(InstallModelError::InvalidTargetState);
+        }
+        self.target_platform.validate()?;
+        self.transition_states
+            .validate(&self.prior_platform, &self.target_platform)?;
+        if self.layout_operation_count == 0
+            || self.layout_operation_count > MAX_LAYOUT_OPERATIONS
+            || self.layout_operation_index > self.layout_operation_count
+        {
+            return Err(InstallModelError::InvalidLayoutOperationCount);
+        }
+        let layout_cursor_matches_action = match (self.disposition, self.next_action) {
+            (
+                InstallDisposition::Forward,
+                Some(
+                    InstallAction::PreflightCandidate
+                    | InstallAction::UnloadPrior
+                    | InstallAction::ProvePriorGuardReleased,
+                ),
+            ) => self.layout_operation_index == 0,
+            (InstallDisposition::Forward, Some(InstallAction::InstallCandidateLayout)) => {
+                self.layout_operation_index < self.layout_operation_count
+            }
+            (InstallDisposition::Forward | InstallDisposition::Committed, _) => {
+                self.layout_operation_index == self.layout_operation_count
+            }
+            (InstallDisposition::Rollback, Some(InstallAction::RestorePriorLayout)) => {
+                self.layout_operation_index > 0
+            }
+            (
+                InstallDisposition::Rollback,
+                Some(
+                    InstallAction::ReloadPriorManager
+                    | InstallAction::RestorePriorAutostart
+                    | InstallAction::RestorePriorRuntime
+                    | InstallAction::ProvePrior
+                    | InstallAction::FinishRollback,
+                ),
+            )
+            | (InstallDisposition::RolledBack, None) => self.layout_operation_index == 0,
+            (InstallDisposition::Rollback, Some(_)) => {
+                self.layout_operation_index == self.layout_operation_count
+            }
+            _ => true,
+        };
+        if !layout_cursor_matches_action {
+            return Err(InstallModelError::InvalidLayoutOperationCursor);
         }
         let terminal = matches!(
             self.disposition,
@@ -352,6 +477,41 @@ impl InstallJournalV1 {
     }
 }
 
+impl InstallTargetPolicy {
+    pub(super) fn target_platform(
+        self,
+        prior: &PlatformState,
+        candidate: &UnitId,
+    ) -> PlatformState {
+        let (launcher_unit, loaded, running, autostart_enabled) = match self {
+            Self::Preserve => (
+                prior.launcher_unit.as_ref().map(|_| candidate.clone()),
+                prior.loaded,
+                prior.running_unit.is_some(),
+                prior.autostart_enabled,
+            ),
+            Self::EnableOnFirstInstall if prior.launcher_unit.is_none() => {
+                (Some(candidate.clone()), true, true, true)
+            }
+            Self::EnableOnFirstInstall => (
+                Some(candidate.clone()),
+                prior.loaded,
+                prior.running_unit.is_some(),
+                prior.autostart_enabled,
+            ),
+            Self::EnabledAndRunning => (Some(candidate.clone()), true, true, true),
+            Self::Disabled => (Some(candidate.clone()), false, false, false),
+        };
+        PlatformState {
+            layout_unit: Some(candidate.clone()),
+            launcher_unit,
+            loaded,
+            running_unit: running.then(|| candidate.clone()),
+            autostart_enabled,
+        }
+    }
+}
+
 impl InstallAction {
     fn is_forward(self) -> bool {
         matches!(
@@ -359,9 +519,12 @@ impl InstallAction {
             Self::PreflightCandidate
                 | Self::UnloadPrior
                 | Self::ProvePriorGuardReleased
+                | Self::InstallCandidateLayout
                 | Self::InstallCandidateLauncher
                 | Self::SwitchToCandidate
-                | Self::ReloadCandidate
+                | Self::ReloadCandidateManager
+                | Self::RestoreCandidateAutostart
+                | Self::RestoreCandidateRuntime
                 | Self::ProveCandidate
                 | Self::Commit
         )
@@ -370,11 +533,16 @@ impl InstallAction {
     fn is_rollback(self) -> bool {
         matches!(
             self,
-            Self::UnloadCandidate
+            Self::UnloadCandidateRuntime
+                | Self::UnloadCandidateAutostart
+                | Self::UnloadCandidateManager
                 | Self::ProveCandidateGuardReleased
                 | Self::RestorePriorActive
                 | Self::RestorePriorLauncher
-                | Self::ReloadPrior
+                | Self::RestorePriorLayout
+                | Self::ReloadPriorManager
+                | Self::RestorePriorAutostart
+                | Self::RestorePriorRuntime
                 | Self::ProvePrior
                 | Self::FinishRollback
         )
@@ -385,6 +553,7 @@ impl InstallAction {
 pub struct InstallRequest {
     pub transaction_id: InstallTransactionId,
     pub candidate: UnitRecord,
+    pub target_policy: InstallTargetPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,6 +581,12 @@ pub enum InstallModelError {
     ZeroJournalRevision,
     #[error("install journal target state does not name the candidate unit")]
     InvalidTargetState,
+    #[error("install journal platform transition states are inconsistent")]
+    InvalidTransitionStates,
+    #[error("install journal layout operation cursor is invalid")]
+    InvalidLayoutOperationCount,
+    #[error("install journal action is inconsistent with its layout operation cursor")]
+    InvalidLayoutOperationCursor,
     #[error("install journal terminal disposition and next action disagree")]
     InvalidTerminalState,
     #[error("install journal disposition and next action disagree")]
