@@ -2,21 +2,13 @@
 
 > Natural language meets photons. The Model Context Protocol surface for AI-driven RGB control.
 
-**Status:** Implemented
+**Status:** Superseded by [Spec 78](78-api-resource-model.md)
 **Crate:** `hypercolor-daemon`
 **Module path:** `hypercolor_daemon::mcp`
 
-> **Note (2026-05-16):** The shipping daemon exposes **16 tools** and 5 resources.
-> This spec was written before `get_devices`, `stop_effect`, `get_audio_state`,
-> `get_sensor_data`, `set_display_face`, `set_profile`, `get_layout`, and `get_status`
-> were finalized in their current forms. Several tool names in this spec differ from
-> the shipped names (e.g. `list_devices` shipped as `get_devices`, `apply_profile` as
-> `set_profile`, `get_state` as `get_status`). The shipped tool list (from
-> `build_tool_definitions()`) is: `set_effect`, `list_effects`, `stop_effect`,
-> `set_color`, `get_devices`, `set_brightness`, `get_status`, `activate_scene`,
-> `list_scenes`, `create_scene`, `get_audio_state`, `get_sensor_data`,
-> `set_display_face`, `set_profile`, `get_layout`, `diagnose`.
-> Resource count of 5 (`state`, `devices`, `effects`, `profiles`, `audio`) is correct.
+> **Historical note:** This document records the original MCP design. Spec 78
+> replaced its tool and resource vocabulary with the canonical 17-tool surface.
+> Use the [current MCP reference](../content/api/mcp.md) for the shipping contract.
 
 ---
 
@@ -1199,24 +1191,24 @@ The following 16 tools are shipped in v0.1 (from `build_tool_definitions()`).
 Tool names and descriptions in earlier sections of this spec use pre-release names
 that differ in some cases — the table below reflects the shipped names.
 
-| Tool                 | Read-only | Description                                        |
-| -------------------- | --------- | -------------------------------------------------- |
-| `set_effect`         | No        | Apply effect by name or natural language           |
-| `list_effects`       | Yes       | Browse/filter the effect catalog                   |
-| `stop_effect`        | No        | Stop the active effect and clear all LEDs          |
-| `set_color`          | No        | Set solid color by name, hex, or description       |
-| `get_devices`        | Yes       | Enumerate connected devices                        |
-| `set_brightness`     | No        | Global or per-device brightness                    |
-| `get_status`         | Yes       | Current system state snapshot                      |
-| `activate_scene`     | No        | Activate a saved scene by ID or name               |
-| `list_scenes`        | Yes       | List all saved scenes                              |
-| `create_scene`       | No        | Create a new scene from current state              |
-| `get_audio_state`    | Yes       | Current audio analysis snapshot                    |
-| `get_sensor_data`    | Yes       | System telemetry (GPU, CPU, temperatures)          |
-| `set_display_face`   | No        | Set the active face on an LCD display device       |
-| `set_profile`        | No        | Activate a saved lighting profile                  |
-| `get_layout`         | Yes       | Current spatial LED layout                         |
-| `diagnose`           | Yes       | Troubleshoot device and daemon issues              |
+| Tool               | Read-only | Description                                  |
+| ------------------ | --------- | -------------------------------------------- |
+| `set_effect`       | No        | Apply effect by name or natural language     |
+| `list_effects`     | Yes       | Browse/filter the effect catalog             |
+| `stop_effect`      | No        | Stop the active effect and clear all LEDs    |
+| `set_color`        | No        | Set solid color by name, hex, or description |
+| `get_devices`      | Yes       | Enumerate connected devices                  |
+| `set_brightness`   | No        | Global or per-device brightness              |
+| `get_status`       | Yes       | Current system state snapshot                |
+| `activate_scene`   | No        | Activate a saved scene by ID or name         |
+| `list_scenes`      | Yes       | List all saved scenes                        |
+| `create_scene`     | No        | Create a new scene from current state        |
+| `get_audio_state`  | Yes       | Current audio analysis snapshot              |
+| `get_sensor_data`  | Yes       | System telemetry (GPU, CPU, temperatures)    |
+| `set_display_face` | No        | Set the active face on an LCD display device |
+| `set_profile`      | No        | Activate a saved lighting profile            |
+| `get_layout`       | Yes       | Current spatial LED layout                   |
+| `diagnose`         | Yes       | Troubleshoot device and daemon issues        |
 
 ---
 
