@@ -259,7 +259,7 @@ impl PlatformTransitionStates {
             || self.candidate_autostart.autostart_enabled != target.autostart_enabled
             || self.prior_manager.layout_unit != prior.layout_unit
             || self.prior_manager.launcher_unit != prior.launcher_unit
-            || self.prior_manager.autostart_enabled != target.autostart_enabled
+            || self.prior_manager.autostart_enabled != prior.autostart_enabled
             || self.prior_manager.running_unit.is_some()
             || self.prior_autostart.layout_unit != prior.layout_unit
             || self.prior_autostart.launcher_unit != prior.launcher_unit

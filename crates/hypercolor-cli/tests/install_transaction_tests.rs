@@ -167,7 +167,7 @@ impl FakePlatform {
         let prior_manager = PlatformState {
             loaded: prior.loaded,
             running_unit: None,
-            autostart_enabled: target.autostart_enabled,
+            autostart_enabled: prior.autostart_enabled,
             ..prior.clone()
         };
         let prior_autostart = PlatformState {
@@ -1097,6 +1097,10 @@ fn persisted_transition_plan_rejects_corrupt_intermediate_states() {
     corrupted.transition_states.prior_manager.running_unit = Some(candidate);
     corruptions.push(corrupted);
 
+    let mut corrupted = journal.clone();
+    corrupted.transition_states.prior_manager.autostart_enabled = false;
+    corruptions.push(corrupted);
+
     let mut corrupted = journal;
     corrupted
         .transition_states
@@ -1110,6 +1114,29 @@ fn persisted_transition_plan_rejects_corrupt_intermediate_states() {
             Err(InstallModelError::InvalidTransitionStates)
         );
     }
+}
+
+#[test]
+fn rollback_manager_reload_preserves_prior_autostart() {
+    let candidate = UnitId::new(CANDIDATE_ID).expect("candidate unit ID");
+    let prior = PlatformState {
+        layout_unit: None,
+        launcher_unit: None,
+        loaded: false,
+        running_unit: None,
+        autostart_enabled: false,
+    };
+    let journal = new_journal(
+        InstallTransactionId::new("manager-autostart-boundary").expect("transaction ID"),
+        None,
+        candidate,
+        prior,
+        InstallTargetPolicy::EnableOnFirstInstall,
+    );
+
+    assert!(journal.target_platform.autostart_enabled);
+    assert!(!journal.transition_states.prior_manager.autostart_enabled);
+    assert!(!journal.transition_states.prior_autostart.autostart_enabled);
 }
 
 #[test]
@@ -1957,57 +1984,76 @@ fn every_platform_rollback_failure_replays_from_exact_before_state() {
 }
 
 #[test]
-fn rollback_autostart_actions_fail_and_crash_replay_under_disabled_policy() {
-    for action in [
-        InstallAction::UnloadCandidateAutostart,
-        InstallAction::RestorePriorAutostart,
-    ] {
-        for injection in [InjectionKind::Fail, InjectionKind::PanicAfter] {
-            let fixture = Fixture::new();
-            let prior = fixture.prior_state();
-            let mut platform =
-                seed_rollback_for_policy(&fixture, action, InstallTargetPolicy::Disabled);
-            platform.inject(action, injection);
+fn rollback_candidate_autostart_failure_and_crash_replay_under_disabled_policy() {
+    let action = InstallAction::UnloadCandidateAutostart;
+    for injection in [InjectionKind::Fail, InjectionKind::PanicAfter] {
+        let fixture = Fixture::new();
+        let prior = fixture.prior_state();
+        let mut platform =
+            seed_rollback_for_policy(&fixture, action, InstallTargetPolicy::Disabled);
+        platform.inject(action, injection);
 
-            if injection == InjectionKind::Fail {
-                let error = InstallCoordinator::new(&fixture.store, &mut platform)
-                    .recover()
-                    .expect_err("rollback autostart action must fail once");
-                assert!(matches!(
-                    error,
-                    InstallCoordinatorError::Platform {
-                        action: failed_action,
-                        ..
-                    } if failed_action == action
-                ));
-                let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
-                    .recover()
-                    .expect("recover rollback autostart failure")
-                    .expect("rollback outcome");
-                assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
-            } else {
-                let crashed = catch_unwind(AssertUnwindSafe(|| {
-                    drop(InstallCoordinator::new(&fixture.store, &mut platform).recover());
-                }));
-                assert!(crashed.is_err(), "{action:?} must inject a crash");
-                let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
-                    .recover()
-                    .expect("recover rollback autostart crash")
-                    .expect("rollback outcome");
-                assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
-                assert_eq!(
-                    platform
-                        .effects
-                        .iter()
-                        .filter(|effect| effect.action == action)
-                        .count(),
-                    1,
-                    "{action:?} must not repeat"
-                );
-            }
-            assert_eq!(platform.state, prior);
+        if injection == InjectionKind::Fail {
+            let error = InstallCoordinator::new(&fixture.store, &mut platform)
+                .recover()
+                .expect_err("rollback autostart action must fail once");
+            assert!(matches!(
+                error,
+                InstallCoordinatorError::Platform {
+                    action: failed_action,
+                    ..
+                } if failed_action == action
+            ));
+            let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+                .recover()
+                .expect("recover rollback autostart failure")
+                .expect("rollback outcome");
+            assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+        } else {
+            let crashed = catch_unwind(AssertUnwindSafe(|| {
+                drop(InstallCoordinator::new(&fixture.store, &mut platform).recover());
+            }));
+            assert!(crashed.is_err(), "{action:?} must inject a crash");
+            let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+                .recover()
+                .expect("recover rollback autostart crash")
+                .expect("rollback outcome");
+            assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+            assert_eq!(
+                platform
+                    .effects
+                    .iter()
+                    .filter(|effect| effect.action == action)
+                    .count(),
+                1,
+                "{action:?} must not repeat"
+            );
         }
+        assert_eq!(platform.state, prior);
     }
+}
+
+#[test]
+fn rollback_prior_autostart_skips_a_state_neutral_platform_effect() {
+    let action = InstallAction::RestorePriorAutostart;
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = seed_rollback_for_policy(&fixture, action, InstallTargetPolicy::Disabled);
+    platform.inject(action, InjectionKind::Fail);
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect("recover state-neutral prior autostart")
+        .expect("rollback outcome");
+
+    assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(platform.state, prior);
+    assert!(
+        platform
+            .effects
+            .iter()
+            .all(|effect| effect.action != action)
+    );
 }
 
 #[test]
