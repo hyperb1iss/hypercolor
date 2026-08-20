@@ -822,6 +822,74 @@ fn seed_rollback_for_policy(
     platform
 }
 
+fn seed_state_neutral_rollback_manager(fixture: &Fixture, action: InstallAction) -> FakePlatform {
+    assert!(matches!(
+        action,
+        InstallAction::UnloadCandidateManager | InstallAction::ReloadPriorManager
+    ));
+    let prior = PlatformState {
+        layout_unit: Some(fixture.prior.id().clone()),
+        launcher_unit: Some(fixture.prior.id().clone()),
+        loaded: false,
+        running_unit: None,
+        autostart_enabled: false,
+    };
+    let target = target_state(
+        &prior,
+        fixture.candidate.id(),
+        InstallTargetPolicy::Disabled,
+    );
+    let transitions = FakePlatform::transitions(&prior, &target);
+    let candidate_active = FakePlatform::candidate_active(&prior, &target);
+    let prior_layout_restored = PlatformState {
+        layout_unit: prior.layout_unit.clone(),
+        launcher_unit: prior.launcher_unit.clone(),
+        ..candidate_active.clone()
+    };
+    let (active, state, layout_operation_index, candidate_launcher_installed) = match action {
+        InstallAction::UnloadCandidateManager => (
+            Some(fixture.candidate.id()),
+            transitions.candidate_manager.clone(),
+            3,
+            true,
+        ),
+        InstallAction::ReloadPriorManager => {
+            (Some(fixture.prior.id()), prior_layout_restored, 0, false)
+        }
+        _ => unreachable!("manager action checked above"),
+    };
+    let mut journal = InstallJournalV1::new(
+        InstallTransactionId::new("state-neutral-rollback-manager").expect("transaction ID"),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
+        prior,
+        InstallTargetPolicy::Disabled,
+        transitions,
+        3,
+        FakePlatform::transaction_record(),
+    )
+    .expect("state-neutral rollback journal");
+    journal.revision = 20;
+    journal.disposition = InstallDisposition::Rollback;
+    journal.next_action = Some(action);
+    journal.failure = Some("seeded state-neutral rollback".to_owned());
+    journal.layout_operation_index = layout_operation_index;
+    let lock = fixture.store.acquire_lock().expect("seed rollback lock");
+    fixture
+        .store
+        .set_active(active, &lock)
+        .expect("seed rollback active unit");
+    fixture
+        .store
+        .write_journal(&journal, &lock)
+        .expect("seed rollback journal");
+    drop(lock);
+    let mut platform = FakePlatform::new(state, &fixture.store);
+    platform.layout_operation_progress = layout_operation_index;
+    platform.candidate_launcher_installed = candidate_launcher_installed;
+    platform
+}
+
 #[test]
 fn successful_install_preserves_write_ahead_order_and_private_journal() {
     let fixture = Fixture::new();
@@ -1266,6 +1334,153 @@ fn enable_on_first_install_preserves_an_existing_disabled_launcher() {
 }
 
 #[test]
+fn state_neutral_manager_reload_is_still_invoked() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    let request = InstallRequest {
+        transaction_id: InstallTransactionId::new("state-neutral-manager").expect("transaction ID"),
+        candidate: fixture.candidate.clone(),
+        target_policy: InstallTargetPolicy::Disabled,
+    };
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .install(request)
+        .expect("state-neutral manager transaction");
+
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::ReloadCandidateManager)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn state_neutral_manager_reload_replays_after_crash() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    platform.inject(
+        InstallAction::ReloadCandidateManager,
+        InjectionKind::PanicAfter,
+    );
+    let request = InstallRequest {
+        transaction_id: InstallTransactionId::new("state-neutral-manager-crash")
+            .expect("transaction ID"),
+        candidate: fixture.candidate.clone(),
+        target_policy: InstallTargetPolicy::Disabled,
+    };
+
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        drop(InstallCoordinator::new(&fixture.store, &mut platform).install(request));
+    }));
+    assert!(crashed.is_err());
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect("recover state-neutral manager command")
+        .expect("recovered outcome");
+
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::ReloadCandidateManager)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn state_neutral_rollback_manager_commands_replay_after_crash() {
+    for action in [
+        InstallAction::UnloadCandidateManager,
+        InstallAction::ReloadPriorManager,
+    ] {
+        let fixture = Fixture::new();
+        let mut platform = seed_state_neutral_rollback_manager(&fixture, action);
+        platform.inject(action, InjectionKind::PanicAfter);
+
+        let crashed = catch_unwind(AssertUnwindSafe(|| {
+            drop(InstallCoordinator::new(&fixture.store, &mut platform).recover());
+        }));
+        assert!(crashed.is_err(), "{action:?} must inject a crash");
+
+        let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+            .recover()
+            .expect("recover state-neutral rollback manager command")
+            .expect("rollback outcome");
+
+        assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+        assert_eq!(
+            platform
+                .effects
+                .iter()
+                .filter(|effect| effect.action == action)
+                .count(),
+            2,
+            "{action:?} must replay"
+        );
+    }
+}
+
+#[test]
+fn idempotent_manager_command_rejects_exact_third_state_without_effects() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let target = target_state(
+        &prior,
+        fixture.candidate.id(),
+        InstallTargetPolicy::Disabled,
+    );
+    let candidate_active = FakePlatform::candidate_active(&prior, &target);
+    let mut journal = new_journal(
+        InstallTransactionId::new("manager-third-state").expect("transaction ID"),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
+        prior,
+        InstallTargetPolicy::Disabled,
+    );
+    journal.revision = 8;
+    journal.next_action = Some(InstallAction::ReloadCandidateManager);
+    journal.layout_operation_index = journal.layout_operation_count;
+    let lock = fixture.store.acquire_lock().expect("seed manager lock");
+    fixture
+        .store
+        .set_active(Some(fixture.candidate.id()), &lock)
+        .expect("seed candidate active unit");
+    fixture
+        .store
+        .write_journal(&journal, &lock)
+        .expect("seed manager journal");
+    drop(lock);
+    let mut platform = FakePlatform::new(candidate_active, &fixture.store);
+    platform.layout_operation_progress = journal.layout_operation_count;
+    platform.candidate_launcher_installed = true;
+    platform.exact_state_valid = false;
+
+    let error = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect_err("exact third state must fail closed");
+
+    assert!(matches!(
+        error,
+        InstallCoordinatorError::StateDrift {
+            action: InstallAction::ReloadCandidateManager,
+            ..
+        }
+    ));
+    assert!(platform.effects.is_empty());
+    assert_eq!(
+        fixture.journal().next_action,
+        Some(InstallAction::ReloadCandidateManager)
+    );
+}
+
+#[test]
 fn every_platform_forward_failure_rolls_back_exact_prior_state() {
     for action in [
         InstallAction::PreflightCandidate,
@@ -1397,10 +1612,12 @@ fn crash_after_platform_effect_is_reconciled_without_repeating_mutation() {
                 .count(),
             if action == InstallAction::InstallCandidateLayout {
                 3
+            } else if action == InstallAction::ReloadCandidateManager {
+                2
             } else {
                 1
             },
-            "{action:?} must not repeat"
+            "{action:?} replay count"
         );
         if action == InstallAction::RestoreCandidateRuntime {
             assert_eq!(
@@ -1889,7 +2106,7 @@ fn rollback_active_switch_failure_replays_after_directory_is_restored() {
 }
 
 #[test]
-fn crash_after_rollback_mutation_is_reconciled_without_repeating_it() {
+fn crash_after_rollback_mutation_replays_by_action_policy() {
     for action in [
         InstallAction::UnloadCandidateRuntime,
         InstallAction::UnloadCandidateManager,
@@ -1921,10 +2138,15 @@ fn crash_after_rollback_mutation_is_reconciled_without_repeating_it() {
                 .count(),
             if action == InstallAction::RestorePriorLayout {
                 3
+            } else if matches!(
+                action,
+                InstallAction::UnloadCandidateManager | InstallAction::ReloadPriorManager
+            ) {
+                2
             } else {
                 1
             },
-            "{action:?} must not repeat"
+            "{action:?} replay count"
         );
     }
 }

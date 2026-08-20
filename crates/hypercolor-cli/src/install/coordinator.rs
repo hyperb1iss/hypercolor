@@ -593,10 +593,11 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 .map_err(StepError::Fatal);
         }
 
-        if after_matches {
+        let replay_policy = ReplayPolicy::for_action(action);
+        if replay_policy == ReplayPolicy::ObservedTransition && after_matches {
             return Ok(());
         }
-        if !before_matches {
+        if !before_matches && !after_matches {
             return Err(StepError::Fatal(state_drift(
                 action,
                 transition.before,
@@ -875,6 +876,23 @@ enum TransitionKind {
     Preflight,
     GuardRelease,
     OwnerPublication,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayPolicy {
+    ObservedTransition,
+    IdempotentCommand,
+}
+
+impl ReplayPolicy {
+    fn for_action(action: InstallAction) -> Self {
+        match action {
+            InstallAction::ReloadCandidateManager
+            | InstallAction::UnloadCandidateManager
+            | InstallAction::ReloadPriorManager => Self::IdempotentCommand,
+            _ => Self::ObservedTransition,
+        }
+    }
 }
 
 impl Transition {
