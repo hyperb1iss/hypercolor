@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -81,8 +81,8 @@ pub struct HueBackend {
     config: HueConfig,
     credential_store: Arc<CredentialStore>,
     mdns_enabled: bool,
-    discovered: HashMap<DeviceId, HueDiscoveredBridge>,
-    bridges: HashMap<DeviceId, Arc<Mutex<HueBridgeState>>>,
+    discovered: StdRwLock<HashMap<DeviceId, HueDiscoveredBridge>>,
+    bridges: StdRwLock<HashMap<DeviceId, Arc<Mutex<HueBridgeState>>>>,
 }
 
 struct HueBridgeState {
@@ -116,14 +116,17 @@ impl HueBackend {
             config,
             credential_store,
             mdns_enabled,
-            discovered: HashMap::new(),
-            bridges: HashMap::new(),
+            discovered: StdRwLock::new(HashMap::new()),
+            bridges: StdRwLock::new(HashMap::new()),
         }
     }
 
     /// Seed the backend with a previously discovered bridge.
     pub fn remember_bridge(&mut self, bridge: HueDiscoveredBridge) {
-        self.discovered.insert(bridge.info.id, bridge);
+        self.discovered
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(bridge.info.id, bridge);
     }
 
     fn known_bridges(&self) -> Vec<HueKnownBridge> {
@@ -136,7 +139,12 @@ impl HueBackend {
             .map(|bridge| (bridge.ip, bridge))
             .collect();
 
-        for bridge in self.discovered.values() {
+        for bridge in self
+            .discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
             known
                 .entry(bridge.ip)
                 .and_modify(|existing| {
@@ -261,7 +269,7 @@ impl DeviceBackend for HueBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         let mut scanner = HueScanner::with_options(
             self.known_bridges(),
             Arc::clone(&self.credential_store),
@@ -270,7 +278,10 @@ impl DeviceBackend for HueBackend {
             self.config.entertainment_config.clone(),
         );
         let bridges = scanner.scan_bridges().await?;
-        self.discovered = bridges
+        *self
+            .discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = bridges
             .iter()
             .cloned()
             .map(|bridge| (bridge.info.id, bridge))
@@ -280,7 +291,13 @@ impl DeviceBackend for HueBackend {
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        let Some(bridge) = self.bridges.get(id) else {
+        let bridge = self
+            .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(bridge) = bridge else {
             return Ok(None);
         };
         Ok(Some(bridge.lock().await.info.clone()))
@@ -294,12 +311,23 @@ impl DeviceBackend for HueBackend {
         DeviceLifecyclePolicy::default().with_connect_timeout(HUE_CONNECT_TIMEOUT)
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if self.bridges.contains_key(id) {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if self
+            .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(id)
+        {
             return Ok(());
         }
 
-        let Some(discovered) = self.discovered.get(id).cloned() else {
+        let discovered = self
+            .discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(discovered) = discovered else {
             bail!("Hue bridge {id} is not known; run discovery first");
         };
 
@@ -386,19 +414,22 @@ impl DeviceBackend for HueBackend {
         let channel_gamuts =
             resolve_channel_gamuts(entertainment_config.channels.as_slice(), lights.as_slice());
 
-        self.discovered.insert(
-            *id,
-            HueDiscoveredBridge {
-                bridge_id: bridge_identity.bridge_id.clone(),
-                ip: discovered.ip,
-                api_port: discovered.api_port,
-                info: info.clone(),
-                entertainment_config: Some(entertainment_config.clone()),
-                lights,
-                connect_behavior: discovered.connect_behavior,
-                metadata: discovered.metadata,
-            },
-        );
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                *id,
+                HueDiscoveredBridge {
+                    bridge_id: bridge_identity.bridge_id.clone(),
+                    ip: discovered.ip,
+                    api_port: discovered.api_port,
+                    info: info.clone(),
+                    entertainment_config: Some(entertainment_config.clone()),
+                    lights,
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata,
+                },
+            );
 
         let channels = entertainment_config.channels.len();
         let bridge = HueBridgeState {
@@ -413,7 +444,10 @@ impl DeviceBackend for HueBackend {
             brightness: u8::MAX,
             last_size_mismatch_warn_at: None,
         };
-        self.bridges.insert(*id, Arc::new(Mutex::new(bridge)));
+        self.bridges
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, Arc::new(Mutex::new(bridge)));
 
         info!(
             device_id = %id,
@@ -425,8 +459,13 @@ impl DeviceBackend for HueBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        let Some(bridge) = self.bridges.remove(id) else {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        let bridge = self
+            .bridges
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        let Some(bridge) = bridge else {
             bail!("Hue bridge {id} is not connected");
         };
         let bridge = bridge.lock().await;
@@ -450,18 +489,24 @@ impl DeviceBackend for HueBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let bridge = self
             .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
+            .cloned()
             .with_context(|| format!("Hue bridge {id} is not connected"))?;
-        Self::write_bridge_colors(id, bridge, colors, None).await
+        Self::write_bridge_colors(id, &bridge, colors, None).await
     }
 
-    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
         let bridge = self
             .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
+            .cloned()
             .with_context(|| format!("Hue bridge {id} is not connected"))?;
         bridge.lock().await.brightness = brightness;
         Ok(())
@@ -476,12 +521,16 @@ impl DeviceBackend for HueBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.bridges.get(id).map(|bridge| {
-            Arc::new(HueFrameSink {
-                device_id: *id,
-                bridge: Arc::clone(bridge),
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|bridge| {
+                Arc::new(HueFrameSink {
+                    device_id: *id,
+                    bridge: Arc::clone(bridge),
+                }) as Arc<dyn DeviceFrameSink>
+            })
     }
 }
 

@@ -93,7 +93,7 @@ pub(super) async fn lifecycle_policy_for_device_info(
         return DeviceLifecyclePolicy::default();
     };
 
-    io.lifecycle_policy(info).await
+    io.lifecycle_policy(info)
 }
 
 pub(super) async fn lifecycle_policy_for_device(
@@ -118,10 +118,7 @@ pub(super) async fn sync_host_attachment_profile_config(
         return;
     };
 
-    if !backend
-        .supports_host_attachment_profiles(&tracked.info)
-        .await
-    {
+    if !backend.supports_host_attachment_profiles(&tracked.info) {
         runtime.usb_protocol_configs.remove_device(device_id).await;
         return;
     }
@@ -180,7 +177,7 @@ async fn connect_backend_device_inner(
         Some(timeout) => io.connect_with_refresh_timeout(device_id, timeout).await?,
         None => io.connect_with_refresh(device_id).await?,
     };
-    let frame_sink = io.frame_sink(device_id).await;
+    let frame_sink = io.frame_sink(device_id);
 
     let mut manager = runtime.backend_manager.lock().await;
     manager.set_cached_output_cadence(backend_id, device_id, output_cadence);
@@ -211,15 +208,13 @@ async fn remember_discovered_device(
         .unwrap_or_default();
     let claim = runtime.device_registry.claim_for_id(&device_id).await;
 
-    backend
-        .remember_discovered_device(&DiscoveredDevice {
-            fingerprint,
-            connect_behavior: tracked.connect_behavior,
-            info: tracked.info,
-            metadata,
-            claim,
-        })
-        .await;
+    backend.remember_discovered_device(&DiscoveredDevice {
+        fingerprint,
+        connect_behavior: tracked.connect_behavior,
+        info: tracked.info,
+        metadata,
+        claim,
+    });
 }
 
 pub(super) async fn disconnect_backend_device(

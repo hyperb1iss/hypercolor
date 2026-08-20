@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -68,7 +68,7 @@ struct StuckHandlerState {
 struct ShutdownCleanupBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 struct StaticHoldRecordingBackend {
@@ -86,19 +86,19 @@ impl DeviceBackend for StaticHoldRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if colors.iter().any(|color| *color != [0, 0, 0]) {
             bail!("static hold emitted a non-black color");
         }
@@ -117,7 +117,7 @@ impl ShutdownCleanupBackend {
         Self {
             expected_device_id,
             disconnects,
-            connected: false,
+            connected: AtomicBool::new(false),
         }
     }
 }
@@ -132,31 +132,31 @@ impl DeviceBackend for ShutdownCleanupBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("disconnect called while backend was not connected");
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }
 }
@@ -1046,7 +1046,7 @@ async fn daemon_shutdown_disconnects_renderable_devices() {
 
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(ShutdownCleanupBackend::new(
+        manager.register_backend(Arc::new(ShutdownCleanupBackend::new(
             device_id,
             Arc::clone(&disconnects),
         )));
@@ -1833,7 +1833,7 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
     .expect("late-connect layout should be valid");
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(StaticHoldRecordingBackend {
+        manager.register_backend(Arc::new(StaticHoldRecordingBackend {
             writes: Arc::clone(&writes),
             write_notify: Arc::clone(&write_notify),
         }));

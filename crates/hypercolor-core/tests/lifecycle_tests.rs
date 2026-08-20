@@ -427,7 +427,7 @@ fn apply_led_perceptual_compensation(mut color: [f32; 3]) -> [f32; 3] {
 
 struct RecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     fail_connect_attempts: Arc<AtomicUsize>,
 }
@@ -440,7 +440,7 @@ impl RecordingBackend {
     ) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             writes,
             fail_connect_attempts,
         }
@@ -457,14 +457,14 @@ impl DeviceBackend for RecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![device_info(
             self.expected_device_id,
             "Lifecycle Device",
         )])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -473,26 +473,26 @@ impl DeviceBackend for RecordingBackend {
             self.fail_connect_attempts.fetch_sub(1, Ordering::Relaxed);
             bail!("simulated connect failure");
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("disconnect called while not connected");
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("write while disconnected");
         }
         self.writes.lock().await.push(colors.to_vec());
@@ -639,7 +639,7 @@ async fn lifecycle_discovery_connect_and_frame_write() {
 
     let backend = RecordingBackend::new(device_id, Arc::clone(&writes), fail_connect_attempts);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let mut lifecycle = DeviceLifecycleManager::new();
     let actions = lifecycle.on_discovered(
@@ -1080,7 +1080,7 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         Arc::clone(&fail_connect_attempts),
     );
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let mut lifecycle = DeviceLifecycleManager::new();
     let actions = lifecycle.on_discovered(

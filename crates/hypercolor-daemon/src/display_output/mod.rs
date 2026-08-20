@@ -629,20 +629,18 @@ async fn reconcile_display_workers(
             continue;
         }
 
-        let backend_io = {
-            let manager = state.backend_manager.lock().await;
-            manager.backend_io(&target.backend_id)
+        let output_lane = {
+            let mut manager = state.backend_manager.lock().await;
+            manager.display_output_lane(&target.backend_id, target.device_id)
         };
 
-        match backend_io {
-            Some(backend_io) => {
-                let display_sink = backend_io.display_sink(target.device_id).await;
+        match output_lane {
+            Some(output_lane) => {
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
                         Arc::clone(target),
-                        backend_io,
-                        display_sink,
+                        output_lane,
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,
                         Arc::clone(&state.display_frames),

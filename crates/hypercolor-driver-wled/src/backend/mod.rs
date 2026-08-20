@@ -19,12 +19,12 @@ mod protocol;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
@@ -68,19 +68,19 @@ pub struct WledBackend {
     mdns_fallback: bool,
 
     /// Connected devices, keyed by `DeviceId`.
-    devices: HashMap<DeviceId, Arc<Mutex<WledDevice>>>,
+    devices: StdRwLock<HashMap<DeviceId, Arc<Mutex<WledDevice>>>>,
 
     /// Maps `DeviceId` to IP for lookup during connect.
-    device_ips: HashMap<DeviceId, IpAddr>,
+    device_ips: StdRwLock<HashMap<DeviceId, IpAddr>>,
 
     /// Maps `DeviceId` to parsed info for lazy connect.
-    device_infos: HashMap<DeviceId, WledDeviceInfo>,
+    device_infos: StdRwLock<HashMap<DeviceId, WledDeviceInfo>>,
 
     /// Default protocol for new connections.
     default_protocol: WledProtocol,
 
     /// Shared UDP socket used by all connected WLED devices.
-    shared_socket: Option<Arc<UdpSocket>>,
+    shared_socket: OnceCell<Arc<UdpSocket>>,
 
     /// Whether connect/disconnect should manage WLED realtime mode over HTTP.
     realtime_http_enabled: bool,
@@ -92,7 +92,7 @@ pub struct WledBackend {
     e131_cid: uuid::Uuid,
 
     /// Next available E1.31 universe number for auto-allocation.
-    next_e131_universe: u16,
+    next_e131_universe: StdMutex<u16>,
 }
 
 impl WledBackend {
@@ -112,15 +112,15 @@ impl WledBackend {
         Self {
             known_ips,
             mdns_fallback,
-            devices: HashMap::new(),
-            device_ips: HashMap::new(),
-            device_infos: HashMap::new(),
+            devices: StdRwLock::new(HashMap::new()),
+            device_ips: StdRwLock::new(HashMap::new()),
+            device_infos: StdRwLock::new(HashMap::new()),
             default_protocol: WledProtocol::default(),
-            shared_socket: None,
+            shared_socket: OnceCell::new(),
             realtime_http_enabled: true,
             dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             e131_cid: uuid::Uuid::now_v7(),
-            next_e131_universe: 1,
+            next_e131_universe: StdMutex::new(1),
         }
     }
 
@@ -144,15 +144,21 @@ impl WledBackend {
         if !self.known_ips.contains(&ip) {
             self.known_ips.push(ip);
         }
-        self.device_ips.insert(device_id, ip);
-        self.device_infos.insert(device_id, info);
+        self.device_ips
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(device_id, ip);
+        self.device_infos
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(device_id, info);
     }
 
     /// The local address of the shared UDP socket, if initialized.
     #[must_use]
     pub fn shared_socket_local_addr(&self) -> Option<SocketAddr> {
         self.shared_socket
-            .as_ref()
+            .get()
             .and_then(|socket| socket.local_addr().ok())
     }
 
@@ -160,6 +166,8 @@ impl WledBackend {
     #[must_use]
     pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
         self.devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .and_then(|device| device.try_lock().ok())
             .and_then(|device| device.socket.local_addr().ok())
@@ -169,6 +177,8 @@ impl WledBackend {
     #[must_use]
     pub fn connected_e131_start_universe(&self, id: &DeviceId) -> Option<u16> {
         self.devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .and_then(|device| device.try_lock().ok())
             .map(|device| device.e131_start_universe)
@@ -179,18 +189,16 @@ impl WledBackend {
         super::fetch_wled_info(ip).await
     }
 
-    async fn ensure_shared_socket(&mut self) -> Result<Arc<UdpSocket>> {
-        if let Some(socket) = &self.shared_socket {
-            return Ok(Arc::clone(socket));
-        }
-
-        let socket = Arc::new(
-            UdpSocket::bind("0.0.0.0:0")
-                .await
-                .context("Failed to bind shared WLED UDP socket")?,
-        );
-        self.shared_socket = Some(Arc::clone(&socket));
-        Ok(socket)
+    async fn ensure_shared_socket(&self) -> Result<Arc<UdpSocket>> {
+        self.shared_socket
+            .get_or_try_init(|| async {
+                UdpSocket::bind("0.0.0.0:0")
+                    .await
+                    .map(Arc::new)
+                    .context("Failed to bind shared WLED UDP socket")
+            })
+            .await
+            .map(Arc::clone)
     }
 
     async fn ensure_device_ready_for_output(
@@ -271,7 +279,7 @@ impl WledBackend {
     }
 
     fn allocate_e131_start_universe(
-        &mut self,
+        &self,
         color_format: WledColorFormat,
         led_count: u16,
         protocol: WledProtocol,
@@ -285,10 +293,12 @@ impl WledBackend {
             .div_ceil(pixels_per_universe)
             .clamp(1, usize::from(u16::MAX));
         let universes_needed = u16::try_from(universes_needed).unwrap_or(u16::MAX);
-        let start_universe = self.next_e131_universe;
-        self.next_e131_universe = self
+        let mut next_universe = self
             .next_e131_universe
-            .saturating_add(universes_needed.max(1));
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let start_universe = *next_universe;
+        *next_universe = next_universe.saturating_add(universes_needed.max(1));
         start_universe
     }
 }
@@ -349,7 +359,7 @@ impl DeviceBackend for WledBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         let mut discovered = Vec::new();
         let mut candidates: HashMap<IpAddr, Option<String>> = self
             .known_ips
@@ -382,8 +392,8 @@ impl DeviceBackend for WledBackend {
             }
         }
 
-        self.device_ips.clear();
-        self.device_infos.clear();
+        let mut device_ips = HashMap::new();
+        let mut device_infos = HashMap::new();
 
         for (ip, hostname) in candidates {
             match Self::probe_ip(ip).await {
@@ -400,8 +410,8 @@ impl DeviceBackend for WledBackend {
                     );
 
                     let device_info = build_device_info(device_id, &wled_info, ip);
-                    self.device_ips.insert(device_id, ip);
-                    self.device_infos.insert(device_id, wled_info);
+                    device_ips.insert(device_id, ip);
+                    device_infos.insert(device_id, wled_info);
                     discovered.push(device_info);
                 }
                 Err(e) => {
@@ -410,10 +420,18 @@ impl DeviceBackend for WledBackend {
             }
         }
 
+        *self
+            .device_ips
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = device_ips;
+        *self
+            .device_infos
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = device_infos;
         Ok(discovered)
     }
 
-    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
         let Some(ip) = discovered
             .metadata
             .get("ip")
@@ -463,42 +481,56 @@ impl DeviceBackend for WledBackend {
             effect_count: 0,
             palette_count: 0,
         };
-        self.remember_device(discovered.info.id, ip, info);
+        self.device_ips
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovered.info.id, ip);
+        self.device_infos
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovered.info.id, info);
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
         true
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        let known_ip_ids = self
-            .device_ips
-            .keys()
-            .take(4)
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let Some(ip) = self.device_ips.get(id).copied() else {
-            bail!(
-                "WLED device IP not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
-                self.device_ips.len(),
-                known_ip_ids
-            );
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        let ip = {
+            let device_ips = self
+                .device_ips
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            let known_ids = device_ips
+                .keys()
+                .take(4)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            device_ips.get(id).copied().with_context(|| {
+                format!(
+                    "WLED device IP not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
+                    device_ips.len(), known_ids
+                )
+            })?
         };
-
-        let known_info_ids = self
-            .device_infos
-            .keys()
-            .take(4)
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let Some(wled_info) = self.device_infos.get(id).cloned() else {
-            bail!(
-                "WLED device info not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
-                self.device_infos.len(),
-                known_info_ids
-            );
+        let wled_info = {
+            let device_infos = self
+                .device_infos
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            let known_ids = device_infos
+                .keys()
+                .take(4)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            device_infos.get(id).cloned().with_context(|| {
+                format!(
+                    "WLED device info not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
+                    device_infos.len(), known_ids
+                )
+            })?
         };
         let socket = self.ensure_shared_socket().await?;
 
@@ -550,12 +582,20 @@ impl DeviceBackend for WledBackend {
             "Connected to WLED device"
         );
 
-        self.devices.insert(*id, Arc::new(Mutex::new(device)));
+        self.devices
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, Arc::new(Mutex::new(device)));
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(device) = self.devices.remove(id) {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        let device = self
+            .devices
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        if let Some(device) = device {
             let mut device = device.lock().await;
             if device.last_sent_pixels.is_some()
                 && let Err(error) = clear_device(&mut device).await
@@ -584,38 +624,40 @@ impl DeviceBackend for WledBackend {
         }
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let device = self
             .devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
+            .cloned()
             .with_context(|| format!("WLED device {id} is not connected"))?;
-        Self::write_device_colors(id, device, colors, self.realtime_http_enabled, None)
+        Self::write_device_colors(id, &device, colors, self.realtime_http_enabled, None)
             .await
             .map(|_| ())
     }
 
-    async fn write_colors_shared(
-        &mut self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<()> {
+    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
         self.write_colors_shared_outcome(id, colors)
             .await
             .map(|_| ())
     }
 
     async fn write_colors_shared_outcome(
-        &mut self,
+        &self,
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<DeviceWriteOutcome> {
         let device = self
             .devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
+            .cloned()
             .with_context(|| format!("WLED device {id} is not connected"))?;
         Self::write_device_colors(
             id,
-            device,
+            &device,
             colors.as_slice(),
             self.realtime_http_enabled,
             None,
@@ -624,7 +666,7 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn deliver_colors_shared_observed(
-        &mut self,
+        &self,
         device_id: &DeviceId,
         delivery_id: DeviceDeliveryId,
         colors: Arc<Vec<[u8; 3]>>,
@@ -632,7 +674,13 @@ impl DeviceBackend for WledBackend {
     ) -> DeviceDeliveryAck {
         let payload_bytes = colors.len().saturating_mul(3);
         let started_at = Instant::now();
-        let Some(device) = self.devices.get(device_id) else {
+        let device = self
+            .devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(device_id)
+            .cloned();
+        let Some(device) = device else {
             return DeviceDeliveryAck::rejected(
                 delivery_id,
                 format!("WLED device {device_id} is not connected"),
@@ -640,7 +688,7 @@ impl DeviceBackend for WledBackend {
         };
         let result = Self::write_device_colors(
             device_id,
-            device,
+            &device,
             colors.as_slice(),
             self.realtime_http_enabled,
             Some((delivery_id, observer.as_ref())),
@@ -656,11 +704,15 @@ impl DeviceBackend for WledBackend {
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         self.devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .and_then(|device| device.try_lock().ok())
             .map(|device| device.info.negotiated_target_fps())
             .or_else(|| {
                 self.device_infos
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
                     .get(id)
                     .map(WledDeviceInfo::negotiated_target_fps)
             })
@@ -673,12 +725,16 @@ impl DeviceBackend for WledBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.devices.get(id).map(|device| {
-            Arc::new(WledFrameSink {
-                device_id: *id,
-                device: Arc::clone(device),
-                realtime_http_enabled: self.realtime_http_enabled,
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|device| {
+                Arc::new(WledFrameSink {
+                    device_id: *id,
+                    device: Arc::clone(device),
+                    realtime_http_enabled: self.realtime_http_enabled,
+                }) as Arc<dyn DeviceFrameSink>
+            })
     }
 }

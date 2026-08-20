@@ -978,7 +978,7 @@ async fn backend_info() {
 
 #[tokio::test]
 async fn backend_discover_no_ips() {
-    let mut backend = WledBackend::new(vec![]);
+    let backend = WledBackend::new(vec![]);
     let discovered = backend.discover().await.expect("discover should succeed");
     assert!(discovered.is_empty(), "no known IPs means no discoveries");
 }
@@ -987,7 +987,7 @@ async fn backend_discover_no_ips() {
 async fn backend_discover_unreachable_ip_graceful() {
     // Use an RFC 5737 documentation address that won't be routable
     let ip: IpAddr = "192.0.2.1".parse().expect("valid IP");
-    let mut backend = WledBackend::new(vec![ip]);
+    let backend = WledBackend::new(vec![ip]);
 
     let discovered = backend.discover().await.expect("discover should succeed");
     assert!(
@@ -998,7 +998,7 @@ async fn backend_discover_unreachable_ip_graceful() {
 
 #[tokio::test]
 async fn backend_connect_without_discover_fails() {
-    let mut backend = WledBackend::new(vec![]);
+    let backend = WledBackend::new(vec![]);
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
     let result = backend.connect(&unknown_id).await;
@@ -1062,7 +1062,7 @@ async fn backend_connects_from_scanner_seed_without_backend_discover() {
 
 #[tokio::test]
 async fn backend_disconnect_unknown_fails() {
-    let mut backend = WledBackend::new(vec![]);
+    let backend = WledBackend::new(vec![]);
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
     let result = backend.disconnect(&unknown_id).await;
@@ -1155,7 +1155,7 @@ async fn backend_disconnect_sends_final_black_frame_after_output() {
 
 #[tokio::test]
 async fn backend_write_to_disconnected_fails() {
-    let mut backend = WledBackend::new(vec![]);
+    let backend = WledBackend::new(vec![]);
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
     let colors = vec![[0xFF, 0x00, 0x00]; 30];

@@ -137,7 +137,7 @@ async fn backend_connect_without_discovery_fails() {
             .await
             .expect("credential store"),
     );
-    let mut backend = NanoleafBackend::with_mdns_enabled(
+    let backend = NanoleafBackend::with_mdns_enabled(
         NanoleafConfig {
             device_ips: Vec::new(),
             transition_time: 1,

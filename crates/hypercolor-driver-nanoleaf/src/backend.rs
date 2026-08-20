@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -56,8 +56,8 @@ pub struct NanoleafBackend {
     credential_store: Arc<CredentialStore>,
     mdns_enabled: bool,
     stream_port: u16,
-    discovered: HashMap<DeviceId, NanoleafDiscoveredDevice>,
-    devices: HashMap<DeviceId, Arc<Mutex<NanoleafDeviceState>>>,
+    discovered: StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>,
+    devices: StdRwLock<HashMap<DeviceId, Arc<Mutex<NanoleafDeviceState>>>>,
 }
 
 struct NanoleafDeviceState {
@@ -90,8 +90,8 @@ impl NanoleafBackend {
             credential_store,
             mdns_enabled,
             stream_port: DEFAULT_NANOLEAF_STREAM_PORT,
-            discovered: HashMap::new(),
-            devices: HashMap::new(),
+            discovered: StdRwLock::new(HashMap::new()),
+            devices: StdRwLock::new(HashMap::new()),
         }
     }
 
@@ -109,7 +109,10 @@ impl NanoleafBackend {
 
     /// Seed the backend with a previously discovered device.
     pub fn remember_device(&mut self, device: NanoleafDiscoveredDevice) {
-        self.discovered.insert(device.info.id, device);
+        self.discovered
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(device.info.id, device);
     }
 
     fn known_devices(&self) -> Vec<NanoleafKnownDevice> {
@@ -122,7 +125,12 @@ impl NanoleafBackend {
             .map(|device| (device.ip, device))
             .collect();
 
-        for device in self.discovered.values() {
+        for device in self
+            .discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
             known
                 .entry(device.ip)
                 .and_modify(|existing| {
@@ -266,7 +274,7 @@ impl DeviceBackend for NanoleafBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         let mut scanner = NanoleafScanner::with_options(
             self.known_devices(),
             Arc::clone(&self.credential_store),
@@ -275,7 +283,10 @@ impl DeviceBackend for NanoleafBackend {
         );
         let devices = scanner.scan_devices().await?;
 
-        self.discovered = devices
+        *self
+            .discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = devices
             .iter()
             .cloned()
             .map(|device| (device.info.id, device))
@@ -285,7 +296,13 @@ impl DeviceBackend for NanoleafBackend {
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        let Some(device) = self.devices.get(id) else {
+        let device = self
+            .devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(device) = device else {
             return Ok(None);
         };
         Ok(Some(device.lock().await.info.clone()))
@@ -299,24 +316,33 @@ impl DeviceBackend for NanoleafBackend {
         clippy::too_many_lines,
         reason = "connect performs credential lookup, metadata refresh, and stream bootstrap in one linear flow"
     )]
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if self.devices.contains_key(id) {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if self
+            .devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(id)
+        {
             return Ok(());
         }
 
-        let known_ids = self
-            .discovered
-            .keys()
-            .take(4)
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let Some(discovered) = self.discovered.get(id).cloned() else {
-            bail!(
-                "Nanoleaf device {id} is not known; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
-                self.discovered.len(),
-                known_ids
-            );
+        let discovered = {
+            let discovered = self
+                .discovered
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            let known_ids = discovered
+                .keys()
+                .take(4)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            discovered.get(id).cloned().with_context(|| {
+                format!(
+                    "Nanoleaf device {id} is not known; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
+                    discovered.len(), known_ids
+                )
+            })?
         };
 
         let auth_token = load_auth_token(
@@ -379,19 +405,22 @@ impl DeviceBackend for NanoleafBackend {
             layout.position_data.as_slice(),
         );
 
-        self.discovered.insert(
-            *id,
-            NanoleafDiscoveredDevice {
-                device_key: discovered.device_key.clone(),
-                ip: discovered.ip,
-                api_port: discovered.api_port,
-                info: info.clone(),
-                panel_ids,
-                connect_behavior: discovered.connect_behavior,
-                metadata: discovered.metadata,
-                claim: discovered.claim,
-            },
-        );
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                *id,
+                NanoleafDiscoveredDevice {
+                    device_key: discovered.device_key.clone(),
+                    ip: discovered.ip,
+                    api_port: discovered.api_port,
+                    info: info.clone(),
+                    panel_ids,
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata,
+                    claim: discovered.claim,
+                },
+            );
 
         let device = NanoleafDeviceState {
             device_key: discovered.device_key.clone(),
@@ -403,13 +432,16 @@ impl DeviceBackend for NanoleafBackend {
             scaled_colors: Vec::new(),
             last_size_mismatch_warn_at: None,
         };
-        self.devices.insert(*id, Arc::new(Mutex::new(device)));
-
-        let panels = self
-            .devices
-            .get(id)
-            .and_then(|device| device.try_lock().ok())
+        let device = Arc::new(Mutex::new(device));
+        let panels = device
+            .try_lock()
+            .ok()
             .map_or(0, |device| device.info.total_led_count());
+        self.devices
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, device);
+
         info!(
             device_id = %id,
             ip = %discovered.ip,
@@ -419,8 +451,13 @@ impl DeviceBackend for NanoleafBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(device) = self.devices.remove(id) {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        let device = self
+            .devices
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        if let Some(device) = device {
             let device = device.lock().await;
             info!(
                 device_id = %id,
@@ -435,18 +472,24 @@ impl DeviceBackend for NanoleafBackend {
         }
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let device = self
             .devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
+            .cloned()
             .with_context(|| format!("Nanoleaf device {id} is not connected"))?;
-        Self::write_device_colors(id, device, colors, self.config.transition_time, None).await
+        Self::write_device_colors(id, &device, colors, self.config.transition_time, None).await
     }
 
-    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
         let device = self
             .devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
+            .cloned()
             .with_context(|| format!("Nanoleaf device {id} is not connected"))?;
         device.lock().await.brightness = brightness;
         Ok(())
@@ -457,12 +500,16 @@ impl DeviceBackend for NanoleafBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.devices.get(id).map(|device| {
-            Arc::new(NanoleafFrameSink {
-                device_id: *id,
-                device: Arc::clone(device),
-                transition_time: self.config.transition_time,
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.devices
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|device| {
+                Arc::new(NanoleafFrameSink {
+                    device_id: *id,
+                    device: Arc::clone(device),
+                    transition_time: self.config.transition_time,
+                }) as Arc<dyn DeviceFrameSink>
+            })
     }
 }

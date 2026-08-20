@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -58,19 +58,19 @@ impl DeviceBackend for NullBenchBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }
 }
@@ -730,7 +730,7 @@ fn bench_backend_routing(c: &mut Criterion) {
 
     let cached_device_id = DeviceId::new();
     let mut cached_manager = BackendManager::new();
-    cached_manager.register_backend(Box::new(NullBenchBackend));
+    cached_manager.register_backend(Arc::new(NullBenchBackend));
     cached_manager.map_device("bench:cached-strip", "bench", cached_device_id);
     let cached_layout = layout_with_zone(bench_routing_zone(
         "zone_0",
@@ -756,7 +756,7 @@ fn bench_backend_routing(c: &mut Criterion) {
 
     let churn_device_id = DeviceId::new();
     let mut churn_manager = BackendManager::new();
-    churn_manager.register_backend(Box::new(NullBenchBackend));
+    churn_manager.register_backend(Arc::new(NullBenchBackend));
     churn_manager.map_device("bench:churn-strip", "bench", churn_device_id);
     let base_layout =
         layout_with_zone(bench_routing_zone("zone_0", "bench:churn-strip", 120, None));

@@ -3,8 +3,8 @@
 use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -61,10 +61,10 @@ struct SmBusDeviceFrameSink {
 
 /// Core `SMBus` backend for HAL-managed ENE controllers.
 pub struct SmBusBackend {
-    scanner: Box<dyn TransportScanner>,
-    pending: HashMap<DeviceId, PendingSmBusDevice>,
-    connected: HashMap<DeviceId, Arc<ConnectedSmBusDevice>>,
-    bus_arbiters: HashMap<String, SmBusBusArbiter>,
+    scanner: Mutex<Box<dyn TransportScanner>>,
+    pending: StdRwLock<HashMap<DeviceId, PendingSmBusDevice>>,
+    connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedSmBusDevice>>>,
+    bus_arbiters: StdMutex<HashMap<String, SmBusBusArbiter>>,
     transport_factory: SmBusTransportFactory,
 }
 
@@ -101,10 +101,10 @@ impl SmBusBackend {
         F: Fn(&str, u16, SmBusBusArbiter) -> Result<Box<dyn Transport>> + Send + Sync + 'static,
     {
         Self {
-            scanner: Box::new(scanner),
-            pending: HashMap::new(),
-            connected: HashMap::new(),
-            bus_arbiters: HashMap::new(),
+            scanner: Mutex::new(Box::new(scanner)),
+            pending: StdRwLock::new(HashMap::new()),
+            connected: StdRwLock::new(HashMap::new()),
+            bus_arbiters: StdMutex::new(HashMap::new()),
             transport_factory: Arc::new(transport_factory),
         }
     }
@@ -164,40 +164,50 @@ impl DeviceBackend for SmBusBackend {
         DeviceLifecyclePolicy::default().with_connect_execution(ConnectExecution::Background)
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        let discovered = self.scanner.scan().await?;
-
-        self.pending.clear();
-
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
+        let discovered = self.scanner.lock().await.scan().await?;
+        let mut pending_devices = HashMap::new();
         let mut info = Vec::with_capacity(discovered.len());
         for discovered_device in discovered {
             if let Some(pending) = pending_from_discovered(&discovered_device) {
-                self.pending.insert(discovered_device.info.id, pending);
+                pending_devices.insert(discovered_device.info.id, pending);
             }
             info.push(discovered_device.info);
         }
+        *self.pending.write().unwrap_or_else(PoisonError::into_inner) = pending_devices;
 
         Ok(info)
     }
 
-    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
         if let Some(pending) = pending_from_discovered(discovered) {
-            self.pending.insert(discovered.info.id, pending);
+            self.pending
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(discovered.info.id, pending);
         }
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if self.connected.contains_key(id) {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(id)
+        {
             debug!(device_id = %id, "SMBus device already connected; skipping duplicate connect");
             return Ok(());
         }
 
-        let pending = self.pending.get(id).cloned().with_context(|| {
-            format!(
-                "device {id} has no pending SMBus descriptor; run discover() (pending_cache_size={})",
-                self.pending.len()
-            )
-        })?;
+        let pending = {
+            let pending_guard = self.pending.read().unwrap_or_else(PoisonError::into_inner);
+            pending_guard.get(id).cloned().with_context(|| {
+                format!(
+                    "device {id} has no pending SMBus descriptor; run discover() (pending_cache_size={})",
+                    pending_guard.len()
+                )
+            })?
+        };
 
         debug!(
             device_id = %id,
@@ -208,17 +218,27 @@ impl DeviceBackend for SmBusBackend {
 
         let bus_arbiter = self
             .bus_arbiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .entry(pending.bus_path.clone())
             .or_default()
             .clone();
         let device = connect_pending_device(&pending, &self.transport_factory, bus_arbiter).await?;
-        self.connected.insert(*id, Arc::new(device));
+        self.connected
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, Arc::new(device));
 
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        let Some(device) = self.connected.remove(id) else {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        let device = self
+            .connected
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        let Some(device) = device else {
             return Ok(());
         };
 
@@ -238,9 +258,11 @@ impl DeviceBackend for SmBusBackend {
         io.transport.close().await.map_err(map_transport_error)
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let device = self
             .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
             .with_context(|| format!("device {id} is not connected on SMBus backend"))?;
@@ -248,7 +270,13 @@ impl DeviceBackend for SmBusBackend {
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        let Some(device) = self.connected.get(id) else {
+        let device = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(device) = device else {
             return Ok(None);
         };
         let io = device.io.lock().await;
@@ -261,17 +289,25 @@ impl DeviceBackend for SmBusBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.connected.get(id).and_then(|device| device.target_fps)
+        self.connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(|device| device.target_fps)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.connected.get(id).map(|device| {
-            Arc::new(SmBusDeviceFrameSink {
-                device_id: *id,
-                device: Arc::clone(device),
-                transport_factory: Arc::clone(&self.transport_factory),
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|device| {
+                Arc::new(SmBusDeviceFrameSink {
+                    device_id: *id,
+                    device: Arc::clone(device),
+                    transport_factory: Arc::clone(&self.transport_factory),
+                }) as Arc<dyn DeviceFrameSink>
+            })
     }
 }
 

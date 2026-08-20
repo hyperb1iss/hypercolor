@@ -82,19 +82,19 @@ impl DeviceBackend for RecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         self.writes
             .lock()
             .expect("recording backend mutex should not be poisoned")
@@ -329,7 +329,7 @@ async fn register_recording_backend(
     writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>,
 ) {
     let mut manager = state.backend_manager.lock().await;
-    manager.register_backend(Box::new(RecordingBackend::new(writes)));
+    manager.register_backend(Arc::new(RecordingBackend::new(writes)));
 }
 
 #[tokio::test]

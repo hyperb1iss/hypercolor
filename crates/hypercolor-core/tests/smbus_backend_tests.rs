@@ -319,7 +319,7 @@ fn smbus_backend_lifecycle_policy_runs_connect_in_background() {
 #[tokio::test]
 async fn smbus_backend_discover_is_empty_on_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
-    let mut backend = SmBusBackend::with_scanner(SmBusScanner::with_dev_root(tempdir.path()));
+    let backend = SmBusBackend::with_scanner(SmBusScanner::with_dev_root(tempdir.path()));
 
     let devices = backend.discover().await.expect("discover should succeed");
     assert!(devices.is_empty());
@@ -334,7 +334,7 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
     let second_packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
     let close_count = Arc::new(AtomicUsize::new(0));
 
-    let mut backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
+    let backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
         let open_count = Arc::clone(&open_count);
         let first_packets = Arc::clone(&first_packets);
         let second_packets = Arc::clone(&second_packets);
@@ -426,7 +426,7 @@ async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions()
         discovered_smbus_device_at(second_id, "/dev/i2c-9", 0x73),
     ]);
     let probe = Arc::new(SmBusConcurrencyProbe::new());
-    let mut backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
+    let backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
         let probe = Arc::clone(&probe);
         move |bus_path, address, bus_arbiter| {
             assert_eq!(bus_path, "/dev/i2c-9");

@@ -3,7 +3,6 @@
 mod host;
 
 use std::collections::BTreeSet;
-#[cfg(not(feature = "builtin-drivers"))]
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -313,7 +312,7 @@ pub fn register_enabled_driver_output_backends(
         let Some(backend) = driver.build_output_backend(host, config_view)? else {
             continue;
         };
-        backend_manager.register_backend(backend);
+        backend_manager.register_backend(Arc::from(backend));
     }
 
     Ok(())
@@ -341,7 +340,7 @@ pub fn register_enabled_device_backends(
             .blocks_socket_path
             .as_ref()
             .map_or_else(BlocksBackend::default_socket_path, std::path::PathBuf::from);
-        backend_manager.register_backend(Box::new(BlocksBackend::new(socket_path)));
+        backend_manager.register_backend(Arc::new(BlocksBackend::new(socket_path)));
     }
 
     if !enabled_module_ids_for_transports(
@@ -352,7 +351,7 @@ pub fn register_enabled_device_backends(
     )
     .is_empty()
     {
-        backend_manager.register_backend(Box::new(SmBusBackend::new()));
+        backend_manager.register_backend(Arc::new(SmBusBackend::new()));
     }
 
     let usb_driver_ids = enabled_module_ids_for_transports(
@@ -362,7 +361,7 @@ pub fn register_enabled_device_backends(
         USB_HOST_DRIVER_TRANSPORTS,
     );
     if !usb_driver_ids.is_empty() {
-        backend_manager.register_backend(Box::new(
+        backend_manager.register_backend(Arc::new(
             UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
                 usb_protocol_configs,
                 usb_driver_ids,

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{
-    Arc, OnceLock,
+    Arc, Mutex as StdMutex, OnceLock, PoisonError,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -70,12 +70,12 @@ async fn insert_default_logical_device(
 struct RecordingDisplayBackend {
     expected_device_id: DeviceId,
     backend_id: String,
-    connected: bool,
+    connected: AtomicBool,
     display_writes: Arc<Mutex<Vec<Vec<u8>>>>,
     display_write_times: Option<Arc<Mutex<Vec<Instant>>>>,
     display_write_attempt_times: Option<Arc<Mutex<Vec<Instant>>>>,
     write_delay: Duration,
-    transient_display_failures: usize,
+    transient_display_failures: AtomicUsize,
 }
 
 impl RecordingDisplayBackend {
@@ -83,12 +83,12 @@ impl RecordingDisplayBackend {
         Self {
             expected_device_id,
             backend_id: "usb".to_owned(),
-            connected: false,
+            connected: AtomicBool::new(false),
             display_writes,
             display_write_times: None,
             display_write_attempt_times: None,
             write_delay: Duration::ZERO,
-            transient_display_failures: 0,
+            transient_display_failures: AtomicUsize::new(0),
         }
     }
 
@@ -116,15 +116,15 @@ impl RecordingDisplayBackend {
     }
 
     fn with_transient_display_failures(mut self, failure_count: usize) -> Self {
-        self.transient_display_failures = failure_count;
+        self.transient_display_failures = AtomicUsize::new(failure_count);
         self
     }
 
-    async fn record_display_write_data(&mut self, id: &DeviceId, data: &[u8]) -> Result<()> {
+    async fn record_display_write_data(&self, id: &DeviceId, data: &[u8]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("display write while disconnected");
         }
 
@@ -134,8 +134,13 @@ impl RecordingDisplayBackend {
                 .await
                 .push(Instant::now());
         }
-        if self.transient_display_failures > 0 {
-            self.transient_display_failures -= 1;
+        if self
+            .transient_display_failures
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
             bail!("intentional transient display write failure");
         }
 
@@ -201,7 +206,7 @@ impl DeviceDisplaySink for RecordingDisplaySink {
 }
 
 struct MultiDisplaySinkBackend {
-    connected: HashSet<DeviceId>,
+    connected: StdMutex<HashSet<DeviceId>>,
     sinks: HashMap<DeviceId, Arc<RecordingDisplaySink>>,
     sinks_available: Arc<AtomicBool>,
     display_sink_lookup_count: Arc<AtomicUsize>,
@@ -214,7 +219,7 @@ impl MultiDisplaySinkBackend {
         fallback_write_count: Arc<AtomicUsize>,
     ) -> Self {
         Self {
-            connected: HashSet::new(),
+            connected: StdMutex::new(HashSet::new()),
             sinks,
             sinks_available: Arc::new(AtomicBool::new(true)),
             display_sink_lookup_count: Arc::new(AtomicUsize::new(0)),
@@ -243,29 +248,35 @@ impl DeviceBackend for MultiDisplaySinkBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if !self.sinks.contains_key(id) {
             bail!("unexpected device id {id}");
         }
 
-        self.connected.insert(*id);
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if !self.sinks.contains_key(id) {
             bail!("unexpected device id {id}");
         }
 
-        self.connected.remove(id);
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if !self.sinks.contains_key(id) {
             bail!("unexpected device id {id}");
         }
@@ -274,11 +285,16 @@ impl DeviceBackend for MultiDisplaySinkBackend {
     }
 
     async fn write_display_payload_owned(
-        &mut self,
+        &self,
         id: &DeviceId,
         _payload: Arc<OwnedDisplayFramePayload>,
     ) -> Result<()> {
-        if !self.connected.contains(id) {
+        if !self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
+        {
             bail!("display write while disconnected");
         }
 
@@ -290,7 +306,13 @@ impl DeviceBackend for MultiDisplaySinkBackend {
         self.display_sink_lookup_count
             .fetch_add(1, Ordering::SeqCst);
 
-        if !self.connected.contains(id) || !self.sinks_available.load(Ordering::SeqCst) {
+        if !self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
+            || !self.sinks_available.load(Ordering::SeqCst)
+        {
             return None;
         }
 
@@ -302,14 +324,14 @@ impl DeviceBackend for MultiDisplaySinkBackend {
 
 struct FailingDisplayBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 impl FailingDisplayBackend {
     fn new(expected_device_id: DeviceId) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
         }
     }
 }
@@ -324,29 +346,29 @@ impl DeviceBackend for RecordingDisplayBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -354,12 +376,12 @@ impl DeviceBackend for RecordingDisplayBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
         self.record_display_write_data(id, jpeg_data).await
     }
 
     async fn write_display_payload_owned(
-        &mut self,
+        &self,
         id: &DeviceId,
         payload: Arc<OwnedDisplayFramePayload>,
     ) -> Result<()> {
@@ -378,29 +400,29 @@ impl DeviceBackend for FailingDisplayBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -408,11 +430,11 @@ impl DeviceBackend for FailingDisplayBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, _jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(&self, id: &DeviceId, _jpeg_data: &[u8]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("display write while disconnected");
         }
 
@@ -836,7 +858,7 @@ async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat)
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
             .with_timestamps(Arc::clone(&display_write_times)),
     ));
@@ -1016,7 +1038,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -1096,7 +1118,7 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(MultiDisplaySinkBackend::new(
+    backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
         HashMap::from([
             (slow_device_id, Arc::clone(&slow_sink)),
             (fast_device_id, Arc::clone(&fast_sink)),
@@ -1203,7 +1225,7 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(MultiDisplaySinkBackend::new(
+    backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
         HashMap::from([
             (slow_device_id, Arc::clone(&slow_sink)),
             (fast_device_id, Arc::clone(&fast_sink)),
@@ -1308,7 +1330,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         MultiDisplaySinkBackend::new(
             HashMap::from([(device_id, Arc::clone(&sink))]),
             Arc::clone(&fallback_write_count),
@@ -1440,7 +1462,7 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         MultiDisplaySinkBackend::new(
             HashMap::from([(device_id, Arc::clone(&sink))]),
             Arc::clone(&fallback_write_count),
@@ -1537,7 +1559,7 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -1612,7 +1634,7 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -1713,7 +1735,7 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -1786,7 +1808,7 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
             .with_backend_id(SIMULATED_DISPLAY_BACKEND_ID),
     ));
@@ -1859,7 +1881,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
             .with_backend_id(SIMULATED_DISPLAY_BACKEND_ID),
     ));
@@ -1937,7 +1959,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let device_id = DeviceId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -1987,7 +2009,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     let device_id = DeviceId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2051,7 +2073,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2143,7 +2165,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2218,7 +2240,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2284,7 +2306,7 @@ async fn display_group_canvas_routes_to_device_worker() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2361,7 +2383,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2443,7 +2465,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2540,7 +2562,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2629,7 +2651,7 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2725,7 +2747,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2812,7 +2834,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2892,7 +2914,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
             .with_timestamps(Arc::clone(&display_write_times)),
     ));
@@ -3000,7 +3022,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -3089,7 +3111,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -3178,7 +3200,7 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
     let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -3276,7 +3298,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
             .with_write_delay(Duration::from_millis(180)),
     ));
@@ -3375,7 +3397,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -3470,7 +3492,7 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -3555,7 +3577,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(FailingDisplayBackend::new(device_id)));
+    backend_manager.register_backend(Arc::new(FailingDisplayBackend::new(device_id)));
     backend_manager
         .connect_device("usb", device_id, "corsair:test-display")
         .await
@@ -3626,7 +3648,7 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(
+    backend_manager.register_backend(Arc::new(
         RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
             .with_attempt_timestamps(Arc::clone(&display_write_attempt_times))
             .with_transient_display_failures(1),
@@ -3717,7 +3739,7 @@ async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(MultiDisplaySinkBackend::new(
+    backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
         HashMap::from([(device_id, Arc::clone(&sink))]),
         Arc::clone(&fallback_write_count),
     )));
@@ -3809,7 +3831,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -3899,7 +3921,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -3977,7 +3999,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -4073,7 +4095,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -4151,7 +4173,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -4240,7 +4262,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -4327,7 +4349,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     }
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));

@@ -3,10 +3,12 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 
 use hypercolor_types::device::DeviceId;
 
-use crate::device::output_queue::{DeviceStagingBuffer, OutputLane, OutputQueue};
+use crate::device::output_queue::{
+    DeviceStagingBuffer, OutputLane, OutputQueue, next_queue_generation,
+};
 use crate::device::traits::OutputCadence;
 
-use super::{BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle};
+use super::{BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle, DisplayOutputLane};
 
 #[derive(Debug, Default)]
 struct DirectControlRegistry {
@@ -62,6 +64,7 @@ impl Drop for DirectControlGuard {
 pub(super) struct DeviceOutputCoordinator {
     queues: HashMap<BackendDeviceKey, OutputQueue>,
     frame_sinks: HashMap<BackendDeviceKey, DeviceFrameSinkHandle>,
+    display_lanes: HashMap<BackendDeviceKey, DisplayOutputLane>,
     staging: HashMap<BackendDeviceKey, DeviceStagingBuffer>,
     active_staging_keys: Vec<BackendDeviceKey>,
     active_staging_len: usize,
@@ -77,6 +80,8 @@ impl DeviceOutputCoordinator {
             .retain(|(queued_backend_id, _), _| queued_backend_id != backend_id);
         self.frame_sinks
             .retain(|(sink_backend_id, _), _| sink_backend_id != backend_id);
+        self.display_lanes
+            .retain(|(lane_backend_id, _), _| lane_backend_id != backend_id);
         self.staging
             .retain(|(staged_backend_id, _), _| staged_backend_id != backend_id);
         self.output_cadence
@@ -88,9 +93,23 @@ impl DeviceOutputCoordinator {
     pub(super) fn remove_target_state(&mut self, key: &BackendDeviceKey) {
         self.queues.remove(key);
         self.frame_sinks.remove(key);
+        self.display_lanes.remove(key);
         self.staging.remove(key);
         self.output_cadence.remove(key);
         self.warned_inactive_layout_devices.remove(key);
+    }
+
+    pub(super) fn display_lane(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        backend: BackendHandle,
+    ) -> DisplayOutputLane {
+        let key = (backend_id.to_owned(), device_id);
+        self.display_lanes
+            .entry(key)
+            .or_insert_with(|| DisplayOutputLane::new(backend, device_id, next_queue_generation()))
+            .clone()
     }
 
     pub(super) fn set_frame_sink(

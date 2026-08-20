@@ -30,7 +30,7 @@ pub use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, Tran
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, DirectControlGuard,
-    SegmentRange,
+    DisplayOutputLane, DisplayOutputStatistics, SegmentRange,
 };
 pub use registry::{DeviceRegistry, PortableKeyCollision, PortableRebindError};
 pub use smbus_backend::SmBusBackend;

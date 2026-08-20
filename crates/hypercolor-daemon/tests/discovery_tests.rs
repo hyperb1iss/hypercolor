@@ -71,7 +71,7 @@ struct CountingBackend {
 struct CachePrimingBackend {
     expected_device_id: DeviceId,
     expected_fingerprint: DeviceFingerprint,
-    cached: bool,
+    cached: AtomicBool,
     remember_count: Arc<std::sync::atomic::AtomicUsize>,
     discover_count: Arc<std::sync::atomic::AtomicUsize>,
     connect_count: Arc<std::sync::atomic::AtomicUsize>,
@@ -165,11 +165,11 @@ impl DeviceBackend for CountingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -178,7 +178,7 @@ impl DeviceBackend for CountingBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -187,7 +187,7 @@ impl DeviceBackend for CountingBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let _ = (id, colors);
         Ok(())
     }
@@ -203,11 +203,11 @@ impl DeviceBackend for FailingDisconnectBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -216,7 +216,7 @@ impl DeviceBackend for FailingDisconnectBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -225,7 +225,7 @@ impl DeviceBackend for FailingDisconnectBackend {
         bail!("simulated disconnect failure")
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let _ = (id, colors);
         Ok(())
     }
@@ -241,28 +241,31 @@ impl DeviceBackend for CachePrimingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         self.discover_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Vec::new())
     }
 
-    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
         self.remember_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.cached = discovered.info.id == self.expected_device_id
-            && discovered.fingerprint == self.expected_fingerprint
-            && discovered
-                .metadata
-                .get("descriptor")
-                .is_some_and(|value| value == "cached");
+        self.cached.store(
+            discovered.info.id == self.expected_device_id
+                && discovered.fingerprint == self.expected_fingerprint
+                && discovered
+                    .metadata
+                    .get("descriptor")
+                    .is_some_and(|value| value == "cached"),
+            Ordering::Release,
+        );
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.cached {
+        if !self.cached.load(Ordering::Acquire) {
             bail!("backend descriptor cache was not primed before connect");
         }
         self.connect_count
@@ -270,14 +273,14 @@ impl DeviceBackend for CachePrimingBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let _ = (id, colors);
         Ok(())
     }
@@ -1019,7 +1022,7 @@ async fn sync_active_layout_connectivity_keeps_layout_inactive_devices_disconnec
     let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
         let mut manager = runtime.backend_manager.lock().await;
-        manager.register_backend(Box::new(CountingBackend {
+        manager.register_backend(Arc::new(CountingBackend {
             expected_device_id: device_id,
             connect_count: Arc::clone(&connect_count),
             disconnect_count: Arc::clone(&disconnect_count),
@@ -1064,10 +1067,10 @@ async fn sync_active_layout_connectivity_primes_backend_from_registry_metadata()
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
         let mut manager = runtime.backend_manager.lock().await;
-        manager.register_backend(Box::new(CachePrimingBackend {
+        manager.register_backend(Arc::new(CachePrimingBackend {
             expected_device_id: device_id,
             expected_fingerprint: fingerprint.clone(),
-            cached: false,
+            cached: AtomicBool::new(false),
             remember_count: Arc::clone(&remember_count),
             discover_count: Arc::clone(&discover_count),
             connect_count: Arc::clone(&connect_count),
@@ -1127,7 +1130,7 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
     let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
         let mut manager = runtime.backend_manager.lock().await;
-        manager.register_backend(Box::new(CountingBackend {
+        manager.register_backend(Arc::new(CountingBackend {
             expected_device_id: device_id,
             connect_count: Arc::clone(&connect_count),
             disconnect_count: Arc::clone(&disconnect_count),
@@ -1192,7 +1195,7 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
     let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
         let mut manager = runtime.backend_manager.lock().await;
-        manager.register_backend(Box::new(FailingDisconnectBackend {
+        manager.register_backend(Arc::new(FailingDisconnectBackend {
             expected_device_id: device_id,
             connect_count: Arc::clone(&connect_count),
             disconnect_count: Arc::clone(&disconnect_count),
@@ -1293,7 +1296,7 @@ async fn sync_active_layout_connectivity_only_applies_host_attachment_profiles_f
     let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
         let mut manager = runtime.backend_manager.lock().await;
-        manager.register_backend(Box::new(CountingBackend {
+        manager.register_backend(Arc::new(CountingBackend {
             expected_device_id: device_id,
             connect_count: Arc::clone(&connect_count),
             disconnect_count: Arc::clone(&disconnect_count),

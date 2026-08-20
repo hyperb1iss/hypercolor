@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Error, Result, bail};
@@ -308,8 +308,8 @@ impl DiscoveryCapability for OpenRgbDriverModule {
 /// Runtime backend for OpenRGB-proxied output.
 pub struct OpenRgbBackend {
     config: OpenRgbConfig,
-    discovered: HashMap<DeviceId, ControllerRoute>,
-    connected: HashMap<DeviceId, ConnectedOutput>,
+    discovered: StdRwLock<HashMap<DeviceId, ControllerRoute>>,
+    connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedOutput>>>,
 }
 
 impl OpenRgbBackend {
@@ -322,8 +322,8 @@ impl OpenRgbBackend {
         validate_openrgb_config(&config)?;
         Ok(Self {
             config,
-            discovered: HashMap::new(),
-            connected: HashMap::new(),
+            discovered: StdRwLock::new(HashMap::new()),
+            connected: StdRwLock::new(HashMap::new()),
         })
     }
 }
@@ -339,10 +339,13 @@ impl DeviceBackend for OpenRgbBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         let mut routes = discover_routes(&self.config).await?;
         self.preserve_connected_previous_modes(&mut routes).await;
-        self.discovered = routes
+        *self
+            .discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = routes
             .iter()
             .cloned()
             .map(|route| (route.info.id, route))
@@ -350,9 +353,11 @@ impl DeviceBackend for OpenRgbBackend {
         Ok(routes.into_iter().map(|route| route.info).collect())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         let route = self
             .discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
             .with_context(|| format!("OpenRGB controller {id} is not discovered"))?;
@@ -381,12 +386,19 @@ impl DeviceBackend for OpenRgbBackend {
             reconnect_backoff: ReconnectBackoff::default(),
         }));
         self.connected
-            .insert(*id, ConnectedOutput::spawn(controller));
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, Arc::new(ConnectedOutput::spawn(controller)));
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(output) = self.connected.remove(id) {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        let output = self
+            .connected
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        if let Some(output) = output {
             let controller = output.stop().await;
             let mut controller = controller.lock().await;
             controller.accepting_frames = false;
@@ -401,8 +413,14 @@ impl DeviceBackend for OpenRgbBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        let Some(output) = self.connected.get(id) else {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let output = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(output) = output else {
             bail!("OpenRGB controller {id} is not connected");
         };
         output.enqueue_colors(Arc::new(colors.to_vec()))
@@ -410,6 +428,8 @@ impl DeviceBackend for OpenRgbBackend {
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         self.connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .and_then(|output| {
                 output
@@ -418,11 +438,19 @@ impl DeviceBackend for OpenRgbBackend {
                     .ok()
                     .map(|controller| controller.route.target_fps)
             })
-            .or_else(|| self.discovered.get(id).map(|route| route.target_fps))
+            .or_else(|| {
+                self.discovered
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(id)
+                    .map(|route| route.target_fps)
+            })
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
         self.connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .map(|output| output.frame_sink() as Arc<dyn DeviceFrameSink>)
     }
@@ -431,7 +459,13 @@ impl DeviceBackend for OpenRgbBackend {
 impl OpenRgbBackend {
     async fn preserve_connected_previous_modes(&self, routes: &mut [ControllerRoute]) {
         for route in routes {
-            let Some(controller) = self.connected.get(&route.info.id) else {
+            let controller = self
+                .connected
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&route.info.id)
+                .cloned();
+            let Some(controller) = controller else {
                 continue;
             };
             let controller = controller.controller.lock().await;
@@ -443,7 +477,7 @@ impl OpenRgbBackend {
 struct ConnectedOutput {
     controller: Arc<Mutex<ConnectedController>>,
     frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
-    io_task: Option<JoinHandle<()>>,
+    io_task: StdMutex<Option<JoinHandle<()>>>,
     active: Arc<AtomicBool>,
     lifecycle_gate: Arc<StdMutex<()>>,
     last_async_error: Arc<StdMutex<Option<String>>>,
@@ -465,7 +499,7 @@ impl ConnectedOutput {
         Self {
             controller,
             frame_tx,
-            io_task: Some(io_task),
+            io_task: StdMutex::new(Some(io_task)),
             active,
             lifecycle_gate,
             last_async_error,
@@ -491,7 +525,7 @@ impl ConnectedOutput {
         )
     }
 
-    async fn stop(mut self) -> Arc<Mutex<ConnectedController>> {
+    async fn stop(&self) -> Arc<Mutex<ConnectedController>> {
         {
             let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
             self.active.store(false, Ordering::Release);
@@ -504,7 +538,12 @@ impl ConnectedOutput {
             controller.accepting_frames = false;
         }
         let controller = Arc::clone(&self.controller);
-        if let Some(mut io_task) = self.io_task.take() {
+        let io_task = self
+            .io_task
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(mut io_task) = io_task {
             tokio::select! {
                 result = &mut io_task => {
                     if let Err(error) = result {
@@ -534,7 +573,12 @@ impl Drop for ConnectedOutput {
                 pending.reject_pending("OpenRGB output worker stopped before transport started");
             }
         }
-        if let Some(io_task) = &self.io_task {
+        if let Some(io_task) = self
+            .io_task
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
             io_task.abort();
         }
     }

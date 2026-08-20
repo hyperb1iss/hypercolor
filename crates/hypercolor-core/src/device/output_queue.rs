@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use hypercolor_types::device::DeviceId;
 use serde::Serialize;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
@@ -16,7 +16,7 @@ use super::traits::{
     DeviceDeliveryStatus, DeviceFrameSink, OutputCadence,
 };
 
-type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
+type BackendHandle = Arc<dyn DeviceBackend>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
 const OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL: u64 = 60;
 const OUTPUT_REASSERTION_RETRY_INTERVAL: Duration = Duration::from_millis(10);
@@ -24,6 +24,14 @@ const WORKER_PHASE_IDLE: u8 = 0;
 const WORKER_PHASE_CADENCE: u8 = 1;
 const WORKER_PHASE_TRANSPORT: u8 = 2;
 static NEXT_QUEUE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub(super) fn next_queue_generation() -> u64 {
+    NEXT_QUEUE_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            (generation != 0).then(|| generation.checked_add(1).unwrap_or(0))
+        })
+        .expect("device output queue generation space exhausted")
+}
 
 pub(super) type OutputLaneHandle = Arc<OutputLane>;
 
@@ -58,7 +66,6 @@ impl OutputLane {
     ) -> DeviceDeliveryAck {
         match self {
             Self::Backend { backend, device_id } => {
-                let mut backend = backend.lock().await;
                 backend
                     .deliver_colors_shared_observed(device_id, id, colors, observer)
                     .await
@@ -1367,14 +1374,6 @@ fn average_micros_ms(total_micros: u64, sample_count: u64) -> u64 {
 fn duration_micros(duration: Duration) -> u64 {
     let micros = duration.as_micros();
     u64::try_from(micros).unwrap_or(u64::MAX)
-}
-
-fn next_queue_generation() -> u64 {
-    NEXT_QUEUE_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
-            (generation != 0).then(|| generation.checked_add(1).unwrap_or(0))
-        })
-        .expect("device output queue generation space exhausted")
 }
 
 fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {

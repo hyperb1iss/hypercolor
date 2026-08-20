@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 
@@ -462,19 +462,19 @@ impl DeviceBackend for NoopBackend {
         self.info.clone()
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }
 }
@@ -885,7 +885,7 @@ impl DriverControlProvider for UnsupportedImpactTestDriver {
 struct DisconnectRecordingBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 type StaticOutputWrites = Arc<StdMutex<Vec<(DeviceId, Vec<[u8; 3]>)>>>;
@@ -908,19 +908,19 @@ impl DeviceBackend for StaticOutputRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         self.writes
             .lock()
             .expect("static output writes lock")
@@ -939,19 +939,19 @@ impl DeviceBackend for IdentifyRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         self.writes
             .lock()
             .expect("identify output writes lock")
@@ -965,7 +965,7 @@ impl DisconnectRecordingBackend {
         Self {
             expected_device_id,
             disconnects,
-            connected: false,
+            connected: AtomicBool::new(false),
         }
     }
 }
@@ -980,7 +980,7 @@ impl DeviceBackend for DisconnectRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
@@ -988,34 +988,34 @@ impl DeviceBackend for DisconnectRecordingBackend {
         true
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("disconnect called while backend was not connected");
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }
 }
 
 async fn register_noop_backend(state: &Arc<AppState>, id: &str, name: &str) {
     let mut manager = state.backend_manager.lock().await;
-    manager.register_backend(Box::new(NoopBackend::new(id, name)));
+    manager.register_backend(Arc::new(NoopBackend::new(id, name)));
 }
 
 /// A `PATCH /api/v1/output` request carrying the given JSON document.
@@ -6254,7 +6254,7 @@ async fn pause_blacks_connected_device_outside_active_layout() {
     let writes = Arc::new(StdMutex::new(Vec::new()));
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(StaticOutputRecordingBackend {
+        manager.register_backend(Arc::new(StaticOutputRecordingBackend {
             writes: Arc::clone(&writes),
         }));
         manager
@@ -11189,7 +11189,7 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
 
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(DisconnectRecordingBackend::new(
+        manager.register_backend(Arc::new(DisconnectRecordingBackend::new(
             device_id,
             Arc::clone(&disconnects),
         )));
@@ -12100,7 +12100,7 @@ async fn identify_device_temporarily_connects_known_network_device() {
     let disconnects = Arc::new(AtomicUsize::new(0));
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(DisconnectRecordingBackend::new(
+        manager.register_backend(Arc::new(DisconnectRecordingBackend::new(
             device_id,
             Arc::clone(&disconnects),
         )));
@@ -12155,7 +12155,7 @@ async fn pause_preempts_identify_and_holds_black_output() {
     let writes = Arc::new(StdMutex::new(Vec::new()));
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(IdentifyRecordingBackend {
+        manager.register_backend(Arc::new(IdentifyRecordingBackend {
             writes: Arc::clone(&writes),
         }));
         manager

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use tokio::sync::Mutex;
 use tracing::{debug, info};
 
 use crate::device::traits::{BackendInfo, DeviceBackend};
@@ -22,6 +23,10 @@ pub struct BlocksBackend {
     /// Socket path for blocksd connection.
     socket_path: PathBuf,
     /// Active connection (None if disconnected).
+    state: Mutex<BlocksBackendState>,
+}
+
+struct BlocksBackendState {
     connection: Option<BlocksConnection>,
     /// Known devices reported by blocksd.
     devices: HashMap<DeviceId, BlocksDevice>,
@@ -53,15 +58,17 @@ impl BlocksBackend {
     pub fn new(socket_path: PathBuf) -> Self {
         Self {
             socket_path,
-            connection: None,
-            devices: HashMap::new(),
-            uid_map: HashMap::new(),
-            brightness: HashMap::new(),
-            reconnect_state: ReconnectState {
-                last_attempt: None,
-                delay: Duration::from_millis(500),
-                consecutive_failures: 0,
-            },
+            state: Mutex::new(BlocksBackendState {
+                connection: None,
+                devices: HashMap::new(),
+                uid_map: HashMap::new(),
+                brightness: HashMap::new(),
+                reconnect_state: ReconnectState {
+                    last_attempt: None,
+                    delay: Duration::from_millis(500),
+                    consecutive_failures: 0,
+                },
+            }),
         }
     }
 
@@ -70,9 +77,14 @@ impl BlocksBackend {
     pub fn default_socket_path() -> PathBuf {
         connection::default_socket_path()
     }
+}
 
+impl BlocksBackendState {
     /// Connect to blocksd if not already connected.
-    async fn ensure_connected(&mut self) -> Result<&mut BlocksConnection> {
+    async fn ensure_connected(
+        &mut self,
+        socket_path: &std::path::Path,
+    ) -> Result<&mut BlocksConnection> {
         if let Some(ref mut conn) = self.connection {
             return Ok(conn);
         }
@@ -89,7 +101,7 @@ impl BlocksBackend {
         self.reconnect_state.last_attempt = Some(Instant::now());
 
         let connect_attempt = async {
-            let mut conn = BlocksConnection::connect(&self.socket_path).await?;
+            let mut conn = BlocksConnection::connect(socket_path).await?;
             let pong = conn.ping().await?;
             Ok::<_, anyhow::Error>((conn, pong))
         }
@@ -141,13 +153,14 @@ impl DeviceBackend for BlocksBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         // If socket doesn't exist, blocksd isn't running — not an error
         if !connection::socket_exists(&self.socket_path) {
             return Ok(vec![]);
         }
 
-        let Ok(conn) = self.ensure_connected().await else {
+        let mut state = self.state.lock().await;
+        let Ok(conn) = state.ensure_connected(&self.socket_path).await else {
             return Ok(vec![]);
         };
 
@@ -155,21 +168,21 @@ impl DeviceBackend for BlocksBackend {
             Ok(r) => r,
             Err(e) => {
                 debug!("blocksd discover failed: {e}");
-                self.handle_disconnect();
+                state.handle_disconnect();
                 return Ok(vec![]);
             }
         };
 
-        self.devices.clear();
-        self.uid_map.clear();
+        state.devices.clear();
+        state.uid_map.clear();
 
         let mut infos = Vec::with_capacity(response.devices.len());
         for dev in &response.devices {
             let info = device_info_from_blocks(dev);
             let device_id = info.id;
 
-            self.uid_map.insert(dev.uid, device_id);
-            self.devices.insert(
+            state.uid_map.insert(dev.uid, device_id);
+            state.devices.insert(
                 device_id,
                 BlocksDevice {
                     uid: dev.uid,
@@ -186,11 +199,18 @@ impl DeviceBackend for BlocksBackend {
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        Ok(self.devices.get(id).map(|d| d.info.clone()))
+        Ok(self
+            .state
+            .lock()
+            .await
+            .devices
+            .get(id)
+            .map(|d| d.info.clone()))
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        let device = self
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        let mut state = self.state.lock().await;
+        let device = state
             .devices
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("unknown blocks device: {id}"))?;
@@ -198,15 +218,16 @@ impl DeviceBackend for BlocksBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(device) = self.devices.get_mut(id) {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        if let Some(device) = self.state.lock().await.devices.get_mut(id) {
             device.connected = false;
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        let device = self
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let mut state = self.state.lock().await;
+        let device = state
             .devices
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("unknown blocks device: {id}"))?;
@@ -217,7 +238,7 @@ impl DeviceBackend for BlocksBackend {
 
         let uid = device.uid;
 
-        let conn = self
+        let conn = state
             .connection
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("blocksd not connected"))?;
@@ -225,7 +246,7 @@ impl DeviceBackend for BlocksBackend {
         match conn.write_frame_binary(uid, colors).await {
             Ok(accepted) => {
                 if accepted {
-                    if let Some(device) = self.devices.get_mut(id) {
+                    if let Some(device) = state.devices.get_mut(id) {
                         device.frames_sent += 1;
                     }
                 } else {
@@ -235,32 +256,33 @@ impl DeviceBackend for BlocksBackend {
                 Ok(())
             }
             Err(e) => {
-                self.handle_disconnect();
+                state.handle_disconnect();
                 Err(e)
             }
         }
     }
 
-    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
-        let device = self
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
+        let mut state = self.state.lock().await;
+        let device = state
             .devices
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("unknown blocks device: {id}"))?;
 
         let uid = device.uid;
 
-        let conn = self
+        let conn = state
             .connection
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("blocksd not connected"))?;
 
         match conn.set_brightness(uid, brightness).await {
             Ok(()) => {
-                self.brightness.insert(*id, brightness);
+                state.brightness.insert(*id, brightness);
                 Ok(())
             }
             Err(e) => {
-                self.handle_disconnect();
+                state.handle_disconnect();
                 Err(e)
             }
         }

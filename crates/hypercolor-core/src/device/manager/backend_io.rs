@@ -9,9 +9,7 @@ use hypercolor_driver_api::DiscoveredDevice;
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload};
 use tracing::debug;
 
-use crate::device::traits::{
-    DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy, OutputCadence,
-};
+use crate::device::traits::{DeviceFrameSink, DeviceLifecyclePolicy, OutputCadence};
 
 use super::BackendHandle;
 
@@ -68,7 +66,7 @@ impl BackendIo {
         device_id: DeviceId,
         timeout: Option<Duration>,
     ) -> Result<OutputCadence> {
-        let mut backend = self.backend.lock().await;
+        let backend = &self.backend;
 
         if let Err(initial_error) = run_backend_operation(
             timeout,
@@ -176,15 +174,13 @@ impl BackendIo {
     }
 
     /// Prime the backend's discovery cache from a scanner result.
-    pub async fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
-        let mut backend = self.backend.lock().await;
-        backend.remember_discovered_device(discovered);
+    pub fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
+        self.backend.remember_discovered_device(discovered);
     }
 
     /// Return backend lifecycle policy for a discovered device.
-    pub async fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
-        let backend = self.backend.lock().await;
-        backend.lifecycle_policy(info)
+    pub fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        self.backend.lifecycle_policy(info)
     }
 
     /// Fetch refreshed metadata for a connected device.
@@ -193,8 +189,7 @@ impl BackendIo {
     ///
     /// Returns an error if metadata retrieval fails.
     pub async fn connected_device_info(&self, device_id: DeviceId) -> Result<Option<DeviceInfo>> {
-        let backend = self.backend.lock().await;
-        backend
+        self.backend
             .connected_device_info(&device_id)
             .await
             .with_context(|| {
@@ -206,27 +201,22 @@ impl BackendIo {
     }
 
     /// Clone the hot-path frame sink for a connected device, if the backend exposes one.
-    pub async fn frame_sink(&self, device_id: DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        let backend = self.backend.lock().await;
-        backend.frame_sink(&device_id)
-    }
-
-    /// Clone the hot-path display sink for a connected device, if the backend exposes one.
-    pub async fn display_sink(&self, device_id: DeviceId) -> Option<Arc<dyn DeviceDisplaySink>> {
-        let backend = self.backend.lock().await;
-        backend.display_sink(&device_id)
+    pub fn frame_sink(&self, device_id: DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.backend.frame_sink(&device_id)
     }
 
     /// Whether this backend can briefly connect an idle device for direct control.
+    #[allow(
+        clippy::unused_async,
+        reason = "control capability lookups share the asynchronous backend I/O facade"
+    )]
     pub async fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
-        let backend = self.backend.lock().await;
-        backend.supports_temporary_direct_control(info)
+        self.backend.supports_temporary_direct_control(info)
     }
 
     /// Whether this backend consumes host-managed attachment profiles.
-    pub async fn supports_host_attachment_profiles(&self, info: &DeviceInfo) -> bool {
-        let backend = self.backend.lock().await;
-        backend.supports_host_attachment_profiles(info)
+    pub fn supports_host_attachment_profiles(&self, info: &DeviceInfo) -> bool {
+        self.backend.supports_host_attachment_profiles(info)
     }
 
     /// Disconnect a device from the backend.
@@ -235,8 +225,7 @@ impl BackendIo {
     ///
     /// Returns an error if the backend disconnect call fails.
     pub async fn disconnect(&self, device_id: DeviceId) -> Result<()> {
-        let mut backend = self.backend.lock().await;
-        backend.disconnect(&device_id).await.with_context(|| {
+        self.backend.disconnect(&device_id).await.with_context(|| {
             format!(
                 "failed to disconnect device {device_id} using backend '{}'",
                 self.backend_id
@@ -250,8 +239,7 @@ impl BackendIo {
     ///
     /// Returns an error if the backend write fails.
     pub async fn write_colors(&self, device_id: DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        let mut backend = self.backend.lock().await;
-        backend
+        self.backend
             .write_colors(&device_id, colors)
             .await
             .with_context(|| {
@@ -269,8 +257,7 @@ impl BackendIo {
     ///
     /// Returns an error if the backend brightness write fails.
     pub async fn set_brightness(&self, device_id: DeviceId, brightness: u8) -> Result<()> {
-        let mut backend = self.backend.lock().await;
-        backend
+        self.backend
             .set_brightness(&device_id, brightness)
             .await
             .with_context(|| {
@@ -287,8 +274,7 @@ impl BackendIo {
     ///
     /// Returns an error if the display write fails.
     pub async fn write_display_frame(&self, device_id: DeviceId, jpeg_data: &[u8]) -> Result<()> {
-        let mut backend = self.backend.lock().await;
-        backend
+        self.backend
             .write_display_frame(&device_id, jpeg_data)
             .await
             .with_context(|| {
@@ -311,8 +297,7 @@ impl BackendIo {
         jpeg_data: Arc<Vec<u8>>,
     ) -> Result<()> {
         let byte_len = jpeg_data.len();
-        let mut backend = self.backend.lock().await;
-        backend
+        self.backend
             .write_display_frame_owned(&device_id, jpeg_data)
             .await
             .with_context(|| {
@@ -335,8 +320,7 @@ impl BackendIo {
     ) -> Result<()> {
         let byte_len = payload.data.len();
         let format = payload.format;
-        let mut backend = self.backend.lock().await;
-        backend
+        self.backend
             .write_display_payload_owned(&device_id, payload)
             .await
             .with_context(|| {

@@ -10,8 +10,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Mutex;
-
 use hypercolor_types::device::DeviceId;
 
 use super::traits::{DeviceBackend, DeviceFrameSink};
@@ -33,12 +31,13 @@ mod warnings;
 
 pub use backend_io::BackendIo;
 use brightness::DeviceOutputBrightness;
+pub use display_output::{DisplayOutputLane, DisplayOutputStatistics};
 use output_coordinator::DeviceOutputCoordinator;
 pub use output_coordinator::DirectControlGuard;
 use routing::{DeviceMapping, RoutingPlan};
 use warnings::DeviceOutputWarnings;
 
-type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
+type BackendHandle = Arc<dyn DeviceBackend>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
 type BackendDeviceKey = (String, DeviceId);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);

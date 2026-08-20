@@ -29,7 +29,7 @@ async fn write_colors_dedups_and_paces_lan_state_frames() {
     let target = socket.local_addr().expect("test socket has local addr");
     let device = test_device("H6163");
     let device_id = build_device_info(&device).id;
-    let mut backend = GoveeBackend::new(GoveeConfig {
+    let backend = GoveeBackend::new(GoveeConfig {
         lan_state_fps: 10,
         ..GoveeConfig::default()
     });
@@ -75,7 +75,7 @@ async fn connect_enables_razer_only_for_validated_profiles() {
         .expect("test socket has local addr");
     let h619a = test_device("H619A");
     let h619a_id = build_device_info(&h619a).id;
-    let mut h619a_backend = GoveeBackend::new(GoveeConfig::default());
+    let h619a_backend = GoveeBackend::new(GoveeConfig::default());
     h619a_backend.remember_device_at(h619a, h619a_target);
 
     h619a_backend
@@ -96,7 +96,7 @@ async fn connect_enables_razer_only_for_validated_profiles() {
         .expect("test socket has local addr");
     let h6163 = test_device("H6163");
     let h6163_id = build_device_info(&h6163).id;
-    let mut h6163_backend = GoveeBackend::new(GoveeConfig::default());
+    let h6163_backend = GoveeBackend::new(GoveeConfig::default());
     h6163_backend.remember_device_at(h6163, h6163_target);
 
     h6163_backend
@@ -116,7 +116,7 @@ async fn write_colors_uses_razer_only_when_led_count_matches() {
     let target = socket.local_addr().expect("test socket has local addr");
     let device = test_device("H619A");
     let device_id = build_device_info(&device).id;
-    let mut backend = GoveeBackend::new(GoveeConfig {
+    let backend = GoveeBackend::new(GoveeConfig {
         razer_fps: 25,
         ..GoveeConfig::default()
     });
@@ -146,7 +146,7 @@ async fn cloud_only_device_uses_v1_control_for_connect_and_color() {
     let (base_url, requests) =
         serve_http_requests(2, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
-    let mut backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
+    let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
     backend.remember_cloud_device(cloud_device);
 
     backend
@@ -178,7 +178,7 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
     let (base_url, requests) =
         serve_http_requests(1, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
-    let mut backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
+    let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
     backend.remember_cloud_device(cloud_device);
 
     let colors = Arc::new(vec![[255, 0, 0], [0, 0, 255]]);
@@ -218,7 +218,7 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
 fn cloud_only_output_cadence_preserves_sub_hz_interval() {
     let cloud_device = test_cloud_device();
     let device_id = build_cloud_discovered_device(cloud_device.clone()).info.id;
-    let mut backend = GoveeBackend::new(GoveeConfig::default());
+    let backend = GoveeBackend::new(GoveeConfig::default());
     backend.remember_cloud_device(cloud_device);
 
     let cadence = backend
@@ -236,7 +236,7 @@ async fn cloud_only_device_uses_v1_control_for_brightness() {
     let (base_url, requests) =
         serve_http_requests(1, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
-    let mut backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
+    let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
     backend.remember_cloud_device(cloud_device);
 
     backend

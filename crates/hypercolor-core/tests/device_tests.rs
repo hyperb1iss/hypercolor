@@ -131,11 +131,11 @@ impl DeviceBackend for MockBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(self.discoverable.clone())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if self.fail_connect.load(Ordering::Relaxed) {
             bail!("mock connect failure for device {id}");
         }
@@ -148,7 +148,7 @@ impl DeviceBackend for MockBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         let mut connected = self.connected.lock().await;
         if let Some(pos) = connected.iter().position(|d| d == id) {
             connected.remove(pos);
@@ -158,7 +158,7 @@ impl DeviceBackend for MockBackend {
         }
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if self.fail_write.load(Ordering::Relaxed) {
             bail!("mock write failure for device {id}");
         }
@@ -272,7 +272,7 @@ async fn backend_info_returns_metadata() {
 async fn backend_discover_returns_devices() {
     let d1 = mock_device_info("LED Strip A");
     let d2 = mock_device_info("LED Strip B");
-    let mut backend = MockBackend::new(vec![d1.clone(), d2.clone()]);
+    let backend = MockBackend::new(vec![d1.clone(), d2.clone()]);
 
     let discovered = backend.discover().await.expect("discover should succeed");
     assert_eq!(discovered.len(), 2);
@@ -284,7 +284,7 @@ async fn backend_discover_returns_devices() {
 async fn backend_connect_and_disconnect() {
     let device = mock_device_info("Test Device");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     // Connect
     backend.connect(&id).await.expect("connect should succeed");
@@ -309,7 +309,7 @@ async fn backend_connect_and_disconnect() {
 async fn backend_double_connect_fails() {
     let device = mock_device_info("Test Device");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.connect(&id).await.expect("first connect succeeds");
     let result = backend.connect(&id).await;
@@ -318,7 +318,7 @@ async fn backend_double_connect_fails() {
 
 #[tokio::test]
 async fn backend_disconnect_unknown_fails() {
-    let mut backend = MockBackend::new(vec![]);
+    let backend = MockBackend::new(vec![]);
     let unknown_id = DeviceId::new();
 
     let result = backend.disconnect(&unknown_id).await;
@@ -329,7 +329,7 @@ async fn backend_disconnect_unknown_fails() {
 async fn backend_write_colors_succeeds() {
     let device = mock_device_info("RGB Strip");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.connect(&id).await.expect("connect succeeds");
 
@@ -349,7 +349,7 @@ async fn backend_write_colors_succeeds() {
 
 #[tokio::test]
 async fn backend_write_to_disconnected_fails() {
-    let mut backend = MockBackend::new(vec![]);
+    let backend = MockBackend::new(vec![]);
     let id = DeviceId::new();
 
     let colors: Vec<[u8; 3]> = vec![[0, 255, 0]; 10];
@@ -364,7 +364,7 @@ async fn backend_write_to_disconnected_fails() {
 async fn backend_connect_failure_propagates() {
     let device = mock_device_info("Flaky Device");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.fail_connect.store(true, Ordering::Relaxed);
     let result = backend.connect(&id).await;
@@ -378,7 +378,7 @@ async fn backend_connect_failure_propagates() {
 async fn backend_write_failure_propagates() {
     let device = mock_device_info("Unreliable Strip");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.connect(&id).await.expect("connect succeeds");
     backend.fail_write.store(true, Ordering::Relaxed);

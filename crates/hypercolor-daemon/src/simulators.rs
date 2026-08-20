@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
@@ -216,7 +216,7 @@ impl SimulatedDisplayRuntime {
 pub struct SimulatedDisplayBackend {
     store: Arc<RwLock<SimulatedDisplayStore>>,
     runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
-    connected: HashSet<DeviceId>,
+    connected: StdMutex<HashSet<DeviceId>>,
 }
 
 impl SimulatedDisplayBackend {
@@ -228,12 +228,17 @@ impl SimulatedDisplayBackend {
         Self {
             store,
             runtime,
-            connected: HashSet::new(),
+            connected: StdMutex::new(HashSet::new()),
         }
     }
 
     async fn store_display_frame(&self, id: &DeviceId, jpeg_data: Arc<Vec<u8>>) -> Result<()> {
-        if !self.connected.contains(id) {
+        if !self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
+        {
             bail!("simulated display {id} is not connected");
         }
         let store = self.store.read().await;
@@ -264,7 +269,7 @@ impl DeviceBackend for SimulatedDisplayBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         let store = self.store.read().await;
         Ok(store
             .list()
@@ -282,7 +287,7 @@ impl DeviceBackend for SimulatedDisplayBackend {
             .map(|config| config.device_info()))
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         let store = self.store.read().await;
         let Some(config) = store.get(*id) else {
             bail!("simulated display {id} is not configured");
@@ -290,17 +295,23 @@ impl DeviceBackend for SimulatedDisplayBackend {
         if !config.enabled {
             bail!("simulated display {id} is disabled");
         }
-        self.connected.insert(*id);
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        self.connected.remove(id);
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
         self.runtime.write().await.remove(*id);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if colors.is_empty() {
             return Ok(());
         }
@@ -308,13 +319,13 @@ impl DeviceBackend for SimulatedDisplayBackend {
         bail!("simulated display {id} does not accept LED color writes");
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
         self.store_display_frame(id, Arc::new(jpeg_data.to_vec()))
             .await
     }
 
     async fn write_display_frame_owned(
-        &mut self,
+        &self,
         id: &DeviceId,
         jpeg_data: Arc<Vec<u8>>,
     ) -> Result<()> {
@@ -408,6 +419,6 @@ pub async fn register_backend_for_tests(
     runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
 ) -> bool {
     let mut manager = backend_manager.lock().await;
-    manager.register_backend(Box::new(SimulatedDisplayBackend::new(store, runtime)));
+    manager.register_backend(Arc::new(SimulatedDisplayBackend::new(store, runtime)));
     true
 }

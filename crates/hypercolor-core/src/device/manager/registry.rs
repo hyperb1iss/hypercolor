@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
 use tracing::debug;
 
 use super::super::traits::DeviceBackend;
@@ -10,7 +9,7 @@ impl BackendManager {
     /// Register a device backend. Uses `backend.info().id` as the key.
     ///
     /// Replaces any existing backend with the same ID.
-    pub fn register_backend(&mut self, backend: Box<dyn DeviceBackend>) {
+    pub fn register_backend(&mut self, backend: Arc<dyn DeviceBackend>) {
         let info = backend.info();
         let backend_id = info.id.clone();
 
@@ -24,8 +23,7 @@ impl BackendManager {
         // They are lazily recreated on the next frame.
         self.output.remove_backend_state(&backend_id);
 
-        self.backends
-            .insert(backend_id, Arc::new(Mutex::new(backend)));
+        self.backends.insert(backend_id, backend);
     }
 
     /// Clone a backend I/O handle without holding the manager across awaits.

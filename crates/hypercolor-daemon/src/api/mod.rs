@@ -591,7 +591,7 @@ impl AppState {
             let mut manager = backend_manager.try_lock().expect(
                 "default app state should register the simulator backend without contention",
             );
-            manager.register_backend(Box::new(SimulatedDisplayBackend::new(
+            manager.register_backend(Arc::new(SimulatedDisplayBackend::new(
                 Arc::clone(&simulated_displays),
                 Arc::clone(&simulated_display_runtime),
             )));

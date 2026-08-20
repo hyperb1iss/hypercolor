@@ -1,10 +1,9 @@
 //! Concurrency and contention tests for [`BackendManager`] frame dispatch.
 //!
-//! The frame-write hot path funnels every async write through
-//! `Arc<Mutex<Box<dyn DeviceBackend>>>`, which means multiple render-loop
-//! tasks writing to different backends should run in parallel, while writes
-//! to the same backend must serialize without dropping frames. Existing
-//! tests cover these paths synchronously; this file stresses them under
+//! Each backend owns its synchronization, while the frame-write hot path uses
+//! independent per-device output lanes. Writes to different backends should
+//! run in parallel, while actor-backed devices must serialize their own
+//! transport without dropping frames. These tests stress the contract under
 //! real concurrent workload using `#[tokio::test]`.
 
 #![allow(clippy::unwrap_used, reason = "test assertions")]
@@ -145,7 +144,7 @@ impl DeviceBackend for MultiDeviceSinkBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(self
             .devices
             .iter()
@@ -153,7 +152,7 @@ impl DeviceBackend for MultiDeviceSinkBackend {
             .collect())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if self.sinks.contains_key(id) {
             Ok(())
         } else {
@@ -161,11 +160,11 @@ impl DeviceBackend for MultiDeviceSinkBackend {
         }
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         self.fallback_count.fetch_add(1, Ordering::AcqRel);
         let Some(sink) = self.sinks.get(id) else {
             bail!("unexpected device id {id}");
@@ -220,7 +219,7 @@ impl DeviceBackend for ContentionMockBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.device_id,
             name: format!("contention-{}", self.backend_id),
@@ -254,7 +253,7 @@ impl DeviceBackend for ContentionMockBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.device_id {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
@@ -262,7 +261,7 @@ impl DeviceBackend for ContentionMockBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.device_id {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
@@ -270,7 +269,7 @@ impl DeviceBackend for ContentionMockBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.device_id {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
@@ -321,7 +320,7 @@ async fn build_manager_with_backends(
         let backend = ContentionMockBackend::new(&backend_id, device_id).with_delay(delay);
         write_counts.push(backend.write_count_handle());
         records.push(backend.records_handle());
-        manager.register_backend(Box::new(backend));
+        manager.register_backend(Arc::new(backend));
 
         let io = manager
             .backend_io(&backend_id)
@@ -447,7 +446,7 @@ async fn same_backend_frame_sinks_do_not_block_each_other() {
     let slow_sink = backend.sink(slow_device);
     let fast_sink = backend.sink(fast_device);
     let fallback_count = backend.fallback_count();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("sink-lanes", slow_device, "sink:slow")
@@ -518,7 +517,7 @@ async fn remapping_same_backend_device_preserves_frame_sink_isolation() {
     let slow_sink = backend.sink(slow_device);
     let fast_sink = backend.sink(fast_device);
     let fallback_count = backend.fallback_count();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("sink-lanes", slow_device, "sink:slow")
@@ -744,14 +743,14 @@ async fn slow_backend_does_not_block_fast_backend() {
     let fast_device = DeviceId::new();
     let fast_backend = ContentionMockBackend::new("fast", fast_device);
     let fast_count = fast_backend.write_count_handle();
-    manager.register_backend(Box::new(fast_backend));
+    manager.register_backend(Arc::new(fast_backend));
     let fast_io = manager.backend_io("fast").unwrap();
     fast_io.connect_with_refresh(fast_device).await.unwrap();
 
     let slow_device = DeviceId::new();
     let slow_backend = ContentionMockBackend::new("slow", slow_device).with_delay(SLOW_DELAY);
     let slow_count = slow_backend.write_count_handle();
-    manager.register_backend(Box::new(slow_backend));
+    manager.register_backend(Arc::new(slow_backend));
     let slow_io = manager.backend_io("slow").unwrap();
     slow_io.connect_with_refresh(slow_device).await.unwrap();
 

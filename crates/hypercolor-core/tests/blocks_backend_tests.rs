@@ -76,7 +76,7 @@ async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
     let socket_path = tempdir.path().join("blocksd.sock");
     let (frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x01)?;
 
-    let mut backend = BlocksBackend::new(socket_path);
+    let backend = BlocksBackend::new(socket_path);
     let discovered = backend.discover().await?;
     let device_id = discovered[0].id;
     backend.connect(&device_id).await?;
@@ -101,7 +101,7 @@ async fn blocks_backend_treats_binary_rejection_as_retryable() -> TestResult {
     let socket_path = tempdir.path().join("blocksd.sock");
     let (_frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x00)?;
 
-    let mut backend = BlocksBackend::new(socket_path);
+    let backend = BlocksBackend::new(socket_path);
     let discovered = backend.discover().await?;
     let device_id = discovered[0].id;
     backend.connect(&device_id).await?;

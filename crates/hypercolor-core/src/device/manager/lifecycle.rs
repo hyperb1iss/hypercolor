@@ -23,7 +23,7 @@ impl BackendManager {
             bail!("backend '{backend_id}' is not registered");
         };
         let output_cadence = io.connect_with_refresh(device_id).await?;
-        let frame_sink = io.frame_sink(device_id).await;
+        let frame_sink = io.frame_sink(device_id);
         self.set_cached_output_cadence(backend_id, device_id, output_cadence);
         self.set_device_frame_sink(backend_id, device_id, frame_sink);
 

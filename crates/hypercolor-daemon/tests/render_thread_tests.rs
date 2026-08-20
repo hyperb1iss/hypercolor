@@ -196,7 +196,7 @@ struct SlowDisconnectFailBackend {
     info: DeviceInfo,
     disconnect_started: Arc<Notify>,
     disconnect_delay: Duration,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 impl SlowDisconnectFailBackend {
@@ -205,7 +205,7 @@ impl SlowDisconnectFailBackend {
             info,
             disconnect_started,
             disconnect_delay,
-            connected: true,
+            connected: AtomicBool::new(true),
         }
     }
 }
@@ -220,30 +220,30 @@ impl DeviceBackend for SlowDisconnectFailBackend {
         }
     }
 
-    async fn discover(&mut self) -> anyhow::Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> anyhow::Result<Vec<DeviceInfo>> {
         Ok(vec![self.info.clone()])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
+    async fn connect(&self, id: &DeviceId) -> anyhow::Result<()> {
         if *id != self.info.id {
             anyhow::bail!("unknown slow-disconnect test device {id}");
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> anyhow::Result<()> {
         if *id != self.info.id {
             anyhow::bail!("unknown slow-disconnect test device {id}");
         }
         self.disconnect_started.notify_waiters();
         tokio::time::sleep(self.disconnect_delay).await;
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> anyhow::Result<()> {
-        if !self.connected {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> anyhow::Result<()> {
+        if !self.connected.load(Ordering::Acquire) {
             anyhow::bail!("slow-disconnect test device {id} is disconnected");
         }
         anyhow::bail!("forced async write failure for slow-disconnect test device {id}");
@@ -1330,11 +1330,11 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(backend));
+    backend_manager.register_backend(Arc::new(backend));
     backend_manager.map_device("mock:audio-strip", "mock", device_id);
 
     let layout = test_layout(vec![strip_zone("zone_audio", "mock:audio-strip", 10)]);
@@ -2547,11 +2547,11 @@ async fn effect_engine_removal_does_not_break_single_group_fast_path() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(backend));
+    backend_manager.register_backend(Arc::new(backend));
     backend_manager.map_device("mock:strip", "mock", device_id);
 
     // Set up spatial layout with one zone.
@@ -2762,7 +2762,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     backend.fail_write = true;
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(backend));
+    backend_manager.register_backend(Arc::new(backend));
     backend_manager.map_device(&layout_device_id, "mock", device_id);
     let backend_manager = Arc::new(Mutex::new(backend_manager));
 
@@ -2950,7 +2950,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     let disconnect_started = Arc::new(Notify::new());
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(SlowDisconnectFailBackend::new(
+    backend_manager.register_backend(Arc::new(SlowDisconnectFailBackend::new(
         info.clone(),
         Arc::clone(&disconnect_started),
         Duration::from_millis(650),

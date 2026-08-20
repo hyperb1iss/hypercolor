@@ -423,7 +423,7 @@ impl BackendRebindActions for DaemonDriverHost {
         };
 
         let mut manager = self.backend_manager.lock().await;
-        manager.register_backend(backend);
+        manager.register_backend(Arc::from(backend));
         Ok(())
     }
 }

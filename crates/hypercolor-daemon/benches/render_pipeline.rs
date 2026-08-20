@@ -1,5 +1,5 @@
 use std::hint::black_box;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -154,7 +154,7 @@ fn build_backend_and_spatial(runtime: &Runtime) -> (BackendManager, SpatialEngin
     }
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     for (layout_device_id, device_id) in mappings {
         manager.map_device(&layout_device_id, "mock", device_id);
     }

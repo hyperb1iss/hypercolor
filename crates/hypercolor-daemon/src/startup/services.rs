@@ -588,11 +588,11 @@ impl DaemonState {
                     "backend manager lock unexpectedly contended during daemon initialization"
                 )
             })?;
-            backend_manager_inner.register_backend(Box::new(SimulatedDisplayBackend::new(
+            backend_manager_inner.register_backend(Arc::new(SimulatedDisplayBackend::new(
                 Arc::clone(&simulated_displays),
                 Arc::clone(&simulated_display_runtime),
             )));
-            backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
+            backend_manager_inner.register_backend(Arc::new(MockDeviceBackend::new()));
             network::register_enabled_device_backends(
                 &mut backend_manager_inner,
                 driver_registry.as_ref(),

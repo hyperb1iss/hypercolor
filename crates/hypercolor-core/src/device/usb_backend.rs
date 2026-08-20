@@ -6,7 +6,7 @@ use std::cmp::min;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -577,10 +577,19 @@ impl UsbBackend {
 /// Core USB backend for HAL-managed device families.
 #[derive(Default)]
 pub struct UsbBackend {
-    pending: HashMap<DeviceId, PendingUsbDevice>,
-    connected: HashMap<DeviceId, UsbDevice>,
+    pending: StdRwLock<HashMap<DeviceId, PendingUsbDevice>>,
+    connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedUsbDevice>>>,
     protocol_configs: UsbProtocolConfigStore,
     enabled_driver_ids: Option<BTreeSet<String>>,
+}
+
+struct ConnectedUsbDevice {
+    device: tokio::sync::Mutex<UsbDevice>,
+    info_template: DeviceInfo,
+    protocol: Arc<dyn Protocol>,
+    target_fps: Option<u32>,
+    frame_sink: Arc<dyn DeviceFrameSink>,
+    display_sink: Option<Arc<dyn DeviceDisplaySink>>,
 }
 
 impl UsbBackend {
@@ -935,13 +944,15 @@ impl DeviceBackend for UsbBackend {
 
     fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
         self.pending
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&info.id)
             .map_or_else(DeviceLifecyclePolicy::default, |pending| {
                 lifecycle_policy_for_transport(pending.descriptor.transport)
             })
     }
 
-    async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
         let mut scanner = self
             .enabled_driver_ids
             .as_ref()
@@ -950,22 +961,25 @@ impl DeviceBackend for UsbBackend {
             });
         let discovered = scanner.scan().await?;
 
-        self.pending.clear();
-
+        let mut pending_devices = HashMap::new();
         let mut info = Vec::with_capacity(discovered.len());
         for discovered_device in discovered {
             if let Some(pending) = pending_from_discovered(&discovered_device) {
-                self.pending.insert(discovered_device.info.id, pending);
+                pending_devices.insert(discovered_device.info.id, pending);
             }
             info.push(discovered_device.info);
         }
+        *self.pending.write().unwrap_or_else(PoisonError::into_inner) = pending_devices;
 
         Ok(info)
     }
 
-    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
         if let Some(pending) = pending_from_discovered(discovered) {
-            self.pending.insert(discovered.info.id, pending);
+            self.pending
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(discovered.info.id, pending);
         }
     }
 
@@ -973,8 +987,15 @@ impl DeviceBackend for UsbBackend {
         clippy::too_many_lines,
         reason = "USB connect owns discovery handoff, init, diagnostics, and actor startup"
     )]
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(device) = self.connected.get_mut(id) {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        let connected = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        if let Some(connected) = connected {
+            let mut device = connected.device.lock().await;
             device.ensure_actor_ready(*id).await.with_context(|| {
                 format!("USB device {id} is already connected but its actor is unhealthy")
             })?;
@@ -982,20 +1003,22 @@ impl DeviceBackend for UsbBackend {
             return Ok(());
         }
 
-        let pending_ids = self
-            .pending
-            .keys()
-            .take(4)
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let pending = self.pending.get(id).cloned().with_context(|| {
-            format!(
-                "device {id} has no pending USB descriptor; run discover() (pending_cache_size={}, sample_ids=[{}])",
-                self.pending.len(),
-                pending_ids
-            )
-        })?;
+        let pending = {
+            let pending_guard = self.pending.read().unwrap_or_else(PoisonError::into_inner);
+            let pending_ids = pending_guard
+                .keys()
+                .take(4)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            pending_guard.get(id).cloned().with_context(|| {
+                format!(
+                    "device {id} has no pending USB descriptor; run discover() (pending_cache_size={}, sample_ids=[{}])",
+                    pending_guard.len(),
+                    pending_ids
+                )
+            })?
+        };
         debug!(
             device_id = %id,
             vendor_id = format_args!("{:04X}", pending.vendor_id),
@@ -1143,54 +1166,84 @@ impl DeviceBackend for UsbBackend {
             Arc::clone(&last_async_error),
         );
 
-        self.connected.insert(
-            *id,
-            UsbDevice {
-                protocol,
-                transport_name,
-                target_fps,
-                resolved_led_count: usize::try_from(resolved_info.total_led_count())
-                    .unwrap_or_default(),
-                frame_tx,
-                display_tx,
-                command_tx,
-                actor_task: Some(actor_task),
-                active,
-                lifecycle_gate,
-                last_async_error,
-                info_template: pending.info_template,
-                frame_diagnostics_emitted: false,
-                non_black_frame_diagnostics_emitted: false,
-            },
-        );
+        let device = UsbDevice {
+            protocol,
+            transport_name,
+            target_fps,
+            resolved_led_count: usize::try_from(resolved_info.total_led_count())
+                .unwrap_or_default(),
+            frame_tx,
+            display_tx,
+            command_tx,
+            actor_task: Some(actor_task),
+            active,
+            lifecycle_gate,
+            last_async_error,
+            info_template: pending.info_template,
+            frame_diagnostics_emitted: false,
+            non_black_frame_diagnostics_emitted: false,
+        };
+        let frame_sink = device.frame_sink(*id);
+        let display_sink = device
+            .info_template
+            .capabilities
+            .has_display
+            .then(|| device.display_sink(*id));
+        let connected = ConnectedUsbDevice {
+            info_template: device.info_template.clone(),
+            protocol: Arc::clone(&device.protocol),
+            target_fps: device.target_fps,
+            frame_sink,
+            display_sink,
+            device: tokio::sync::Mutex::new(device),
+        };
+        self.connected
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, Arc::new(connected));
 
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        let Some(mut device) = self.connected.remove(id) else {
-            self.pending.remove(id);
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        let connected = self
+            .connected
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        let Some(connected) = connected else {
+            self.pending
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(id);
             return Ok(());
         };
 
+        let mut device = connected.device.lock().await;
         let disconnect_result = device.shutdown(*id).await;
-        self.pending.remove(id);
+        self.pending
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
         disconnect_result
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         self.write_colors_shared(id, Arc::new(colors.to_vec()))
             .await
     }
 
-    async fn write_colors_shared(
-        &mut self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<()> {
-        let Some(device) = self.connected.get_mut(id) else {
+    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        let connected = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(connected) = connected else {
             bail!("device {id} is not connected");
         };
+        let mut device = connected.device.lock().await;
 
         device.ensure_actor_ready(*id).await?;
 
@@ -1236,13 +1289,13 @@ impl DeviceBackend for UsbBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
         self.write_display_frame_owned(id, Arc::new(jpeg_data.to_vec()))
             .await
     }
 
     async fn write_display_frame_owned(
-        &mut self,
+        &self,
         id: &DeviceId,
         jpeg_data: Arc<Vec<u8>>,
     ) -> Result<()> {
@@ -1251,13 +1304,20 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn write_display_payload_owned(
-        &mut self,
+        &self,
         id: &DeviceId,
         payload: Arc<OwnedDisplayFramePayload>,
     ) -> Result<()> {
-        let Some(device) = self.connected.get_mut(id) else {
+        let connected = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(connected) = connected else {
             bail!("device {id} is not connected");
         };
+        let mut device = connected.device.lock().await;
 
         if !device.info_template.capabilities.has_display {
             bail!("USB protocol does not support display output for device {id}");
@@ -1277,16 +1337,27 @@ impl DeviceBackend for UsbBackend {
         Ok(())
     }
 
-    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
-        let Some(device) = self.connected.get_mut(id) else {
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
+        let connected = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(connected) = connected else {
             bail!("device {id} is not connected");
         };
 
+        let mut device = connected.device.lock().await;
         device.set_brightness(*id, brightness).await
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        let Some(device) = self.connected.get(id) else {
+        let connected = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(device) = connected.get(id) else {
             return Ok(None);
         };
 
@@ -1298,25 +1369,27 @@ impl DeviceBackend for UsbBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.connected.get(id).and_then(|device| device.target_fps)
+        self.connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(|device| device.target_fps)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.connected.get(id).map(|device| device.frame_sink(*id))
+        self.connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|device| Arc::clone(&device.frame_sink))
     }
 
     fn display_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceDisplaySink>> {
         self.connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
-            .filter(|device| {
-                device.info_template.capabilities.has_display
-                    && device.active.load(Ordering::Acquire)
-                    && device
-                        .actor_task
-                        .as_ref()
-                        .is_some_and(|task| !task.is_finished())
-            })
-            .map(|device| device.display_sink(*id))
+            .and_then(|device| device.display_sink.as_ref().map(Arc::clone))
     }
 }
 

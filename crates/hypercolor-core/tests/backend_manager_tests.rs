@@ -17,7 +17,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
 };
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, OwnedDisplayFramePayload, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -84,25 +84,25 @@ impl DeviceBackend for SharedSlowBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(Vec::new())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
         }
@@ -164,7 +164,7 @@ impl DeviceBackend for SlowRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Slow Device".to_owned(),
@@ -185,15 +185,15 @@ impl DeviceBackend for SlowRecordingBackend {
         }])
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -227,7 +227,7 @@ impl DeviceBackend for SlowRecordingBackend {
 
 struct DirectControlRecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     brightness_writes: Arc<Mutex<Vec<u8>>>,
 }
@@ -250,7 +250,7 @@ impl SharedPayloadRecordingBackend {
 
 struct FailingDisconnectBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -263,7 +263,7 @@ impl DeviceBackend for FailingDisconnectBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Failing Disconnect Device".to_owned(),
@@ -284,26 +284,26 @@ impl DeviceBackend for FailingDisconnectBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         bail!("simulated disconnect failure")
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("write while disconnected");
         }
         Ok(())
@@ -320,7 +320,7 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Shared Payload Device".to_owned(),
@@ -341,29 +341,25 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("borrowed color path should not be used for shared payload backend")
     }
 
-    async fn write_colors_shared(
-        &mut self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<()> {
+    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -530,7 +526,7 @@ impl DeviceBackend for FastFrameSinkBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Fast Sink Device".to_owned(),
@@ -551,21 +547,21 @@ impl DeviceBackend for FastFrameSinkBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("backend-wide write path should not be used when a frame sink is available")
     }
 
@@ -600,7 +596,7 @@ impl DirectControlRecordingBackend {
     ) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             writes,
             brightness_writes,
         }
@@ -617,7 +613,7 @@ impl DeviceBackend for DirectControlRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Recording Device".to_owned(),
@@ -647,29 +643,29 @@ impl DeviceBackend for DirectControlRecordingBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("write while disconnected");
         }
 
@@ -677,11 +673,11 @@ impl DeviceBackend for DirectControlRecordingBackend {
         Ok(())
     }
 
-    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("brightness change while disconnected");
         }
 
@@ -727,7 +723,7 @@ impl DeviceBackend for FailOnceRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Fail Once Device".to_owned(),
@@ -748,15 +744,15 @@ impl DeviceBackend for FailOnceRecordingBackend {
         }])
     }
 
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -782,7 +778,7 @@ impl DeviceBackend for FailOnceRecordingBackend {
 
 struct MetadataRefreshingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     refreshed_info: DeviceInfo,
 }
 
@@ -790,7 +786,7 @@ impl MetadataRefreshingBackend {
     fn new(expected_device_id: DeviceId) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             refreshed_info: DeviceInfo {
                 id: expected_device_id,
                 name: "Connected Metadata Device".to_owned(),
@@ -841,7 +837,7 @@ impl DeviceBackend for MetadataRefreshingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Initial Metadata Device".to_owned(),
@@ -876,28 +872,31 @@ impl DeviceBackend for MetadataRefreshingBackend {
             bail!("unexpected device id {id}");
         }
 
-        Ok(self.connected.then_some(self.refreshed_info.clone()))
+        Ok(self
+            .connected
+            .load(Ordering::Acquire)
+            .then_some(self.refreshed_info.clone()))
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -908,7 +907,7 @@ impl DeviceBackend for MetadataRefreshingBackend {
 
 struct DisplayRecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     display_writes: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
@@ -916,7 +915,7 @@ impl DisplayRecordingBackend {
     fn new(expected_device_id: DeviceId, display_writes: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             display_writes,
         }
     }
@@ -924,9 +923,9 @@ impl DisplayRecordingBackend {
 
 struct DiscoverRetryBackend {
     expected_device_id: DeviceId,
-    connected: bool,
-    connect_attempts: u32,
-    discover_count: u32,
+    connected: AtomicBool,
+    connect_attempts: AtomicUsize,
+    discover_count: AtomicUsize,
     target_fps: u32,
 }
 
@@ -934,9 +933,9 @@ impl DiscoverRetryBackend {
     fn new(expected_device_id: DeviceId, target_fps: u32) -> Self {
         Self {
             expected_device_id,
-            connected: false,
-            connect_attempts: 0,
-            discover_count: 0,
+            connected: AtomicBool::new(false),
+            connect_attempts: AtomicUsize::new(0),
+            discover_count: AtomicUsize::new(0),
             target_fps,
         }
     }
@@ -952,8 +951,8 @@ impl DeviceBackend for DiscoverRetryBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        self.discover_count = self.discover_count.saturating_add(1);
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
+        self.discover_count.fetch_add(1, Ordering::Relaxed);
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Retry Device".to_owned(),
@@ -983,34 +982,34 @@ impl DeviceBackend for DiscoverRetryBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connect_attempts = self.connect_attempts.saturating_add(1);
-        if self.connect_attempts == 1 {
+        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+        if self.connect_attempts.load(Ordering::Relaxed) == 1 {
             bail!("first connect attempt should fail");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("write while disconnected");
         }
 
@@ -1018,13 +1017,14 @@ impl DeviceBackend for DiscoverRetryBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        (*id == self.expected_device_id && self.connected).then_some(self.target_fps)
+        (*id == self.expected_device_id && self.connected.load(Ordering::Acquire))
+            .then_some(self.target_fps)
     }
 }
 
 struct CleanupRetryBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     connect_attempts: Arc<AtomicUsize>,
     disconnect_attempts: Arc<AtomicUsize>,
     discover_attempts: Arc<AtomicUsize>,
@@ -1055,7 +1055,7 @@ impl CleanupRetryBackend {
     ) -> Self {
         Self {
             expected_device_id,
-            connected: true,
+            connected: AtomicBool::new(true),
             connect_attempts,
             disconnect_attempts,
             discover_attempts,
@@ -1074,7 +1074,7 @@ impl DeviceBackend for CleanupRetryBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         self.discover_attempts.fetch_add(1, Ordering::Relaxed);
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
@@ -1105,35 +1105,35 @@ impl DeviceBackend for CleanupRetryBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
         self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        if self.connected {
+        if self.connected.load(Ordering::Acquire) {
             bail!("stale session still connected");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
         self.disconnect_attempts.fetch_add(1, Ordering::Relaxed);
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("write while disconnected");
         }
 
@@ -1141,7 +1141,8 @@ impl DeviceBackend for CleanupRetryBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        (*id == self.expected_device_id && self.connected).then_some(self.target_fps)
+        (*id == self.expected_device_id && self.connected.load(Ordering::Acquire))
+            .then_some(self.target_fps)
     }
 }
 
@@ -1155,7 +1156,7 @@ impl DeviceBackend for TimeoutConnectBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         self.discover_attempts.fetch_add(1, Ordering::Relaxed);
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
@@ -1177,7 +1178,7 @@ impl DeviceBackend for TimeoutConnectBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1187,7 +1188,7 @@ impl DeviceBackend for TimeoutConnectBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1196,7 +1197,7 @@ impl DeviceBackend for TimeoutConnectBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1215,7 +1216,7 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         self.discover_attempts.fetch_add(1, Ordering::Relaxed);
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
@@ -1237,7 +1238,7 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1247,7 +1248,7 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
             .context("failed to run init sequence for Ableton Push 2")
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1256,7 +1257,7 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1275,7 +1276,7 @@ impl DeviceBackend for DisplayRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             id: self.expected_device_id,
             name: "Display Device".to_owned(),
@@ -1309,25 +1310,25 @@ impl DeviceBackend for DisplayRecordingBackend {
         }])
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1335,11 +1336,11 @@ impl DeviceBackend for DisplayRecordingBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("display write while disconnected");
         }
 
@@ -1582,7 +1583,7 @@ fn new_manager_is_empty() {
 fn register_backend() {
     let mut manager = BackendManager::new();
     let backend = MockDeviceBackend::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     assert_eq!(manager.backend_count(), 1);
     let ids = manager.backend_ids();
@@ -1592,8 +1593,8 @@ fn register_backend() {
 #[test]
 fn register_replaces_existing_backend() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     // Still only one backend — replaced, not duplicated.
     assert_eq!(manager.backend_count(), 1);
@@ -1602,7 +1603,7 @@ fn register_replaces_existing_backend() {
 #[test]
 fn routing_snapshot_marks_registered_backend() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     let device_id = DeviceId::new();
     manager.map_device("mock:device_1", "mock", device_id);
@@ -1671,7 +1672,7 @@ fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
     .with_target_fps(33);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
     runtime
@@ -1698,7 +1699,7 @@ async fn connect_device_connects_backend_and_maps_layout_device() {
 
     let backend = MockDeviceBackend::new().with_device(&mock_config);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("mock", device_id, "mock:connect-flow")
@@ -1724,7 +1725,7 @@ async fn write_frame_hands_shared_led_payload_to_backend_queue() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let backend = SharedPayloadRecordingBackend::new(device_id, Arc::clone(&writes));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("shared", device_id, "shared:leds")
         .await
@@ -1775,7 +1776,7 @@ async fn disconnect_device_disconnects_and_unmaps_layout_device() {
 
     let backend = MockDeviceBackend::new().with_device(&mock_config);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("mock", device_id, "mock:disconnect-flow")
@@ -1804,10 +1805,10 @@ async fn disconnect_device_cleans_routing_even_when_backend_disconnect_fails() {
     let device_id = DeviceId::new();
     let backend = FailingDisconnectBackend {
         expected_device_id: device_id,
-        connected: false,
+        connected: AtomicBool::new(false),
     };
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("fail_disconnect", device_id, "fail_disconnect:zombie")
@@ -1856,7 +1857,7 @@ async fn connect_device_caches_backend_target_fps_for_output_queue() {
     .with_target_fps(37);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:fps-cache")
         .await
@@ -1896,7 +1897,7 @@ async fn disconnect_device_surfaces_backend_errors() {
 
     let backend = MockDeviceBackend::new().with_device(&mock_config);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let error = manager
         .disconnect_device("mock", device_id, "mock:error")
@@ -1921,11 +1922,11 @@ async fn write_device_colors_writes_immediately_to_connected_device() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .write_device_colors("mock", device_id, &[[1, 2, 3]; 4])
@@ -1937,7 +1938,7 @@ async fn write_device_colors_writes_immediately_to_connected_device() {
 async fn backend_io_connect_with_refresh_retries_and_caches_target_fps() {
     let device_id = DeviceId::new();
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DiscoverRetryBackend::new(device_id, 48)));
+    manager.register_backend(Arc::new(DiscoverRetryBackend::new(device_id, 48)));
 
     let io = manager
         .backend_io("retry")
@@ -1961,7 +1962,7 @@ async fn backend_io_connect_with_refresh_cleans_up_stale_session_before_retry() 
     let disconnect_attempts = Arc::new(AtomicUsize::new(0));
     let discover_attempts = Arc::new(AtomicUsize::new(0));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(CleanupRetryBackend::new(
+    manager.register_backend(Arc::new(CleanupRetryBackend::new(
         device_id,
         Arc::clone(&connect_attempts),
         Arc::clone(&disconnect_attempts),
@@ -1996,7 +1997,7 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     let io = manager
         .backend_io("slow")
         .expect("backend io handle should exist");
@@ -2033,7 +2034,7 @@ async fn backend_io_connect_timeout_skips_discovery_refresh_retry() {
     let discover_attempts = Arc::new(AtomicUsize::new(0));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(TimeoutConnectBackend {
+    manager.register_backend(Arc::new(TimeoutConnectBackend {
         expected_device_id: device_id,
         connect_attempts: Arc::clone(&connect_attempts),
         disconnect_attempts: Arc::clone(&disconnect_attempts),
@@ -2073,7 +2074,7 @@ async fn backend_io_transport_timeout_skips_discovery_refresh_retry() {
     let discover_attempts = Arc::new(AtomicUsize::new(0));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(TransportTimeoutConnectBackend {
+    manager.register_backend(Arc::new(TransportTimeoutConnectBackend {
         expected_device_id: device_id,
         connect_attempts: Arc::clone(&connect_attempts),
         disconnect_attempts: Arc::clone(&disconnect_attempts),
@@ -2112,7 +2113,7 @@ async fn backend_io_write_colors_targets_backend_directly() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+    manager.register_backend(Arc::new(DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2138,7 +2139,7 @@ async fn backend_io_set_brightness_targets_backend_directly() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+    manager.register_backend(Arc::new(DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2167,7 +2168,7 @@ async fn backend_io_disconnect_stops_future_direct_writes() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+    manager.register_backend(Arc::new(DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2194,7 +2195,7 @@ async fn backend_io_disconnect_stops_future_direct_writes() {
 async fn backend_io_connected_device_info_returns_backend_metadata() {
     let device_id = DeviceId::new();
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MetadataRefreshingBackend::new(device_id)));
+    manager.register_backend(Arc::new(MetadataRefreshingBackend::new(device_id)));
 
     let io = manager
         .backend_io("metadata")
@@ -2218,7 +2219,7 @@ async fn backend_io_write_display_frame_targets_backend_directly() {
     let device_id = DeviceId::new();
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DisplayRecordingBackend::new(
+    manager.register_backend(Arc::new(DisplayRecordingBackend::new(
         device_id,
         Arc::clone(&display_writes),
     )));
@@ -2258,7 +2259,7 @@ async fn set_device_brightness_targets_backend_directly() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
 
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2266,7 +2267,7 @@ async fn set_device_brightness_targets_backend_directly() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .set_device_brightness("recording", device_id, 128)
@@ -2283,11 +2284,11 @@ async fn set_device_brightness_targets_backend_directly() {
 #[tokio::test]
 async fn connected_device_info_returns_backend_metadata() {
     let device_id = DeviceId::new();
-    let mut backend = MetadataRefreshingBackend::new(device_id);
+    let backend = MetadataRefreshingBackend::new(device_id);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let info = manager
         .connected_device_info("metadata", device_id)
@@ -2312,11 +2313,11 @@ async fn write_device_display_frame_targets_backend_directly() {
     let device_id = DeviceId::new();
     let display_writes = Arc::new(Mutex::new(Vec::new()));
 
-    let mut backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
+    let backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xDB];
     manager
@@ -2328,12 +2329,43 @@ async fn write_device_display_frame_targets_backend_directly() {
 }
 
 #[tokio::test]
+async fn display_output_lane_tracks_delivery_telemetry() {
+    let device_id = DeviceId::new();
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    let lane = manager
+        .display_output_lane("display", device_id)
+        .expect("registered display backend should expose a lane");
+
+    let initial = lane.statistics();
+    assert_ne!(initial.queue_generation, 0);
+    assert_eq!(initial.attempts, 0);
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        16,
+        16,
+        Arc::new(vec![0xFF, 0xD8, 0xFF, 0xDB]),
+    )))
+    .await
+    .expect("display delivery should succeed");
+
+    let delivered = lane.statistics();
+    assert_eq!(delivered.queue_generation, initial.queue_generation);
+    assert_eq!(delivered.attempts, 1);
+    assert_eq!(delivered.completed, 1);
+    assert_eq!(delivered.failed, 0);
+}
+
+#[tokio::test]
 async fn direct_control_suppresses_queued_writes_until_released() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
 
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2341,7 +2373,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:device", "recording", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "recording:device", 4)]);
@@ -2437,11 +2469,11 @@ async fn write_frame_routes_to_correct_backend() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:strip_1", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:strip_1", 10)]);
@@ -2462,7 +2494,7 @@ async fn write_frame_scales_device_output_brightness() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2470,7 +2502,7 @@ async fn write_frame_scales_device_output_brightness() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
     manager.set_device_output_brightness(device_id, 0.5);
 
@@ -2536,7 +2568,7 @@ async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2544,7 +2576,7 @@ async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "recording:strip", 3)]);
@@ -2579,7 +2611,7 @@ async fn write_frame_lifts_dark_chromatic_colors_without_blowing_out_neutrals() 
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2587,7 +2619,7 @@ async fn write_frame_lifts_dark_chromatic_colors_without_blowing_out_neutrals() 
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "recording:strip", 3)]);
@@ -2648,11 +2680,11 @@ async fn write_frame_reuses_compiled_routing_plan_for_stable_layout() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:cached-strip", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:cached-strip", 5)]);
@@ -2682,11 +2714,11 @@ async fn ordered_routing_excludes_display_helper_zones() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:display-helper", "mock", device_id);
 
     let mut display_zone = make_zone("display_helper", "mock:display-helper", 16);
@@ -2719,11 +2751,11 @@ async fn write_frame_rebuilds_routing_plan_when_layout_changes() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:cached-strip", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:cached-strip", 5)]);
@@ -2748,7 +2780,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2756,7 +2788,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
 
     let mut dim_zone = make_zone("zone_0", "recording:strip", 4);
@@ -2825,11 +2857,11 @@ async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("usb:dygma-defy", "mock", device_id);
 
     let mut zone = make_zone("zone_right_keys", "usb:dygma-defy", 4);
@@ -2998,7 +3030,7 @@ fn unassigned_output_zones_treats_slot_ids_as_zone_aliases() {
 #[tokio::test]
 async fn write_frame_unmapped_zones_are_silently_skipped() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     let layout = make_layout(vec![make_zone("zone_0", "wled:unknown_device", 5)]);
 
@@ -3016,7 +3048,7 @@ async fn write_frame_unmapped_zones_are_silently_skipped() {
 #[tokio::test(flavor = "current_thread")]
 async fn write_frame_unmapped_zones_stay_quiet_until_warnings_enabled() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     let layout_device_id = "wled:unknown_device";
     let layout = make_layout(vec![make_zone("zone_0", layout_device_id, 5)]);
@@ -3038,7 +3070,7 @@ async fn write_frame_unmapped_zones_stay_quiet_until_warnings_enabled() {
 #[tokio::test(flavor = "current_thread")]
 async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
     manager.enable_unmapped_layout_warnings();
 
     let layout_device_id = "wled:unknown_device";
@@ -3099,7 +3131,7 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
     backend.fail_write = true;
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:failing", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:failing", 5)]);
@@ -3160,7 +3192,7 @@ async fn write_frame_dedupes_repeated_async_write_failure_warnings() {
     backend.fail_write = true;
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:failing", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:failing", 5)]);
@@ -3204,11 +3236,11 @@ async fn write_frame_groups_multiple_zones_per_device() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:multi", "mock", device_id);
 
     // Two zones map to the same device — colors should be concatenated.
@@ -3248,7 +3280,7 @@ async fn write_frame_places_colors_into_configured_segments() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:left-segment",
         "slow",
@@ -3312,7 +3344,7 @@ async fn write_frame_fills_segment_from_single_sampled_color() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:point-zone",
         "slow",
@@ -3356,7 +3388,7 @@ async fn write_frame_resamples_segment_when_sample_count_differs() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:resampled-zone",
         "slow",
@@ -3403,7 +3435,7 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:dygma-defy",
         "slow",
@@ -3502,7 +3534,7 @@ async fn write_frame_routes_slot_alias_zone_name_to_hardware_segment() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:nollie-32",
         "slow",
@@ -3588,7 +3620,7 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:dygma-defy",
         "slow",
@@ -3679,7 +3711,7 @@ async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:mapped-zone",
         "slow",
@@ -3727,7 +3759,7 @@ async fn write_frame_treats_identity_zone_led_mapping_as_direct_order() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:identity-mapped-zone",
         "slow",
@@ -3775,7 +3807,7 @@ async fn write_frame_uses_attachment_led_range_within_mapped_device() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:prismrgb-prism-s",
         "slow",
@@ -3824,7 +3856,7 @@ async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() 
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("usb:corsair-aio", "slow", device_id);
 
     let mut zone = make_zone("zone_aio", "usb:corsair-aio", 24);
@@ -3880,7 +3912,7 @@ async fn write_frame_uses_absolute_attachment_coordinates_for_segmented_logical_
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "attachment:gpu",
         "slow",
@@ -3948,7 +3980,7 @@ async fn write_frame_uses_mapped_segment_when_attachment_length_already_matches(
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "attachment-usb-16d0-1294-a04328385154315431202020ff01332e-gpu-strimer-120-0",
         "slow",
@@ -4011,11 +4043,11 @@ async fn write_frame_unknown_zone_id_warns_but_continues() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:strip", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:strip", 5)]);
@@ -4053,7 +4085,7 @@ async fn write_frame_returns_immediately_with_slow_backend() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 10)]);
@@ -4115,7 +4147,7 @@ async fn shared_backend_output_queues_serialize_without_starving_peers() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("shared_slow", left_id, "shared:left")
         .await
@@ -4188,7 +4220,7 @@ async fn device_output_statistics_tracks_payload_bytes_on_success() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:bytes", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:bytes", 4)]);
@@ -4233,7 +4265,7 @@ async fn device_output_statistics_tracks_async_write_errors() {
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("fail_once:errors", "fail_once", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "fail_once:errors", 4)]);
@@ -4278,7 +4310,7 @@ async fn write_frame_drops_stale_intermediate_payloads() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
@@ -4354,7 +4386,7 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
@@ -4399,7 +4431,7 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
     .with_max_frame_silence(max_frame_silence);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:reassert")
         .await
@@ -4454,7 +4486,7 @@ async fn cached_payload_reassertion_uses_normal_failure_and_ack_telemetry() {
             .with_max_frame_silence(Duration::from_millis(40));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fail_once", device_id, "fail_once:reassert")
         .await
@@ -4508,7 +4540,7 @@ async fn write_frame_retries_identical_payload_after_async_write_error() {
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("fail_once:strip", "fail_once", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "fail_once:strip", 4)]);
@@ -4551,7 +4583,7 @@ async fn reuse_routed_frame_outputs_keeps_identical_successful_payload_quiet() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
@@ -4592,7 +4624,7 @@ async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_err
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("fail_once:strip", "fail_once", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "fail_once:strip", 4)]);
@@ -4642,7 +4674,7 @@ async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
     .with_write_times(Arc::clone(&write_times));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:paced")
         .await
@@ -4704,7 +4736,7 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
     .with_target_fps(5);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:latest")
         .await
@@ -4768,7 +4800,7 @@ async fn paced_output_queue_sends_fast_frame_sink_while_updates_keep_arriving() 
     let backend = FastFrameSinkBackend::new(device_id, Arc::clone(&writes), 20);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:strip")
         .await
@@ -4818,7 +4850,7 @@ async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
     let backend = FastFrameSinkBackend::suppressing(device_id, Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:suppressed")
         .await
@@ -4857,7 +4889,7 @@ async fn output_queue_reports_transport_start_before_terminal_acknowledgement() 
         FastFrameSinkBackend::blocking(device_id, Arc::clone(&writes), Arc::clone(&block_release));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:observed")
         .await
@@ -4916,7 +4948,7 @@ async fn direct_backend_reports_transport_start_while_write_is_blocked() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:observed", "slow", device_id);
     let layout = make_layout(vec![make_zone("zone_0", "slow:observed", 4)]);
     let frame = vec![ZoneColors {
@@ -4961,7 +4993,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:recover")
         .await
@@ -5035,7 +5067,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
     .with_target_fps(30);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.set_cached_target_fps("slow", device_id, 30);
     manager.map_device("slow:strip", "slow", device_id);
 

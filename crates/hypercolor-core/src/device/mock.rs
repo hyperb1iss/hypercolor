@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Result, bail};
 
@@ -77,16 +78,7 @@ pub struct MockDeviceBackend {
     devices: Vec<DeviceInfo>,
 
     /// Currently connected device IDs.
-    connected: HashSet<DeviceId>,
-
-    /// Last colors written per device.
-    last_colors: HashMap<DeviceId, Vec<[u8; 3]>>,
-
-    /// Total `write_colors` call count.
-    write_count: u64,
-
-    /// Ordered call log for assertions.
-    calls: Vec<MockCall>,
+    state: Mutex<MockDeviceState>,
 
     /// If `true`, `connect` calls will fail.
     pub fail_connect: bool,
@@ -95,16 +87,21 @@ pub struct MockDeviceBackend {
     pub fail_write: bool,
 }
 
+#[derive(Default)]
+struct MockDeviceState {
+    connected: HashSet<DeviceId>,
+    last_colors: HashMap<DeviceId, Vec<[u8; 3]>>,
+    write_count: u64,
+    calls: Vec<MockCall>,
+}
+
 impl MockDeviceBackend {
     /// Create a new empty mock backend with no pre-configured devices.
     #[must_use]
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
-            connected: HashSet::new(),
-            last_colors: HashMap::new(),
-            write_count: 0,
-            calls: Vec::new(),
+            state: Mutex::new(MockDeviceState::default()),
             fail_connect: false,
             fail_write: false,
         }
@@ -123,26 +120,42 @@ impl MockDeviceBackend {
 
     /// Returns the ordered call log for test assertions.
     #[must_use]
-    pub fn calls(&self) -> &[MockCall] {
-        &self.calls
+    pub fn calls(&self) -> Vec<MockCall> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .clone()
     }
 
     /// Returns the total number of `write_colors` calls across all devices.
     #[must_use]
     pub fn write_count(&self) -> u64 {
-        self.write_count
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write_count
     }
 
     /// Returns the last colors written to a specific device.
     #[must_use]
-    pub fn last_colors(&self, id: &DeviceId) -> Option<&Vec<[u8; 3]>> {
-        self.last_colors.get(id)
+    pub fn last_colors(&self, id: &DeviceId) -> Option<Vec<[u8; 3]>> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last_colors
+            .get(id)
+            .cloned()
     }
 
     /// Check whether a device is currently connected.
     #[must_use]
     pub fn is_connected(&self, id: &DeviceId) -> bool {
-        self.connected.contains(id)
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .connected
+            .contains(id)
     }
 
     /// Returns the list of configured device infos (for test setup).
@@ -168,40 +181,47 @@ impl DeviceBackend for MockDeviceBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        self.calls.push(MockCall::Discover);
+    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .push(MockCall::Discover);
         Ok(self.devices.clone())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        self.calls.push(MockCall::Connect(*id));
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.calls.push(MockCall::Connect(*id));
 
         if self.fail_connect {
             bail!("mock connect failure for device {id}");
         }
-        if self.connected.contains(id) {
+        if state.connected.contains(id) {
             bail!("device {id} is already connected");
         }
         // Verify the device is actually known
         if !self.devices.iter().any(|d| d.id == *id) {
             bail!("device {id} not found in mock backend");
         }
-        self.connected.insert(*id);
+        state.connected.insert(*id);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        self.calls.push(MockCall::Disconnect(*id));
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.calls.push(MockCall::Disconnect(*id));
 
-        if !self.connected.remove(id) {
+        if !state.connected.remove(id) {
             bail!("device {id} is not connected");
         }
-        self.last_colors.remove(id);
+        state.last_colors.remove(id);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        self.calls.push(MockCall::WriteColors {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.calls.push(MockCall::WriteColors {
             device_id: *id,
             led_count: colors.len(),
         });
@@ -209,12 +229,12 @@ impl DeviceBackend for MockDeviceBackend {
         if self.fail_write {
             bail!("mock write failure for device {id}");
         }
-        if !self.connected.contains(id) {
+        if !state.connected.contains(id) {
             bail!("cannot write to disconnected device {id}");
         }
 
-        self.write_count += 1;
-        self.last_colors.insert(*id, colors.to_vec());
+        state.write_count += 1;
+        state.last_colors.insert(*id, colors.to_vec());
         Ok(())
     }
 }

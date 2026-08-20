@@ -288,7 +288,7 @@ async fn device_lifecycle_discover_connect_write_disconnect() {
     let config = strip_config("Test Strip", 60);
     let device_id = config.id.expect("device id should be set");
 
-    let mut backend = MockDeviceBackend::new().with_device(&config);
+    let backend = MockDeviceBackend::new().with_device(&config);
 
     // Discover
     let devices = backend.discover().await.expect("discover should succeed");
@@ -344,7 +344,7 @@ async fn write_to_disconnected_device_fails() {
     let config = strip_config("Disconnected Strip", 30);
     let device_id = config.id.expect("device id");
 
-    let mut backend = MockDeviceBackend::new().with_device(&config);
+    let backend = MockDeviceBackend::new().with_device(&config);
 
     let colors: Vec<[u8; 3]> = vec![[0, 255, 0]; 30];
     let result = backend.write_colors(&device_id, &colors).await;
@@ -525,7 +525,7 @@ async fn full_pipeline_solid_red_through_strip() {
     let strip = strip_config("Pipeline Strip", 60);
     let strip_id = strip.id.expect("strip id");
 
-    let mut backend = MockDeviceBackend::new().with_device(&strip);
+    let backend = MockDeviceBackend::new().with_device(&strip);
 
     // Connect the device
     backend
@@ -581,7 +581,7 @@ async fn full_pipeline_dual_devices() {
     let matrix = matrix_config("Dual Matrix", 10, 10);
     let matrix_id = matrix.id.expect("matrix id");
 
-    let mut backend = MockDeviceBackend::new()
+    let backend = MockDeviceBackend::new()
         .with_device(&strip)
         .with_device(&matrix);
 
@@ -643,7 +643,7 @@ async fn multiple_frames_increment_and_update() {
     let config = strip_config("Multi-Frame Strip", 30);
     let device_id = config.id.expect("device id");
 
-    let mut backend = MockDeviceBackend::new().with_device(&config);
+    let backend = MockDeviceBackend::new().with_device(&config);
     backend.connect(&device_id).await.expect("connect");
 
     let (mut renderer, mut frame_state) =
@@ -707,7 +707,7 @@ async fn effect_switching_produces_different_output() {
     let config = strip_config("Effect Switch Strip", 20);
     let device_id = config.id.expect("device id");
 
-    let mut backend = MockDeviceBackend::new().with_device(&config);
+    let backend = MockDeviceBackend::new().with_device(&config);
     backend.connect(&device_id).await.expect("connect");
 
     let layout = build_layout_for_device(
@@ -853,7 +853,7 @@ async fn mock_backend_multiple_devices_independent_state() {
     let dev_b = strip_config("Device B", 20);
     let id_b = dev_b.id.expect("id b");
 
-    let mut backend = MockDeviceBackend::new()
+    let backend = MockDeviceBackend::new()
         .with_device(&dev_a)
         .with_device(&dev_b);
 
