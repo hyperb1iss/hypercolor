@@ -423,13 +423,26 @@ pub fn wait_for_exact_direct_launchd_publication(
     timeout: Duration,
     inspector: &mut impl MacosDirectLaunchdInspector,
 ) -> Result<Option<MacosOwnerRecord>, MacosOwnerExecutionError> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| MacosOwnerExecutionError::new("owner publication deadline overflowed"))?;
+    wait_for_exact_direct_launchd_publication_proof(store, expectation, deadline, inspector)
+        .map(|proof| proof.map(MacosDirectLaunchdOwnerProof::into_record))
+}
+
+fn wait_for_exact_direct_launchd_publication_proof(
+    store: &MacosOwnerStore,
+    expectation: &MacosDirectLaunchdPublicationExpectation,
+    deadline: Instant,
+    inspector: &mut impl MacosDirectLaunchdInspector,
+) -> Result<Option<MacosDirectLaunchdOwnerProof>, MacosOwnerExecutionError> {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    if let Some(record) = exact_published_record(store, expectation, inspector)? {
-        return Ok(Some(record));
+    if let Some(proof) = exact_published_proof(store, expectation, inspector)? {
+        return Ok(Some(proof));
     }
-    if timeout.is_zero() {
+    if Instant::now() >= deadline {
         return Ok(None);
     }
 
@@ -456,19 +469,18 @@ pub fn wait_for_exact_direct_launchd_publication(
     watcher
         .watch(&directory, RecursiveMode::NonRecursive)
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    if let Some(record) = exact_published_record(store, expectation, inspector)? {
-        return Ok(Some(record));
+    if let Some(proof) = exact_published_proof(store, expectation, inspector)? {
+        return Ok(Some(proof));
     }
 
-    let started = Instant::now();
     loop {
-        let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return Ok(None);
         };
         match signal_rx.recv_timeout(remaining) {
             Ok(()) => {
-                if let Some(record) = exact_published_record(store, expectation, inspector)? {
-                    return Ok(Some(record));
+                if let Some(proof) = exact_published_proof(store, expectation, inspector)? {
+                    return Ok(Some(proof));
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
@@ -481,11 +493,11 @@ pub fn wait_for_exact_direct_launchd_publication(
     }
 }
 
-fn exact_published_record(
+fn exact_published_proof(
     store: &MacosOwnerStore,
     expectation: &MacosDirectLaunchdPublicationExpectation,
     inspector: &mut impl MacosDirectLaunchdInspector,
-) -> Result<Option<MacosOwnerRecord>, MacosOwnerExecutionError> {
+) -> Result<Option<MacosDirectLaunchdOwnerProof>, MacosOwnerExecutionError> {
     let Some(record) = store
         .load_owner_record()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
@@ -502,10 +514,17 @@ fn exact_published_record(
     if current.as_ref() != Some(proof.record()) {
         return Ok(None);
     }
-    Ok(Some(proof.into_record()))
+    Ok(Some(proof))
 }
 
+mod mutation;
 #[cfg(target_os = "macos")]
 mod native;
+#[cfg(target_os = "macos")]
+pub use mutation::NativeMacosDirectLaunchdMutator;
+pub use mutation::{
+    MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdMutationOutcome,
+    MacosDirectLaunchdMutator, parse_direct_launchd_autostart_state,
+};
 #[cfg(target_os = "macos")]
 pub use native::NativeMacosDirectLaunchdInspector;

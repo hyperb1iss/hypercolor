@@ -11,15 +11,17 @@ use serde::{Deserialize, Serialize};
 
 mod direct_launchd;
 
-#[cfg(target_os = "macos")]
-pub use direct_launchd::NativeMacosDirectLaunchdInspector;
 pub use direct_launchd::{
-    MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdExecutableExpectation,
-    MacosDirectLaunchdInspector, MacosDirectLaunchdOwnerProof,
+    MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdBootstrapExpectation,
+    MacosDirectLaunchdExecutableExpectation, MacosDirectLaunchdInspector,
+    MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator, MacosDirectLaunchdOwnerProof,
     MacosDirectLaunchdPublicationExpectation, MacosDirectLaunchdState,
     corroborate_direct_launchd_owner, corroborate_newer_direct_launchd_owner,
-    parse_direct_launchd_service_state, wait_for_exact_direct_launchd_publication,
+    parse_direct_launchd_autostart_state, parse_direct_launchd_service_state,
+    wait_for_exact_direct_launchd_publication,
 };
+#[cfg(target_os = "macos")]
+pub use direct_launchd::{NativeMacosDirectLaunchdInspector, NativeMacosDirectLaunchdMutator};
 
 /// Current owner-record schema version.
 pub const MACOS_OWNER_RECORD_SCHEMA_VERSION: u32 = 1;
