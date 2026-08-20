@@ -12,10 +12,11 @@ use std::time::Duration;
 use anyhow::{Context, Error, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior,
-    DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
+    BackendInfo, DeviceBackend, DeviceBackendFactory, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryObserver, DeviceFrameSink, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigProvider,
+    DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverError, DriverHost,
+    DriverModule, DriverPresentationProvider, OutputBinding,
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
@@ -28,6 +29,7 @@ use hypercolor_types::device::{
     DeviceTopologyHint, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
     DriverPresentation, DriverTransportKind, SegmentInfo,
 };
+use hypercolor_types::identity::BackendId;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{Mutex, oneshot, watch};
@@ -229,18 +231,11 @@ impl DriverModule for OpenRgbDriverModule {
         descriptor
     }
 
-    fn has_output_backend(&self) -> bool {
-        true
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(OpenRgbBackend::new(
-            config.parse_settings::<OpenRgbConfig>()?,
-        )?)))
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("OpenRGB backend ID must be valid"),
+            factory: self,
+        }
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -253,6 +248,21 @@ impl DriverModule for OpenRgbDriverModule {
 
     fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
         Some(self)
+    }
+}
+
+impl DeviceBackendFactory for OpenRgbDriverModule {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let config = config.parse_settings::<OpenRgbConfig>().map_err(|error| {
+            DriverError::Configuration {
+                message: error.to_string(),
+            }
+        })?;
+        Ok(Arc::new(OpenRgbBackend::new(config)?))
     }
 }
 

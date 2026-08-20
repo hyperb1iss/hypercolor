@@ -1,5 +1,7 @@
 //! Tests for device identity, capabilities, and state types.
 
+use std::time::Duration;
+
 use hypercolor_color::DevicePixelLayout;
 use hypercolor_types::device::{
     ConnectionType, DRIVER_MODULE_API_SCHEMA_VERSION, DeviceCapabilities, DeviceClassHint,
@@ -596,13 +598,9 @@ fn device_error_display_messages() {
     assert_eq!(err.to_string(), "device not found: Prism 8");
 
     let err = DeviceError::Timeout {
-        device: "LED Strip".into(),
-        operation: "push_frame".into(),
+        after: Duration::from_secs(2),
     };
-    assert_eq!(
-        err.to_string(),
-        "timeout communicating with LED Strip: push_frame"
-    );
+    assert_eq!(err.to_string(), "device operation timed out after 2s");
 
     let err = DeviceError::WriteError {
         device: "USB Controller".into(),
@@ -648,68 +646,77 @@ fn device_error_display_messages() {
 }
 
 #[test]
-fn device_error_is_recoverable() {
-    assert!(
+fn device_error_recoverability_is_typed() {
+    use hypercolor_types::device::ErrorRecoverability;
+
+    assert_eq!(
         DeviceError::ConnectionFailed {
             device: String::new(),
             reason: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::WriteError {
             device: String::new(),
             detail: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::Timeout {
-            device: String::new(),
-            operation: String::new()
+            after: Duration::from_secs(1),
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Retry
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::ProtocolError {
             device: String::new(),
             detail: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
-        !DeviceError::NotFound {
+    assert_eq!(
+        DeviceError::NotFound {
             device: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Permanent
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::Disconnected {
             device: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
-        !DeviceError::InvalidHandle {
+    assert_eq!(
+        DeviceError::InvalidHandle {
             handle_id: 1,
             backend: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Permanent
     );
 
-    assert!(
-        !DeviceError::InvalidTransition {
+    assert_eq!(
+        DeviceError::InvalidTransition {
             device: String::new(),
             from: String::new(),
             to: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Permanent
     );
 }
 

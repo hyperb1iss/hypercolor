@@ -18,12 +18,13 @@ use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unp
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, CredentialStore, DeviceAuthState, DeviceAuthSummary,
-    DeviceBackend, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
-    DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, PairDeviceOutcome, PairDeviceRequest,
-    PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFieldDescriptor,
-    PairingFlowKind, TrackedDeviceCtx, TransportScanner, ValidatedControlChanges,
+    DeviceBackend, DeviceBackendFactory, DiscoveryCapability, DiscoveryConnectBehavior,
+    DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverDiscoveredDevice, DriverError, DriverHost,
+    DriverModule, DriverPresentationProvider, DriverRuntimeCacheProvider, DriverTrackedDevice,
+    OutputBinding, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability,
+    PairingDescriptor, PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, TransportScanner,
+    ValidatedControlChanges,
 };
 use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
 use hypercolor_types::controls::{
@@ -35,6 +36,7 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DriverPresentation,
     DriverTransportKind, SegmentInfo,
 };
+use hypercolor_types::identity::BackendId;
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde_json::json;
 use tracing::warn;
@@ -140,37 +142,11 @@ impl DriverModule for GoveeDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let mut backend = GoveeBackend::new(self.resolved_config(config)?);
-        if let Some(credential_store) = &self.credential_store {
-            backend = backend.with_credential_store(Arc::clone(credential_store));
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("Govee backend ID must be valid"),
+            factory: self,
         }
-        if let Some(base_url) = &self.cloud_base_url {
-            backend = backend.with_cloud_base_url(base_url.clone());
-        }
-        for device in load_cached_probe_devices(host)? {
-            let (Some(sku), Some(mac)) = (device.sku, device.mac) else {
-                continue;
-            };
-            let profile = profile_for_sku(&sku).unwrap_or_else(|| fallback_profile(&sku));
-            backend.remember_device(GoveeLanDevice {
-                ip: device.ip,
-                sku,
-                mac,
-                name: profile.name.to_owned(),
-                firmware_version: None,
-            });
-        }
-
-        Ok(Some(Box::new(backend)))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -195,6 +171,42 @@ impl DriverModule for GoveeDriverModule {
 
     fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         Some(self)
+    }
+}
+
+impl DeviceBackendFactory for GoveeDriverModule {
+    fn build(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let resolved_config =
+            self.resolved_config(config)
+                .map_err(|error| DriverError::Configuration {
+                    message: error.to_string(),
+                })?;
+        let mut backend = GoveeBackend::new(resolved_config);
+        if let Some(credential_store) = &self.credential_store {
+            backend = backend.with_credential_store(Arc::clone(credential_store));
+        }
+        if let Some(base_url) = &self.cloud_base_url {
+            backend = backend.with_cloud_base_url(base_url.clone());
+        }
+        for device in load_cached_probe_devices(host)? {
+            let (Some(sku), Some(mac)) = (device.sku, device.mac) else {
+                continue;
+            };
+            let profile = profile_for_sku(&sku).unwrap_or_else(|| fallback_profile(&sku));
+            backend.remember_device(GoveeLanDevice {
+                ip: device.ip,
+                sku,
+                mac,
+                name: profile.name.to_owned(),
+                firmware_version: None,
+            });
+        }
+
+        Ok(Arc::new(backend))
     }
 }
 

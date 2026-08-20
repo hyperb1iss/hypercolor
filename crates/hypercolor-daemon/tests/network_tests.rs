@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::{BackendManager, UsbProtocolConfigStore};
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveryState, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverProtocolCatalog, DriverRuntimeActions,
+    BackendInfo, DeviceBackend, DeviceBackendFactory, DriverConfigView, DriverCredentialStore,
+    DriverDescriptor, DriverDiscoveryState, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputBinding,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -17,6 +17,7 @@ use hypercolor_types::device::{
     DeviceClassHint, DeviceId, DeviceInfo, DriverModuleKind, DriverPresentation,
     DriverProtocolDescriptor, DriverTransportKind,
 };
+use hypercolor_types::identity::BackendId;
 
 #[test]
 fn host_transport_scanner_factory_handles_known_and_unknown_targets() {
@@ -347,22 +348,27 @@ impl DriverModule for ConfiglessDriver {
         &CONFIGLESS_DESCRIPTOR
     }
 
-    fn build_output_backend(
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new("external-backend").expect("valid test backend ID"),
+            factory: self,
+        }
+    }
+}
+
+impl DeviceBackendFactory for ConfiglessDriver {
+    fn build(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let _ = host;
         assert_eq!(config.driver_id, "external");
         assert!(config.enabled());
         assert!(config.entry.settings.is_empty());
-        Ok(Some(Box::new(TestBackend {
+        Ok(Arc::new(TestBackend {
             id: "external-backend",
-        })))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
+        }))
     }
 }
 
@@ -379,19 +385,6 @@ static CAPABILITY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 impl DriverModule for CapabilityOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &CAPABILITY_ONLY_DESCRIPTOR
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        panic!("capability-only drivers should not build output backends");
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
     }
 }
 
@@ -432,19 +425,6 @@ impl DriverModule for ProtocolCatalogDriver {
         &PROTOCOL_CATALOG_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
     fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
         Some(self)
     }
@@ -476,19 +456,6 @@ impl DriverPresentationProvider for PresentationDriver {
 impl DriverModule for PresentationDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &PRESENTATION_DRIVER_DESCRIPTOR
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
     }
 
     fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {

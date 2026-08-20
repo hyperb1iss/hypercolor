@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceDeliveryId, DeviceDeliveryStatus, DiscoveryConnectBehavior, DiscoveryRequest,
-    DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverRuntimeActions, DriverTrackedDevice,
+    DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveryConnectBehavior,
+    DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost,
+    DriverModule, DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -83,9 +83,8 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     assert!(discovered.info.capabilities.supports_direct);
 
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -139,9 +138,8 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -204,9 +202,8 @@ async fn connect_re_resolves_controller_index_before_mode_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -254,9 +251,8 @@ async fn connect_fails_when_re_resolved_controller_disappears() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -299,9 +295,8 @@ async fn connect_rejects_unapproved_active_mode_after_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -344,9 +339,8 @@ async fn connect_rejects_missing_active_mode_after_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -387,9 +381,8 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -450,9 +443,8 @@ async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -505,9 +497,8 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -566,9 +557,8 @@ async fn disconnect_completes_while_frame_sink_writers_race() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -639,9 +629,8 @@ async fn disconnect_restores_previous_openrgb_mode() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -714,9 +703,8 @@ async fn disconnect_fallback_blacks_out_without_previous_mode() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -768,9 +756,8 @@ async fn disconnect_blackout_policy_writes_zero_frame() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -822,9 +809,8 @@ async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
     let devices = backend
         .discover()
         .await
@@ -906,9 +892,8 @@ async fn discover_with_startup_rescan_server(server_protocol_version: u32) -> bo
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+        .build(&host, view)
+        .expect("backend construction should succeed");
 
     let devices = backend
         .discover()

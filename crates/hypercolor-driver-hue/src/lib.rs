@@ -27,9 +27,10 @@ use hypercolor_driver_api::support::{
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, PairDeviceOutcome,
+    DeviceBackendFactory, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
+    DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverCredentialStore,
+    DriverDescriptor, DriverDiscoveredDevice, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairDeviceOutcome,
     PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
@@ -40,6 +41,7 @@ use hypercolor_types::controls::{
     ControlGroupKind, ControlSurfaceDocument, ControlValue, ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
+use hypercolor_types::identity::BackendId;
 
 pub use backend::{HueBackend, HueConfig};
 pub use bridge::{DEFAULT_HUE_API_PORT, DEFAULT_HUE_STREAM_PORT, HueBridgeClient, HueNupnpBridge};
@@ -101,20 +103,11 @@ impl DriverModule for HueDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(HueBackend::with_mdns_enabled(
-            config.parse_settings::<HueConfig>()?,
-            Arc::clone(&self.credential_store),
-            self.mdns_enabled,
-        ))))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("Hue backend ID must be valid"),
+            factory: self,
+        }
     }
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
@@ -135,6 +128,26 @@ impl DriverModule for HueDriverModule {
 
     fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
         Some(self)
+    }
+}
+
+impl DeviceBackendFactory for HueDriverModule {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let config =
+            config
+                .parse_settings::<HueConfig>()
+                .map_err(|error| DriverError::Configuration {
+                    message: error.to_string(),
+                })?;
+        Ok(Arc::new(HueBackend::with_mdns_enabled(
+            config,
+            Arc::clone(&self.credential_store),
+            self.mdns_enabled,
+        )))
     }
 }
 

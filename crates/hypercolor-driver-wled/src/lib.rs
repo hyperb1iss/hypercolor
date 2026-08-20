@@ -12,7 +12,7 @@ mod scanner;
 
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -21,10 +21,11 @@ use hypercolor_driver_api::control_apply;
 use hypercolor_driver_api::control_surface;
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
-    DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveryCapability, DiscoveryRequest,
+    DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverDiscoveredDevice, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding,
+    TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -36,6 +37,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     DeviceClassHint, DeviceId, DriverPresentation, DriverTransportKind,
 };
+use hypercolor_types::identity::BackendId;
 use serde::{Deserialize, Serialize};
 
 pub use backend::{
@@ -168,20 +170,11 @@ impl DriverModule for WledDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(build_wled_backend(
-            &config.parse_settings::<WledConfig>()?,
-            self.mdns_enabled,
-            host,
-        )?)))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("WLED backend ID must be valid"),
+            factory: self,
+        }
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -202,6 +195,26 @@ impl DriverModule for WledDriverModule {
 
     fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         Some(self)
+    }
+}
+
+impl DeviceBackendFactory for WledDriverModule {
+    fn build(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let config =
+            config
+                .parse_settings::<WledConfig>()
+                .map_err(|error| DriverError::Configuration {
+                    message: error.to_string(),
+                })?;
+        Ok(Arc::new(build_wled_backend(
+            &config,
+            self.mdns_enabled,
+            host,
+        )?))
     }
 }
 

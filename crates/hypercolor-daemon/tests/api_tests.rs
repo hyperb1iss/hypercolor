@@ -494,18 +494,6 @@ impl DriverModule for ActionTestDriver {
         &ACTION_TEST_DRIVER
     }
 
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
-    }
-
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(self)
     }
@@ -622,18 +610,6 @@ impl RescanTestDriver {
 impl DriverModule for RescanTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &RESCAN_TEST_DRIVER
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -755,18 +731,6 @@ impl DriverModule for BlockingReconnectTestDriver {
         &BLOCKING_RECONNECT_TEST_DRIVER
     }
 
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
-    }
-
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(self)
     }
@@ -802,18 +766,6 @@ struct UnsupportedImpactTestDriver;
 impl DriverModule for UnsupportedImpactTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &UNSUPPORTED_IMPACT_TEST_DRIVER
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
     }
 
     fn controls(&self) -> Option<&dyn DriverControlProvider> {

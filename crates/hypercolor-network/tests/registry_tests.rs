@@ -3,10 +3,10 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DeviceBackendFactory, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
-    DriverRuntimeActions, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
+    DriverError, DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
+    DriverRuntimeActions, OutputBinding, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
@@ -19,7 +19,9 @@ use hypercolor_types::device::{
     DeviceClassHint, DeviceId, DeviceInfo, DriverModuleDescriptor, DriverModuleKind,
     DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
 };
-use std::sync::LazyLock;
+use hypercolor_types::identity::BackendId;
+use std::collections::BTreeSet;
+use std::sync::{Arc, LazyLock};
 
 struct NullCredentialStore;
 
@@ -268,21 +270,26 @@ impl DriverModule for DiscoveryOnlyDriver {
         &DISCOVERY_ONLY_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(Some(Box::new(TestBackend)))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new("test").expect("valid test backend ID"),
+            factory: self,
+        }
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(&DiscoveryOnlyCapability)
+    }
+}
+
+impl DeviceBackendFactory for DiscoveryOnlyDriver {
+    fn build(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let _ = (host, config);
+        Ok(Arc::new(TestBackend))
     }
 }
 
@@ -299,15 +306,6 @@ static PAIRING_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 impl DriverModule for PairingOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &PAIRING_ONLY_DESCRIPTOR
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
     }
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
@@ -330,21 +328,8 @@ impl DriverModule for ControlOnlyDriver {
         &CONTROL_ONLY_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(&ControlOnlyCapability)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
     }
 }
 
@@ -386,19 +371,6 @@ impl DriverModule for ProtocolOnlyDriver {
         &PROTOCOL_ONLY_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
     fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
         Some(&ProtocolOnlyCatalog)
     }
@@ -434,22 +406,147 @@ impl DriverModule for PresentationOnlyDriver {
         &PRESENTATION_ONLY_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
     fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
         Some(&PresentationOnlyProvider)
     }
+}
+
+struct DuplicateTestProvider;
+struct SharedTestConsumer;
+struct UnresolvedSharedConsumer;
+
+static DUPLICATE_TEST_PROVIDER_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "duplicate-test-provider",
+    "Duplicate Test Provider",
+    DriverTransportKind::Network,
+    false,
+    false,
+);
+static SHARED_TEST_CONSUMER_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "shared-test-consumer",
+    "Shared Test Consumer",
+    DriverTransportKind::Network,
+    false,
+    false,
+);
+static UNRESOLVED_SHARED_CONSUMER_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "unresolved-shared-consumer",
+    "Unresolved Shared Consumer",
+    DriverTransportKind::Network,
+    false,
+    false,
+);
+
+impl DriverModule for DuplicateTestProvider {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &DUPLICATE_TEST_PROVIDER_DESCRIPTOR
+    }
+
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new("test").expect("valid test backend ID"),
+            factory: self,
+        }
+    }
+}
+
+impl DeviceBackendFactory for DuplicateTestProvider {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        Ok(Arc::new(TestBackend))
+    }
+}
+
+impl DriverModule for SharedTestConsumer {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &SHARED_TEST_CONSUMER_DESCRIPTOR
+    }
+
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Shared(BackendId::new("test").expect("valid test backend ID"))
+    }
+}
+
+impl DriverModule for UnresolvedSharedConsumer {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &UNRESOLVED_SHARED_CONSUMER_DESCRIPTOR
+    }
+
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Shared(BackendId::new("missing").expect("valid test backend ID"))
+    }
+}
+
+#[test]
+fn output_registration_rejects_duplicate_providers() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("first provider should register");
+    let error = registry
+        .register(DuplicateTestProvider)
+        .expect_err("duplicate output providers should fail registration");
+    assert!(matches!(
+        error,
+        DriverModuleRegistryError::DuplicateOutputProvider { backend_id, .. }
+            if backend_id.as_str() == "test"
+    ));
+}
+
+#[test]
+fn output_finalization_rejects_unresolved_shared_bindings() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(UnresolvedSharedConsumer)
+        .expect("shared consumer should register");
+
+    let Err(error) = registry.finalize_output_bindings(&BTreeSet::new()) else {
+        panic!("unresolved shared output should fail finalization");
+    };
+    assert_eq!(
+        error,
+        DriverModuleRegistryError::UnresolvedSharedOutput {
+            backend_id: BackendId::new("missing").expect("valid test backend ID"),
+            consumer_driver_id: "unresolved-shared-consumer".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn enabled_shared_consumer_selects_its_disabled_provider() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("provider should register");
+    registry
+        .register(SharedTestConsumer)
+        .expect("shared consumer should register");
+
+    let enabled = BTreeSet::from(["shared-test-consumer".to_owned()]);
+    let finalized = registry
+        .finalize_output_bindings(&enabled)
+        .expect("shared output should resolve");
+
+    assert_eq!(finalized.providers().len(), 1);
+    assert_eq!(finalized.providers()[0].driver_id(), "discovery-only");
+    assert_eq!(finalized.providers()[0].backend_id().as_str(), "test");
+}
+
+#[test]
+fn disabled_unreferenced_provider_is_not_selected() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("provider should register");
+
+    let finalized = registry
+        .finalize_output_bindings(&BTreeSet::new())
+        .expect("provider graph should finalize");
+
+    assert!(finalized.providers().is_empty());
 }
 
 #[test]
@@ -648,15 +745,6 @@ impl DriverModule for MismatchedSchemaDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &MISMATCHED_DESCRIPTOR
     }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
 }
 
 impl DriverModule for MismatchedModuleSchemaDriver {
@@ -713,20 +801,24 @@ fn drivers_can_build_output_backends_through_registry_lookup() {
         .register(DiscoveryOnlyDriver)
         .expect("driver should register");
 
-    let driver = registry
-        .get("discovery-only")
-        .expect("driver should be returned");
+    let enabled = BTreeSet::from(["discovery-only".to_owned()]);
+    let finalized = registry
+        .finalize_output_bindings(&enabled)
+        .expect("output bindings should finalize");
+    let provider = finalized
+        .providers()
+        .first()
+        .expect("enabled provider should be selected");
     let config = DriverConfigEntry::default();
-    let backend = driver
-        .build_output_backend(
+    let backend = provider
+        .build(
             &host,
             DriverConfigView {
                 driver_id: "discovery-only",
                 entry: &config,
             },
         )
-        .expect("backend build should succeed")
-        .expect("driver should return a backend");
+        .expect("backend build should succeed");
 
     assert_eq!(backend.info().id, "test");
 }

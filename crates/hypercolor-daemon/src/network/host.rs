@@ -413,17 +413,26 @@ impl BackendRebindActions for DaemonDriverHost {
             return Ok(());
         }
 
-        let config_entry = super::driver_config_entry(&config, driver_id);
-        let config_view = DriverConfigView {
-            driver_id,
-            entry: &config_entry,
-        };
-        let Some(backend) = driver.build_output_backend(self, config_view)? else {
+        let enabled_driver_ids = super::enabled_driver_module_ids(&self.driver_registry, &config);
+        let finalized = self
+            .driver_registry
+            .finalize_output_bindings(&enabled_driver_ids)?;
+        let Some(backend_id) = driver.output().backend_id().cloned() else {
             return Ok(());
         };
+        let Some(provider) = finalized.provider(&backend_id) else {
+            return Ok(());
+        };
+        let provider_driver_id = provider.driver_id();
+        let config_entry = super::driver_config_entry(&config, provider_driver_id);
+        let config_view = DriverConfigView {
+            driver_id: provider_driver_id,
+            entry: &config_entry,
+        };
+        let backend = provider.build(self, config_view)?;
 
         let mut manager = self.backend_manager.lock().await;
-        manager.register_backend(Arc::from(backend));
+        manager.register_backend(backend);
         Ok(())
     }
 }

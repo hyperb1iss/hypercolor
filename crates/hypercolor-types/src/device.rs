@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -974,10 +975,22 @@ pub enum DeviceColorSpace {
 
 // ── DeviceError ───────────────────────────────────────────────────────────
 
+/// Recovery action recommended by a typed driver-boundary error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorRecoverability {
+    /// Retry the same operation without rebuilding the connection.
+    Retry,
+    /// Reconnect or rebuild the device session before retrying.
+    Reconnect,
+    /// Do not retry without a configuration or capability change.
+    Permanent,
+}
+
 /// Errors from the device backend layer.
 ///
 /// All variants are `Send + Sync` for use across async boundaries.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DeviceError {
     /// Connection attempt failed.
     #[error("connection to {device} failed: {reason}")]
@@ -998,12 +1011,17 @@ pub enum DeviceError {
     },
 
     /// Operation timed out.
-    #[error("timeout communicating with {device}: {operation}")]
+    #[error("device operation timed out after {after:?}")]
     Timeout {
-        /// Device display name or identifier.
-        device: String,
-        /// What was being attempted.
-        operation: String,
+        /// Elapsed deadline.
+        after: Duration,
+    },
+
+    /// The backend has not adopted this discovered device.
+    #[error("device has not been adopted by an output backend: {device_id}")]
+    NotAdopted {
+        /// Device missing from backend-owned inventory.
+        device_id: DeviceId,
     },
 
     /// Device not found during connection attempt.
@@ -1051,18 +1069,20 @@ pub enum DeviceError {
 }
 
 impl DeviceError {
-    /// Whether this error indicates the device is gone and reconnection
-    /// should be attempted.
+    /// Classify the recovery action for this failure.
     #[must_use]
-    pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
+    pub const fn recoverability(&self) -> ErrorRecoverability {
+        match self {
+            Self::Timeout { .. } => ErrorRecoverability::Retry,
             Self::ConnectionFailed { .. }
-                | Self::WriteError { .. }
-                | Self::Timeout { .. }
-                | Self::ProtocolError { .. }
-                | Self::Disconnected { .. }
-        )
+            | Self::WriteError { .. }
+            | Self::ProtocolError { .. }
+            | Self::Disconnected { .. } => ErrorRecoverability::Reconnect,
+            Self::NotAdopted { .. }
+            | Self::NotFound { .. }
+            | Self::InvalidHandle { .. }
+            | Self::InvalidTransition { .. } => ErrorRecoverability::Permanent,
+        }
     }
 }
 

@@ -1,16 +1,64 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_types::device::{
     DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
 };
+use hypercolor_types::identity::BackendId;
 
 use crate::DriverTrackedDevice;
 use crate::{
     DeviceBackend, DiscoveryCapability, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverHost, PairingCapability,
+    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, PairingCapability,
 };
+
+/// Declared relationship between a driver module and an output backend.
+pub enum OutputBinding<'a> {
+    /// This module owns the only factory for the declared backend ID.
+    Owned {
+        /// Stable backend ID registered with the output manager.
+        id: BackendId,
+        /// Factory used after registry finalization selects this provider.
+        factory: &'a dyn DeviceBackendFactory,
+    },
+    /// This module consumes a backend owned by another registered module.
+    Shared(BackendId),
+    /// This module does not participate in device output.
+    None,
+}
+
+impl OutputBinding<'_> {
+    /// Whether the binding participates in device output.
+    #[must_use]
+    pub const fn is_output(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Declared output backend ID, if any.
+    #[must_use]
+    pub fn backend_id(&self) -> Option<&BackendId> {
+        match self {
+            Self::Owned { id, .. } | Self::Shared(id) => Some(id),
+            Self::None => None,
+        }
+    }
+}
+
+/// Factory for one finalized output backend provider.
+pub trait DeviceBackendFactory: Send + Sync {
+    /// Construct the live backend after the registry validates all bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if configuration or backend construction fails.
+    fn build(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Arc<dyn DeviceBackend>, DriverError>;
+}
 
 /// Driver capability for persisting discovery/runtime hints between daemon runs.
 #[async_trait]
@@ -63,7 +111,7 @@ pub trait DriverModule: Send + Sync {
         descriptor.capabilities.pairing = self.pairing().is_some();
         descriptor.capabilities.runtime_cache = self.runtime_cache().is_some();
         descriptor.capabilities.credentials = descriptor.capabilities.pairing;
-        descriptor.capabilities.output_backend = self.has_output_backend();
+        descriptor.capabilities.output_backend = self.output().is_output();
         descriptor.capabilities.protocol_catalog = self.protocol_catalog().is_some();
         descriptor.capabilities.presentation = self.presentation().is_some();
         descriptor.capabilities.controls = self.controls().is_some();
@@ -75,24 +123,9 @@ pub trait DriverModule: Send + Sync {
         None
     }
 
-    /// Whether this driver contributes a runtime backend for color output.
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    /// Build the optional runtime backend used for color output.
-    ///
-    /// Returning `Ok(None)` allows capability-only drivers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if backend construction fails.
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
+    /// Declare this module's relationship to the output backend registry.
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::None
     }
 
     /// Discovery capability, if supported.

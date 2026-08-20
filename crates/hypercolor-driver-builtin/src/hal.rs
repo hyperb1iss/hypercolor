@@ -1,8 +1,4 @@
-use anyhow::Result;
-use hypercolor_driver_api::{
-    DeviceBackend, DriverConfigView, DriverDescriptor, DriverHost, DriverModule,
-    DriverProtocolCatalog,
-};
+use hypercolor_driver_api::{DriverDescriptor, DriverModule, DriverProtocolCatalog};
 use hypercolor_hal::ProtocolDatabase;
 use hypercolor_types::device::{
     DriverModuleDescriptor, DriverProtocolDescriptor, DriverTransportKind,
@@ -54,19 +50,6 @@ impl DriverModule for HalCatalogDriverModule {
 
     fn module_descriptor(&self) -> DriverModuleDescriptor {
         self.module_descriptor.clone()
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
     }
 
     fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {

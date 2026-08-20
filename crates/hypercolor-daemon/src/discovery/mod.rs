@@ -538,8 +538,8 @@ mod tests {
     };
     use crate::api::AppState;
     use hypercolor_driver_api::{
-        DeviceBackend, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-        DriverDescriptor, DriverModule,
+        DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView, DriverDescriptor,
+        DriverModule,
     };
     use hypercolor_network::DriverModuleRegistry;
     use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -616,19 +616,6 @@ mod tests {
             let mut descriptor = self.descriptor().module_descriptor();
             descriptor.default_enabled = self.default_enabled;
             descriptor
-        }
-
-        fn build_output_backend(
-            &self,
-            host: &dyn hypercolor_driver_api::DriverHost,
-            config: DriverConfigView<'_>,
-        ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-            let _ = (host, config);
-            Ok(None)
-        }
-
-        fn has_output_backend(&self) -> bool {
-            false
         }
 
         fn discovery(&self) -> Option<&dyn DiscoveryCapability> {

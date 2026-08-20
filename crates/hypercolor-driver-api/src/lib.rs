@@ -13,6 +13,7 @@ pub mod controls;
 pub mod descriptor;
 pub mod discovery;
 pub mod driver_discovery;
+pub mod error;
 pub mod host;
 pub mod module;
 pub mod net;
@@ -35,12 +36,15 @@ pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner
 pub use driver_discovery::{
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDiscoveredDevice,
 };
+pub use error::{DriverError, ErrorRecoverability};
 pub use host::{
     DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
     DriverTrackedDevice, TrackedDeviceCtx,
 };
+pub use hypercolor_types::device::DeviceError;
 pub use module::{
-    DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeCacheProvider,
+    DeviceBackendFactory, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
+    DriverRuntimeCacheProvider, OutputBinding,
 };
 pub use net::{CredentialStore, MdnsBrowser, MdnsService};
 pub use pairing::{

@@ -280,6 +280,17 @@ pub fn driver_config_entry(config: &HypercolorConfig, driver_id: &str) -> Driver
     config.drivers.get(driver_id).cloned().unwrap_or_default()
 }
 
+fn enabled_driver_module_ids(
+    registry: &DriverModuleRegistry,
+    config: &HypercolorConfig,
+) -> BTreeSet<String> {
+    registry
+        .ids()
+        .into_iter()
+        .filter(|driver_id| module_enabled_by_id(registry, config, driver_id))
+        .collect()
+}
+
 /// Register all enabled driver output backends with the backend manager.
 ///
 /// # Errors
@@ -291,28 +302,20 @@ pub fn register_enabled_driver_output_backends(
     host: &dyn DriverHost,
     config: &HypercolorConfig,
 ) -> Result<()> {
-    for driver_id in registry.ids() {
-        let Some(driver) = registry.get(&driver_id) else {
-            continue;
-        };
+    let enabled_driver_ids = enabled_driver_module_ids(registry, config);
+    let finalized = registry
+        .finalize_output_bindings(&enabled_driver_ids)
+        .context("failed to finalize driver output bindings")?;
 
-        let descriptor = driver.module_descriptor();
-        if !module_enabled(config, &descriptor) {
-            continue;
-        }
-        if !descriptor.capabilities.output_backend {
-            continue;
-        }
-
-        let config_entry = driver_config_entry(config, &driver_id);
+    for provider in finalized.providers() {
+        let driver_id = provider.driver_id();
+        let config_entry = driver_config_entry(config, driver_id);
         let config_view = DriverConfigView {
-            driver_id: &driver_id,
+            driver_id,
             entry: &config_entry,
         };
-        let Some(backend) = driver.build_output_backend(host, config_view)? else {
-            continue;
-        };
-        backend_manager.register_backend(Arc::from(backend));
+        let backend = provider.build(host, config_view)?;
+        backend_manager.register_backend(backend);
     }
 
     Ok(())
