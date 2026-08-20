@@ -348,6 +348,34 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
 }
 
+#[tokio::test]
+async fn initialize_rejects_a_corrupt_scene_store_without_overwriting_it() {
+    let guard = TestDataDirGuard::new().await;
+    std::fs::create_dir_all(&guard.data_dir).expect("test data directory should exist");
+    let corrupt = "{ definitely not scene json";
+    std::fs::write(guard.scenes_path(), corrupt).expect("corrupt scene store should write");
+    let temp = temp_config_file();
+    let config = default_config();
+
+    let Err(error) = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    ) else {
+        panic!("corrupt scene persistence must prevent startup");
+    };
+
+    assert!(
+        format!("{error:#}").contains("failed to load scenes"),
+        "the startup error identifies scene persistence: {error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(guard.scenes_path())
+            .expect("corrupt scene store should remain readable"),
+        corrupt,
+        "startup must not replace corrupt scene persistence"
+    );
+}
+
 #[cfg(not(feature = "wgpu"))]
 #[tokio::test]
 async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_feature() {

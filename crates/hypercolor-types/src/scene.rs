@@ -723,6 +723,13 @@ impl Scene {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
+        if self.name.trim().is_empty() {
+            errors.push("scene name must not be empty".to_owned());
+        }
+        if self.name.chars().count() > 128 {
+            errors.push("scene name must be at most 128 characters".to_owned());
+        }
+
         if let Err(mut conflicts) = self.validate_group_exclusivity() {
             errors.append(&mut conflicts);
         }

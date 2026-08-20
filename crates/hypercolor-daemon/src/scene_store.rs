@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
@@ -55,7 +55,9 @@ impl SceneStore {
             .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
 
         let mut store = Self { writer, scenes };
-        store.normalize();
+        store
+            .normalize()
+            .with_context(|| format!("failed to validate scenes at {}", path.display()))?;
         let normalized = serde_json::to_value(&store.scenes)
             .context("failed to serialize normalized scene store")?;
         if normalized != original {
@@ -147,8 +149,8 @@ impl SceneStore {
         self.replace_named_scenes(manager.list().into_iter().cloned());
     }
 
-    fn normalize(&mut self) {
-        self.scenes.retain(|id, scene| {
+    fn normalize(&mut self) -> anyhow::Result<()> {
+        for (id, scene) in &mut self.scenes {
             scene.name = scene.name.trim().to_owned();
             scene.description = scene
                 .description
@@ -156,11 +158,23 @@ impl SceneStore {
                 .map(|description| description.trim().to_owned())
                 .filter(|description| !description.is_empty());
 
-            !id.is_default()
-                && scene.id == *id
-                && scene.kind == SceneKind::Named
-                && !scene.name.is_empty()
-        });
+            if id.is_default() {
+                bail!("persisted scene store contains the reserved default scene");
+            }
+            if scene.id != *id {
+                bail!(
+                    "persisted scene key {id} does not match scene id {}",
+                    scene.id
+                );
+            }
+            if scene.kind != SceneKind::Named {
+                bail!("persisted scene {id} is not a named scene");
+            }
+            if let Err(errors) = scene.validate() {
+                bail!("persisted scene {id} is invalid: {}", errors.join("; "));
+            }
+        }
+        Ok(())
     }
 }
 

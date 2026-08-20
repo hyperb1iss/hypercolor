@@ -290,27 +290,8 @@ impl DaemonState {
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let profiles_path = ConfigManager::data_dir().join("profiles.json");
-        let mut scene_store_inner = match SceneStore::load(&scenes_path) {
-            Ok(store) => store,
-            Err(error) if profiles_path.exists() => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to load scenes before importing {}",
-                        profiles_path.display()
-                    )
-                });
-            }
-            Err(error) => {
-                warn!(
-                    path = %scenes_path.display(),
-                    %error,
-                    cause = %error.root_cause(),
-                    "Failed to load scenes; starting with empty store"
-                );
-                SceneStore::new(scenes_path.clone())
-                    .context("failed to prepare empty scene persistence")?
-            }
-        };
+        let mut scene_store_inner = SceneStore::load(&scenes_path)
+            .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
         match crate::profile_import::import_profiles(
             &profiles_path,
             &mut scene_store_inner,

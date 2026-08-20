@@ -1106,3 +1106,24 @@ fn validate_fences_the_activation_fields() {
         "valid values pass: in-range brightness, well-formed id"
     );
 }
+
+#[test]
+fn validate_fences_the_scene_name_contract() {
+    let mut scene = sample_scene();
+    scene.name = "   ".to_owned();
+    let errors = scene.validate().expect_err("blank scene names are invalid");
+    assert!(
+        errors.iter().any(|error| error.contains("scene name")),
+        "blank names are reported: {errors:?}"
+    );
+
+    scene.name = "x".repeat(129);
+    let errors = scene.validate().expect_err("long scene names are invalid");
+    assert!(
+        errors.iter().any(|error| error.contains("128")),
+        "the maximum length is reported: {errors:?}"
+    );
+
+    scene.name = "x".repeat(128);
+    assert!(scene.validate().is_ok(), "the documented limit is valid");
+}

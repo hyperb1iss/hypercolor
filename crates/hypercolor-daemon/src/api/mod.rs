@@ -487,16 +487,8 @@ impl AppState {
         let device_registry = DeviceRegistry::new();
         let effect_registry = Arc::new(RwLock::new(EffectRegistry::default()));
         let scenes_path = data_dir.join("scenes.json");
-        let scene_store = SceneStore::load(&scenes_path).unwrap_or_else(|error| {
-            warn!(
-                path = %scenes_path.display(),
-                %error,
-                cause = %error.root_cause(),
-                "Failed to load scenes; starting with empty store"
-            );
-            SceneStore::new(scenes_path)
-                .expect("default app state should prepare scene persistence")
-        });
+        let scene_store = SceneStore::load(&scenes_path)
+            .expect("default app state should load scene persistence");
         let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store.list().cloned() {
             if let Err(error) = scene_manager_inner.create(scene) {

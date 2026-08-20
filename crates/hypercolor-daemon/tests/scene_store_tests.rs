@@ -77,6 +77,29 @@ fn scene_store_round_trips_named_scenes() {
 }
 
 #[test]
+fn scene_store_rejects_invalid_scenes_without_rewriting_the_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let mut scene = make_scene("Invalid");
+    scene.name = "   ".to_owned();
+    let payload =
+        serde_json::to_string_pretty(&std::collections::HashMap::from([(scene.id, scene)]))
+            .expect("scene payload should serialize");
+    std::fs::write(&path, &payload).expect("scene payload should write");
+
+    let error = SceneStore::load(&path).expect_err("invalid scenes must fail closed");
+    assert!(
+        format!("{error:#}").contains("scene name must not be empty"),
+        "the validation cause is preserved: {error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("scene payload should remain readable"),
+        payload,
+        "a rejected store must remain byte-for-byte untouched"
+    );
+}
+
+#[test]
 fn scene_store_materializes_and_persists_fresh_legacy_layer_ids() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
