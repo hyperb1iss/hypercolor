@@ -6,6 +6,7 @@
 pub mod fuzzy;
 pub mod prompts;
 pub mod resources;
+pub mod selector;
 pub mod tools;
 
 mod device_payload;
