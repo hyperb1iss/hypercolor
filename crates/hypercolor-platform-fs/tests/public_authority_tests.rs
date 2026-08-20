@@ -1,7 +1,8 @@
 #![cfg(unix)]
 
 use std::fs::{self, File};
-use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::io::Read as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
@@ -219,6 +220,72 @@ fn exact_observation_rejects_unsupported_entry_states() {
             },
         )
         .expect_err("set-ID replacement modes must be rejected");
+}
+
+#[test]
+fn anchored_regular_open_rejects_unsupported_entry_states() {
+    let fixture = Fixture::new();
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+    fs::create_dir(fixture.public.join("directory")).expect("create directory entry");
+    UnixListener::bind(fixture.public.join("socket")).expect("create socket entry");
+    write_mode(&fixture.public.join("original"), b"linked", 0o644);
+    write_mode(&fixture.public.join("set-id"), b"unsafe mode", 0o4644);
+    fs::hard_link(
+        fixture.public.join("original"),
+        fixture.public.join("hardlink"),
+    )
+    .expect("create hardlink");
+    symlink("original", fixture.public.join("symlink")).expect("create symlink");
+
+    for name in ["directory", "socket", "set-id", "hardlink", "symlink"] {
+        authority
+            .open_regular_file(Path::new(name))
+            .expect_err("unsupported public read entry must be rejected");
+    }
+    authority
+        .open_regular_file(Path::new("nested/name"))
+        .expect_err("nested public read names must be rejected");
+}
+
+#[test]
+fn anchored_regular_open_retains_inode_after_pathname_replacement() {
+    let fixture = Fixture::new();
+    let entry = fixture.public.join("fragment");
+    let displaced = fixture.public.join("displaced-fragment");
+    write_mode(&entry, b"prior bytes", 0o644);
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+    let mut opened = authority
+        .open_regular_file(Path::new("fragment"))
+        .expect("open anchored public regular file");
+    let opened_metadata = opened.metadata();
+
+    fs::rename(&entry, &displaced).expect("displace opened entry");
+    write_mode(&entry, b"attacker", 0o644);
+    let mut bytes = Vec::new();
+    opened
+        .file_mut()
+        .read_to_end(&mut bytes)
+        .expect("snapshot retained file");
+
+    assert_eq!(bytes, b"prior bytes");
+    assert_eq!(
+        opened_metadata.inode(),
+        fs::symlink_metadata(&displaced)
+            .expect("inspect displaced entry")
+            .ino()
+    );
+    assert_ne!(
+        opened_metadata.inode(),
+        fs::symlink_metadata(&entry)
+            .expect("inspect pathname replacement")
+            .ino()
+    );
 }
 
 #[test]
