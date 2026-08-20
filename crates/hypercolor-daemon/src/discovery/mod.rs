@@ -24,7 +24,6 @@ use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DriverModuleKind, DriverTransportKind};
 use hypercolor_types::spatial::SpatialLayout;
-use serde::Serialize;
 use tokio::runtime::Handle;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -40,6 +39,7 @@ pub use auto_layout::{
     sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
 };
 pub(crate) use device_helpers::{apply_persisted_device_settings, sync_registry_state};
+pub use hypercolor_types::api::devices::{DiscoveryScanResult, DiscoveryScannerResult};
 pub(crate) use lifecycle::execute_lifecycle_actions;
 pub(crate) use lifecycle::handle_async_write_failures;
 pub use lifecycle::{
@@ -48,32 +48,13 @@ pub use lifecycle::{
     shutdown_renderable_devices,
 };
 pub use scan::{
-    DiscoveryScanResult, execute_discovery_scan, execute_discovery_scan_if_idle,
-    execute_discovery_scan_or_enqueue, schedule_discovery_scan,
+    execute_discovery_scan, execute_discovery_scan_if_idle, execute_discovery_scan_or_enqueue,
+    schedule_discovery_scan,
 };
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
 const MAX_DISCOVERY_TIMEOUT_MS: u64 = 60_000;
-
-/// Per-scanner diagnostics for one discovery scan.
-#[derive(Debug, Clone, Serialize)]
-pub struct DiscoveryScannerResult {
-    /// Scanner display name.
-    pub scanner: String,
-
-    /// Scanner runtime in milliseconds.
-    pub duration_ms: u64,
-
-    /// Devices returned by this scanner.
-    pub discovered: usize,
-
-    /// `"ok"` or `"error"`.
-    pub status: String,
-
-    /// Error message for failed scanners.
-    pub error: Option<String>,
-}
 
 /// Shared runtime dependencies needed for discovery + lifecycle orchestration.
 #[derive(Clone)]

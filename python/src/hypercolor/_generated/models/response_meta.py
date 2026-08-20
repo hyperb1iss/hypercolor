@@ -13,13 +13,10 @@ T = TypeVar("T", bound="ResponseMeta")
 class ResponseMeta:
     """Response metadata included in every envelope.
 
-    Field-for-field the wire shape v1 already emits, so canonical and
-    legacy envelopes stay mergeable in clients.
-
-        Attributes:
-            api_version (str): API version string.
-            request_id (str): Per-request correlation ID, prefixed `req_`.
-            timestamp (str): ISO 8601 UTC timestamp of response generation.
+    Attributes:
+        api_version (str): API version string.
+        request_id (str): Per-request correlation ID, prefixed `req_`.
+        timestamp (str): ISO 8601 UTC timestamp of response generation.
     """
 
     api_version: str

@@ -26,8 +26,9 @@ use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::displays::{
-    DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery, DisplaySummary,
-    SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+    DeleteDisplayFaceResponse, DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery,
+    DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
+    UpdateDisplayFaceControlsRequest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -472,11 +473,12 @@ pub async fn delete_display_face(
             Err(error) => return error.into_response(),
         }
 
-        return envelope::ok(serde_json::json!({
-            "device_id": device_id.to_string(),
-            "scope": DisplayFaceScope::Default,
-            "deleted": removed,
-        }));
+        return envelope::ok(DeleteDisplayFaceResponse {
+            device_id: device_id.to_string(),
+            scene_id: None,
+            scope: DisplayFaceScope::Default,
+            deleted: removed,
+        });
     }
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return DomainError::not_found(ResourceKind::Device, &device).into_response();
@@ -504,12 +506,12 @@ pub async fn delete_display_face(
         Err(error) => return error.into_response(),
     };
 
-    envelope::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "scene_id": cleared.scene_id.to_string(),
-        "scope": DisplayFaceScope::Scene,
-        "deleted": true,
-    }))
+    envelope::ok(DeleteDisplayFaceResponse {
+        device_id: device_id.to_string(),
+        scene_id: Some(cleared.scene_id.to_string()),
+        scope: DisplayFaceScope::Scene,
+        deleted: true,
+    })
 }
 
 /// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides

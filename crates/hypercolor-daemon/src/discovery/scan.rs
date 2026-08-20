@@ -14,7 +14,6 @@ use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
-use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -24,38 +23,13 @@ use super::device_helpers::{
     device_ref_for_tracked, lifecycle_policy_for_device_info, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
-use super::{DiscoveryRuntime, DiscoveryScannerResult, DiscoveryTarget, DiscoveryTargetScanner};
+use super::{
+    DiscoveryRuntime, DiscoveryScanResult, DiscoveryScannerResult, DiscoveryTarget,
+    DiscoveryTargetScanner,
+};
 use crate::network::{self, DaemonDriverHost};
 
 use hypercolor_core::device::ScannerScanReport;
-
-/// Detailed discovery scan result for reverse-engineering workflows.
-#[derive(Debug, Clone, Serialize)]
-pub struct DiscoveryScanResult {
-    /// Public discovery target identifiers that were scanned.
-    pub targets: Vec<String>,
-
-    /// Effective timeout used for the scan.
-    pub timeout_ms: u64,
-
-    /// Newly discovered devices.
-    pub new_devices: Vec<DeviceRef>,
-
-    /// Previously known devices observed again.
-    pub reappeared_devices: Vec<DeviceRef>,
-
-    /// Device IDs that were not observed in this scan.
-    pub vanished_devices: Vec<String>,
-
-    /// Total known devices in the registry after merge.
-    pub total_known: usize,
-
-    /// End-to-end scan duration.
-    pub duration_ms: u64,
-
-    /// Per-scanner diagnostics.
-    pub scanners: Vec<DiscoveryScannerResult>,
-}
 
 /// Execute a discovery scan only when no other scan currently owns the
 /// shared in-progress slot.

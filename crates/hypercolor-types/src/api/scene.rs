@@ -31,22 +31,26 @@ use crate::scene::{
 };
 use crate::spatial::{LedTopology, NormalizedPosition, Orientation};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// The `GET /scene` document: the full live tree.
 ///
 /// Always present — an active scene always exists (Spec 78 §1.1), so
 /// there is no idle sentinel and no all-optional shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct SceneDocument {
+    #[schema(value_type = String)]
     pub id: SceneId,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[schema(value_type = String)]
     pub kind: SceneKind,
     /// Whether this is the auto-managed default scene, which cannot be
     /// renamed or deleted.
     pub is_default: bool,
     #[serde(default)]
+    #[schema(value_type = String)]
     pub unassigned_behavior: UnassignedBehavior,
     /// The named spatial layout this scene references, if any
     /// (Spec 78 §3.2). Activation applies it; a dangling reference is
@@ -56,14 +60,17 @@ pub struct SceneDocument {
     #[serde(default)]
     pub activation_brightness: Option<f32>,
     #[serde(default = "default_scene_transition")]
+    #[schema(value_type = Object)]
     pub transition: TransitionSpec,
     #[serde(default)]
+    #[schema(value_type = u8)]
     pub priority: ScenePriority,
     #[serde(default = "default_scene_enabled")]
     pub enabled: bool,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
     #[serde(default)]
+    #[schema(value_type = String)]
     pub mutation_mode: SceneMutationMode,
     /// The commit generation. Served as `ETag`; the one wire version
     /// token (Spec 78 §1.6).
@@ -85,13 +92,15 @@ const fn default_scene_enabled() -> bool {
 }
 
 /// One authored zone inside the live document (Spec 78 §1.3).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ZoneResource {
+    #[schema(value_type = String)]
     pub id: ZoneId,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
+    #[schema(value_type = String)]
     pub role: ZoneRole,
     pub enabled: bool,
     pub brightness: f32,
@@ -99,6 +108,7 @@ pub struct ZoneResource {
     pub color: Option<String>,
     /// Present on Display-role zones only.
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub display_target: Option<DisplayFaceTarget>,
     /// Device segments assigned to this zone, addressed by membership
     /// id (Spec 78 §1.2) — never by device-scoped segment name.
@@ -110,6 +120,7 @@ pub struct ZoneResource {
     pub layout: Option<ZoneLayoutResource>,
     /// The authored bottom-to-top layer stack. Layers are the real,
     /// addressable unit: clients patch the layer id they read here.
+    #[schema(value_type = Vec<Object>)]
     pub layers: Vec<SceneLayer>,
 }
 
@@ -117,7 +128,7 @@ pub struct ZoneResource {
 /// `PUT .../layout` and read back on the zone resource. Compact by
 /// design: member placements only, no computed LED data, and no
 /// device-internal vocabulary (Spec 78 §5.1). Vec order is z-order.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ZoneLayoutResource {
     pub placements: Vec<MemberPlacement>,
 }
@@ -128,7 +139,7 @@ pub struct ZoneLayoutResource {
 /// (request body and zone-resource read-back), and the response-side
 /// client-tolerance convention wins for embedded resources. The
 /// strict envelope around it still rejects unknown top-level fields.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct MemberPlacement {
     pub member: ZoneMemberId,
     /// Center on the canvas, normalized `[0.0, 1.0]`.
@@ -150,7 +161,7 @@ fn default_placement_scale() -> f32 {
 
 /// A zone membership's identity — wire-transparent, unique within its
 /// zone, which is all its zone-scoped route needs.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(transparent)]
 pub struct ZoneMemberId(pub String);
 
@@ -162,7 +173,7 @@ impl std::fmt::Display for ZoneMemberId {
 
 /// One zone membership: a device segment's assignment, with its own
 /// identity (Spec 78 §1.2).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ZoneMember {
     /// The resource identity for `DELETE .../members/{member}`; unique
     /// within the zone.
@@ -178,38 +189,41 @@ pub struct ZoneMember {
 }
 
 /// `PATCH /scene` — scene-level fields only (Spec 78 §1.2).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScenePatchRequest {
     /// Rename; rejected for the default scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub unassigned_behavior: Option<UnassignedBehavior>,
 }
 
 /// `POST /scene/clear` — the "stop" gesture (Spec 78 §1.2).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClearSceneRequest {
     /// Clear one non-display zone's stack; omitted clears every non-display zone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub zone: Option<ZoneId>,
 }
 
 /// `POST /scene/zones` — create a zone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateZoneRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub role: Option<ZoneRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 }
 
 /// `PATCH /scene/zones/{zone}` — name and structural fields.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatchZoneRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -245,7 +259,7 @@ where
 
 /// `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
 /// in the same compact shape the zone resource reads back.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ZoneLayoutRequest {
     pub placements: Vec<MemberPlacement>,
@@ -255,7 +269,7 @@ pub struct ZoneLayoutRequest {
 ///
 /// The request names a device and its segments; the response's zone
 /// resource carries the minted membership ids (Spec 78 §1.2).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AssignMembersRequest {
     pub device_id: String,
@@ -269,7 +283,7 @@ pub struct AssignMembersRequest {
 ///
 /// The server mints the layer id (Spec 78 §1.4); the response's zone
 /// resource carries it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateLayerRequest {
     pub source: LayerSource,
@@ -300,7 +314,7 @@ pub type ReplaceLayerRequest = CreateLayerRequest;
 ///
 /// `order` names every layer in the zone exactly once, bottom to top;
 /// anything else is a validation error.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReorderLayersRequest {
     pub order: Vec<SceneLayerId>,
@@ -316,7 +330,7 @@ pub struct ReorderLayersRequest {
 /// 409 `control_bound` unless the same request clears that binding —
 /// removal and the accompanying values land in one atomic commit
 /// (Spec 78 §1.6).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatchControlsRequest {
     #[serde(default)]
@@ -329,7 +343,7 @@ pub struct PatchControlsRequest {
 ///
 /// Grows when the engine does; the request field does not accept
 /// aspirational values.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransitionType {
     /// Immediate switch — the only transition the engine performs.
@@ -342,12 +356,13 @@ pub enum TransitionType {
 /// Replaces the target zone's layer stack with a single new layer
 /// running this effect; a projection of the same `SceneMutation` a
 /// layer-stack replacement performs, never a second code path.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplyEffectRequest {
     /// Target zone; omitted means the primary zone, created if the
     /// scene has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub zone: Option<ZoneId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls: Option<BTreeMap<String, ControlValue>>,
@@ -360,7 +375,7 @@ pub struct ApplyEffectRequest {
 /// One post-commit side-effect outcome (Spec 78 §2.3, §3.2): the
 /// commit stands, the outcome says whether the side effect landed,
 /// and a failure carries its reason.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SideEffectOutcome {
     pub applied: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,7 +410,7 @@ impl SideEffectOutcome {
 /// 200 per Spec 78 §2.3; repair goes through the side effect's own
 /// route (`PATCH /output`), never a blind re-apply, because apply
 /// mints a fresh layer id and is deliberately not idempotent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEffectResponse {
     pub zone: ZoneResource,
     pub transition: TransitionType,

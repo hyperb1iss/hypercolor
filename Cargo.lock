@@ -5208,6 +5208,7 @@ dependencies = [
  "turbojpeg",
  "ulid",
  "utoipa",
+ "utoipa-axum",
  "utoipa-swagger-ui",
  "uuid",
  "wgpu",
@@ -15558,6 +15559,19 @@ dependencies = [
  "serde",
  "serde_json",
  "utoipa-gen",
+]
+
+[[package]]
+name = "utoipa-axum"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c25bae5bccc842449ec0c5ddc5cbb6a3a1eaeac4503895dc105a1138f8234a0"
+dependencies = [
+ "axum",
+ "paste",
+ "tower-layer",
+ "tower-service",
+ "utoipa",
 ]
 
 [[package]]

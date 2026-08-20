@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use utoipa::ToSchema;
 
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
@@ -27,7 +28,7 @@ pub const SIMULATED_DISPLAY_BACKEND_ID: &str = "simulator";
 const SIMULATED_DISPLAY_FAMILY: &str = "simulator";
 const DEFAULT_SIMULATED_DISPLAY_FPS: u32 = 15;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SimulatedDisplayConfig {
     pub id: DeviceId,
     pub name: String,

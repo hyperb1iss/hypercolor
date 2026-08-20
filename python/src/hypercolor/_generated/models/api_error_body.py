@@ -21,9 +21,6 @@ class ApiErrorBody:
     Attributes:
         error (ApiErrorDetail): The error payload inside [`ApiErrorBody`].
         meta (ResponseMeta): Response metadata included in every envelope.
-
-            Field-for-field the wire shape v1 already emits, so canonical and
-            legacy envelopes stay mergeable in clients.
     """
 
     error: ApiErrorDetail

@@ -1654,18 +1654,6 @@ async fn system_status_with_privacy(
 }
 
 /// `GET /api/v1/system` -- Public identity with authorized daemon status.
-#[utoipa::path(
-    get,
-    path = "/api/v1/system",
-    responses(
-        (
-            status = 200,
-            description = "Daemon identity and authorized status",
-            body = crate::api::envelope::ApiResponse<SystemResource>
-        )
-    ),
-    tag = "system"
-)]
 pub(crate) async fn get_system(
     State(state): State<Arc<AppState>>,
     Extension(auth_context): Extension<RequestAuthContext>,
@@ -1698,15 +1686,6 @@ async fn server_info(state: &AppState) -> ServerInfo {
 }
 
 /// `GET /health` — Lightweight health check (no envelope).
-#[utoipa::path(
-    get,
-    path = "/health",
-    responses(
-        (status = 200, description = "Daemon is healthy", body = HealthResponse),
-        (status = 503, description = "Daemon is degraded", body = HealthResponse)
-    ),
-    tag = "system"
-)]
 pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let render_loop = {
@@ -2305,7 +2284,7 @@ fn round_2(value: f64) -> f64 {
 // ── Audio Devices ────────────────────────────────────────────────────────
 
 /// One selectable audio input source.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, ToSchema)]
 pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
@@ -2313,7 +2292,7 @@ pub struct AudioDeviceInfo {
 }
 
 /// The audio input inventory plus the configured selection.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AudioDevicesResponse {
     pub devices: Vec<AudioDeviceInfo>,
     pub current: String,

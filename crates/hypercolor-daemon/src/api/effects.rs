@@ -322,24 +322,6 @@ impl EffectListIncludes {
 }
 
 /// `GET /api/v1/effects` — the effect catalog, narrowed server-side.
-#[utoipa::path(
-    get,
-    path = "/api/v1/effects",
-    params(EffectListQuery),
-    responses(
-        (
-            status = 200,
-            description = "Effect catalog",
-            body = crate::api::envelope::ApiResponse<EffectListResponse>
-        ),
-        (
-            status = 422,
-            description = "A filter or expansion named a value that does not exist",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn list_effects(
     State(state): State<Arc<AppState>>,
     Query(query): Query<EffectListQuery>,
@@ -401,24 +383,6 @@ fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> Effect
 }
 
 /// `GET /api/v1/effects/{id}` — Get a single effect's metadata.
-#[utoipa::path(
-    get,
-    path = "/api/v1/effects/{id}",
-    params(("id" = String, Path, description = "Effect id or name")),
-    responses(
-        (
-            status = 200,
-            description = "Effect detail",
-            body = crate::api::envelope::ApiResponse<EffectDetailResponse>
-        ),
-        (
-            status = 404,
-            description = "Effect was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let registry = state.effect_registry.read().await;
 
@@ -447,24 +411,6 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 }
 
 /// `GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
-#[utoipa::path(
-    get,
-    path = "/api/v1/effects/{id}/presets",
-    params(("id" = String, Path, description = "Effect id or name")),
-    responses(
-        (
-            status = 200,
-            description = "Unified effect preset stack",
-            body = crate::api::envelope::ApiResponse<EffectPresetListResponse>
-        ),
-        (
-            status = 404,
-            description = "Effect was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn list_effect_presets(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

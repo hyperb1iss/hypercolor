@@ -7,7 +7,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...models.api_response_device_summary import ApiResponseDeviceSummary
+from ...models.get_device_response_200 import GetDeviceResponse200
 from ...types import Response
 
 
@@ -27,16 +27,56 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorBody | ApiResponseDeviceSummary | None:
+) -> ApiErrorBody | GetDeviceResponse200 | None:
     if response.status_code == 200:
-        response_200 = ApiResponseDeviceSummary.from_dict(response.json())
+        response_200 = GetDeviceResponse200.from_dict(response.json())
 
         return response_200
+
+    if response.status_code == 400:
+        response_400 = ApiErrorBody.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 401:
+        response_401 = ApiErrorBody.from_dict(response.json())
+
+        return response_401
+
+    if response.status_code == 403:
+        response_403 = ApiErrorBody.from_dict(response.json())
+
+        return response_403
 
     if response.status_code == 404:
         response_404 = ApiErrorBody.from_dict(response.json())
 
         return response_404
+
+    if response.status_code == 409:
+        response_409 = ApiErrorBody.from_dict(response.json())
+
+        return response_409
+
+    if response.status_code == 412:
+        response_412 = ApiErrorBody.from_dict(response.json())
+
+        return response_412
+
+    if response.status_code == 422:
+        response_422 = ApiErrorBody.from_dict(response.json())
+
+        return response_422
+
+    if response.status_code == 429:
+        response_429 = ApiErrorBody.from_dict(response.json())
+
+        return response_429
+
+    if response.status_code == 500:
+        response_500 = ApiErrorBody.from_dict(response.json())
+
+        return response_500
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -46,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorBody | ApiResponseDeviceSummary]:
+) -> Response[ApiErrorBody | GetDeviceResponse200]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -59,8 +99,8 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorBody | ApiResponseDeviceSummary]:
-    """`GET /api/v1/devices/{id}` — Get a single device.
+) -> Response[ApiErrorBody | GetDeviceResponse200]:
+    """Get one device
 
     Args:
         id (str):
@@ -70,7 +110,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | ApiResponseDeviceSummary]
+        Response[ApiErrorBody | GetDeviceResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -88,8 +128,8 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorBody | ApiResponseDeviceSummary | None:
-    """`GET /api/v1/devices/{id}` — Get a single device.
+) -> ApiErrorBody | GetDeviceResponse200 | None:
+    """Get one device
 
     Args:
         id (str):
@@ -99,7 +139,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | ApiResponseDeviceSummary
+        ApiErrorBody | GetDeviceResponse200
     """
 
     return sync_detailed(
@@ -112,8 +152,8 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorBody | ApiResponseDeviceSummary]:
-    """`GET /api/v1/devices/{id}` — Get a single device.
+) -> Response[ApiErrorBody | GetDeviceResponse200]:
+    """Get one device
 
     Args:
         id (str):
@@ -123,7 +163,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | ApiResponseDeviceSummary]
+        Response[ApiErrorBody | GetDeviceResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -139,8 +179,8 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorBody | ApiResponseDeviceSummary | None:
-    """`GET /api/v1/devices/{id}` — Get a single device.
+) -> ApiErrorBody | GetDeviceResponse200 | None:
+    """Get one device
 
     Args:
         id (str):
@@ -150,7 +190,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | ApiResponseDeviceSummary
+        ApiErrorBody | GetDeviceResponse200
     """
 
     return (

@@ -4,37 +4,18 @@ use std::sync::{Arc, LazyLock, Mutex};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::openapi::ROUTES;
 use hypercolor_daemon::api::{self, AppState};
 use tower::ServiceExt;
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-// The live scene tree intentionally stays out of the transitional catalog.
-// Its shared types gain schemas when the complete post-resource-model catalog
-// is published atomically, so keep this gap exact until then.
-const DEFERRED_SCENE_TREE_OPERATIONS: &[(&str, &str)] = &[
-    ("delete", "/api/v1/scene/zones/{zone}"),
-    ("delete", "/api/v1/scene/zones/{zone}/layers/{layer}"),
-    ("delete", "/api/v1/scene/zones/{zone}/members/{member}"),
-    ("get", "/api/v1/scene"),
-    ("get", "/api/v1/scene/zones/{zone}"),
-    ("get", "/api/v1/scene/zones/{zone}/layers"),
-    ("patch", "/api/v1/scene"),
-    ("patch", "/api/v1/scene/zones/{zone}"),
-    ("patch", "/api/v1/scene/zones/{zone}/layers/order"),
-    (
-        "patch",
-        "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
-    ),
-    ("post", "/api/v1/scene/clear"),
-    ("post", "/api/v1/scene/deactivate"),
-    ("post", "/api/v1/scene/zones"),
-    ("post", "/api/v1/scene/zones/{zone}/layers"),
-    ("post", "/api/v1/scene/zones/{zone}/members"),
-    ("put", "/api/v1/scene/zones/{zone}/layers/{layer}"),
-    ("put", "/api/v1/scene/zones/{zone}/layout"),
-];
+fn openapi_document() -> serde_json::Value {
+    serde_json::from_str(
+        &hypercolor_daemon::api::openapi::document_json_pretty()
+            .expect("OpenAPI document should serialize"),
+    )
+    .expect("OpenAPI document should parse")
+}
 
 fn isolated_state() -> AppState {
     let _lock = DATA_DIR_LOCK
@@ -106,7 +87,7 @@ async fn openapi_json_is_served_with_expected_paths() {
     );
     assert!(body["components"]["schemas"]["UpdateAttachmentsRequest"].is_object());
     assert!(body["paths"]["/api/v1/system/audio-devices"]["get"].is_object());
-    // The merged routes carry no catalog entry either.
+    // Retired routes stay absent from the runtime document.
     for retired in [
         "/api/v1/server",
         "/api/v1/status",
@@ -125,7 +106,7 @@ async fn openapi_json_is_served_with_expected_paths() {
     ] {
         assert!(
             body["paths"][retired].is_null(),
-            "{retired} must be absent from the catalog"
+            "{retired} must be absent from the document"
         );
     }
     assert!(body["components"]["schemas"]["SystemResource"].is_object());
@@ -136,12 +117,11 @@ async fn openapi_json_is_served_with_expected_paths() {
         "SetBrightnessRequest",
         "PauseEffectResponse",
         "ResumeEffectResponse",
-        "CreateZoneRequest",
         "AssignDevicesRequest",
     ] {
         assert!(
             body["components"]["schemas"][retired].is_null(),
-            "{retired} must be absent from the schema catalog"
+            "{retired} must be absent from the schema components"
         );
     }
     assert!(body["paths"]["/api/v1/effects/{id}/apply"].is_object());
@@ -201,96 +181,8 @@ async fn openapi_json_is_served_with_expected_paths() {
     }
     assert!(body["components"]["schemas"]["CaptureAuthorizationResponse"].is_object());
     assert!(body["components"]["schemas"]["CapturePickerResponse"].is_object());
-    assert!(body["components"]["schemas"]["CaptureMonitor"].is_object());
+    assert!(body["components"]["schemas"]["CaptureMonitorList"].is_object());
     assert!(body["components"]["schemas"]["ProtectedSourceGrantOwner"].is_object());
-
-    for route in ROUTES {
-        let operation = &body["paths"][route.path][route.method];
-        assert!(
-            operation.is_object(),
-            "missing OpenAPI operation {} {}",
-            route.method.to_uppercase(),
-            route.path
-        );
-        assert_eq!(
-            operation["operationId"],
-            route.operation_id,
-            "unexpected operationId for {} {}",
-            route.method.to_uppercase(),
-            route.path
-        );
-    }
-}
-
-fn balanced_call(input: &str) -> &str {
-    let mut depth = 0_usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut saw_open = false;
-
-    for (index, character) in input.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match character {
-            '"' => in_string = true,
-            '(' => {
-                saw_open = true;
-                depth += 1;
-            }
-            ')' => {
-                depth -= 1;
-                if saw_open && depth == 0 {
-                    return &input[..=index];
-                }
-            }
-            _ => {}
-        }
-    }
-
-    panic!("unterminated router call: {input}");
-}
-
-fn quoted_path(call: &str) -> &str {
-    let start = call.find('"').expect("router call should contain a path") + 1;
-    let end = call[start..]
-        .find('"')
-        .expect("router path should have a closing quote");
-    &call[start..start + end]
-}
-
-fn router_operations() -> BTreeSet<(String, String)> {
-    let source = include_str!("../src/api/mod.rs");
-    let mut router = source
-        .split_once("let api = Router::new()")
-        .expect("router construction should be present")
-        .1
-        .split_once("let mut api = api;")
-        .expect("router construction should have a stable boundary")
-        .0;
-    let mut operations = BTreeSet::new();
-
-    while let Some(index) = router.find(".route(") {
-        let call = balanced_call(&router[index..]);
-        let path = format!("/api/v1{}", quoted_path(call));
-        for method in ["get", "post", "put", "patch", "delete"] {
-            if call.contains(&format!("axum::routing::{method}("))
-                || call.contains(&format!(".{method}("))
-            {
-                operations.insert((method.to_owned(), path.clone()));
-            }
-        }
-        router = &router[index + call.len()..];
-    }
-
-    operations
 }
 
 fn target_operations() -> BTreeSet<(String, String)> {
@@ -323,10 +215,51 @@ fn target_operations() -> BTreeSet<(String, String)> {
         .collect()
 }
 
+fn documented_operations(document: &serde_json::Value) -> BTreeSet<(String, String)> {
+    const METHODS: [&str; 5] = ["delete", "get", "patch", "post", "put"];
+
+    document["paths"]
+        .as_object()
+        .expect("OpenAPI paths should be an object")
+        .iter()
+        .flat_map(|(path, item)| {
+            METHODS.into_iter().filter_map(move |method| {
+                item[method]
+                    .is_object()
+                    .then(|| (method.to_owned(), path.clone()))
+            })
+        })
+        .collect()
+}
+
+fn assert_local_refs_resolve(root: &serde_json::Value, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(reference) = object.get("$ref").and_then(serde_json::Value::as_str)
+                && let Some(pointer) = reference.strip_prefix('#')
+            {
+                assert!(
+                    root.pointer(pointer).is_some(),
+                    "unresolved OpenAPI reference {reference}"
+                );
+            }
+            for child in object.values() {
+                assert_local_refs_resolve(root, child);
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for child in array {
+                assert_local_refs_resolve(root, child);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[test]
-fn live_router_exactly_matches_the_spec_78_target_manifest() {
-    let mut live = router_operations();
-    live.insert(("get".to_owned(), "/health".to_owned()));
+fn runtime_document_exactly_matches_the_spec_78_target_manifest() {
+    let document = openapi_document();
+    let live = documented_operations(&document);
     let target = target_operations();
 
     assert_eq!(target.len(), 117, "target operation count drifted");
@@ -350,39 +283,254 @@ fn live_router_exactly_matches_the_spec_78_target_manifest() {
     );
     assert_eq!(
         live, target,
-        "live router diverged from the locked inventory"
+        "runtime route registration diverged from the locked inventory"
     );
 }
 
 #[test]
-fn only_the_deferred_scene_tree_operations_are_uncataloged() {
-    let catalog = ROUTES
-        .iter()
-        .map(|route| (route.method.to_owned(), route.path.to_owned()))
-        .collect::<BTreeSet<_>>();
-    let missing = router_operations()
-        .difference(&catalog)
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let expected = DEFERRED_SCENE_TREE_OPERATIONS
-        .iter()
-        .map(|(method, path)| ((*method).to_owned(), (*path).to_owned()))
-        .collect::<BTreeSet<_>>();
-
-    assert_eq!(
-        missing, expected,
-        "OpenAPI gaps must remain exactly the deferred scene tree"
-    );
-}
-
-#[test]
-fn route_catalog_operation_ids_are_unique() {
+fn runtime_document_has_complete_operation_contracts() {
+    let document = openapi_document();
     let mut operation_ids = BTreeSet::new();
-    for route in ROUTES {
+    let paths = document["paths"]
+        .as_object()
+        .expect("OpenAPI paths should be an object");
+
+    for (method, path) in documented_operations(&document) {
+        let operation = &paths[&path][&method];
+        let operation_id = operation["operationId"]
+            .as_str()
+            .expect("every operation should have an operationId");
         assert!(
-            operation_ids.insert(route.operation_id),
-            "duplicate OpenAPI operationId {}",
-            route.operation_id
+            operation_ids.insert(operation_id),
+            "duplicate {operation_id}"
+        );
+        assert!(
+            operation["summary"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert_eq!(
+            operation["tags"].as_array().map(Vec::len),
+            Some(1),
+            "{method} {path} should have one resource tag"
+        );
+
+        let responses = operation["responses"]
+            .as_object()
+            .expect("every operation should declare responses");
+        let successes = responses
+            .iter()
+            .filter(|(status, _)| status.starts_with('2') || status.as_str() == "101")
+            .collect::<Vec<_>>();
+        assert!(
+            !successes.is_empty(),
+            "{method} {path} has no success response"
+        );
+        if path != "/api/v1/ws" {
+            for (status, response) in successes {
+                assert!(
+                    response["content"]
+                        .as_object()
+                        .is_some_and(|content| !content.is_empty()),
+                    "{method} {path} response {status} has no schema"
+                );
+                assert!(
+                    !response.to_string().contains("#/components/schemas/Value"),
+                    "{method} {path} response {status} uses an untyped Value schema"
+                );
+            }
+        }
+
+        for status in [
+            "400", "401", "403", "404", "409", "412", "422", "429", "500",
+        ] {
+            assert_eq!(
+                responses[status]["content"]["application/json"]["schema"]["$ref"],
+                "#/components/schemas/ApiErrorBody",
+                "{method} {path} response {status} must use the shared error contract"
+            );
+        }
+
+        let expected_parameters = path
+            .split('/')
+            .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
+            .collect::<BTreeSet<_>>();
+        let parameters = operation["parameters"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let actual_parameters = parameters
+            .iter()
+            .filter(|parameter| parameter["in"] == "path")
+            .filter_map(|parameter| parameter["name"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_parameters, expected_parameters, "{method} {path}");
+        for parameter in parameters
+            .iter()
+            .filter(|parameter| parameter["in"] == "path")
+        {
+            assert_eq!(parameter["required"], true, "{method} {path}");
+            assert_eq!(parameter["schema"]["type"], "string", "{method} {path}");
+        }
+    }
+
+    assert_eq!(operation_ids.len(), 117);
+    let schemas = &document["components"]["schemas"];
+    assert!(schemas["Vec"].is_null());
+    assert!(schemas["ListResponse"].is_null());
+    assert!(schemas["Option"].is_null());
+    for schema in [
+        "CaptureMonitorList",
+        "ConfigKeySchemaEntryList",
+        "DeviceSummaryListResponse",
+        "DisplaySummaryList",
+        "MediaAssetRecordListResponse",
+        "SimulatedDisplayConfigList",
+    ] {
+        assert!(schemas[schema].is_object(), "missing schema {schema}");
+    }
+    assert_local_refs_resolve(&document, &document);
+}
+
+#[test]
+fn runtime_document_records_real_statuses_bodies_and_media_types() {
+    let document = openapi_document();
+    let paths = &document["paths"];
+
+    for (path, method, status) in [
+        ("/health", "get", "503"),
+        ("/api/v1/assets", "post", "201"),
+        ("/api/v1/attachments/templates", "post", "201"),
+        ("/api/v1/devices/discover", "post", "202"),
+        ("/api/v1/effects/install", "post", "201"),
+        ("/api/v1/layouts/{id}", "delete", "202"),
+        ("/api/v1/layouts/{id}/apply", "post", "202"),
+        ("/api/v1/scene/zones", "post", "201"),
+        ("/api/v1/scene/zones/{zone}/layers", "post", "201"),
+        ("/api/v1/scenes", "post", "201"),
+        ("/api/v1/scenes/snapshot", "post", "201"),
+        ("/api/v1/simulators/displays", "post", "201"),
+        ("/api/v1/ws", "get", "101"),
+    ] {
+        assert!(
+            paths[path][method]["responses"][status].is_object(),
+            "{method} {path} should document {status}"
+        );
+    }
+
+    for (path, method, schema, required) in [
+        ("/api/v1/output", "patch", "OutputPatchRequest", true),
+        ("/api/v1/scene", "patch", "ScenePatchRequest", true),
+        (
+            "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+            "patch",
+            "PatchControlsRequest",
+            true,
+        ),
+        ("/api/v1/devices/discover", "post", "DiscoverRequest", false),
+        (
+            "/api/v1/effects/{id}/apply",
+            "post",
+            "ApplyEffectRequest",
+            false,
+        ),
+    ] {
+        let body = &paths[path][method]["requestBody"];
+        assert_eq!(body["required"], required, "{method} {path}");
+        assert_eq!(
+            body["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{schema}"),
+            "{method} {path}"
+        );
+    }
+
+    for (path, content_type) in [
+        ("/api/v1/assets/{id}/blob", "application/octet-stream"),
+        ("/api/v1/assets/{id}/thumbnail", "image/webp"),
+        ("/api/v1/displays/{id}/frame", "image/jpeg"),
+        ("/api/v1/effects/{id}/cover", "image/jpeg"),
+        ("/api/v1/simulators/displays/{id}/frame", "image/jpeg"),
+    ] {
+        assert_eq!(
+            paths[path]["get"]["responses"]["200"]["content"][content_type]["schema"]["format"],
+            "binary",
+            "GET {path}"
+        );
+    }
+
+    for (path, method, expected) in [
+        ("/api/v1/assets", "post", &["rename_duplicate", "type"][..]),
+        (
+            "/api/v1/attachments/templates",
+            "get",
+            &[
+                "offset",
+                "limit",
+                "category",
+                "vendor",
+                "origin",
+                "q",
+                "controller_id",
+                "model",
+                "slot_id",
+                "led_min",
+                "led_max",
+            ][..],
+        ),
+        ("/api/v1/config/keys/{key}", "put", &["live"][..]),
+        ("/api/v1/config/keys/{key}", "delete", &["live"][..]),
+        ("/api/v1/config/reset", "post", &["live"][..]),
+        (
+            "/api/v1/control-surfaces",
+            "get",
+            &["device_id", "driver_id", "include_driver"][..],
+        ),
+        (
+            "/api/v1/devices",
+            "get",
+            &[
+                "offset",
+                "limit",
+                "status",
+                "backend_id",
+                "driver",
+                "q",
+                "include",
+            ][..],
+        ),
+        ("/api/v1/displays/{id}/face", "delete", &["scope"][..]),
+        (
+            "/api/v1/effects",
+            "get",
+            &[
+                "category",
+                "audio_reactive",
+                "screen_reactive",
+                "input_reactive",
+                "source",
+                "q",
+                "include",
+            ][..],
+        ),
+        ("/api/v1/layouts", "get", &["offset", "limit", "active"][..]),
+    ] {
+        let parameters = paths[path][method]["parameters"]
+            .as_array()
+            .expect("query-bearing operation should declare parameters");
+        let actual = parameters
+            .iter()
+            .filter(|parameter| parameter["in"] == "query")
+            .map(|parameter| {
+                assert_ne!(parameter["required"], true, "{method} {path}");
+                parameter["name"]
+                    .as_str()
+                    .expect("query parameter should have a name")
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual,
+            expected.iter().copied().collect::<BTreeSet<_>>(),
+            "{method} {path}"
         );
     }
 }

@@ -9,7 +9,9 @@ use crate::controls::ControlValueMap;
 ///
 /// At least one selector must be present; a query that names neither a
 /// device nor a driver is rejected.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, utoipa::IntoParams,
+)]
 pub struct ControlSurfaceListQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,

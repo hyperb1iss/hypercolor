@@ -114,7 +114,7 @@ pub struct InstalledEffectResponse {
 ///
 /// Counts describe what the rescan changed in the registry, so an
 /// all-zero response means the effect directories were already current.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RescanResponse {
     pub added: usize,
     pub removed: usize,

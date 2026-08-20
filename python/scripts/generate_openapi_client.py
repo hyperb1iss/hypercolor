@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import IO
+from typing import IO, cast
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parent
@@ -123,11 +123,15 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
 
     schemas = spec.get("components", {}).get("schemas", {})
     for name in (
+        "AssetScanStatus",
         "ControlApplyError",
         "ControlOwner",
         "ControlSurfaceEvent",
         "ControlSurfaceScope",
+        "DisplayFaceResponseOptional",
         "EdgeBehavior",
+        "EffectSource",
+        "LayerSource",
     ):
         schema = schemas.get(name)
         if isinstance(schema, dict):
@@ -136,9 +140,38 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
                 "description": schema.get("description", f"{name} payload"),
             }
 
+    normalize_binary_response_media_types(spec)
+
     generator_spec = temp_dir / "openapi-python-client.json"
     generator_spec.write_text(json.dumps(spec, indent=2), encoding="utf-8")
     return generator_spec
+
+
+def normalize_binary_response_media_types(spec: dict[str, object]) -> None:
+    paths = spec.get("paths")
+    if not isinstance(paths, dict):
+        return
+    for path_item in cast(dict[str, object], paths).values():
+        if not isinstance(path_item, dict):
+            continue
+        for operation in cast(dict[str, object], path_item).values():
+            if not isinstance(operation, dict):
+                continue
+            responses = cast(dict[str, object], operation).get("responses")
+            if not isinstance(responses, dict):
+                continue
+            for response in cast(dict[str, object], responses).values():
+                if not isinstance(response, dict):
+                    continue
+                content = cast(dict[str, object], response).get("content")
+                if not isinstance(content, dict):
+                    continue
+                content_by_media_type = cast(dict[str, object], content)
+                for media_type in list(content_by_media_type):
+                    if media_type.startswith("image/"):
+                        content_by_media_type["application/octet-stream"] = (
+                            content_by_media_type.pop(media_type)
+                        )
 
 
 def replace_generated(source: Path) -> None:

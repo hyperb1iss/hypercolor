@@ -88,32 +88,6 @@ impl DeviceListIncludes {
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/devices` — List all tracked devices.
-#[utoipa::path(
-    get,
-    path = "/api/v1/devices",
-    params(
-        ("offset" = Option<usize>, Query, description = "Number of devices to skip"),
-        ("limit" = Option<usize>, Query, description = "Maximum number of devices to return"),
-        ("status" = Option<String>, Query, description = "Filter by device status"),
-        ("backend_id" = Option<String>, Query, description = "Filter by output backend route"),
-        ("driver" = Option<String>, Query, description = "Filter by owning driver module"),
-        ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search"),
-        ("include" = Option<String>, Query, description = "Comma-separated expansions: attachments")
-    ),
-    responses(
-        (
-            status = 200,
-            description = "Tracked devices",
-            body = crate::api::envelope::ApiResponse<DeviceListResponse>
-        ),
-        (
-            status = 422,
-            description = "Query validation failed",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "devices"
-)]
 pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListDevicesQuery>,
@@ -228,24 +202,6 @@ pub async fn list_devices(
 }
 
 /// `GET /api/v1/devices/{id}` — Get a single device.
-#[utoipa::path(
-    get,
-    path = "/api/v1/devices/{id}",
-    params(("id" = String, Path, description = "Device id or display name")),
-    responses(
-        (
-            status = 200,
-            description = "Device detail",
-            body = crate::api::envelope::ApiResponse<DeviceSummary>
-        ),
-        (
-            status = 404,
-            description = "Device was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "devices"
-)]
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,

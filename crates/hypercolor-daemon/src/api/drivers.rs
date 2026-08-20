@@ -47,18 +47,6 @@ pub struct DriverConfigResponse {
 }
 
 /// `GET /api/v1/drivers` — List registered driver modules.
-#[utoipa::path(
-    get,
-    path = "/api/v1/drivers",
-    responses(
-        (
-            status = 200,
-            description = "Registered driver modules",
-            body = crate::api::envelope::ApiResponse<DriverListResponse>
-        )
-    ),
-    tag = "drivers"
-)]
 pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
     let config = state.config_manager.as_ref().map_or_else(
         || Arc::new(HypercolorConfig::default()),
@@ -106,26 +94,6 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
-#[utoipa::path(
-    get,
-    path = "/api/v1/drivers/{id}/config",
-    params(
-        ("id" = String, Path, description = "Driver module identifier")
-    ),
-    responses(
-        (
-            status = 200,
-            description = "Driver module config",
-            body = crate::api::envelope::ApiResponse<DriverConfigResponse>
-        ),
-        (
-            status = 404,
-            description = "Driver module not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "drivers"
-)]
 pub async fn get_driver_config(
     State(state): State<Arc<AppState>>,
     Path(driver_id): Path<String>,

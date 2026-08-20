@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use axum::Router;
+use utoipa_axum::router::OpenApiRouter;
 
 use crate::api::AppState;
 use crate::startup::DaemonState;
@@ -88,7 +88,10 @@ impl ExtensionRegistry {
 pub trait ApiExtension: Send + Sync {
     fn name(&self) -> &'static str;
 
-    fn mount_api_routes(&self, router: Router<Arc<AppState>>) -> Router<Arc<AppState>>;
+    fn mount_api_routes(
+        &self,
+        router: OpenApiRouter<Arc<AppState>>,
+    ) -> OpenApiRouter<Arc<AppState>>;
 }
 
 #[async_trait]

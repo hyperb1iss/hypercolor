@@ -19,6 +19,7 @@ use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::assets::{
     AssetListResponse, AssetUpdateRequest, AssetUploadQuery, AssetUploadResponse,
+    DeleteAssetResponse,
 };
 
 /// Multipart framing the upload route accepts on top of the asset bytes
@@ -116,7 +117,7 @@ pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<Ass
     };
 
     publish_asset_events(state.as_ref(), std::slice::from_ref(&event));
-    envelope::ok(serde_json::json!({ "removed": id }))
+    envelope::ok(DeleteAssetResponse { removed: id })
 }
 
 pub async fn get_asset_blob(

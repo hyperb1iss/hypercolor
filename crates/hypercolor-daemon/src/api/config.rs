@@ -30,7 +30,7 @@ use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::domain::{DomainError, ResourceKind};
 
-pub use hypercolor_types::api::config::ConfigApplyQuery;
+pub use hypercolor_types::api::config::{ConfigApplyQuery, ConfigDocument, ConfigKeyResponse};
 
 /// Render an internal config failure.
 ///
@@ -71,7 +71,12 @@ pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
         Err(error) => return internal_config_error(format!("Failed to serialize config: {error}")),
     };
 
-    envelope::ok(redact_document(value))
+    let serde_json::Value::Object(values) = redact_document(value) else {
+        return internal_config_error("Effective config did not serialize as an object");
+    };
+    envelope::ok(ConfigDocument {
+        values: values.into_iter().collect(),
+    })
 }
 
 /// `GET /api/v1/config/schema` — the key registry clients read to learn
@@ -99,10 +104,10 @@ pub async fn get_config_key(
         return DomainError::not_found(ResourceKind::ConfigKey, key).into_response();
     };
 
-    envelope::ok(serde_json::json!({
-        "key": key,
-        "value": redact_key(&key, found.clone()),
-    }))
+    envelope::ok(ConfigKeyResponse {
+        value: redact_key(&key, found.clone()),
+        key,
+    })
 }
 
 /// Privacy-bearing config keys. Mutating them starts, retargets, or

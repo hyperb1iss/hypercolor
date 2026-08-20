@@ -39,7 +39,8 @@ use crate::scene_transactions::{
 };
 
 pub use hypercolor_types::api::layouts::{
-    CreateLayoutRequest, LayoutListQuery, LayoutListResponse, LayoutSummary, UpdateLayoutRequest,
+    ApplyLayoutResponse, CreateLayoutRequest, DeleteLayoutResponse, LayoutListQuery,
+    LayoutListResponse, LayoutSummary, PreviewLayoutResponse, UpdateLayoutRequest,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -516,11 +517,11 @@ async fn apply_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     }
     let persistence = converge_persisted_layout_update(&state).await;
     layout_persistence_response(
-        serde_json::json!({
-            "layout": layout,
-            "applied": true,
-            "persistence_pending": persistence == LayoutPersistenceStatus::Pending,
-        }),
+        ApplyLayoutResponse {
+            layout,
+            applied: true,
+            persistence_pending: persistence == LayoutPersistenceStatus::Pending,
+        },
         persistence,
     )
 }
@@ -592,7 +593,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
         )
         .await;
 
-    envelope::ok(serde_json::json!({ "previewing": true }))
+    envelope::ok(PreviewLayoutResponse { previewing: true })
 }
 
 /// `DELETE /api/v1/layouts/{id}` — Delete a layout.
@@ -708,11 +709,11 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     };
 
     layout_persistence_response(
-        serde_json::json!({
-            "id": key,
-            "deleted": true,
-            "persistence_pending": persistence == LayoutPersistenceStatus::Pending,
-        }),
+        DeleteLayoutResponse {
+            id: key,
+            deleted: true,
+            persistence_pending: persistence == LayoutPersistenceStatus::Pending,
+        },
         persistence,
     )
 }
@@ -863,8 +864,8 @@ fn layout_update_error_response(error: LayoutUpdateError) -> Response {
     }
 }
 
-fn layout_persistence_response(
-    data: serde_json::Value,
+fn layout_persistence_response<T: serde::Serialize>(
+    data: T,
     persistence: LayoutPersistenceStatus,
 ) -> Response {
     match persistence {

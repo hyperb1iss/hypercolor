@@ -25,7 +25,7 @@ use crate::simulators::{
 };
 
 pub use hypercolor_types::api::simulators::{
-    CreateSimulatedDisplayRequest, UpdateSimulatedDisplayRequest,
+    CreateSimulatedDisplayRequest, DeleteSimulatedDisplayResponse, UpdateSimulatedDisplayRequest,
 };
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
@@ -220,10 +220,10 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
             &device_id.to_string(),
         )
         .await;
-    envelope::ok(serde_json::json!({
-        "id": device_id,
-        "deleted": true,
-    }))
+    envelope::ok(DeleteSimulatedDisplayResponse {
+        id: device_id,
+        deleted: true,
+    })
 }
 
 pub async fn get_simulated_display_frame(

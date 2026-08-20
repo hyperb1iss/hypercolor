@@ -8,6 +8,7 @@ use axum::{Extension, Json};
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::capture::protected_control_rejection;
@@ -24,14 +25,14 @@ const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
 const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
 const DEFAULT_SAFE_CHECKS: [&str; 6] = ["daemon", "render", "devices", "config", "input", "memory"];
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct DiagnoseResponse {
     checks: Vec<DiagnoseCheck>,
     summary: DiagnoseSummary,
     snapshot: DiagnoseSnapshot,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseCheck {
     category: String,
     name: String,
@@ -39,14 +40,14 @@ struct DiagnoseCheck {
     detail: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseSummary {
     passed: usize,
     warnings: usize,
     failed: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseSnapshot {
     input: InputStatus,
     render: DiagnoseRenderSnapshot,
@@ -57,13 +58,13 @@ struct DiagnoseSnapshot {
     macos_screen_parity: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseRenderSnapshot {
     latest_frame: Option<DiagnoseLatestFrameSnapshot>,
     recent_window: DiagnoseRenderWindowSnapshot,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "diagnostics snapshot mirrors independent frame freshness flags"
@@ -102,7 +103,7 @@ struct DiagnoseLatestFrameSnapshot {
     output_errors: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseRenderWindowSnapshot {
     frames: u32,
     gpu_sample_deferred: u32,
@@ -122,7 +123,7 @@ struct DiagnoseRenderWindowSnapshot {
     publish_p95_ms: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[allow(
     clippy::struct_field_names,
     reason = "JSON names mirror the USB actor metrics exported elsewhere"
@@ -135,7 +136,7 @@ struct DiagnoseUsbActorSnapshot {
     display_led_priority_wait_max_ms: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseDisplayOutputSnapshot {
     captured_devices: usize,
     preview_subscribers: usize,
@@ -154,7 +155,7 @@ struct DiagnoseDisplayOutputSnapshot {
     last_failure_age_ms: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseDeviceOutputSnapshot {
     queues: usize,
     usb_queues: usize,
@@ -165,7 +166,7 @@ struct DiagnoseDeviceOutputSnapshot {
     items: Vec<DiagnoseDeviceOutputItem>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseDeviceOutputItem {
     id: String,
     backend_id: String,

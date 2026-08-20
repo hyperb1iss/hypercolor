@@ -98,6 +98,7 @@ mdns-sd = { workspace = true }
 notify = { workspace = true }
 owo-colors = { workspace = true }
 utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 httpdate = "1.0"
 wgpu = { workspace = true, optional = true }

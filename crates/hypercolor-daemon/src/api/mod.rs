@@ -24,6 +24,7 @@ pub mod local;
 mod macos_screen_parity;
 pub mod openapi;
 pub mod output;
+mod routes;
 pub mod scene;
 pub mod scenes;
 pub mod security;
@@ -45,14 +46,15 @@ use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, Method, header};
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
+use utoipa_axum::router::OpenApiRouter;
 
+use self::openapi::OperationDoc;
 use crate::interaction_routing::InteractionRoutingControl;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
@@ -1049,6 +1051,33 @@ pub(crate) async fn sync_connectivity(state: &AppState) {
 
 // ── Router ───────────────────────────────────────────────────────────────
 
+fn documented_api_routes(asset_upload_body_limit: usize) -> OpenApiRouter<Arc<AppState>> {
+    routes::versioned(asset_upload_body_limit)
+}
+
+fn documented_root_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::with_openapi(openapi::base_document()).routes(openapi::documented_route(
+        "/health",
+        axum::routing::get(system::health_check),
+        [OperationDoc::get::<system::HealthResponse>(
+            "health_check",
+            "system",
+            "Run daemon health check",
+        )
+        .also_status("503")
+        .raw()],
+    ))
+}
+
+pub(crate) fn openapi_document() -> utoipa::openapi::OpenApi {
+    let asset_upload_body_limit =
+        usize::try_from(assets::asset_upload_body_limit_bytes()).unwrap_or(usize::MAX);
+    documented_root_routes().into_openapi().nest(
+        "/api/v1",
+        documented_api_routes(asset_upload_body_limit).into_openapi(),
+    )
+}
+
 /// Build the complete Axum router with all API routes and middleware.
 ///
 /// When `ui_dir` is provided, static files are served at `/` with SPA
@@ -1070,331 +1099,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let asset_upload_body_limit =
         usize::try_from(assets::asset_upload_body_limit_bytes()).unwrap_or(usize::MAX);
 
-    let api = Router::new()
-        // ── Assets ───────────────────────────────────────────────────
-        .route(
-            "/assets",
-            axum::routing::get(assets::list_assets)
-                .post(assets::upload_asset)
-                .layer(DefaultBodyLimit::max(asset_upload_body_limit)),
-        )
-        .route(
-            "/assets/{id}",
-            axum::routing::get(assets::get_asset)
-                .put(assets::update_asset)
-                .delete(assets::delete_asset),
-        )
-        .route(
-            "/assets/{id}/blob",
-            axum::routing::get(assets::get_asset_blob),
-        )
-        .route(
-            "/assets/{id}/thumbnail",
-            axum::routing::get(assets::get_asset_thumbnail),
-        )
-        // ── Devices ──────────────────────────────────────────────────
-        .route("/devices", axum::routing::get(devices::list_devices))
-        .route("/drivers", axum::routing::get(drivers::list_drivers))
-        .route(
-            "/drivers/{id}/config",
-            axum::routing::get(drivers::get_driver_config),
-        )
-        .route(
-            "/drivers/{id}/controls",
-            axum::routing::get(controls::get_driver_control_surface),
-        )
-        .route(
-            "/devices/discover",
-            axum::routing::post(devices::discover_devices),
-        )
-        .route(
-            "/devices/{id}",
-            axum::routing::get(devices::get_device)
-                .put(devices::update_device)
-                .delete(devices::delete_device),
-        )
-        .route(
-            "/devices/{id}/controls",
-            axum::routing::get(controls::get_device_control_surface),
-        )
-        .route(
-            "/devices/{id}/attachments",
-            axum::routing::get(devices::get_attachments)
-                .put(devices::update_attachments)
-                .delete(devices::delete_attachments),
-        )
-        .route(
-            "/devices/{id}/identify",
-            axum::routing::post(devices::identify_device),
-        )
-        .route(
-            "/devices/{id}/segments/{segment}/identify",
-            axum::routing::post(devices::identify_segment),
-        )
-        .route(
-            "/devices/{id}/attachments/{slot}/identify",
-            axum::routing::post(devices::identify_attachment),
-        )
-        .route(
-            "/devices/{id}/pair",
-            axum::routing::post(devices::pair_device).delete(devices::delete_pairing),
-        )
-        // ── Displays ─────────────────────────────────────────────────
-        .route("/displays", axum::routing::get(displays::list_displays))
-        .route(
-            "/displays/{id}/frame",
-            axum::routing::get(displays::get_display_frame),
-        )
-        .route(
-            "/displays/{id}/face",
-            axum::routing::get(displays::get_display_face)
-                .put(displays::set_display_face)
-                .delete(displays::delete_display_face),
-        )
-        .route(
-            "/displays/{id}/face/controls",
-            axum::routing::patch(displays::patch_display_face_controls),
-        )
-        .route(
-            "/displays/{id}/face/composition",
-            axum::routing::patch(displays::patch_display_face_composition),
-        )
-        .route(
-            "/simulators/displays",
-            axum::routing::get(simulators::list_simulated_displays)
-                .post(simulators::create_simulated_display),
-        )
-        .route(
-            "/simulators/displays/{id}",
-            axum::routing::get(simulators::get_simulated_display)
-                .patch(simulators::patch_simulated_display)
-                .delete(simulators::delete_simulated_display),
-        )
-        .route(
-            "/simulators/displays/{id}/frame",
-            axum::routing::get(simulators::get_simulated_display_frame),
-        )
-        // ── Attachments ──────────────────────────────────────────────
-        .route(
-            "/attachments/templates",
-            axum::routing::get(attachments::list_templates)
-                .post(attachments::create_template),
-        )
-        // ── Output ───────────────────────────────────────────────────
-        .route(
-            "/output",
-            axum::routing::get(output::get_output).patch(output::patch_output),
-        )
-        // ── Effects ──────────────────────────────────────────────────
-        .route("/effects", axum::routing::get(effects::list_effects))
-        .route(
-            "/effects/rescan",
-            axum::routing::post(effects::rescan_effects),
-        )
-        .route(
-            "/effects/install",
-            axum::routing::post(effects::install_effect),
-        )
-        .route(
-            "/effects/{id}/cover",
-            axum::routing::get(effects::get_effect_cover),
-        )
-        .route("/effects/{id}", axum::routing::get(effects::get_effect))
-        .route(
-            "/effects/{id}/presets",
-            axum::routing::get(effects::list_effect_presets),
-        )
-        .route(
-            "/effects/{id}/presets/{preset}/apply",
-            axum::routing::post(effects::apply_effect_preset),
-        )
-        .route(
-            "/effects/{id}/apply",
-            axum::routing::post(effects::apply_effect),
-        )
-        // ── The live scene tree (Spec 78 §1) ─────────────────────────
-        .route(
-            "/scene",
-            axum::routing::get(scene::get_scene).patch(scene::patch_scene),
-        )
-        .route(
-            "/scene/deactivate",
-            axum::routing::post(scene::deactivate_scene),
-        )
-        .route("/scene/clear", axum::routing::post(scene::clear_scene))
-        .route("/scene/zones", axum::routing::post(scene::create_zone))
-        .route(
-            "/scene/zones/{zone}",
-            axum::routing::get(scene::get_zone)
-                .patch(scene::patch_zone)
-                .delete(scene::delete_zone),
-        )
-        .route(
-            "/scene/zones/{zone}/layout",
-            axum::routing::put(scene::put_zone_layout),
-        )
-        .route(
-            "/scene/zones/{zone}/members",
-            axum::routing::post(scene::assign_members),
-        )
-        .route(
-            "/scene/zones/{zone}/members/{member}",
-            axum::routing::delete(scene::unassign_member),
-        )
-        .route(
-            "/scene/zones/{zone}/layers",
-            axum::routing::get(scene::list_layers).post(scene::create_layer),
-        )
-        .route(
-            "/scene/zones/{zone}/layers/order",
-            axum::routing::patch(scene::reorder_layers),
-        )
-        .route(
-            "/scene/zones/{zone}/layers/{layer}",
-            axum::routing::put(scene::replace_layer).delete(scene::delete_layer),
-        )
-        .route(
-            "/scene/zones/{zone}/layers/{layer}/controls",
-            axum::routing::patch(scene::patch_layer_controls),
-        )
-        // ── Scenes ───────────────────────────────────────────────────
-        .route(
-            "/scenes",
-            axum::routing::get(scenes::list_scenes).post(scenes::create_scene),
-        )
-        .route(
-            "/scenes/snapshot",
-            axum::routing::post(scenes::snapshot_scene),
-        )
-        .route(
-            "/scenes/{id}",
-            axum::routing::get(scenes::get_scene)
-                .put(scenes::update_scene)
-                .delete(scenes::delete_scene),
-        )
-        .route(
-            "/scenes/{id}/activate",
-            axum::routing::post(scenes::activate_scene),
-        )
-        // ── Layouts ──────────────────────────────────────────────────
-        .route(
-            "/layouts",
-            axum::routing::get(layouts::list_layouts).post(layouts::create_layout),
-        )
-        .route(
-            "/layouts/active",
-            axum::routing::get(layouts::get_active_layout),
-        )
-        .route(
-            "/layouts/active/preview",
-            axum::routing::put(layouts::preview_layout),
-        )
-        .route(
-            "/layouts/{id}",
-            axum::routing::get(layouts::get_layout)
-                .put(layouts::update_layout)
-                .delete(layouts::delete_layout),
-        )
-        .route(
-            "/layouts/{id}/apply",
-            axum::routing::post(layouts::apply_layout),
-        )
-        // ── Library ──────────────────────────────────────────────────
-        .route(
-            "/library/favorites",
-            axum::routing::get(library::list_favorites).post(library::add_favorite),
-        )
-        .route(
-            "/library/favorites/{effect}",
-            axum::routing::delete(library::remove_favorite),
-        )
-        .route(
-            "/library/presets",
-            axum::routing::get(library::list_presets).post(library::create_preset),
-        )
-        .route(
-            "/library/presets/{id}",
-            axum::routing::get(library::get_preset)
-                .put(library::update_preset)
-                .delete(library::delete_preset),
-        )
-        .route(
-            "/library/playlists",
-            axum::routing::get(library::list_playlists).post(library::create_playlist),
-        )
-        .route(
-            "/library/playlists/active",
-            axum::routing::get(library::get_active_playlist),
-        )
-        .route(
-            "/library/playlists/deactivate",
-            axum::routing::post(library::deactivate_playlist),
-        )
-        .route(
-            "/library/playlists/{id}",
-            axum::routing::get(library::get_playlist)
-                .put(library::update_playlist)
-                .delete(library::delete_playlist),
-        )
-        .route(
-            "/library/playlists/{id}/activate",
-            axum::routing::post(library::activate_playlist),
-        )
-        // ── System ───────────────────────────────────────────────────
-        .route("/system", axum::routing::get(system::get_system))
-        .route("/system/sensors", axum::routing::get(system::get_sensors))
-        .route(
-            "/system/audio-devices",
-            axum::routing::get(system::list_audio_devices),
-        )
-        // ── Screen Capture ───────────────────────────────────────────
-        .route(
-            "/input/authorize",
-            axum::routing::post(capture::authorize_input_monitoring),
-        )
-        .route(
-            "/capture/authorize",
-            axum::routing::post(capture::authorize_screen_recording),
-        )
-        .route(
-            "/capture/source",
-            axum::routing::put(capture::set_capture_source),
-        )
-        .route(
-            "/capture/monitors",
-            axum::routing::get(capture::list_capture_monitors),
-        )
-        // ── Config ───────────────────────────────────────────────────
-        .route("/config", axum::routing::get(config::show_config))
-        .route("/config/schema", axum::routing::get(config::get_config_schema))
-        .route(
-            "/config/keys/{key}",
-            axum::routing::get(config::get_config_key)
-                .put(config::put_config_key)
-                .delete(config::delete_config_key),
-        )
-        .route("/config/reset", axum::routing::post(config::reset_config))
-        // ── Control Surfaces ────────────────────────────────────────
-        .route(
-            "/control-surfaces",
-            axum::routing::get(controls::list_control_surfaces),
-        )
-        .route(
-            "/control-surfaces/{id}",
-            axum::routing::get(controls::get_control_surface),
-        )
-        .route(
-            "/control-surfaces/{id}/values",
-            axum::routing::patch(controls::apply_control_surface_values),
-        )
-        .route(
-            "/control-surfaces/{id}/actions/{action}",
-            axum::routing::post(controls::invoke_control_surface_action),
-        )
-        // ── Diagnostics ──────────────────────────────────────────────
-        .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
-        // ── WebSocket ────────────────────────────────────────────────
-        .route("/ws", axum::routing::get(ws::ws_handler));
+    let api = documented_api_routes(asset_upload_body_limit);
+
     let mut api = api;
     for extension in &state.api_extensions {
         api = extension.mount_api_routes(api);
@@ -1405,18 +1111,19 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     // for a route that no longer exists — every route-deletion fence in
     // the program is only as strong as this. Nesting resolves the inner
     // fallback first, so the SPA never sees an API path.
-    let api = api
-        .fallback(api_route_not_found)
-        .method_not_allowed_fallback(api_route_not_found);
-    let mut router = Router::new()
-        .nest("/api/v1", api)
-        .route("/health", axum::routing::get(system::health_check));
+    let api = api.fallback(api_route_not_found);
+    let (api, versioned_openapi) = api.split_for_parts();
+    let api = api.method_not_allowed_fallback(api_route_not_found);
+    let root = documented_root_routes();
+    let (root, root_openapi) = root.split_for_parts();
+    let document = root_openapi.nest("/api/v1", versioned_openapi);
+    let mut router = root.nest("/api/v1", api);
 
     if mcp_config.enabled {
         router = router.merge(crate::mcp::build_router(Arc::clone(&state), &mcp_config));
     }
 
-    router = router.merge(openapi::router());
+    router = router.merge(openapi::swagger(document));
 
     // Serve the web UI with SPA fallback when a UI directory is configured.
     //

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::asset::AssetId;
 use crate::controls::ControlSurfaceEvent;
@@ -27,7 +28,7 @@ pub struct EffectRef {
 }
 
 /// Lightweight reference to a discovered device.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceRef {
     pub id: String,
     pub name: String,

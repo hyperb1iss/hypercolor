@@ -6,6 +6,10 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.api_error_body import ApiErrorBody
+from ...models.delete_simulated_display_response_200 import (
+    DeleteSimulatedDisplayResponse200,
+)
 from ...types import Response
 
 
@@ -25,27 +29,56 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | None:
+) -> ApiErrorBody | DeleteSimulatedDisplayResponse200 | None:
     if response.status_code == 200:
-        return None
+        response_200 = DeleteSimulatedDisplayResponse200.from_dict(response.json())
+
+        return response_200
 
     if response.status_code == 400:
-        return None
+        response_400 = ApiErrorBody.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 401:
+        response_401 = ApiErrorBody.from_dict(response.json())
+
+        return response_401
+
+    if response.status_code == 403:
+        response_403 = ApiErrorBody.from_dict(response.json())
+
+        return response_403
 
     if response.status_code == 404:
-        return None
+        response_404 = ApiErrorBody.from_dict(response.json())
+
+        return response_404
 
     if response.status_code == 409:
-        return None
+        response_409 = ApiErrorBody.from_dict(response.json())
+
+        return response_409
 
     if response.status_code == 412:
-        return None
+        response_412 = ApiErrorBody.from_dict(response.json())
+
+        return response_412
 
     if response.status_code == 422:
-        return None
+        response_422 = ApiErrorBody.from_dict(response.json())
+
+        return response_422
+
+    if response.status_code == 429:
+        response_429 = ApiErrorBody.from_dict(response.json())
+
+        return response_429
 
     if response.status_code == 500:
-        return None
+        response_500 = ApiErrorBody.from_dict(response.json())
+
+        return response_500
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -55,7 +88,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any]:
+) -> Response[ApiErrorBody | DeleteSimulatedDisplayResponse200]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -68,7 +101,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
+) -> Response[ApiErrorBody | DeleteSimulatedDisplayResponse200]:
     """Delete simulated display
 
     Args:
@@ -79,7 +112,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        Response[ApiErrorBody | DeleteSimulatedDisplayResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -93,11 +126,11 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 
-async def asyncio_detailed(
+def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
+) -> ApiErrorBody | DeleteSimulatedDisplayResponse200 | None:
     """Delete simulated display
 
     Args:
@@ -108,7 +141,31 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        ApiErrorBody | DeleteSimulatedDisplayResponse200
+    """
+
+    return sync_detailed(
+        id=id,
+        client=client,
+    ).parsed
+
+
+async def asyncio_detailed(
+    id: str,
+    *,
+    client: AuthenticatedClient | Client,
+) -> Response[ApiErrorBody | DeleteSimulatedDisplayResponse200]:
+    """Delete simulated display
+
+    Args:
+        id (str):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[ApiErrorBody | DeleteSimulatedDisplayResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -118,3 +175,29 @@ async def asyncio_detailed(
     response = await client.get_async_httpx_client().request(**kwargs)
 
     return _build_response(client=client, response=response)
+
+
+async def asyncio(
+    id: str,
+    *,
+    client: AuthenticatedClient | Client,
+) -> ApiErrorBody | DeleteSimulatedDisplayResponse200 | None:
+    """Delete simulated display
+
+    Args:
+        id (str):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        ApiErrorBody | DeleteSimulatedDisplayResponse200
+    """
+
+    return (
+        await asyncio_detailed(
+            id=id,
+            client=client,
+        )
+    ).parsed

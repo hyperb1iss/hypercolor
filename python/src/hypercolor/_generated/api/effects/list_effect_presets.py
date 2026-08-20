@@ -7,9 +7,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...models.api_response_effect_preset_list_response import (
-    ApiResponseEffectPresetListResponse,
-)
+from ...models.list_effect_presets_response_200 import ListEffectPresetsResponse200
 from ...types import Response
 
 
@@ -29,16 +27,56 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorBody | ApiResponseEffectPresetListResponse | None:
+) -> ApiErrorBody | ListEffectPresetsResponse200 | None:
     if response.status_code == 200:
-        response_200 = ApiResponseEffectPresetListResponse.from_dict(response.json())
+        response_200 = ListEffectPresetsResponse200.from_dict(response.json())
 
         return response_200
+
+    if response.status_code == 400:
+        response_400 = ApiErrorBody.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 401:
+        response_401 = ApiErrorBody.from_dict(response.json())
+
+        return response_401
+
+    if response.status_code == 403:
+        response_403 = ApiErrorBody.from_dict(response.json())
+
+        return response_403
 
     if response.status_code == 404:
         response_404 = ApiErrorBody.from_dict(response.json())
 
         return response_404
+
+    if response.status_code == 409:
+        response_409 = ApiErrorBody.from_dict(response.json())
+
+        return response_409
+
+    if response.status_code == 412:
+        response_412 = ApiErrorBody.from_dict(response.json())
+
+        return response_412
+
+    if response.status_code == 422:
+        response_422 = ApiErrorBody.from_dict(response.json())
+
+        return response_422
+
+    if response.status_code == 429:
+        response_429 = ApiErrorBody.from_dict(response.json())
+
+        return response_429
+
+    if response.status_code == 500:
+        response_500 = ApiErrorBody.from_dict(response.json())
+
+        return response_500
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -48,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorBody | ApiResponseEffectPresetListResponse]:
+) -> Response[ApiErrorBody | ListEffectPresetsResponse200]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -61,8 +99,8 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorBody | ApiResponseEffectPresetListResponse]:
-    """`GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
+) -> Response[ApiErrorBody | ListEffectPresetsResponse200]:
+    """List effect presets
 
     Args:
         id (str):
@@ -72,7 +110,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | ApiResponseEffectPresetListResponse]
+        Response[ApiErrorBody | ListEffectPresetsResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -90,8 +128,8 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorBody | ApiResponseEffectPresetListResponse | None:
-    """`GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
+) -> ApiErrorBody | ListEffectPresetsResponse200 | None:
+    """List effect presets
 
     Args:
         id (str):
@@ -101,7 +139,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | ApiResponseEffectPresetListResponse
+        ApiErrorBody | ListEffectPresetsResponse200
     """
 
     return sync_detailed(
@@ -114,8 +152,8 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorBody | ApiResponseEffectPresetListResponse]:
-    """`GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
+) -> Response[ApiErrorBody | ListEffectPresetsResponse200]:
+    """List effect presets
 
     Args:
         id (str):
@@ -125,7 +163,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | ApiResponseEffectPresetListResponse]
+        Response[ApiErrorBody | ListEffectPresetsResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -141,8 +179,8 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorBody | ApiResponseEffectPresetListResponse | None:
-    """`GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
+) -> ApiErrorBody | ListEffectPresetsResponse200 | None:
+    """List effect presets
 
     Args:
         id (str):
@@ -152,7 +190,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | ApiResponseEffectPresetListResponse
+        ApiErrorBody | ListEffectPresetsResponse200
     """
 
     return (

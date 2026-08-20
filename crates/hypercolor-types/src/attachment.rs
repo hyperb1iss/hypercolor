@@ -201,7 +201,7 @@ impl<'de> Deserialize<'de> for ComponentCategory {
 }
 
 /// Where an attachment template came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentOrigin {
     /// Shipped by Hypercolor.
@@ -233,7 +233,7 @@ impl Default for ComponentCanvasSize {
 ///
 /// Empty matcher fields are wildcards. If a template has no compatibility
 /// entries at all, it is considered globally compatible.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 pub struct ComponentCompatibility {
     /// Controller driver or protocol identifiers.
     #[serde(default)]
@@ -262,7 +262,7 @@ impl ComponentCompatibility {
 }
 
 /// Reusable attachment layout template.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ComponentTemplate {
     /// Stable template identifier.
     pub id: String,
@@ -301,6 +301,7 @@ pub struct ComponentTemplate {
     pub image_url: Option<String>,
     /// Optional physical dimensions in millimeters.
     #[serde(default)]
+    #[schema(value_type = Option<Vec<f32>>, min_items = 2, max_items = 2)]
     pub physical_size_mm: Option<(f32, f32)>,
 }
 
@@ -328,7 +329,7 @@ impl ComponentTemplate {
 }
 
 /// TOML-friendly manifest wrapper for one template file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ComponentTemplateManifest {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]
@@ -477,7 +478,7 @@ pub struct ComponentSuggestedZone {
 }
 
 /// Per-controller attachment state persisted in TOML.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceComponentProfile {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]
