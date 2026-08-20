@@ -5512,11 +5512,14 @@ dependencies = [
 name = "hypercolor-macos-owner"
 version = "0.3.2"
 dependencies = [
+ "core-foundation 0.10.1",
  "hypercolor-platform-fs",
  "nix 0.29.0",
  "notify",
+ "security-framework",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "single-instance",
  "tempfile",
  "thiserror 2.0.18",

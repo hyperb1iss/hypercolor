@@ -19,7 +19,10 @@ thiserror = { workspace = true }
 notify = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
 nix = { version = "0.29", features = ["event", "fs", "process", "signal", "user"] }
+security-framework = "3.7.0"
+sha2 = { workspace = true }
 single-instance = "0.3.3"
 
 [dev-dependencies]

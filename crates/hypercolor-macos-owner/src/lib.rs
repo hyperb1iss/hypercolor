@@ -9,6 +9,17 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+mod direct_launchd;
+
+#[cfg(target_os = "macos")]
+pub use direct_launchd::NativeMacosDirectLaunchdInspector;
+pub use direct_launchd::{
+    MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdInspector, MacosDirectLaunchdOwnerProof,
+    MacosDirectLaunchdPublicationExpectation, MacosDirectLaunchdState,
+    corroborate_direct_launchd_owner, corroborate_newer_direct_launchd_owner,
+    parse_direct_launchd_service_state, wait_for_exact_direct_launchd_publication,
+};
+
 /// Current owner-record schema version.
 pub const MACOS_OWNER_RECORD_SCHEMA_VERSION: u32 = 1;
 /// Current handover-journal schema version.
