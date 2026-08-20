@@ -96,9 +96,8 @@ fn drain_events(
     seen
 }
 
-fn create_command(scene_id: SceneId, name: &str) -> CreateZone {
+fn create_command(name: &str) -> CreateZone {
     CreateZone {
-        target: scene_id.into(),
         name: name.to_owned(),
         color: None,
         fallback_canvas: (640, 480),
@@ -115,13 +114,9 @@ async fn create_zone_adds_a_custom_zone_and_announces_it() {
     let before = state.scene_commits.revision();
     let mut events = state.event_bus.subscribe_all();
 
-    let written = create_zone(
-        &state,
-        create_command(scene_id, "Desk"),
-        MutationContext::api(),
-    )
-    .await
-    .expect("zone should be created");
+    let written = create_zone(&state, create_command("Desk"), MutationContext::api())
+        .await
+        .expect("zone should be created");
 
     assert_eq!(written.zone.name, "Desk");
     assert_eq!(written.zone.role, ZoneRole::Custom);
@@ -149,35 +144,15 @@ async fn create_zone_adds_a_custom_zone_and_announces_it() {
 #[tokio::test]
 async fn create_zone_refuses_a_blank_name() {
     let (state, _tempdir) = isolated_state();
-    let scene_id = seeded_scene(&state).await;
+    seeded_scene(&state).await;
 
-    let error = create_zone(
-        &state,
-        create_command(scene_id, "   "),
-        MutationContext::api(),
-    )
-    .await
-    .expect_err("a zone needs a name");
+    let error = create_zone(&state, create_command("   "), MutationContext::api())
+        .await
+        .expect_err("a zone needs a name");
     match error {
         DomainError::Validation { field, .. } => assert_eq!(field.as_deref(), Some("name")),
         other => panic!("expected Validation, got {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn create_zone_refuses_an_unknown_scene() {
-    let (state, _tempdir) = isolated_state();
-    let error = create_zone(
-        &state,
-        create_command(SceneId::new(), "Desk"),
-        MutationContext::api(),
-    )
-    .await
-    .expect_err("an unknown scene has nowhere to put a zone");
-    assert!(
-        matches!(error, DomainError::NotFound { .. }),
-        "expected NotFound, got {error:?}"
-    );
 }
 
 // ── scene revision preconditions ─────────────────────────────────────────
@@ -186,16 +161,12 @@ async fn create_zone_refuses_an_unknown_scene() {
 async fn a_stale_scene_revision_is_refused_before_the_mutation() {
     let (state, _tempdir) = isolated_state();
     let scene_id = seeded_scene(&state).await;
-    create_zone(
-        &state,
-        create_command(scene_id, "Desk"),
-        MutationContext::api(),
-    )
-    .await
-    .expect("first zone should be created");
+    create_zone(&state, create_command("Desk"), MutationContext::api())
+        .await
+        .expect("first zone should be created");
     let current = state.scene_commits.revision();
 
-    let mut command = create_command(scene_id, "Shelf");
+    let mut command = create_command("Shelf");
     command.expected_revision = Some(current.saturating_sub(1));
     let error = create_zone(&state, command, MutationContext::api())
         .await
@@ -223,20 +194,15 @@ async fn a_stale_scene_revision_is_refused_before_the_mutation() {
 #[tokio::test]
 async fn a_cosmetic_zone_patch_honors_the_scene_revision() {
     let (state, _tempdir) = isolated_state();
-    let scene_id = seeded_scene(&state).await;
-    let created = create_zone(
-        &state,
-        create_command(scene_id, "Desk"),
-        MutationContext::api(),
-    )
-    .await
-    .expect("zone should be created");
+    seeded_scene(&state).await;
+    let created = create_zone(&state, create_command("Desk"), MutationContext::api())
+        .await
+        .expect("zone should be created");
 
     let current = state.scene_commits.revision();
     let written = update_zone(
         &state,
         UpdateZone {
-            target: scene_id.into(),
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
                 name: Some("Desk Left".to_owned()),
@@ -254,19 +220,14 @@ async fn a_cosmetic_zone_patch_honors_the_scene_revision() {
 #[tokio::test]
 async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
     let (state, _tempdir) = isolated_state();
-    let scene_id = seeded_scene(&state).await;
-    let created = create_zone(
-        &state,
-        create_command(scene_id, "Desk"),
-        MutationContext::api(),
-    )
-    .await
-    .expect("zone should be created");
+    seeded_scene(&state).await;
+    let created = create_zone(&state, create_command("Desk"), MutationContext::api())
+        .await
+        .expect("zone should be created");
 
     let error = update_zone(
         &state,
         UpdateZone {
-            target: scene_id.into(),
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
                 make_primary: Some(true),
@@ -290,13 +251,9 @@ async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
 async fn delete_zone_removes_it_and_announces_the_removal() {
     let (state, _tempdir) = isolated_state();
     let scene_id = seeded_scene(&state).await;
-    let created = create_zone(
-        &state,
-        create_command(scene_id, "Desk"),
-        MutationContext::api(),
-    )
-    .await
-    .expect("zone should be created");
+    let created = create_zone(&state, create_command("Desk"), MutationContext::api())
+        .await
+        .expect("zone should be created");
     let preview_layout = state.spatial_engine.read().await.layout().as_ref().clone();
     state
         .zone_layout_previews
@@ -312,7 +269,6 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     let removed = delete_zone(
         &state,
         DeleteZone {
-            target: scene_id.into(),
             zone_id: created.zone.id,
             expected_revision: None,
         },
@@ -364,7 +320,6 @@ async fn delete_zone_refuses_the_primary_zone() {
     let error = delete_zone(
         &state,
         DeleteZone {
-            target: scene_id.into(),
             zone_id: primary_id,
             expected_revision: None,
         },
@@ -381,12 +336,11 @@ async fn delete_zone_refuses_the_primary_zone() {
 #[tokio::test]
 async fn delete_zone_refuses_an_unknown_zone() {
     let (state, _tempdir) = isolated_state();
-    let scene_id = seeded_scene(&state).await;
+    seeded_scene(&state).await;
 
     let error = delete_zone(
         &state,
         DeleteZone {
-            target: scene_id.into(),
             zone_id: ZoneId::new(),
             expected_revision: None,
         },

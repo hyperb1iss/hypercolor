@@ -274,93 +274,6 @@ pub async fn apply_effect(
     })
 }
 
-// ── stop_effect ──────────────────────────────────────────────────────────
-
-/// The outcome of stopping the active effect.
-#[derive(Debug)]
-pub struct EffectStopped {
-    /// The effect that was running.
-    pub effect: EffectRef,
-    /// The scene that owns the zone.
-    pub scene_id: SceneId,
-    /// The zone as it stands with the effect unloaded.
-    pub zone: Zone,
-    /// How many network devices the quiesce released.
-    pub released_network_devices: usize,
-    /// The commit receipt.
-    pub commit: SceneCommit,
-}
-
-/// Unload the active scene's primary effect and quiesce output.
-///
-/// `Ok(None)` means there was nothing running: the primary zone is
-/// absent, idle, or loaded with an effect the registry no longer knows.
-/// Callers decide how that domain outcome appears on their surface.
-///
-/// # Errors
-///
-/// [`DomainError::Conflict`] when the active scene is snapshot-locked,
-/// and [`DomainError::Conflict`] when a concurrent scene
-/// mutation lands first.
-pub async fn stop_effect(
-    state: &AppState,
-    meta: MutationContext,
-) -> Result<Option<EffectStopped>, DomainError> {
-    let _ = meta;
-
-    // Resolving the outgoing effect's name needs the registry, so the
-    // index is taken before the candidate opens and no await sits
-    // between the snapshot and its compare-and-swap.
-    let effect_refs = effect_ref_index(state).await;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let Some(zone) = mutation
-        .scenes()
-        .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
-        .cloned()
-    else {
-        return Ok(None);
-    };
-    let Some(effect) = zone
-        .effect_id
-        .and_then(|effect_id| effect_refs.get(&effect_id).cloned())
-    else {
-        return Ok(None);
-    };
-
-    let scene_id = mutation.active_scene_for_runtime_mutation("stopping the active effect")?;
-    let Some(cleared) = mutation.clear_zone_effect(zone.id) else {
-        return Ok(None);
-    };
-
-    mutation.record(HypercolorEvent::EffectStopped {
-        effect: effect.clone(),
-        reason: hypercolor_types::event::EffectStopReason::Stopped,
-        zone_id: Some(cleared.id),
-        zone_name: Some(cleared.name.clone()),
-    });
-    mutation.record(zone_changed_event(
-        scene_id,
-        &cleared,
-        ZoneChangeKind::Updated,
-    ));
-
-    let commit = commit_scene(state, mutation).await?;
-
-    let released_network_devices =
-        crate::api::effects::quiesce_output_after_effect_stop(state).await;
-    crate::api::save_runtime_session_snapshot(state).await;
-
-    Ok(Some(EffectStopped {
-        effect,
-        scene_id,
-        zone: cleared,
-        released_network_devices,
-        commit,
-    }))
-}
-
 /// Recompute the active scene's resolved zones after the effect registry
 /// changed underneath them.
 ///
@@ -562,8 +475,6 @@ fn effect_matches_search(metadata: &EffectMetadata, term: &str) -> bool {
             .iter()
             .any(|tag| tag.to_lowercase().contains(term))
 }
-
-// ── Shared steps ─────────────────────────────────────────────────────────
 
 pub(super) async fn effect_ref_index(state: &AppState) -> HashMap<EffectId, EffectRef> {
     let registry = state.effect_registry.read().await;

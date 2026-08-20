@@ -3,9 +3,8 @@
 //! Zone identity and metadata mutations commit through the same scene
 //! transaction boundary as the canonical live tree API.
 //!
-//! Explicit stored-scene identity resolution stays with the adapter.
-//! Live-tree routes carry [`SceneTarget::Active`] so the service resolves
-//! the target from the same candidate it validates and commits.
+//! Every service targets the active scene resolved from the same candidate
+//! it validates and commits.
 
 use hypercolor_core::scene::{ZoneMetaPatch, ZoneMutationError};
 use hypercolor_types::event::ZoneChangeKind;
@@ -13,7 +12,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{SceneMutation, SceneTarget, commit_scene, zone_changed_event};
+use crate::domain::scene::{SceneMutation, commit_scene, zone_changed_event};
 use crate::domain::scene_tree::check_scene_revision;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::layout_auto_exclusions;
@@ -23,8 +22,6 @@ use crate::layout_auto_exclusions;
 /// Add a custom zone to a scene.
 #[derive(Debug, Clone)]
 pub struct CreateZone {
-    /// Which scene gains the zone.
-    pub target: SceneTarget,
     /// The zone's name. Must not be blank.
     pub name: String,
     /// Optional swatch for the Studio zone tree.
@@ -38,8 +35,6 @@ pub struct CreateZone {
 /// Patch a zone's presentation metadata.
 #[derive(Debug, Clone)]
 pub struct UpdateZone {
-    /// Which scene owns the zone.
-    pub target: SceneTarget,
     /// Which zone to patch.
     pub zone_id: ZoneId,
     /// The fields to change; `None` fields keep their current values.
@@ -51,8 +46,6 @@ pub struct UpdateZone {
 /// Remove a custom zone from a scene.
 #[derive(Debug, Clone)]
 pub struct DeleteZone {
-    /// Which scene owns the zone.
-    pub target: SceneTarget,
     /// Which zone to remove.
     pub zone_id: ZoneId,
     /// The scene `revision` the caller last saw, when it sent one.
@@ -105,9 +98,7 @@ pub async fn create_zone(
     }
 
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command
-        .target
-        .resolve(&mutation, "creating a zone in the live scene")?;
+    let scene_id = mutation.active_scene_for_runtime_mutation("creating a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
 
     let zone_id = mutation
@@ -141,9 +132,7 @@ pub async fn update_zone(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command
-        .target
-        .resolve(&mutation, "updating a zone in the live scene")?;
+    let scene_id = mutation.active_scene_for_runtime_mutation("updating a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
@@ -173,9 +162,7 @@ pub async fn delete_zone(
     let _ = meta;
 
     let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command
-        .target
-        .resolve(&mutation, "deleting a zone from the live scene")?;
+    let scene_id = mutation.active_scene_for_runtime_mutation("deleting a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 

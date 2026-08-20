@@ -70,45 +70,6 @@ pub struct SceneMutation {
     preview_zones_to_clear: HashSet<(SceneId, ZoneId)>,
 }
 
-/// Which scene a mutation addresses.
-///
-/// Explicit scene-library routes resolve their path before entering the
-/// domain. Live-tree routes carry [`Self::Active`] so the target is
-/// resolved from the same candidate the mutation will commit.
-#[derive(Debug, Clone, Copy)]
-pub enum SceneTarget {
-    /// A scene selected explicitly by id or name.
-    Scene(SceneId),
-    /// The active scene in the mutation candidate.
-    Active,
-}
-
-impl From<SceneId> for SceneTarget {
-    fn from(scene_id: SceneId) -> Self {
-        Self::Scene(scene_id)
-    }
-}
-
-impl SceneTarget {
-    /// Resolve this target against a mutation candidate.
-    ///
-    /// # Errors
-    ///
-    /// Active targets refuse a missing or snapshot-locked scene.
-    pub fn resolve(self, mutation: &SceneMutation, action: &str) -> Result<SceneId, DomainError> {
-        match self {
-            Self::Scene(scene_id) => Ok(scene_id),
-            Self::Active => mutation.active_scene_for_runtime_mutation(action),
-        }
-    }
-
-    /// Whether the target follows the live scene tree.
-    #[must_use]
-    pub const fn is_active(self) -> bool {
-        matches!(self, Self::Active)
-    }
-}
-
 impl SceneMutation {
     /// The revision this candidate was snapshotted from.
     #[must_use]
@@ -1192,22 +1153,6 @@ pub struct SnapshotScene {
     pub description: Option<String>,
 }
 
-/// Replace a scene's stored definition.
-#[derive(Debug, Clone)]
-pub struct UpdateScene {
-    /// Which scene to rewrite.
-    pub scene_id: SceneId,
-    /// Its new name.
-    pub name: String,
-    /// Its new description.
-    pub description: Option<String>,
-    /// Whether it stays selectable. `None` keeps the current value.
-    pub enabled: Option<bool>,
-    /// Whether runtime actions may rewrite it. `None` keeps the
-    /// current value.
-    pub mutation_mode: Option<SceneMutationMode>,
-}
-
 /// Replace one stored scene with the complete client-authored document.
 #[derive(Debug, Clone)]
 pub struct ReplaceScene {
@@ -1357,49 +1302,6 @@ pub async fn snapshot_scene(
     let commit = commit_scene(state, mutation).await?;
 
     Ok(SceneWritten { scene, commit })
-}
-
-/// Rewrite a scene's name, description, and mode flags.
-///
-/// # Errors
-///
-/// [`DomainError::NotFound`] for an unknown scene, and
-/// [`DomainError::Conflict`] when a concurrent scene mutation
-/// lands first.
-pub async fn update_scene(
-    state: &AppState,
-    command: UpdateScene,
-    meta: MutationContext,
-) -> Result<SceneWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let existing = mutation
-        .scenes()
-        .get(&command.scene_id)
-        .cloned()
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, command.scene_id))?;
-
-    let updated = Scene {
-        name: command.name,
-        description: command.description,
-        enabled: command.enabled.unwrap_or(existing.enabled),
-        mutation_mode: command.mutation_mode.unwrap_or(existing.mutation_mode),
-        ..existing
-    };
-
-    mutation.update_scene(updated.clone())?;
-    mutation.record(HypercolorEvent::SceneLibraryChanged {
-        scene_id: updated.id,
-        kind: SceneLibraryChangeKind::Updated,
-        name: Some(updated.name.clone()),
-    });
-    let commit = commit_scene(state, mutation).await?;
-
-    Ok(SceneWritten {
-        scene: updated,
-        commit,
-    })
 }
 
 /// Replace every client-authored field of one stored scene.

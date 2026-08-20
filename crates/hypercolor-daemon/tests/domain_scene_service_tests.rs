@@ -38,8 +38,8 @@ use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
 use hypercolor_daemon::domain::scene::{
-    ActivateScene, CreateScene, SnapshotScene, UpdateScene, activate_scene, commit_scene,
-    create_scene, deactivate_scene, delete_scene, snapshot_scene, update_scene,
+    ActivateScene, CreateScene, SnapshotScene, activate_scene, commit_scene, create_scene,
+    deactivate_scene, delete_scene, snapshot_scene,
 };
 use hypercolor_daemon::domain::scene_tree::{
     ClearScene, PatchLayerControls, clear_scene, patch_layer_controls, read_document,
@@ -1248,64 +1248,6 @@ async fn create_scene_carries_adapter_metadata_onto_the_scene() {
     );
     assert_eq!(created.scene.mutation_mode, SceneMutationMode::Snapshot);
     assert!(!created.scene.enabled);
-}
-
-#[tokio::test]
-async fn update_scene_rewrites_the_named_fields_and_keeps_the_rest() {
-    let (state, _tempdir) = isolated_state();
-    let created = create_scene(&state, create_command("evening"), MutationContext::api())
-        .await
-        .expect("scene should be created");
-    let mut events = state.event_bus.subscribe_all();
-
-    let updated = update_scene(
-        &state,
-        UpdateScene {
-            scene_id: created.scene.id,
-            name: "midnight".to_owned(),
-            description: None,
-            enabled: Some(false),
-            mutation_mode: None,
-        },
-        MutationContext::api(),
-    )
-    .await
-    .expect("scene should update");
-
-    assert_eq!(updated.scene.name, "midnight");
-    assert!(!updated.scene.enabled);
-    assert_eq!(updated.scene.mutation_mode, created.scene.mutation_mode);
-    assert_eq!(
-        updated.scene.groups.len(),
-        created.scene.groups.len(),
-        "an update must not drop the scene's zones"
-    );
-    assert_eq!(
-        library_events(&mut events),
-        vec![(created.scene.id, SceneLibraryChangeKind::Updated)]
-    );
-}
-
-#[tokio::test]
-async fn update_scene_refuses_an_unknown_scene() {
-    let (state, _tempdir) = isolated_state();
-    let error = update_scene(
-        &state,
-        UpdateScene {
-            scene_id: SceneId::new(),
-            name: "ghost".to_owned(),
-            description: None,
-            enabled: None,
-            mutation_mode: None,
-        },
-        MutationContext::api(),
-    )
-    .await
-    .expect_err("an unknown scene has nothing to update");
-    assert!(
-        matches!(error, DomainError::NotFound { .. }),
-        "expected NotFound, got {error:?}"
-    );
 }
 
 #[tokio::test]

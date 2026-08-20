@@ -6,7 +6,6 @@ use std::sync::Arc;
 use hypercolor_core::scene::{ZoneMetaPatch, default_primary_group};
 use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::domain::layer::{insert_layer, remove_layer, reorder_layers};
-use hypercolor_daemon::domain::scene::SceneTarget;
 use hypercolor_daemon::domain::zone::{
     CreateZone, DeleteZone, UpdateZone, create_zone, delete_zone, update_zone,
 };
@@ -150,20 +149,17 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     }
 
     let create = CreateZone {
-        target: SceneTarget::Active,
         name: "candidate zone".to_owned(),
         color: None,
         fallback_canvas: (640, 480),
         expected_revision: Some(state.scene_commits.revision()),
     };
     let update = UpdateZone {
-        target: SceneTarget::Active,
         zone_id: shared_zone_id,
         patch: rename_patch("candidate zone renamed"),
         expected_revision: None,
     };
     let delete = DeleteZone {
-        target: SceneTarget::Active,
         zone_id: shared_zone_id,
         expected_revision: None,
     };
@@ -187,7 +183,6 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
 
     let inserted = insert_layer(
         &state,
-        SceneTarget::Active,
         shared_zone_id,
         inserted_layer,
         None,
@@ -207,7 +202,6 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
 
     let reordered = reorder_layers(
         &state,
-        SceneTarget::Active,
         shared_zone_id,
         vec![inserted_layer_id, shared_layer_ids[1], shared_layer_ids[0]],
         None,
@@ -228,7 +222,6 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
 
     let removed = remove_layer(
         &state,
-        SceneTarget::Active,
         shared_zone_id,
         shared_layer_ids[1],
         None,
@@ -293,7 +286,6 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
         create_zone(
             &state,
             CreateZone {
-                target: SceneTarget::Active,
                 name: "blocked".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
@@ -307,7 +299,6 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
         update_zone(
             &state,
             UpdateZone {
-                target: SceneTarget::Active,
                 zone_id,
                 patch: rename_patch("blocked"),
                 expected_revision: Some(revision),
@@ -320,7 +311,6 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
         delete_zone(
             &state,
             DeleteZone {
-                target: SceneTarget::Active,
                 zone_id,
                 expected_revision: Some(revision),
             },
@@ -331,7 +321,6 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     assert_conflict(
         insert_layer(
             &state,
-            SceneTarget::Active,
             zone_id,
             color_layer(SceneLayerId::new(), 2),
             None,
@@ -343,7 +332,6 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     assert_conflict(
         reorder_layers(
             &state,
-            SceneTarget::Active,
             zone_id,
             layer_ids.into_iter().rev().collect(),
             Some(revision),
@@ -354,7 +342,6 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     assert_conflict(
         remove_layer(
             &state,
-            SceneTarget::Active,
             zone_id,
             layer_ids[0],
             Some(revision),

@@ -32,7 +32,6 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
-use crate::domain::scene::SceneTarget;
 use crate::domain::scene_tree::{
     AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
     ZoneWritten,
@@ -147,7 +146,6 @@ pub async fn create_zone(
     let created = crate::domain::zone::create_zone(
         state.as_ref(),
         crate::domain::zone::CreateZone {
-            target: SceneTarget::Active,
             name: body.name,
             color: body.color,
             fallback_canvas: canvas,
@@ -201,7 +199,6 @@ pub async fn patch_zone(
         crate::domain::zone::update_zone(
             state.as_ref(),
             crate::domain::zone::UpdateZone {
-                target: SceneTarget::Active,
                 zone_id,
                 patch: hypercolor_core::scene::ZoneMetaPatch {
                     name: body.name,
@@ -233,7 +230,6 @@ pub async fn delete_zone(
     if let Err(error) = crate::domain::zone::delete_zone(
         state.as_ref(),
         crate::domain::zone::DeleteZone {
-            target: SceneTarget::Active,
             zone_id,
             expected_revision: expected,
         },
@@ -372,7 +368,6 @@ pub async fn create_layer(
     };
     let inserted = crate::domain::layer::insert_layer(
         state.as_ref(),
-        SceneTarget::Active,
         zone_id,
         layer,
         None,
@@ -413,7 +408,6 @@ pub async fn reorder_layers(
     layer_stack_response(
         crate::domain::layer::reorder_layers(
             state.as_ref(),
-            SceneTarget::Active,
             zone_id,
             body.order,
             expected,
@@ -483,7 +477,6 @@ pub async fn delete_layer(
     layer_stack_response(
         crate::domain::layer::remove_layer(
             state.as_ref(),
-            SceneTarget::Active,
             zone_id,
             layer_id,
             expected,
