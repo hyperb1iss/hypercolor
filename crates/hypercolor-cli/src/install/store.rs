@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_platform_fs::{
-    DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory, PublicDirectoryAuthority,
+    DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, ExclusiveDirectory,
+    PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
 };
 
 use super::model::{InstallJournalV1, UnitId, active_target};
 
 const INSTALL_LOCK_FILE: &str = "install.lock";
+const ANCHORED_INSTALL_LOCK_FILE: &str = ".hypercolor-release-install.lock";
 const INSTALL_JOURNAL_FILE: &str = "install-journal.json";
 const UNITS_DIRECTORY: &str = "units";
 const MAX_JOURNAL_STAGE_ATTEMPTS: usize = 128;
@@ -58,11 +60,82 @@ impl InstallStore {
 
     pub fn acquire_lock(&self) -> Result<InstallLock, InstallStoreError> {
         fs::create_dir_all(&self.root).map_err(InstallStoreError::CreateRoot)?;
-        let directory = ExclusiveDirectory::try_acquire(&self.root, Path::new(INSTALL_LOCK_FILE))
+        let gate = ExclusiveDirectory::try_acquire(&self.root, Path::new(INSTALL_LOCK_FILE))
             .map_err(InstallStoreError::AcquireLock)?
             .ok_or(InstallStoreError::LockContended)?;
+        let directory = gate
+            .root_directory()
+            .map_err(InstallStoreError::OpenRootAuthority)?;
         Ok(InstallLock {
             root: self.root.clone(),
+            gate,
+            directory,
+        })
+    }
+
+    /// Acquire one user-scoped install lock before durably bootstrapping the
+    /// exact store root beneath retained no-follow directory authorities.
+    ///
+    /// The anchor must already exist. Missing store components are monotone
+    /// scaffolding and are intentionally retained after later failures. Callers
+    /// must validate the candidate release before invoking this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe root, missing non-root bootstrap anchor,
+    /// lock contention, ancestry drift, unsafe existing components, directory
+    /// creation failure, or failure to retain the final store inode.
+    pub fn acquire_anchored_lock(&self, anchor: &Path) -> Result<InstallLock, InstallStoreError> {
+        validate_bootstrap_root(&self.root)?;
+        validate_bootstrap_root(anchor)?;
+        let relative =
+            self.root
+                .strip_prefix(anchor)
+                .map_err(|_| InstallStoreError::RootOutsideAnchor {
+                    root: self.root.clone(),
+                    anchor: anchor.to_path_buf(),
+                })?;
+        if relative.as_os_str().is_empty() {
+            return Err(InstallStoreError::RootOutsideAnchor {
+                root: self.root.clone(),
+                anchor: anchor.to_path_buf(),
+            });
+        }
+        let anchor_preflight =
+            ReadOnlyDirectoryAuthority::open(anchor).map_err(InstallStoreError::BootstrapRoot)?;
+        let anchor_metadata = anchor_preflight
+            .metadata()
+            .map_err(InstallStoreError::BootstrapRoot)?;
+        require_safe_bootstrap_directory(anchor_metadata, anchor)?;
+        let bootstrap =
+            ExclusiveDirectory::try_acquire(anchor, Path::new(ANCHORED_INSTALL_LOCK_FILE))
+                .map_err(InstallStoreError::AcquireLock)?
+                .ok_or(InstallStoreError::LockContended)?;
+        require_same_directory_identity(
+            anchor_metadata,
+            bootstrap
+                .root_directory()
+                .and_then(|directory| directory.metadata())
+                .map_err(InstallStoreError::OpenRootAuthority)?,
+        )?;
+        let bootstrapped = bootstrap_store_root(&bootstrap, anchor, relative)?;
+        let gate = ExclusiveDirectory::try_acquire(&self.root, Path::new(INSTALL_LOCK_FILE))
+            .map_err(InstallStoreError::AcquireLock)?
+            .ok_or(InstallStoreError::LockContended)?;
+        let directory = gate
+            .root_directory()
+            .map_err(InstallStoreError::OpenRootAuthority)?;
+        require_same_directory_identity(
+            directory
+                .metadata()
+                .map_err(InstallStoreError::OpenRootAuthority)?,
+            bootstrapped
+                .metadata()
+                .map_err(InstallStoreError::BootstrapRoot)?,
+        )?;
+        Ok(InstallLock {
+            root: self.root.clone(),
+            gate,
             directory,
         })
     }
@@ -177,7 +250,7 @@ impl InstallStore {
     fn authority<'a>(
         &self,
         lock: &'a InstallLock,
-    ) -> Result<&'a ExclusiveDirectory, InstallStoreError> {
+    ) -> Result<&'a DirectoryAuthority, InstallStoreError> {
         if lock.root != self.root {
             return Err(InstallStoreError::WrongLock);
         }
@@ -188,10 +261,7 @@ impl InstallStore {
         &self,
         lock: &InstallLock,
     ) -> Result<DirectoryAuthority, InstallStoreError> {
-        let root = self
-            .authority(lock)?
-            .root_directory()
-            .map_err(InstallStoreError::OpenRootAuthority)?;
+        let root = self.authority(lock)?;
         match root
             .entry_metadata(Path::new(UNITS_DIRECTORY))
             .map_err(InstallStoreError::InspectUnits)?
@@ -228,7 +298,7 @@ impl InstallStore {
 }
 
 fn stage_journal(
-    directory: &ExclusiveDirectory,
+    directory: &DirectoryAuthority,
     bytes: &[u8],
     sequence: &AtomicU64,
 ) -> Result<PathBuf, InstallStoreError> {
@@ -250,13 +320,132 @@ fn stage_journal(
     })
 }
 
+fn validate_bootstrap_root(root: &Path) -> Result<(), InstallStoreError> {
+    if !root.is_absolute()
+        || root.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+    {
+        return Err(InstallStoreError::InvalidBootstrapRoot(root.to_path_buf()));
+    }
+    Ok(())
+}
+
+fn bootstrap_store_root(
+    gate: &ExclusiveDirectory,
+    anchor: &Path,
+    relative: &Path,
+) -> Result<PublicDirectoryAuthority, InstallStoreError> {
+    let retained = gate
+        .root_directory()
+        .map_err(InstallStoreError::OpenRootAuthority)?;
+    let mut authority = gate
+        .open_public_directory(anchor)
+        .map_err(InstallStoreError::BootstrapRoot)?;
+    require_same_directory_identity(
+        retained
+            .metadata()
+            .map_err(InstallStoreError::OpenRootAuthority)?,
+        authority
+            .metadata()
+            .map_err(InstallStoreError::BootstrapRoot)?,
+    )?;
+    require_safe_bootstrap_directory(
+        authority
+            .metadata()
+            .map_err(InstallStoreError::BootstrapRoot)?,
+        anchor,
+    )?;
+    let mut current = anchor.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(InstallStoreError::InvalidBootstrapRoot(
+                anchor.join(relative),
+            ));
+        };
+        current.push(name);
+        authority = match authority.open_child_directory(Path::new(name)) {
+            Ok(child) => {
+                require_safe_bootstrap_directory(
+                    child.metadata().map_err(InstallStoreError::BootstrapRoot)?,
+                    &current,
+                )?;
+                child
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => authority
+                .durable_ensure_child_directory(Path::new(name), 0o755)
+                .map_err(InstallStoreError::BootstrapRoot)?,
+            Err(error) => return Err(InstallStoreError::BootstrapRoot(error)),
+        };
+    }
+    Ok(authority)
+}
+
+fn require_safe_bootstrap_directory(
+    metadata: DirectoryEntryMetadata,
+    path: &Path,
+) -> Result<(), InstallStoreError> {
+    if metadata.kind() != DirectoryEntryKind::Directory
+        || metadata.mode() & 0o700 != 0o700
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err(InstallStoreError::UnsafeBootstrapDirectory(
+            path.to_path_buf(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_same_directory_identity(
+    retained: DirectoryEntryMetadata,
+    public: DirectoryEntryMetadata,
+) -> Result<(), InstallStoreError> {
+    if retained.kind() != DirectoryEntryKind::Directory
+        || public.kind() != DirectoryEntryKind::Directory
+        || retained.device() != public.device()
+        || retained.inode() != public.inode()
+    {
+        return Err(InstallStoreError::StoreRootIdentityMismatch);
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct InstallLock {
     root: PathBuf,
-    directory: ExclusiveDirectory,
+    gate: ExclusiveDirectory,
+    directory: DirectoryAuthority,
 }
 
 impl InstallLock {
+    /// Open the canonical store root only when it still names this lock's
+    /// retained store inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the canonical root ancestry changed, the path now
+    /// names another inode, or retained-handle inspection fails.
+    pub fn open_store_public_directory(
+        &self,
+    ) -> Result<PublicDirectoryAuthority, InstallStoreError> {
+        let public = self
+            .gate
+            .open_public_directory(&self.root)
+            .map_err(InstallStoreError::OpenPublicDirectory)?;
+        require_same_directory_identity(
+            self.directory
+                .metadata()
+                .map_err(InstallStoreError::OpenRootAuthority)?,
+            public
+                .metadata()
+                .map_err(InstallStoreError::OpenPublicDirectory)?,
+        )?;
+        Ok(public)
+    }
+
     /// Open one public directory under this transaction's retained authority.
     ///
     /// The returned capability shares the install lock and operation gate, so
@@ -270,7 +459,7 @@ impl InstallLock {
         &self,
         directory: &Path,
     ) -> Result<PublicDirectoryAuthority, InstallStoreError> {
-        self.directory
+        self.gate
             .open_public_directory(directory)
             .map_err(InstallStoreError::OpenPublicDirectory)
     }
@@ -288,6 +477,20 @@ pub enum InstallStoreError {
     WrongLock,
     #[error("failed to retain the install root authority: {0}")]
     OpenRootAuthority(io::Error),
+    #[error("install store root is not one safe absolute path: {}", .0.display())]
+    InvalidBootstrapRoot(PathBuf),
+    #[error(
+        "install store root {} is outside retained bootstrap anchor {}",
+        root.display(),
+        anchor.display()
+    )]
+    RootOutsideAnchor { root: PathBuf, anchor: PathBuf },
+    #[error("install store bootstrap directory is not safely owned: {}", .0.display())]
+    UnsafeBootstrapDirectory(PathBuf),
+    #[error("canonical install store path no longer names the retained store inode")]
+    StoreRootIdentityMismatch,
+    #[error("failed to bootstrap the retained install root: {0}")]
+    BootstrapRoot(io::Error),
     #[error("failed to retain a public layout directory: {0}")]
     OpenPublicDirectory(io::Error),
     #[error("failed to inspect the immutable unit directory: {0}")]
@@ -328,10 +531,14 @@ pub enum InstallStoreError {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicU64;
 
-    use super::{INSTALL_JOURNAL_FILE, InstallStore, stage_journal};
+    use super::{
+        ANCHORED_INSTALL_LOCK_FILE, INSTALL_JOURNAL_FILE, InstallStore, UnitId, stage_journal,
+    };
 
     #[test]
     fn stale_stage_from_reused_pid_does_not_block_journal_staging() {
@@ -351,5 +558,126 @@ mod tests {
             staged,
             PathBuf::from(format!(".{INSTALL_JOURNAL_FILE}.{}.1", std::process::id()))
         );
+    }
+
+    #[test]
+    fn anchored_lock_bootstraps_and_retains_the_exact_store_inode() {
+        let workspace = tempfile::Builder::new()
+            .prefix("anchored-install-store-")
+            .tempdir_in(std::env::current_dir().expect("current directory"))
+            .expect("temporary anchored store workspace");
+        let home = workspace.path().join("home");
+        fs::create_dir(&home).expect("create retained HOME anchor");
+        fs::create_dir(home.join(".local")).expect("create existing user directory");
+        fs::set_permissions(home.join(".local"), fs::Permissions::from_mode(0o700))
+            .expect("set existing user directory mode");
+        let root = home.join(".local/lib/hypercolor");
+        let store = InstallStore::new(&root, 1024);
+        let lock = store
+            .acquire_anchored_lock(&home)
+            .expect("anchored install authority");
+        let retained_public = lock
+            .open_store_public_directory()
+            .expect("canonical path names retained store");
+
+        assert!(home.join(ANCHORED_INSTALL_LOCK_FILE).is_file());
+        assert!(root.join("install.lock").is_file());
+        assert_eq!(
+            fs::metadata(home.join(".local"))
+                .expect("existing user directory metadata")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            retained_public.metadata().expect("public store metadata"),
+            lock.directory.metadata().expect("retained store metadata")
+        );
+        assert!(matches!(
+            store.acquire_anchored_lock(&home),
+            Err(super::InstallStoreError::LockContended)
+        ));
+        assert!(matches!(
+            store.acquire_lock(),
+            Err(super::InstallStoreError::LockContended)
+        ));
+
+        let displaced = home.join("displaced-local");
+        fs::rename(home.join(".local"), &displaced).expect("displace canonical store ancestry");
+        fs::create_dir_all(&root).expect("create attacker replacement store path");
+        lock.open_store_public_directory()
+            .expect_err("replacement path must not become the public store authority");
+        let unit = UnitId::new(&"a".repeat(64)).expect("unit ID");
+        store
+            .set_active(Some(&unit), &lock)
+            .expect("switch retained active entry");
+
+        assert_eq!(
+            fs::read_link(displaced.join("lib/hypercolor/active"))
+                .expect("retained active symlink"),
+            Path::new("units").join(unit.as_str())
+        );
+        assert!(!root.join("active").exists());
+    }
+
+    #[test]
+    fn anchored_lock_rejects_store_roots_outside_the_anchor() {
+        let workspace = tempfile::Builder::new()
+            .prefix("anchored-install-store-boundary-")
+            .tempdir_in(std::env::current_dir().expect("current directory"))
+            .expect("temporary anchored store workspace");
+        let home = workspace.path().join("home");
+        let outside = workspace.path().join("outside/hypercolor");
+        fs::create_dir(&home).expect("create retained HOME anchor");
+        let store = InstallStore::new(&outside, 1024);
+
+        assert!(matches!(
+            store.acquire_anchored_lock(&home),
+            Err(super::InstallStoreError::RootOutsideAnchor { .. })
+        ));
+        assert!(!outside.exists());
+        assert!(!home.join(ANCHORED_INSTALL_LOCK_FILE).exists());
+
+        let equal = InstallStore::new(&home, 1024);
+        assert!(matches!(
+            equal.acquire_anchored_lock(&home),
+            Err(super::InstallStoreError::RootOutsideAnchor { .. })
+        ));
+        assert!(!home.join(ANCHORED_INSTALL_LOCK_FILE).exists());
+        assert!(!home.join("install.lock").exists());
+    }
+
+    #[test]
+    fn anchored_lock_rejects_writable_existing_store_ancestors() {
+        for unsafe_depth in 0..3 {
+            let workspace = tempfile::Builder::new()
+                .prefix("anchored-install-store-mode-")
+                .tempdir_in(std::env::current_dir().expect("current directory"))
+                .expect("temporary anchored store workspace");
+            let home = workspace.path().join("home");
+            fs::create_dir(&home).expect("create retained HOME anchor");
+            let components = [".local", "lib", "hypercolor"];
+            let mut unsafe_path = home.clone();
+            for (depth, component) in components.iter().enumerate().take(unsafe_depth + 1) {
+                unsafe_path.push(component);
+                fs::create_dir(&unsafe_path).expect("create existing store component");
+                let mode = if depth == unsafe_depth { 0o777 } else { 0o755 };
+                fs::set_permissions(&unsafe_path, fs::Permissions::from_mode(mode))
+                    .expect("set existing store component mode");
+            }
+            let root = home.join(".local/lib/hypercolor");
+            let store = InstallStore::new(&root, 1024);
+
+            assert!(matches!(
+                store.acquire_anchored_lock(&home),
+                Err(super::InstallStoreError::UnsafeBootstrapDirectory(ref path))
+                    if path == &unsafe_path
+            ));
+            assert!(!root.join("install.lock").exists());
+            if let Some(next) = components.get(unsafe_depth + 1) {
+                assert!(!unsafe_path.join(next).exists());
+            }
+        }
     }
 }

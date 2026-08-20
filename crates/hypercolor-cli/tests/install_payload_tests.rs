@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use hypercolor_cli::install::{
     InstallLock, InstallStore, MAX_RELEASE_MANIFEST_BYTES, ReleasePayloadError, UnitId, UnitRecord,
     retain_linux_unit, stage_release_payload, stage_release_payload_from_authority,
+    validate_release_payload,
 };
 use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
 use serde_json::{Value, json};
@@ -354,6 +355,32 @@ fn verified_manifest_digest_mismatch_fails_before_install_state_mutation() {
     );
     assert!(!store.root().join("units").exists());
     assert_no_private_residue(&store);
+}
+
+#[test]
+fn release_preflight_validates_before_store_bootstrap() {
+    let fixture = ReleaseFixture::new();
+    let (install_parent, store) = new_store();
+    let expected = fixture.expected_unit();
+
+    validate_release_payload(fixture.path(), &fixture.candidate, &expected)
+        .expect("validate release before install authority exists");
+    assert!(!store.root().exists());
+
+    let mismatch = UnitId::new("0".repeat(64)).expect("valid mismatched digest");
+    let error = validate_release_payload(fixture.path(), &fixture.candidate, &mismatch)
+        .expect_err("mismatched release must fail before store bootstrap");
+    assert!(matches!(
+        error,
+        ReleasePayloadError::UnexpectedManifestDigest { .. }
+    ));
+    assert!(!store.root().exists());
+    assert!(
+        fs::read_dir(install_parent.path())
+            .expect("inspect install parent")
+            .next()
+            .is_none()
+    );
 }
 
 #[test]

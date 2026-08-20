@@ -77,16 +77,7 @@ pub fn stage_release_payload_from_authority(
     candidate_executable: &File,
     expected_unit: &UnitId,
 ) -> Result<UnitRecord, ReleasePayloadError> {
-    let manifest_bytes = tree::read_manifest_bytes(source)?;
-    let manifest = ValidatedManifest::parse(manifest_bytes)?;
-    if manifest.unit_id != *expected_unit {
-        return Err(ReleasePayloadError::UnexpectedManifestDigest {
-            expected: expected_unit.as_str().to_owned(),
-            actual: manifest.unit_id.as_str().to_owned(),
-        });
-    }
-    tree::validate_source(source, &manifest)?;
-    tree::bind_candidate_executable(source, candidate_executable, &manifest)?;
+    let manifest = validate_release_payload_authority(source, candidate_executable, expected_unit)?;
 
     let units = store.units_authority(lock)?;
     let unit_name = Path::new(manifest.unit_id.as_str());
@@ -131,6 +122,62 @@ pub fn stage_release_payload_from_authority(
             })?;
     tree::validate_installed(&published, &manifest)?;
     unit_record(store, manifest.unit_id, &published)
+}
+
+/// Validate one verifier-extracted release without mutating install state.
+///
+/// This preflight is not durable authorization for a later stage. Callers must
+/// invoke [`stage_release_payload`] after acquiring the install lock so the
+/// source tree and running executable are revalidated immediately before
+/// publication.
+///
+/// # Errors
+///
+/// Returns an error for an invalid manifest, unsafe or drifting source tree,
+/// candidate identity mismatch, or unexpected manifest digest.
+pub fn validate_release_payload(
+    source_root: &Path,
+    candidate_executable: &File,
+    expected_unit: &UnitId,
+) -> Result<(), ReleasePayloadError> {
+    let source = ReadOnlyDirectoryAuthority::open(source_root).map_err(|source| {
+        ReleasePayloadError::Filesystem {
+            operation: "open the extracted release root",
+            source,
+        }
+    })?;
+    validate_release_payload_from_authority(&source, candidate_executable, expected_unit)
+}
+
+/// Validate one already-open release authority without mutating install state.
+///
+/// # Errors
+///
+/// Returns the same errors as [`validate_release_payload`].
+pub fn validate_release_payload_from_authority(
+    source: &ReadOnlyDirectoryAuthority,
+    candidate_executable: &File,
+    expected_unit: &UnitId,
+) -> Result<(), ReleasePayloadError> {
+    validate_release_payload_authority(source, candidate_executable, expected_unit).map(drop)
+}
+
+fn validate_release_payload_authority(
+    source: &ReadOnlyDirectoryAuthority,
+    candidate_executable: &File,
+    expected_unit: &UnitId,
+) -> Result<ValidatedManifest, ReleasePayloadError> {
+    let manifest_bytes = tree::read_manifest_bytes(source)?;
+    let manifest = ValidatedManifest::parse(manifest_bytes)?;
+    if manifest.unit_id != *expected_unit {
+        return Err(ReleasePayloadError::UnexpectedManifestDigest {
+            expected: expected_unit.as_str().to_owned(),
+            actual: manifest.unit_id.as_str().to_owned(),
+        });
+    }
+    tree::validate_source(source, &manifest)?;
+    tree::bind_candidate_executable(source, candidate_executable, &manifest)?;
+    Ok(manifest)
 }
 
 pub(crate) fn retain_installed_release_unit(
