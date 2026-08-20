@@ -157,15 +157,35 @@ impl InputSource for FailedInputSource {
 }
 
 #[tokio::test]
-async fn diagnose_exposes_capacity_and_delivered_fps_separately() {
-    let state = fresh_app_state();
-    let result = execute_tool_with_state("diagnose", &json!({}), &state)
+async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
+    let state = Arc::new(fresh_app_state());
+    let tool_payload = execute_tool_with_state("diagnose", &json!({}), state.as_ref())
         .await
         .expect("diagnose should succeed");
+    let (client, base_url) = spawn_router(api::build_router(Arc::clone(&state), None)).await;
+    let response = client
+        .post(format!("{base_url}/api/v1/diagnose"))
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("REST diagnose should complete");
+    assert!(response.status().is_success());
+    let rest_payload: Value = response
+        .json()
+        .await
+        .expect("REST diagnose should return JSON");
 
-    assert_eq!(result["metrics"]["fps"], result["metrics"]["capacity_fps"]);
-    assert!(result["metrics"]["capacity_fps"].is_number());
-    assert!(result["metrics"]["delivered_fps"].is_number());
+    assert_eq!(tool_payload, rest_payload["data"]);
+    assert!(tool_payload["checks"].as_array().is_some_and(|checks| {
+        checks.iter().all(|check| {
+            check["name"] != "macos_screen_parity" && check["name"] != "uptime_seconds"
+        })
+    }));
+    assert!(
+        tool_payload["snapshot"]
+            .get("macos_screen_parity")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -181,16 +201,21 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
         .await
         .expect("diagnose should succeed");
 
-    assert_eq!(result["overall_status"], "unhealthy");
-    assert!(result["findings"].as_array().is_some_and(|findings| {
-        findings.iter().any(|finding| {
-            finding["severity"] == "error"
-                && finding["source_id"] == "failed_mcp_audio"
-                && finding["message"]
+    assert!(result["checks"].as_array().is_some_and(|checks| {
+        checks.iter().any(|check| {
+            check["category"] == "input"
+                && check["name"] == "failed_mcp_audio"
+                && check["status"] == "fail"
+                && check["detail"]
                     .as_str()
-                    .is_some_and(|message| message.contains("capture_worker_exited"))
+                    .is_some_and(|detail| detail.contains("capture_worker_exited"))
         })
     }));
+    assert!(
+        result["summary"]["failed"]
+            .as_u64()
+            .is_some_and(|failed| failed > 0)
+    );
 }
 
 #[tokio::test]
@@ -236,14 +261,14 @@ async fn mcp_input_status_surfaces_do_not_wait_for_input_manager() {
     drop(manager_guard);
 
     assert_eq!(
-        diagnose["metrics"]["inputs"]["sources"][0]["source_id"],
+        diagnose["snapshot"]["input"]["sources"][0]["source_id"],
         "browser_input"
     );
-    assert!(diagnose["findings"].as_array().is_some_and(|findings| {
-        findings
-            .iter()
-            .all(|finding| finding["source_id"] != "browser_input")
-    }));
+    assert!(
+        diagnose["checks"]
+            .as_array()
+            .is_some_and(|checks| { checks.iter().all(|check| check["name"] != "browser_input") })
+    );
 }
 
 #[tokio::test]
@@ -1491,8 +1516,17 @@ fn tool_definitions_have_valid_schemas() {
         .find(|tool| tool.name == "diagnose")
         .expect("diagnose tool should be registered");
     assert_eq!(
-        diagnose.output_schema["properties"]["overall_status"]["enum"],
-        json!(["healthy", "warning", "unhealthy"])
+        diagnose.input_schema,
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        })
+    );
+    assert!(
+        diagnose.output_schema["properties"]
+            .get("overall_status")
+            .is_none()
     );
 }
 

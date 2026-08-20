@@ -7,7 +7,7 @@ use super::{
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
-use crate::api::system::{actionable_input_diagnostics, input_status_snapshot};
+use crate::api::system::input_status_snapshot;
 use crate::domain::output;
 use crate::session::current_global_brightness;
 use hypercolor_core::input::InteractionDegradation;
@@ -109,33 +109,7 @@ pub(super) fn build_diagnose() -> ToolDefinition {
             "properties": {},
             "additionalProperties": false
         }),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "overall_status": {
-                    "type": "string",
-                    "enum": ["healthy", "warning", "unhealthy"]
-                },
-                "findings": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "severity": {
-                                "type": "string",
-                                "enum": ["info", "warning", "error", "critical"]
-                            },
-                            "source_id": { "type": "string" },
-                            "message": { "type": "string" }
-                        },
-                        "required": ["severity", "message"]
-                    }
-                },
-                "metrics": { "type": "object" }
-            },
-            "required": ["overall_status", "findings", "metrics"],
-            "additionalProperties": false
-        }),
+        output_schema: default_output_schema(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -383,185 +357,12 @@ pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Val
     }))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "MCP diagnose returns a compact but broad operational snapshot"
-)]
 pub(super) async fn handle_diagnose_with_state(
     _params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    let render_stats = state.render_loop.read().await.stats();
-    let performance = state.performance.read().await.snapshot();
-    let device_metrics = state.device_metrics.load_full();
-    let usb_actor_metrics = hypercolor_core::device::usb_actor_metrics_snapshot();
-    let capacity_fps = render_capacity_fps(&render_stats);
-    let is_running = matches!(
-        render_stats.state,
-        hypercolor_core::engine::RenderLoopState::Running
-    );
-    let delivered_fps = if is_running {
-        performance.delivered_fps
-    } else {
-        0.0
-    };
-    let target_fps = render_stats.tier.fps();
-    let consecutive_misses = render_stats.consecutive_misses;
-    let render_time_ms = render_stats.avg_frame_time.as_secs_f64() * 1000.0;
-    let latest_frame = performance.latest_frame.as_ref().map(|frame| {
-        json!({
-            "frame_token": frame.timeline.frame_token,
-            "compositor_backend": frame.compositor_backend.as_str(),
-            "output_frame_source": frame.output_frame_source.as_str(),
-            "output_reuses_published_frame": frame.output_reuses_published_frame,
-            "gpu_zone_sampling": frame.gpu_zone_sampling,
-            "gpu_sample_deferred": frame.gpu_sample_deferred,
-            "gpu_sample_stale": frame.gpu_sample_stale,
-            "gpu_sample_retry_hit": frame.gpu_sample_retry_hit,
-            "gpu_sample_queue_saturated": frame.gpu_sample_queue_saturated,
-            "gpu_sample_wait_blocked": frame.gpu_sample_wait_blocked,
-            "cpu_readback_skipped": frame.cpu_readback_skipped,
-            "gpu_readback_failed": frame.gpu_readback_failed,
-            "devices_written": frame.devices_written,
-            "total_leds": frame.total_leds,
-            "sample_us": frame.sample_us,
-            "push_us": frame.push_us,
-            "publish_us": frame.publish_us,
-            "total_us": frame.total_us,
-            "output_routing_signature": frame.output_routing_signature,
-            "output_zone_shape_signature": frame.output_zone_shape_signature,
-            "output_unassigned_behavior_generation": frame.output_unassigned_behavior_generation,
-            "output_errors": frame.output_errors
-        })
-    });
-    let lagging_queues = device_metrics
-        .items
-        .iter()
-        .filter(|item| item.fps_queued > 1.0 && item.fps_sent + 1.0 < item.fps_queued * 0.75)
-        .count();
-    let dropped_frames_total = device_metrics
-        .items
-        .iter()
-        .fold(0_u64, |acc, item| acc.saturating_add(item.frames_dropped));
-    let output_errors_total = device_metrics
-        .items
-        .iter()
-        .fold(0_u64, |acc, item| acc.saturating_add(item.errors_total));
-    let input = input_status_snapshot(state);
-    let input_diagnostics = actionable_input_diagnostics(&input);
-
-    let devices = state.device_registry.list().await;
-    let device_count = devices.len();
-    let connected_count = devices.iter().filter(|d| d.state.is_renderable()).count();
-    let disconnected_count = device_count - connected_count;
-
-    let mut findings = Vec::new();
-
-    if device_count == 0 {
-        findings.push(json!({
-            "severity": "warning",
-            "message": "No devices discovered. Check backend configuration and network visibility."
-        }));
-    } else if disconnected_count > 0 {
-        findings.push(json!({
-            "severity": "info",
-            "message": format!("{disconnected_count} of {device_count} devices are disconnected.")
-        }));
-    }
-
-    if consecutive_misses > 5 {
-        findings.push(json!({
-            "severity": "warning",
-            "message": format!("Render loop has {consecutive_misses} consecutive frame budget misses — effects may stutter.")
-        }));
-    }
-
-    if performance
-        .latest_frame
-        .as_ref()
-        .is_some_and(|frame| frame.gpu_sample_stale)
-    {
-        findings.push(json!({
-            "severity": "warning",
-            "message": "Latest LED frame used a stale GPU sample; inspect metrics.latest_frame.output_frame_source and metrics.render_window."
-        }));
-    }
-
-    if lagging_queues > 0 || dropped_frames_total > 0 {
-        findings.push(json!({
-            "severity": "warning",
-            "message": format!("Device output queues show lag/drops: lagging={lagging_queues}, dropped_total={dropped_frames_total}.")
-        }));
-    }
-
-    if !is_running {
-        findings.push(json!({
-            "severity": "warning",
-            "message": format!("Render loop is {:?}, not running.", render_stats.state)
-        }));
-    }
-
-    for diagnostic in &input_diagnostics {
-        findings.push(json!({
-            "severity": if diagnostic.status == "fail" { "error" } else { "warning" },
-            "source_id": diagnostic.source_id,
-            "message": diagnostic.detail,
-        }));
-    }
-
-    let status = if findings.iter().any(|f| f["severity"] == "error") {
-        "unhealthy"
-    } else if findings.iter().any(|f| f["severity"] == "warning") {
-        "warning"
-    } else {
-        "healthy"
-    };
-
-    Ok(json!({
-        "overall_status": status,
-        "findings": findings,
-        "metrics": {
-            "fps": capacity_fps,
-            "capacity_fps": capacity_fps,
-            "delivered_fps": delivered_fps,
-            "target_fps": target_fps,
-            "consecutive_misses": consecutive_misses,
-            "avg_render_time_ms": render_time_ms,
-            "device_count": device_count,
-            "connected_devices": connected_count,
-            "uptime_seconds": state.start_time.elapsed().as_secs(),
-            "inputs": input,
-            "latest_frame": latest_frame,
-            "render_window": {
-                "frames": performance.frame_count,
-                "gpu_sample_deferred": performance.pacing.gpu_sample_deferred,
-                "gpu_sample_stale": performance.pacing.gpu_sample_stale,
-                "gpu_sample_retry_hit": performance.pacing.gpu_sample_retry_hit,
-                "gpu_sample_queue_saturated": performance.pacing.gpu_sample_queue_saturated,
-                "gpu_sample_wait_blocked": performance.pacing.gpu_sample_wait_blocked,
-                "output_current_frame": performance.pacing.output_current_frame,
-                "output_published_frame": performance.pacing.output_published_frame,
-                "output_routed_reuse": performance.pacing.output_routed_reuse,
-                "output_reused_published_frame": performance.pacing.output_reused_published_frame,
-                "output_error_frames": performance.pacing.output_error_frames
-            },
-            "device_output": {
-                "queues": device_metrics.items.len(),
-                "lagging_queues": lagging_queues,
-                "dropped_frames_total": dropped_frames_total,
-                "errors_total": output_errors_total,
-                "items": device_metrics.items.iter().map(|item| {
-                    serde_json::to_value(item).unwrap_or(serde_json::Value::Null)
-                }).collect::<Vec<_>>()
-            },
-            "usb_actor": {
-                "display_frames_total": usb_actor_metrics.display_frames_total,
-                "display_frames_delayed_for_led_total": usb_actor_metrics.display_frames_delayed_for_led_total,
-                "display_led_priority_wait_total_us": usb_actor_metrics.display_led_priority_wait_total_us,
-                "display_led_priority_wait_max_us": usb_actor_metrics.display_led_priority_wait_max_us
-            }
-        }
-    }))
+    serde_json::to_value(crate::api::diagnose::collect_default_diagnostics(state).await)
+        .map_err(|error| ToolError::Internal(error.to_string()))
 }
 
 #[cfg(test)]
