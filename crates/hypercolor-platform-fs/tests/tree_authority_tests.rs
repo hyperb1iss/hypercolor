@@ -3,12 +3,14 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Cursor, Read as _};
+use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
 use hypercolor_platform_fs::{
-    DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory, ReadOnlyDirectoryAuthority,
+    DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory, MAX_PUBLIC_DIRECTORY_CHILD_COUNT,
+    MAX_PUBLIC_DIRECTORY_CHILD_NAMES_BYTES, ReadOnlyDirectoryAuthority,
 };
 
 fn acquire(directory: &Path) -> DirectoryAuthority {
@@ -197,6 +199,118 @@ fn enumeration_and_metadata_are_handle_relative_and_exact() {
             .expect("payload exists")
             .mode(),
         0o550
+    );
+}
+
+#[test]
+fn bounded_child_names_are_sorted_retained_and_openable() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let current = parent.path().join("current");
+    let detached = parent.path().join("detached");
+    fs::create_dir(&current).expect("create governed root");
+    let root = acquire(&current);
+    let payload = root
+        .create_child_directory(Path::new("payload"))
+        .expect("create payload directory");
+    write_file(&payload, "z-last", 0o600, b"last");
+    write_file(&payload, "a-first", 0o600, b"first");
+    payload
+        .create_child_directory(Path::new("m-directory"))
+        .expect("create nested directory");
+
+    fs::rename(&current, &detached).expect("detach governed root");
+    fs::create_dir(&current).expect("replace governed pathname");
+    fs::write(current.join("attacker"), b"attacker").expect("write replacement entry");
+
+    let names = payload.child_names().expect("enumerate retained payload");
+    assert_eq!(
+        names,
+        ["a-first", "m-directory", "z-last"]
+            .map(OsString::from)
+            .to_vec()
+    );
+    let mut opened = payload
+        .open_regular_file(Path::new(&names[0]))
+        .expect("open enumerated regular file");
+    let mut contents = Vec::new();
+    opened
+        .file_mut()
+        .read_to_end(&mut contents)
+        .expect("read enumerated regular file");
+    assert_eq!(contents, b"first");
+    payload
+        .open_child_directory(Path::new(&names[1]))
+        .expect("open enumerated child directory");
+    assert!(!names.contains(&OsString::from("attacker")));
+}
+
+#[test]
+fn bounded_child_names_enforce_count_and_aggregate_byte_limits() {
+    let count_directory = tempfile::tempdir().expect("temporary count directory");
+    let count_root = acquire(count_directory.path());
+    let count_payload = count_root
+        .create_child_directory(Path::new("payload"))
+        .expect("create count payload");
+    for index in 0..=MAX_PUBLIC_DIRECTORY_CHILD_COUNT {
+        fs::write(
+            count_directory
+                .path()
+                .join(format!("payload/entry-{index:04}")),
+            b"entry",
+        )
+        .expect("write count entry");
+    }
+    count_payload
+        .child_names()
+        .expect_err("child count above the bound must fail");
+    assert!(count_directory.path().join("payload/entry-0000").is_file());
+
+    let bytes_directory = tempfile::tempdir().expect("temporary byte directory");
+    let bytes_root = acquire(bytes_directory.path());
+    let bytes_payload = bytes_root
+        .create_child_directory(Path::new("payload"))
+        .expect("create byte payload");
+    let name_len = 255;
+    let entry_count = MAX_PUBLIC_DIRECTORY_CHILD_NAMES_BYTES / name_len + 1;
+    assert!(entry_count < MAX_PUBLIC_DIRECTORY_CHILD_COUNT);
+    for index in 0..entry_count {
+        let mut name = format!("{index:04}").into_bytes();
+        name.resize(name_len, b'x');
+        fs::write(
+            bytes_directory
+                .path()
+                .join("payload")
+                .join(OsString::from_vec(name)),
+            b"entry",
+        )
+        .expect("write byte-bound entry");
+    }
+    bytes_payload
+        .child_names()
+        .expect_err("aggregate child name bytes above the bound must fail");
+    assert_eq!(
+        fs::read_dir(bytes_directory.path().join("payload"))
+            .expect("read unchanged byte-bound payload")
+            .count(),
+        entry_count
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn bounded_child_names_preserve_non_utf8_names() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let root = acquire(directory.path());
+    let payload = root
+        .create_child_directory(Path::new("payload"))
+        .expect("create payload directory");
+    let raw_name = OsString::from_vec(vec![b'n', 0xff]);
+    fs::write(directory.path().join("payload").join(&raw_name), b"raw")
+        .expect("write raw-name entry");
+
+    assert_eq!(
+        payload.child_names().expect("enumerate raw child name"),
+        [raw_name]
     );
 }
 

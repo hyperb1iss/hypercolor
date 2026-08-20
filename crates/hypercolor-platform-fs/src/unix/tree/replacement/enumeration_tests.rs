@@ -78,3 +78,31 @@ fn enumeration_rejects_ancestor_replacement_with_symlink() {
         b"entry"
     );
 }
+
+#[test]
+fn directory_enumeration_rejects_name_mutation_between_confirming_scans() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = ExclusiveDirectory::try_acquire(temporary.path(), Path::new("install.lock"))
+        .expect("acquire lock")
+        .expect("uncontended lock")
+        .root_directory()
+        .expect("open root authority");
+    let payload = root
+        .create_child_directory(Path::new("payload"))
+        .expect("create payload directory");
+    fs::write(temporary.path().join("payload/before"), b"before").expect("write initial entry");
+
+    let error = payload
+        .child_names_with(|| fs::write(temporary.path().join("payload/after"), b"after"))
+        .expect_err("name mutation must invalidate enumeration");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        fs::read(temporary.path().join("payload/before")).expect("read retained initial entry"),
+        b"before"
+    );
+    assert_eq!(
+        fs::read(temporary.path().join("payload/after")).expect("read retained added entry"),
+        b"after"
+    );
+}
