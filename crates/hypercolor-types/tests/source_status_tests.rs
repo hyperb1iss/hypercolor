@@ -24,7 +24,55 @@ fn unknown_bounded_version_round_trips_opaquely() {
     let json = serde_json::to_string(&envelope).expect("serialize envelope");
     let restored: SourceDiagnosticsEnvelope =
         serde_json::from_str(&json).expect("deserialize envelope");
-    assert_eq!(restored, envelope);
+    assert_eq!(restored.schema(), envelope.schema());
+    assert_eq!(restored.version(), envelope.version());
+    assert_eq!(restored.display(), envelope.display());
+    assert_eq!(restored.payload(), envelope.payload());
+    assert!(restored.public_projection().is_none());
+}
+
+#[test]
+fn public_projection_replaces_only_the_platform_payload() {
+    let envelope = SourceDiagnosticsEnvelope::try_new_with_public_payload(
+        "platform.input",
+        1,
+        vec![field()],
+        json!({"source_id": "private-display"}),
+        json!({"source_id": "display"}),
+    )
+    .expect("private and public payloads should remain bounded");
+
+    assert_eq!(envelope.payload()["source_id"], "private-display");
+    let public = envelope
+        .public_projection()
+        .expect("platform-authored projection should remain available");
+    assert_eq!(public.payload()["source_id"], "display");
+    assert_eq!(public.schema(), envelope.schema());
+    assert_eq!(public.version(), envelope.version());
+    assert_eq!(public.display(), envelope.display());
+    assert!(
+        !serde_json::to_string(&public)
+            .expect("public projection should serialize")
+            .contains("private-display")
+    );
+}
+
+#[test]
+fn serialized_private_envelope_cannot_regain_a_public_projection() {
+    let private = SourceDiagnosticsEnvelope::try_new_with_public_payload(
+        "platform.input",
+        1,
+        vec![],
+        json!({"source_id": "private-display"}),
+        json!({"source_id": "display"}),
+    )
+    .expect("private envelope should remain bounded");
+    let wire = serde_json::to_vec(&private).expect("private envelope should serialize");
+    let restored: SourceDiagnosticsEnvelope =
+        serde_json::from_slice(&wire).expect("private envelope should deserialize");
+
+    assert_eq!(restored.payload()["source_id"], "private-display");
+    assert!(restored.public_projection().is_none());
 }
 
 #[test]
@@ -39,6 +87,17 @@ fn malformed_and_oversized_payloads_are_rejected() {
             "platform.input",
             1,
             vec![],
+            serde_json::Value::String(oversized),
+        ),
+        Err(SourceDiagnosticsEnvelopeError::PayloadTooLarge)
+    );
+    let oversized = "x".repeat(SOURCE_DIAGNOSTICS_PAYLOAD_MAX_BYTES + 1);
+    assert_eq!(
+        SourceDiagnosticsEnvelope::try_new_with_public_payload(
+            "platform.input",
+            1,
+            vec![],
+            json!({}),
             serde_json::Value::String(oversized),
         ),
         Err(SourceDiagnosticsEnvelopeError::PayloadTooLarge)

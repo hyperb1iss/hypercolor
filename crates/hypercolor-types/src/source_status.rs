@@ -18,6 +18,13 @@ pub const SOURCE_DIAGNOSTICS_DISPLAY_LABEL_MAX_BYTES: usize = 64;
 pub const SOURCE_DIAGNOSTICS_DISPLAY_VALUE_MAX_BYTES: usize = 256;
 const PAYLOAD_PREALLOC_MAX_ITEMS: usize = 32;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SourceDiagnosticsPublicPayload {
+    Same,
+    Projected(Value),
+    Unavailable,
+}
+
 /// One platform-authored, presentation-safe diagnostic value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct SourceDiagnosticsDisplayField {
@@ -265,6 +272,9 @@ pub struct SourceDiagnosticsEnvelope {
     display: Vec<SourceDiagnosticsDisplayField>,
     /// Opaque platform JSON bounded to 16384 serialized UTF-8 bytes.
     payload: Value,
+    #[serde(skip)]
+    #[schema(ignore)]
+    public_payload: SourceDiagnosticsPublicPayload,
 }
 
 impl SourceDiagnosticsEnvelope {
@@ -280,6 +290,26 @@ impl SourceDiagnosticsEnvelope {
             version,
             display,
             payload,
+            public_payload: SourceDiagnosticsPublicPayload::Same,
+        };
+        envelope.validate()?;
+        Ok(envelope)
+    }
+
+    /// Build an envelope with a platform-owned projection for read-tier status.
+    pub fn try_new_with_public_payload(
+        schema: impl Into<String>,
+        version: u16,
+        display: Vec<SourceDiagnosticsDisplayField>,
+        payload: Value,
+        public_payload: Value,
+    ) -> Result<Self, SourceDiagnosticsEnvelopeError> {
+        let envelope = Self {
+            schema: schema.into(),
+            version,
+            display,
+            payload,
+            public_payload: SourceDiagnosticsPublicPayload::Projected(public_payload),
         };
         envelope.validate()?;
         Ok(envelope)
@@ -320,6 +350,26 @@ impl SourceDiagnosticsEnvelope {
         &self.payload
     }
 
+    /// Return the platform-authored projection safe for read-tier status.
+    ///
+    /// Deserialization cannot attest an omitted projection, so those envelopes
+    /// fail closed instead of treating their opaque payload as public.
+    #[must_use]
+    pub fn public_projection(&self) -> Option<Self> {
+        let payload = match &self.public_payload {
+            SourceDiagnosticsPublicPayload::Same => self.payload.clone(),
+            SourceDiagnosticsPublicPayload::Projected(payload) => payload.clone(),
+            SourceDiagnosticsPublicPayload::Unavailable => return None,
+        };
+        Some(Self {
+            schema: self.schema.clone(),
+            version: self.version,
+            display: self.display.clone(),
+            payload,
+            public_payload: SourceDiagnosticsPublicPayload::Same,
+        })
+    }
+
     fn validate(&self) -> Result<(), SourceDiagnosticsEnvelopeError> {
         if self.schema.is_empty() || self.schema.len() > SOURCE_DIAGNOSTICS_SCHEMA_MAX_BYTES {
             return Err(SourceDiagnosticsEnvelopeError::InvalidSchema);
@@ -348,6 +398,14 @@ impl SourceDiagnosticsEnvelope {
             .len();
         if payload_size > SOURCE_DIAGNOSTICS_PAYLOAD_MAX_BYTES {
             return Err(SourceDiagnosticsEnvelopeError::PayloadTooLarge);
+        }
+        if let SourceDiagnosticsPublicPayload::Projected(public_payload) = &self.public_payload {
+            let public_payload_size = serde_json::to_vec(public_payload)
+                .map_err(|_| SourceDiagnosticsEnvelopeError::MalformedPayload)?
+                .len();
+            if public_payload_size > SOURCE_DIAGNOSTICS_PAYLOAD_MAX_BYTES {
+                return Err(SourceDiagnosticsEnvelopeError::PayloadTooLarge);
+            }
         }
         Ok(())
     }
@@ -671,13 +729,15 @@ impl<'de> Deserialize<'de> for SourceDiagnosticsEnvelope {
                         }
                     }
                 }
-                SourceDiagnosticsEnvelope::try_new(
+                let mut envelope = SourceDiagnosticsEnvelope::try_new(
                     schema.ok_or_else(|| de::Error::missing_field("schema"))?,
                     version.ok_or_else(|| de::Error::missing_field("version"))?,
                     display.unwrap_or_default(),
                     payload.ok_or_else(|| de::Error::missing_field("payload"))?,
                 )
-                .map_err(de::Error::custom)
+                .map_err(de::Error::custom)?;
+                envelope.public_payload = SourceDiagnosticsPublicPayload::Unavailable;
+                Ok(envelope)
             }
         }
 

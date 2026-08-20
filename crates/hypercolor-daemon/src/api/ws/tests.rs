@@ -5699,6 +5699,37 @@ async fn dispatch_command_routes_to_status() {
 }
 
 #[tokio::test]
+async fn dispatch_command_routes_to_system() {
+    let state = Arc::new(AppState::new());
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::unsecured(),
+        "cmd_system".to_owned(),
+        "GET".to_owned(),
+        "/system".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            id,
+            status,
+            data,
+            error,
+        } => {
+            assert_eq!(id, "cmd_system");
+            assert_eq!(status, 200);
+            let payload = data.expect("system command should return payload");
+            assert!(payload.get("identity").is_some());
+            assert!(payload.get("status").is_some());
+            assert!(error.is_none());
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
 async fn dispatch_command_rejects_invalid_method() {
     let state = Arc::new(AppState::new());
     let message = dispatch_command(

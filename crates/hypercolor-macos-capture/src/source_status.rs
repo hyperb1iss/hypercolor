@@ -121,18 +121,61 @@ pub fn screen_diagnostics_envelope(
     status: &MacosScreenStatusSnapshot,
 ) -> Result<SourceDiagnosticsEnvelope, SourceDiagnosticsEnvelopeError> {
     let selection = &status.selection.selection;
-    let payload = serde_json::json!({
+    let payload = screen_diagnostics_payload(status, true);
+    let public_payload = screen_diagnostics_payload(status, false);
+    let display = vec![
+        SourceDiagnosticsDisplayField::new(
+            "state",
+            "Capture",
+            protected_state_display_name(status.state),
+        ),
+        SourceDiagnosticsDisplayField::new(
+            "authorization",
+            "Authorization",
+            authorization_state_display_name(status.authorization),
+        ),
+        SourceDiagnosticsDisplayField::new("owner", "Owner", owner_display_name(&status.owner)),
+        SourceDiagnosticsDisplayField::new(
+            "selection",
+            "Selection",
+            selection_display_name(selection),
+        ),
+        SourceDiagnosticsDisplayField::new(
+            "stream",
+            "Stream",
+            stream_state_display_name(status.state),
+        ),
+    ];
+    SourceDiagnosticsEnvelope::try_new_with_public_payload(
+        SCREEN_DIAGNOSTICS_SCHEMA,
+        SCREEN_DIAGNOSTICS_VERSION,
+        display,
+        payload,
+        public_payload,
+    )
+}
+
+fn screen_diagnostics_payload(
+    status: &MacosScreenStatusSnapshot,
+    include_private_selection_ids: bool,
+) -> serde_json::Value {
+    let selection = &status.selection.selection;
+    serde_json::json!({
         "state": protected_state_name(status.state),
         "tcc": authorization_state_name(status.authorization),
         "owner": status.owner.as_ref(),
-        "selection": encode_selection(selection),
+        "selection": encode_selection(selection, include_private_selection_ids),
         "selection_diagnostic_label": selection_diagnostic_label(selection),
         "selection_revision": status.selection.revision,
         "tahoe": tahoe_payload(status.tahoe),
         "tahoe_selection": status
             .tahoe_selection
             .as_ref()
-            .map(|selection_status| tahoe_selection_payload(selection_status, selection)),
+            .map(|selection_status| tahoe_selection_payload(
+                selection_status,
+                selection,
+                include_private_selection_ids,
+            )),
         "owner_conflict": status.owner_conflict.as_ref().map(|conflict| serde_json::json!({
             "active": conflict.active.as_ref(),
             "contender": conflict.contender.as_ref(),
@@ -167,36 +210,7 @@ pub fn screen_diagnostics_envelope(
         "publication_path": status.publication_path.as_deref(),
         "fallback_reason": status.fallback_reason.as_deref(),
         "timing": screen_timing_payload(status.timing),
-    });
-    let display = vec![
-        SourceDiagnosticsDisplayField::new(
-            "state",
-            "Capture",
-            protected_state_display_name(status.state),
-        ),
-        SourceDiagnosticsDisplayField::new(
-            "authorization",
-            "Authorization",
-            authorization_state_display_name(status.authorization),
-        ),
-        SourceDiagnosticsDisplayField::new("owner", "Owner", owner_display_name(&status.owner)),
-        SourceDiagnosticsDisplayField::new(
-            "selection",
-            "Selection",
-            selection_display_name(selection),
-        ),
-        SourceDiagnosticsDisplayField::new(
-            "stream",
-            "Stream",
-            stream_state_display_name(status.state),
-        ),
-    ];
-    SourceDiagnosticsEnvelope::try_new(
-        SCREEN_DIAGNOSTICS_SCHEMA,
-        SCREEN_DIAGNOSTICS_VERSION,
-        display,
-        payload,
-    )
+    })
 }
 
 const fn protected_state_name(state: MacosProtectedSourceState) -> &'static str {
@@ -318,9 +332,13 @@ fn tahoe_payload(status: MacosScreenTahoeStatus) -> serde_json::Value {
 fn tahoe_selection_payload(
     status: &MacosScreenTahoeSelectionStatus,
     selection: &MacosCaptureSelection,
+    include_private_selection_ids: bool,
 ) -> serde_json::Value {
     let source_id = match selection {
-        MacosCaptureSelection::Display { .. } => status.source_id.as_ref(),
+        MacosCaptureSelection::Display { .. } if include_private_selection_ids => {
+            status.source_id.as_ref()
+        }
+        MacosCaptureSelection::Display { .. } => "display",
         MacosCaptureSelection::None => "none",
         MacosCaptureSelection::SessionScoped { .. } => "session_scoped",
     };
@@ -359,11 +377,17 @@ fn screen_timing_payload(status: MacosScreenTimingStatus) -> serde_json::Value {
     })
 }
 
-fn encode_selection(selection: &MacosCaptureSelection) -> serde_json::Value {
+fn encode_selection(
+    selection: &MacosCaptureSelection,
+    include_private_selection_ids: bool,
+) -> serde_json::Value {
     match selection {
         MacosCaptureSelection::None => serde_json::json!({"type": "none"}),
-        MacosCaptureSelection::Display { source_id } => {
+        MacosCaptureSelection::Display { source_id } if include_private_selection_ids => {
             serde_json::json!({"type": "display", "source_id": source_id.as_ref()})
+        }
+        MacosCaptureSelection::Display { .. } => {
+            serde_json::json!({"type": "display", "source_id": "display"})
         }
         MacosCaptureSelection::SessionScoped { content_style } => serde_json::json!({
             "type": "session_scoped",

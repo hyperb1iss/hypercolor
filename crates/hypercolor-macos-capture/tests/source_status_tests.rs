@@ -158,3 +158,36 @@ fn diagnostics_present_neutral_labels_and_redact_session_identity() {
     assert_eq!(diagnostics.display()[1].value, "Not determined");
     assert_eq!(diagnostics.display()[3].value, "Session scoped");
 }
+
+#[test]
+fn public_diagnostics_redact_display_selection_identity() {
+    let secret = "display:com.secret.private";
+    let mut status = status(MacosCaptureSelection::Display {
+        source_id: secret.into(),
+    });
+    status.tahoe_selection = Some(MacosScreenTahoeSelectionStatus {
+        source_id: secret.into(),
+        capture_session_generation: 12,
+        hdr_capture: true,
+        dual_range_screenshots: true,
+    });
+
+    let diagnostics =
+        screen_diagnostics_envelope(&status).expect("display diagnostics should remain bounded");
+    assert_eq!(diagnostics.payload()["selection"]["source_id"], secret);
+    assert_eq!(
+        diagnostics.payload()["tahoe_selection"]["source_id"],
+        secret
+    );
+
+    let public = diagnostics
+        .public_projection()
+        .expect("platform-authored projection should remain available");
+    assert_eq!(public.payload()["selection"]["source_id"], "display");
+    assert_eq!(public.payload()["tahoe_selection"]["source_id"], "display");
+    assert!(
+        !serde_json::to_string(&public)
+            .expect("public diagnostics should serialize")
+            .contains(secret)
+    );
+}

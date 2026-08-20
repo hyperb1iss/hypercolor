@@ -601,6 +601,13 @@ pub struct SystemResource {
 /// Build the bounded input health snapshot used without protected control.
 #[must_use]
 pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
+    input_status_snapshot_with_privacy(state, false)
+}
+
+fn input_status_snapshot_with_privacy(
+    state: &AppState,
+    include_private_diagnostics: bool,
+) -> InputStatus {
     let now = Instant::now();
     let registry = state.input_status.snapshot();
     let statuses = registry
@@ -613,7 +620,7 @@ pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
         .filter(|source| is_host_interaction_source(source));
     let sources = statuses
         .iter()
-        .map(|source| input_source_status(source, now))
+        .map(|source| input_source_status(source, now, include_private_diagnostics))
         .collect();
 
     InputStatus {
@@ -693,7 +700,11 @@ pub(crate) fn actionable_input_diagnostics(input: &InputStatus) -> Vec<InputDiag
         .collect()
 }
 
-fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus {
+fn input_source_status(
+    source: &SourceStatus,
+    now: Instant,
+    include_private_diagnostics: bool,
+) -> InputSourceStatus {
     let lifecycle_issue = source.issue.as_ref().map(input_source_issue_status);
     let freshness_issue = source
         .freshness_issue
@@ -729,7 +740,13 @@ fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus
         lifecycle_issue,
         freshness_issue,
         action_issue,
-        diagnostics: source.diagnostics.as_deref().cloned(),
+        diagnostics: source.diagnostics.as_deref().and_then(|diagnostics| {
+            if include_private_diagnostics {
+                Some(diagnostics.clone())
+            } else {
+                diagnostics.public_projection()
+            }
+        }),
         retired: source.retired,
     }
 }
@@ -888,10 +905,13 @@ fn duration_ms(duration: Duration) -> u64 {
     tag = "system"
 )]
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
-    ApiResponse::ok(system_status(state).await)
+    ApiResponse::ok(system_status_with_privacy(state, false).await)
 }
 
-async fn system_status(state: Arc<AppState>) -> SystemStatus {
+async fn system_status_with_privacy(
+    state: Arc<AppState>,
+    include_private_diagnostics: bool,
+) -> SystemStatus {
     let device_count = state.device_registry.len().await;
     let effect_count = state.effect_registry.read().await.len();
     let scene_count = state.scene_manager.read().await.scene_count();
@@ -1087,7 +1107,7 @@ async fn system_status(state: Arc<AppState>) -> SystemStatus {
     };
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
-    let input_status = input_status_snapshot(&state);
+    let input_status = input_status_snapshot_with_privacy(&state, include_private_diagnostics);
     let audio_available = input_status.sources.iter().any(|source| {
         source.kind == "audio"
             && !source.retired
@@ -1202,7 +1222,10 @@ pub(crate) async fn get_system(
 ) -> Response {
     let identity = server_info(&state).await;
     let status = if auth_context.can_read_system_status() {
-        Some(system_status(Arc::clone(&state)).await)
+        Some(
+            system_status_with_privacy(Arc::clone(&state), auth_context.can_protected_control())
+                .await,
+        )
     } else {
         None
     };
@@ -2086,10 +2109,11 @@ fn is_monitorish_device_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_sensor, get_sensors, get_server, get_status, input_source_status,
+        get_sensor, get_sensors, get_server, get_status, get_system, input_source_status,
         macos_daemon_ownership, us_to_ms_f64,
     };
     use crate::api::AppState;
+    use crate::api::security::RequestAuthContext;
     use crate::macos_owner::{
         MacosDaemonOwner, MacosDaemonSessionAttestation, MacosHandoverPhase, MacosOwnerConflict,
         MacosOwnerIdentity, MacosOwnerRecoveryRequired, MacosOwnerSnapshot,
@@ -2101,12 +2125,13 @@ mod tests {
     };
     use crate::preview_runtime::{PreviewPixelFormat, PreviewStreamDemand};
     use axum::body::to_bytes;
-    use axum::extract::{Path, State};
+    use axum::extract::{Extension, Path, State};
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::{
         DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, ManagedSourceRole,
         SourceFreshness, SourceKind, SourceRoleBinding, SourceState, SourceStatus,
+        SourceStatusHandle, SourceStatusReporter,
     };
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
@@ -2120,6 +2145,48 @@ mod tests {
     struct FixedSensorSource {
         snapshot: Arc<SystemSnapshot>,
         running: bool,
+    }
+
+    struct FixedDiagnosticsSource {
+        status: SourceStatusReporter,
+    }
+
+    impl InputSource for FixedDiagnosticsSource {
+        fn name(&self) -> &'static str {
+            "fixed-diagnostics"
+        }
+
+        fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+            Some(self.status.handle())
+        }
+
+        fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+            Some(&mut self.status)
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn stop(&mut self) {}
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            false
+        }
+    }
+
+    impl SourceRoleBinding for FixedDiagnosticsSource {
+        type Role = DataSourceRole;
+    }
+
+    impl DataSource for FixedDiagnosticsSource {
+        fn data_source_kind(&self) -> DataSourceKind {
+            DataSourceKind::Sensors
+        }
     }
 
     impl InputSource for FixedSensorSource {
@@ -2247,6 +2314,7 @@ mod tests {
         let status = input_source_status(
             &source_status_fixture(Some(diagnostics.clone())),
             Instant::now(),
+            true,
         );
         let value = serde_json::to_value(status).expect("input status should serialize");
 
@@ -2257,6 +2325,75 @@ mod tests {
             value["diagnostics"]["payload"],
             diagnostics.payload().clone()
         );
+    }
+
+    #[tokio::test]
+    async fn system_resource_redacts_protected_diagnostics_without_control() {
+        let secret = "display:com.secret.private";
+        let diagnostics = SourceDiagnosticsEnvelope::try_new_with_public_payload(
+            "fixture.protected",
+            1,
+            Vec::new(),
+            json!({"selection": {"source_id": secret}}),
+            json!({"selection": {"source_id": "display"}}),
+        )
+        .expect("protected diagnostics should remain bounded");
+        let mut reporter = SourceStatusReporter::new(
+            "fixture:protected",
+            SourceKind::Sensors,
+            "fixture",
+            true,
+            true,
+            true,
+        );
+        reporter
+            .set_diagnostics(Some(diagnostics))
+            .expect("fixture diagnostics should publish");
+        let state = AppState::new();
+        state
+            .input_manager
+            .add_source(ManagedSourceRole::data(Box::new(FixedDiagnosticsSource {
+                status: reporter,
+            })))
+            .expect("fixture source should register");
+        let state = Arc::new(state);
+
+        let anonymous = get_system(
+            State(Arc::clone(&state)),
+            Extension(RequestAuthContext::preflight()),
+        )
+        .await;
+        let read = get_system(
+            State(Arc::clone(&state)),
+            Extension(RequestAuthContext::read_only()),
+        )
+        .await;
+        let legacy = get_status(State(Arc::clone(&state))).await;
+        let control = get_system(State(state), Extension(RequestAuthContext::control())).await;
+        let anonymous = to_bytes(anonymous.into_body(), usize::MAX)
+            .await
+            .expect("anonymous response should read");
+        let read = to_bytes(read.into_body(), usize::MAX)
+            .await
+            .expect("read response should read");
+        let control = to_bytes(control.into_body(), usize::MAX)
+            .await
+            .expect("control response should read");
+        let legacy = to_bytes(legacy.into_body(), usize::MAX)
+            .await
+            .expect("legacy response should read");
+        let anonymous: Value =
+            serde_json::from_slice(&anonymous).expect("anonymous response should parse");
+        let read: Value = serde_json::from_slice(&read).expect("read response should parse");
+        let control: Value =
+            serde_json::from_slice(&control).expect("control response should parse");
+        let legacy: Value = serde_json::from_slice(&legacy).expect("legacy response should parse");
+
+        assert!(anonymous["data"].get("status").is_none());
+        assert!(!read.to_string().contains(secret));
+        assert!(read.to_string().contains("display"));
+        assert!(!legacy.to_string().contains(secret));
+        assert!(control.to_string().contains(secret));
     }
 
     #[test]
@@ -2299,7 +2436,7 @@ mod tests {
 
     #[test]
     fn input_source_status_omits_absent_diagnostics() {
-        let status = input_source_status(&source_status_fixture(None), Instant::now());
+        let status = input_source_status(&source_status_fixture(None), Instant::now(), false);
         let value = serde_json::to_value(status).expect("source status should serialize");
 
         assert!(value.get("diagnostics").is_none());
