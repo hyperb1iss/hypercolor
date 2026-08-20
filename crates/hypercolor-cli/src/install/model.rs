@@ -245,7 +245,6 @@ impl PlatformTransitionStates {
 
         if self.prior_unloaded.layout_unit != prior.layout_unit
             || self.prior_unloaded.launcher_unit != prior.launcher_unit
-            || self.prior_unloaded.loaded
             || self.prior_unloaded.running_unit.is_some()
             || self.prior_unloaded.autostart_enabled != prior.autostart_enabled
             || self.candidate_manager.layout_unit != target.layout_unit

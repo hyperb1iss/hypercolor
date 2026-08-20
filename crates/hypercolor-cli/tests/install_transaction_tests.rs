@@ -971,7 +971,7 @@ fn persisted_transition_plan_rejects_corrupt_intermediate_states() {
     let mut corruptions = Vec::new();
 
     let mut corrupted = journal.clone();
-    corrupted.transition_states.prior_unloaded.loaded = true;
+    corrupted.transition_states.prior_unloaded.layout_unit = None;
     corruptions.push(corrupted);
 
     let mut corrupted = journal.clone();
@@ -1070,6 +1070,28 @@ fn persisted_layout_cursor_must_match_the_named_journal_action() {
             Err(InstallModelError::InvalidLayoutOperationCursor)
         );
     }
+}
+
+#[test]
+fn persisted_transition_plan_allows_platform_specific_loaded_quiescence() {
+    let candidate = UnitId::new(CANDIDATE_ID).expect("candidate unit ID");
+    let prior = PlatformState {
+        layout_unit: Some(UnitId::new(PRIOR_ID).expect("prior layout unit ID")),
+        launcher_unit: Some(UnitId::new(PRIOR_ID).expect("prior launcher unit ID")),
+        loaded: true,
+        running_unit: Some(UnitId::new(PRIOR_ID).expect("prior running unit ID")),
+        autostart_enabled: true,
+    };
+    let mut journal = new_journal(
+        InstallTransactionId::new("loaded-quiescence").expect("transaction ID"),
+        prior.layout_unit.clone(),
+        candidate,
+        prior,
+        InstallTargetPolicy::Preserve,
+    );
+    journal.transition_states.prior_unloaded.loaded = true;
+
+    assert_eq!(journal.validate(), Ok(()));
 }
 
 #[test]
