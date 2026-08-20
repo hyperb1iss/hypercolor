@@ -85,7 +85,6 @@ pub(crate) async fn service_scene_transactions(
                     &expected_layout,
                     active_scene_id,
                     source_active_render_groups_revision,
-                    &state.scene_transactions,
                     |spatial_engine| {
                         if let Some(prepared_resize) = prepared_resize {
                             render.commit_canvas_resize(prepared_resize);

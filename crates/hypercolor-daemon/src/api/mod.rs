@@ -87,6 +87,7 @@ use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::domain::scene::SceneService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::layout_auto_exclusions;
@@ -129,14 +130,10 @@ pub struct AppState {
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// Scene CRUD, priority stack, and transitions.
-    pub scene_manager: Arc<RwLock<SceneManager>>,
+    pub scene_manager: SceneService,
 
     /// Persisted named-scene store.
     pub scene_store: Arc<RwLock<SceneStore>>,
-
-    /// Ordered publication chain and revision counter for scene commits
-    /// (Spec 76 §2.3).
-    pub scene_commits: Arc<crate::domain::commit::SceneCommitSequencer>,
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
@@ -314,7 +311,7 @@ pub struct AppState {
 
 #[derive(Clone)]
 pub(crate) struct RuntimeSessionSnapshotReader {
-    scene_manager: Arc<RwLock<SceneManager>>,
+    scene_manager: SceneService,
     spatial_engine: Arc<RwLock<SpatialEngine>>,
     power_state: watch::Sender<OutputPowerState>,
     driver_host: Arc<DaemonDriverHost>,
@@ -324,7 +321,7 @@ pub(crate) struct RuntimeSessionSnapshotReader {
 impl RuntimeSessionSnapshotReader {
     async fn snapshot(&self) -> runtime_state::RuntimeSessionSnapshot {
         let mut snapshot = {
-            let manager = self.scene_manager.read().await;
+            let manager = self.scene_manager.snapshot().await;
             runtime_state::snapshot_from_scene_manager(&manager)
         };
         {
@@ -381,7 +378,7 @@ mod tests {
 impl AppState {
     pub(crate) fn runtime_session_snapshot_reader(&self) -> RuntimeSessionSnapshotReader {
         RuntimeSessionSnapshotReader {
-            scene_manager: Arc::clone(&self.scene_manager),
+            scene_manager: self.scene_manager.clone(),
             spatial_engine: Arc::clone(&self.spatial_engine),
             power_state: self.power_state.clone(),
             driver_host: Arc::clone(&self.driver_host),
@@ -496,12 +493,10 @@ impl AppState {
                 warn!(%error, "Failed to install persisted named scene into default app state");
             }
         }
-        let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
-        let scene_store = Arc::new(RwLock::new(scene_store));
         let event_bus = Arc::new(HypercolorBus::new());
-        let scene_commits = Arc::new(crate::domain::commit::SceneCommitSequencer::new());
-        let scene_transactions =
-            SceneTransactionQueue::new(Arc::clone(&scene_commits), Arc::clone(&event_bus));
+        let scene_manager = SceneService::new(scene_manager_inner, Arc::clone(&event_bus));
+        let scene_store = Arc::new(RwLock::new(scene_store));
+        let scene_transactions = SceneTransactionQueue::default();
         let asset_library = AssetLibrary::open(data_dir.join("assets"))
             .expect("default app state should open asset library");
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
@@ -570,7 +565,7 @@ impl AppState {
             Arc::clone(&reconnect_tasks),
             Arc::clone(&event_bus),
             Arc::clone(&spatial_engine),
-            Arc::clone(&scene_manager),
+            scene_manager.clone(),
             Arc::clone(&layouts),
             layouts_path.clone(),
             Arc::clone(&layout_auto_exclusions),
@@ -602,7 +597,6 @@ impl AppState {
             effect_registry,
             scene_manager,
             scene_store,
-            scene_commits,
             event_bus,
             macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
             asset_library: Arc::new(RwLock::new(asset_library)),
@@ -689,9 +683,8 @@ impl AppState {
         Self {
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
-            scene_manager: Arc::clone(&daemon.scene_manager),
+            scene_manager: daemon.scene_manager.clone(),
             scene_store: Arc::clone(&daemon.scene_store),
-            scene_commits: Arc::clone(&daemon.scene_commits),
             event_bus: Arc::clone(&daemon.event_bus),
             macos_daemon_ownership: Arc::clone(&daemon.macos_daemon_ownership),
             asset_library: Arc::clone(&daemon.asset_library),
@@ -810,7 +803,7 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
 /// gives the session snapshot a scene context to read from.
 pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Result<()> {
     let pending = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let store = state.scene_store.read().await;
         store.reserve_save(manager.list().into_iter().cloned())?
     };
@@ -863,9 +856,8 @@ async fn clear_active_scene_effect_groups(
 ) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
 
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id =
-        mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
     let zone_ids = mutation
         .scenes()
         .active_scene()
@@ -887,24 +879,12 @@ async fn clear_active_scene_effect_groups(
 
     let cleared_zones = zone_ids
         .into_iter()
-        .filter_map(|zone_id| mutation.clear_zone_effect(zone_id))
+        .filter_map(|zone_id| {
+            mutation.clear_zone_effect(zone_id, Some(effect.clone()), EffectStopReason::Error)
+        })
         .collect::<Vec<_>>();
     if cleared_zones.is_empty() {
         return Ok(None);
-    }
-
-    for zone in &cleared_zones {
-        mutation.record(HypercolorEvent::EffectStopped {
-            effect: effect.clone(),
-            reason: EffectStopReason::Error,
-            zone_id: Some(zone.id),
-            zone_name: Some(zone.name.clone()),
-        });
-        mutation.record(crate::domain::scene::zone_changed_event(
-            scene_id,
-            zone,
-            ZoneChangeKind::Updated,
-        ));
     }
 
     crate::domain::scene::commit_scene(state.as_ref(), mutation)

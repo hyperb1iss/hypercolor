@@ -27,11 +27,11 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryTarget};
+use crate::domain::scene::SceneService;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
 use crate::scene_transactions::SceneTransactionQueue;
-use hypercolor_core::scene::SceneManager;
 
 const STARTUP_DRIVER_RECOVERY_ATTEMPTS: usize = 3;
 const STARTUP_DRIVER_RECOVERY_INTERVAL_SECS: u64 = 5;
@@ -47,7 +47,7 @@ pub(super) struct DiscoveryWorkerContext {
     pub(super) driver_host: Arc<DaemonDriverHost>,
     pub(super) driver_registry: Arc<DriverModuleRegistry>,
     pub(super) spatial_engine: Arc<RwLock<SpatialEngine>>,
-    pub(super) scene_manager: Arc<RwLock<SceneManager>>,
+    pub(super) scene_manager: SceneService,
     pub(super) layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     pub(super) layouts_path: PathBuf,
     pub(super) layout_auto_exclusions:
@@ -72,7 +72,7 @@ impl DiscoveryWorkerContext {
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
             spatial_engine: Arc::clone(&self.spatial_engine),
-            scene_manager: Arc::clone(&self.scene_manager),
+            scene_manager: self.scene_manager.clone(),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
             layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),

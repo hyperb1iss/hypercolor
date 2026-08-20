@@ -958,7 +958,7 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
     }
 
     let active_effect_ids = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
             .active_render_groups()
             .iter()
@@ -1490,7 +1490,7 @@ async fn sync_active_layout_canvas_size_workflow(
     };
     if let Err(error) = apply_prepared_layout_update_under_guard(
         Arc::clone(&state.spatial_engine),
-        Arc::clone(&state.scene_manager),
+        state.scene_manager.clone(),
         state.scene_transactions.clone(),
         &guard,
         prepared,

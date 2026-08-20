@@ -23,6 +23,7 @@ use hypercolor_daemon::discovery::{
     schedule_discovery_scan, sync_active_layout_connectivity,
     sync_active_layout_for_renderable_devices,
 };
+use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
@@ -517,7 +518,7 @@ fn make_runtime_with_registry(
             .expect("test driver inventory"),
     );
     let scene_transactions = SceneTransactionQueue::default();
-    let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
+    let scene_manager = SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus));
     let driver_registry = Arc::new(driver_registry.unwrap_or_else(|| {
         network::build_builtin_driver_module_registry(
             &HypercolorConfig::default(),
@@ -532,7 +533,7 @@ fn make_runtime_with_registry(
         reconnect_tasks: Arc::clone(&reconnect_tasks),
         event_bus: Arc::clone(&event_bus),
         spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: Arc::clone(&scene_manager),
+        scene_manager: scene_manager.clone(),
         layouts: Arc::clone(&layouts),
         layouts_path,
         layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
@@ -908,7 +909,7 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
     }
     {
         let (scene_id, zone_id) = {
-            let scene_manager = runtime.scene_manager.read().await;
+            let scene_manager = runtime.scene_manager.snapshot().await;
             let scene = scene_manager
                 .active_scene()
                 .expect("default scene should be active");

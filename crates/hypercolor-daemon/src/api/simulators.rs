@@ -343,7 +343,7 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
             Ok(prepared) => {
                 if let Err(error) = apply_prepared_layout_update_under_guard(
                     Arc::clone(&state.spatial_engine),
-                    Arc::clone(&state.scene_manager),
+                    state.scene_manager.clone(),
                     state.scene_transactions.clone(),
                     &guard,
                     prepared,

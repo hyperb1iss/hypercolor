@@ -210,9 +210,9 @@ async fn seed_tree(state: &Arc<AppState>) -> EffectId {
             state: EffectState::Loading,
         });
     }
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .upsert_primary_group(
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
             &metadata,
             HashMap::<String, ControlValue>::new(),
             None,
@@ -220,8 +220,13 @@ async fn seed_tree(state: &Arc<AppState>) -> EffectId {
                 sample_output("out-a", Some("ch1")),
                 sample_output("out-b", Some("ch2")),
             ]),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
         )
         .expect("primary zone should seed");
+    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+        .await
+        .expect("primary zone should commit");
     effect_id
 }
 
@@ -340,7 +345,7 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
         "a layer id is never derived from its zone"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let zone = manager
         .active_scene()
         .and_then(hypercolor_types::scene::Scene::primary_zone)
@@ -624,7 +629,7 @@ async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() 
         .expect("live scene revision");
     let zone_id = state
         .scene_manager
-        .read()
+        .snapshot()
         .await
         .active_scene()
         .and_then(hypercolor_types::scene::Scene::primary_zone)
@@ -680,7 +685,7 @@ async fn a_control_patch_event_names_its_zone_and_real_layer() {
     let app = api::build_router(Arc::clone(&state), None);
     let effect_id = seed_tree(&state).await;
     let (zone_id, layer_id) = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let zone = manager
             .active_scene()
             .and_then(hypercolor_types::scene::Scene::primary_zone)
@@ -745,10 +750,10 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
         .to_owned();
 
     {
-        let mut manager = state.scene_manager.write().await;
+        let mut mutation = state.scene_manager.begin_mutation().await;
         let zone_uuid = zone_id.parse::<Uuid>().expect("zone uuid");
-        manager
-            .set_group_control_binding(
+        mutation
+            .set_zone_control_binding(
                 hypercolor_types::scene::ZoneId(zone_uuid),
                 "speed".to_owned(),
                 ControlBinding {
@@ -762,6 +767,9 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
                 },
             )
             .expect("binding should attach");
+        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("binding should commit");
     }
 
     let refused = send(
@@ -1292,17 +1300,23 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
                 .map(|entry| entry.metadata.clone())
                 .expect("seeded effect")
         };
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
-                hypercolor_types::device::DeviceId::new(),
+        let device_id = hypercolor_types::device::DeviceId::new();
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let zone_id = mutation
+            .upsert_display_zone(
+                device_id,
                 "Panel",
                 &metadata,
                 HashMap::<String, ControlValue>::new(),
                 sample_layout(vec![sample_output("out-face", None)]),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("face assigns")
-            .id
+            .id;
+        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("face should commit");
+        zone_id
     };
 
     let cleared = send(&app, empty_request("POST", "/api/v1/scene/clear".into())).await;
@@ -1348,17 +1362,23 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
                 .map(|entry| entry.metadata.clone())
                 .expect("seeded effect")
         };
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
-                hypercolor_types::device::DeviceId::new(),
+        let device_id = hypercolor_types::device::DeviceId::new();
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let zone_id = mutation
+            .upsert_display_zone(
+                device_id,
                 "Panel",
                 &metadata,
                 HashMap::new(),
                 sample_layout(vec![sample_output("out-face", None)]),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("face assigns")
-            .id
+            .id;
+        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("face should commit");
+        zone_id
     };
     let before = read_document(&app).await;
     let face = before["data"]["zones"]

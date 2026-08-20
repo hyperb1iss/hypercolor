@@ -640,35 +640,44 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
 
     let face = simulated_display_face_effect("Desk Clock");
     let named_scene_id = {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_display_zone(
                 device_id,
                 "Desk Preview",
                 &face,
                 HashMap::new(),
                 simulated_display_face_layout("default"),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("default simulator face should be assigned");
 
         let named_scene = make_scene("Display Scene");
         let named_scene_id = named_scene.id;
-        manager
-            .create(named_scene)
+        mutation
+            .create_scene(named_scene)
             .expect("named scene should be created");
-        manager
-            .activate(&named_scene_id, None)
+        mutation
+            .activate(
+                named_scene_id,
+                None,
+                hypercolor_types::event::SceneChangeReason::UserActivate,
+            )
             .expect("named scene should activate");
-        manager
-            .upsert_display_group(
+        mutation
+            .upsert_display_zone(
                 device_id,
                 "Desk Preview",
                 &face,
                 HashMap::new(),
                 simulated_display_face_layout("named"),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("named simulator face should be assigned");
-        manager.deactivate_current();
+        mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
+        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("simulator face scenes should commit");
         named_scene_id
     };
 
@@ -687,7 +696,7 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
     assert_eq!(deleted["data"]["deleted"], true);
 
     {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let default_scene = manager
             .active_scene()
             .expect("default scene should remain active");

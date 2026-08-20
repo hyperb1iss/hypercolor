@@ -245,10 +245,7 @@ async fn current_scene_runtime_snapshot(
     render_scene_state: &mut RenderSceneState,
     delta_secs: f32,
 ) -> SceneRuntimeSnapshot {
-    let plan = {
-        let manager = state.scene_manager.read().await;
-        manager.plan_snapshot(state.scene_transactions.scene_revision())
-    };
+    let plan = state.scene_plan.load();
     let transition_frame = render_scene_state
         .frame_state_mut()
         .reconcile(plan.transition.as_ref(), delta_secs);
@@ -856,6 +853,11 @@ mod tests {
     fn minimal_render_thread_state(registry: EffectRegistry) -> RenderThreadState {
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let event_bus = Arc::new(HypercolorBus::new());
+        let scene_manager = crate::domain::scene::SceneService::new(
+            SceneManager::with_default(),
+            Arc::clone(&event_bus),
+        );
+        let scene_plan = scene_manager.plan_reader();
         let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
         let asset_dir = asset_tempdir.path().join("assets");
         RenderThreadState {
@@ -874,7 +876,8 @@ mod tests {
                 crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
             ),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-            scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+            scene_manager,
+            scene_plan,
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
@@ -1058,15 +1061,34 @@ mod tests {
         preview_layout.canvas_height = 360;
 
         let (scene_id, group_id) = {
-            let mut manager = state.scene_manager.write().await;
-            manager
-                .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
+            let mut mutation = state.scene_manager.begin_mutation().await;
+            let zone = mutation
+                .upsert_primary_zone(
+                    &metadata,
+                    HashMap::new(),
+                    None,
+                    sample_layout(),
+                    hypercolor_types::event::ChangeTrigger::System,
+                    None,
+                )
                 .expect("test scene should accept a primary group");
-            let scene = manager
+            let scene = mutation
+                .scenes()
                 .active_scene()
                 .expect("default scene should be active");
-            let group = scene.zones.first().expect("primary group should exist");
-            (scene.id, group.id)
+            let scene_id = scene.id;
+            let group_id = zone.id;
+            let tempdir = tempfile::tempdir().expect("test scene store tempdir");
+            let store = tokio::sync::RwLock::new(
+                crate::scene_store::SceneStore::new(tempdir.path().join("scenes.json"))
+                    .expect("test scene store should open"),
+            );
+            state
+                .scene_manager
+                .commit_mutation(&store, &state.zone_layout_previews, mutation)
+                .await
+                .expect("test scene should commit");
+            (scene_id, group_id)
         };
         state
             .zone_layout_previews
@@ -1079,11 +1101,7 @@ mod tests {
             .await;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let plan = state
-            .scene_manager
-            .read()
-            .await
-            .plan_snapshot(state.scene_transactions.scene_revision());
+        let plan = state.scene_plan.load();
         let snapshot = snapshot_scene_runtime(&state, &mut scene_snapshot_cache, &plan, None).await;
 
         assert_eq!(snapshot.active_render_groups[0].layout, preview_layout);

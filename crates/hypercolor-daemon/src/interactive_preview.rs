@@ -18,7 +18,6 @@ use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, SourceFreshness, SourceKind, SourceState,
     SourceStatusHandle,
 };
-use hypercolor_core::scene::SceneManager;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{PublishedSurface, SurfaceDescriptor};
 use hypercolor_types::config::RenderAccelerationMode;
@@ -31,6 +30,7 @@ use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::scene::SceneService;
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::preview_runtime::PreviewPixelFormat;
 #[cfg(feature = "wgpu")]
@@ -191,7 +191,7 @@ impl InteractivePreviewAcceleration {
 }
 
 pub struct InteractivePreviewContext {
-    pub scene_manager: Arc<RwLock<SceneManager>>,
+    pub scene_manager: SceneService,
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
     pub asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     pub event_bus: Arc<HypercolorBus>,
@@ -385,7 +385,7 @@ impl InteractivePreviewExecutor {
         let catalog_cancel = CancellationToken::new();
         let task = spawn_catalog_publisher(
             catalog.clone(),
-            Arc::clone(&context.scene_manager),
+            context.scene_manager.clone(),
             Arc::clone(&context.effect_registry),
             Arc::clone(&context.event_bus),
             context.canvas_width,
@@ -1406,7 +1406,7 @@ impl PreviewLaneInput {
 
 impl PreviewSceneCatalogSource {
     async fn capture(
-        scene_manager: &Arc<RwLock<SceneManager>>,
+        scene_manager: &SceneService,
         effect_registry: &Arc<RwLock<EffectRegistry>>,
         canvas_width: u32,
         canvas_height: u32,
@@ -1461,7 +1461,7 @@ impl PreviewSceneCatalog {
 
 fn spawn_catalog_publisher(
     catalog: PreviewSceneCatalogSource,
-    scene_manager: Arc<RwLock<SceneManager>>,
+    scene_manager: SceneService,
     effect_registry: Arc<RwLock<EffectRegistry>>,
     event_bus: Arc<HypercolorBus>,
     canvas_width: u32,
@@ -1501,14 +1501,14 @@ fn spawn_catalog_publisher(
 }
 
 async fn capture_catalog(
-    scene_manager: &Arc<RwLock<SceneManager>>,
+    scene_manager: &SceneService,
     effect_registry: &Arc<RwLock<EffectRegistry>>,
     canvas_width: u32,
     canvas_height: u32,
     generation: u64,
 ) -> Arc<PreviewSceneCatalog> {
     let (active_scene_id, active_groups_revision, active_groups, scenes) = {
-        let manager = scene_manager.read().await;
+        let manager = scene_manager.snapshot().await;
         let scenes = manager
             .list()
             .into_iter()

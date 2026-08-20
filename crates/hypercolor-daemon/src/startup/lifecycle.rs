@@ -134,7 +134,8 @@ impl DaemonState {
             preview_runtime: Arc::clone(&self.preview_runtime),
             zone_layout_previews: Arc::clone(&self.zone_layout_previews),
             render_loop: Arc::clone(&self.render_loop),
-            scene_manager: Arc::clone(&self.scene_manager),
+            scene_manager: self.scene_manager.clone(),
+            scene_plan: self.scene_manager.plan_reader(),
             input_manager: Arc::clone(&self.input_manager),
             interaction_routing: self.interaction_routing.clone(),
             power_state: self.power_state.subscribe(),
@@ -165,7 +166,7 @@ impl DaemonState {
             .expect("render thread was installed after successful spawn")
             .input_publication_demands();
         let interactive_preview = InteractivePreviewExecutor::start(InteractivePreviewContext {
-            scene_manager: Arc::clone(&self.scene_manager),
+            scene_manager: self.scene_manager.clone(),
             effect_registry: Arc::clone(&self.effect_registry),
             asset_library: Some(Arc::clone(&self.asset_library)),
             event_bus: Arc::clone(&self.event_bus),
@@ -404,10 +405,16 @@ impl DaemonState {
         // publication pump that stopped with the render thread. It
         // routes through the commit path once §6.4 gives scene services
         // a context narrower than `AppState`.
-        {
-            let mut scene_guard = self.scene_manager.write().await;
-            scene_guard.deactivate_current();
-        }
+        let mut mutation = self.scene_manager.begin_mutation().await;
+        mutation.deactivate_current(SceneChangeReason::UserDeactivate);
+        self.scene_manager
+            .commit_mutation(
+                self.scene_store.as_ref(),
+                self.zone_layout_previews.as_ref(),
+                mutation,
+            )
+            .await
+            .context("failed to deactivate scene during shutdown")?;
         info!("Scene manager cleaned up");
 
         // 7. Log final device count.
@@ -431,7 +438,7 @@ impl DaemonState {
     async fn persist_runtime_session_snapshot(&self) -> Result<AtomicWriteOutcome> {
         let pending_save = runtime_state::reserve_save(&self.runtime_state_path)?;
         let mut snapshot = {
-            let scene_manager = self.scene_manager.read().await;
+            let scene_manager = self.scene_manager.snapshot().await;
             runtime_state::snapshot_from_scene_manager(&scene_manager)
         };
 
@@ -451,7 +458,7 @@ impl DaemonState {
 
     async fn persist_scene_store_snapshot(&self) -> Result<AtomicWriteOutcome> {
         let pending = {
-            let scene_manager = self.scene_manager.read().await;
+            let scene_manager = self.scene_manager.snapshot().await;
             let store = self.scene_store.read().await;
             store.reserve_save(scene_manager.list().into_iter().cloned())
         };
@@ -515,10 +522,19 @@ impl DaemonState {
                         // PRE-INIT WRITER (1 of 4) — see
                         // `apply_runtime_session_snapshot` for the reasoning
                         // all restore writers share.
-                        self.scene_manager
-                            .write()
+                        let mut mutation = self.scene_manager.begin_mutation().await;
+                        mutation.sync_primary_layout(&layout);
+                        if let Err(error) = self
+                            .scene_manager
+                            .commit_mutation(
+                                self.scene_store.as_ref(),
+                                self.zone_layout_previews.as_ref(),
+                                mutation,
+                            )
                             .await
-                            .sync_primary_group_layout(&layout);
+                        {
+                            warn!(%error, "Failed to sync restored scene layout");
+                        }
                         info!(layout_id, layout_name = %layout.name, "Restored active layout");
                     }
                     Err(error) => {
@@ -544,7 +560,7 @@ impl DaemonState {
         }
 
         let target = {
-            let scenes = self.scene_manager.read().await;
+            let scenes = self.scene_manager.snapshot().await;
             let scene_id = if selector.eq_ignore_ascii_case("default") {
                 Some(SceneId::DEFAULT)
             } else if let Ok(uuid) = selector.parse::<uuid::Uuid>() {
@@ -587,14 +603,25 @@ impl DaemonState {
             return;
         }
 
-        let current_scene = {
-            let mut scenes = self.scene_manager.write().await;
-            if let Err(error) = scenes.activate(&scene_id, None) {
+        {
+            let mut mutation = self.scene_manager.begin_mutation().await;
+            if let Err(error) = mutation.activate(scene_id, None, SceneChangeReason::DaemonStart) {
                 warn!(selector, scene_id = %scene_id, %error, "Failed to activate configured startup scene");
                 return;
             }
-            scenes.active_scene().cloned()
-        };
+            if let Err(error) = self
+                .scene_manager
+                .commit_mutation(
+                    self.scene_store.as_ref(),
+                    self.zone_layout_previews.as_ref(),
+                    mutation,
+                )
+                .await
+            {
+                warn!(selector, scene_id = %scene_id, %error, "Failed to commit configured startup scene");
+                return;
+            }
+        }
 
         if let Some(layout_id) = layout_id {
             let layout = self.layouts.read().await.get(layout_id.as_str()).cloned();
@@ -602,10 +629,19 @@ impl DaemonState {
                 Some(layout) => match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
                         *self.spatial_engine.write().await = prepared;
-                        self.scene_manager
-                            .write()
+                        let mut mutation = self.scene_manager.begin_mutation().await;
+                        mutation.sync_primary_layout(&layout);
+                        if let Err(error) = self
+                            .scene_manager
+                            .commit_mutation(
+                                self.scene_store.as_ref(),
+                                self.zone_layout_previews.as_ref(),
+                                mutation,
+                            )
                             .await
-                            .sync_primary_group_layout(&layout);
+                        {
+                            warn!(%error, "Failed to sync configured startup scene layout");
+                        }
                     }
                     Err(error) => {
                         warn!(%layout_id, %error, "Rejected configured startup scene layout");
@@ -626,14 +662,6 @@ impl DaemonState {
             }
         }
 
-        if let Some(current_scene) = current_scene {
-            self.event_bus
-                .publish(crate::domain::scene::active_scene_changed_event(
-                    previous_scene_id,
-                    &current_scene,
-                    SceneChangeReason::DaemonStart,
-                ));
-        }
         info!(scene_id = %scene_id, scene_name, "Activated configured startup scene");
     }
 
@@ -648,40 +676,24 @@ impl DaemonState {
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
 
-        // PRE-INIT WRITER (4 of 4, Spec 76 §2.3). All restore writers
-        // run inside `DaemonState::initialize`, before the render thread
-        // starts and before the API server binds, so nothing else can be
-        // committing and there is no competing writer for the commit
-        // sequencer to order against. The fifth scene writer in this
-        // file is the shutdown deactivate, which is post-teardown rather
-        // than pre-init.
-        //
-        // Neither can use the commit path regardless:
-        // `AppState::from_daemon_state` requires a live input
-        // publication pump, which does not exist yet. They route through
-        // the commit path once §6.4 gives scene services a context
-        // narrower than `AppState`.
         {
-            let mut scene_manager = self.scene_manager.write().await;
+            let mut mutation = self.scene_manager.begin_mutation().await;
             if !snapshot.default_scene_groups.is_empty() {
-                let Some(mut default_scene) = scene_manager.get(&SceneId::DEFAULT).cloned() else {
+                let Some(mut default_scene) = mutation.scenes().get(&SceneId::DEFAULT).cloned()
+                else {
                     anyhow::bail!("default scene is missing during runtime restore");
                 };
                 default_scene
                     .zones
                     .clone_from(&snapshot.default_scene_groups);
-                scene_manager
-                    .update(default_scene)
-                    .context("failed to restore default scene groups")?;
+                mutation.restore_scene(default_scene)?;
             }
 
             if let Some(scene_id) =
                 requested_active_scene_id.filter(|scene_id| !scene_id.is_default())
             {
-                if scene_manager.get(&scene_id).is_some() {
-                    scene_manager
-                        .activate(&scene_id, None)
-                        .with_context(|| format!("failed to activate restored scene {scene_id}"))?;
+                if mutation.scenes().get(&scene_id).is_some() {
+                    mutation.activate(scene_id, None, SceneChangeReason::DaemonStart)?;
                 } else {
                     warn!(
                         scene_id = %scene_id,
@@ -694,18 +706,15 @@ impl DaemonState {
             // the active layout restored just above. Re-align the primary group
             // so the render pipeline sees the current layout's zones.
             let active_layout = self.spatial_engine.read().await.layout().as_ref().clone();
-            scene_manager.sync_primary_group_layout(&active_layout);
+            mutation.sync_primary_layout(&active_layout);
+            self.scene_manager
+                .commit_mutation(
+                    self.scene_store.as_ref(),
+                    self.zone_layout_previews.as_ref(),
+                    mutation,
+                )
+                .await?;
         }
-        if let Some(current_active_scene) = self.scene_manager.read().await.active_scene().cloned()
-        {
-            self.event_bus
-                .publish(crate::domain::scene::active_scene_changed_event(
-                    None,
-                    &current_active_scene,
-                    SceneChangeReason::DaemonStart,
-                ));
-        }
-
         if !snapshot.default_scene_groups.is_empty() || requested_active_scene_id.is_some() {
             info!(
                 groups = snapshot.default_scene_groups.len(),
@@ -925,7 +934,7 @@ impl DaemonState {
             driver_host: Arc::clone(&self.driver_host),
             driver_registry: Arc::clone(&self.driver_registry),
             spatial_engine: Arc::clone(&self.spatial_engine),
-            scene_manager: Arc::clone(&self.scene_manager),
+            scene_manager: self.scene_manager.clone(),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
             layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),

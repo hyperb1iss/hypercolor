@@ -125,7 +125,7 @@ async fn read_effects_with_state(state: &AppState) -> Value {
 }
 
 async fn read_scenes_with_state(state: &AppState) -> Value {
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     let active_scene_id = scene_manager.active_scene_id().copied();
     let payload = scene_manager
         .list()

@@ -131,22 +131,29 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         SceneMutationMode::Live,
     )
     .await;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create(scene_a.clone())
-            .expect("scene A should create");
-        manager.create(scene_b).expect("scene B should create");
-        manager
-            .activate(&scene_a_id, None)
-            .expect("scene A should activate");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene_a.clone())
+        .expect("scene A should create");
+    mutation
+        .create_scene(scene_b)
+        .expect("scene B should create");
+    mutation
+        .activate(
+            scene_a_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("scene A should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("scene A should commit");
 
     let create = CreateZone {
         name: "candidate zone".to_owned(),
         color: None,
         fallback_canvas: (640, 480),
-        expected_revision: Some(state.scene_commits.revision()),
+        expected_revision: None,
     };
     let update = UpdateZone {
         zone_id: shared_zone_id,
@@ -160,12 +167,17 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     let inserted_layer_id = SceneLayerId::new();
     let inserted_layer = color_layer(inserted_layer_id, 2);
 
-    state
-        .scene_manager
-        .write()
-        .await
-        .activate(&scene_b_id, None)
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .activate(
+            scene_b_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
         .expect("scene B should activate before candidates are opened");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("scene B should commit");
 
     let created = create_zone(&state, create, MutationContext::api())
         .await
@@ -236,7 +248,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         .await
         .expect("zone deletion should follow scene B");
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(
         manager.get(&scene_a_id),
         Some(&scene_a),
@@ -265,16 +277,21 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
         SceneMutationMode::Snapshot,
     )
     .await;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create(scene.clone())
-            .expect("snapshot scene should create");
-        manager
-            .activate(&scene_id, None)
-            .expect("snapshot scene should activate");
-    }
-    let revision = state.scene_commits.revision();
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene.clone())
+        .expect("snapshot scene should create");
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("snapshot scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("snapshot scene should commit");
+    let revision = state.scene_manager.revision();
 
     assert_conflict(
         create_zone(
@@ -344,7 +361,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
         .await,
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.get(&scene_id), Some(&scene));
-    assert_eq!(state.scene_commits.revision(), revision);
+    assert_eq!(state.scene_manager.revision(), revision);
 }

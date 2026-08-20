@@ -1364,7 +1364,7 @@ async fn system_status_with_privacy(
 ) -> SystemStatus {
     let device_count = state.device_registry.len().await;
     let effect_count = state.effect_registry.read().await.len();
-    let scene_count = state.scene_manager.read().await.scene_count();
+    let scene_count = state.scene_manager.snapshot().await.scene_count();
     let subscribers = state.event_bus.subscriber_count();
 
     // Query the live effect engine for the active effect name.
@@ -1372,7 +1372,7 @@ async fn system_status_with_privacy(
         .await
         .map(|(_, effect)| effect.name);
     let (active_scene, active_scene_snapshot_locked) = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_scene().map_or((None, false), |scene| {
             (Some(scene.name.clone()), scene.blocks_runtime_mutation())
         })

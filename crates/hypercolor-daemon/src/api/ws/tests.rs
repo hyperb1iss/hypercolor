@@ -2912,7 +2912,7 @@ fn zone_layout_preview_client_messages_deserialize() {
 #[tokio::test]
 async fn zone_layout_preview_rejects_invalid_sampling_radii() {
     let state = AppState::new();
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scene = manager
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
@@ -4095,12 +4095,16 @@ fn browser_preview_test_context() -> (
 async fn browser_preview_test_executor(
     routing: InteractionRoutingControl,
 ) -> Arc<InteractivePreviewExecutor> {
+    let event_bus = Arc::new(HypercolorBus::new());
     Arc::new(
         InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
-            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+            scene_manager: crate::domain::scene::SceneService::new(
+                SceneManager::new(),
+                Arc::clone(&event_bus),
+            ),
             effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
             asset_library: None,
-            event_bus: Arc::new(HypercolorBus::new()),
+            event_bus,
             input_graph: InputGraphHandle::default(),
             sensor_snapshots: None,
             interaction_routing: routing,

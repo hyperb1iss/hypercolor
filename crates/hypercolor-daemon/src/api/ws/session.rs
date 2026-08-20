@@ -1522,21 +1522,13 @@ async fn handle_zone_layout_preview(
     layout: SpatialLayout,
 ) -> Result<(), WsProtocolError> {
     let zone_id = parse_zone_preview_id(&zone_id_raw)?;
-    let manager = state.scene_manager.read().await;
-    let scene = manager
-        .active_scene()
+    let scene_id = state
+        .scene_manager
+        .stage_zone_layout_preview(&state.zone_layout_previews, owner, zone_id, |scene| {
+            validated_zone_layout_preview(scene, zone_id, layout)
+        })
+        .await?
         .ok_or_else(|| WsProtocolError::invalid_request("No active scene"))?;
-    let scene_id = scene.id;
-    let layout = validated_zone_layout_preview(scene, zone_id, layout)?;
-
-    // Keep the scene read guard until insertion. A concurrent scene or
-    // zone deletion must commit after this write so its cleanup cannot
-    // run first and leave a newly stranded preview behind.
-    state
-        .zone_layout_previews
-        .set(owner, scene_id, zone_id, layout)
-        .await;
-    drop(manager);
     zone_layout_preview_keys.insert((scene_id, zone_id));
     Ok(())
 }
@@ -1652,7 +1644,7 @@ pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
         };
 
     let active_scene = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_scene().map(|scene| SceneRef {
             id: scene.id.to_string(),
             name: scene.name.clone(),
@@ -1801,7 +1793,7 @@ mod zone_layout_preview_race_tests {
     async fn wait_for_preview_scene_read(state: &AppState) {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if state.scene_manager.try_write().is_err() {
+                if state.scene_manager.scene_write_is_blocked_for_test() {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -1815,8 +1807,8 @@ mod zone_layout_preview_race_tests {
     async fn scene_switch_cleanup_cannot_run_before_a_preview_insert() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
-        let (zone_id, layout, next_scene_id) = {
-            let mut manager = state.scene_manager.write().await;
+        let (zone_id, layout, next) = {
+            let manager = state.scene_manager.snapshot().await;
             let active = manager.active_scene().expect("default scene").clone();
             let (zone_id, layout) = {
                 let zone = active.primary_zone().expect("default primary zone");
@@ -1826,10 +1818,16 @@ mod zone_layout_preview_race_tests {
             next.id = SceneId::new();
             next.name = "next".to_owned();
             next.kind = SceneKind::Named;
-            let next_scene_id = next.id;
-            manager.create(next).expect("next scene should be created");
-            (zone_id, layout, next_scene_id)
+            (zone_id, layout, next)
         };
+        let next_scene_id = next.id;
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .create_scene(next)
+            .expect("next scene should be created");
+        crate::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("next scene should commit");
 
         let (release, blocker) = block_preview_writes(&state).await;
         let setter_state = Arc::clone(&state);

@@ -193,7 +193,7 @@ pub(super) async fn handle_activate_scene_with_state(
     let media_config = current_media_config(state);
 
     let scene = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         let candidates = scene_manager
             .list()
             .into_iter()
@@ -397,7 +397,7 @@ pub(super) async fn handle_list_scenes_with_state(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     let active_scene_id = scene_manager.active_scene_id().copied();
     let scenes = scene_manager
         .list()

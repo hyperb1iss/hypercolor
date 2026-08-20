@@ -279,13 +279,20 @@ async fn display_face_mutations_conflict_on_a_snapshot_locked_scene() {
     let mut scene = named_scene("frozen");
     scene.mutation_mode = SceneMutationMode::Snapshot;
     let scene_id = scene.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(scene).expect("scene should be created");
-        manager
-            .activate(&scene_id, None)
-            .expect("scene should activate");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene)
+        .expect("scene should be created");
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("scene should commit");
 
     let error = set_display_face(
         &state,
@@ -382,13 +389,20 @@ async fn sync_display_surfaces_skips_a_snapshot_locked_scene() {
     let mut scene = named_scene("frozen");
     scene.mutation_mode = SceneMutationMode::Snapshot;
     let scene_id = scene.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(scene).expect("scene should be created");
-        manager
-            .activate(&scene_id, None)
-            .expect("scene should activate");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene)
+        .expect("scene should be created");
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("scene should commit");
 
     let changed = sync_display_surfaces(
         &state,
@@ -444,7 +458,7 @@ async fn prune_display_zones_removes_both_layers_for_a_deleted_device() {
     assert!(pruned.removed_default.is_some());
     assert!(pruned.commit.is_some());
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(manager.default_display_group_for(device_id).is_none());
     assert!(
         manager
@@ -478,7 +492,7 @@ async fn the_default_overlay_installs_and_retracts_without_persisting() {
         .expect("the retraction reports what it removed");
     assert_eq!(removed.id, installed.id);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(manager.default_display_group_for(device_id).is_none());
     assert!(
         manager
@@ -507,7 +521,7 @@ async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
     set_default_display_overlay(&state, device_id, zone.clone())
         .await
         .expect("the first install lands");
-    let after_install = state.scene_commits.revision();
+    let after_install = state.scene_manager.revision();
 
     for _ in 0..3 {
         let mut refresh = zone.clone();
@@ -520,7 +534,7 @@ async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
     }
 
     assert_eq!(
-        state.scene_commits.revision(),
+        state.scene_manager.revision(),
         after_install,
         "an unchanged overlay must not advance the scene revision"
     );
@@ -529,7 +543,7 @@ async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
 #[tokio::test]
 async fn retracting_an_absent_default_overlay_mints_no_revision() {
     let (state, _tempdir) = isolated_state();
-    let before = state.scene_commits.revision();
+    let before = state.scene_manager.revision();
 
     assert!(
         remove_default_display_overlay(&state, DeviceId::new())
@@ -537,7 +551,7 @@ async fn retracting_an_absent_default_overlay_mints_no_revision() {
             .expect("retracting nothing succeeds")
             .is_none()
     );
-    assert_eq!(state.scene_commits.revision(), before);
+    assert_eq!(state.scene_manager.revision(), before);
 }
 
 /// A changed preference still has to land, or the display keeps
@@ -554,7 +568,7 @@ async fn a_changed_default_overlay_still_commits() {
     set_default_display_overlay(&state, device_id, overlay_zone(device_id, first.id))
         .await
         .expect("the first install lands");
-    let after_first = state.scene_commits.revision();
+    let after_first = state.scene_manager.revision();
 
     let installed =
         set_default_display_overlay(&state, device_id, overlay_zone(device_id, second.id))
@@ -564,7 +578,7 @@ async fn a_changed_default_overlay_still_commits() {
 
     assert_eq!(installed.effect_ids().next(), Some(second.id));
     assert!(
-        state.scene_commits.revision() > after_first,
+        state.scene_manager.revision() > after_first,
         "a real change must advance the revision"
     );
 }
@@ -572,7 +586,7 @@ async fn a_changed_default_overlay_still_commits() {
 #[tokio::test]
 async fn pruning_a_device_that_owns_no_display_zones_mints_no_revision() {
     let (state, _tempdir) = isolated_state();
-    let before = state.scene_commits.revision();
+    let before = state.scene_manager.revision();
 
     let pruned = prune_display_zones_for_device(&state, DeviceId::new())
         .await
@@ -581,5 +595,5 @@ async fn pruning_a_device_that_owns_no_display_zones_mints_no_revision() {
     assert!(pruned.removed_zones.is_empty());
     assert!(pruned.removed_default.is_none());
     assert!(pruned.commit.is_none());
-    assert_eq!(state.scene_commits.revision(), before);
+    assert_eq!(state.scene_manager.revision(), before);
 }

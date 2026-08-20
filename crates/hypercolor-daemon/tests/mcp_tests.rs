@@ -488,21 +488,31 @@ async fn seed_multi_zone_primary_assignment(
 ) -> SpatialLayout {
     let primary_layout = test_layout("primary-layout", vec![test_device_zone("primary-zone")]);
     let custom_zone = test_device_zone("custom-zone");
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .upsert_primary_group(metadata, HashMap::new(), None, primary_layout.clone())
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            metadata,
+            HashMap::new(),
+            None,
+            primary_layout.clone(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
         .expect("primary group should be seeded");
-    let custom_id = manager
-        .create_render_group(&SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
+    let custom_id = mutation
+        .create_zone(SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
         .expect("custom group should be created");
-    manager
-        .assign_device_zone(
-            &SceneId::DEFAULT,
+    mutation
+        .assign_output(
+            SceneId::DEFAULT,
             custom_id,
             custom_zone,
             OutputPlacement::AutoGrid,
         )
         .expect("custom group should claim a zone");
+    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+        .await
+        .expect("multi-zone scene should commit");
     primary_layout
 }
 
@@ -523,11 +533,11 @@ struct McpMutationSnapshot {
 }
 
 async fn mcp_mutation_snapshot(state: &AppState) -> McpMutationSnapshot {
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     McpMutationSnapshot {
         power: *state.power_state.borrow(),
         active_scene_id: manager.active_scene_id().copied(),
-        revision: state.scene_commits.revision(),
+        revision: state.scene_manager.revision(),
         scenes: serde_json::to_value(manager.list()).expect("scenes should serialize"),
     }
 }
@@ -1246,7 +1256,7 @@ async fn malformed_declared_arguments_never_reach_mutating_handlers() {
     .expect("baseline effect should apply");
 
     let (zone_id, layer_id) = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let zone = manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
@@ -1381,7 +1391,7 @@ async fn a_refused_deleted_parameter_leaves_the_scene_untouched() {
         "the refusal names the parameter: {error}"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .active_scene()
@@ -1572,7 +1582,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     );
 
     let (scene_id, active_group) = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         (
             manager
                 .active_scene_id()
@@ -1661,7 +1671,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     assert!(stopped_snapshot.default_scene_groups[0].layers.is_empty());
 
     let cleared_group = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
@@ -1717,7 +1727,7 @@ async fn stateful_set_effect_preserves_primary_assignment_when_custom_zones_exis
     .expect("set_effect should succeed");
 
     let active_group = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
@@ -1794,7 +1804,7 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
     .expect("set_color should succeed");
 
     let active_group = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
@@ -2295,7 +2305,7 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert!(
         state
             .scene_manager
-            .read()
+            .snapshot()
             .await
             .active_render_groups()
             .iter()

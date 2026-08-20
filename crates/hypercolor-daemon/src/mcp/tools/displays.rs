@@ -172,7 +172,7 @@ async fn live_scope_payload(
     device_id: DeviceId,
 ) -> Option<crate::api::displays::DisplayFaceScope> {
     let scene_assigned = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
             .active_scene()
             .and_then(|scene| scene.display_zone_for(device_id))
@@ -210,7 +210,7 @@ async fn handle_default_scope(
                 .is_some()
         };
         let scene_assigned = {
-            let scene_manager = state.scene_manager.read().await;
+            let scene_manager = state.scene_manager.snapshot().await;
             scene_manager
                 .active_scene()
                 .and_then(|scene| scene.display_zone_for(device_id))
@@ -223,7 +223,7 @@ async fn handle_default_scope(
         {
             zone.layers.clear();
             let scene_id = {
-                let scene_manager = state.scene_manager.read().await;
+                let scene_manager = state.scene_manager.snapshot().await;
                 scene_manager
                     .active_scene()
                     .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
@@ -292,7 +292,7 @@ async fn handle_default_scope(
     let live_scope = live_scope_payload(state, device_id).await;
     if live_scope == Some(crate::api::displays::DisplayFaceScope::Default) {
         let scene_id = {
-            let scene_manager = state.scene_manager.read().await;
+            let scene_manager = state.scene_manager.snapshot().await;
             scene_manager
                 .active_scene()
                 .map(|scene| scene.id)

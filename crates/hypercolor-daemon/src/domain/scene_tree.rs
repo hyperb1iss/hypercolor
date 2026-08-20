@@ -22,11 +22,7 @@ use hypercolor_types::api::scene::{
     AssignMembersRequest, MemberPlacement, SceneDocument, ZoneLayoutResource, ZoneMember,
     ZoneMemberId, ZoneResource,
 };
-use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::event::{
-    EventControlValue, HypercolorEvent, LayerStackChangeKind, SceneLibraryChangeKind,
-    SceneSettingsChangeKind, ZoneChangeKind,
-};
+use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
@@ -35,9 +31,7 @@ use hypercolor_core::scene::{LayerMutationError, OutputPlacement};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{
-    MediaAdmissionContext, SceneMutation, commit_scene, zone_changed_event,
-};
+use crate::domain::scene::{MediaAdmissionContext, SceneMutation, commit_scene};
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 
 // ── Projection ───────────────────────────────────────────────────────────
@@ -53,8 +47,8 @@ use crate::domain::{DomainError, MutationContext, ResourceKind};
 /// [`DomainError::NotFound`] when no scene is active, which the
 /// always-a-default invariant makes unreachable in practice.
 pub async fn read_document(state: &AppState) -> Result<SceneDocument, DomainError> {
-    let manager = state.scene_manager.read().await;
-    let revision = state.scene_commits.revision();
+    let manager = state.scene_manager.snapshot().await;
+    let revision = state.scene_manager.revision();
     let scene = manager
         .active_scene()
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
@@ -71,8 +65,8 @@ pub async fn read_zone(
     state: &AppState,
     zone_id: ZoneId,
 ) -> Result<(ZoneResource, u64), DomainError> {
-    let manager = state.scene_manager.read().await;
-    let revision = state.scene_commits.revision();
+    let manager = state.scene_manager.snapshot().await;
+    let revision = state.scene_manager.revision();
     let scene = manager
         .active_scene()
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
@@ -300,7 +294,7 @@ pub async fn patch_scene(
         ));
     }
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("patching the scene")?;
 
@@ -314,26 +308,12 @@ pub async fn patch_scene(
         let mut scene = active_scene(&mutation)?;
         scene.name = name;
         mutation.update_scene(scene.clone())?;
-        mutation.record(HypercolorEvent::SceneLibraryChanged {
-            scene_id,
-            kind: SceneLibraryChangeKind::Updated,
-            name: Some(scene.name),
-        });
     }
 
     if let Some(behavior) = command.unassigned_behavior {
         mutation
             .set_unassigned_behavior(scene_id, behavior)
             .map_err(|_| DomainError::not_found(ResourceKind::Scene, scene_id))?;
-        let revision = mutation
-            .base_revision()
-            .checked_add(1)
-            .expect("scene revision must not exhaust u64");
-        mutation.record(HypercolorEvent::SceneSettingsChanged {
-            scene_id,
-            revision,
-            kind: SceneSettingsChangeKind::UnassignedBehavior,
-        });
     }
 
     let commit = commit_scene(state, mutation).await?;
@@ -366,7 +346,7 @@ pub async fn clear_scene(
     } else {
         HashMap::new()
     };
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("clearing the scene")?;
 
@@ -403,7 +383,7 @@ pub async fn clear_scene(
                 zone.effect_ids()
                     .next()
                     .and_then(|effect_id| effect_refs.get(&effect_id).cloned())
-                    .map(|effect| (zone.id, (zone.name.clone(), effect)))
+                    .map(|effect| (zone.id, effect))
             })
             .collect::<HashMap<_, _>>()
     } else {
@@ -412,17 +392,11 @@ pub async fn clear_scene(
 
     for zone_id in targets {
         mutation.retire_zone_preview(scene_id, zone_id);
-        if let Some(zone) = mutation.clear_zone_effect(zone_id) {
-            if let Some((zone_name, effect)) = stopped_effects.get(&zone_id) {
-                mutation.record(HypercolorEvent::EffectStopped {
-                    effect: effect.clone(),
-                    reason: hypercolor_types::event::EffectStopReason::Stopped,
-                    zone_id: Some(zone_id),
-                    zone_name: Some(zone_name.clone()),
-                });
-            }
-            mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
-        }
+        mutation.clear_zone_effect(
+            zone_id,
+            stopped_effects.get(&zone_id).cloned(),
+            hypercolor_types::event::EffectStopReason::Stopped,
+        );
     }
 
     let commit = commit_scene(state, mutation).await?;
@@ -456,7 +430,7 @@ pub async fn replace_layer(
     let _ = meta;
 
     let media_admission = MediaAdmissionContext::for_layer(state, &command.layer).await;
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("replacing a layer")?;
     ensure_live_zone_mutable(&mutation, command.zone_id)?;
@@ -471,24 +445,20 @@ pub async fn replace_layer(
         .position(|layer| layer.id == command.layer_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, command.layer_id))?;
 
-    mutation
-        .remove_layer(scene_id, command.zone_id, command.layer_id, None)
-        .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
     let zone = mutation
-        .insert_layer(scene_id, command.zone_id, command.layer, Some(index), None)
-        .map_err(|error| layer_error(error, command.zone_id, None))?;
+        .replace_layer(
+            scene_id,
+            command.zone_id,
+            command.layer_id,
+            command.layer,
+            index,
+        )
+        .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
     if let Some(media_admission) = media_admission {
         media_admission.validate(&active_scene(&mutation)?)?;
     }
 
-    finish_layer_mutation(
-        state,
-        mutation,
-        scene_id,
-        zone,
-        LayerStackChangeKind::Updated,
-    )
-    .await
+    finish_layer_mutation(state, mutation, zone).await
 }
 
 /// Write control values and drop named bindings on one layer.
@@ -515,7 +485,7 @@ pub async fn patch_layer_controls(
     }
 
     loop {
-        let mut mutation = state.begin_scene_mutation().await;
+        let mut mutation = state.scene_manager.begin_mutation().await;
         check_scene_revision(&mutation, command.expected_revision)?;
         let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
         ensure_live_zone_mutable(&mutation, command.zone_id)?;
@@ -527,27 +497,6 @@ pub async fn patch_layer_controls(
             command.values.clone(),
         )
         .await?;
-        let control_events = normalized.event_context.map_or_else(Vec::new, |context| {
-            normalized
-                .values
-                .iter()
-                .filter_map(|(control_id, new_value)| {
-                    let old_value = context.previous.get(control_id)?;
-                    if old_value == new_value {
-                        return None;
-                    }
-                    Some(HypercolorEvent::EffectControlChanged {
-                        effect_id: context.effect_id.to_string(),
-                        control_id: control_id.clone(),
-                        old_value: event_control_value(old_value)?,
-                        new_value: event_control_value(new_value)?,
-                        zone_id: command.zone_id,
-                        layer_id: command.layer_id,
-                        trigger: meta.trigger.clone(),
-                    })
-                })
-                .collect()
-        });
         let zone = mutation
             .patch_layer_controls_and_bindings(
                 scene_id,
@@ -556,19 +505,12 @@ pub async fn patch_layer_controls(
                 normalized.values,
                 &command.clear_bindings,
                 None,
+                meta.trigger.clone(),
+                &normalized.previous,
             )
             .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
 
-        match finish_layer_mutation_with_events(
-            state,
-            mutation,
-            scene_id,
-            zone,
-            LayerStackChangeKind::ControlsPatched,
-            control_events,
-        )
-        .await
-        {
+        match finish_layer_mutation(state, mutation, zone).await {
             Err(error) if scene_commit_was_superseded(&error) => {}
             outcome => return outcome,
         }
@@ -596,7 +538,7 @@ pub async fn assign_members(
 
     let minted = mint_missing_outputs(state, &command.request).await?;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning zone members")?;
     ensure_live_zone_mutable(&mutation, command.zone_id)?;
@@ -637,7 +579,7 @@ pub async fn unassign_member(
 ) -> Result<ZoneWritten, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     check_scene_revision(&mutation, expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("unassigning a zone member")?;
     ensure_live_zone_mutable(&mutation, zone_id)?;
@@ -685,7 +627,7 @@ pub async fn set_zone_layout(
 ) -> Result<ZoneWritten, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     check_scene_revision(&mutation, expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("laying out a zone")?;
     ensure_live_zone_mutable(&mutation, zone_id)?;
@@ -712,23 +654,9 @@ pub async fn set_zone_layout(
 async fn finish_zone_mutation(
     state: &AppState,
     mutation: SceneMutation,
-    scene_id: SceneId,
+    _scene_id: SceneId,
     zone: Zone,
 ) -> Result<ZoneWritten, DomainError> {
-    finish_zone_mutation_with_events(state, mutation, scene_id, zone, Vec::new()).await
-}
-
-async fn finish_zone_mutation_with_events(
-    state: &AppState,
-    mut mutation: SceneMutation,
-    scene_id: SceneId,
-    zone: Zone,
-    events: Vec<HypercolorEvent>,
-) -> Result<ZoneWritten, DomainError> {
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
-    for event in events {
-        mutation.record(event);
-    }
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
     Ok(ZoneWritten {
@@ -741,40 +669,8 @@ async fn finish_zone_mutation_with_events(
 async fn finish_layer_mutation(
     state: &AppState,
     mutation: SceneMutation,
-    scene_id: SceneId,
     zone: Zone,
-    kind: LayerStackChangeKind,
 ) -> Result<ZoneWritten, DomainError> {
-    finish_layer_mutation_with_events(state, mutation, scene_id, zone, kind, Vec::new()).await
-}
-
-async fn finish_layer_mutation_with_events(
-    state: &AppState,
-    mut mutation: SceneMutation,
-    scene_id: SceneId,
-    zone: Zone,
-    kind: LayerStackChangeKind,
-    events: Vec<HypercolorEvent>,
-) -> Result<ZoneWritten, DomainError> {
-    let zone_kind = if kind == LayerStackChangeKind::ControlsPatched {
-        ZoneChangeKind::ControlsPatched
-    } else {
-        ZoneChangeKind::Updated
-    };
-    mutation.record(zone_changed_event(scene_id, &zone, zone_kind));
-    for event in events {
-        mutation.record(event);
-    }
-    let revision = mutation
-        .base_revision()
-        .checked_add(1)
-        .expect("scene revision must not exhaust u64");
-    mutation.record(HypercolorEvent::LayerStackChanged {
-        scene_id,
-        zone_id: zone.id,
-        revision,
-        kind,
-    });
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
     Ok(ZoneWritten {
@@ -885,14 +781,9 @@ pub(crate) fn layer_error(
 /// A layer whose effect the registry does not know keeps the caller's
 /// values as written: the schema is what validates, and without one
 /// there is nothing to validate against.
-struct EffectControlEventContext {
-    effect_id: EffectId,
-    previous: HashMap<String, ControlValue>,
-}
-
 struct NormalizedLayerControls {
     values: HashMap<String, ControlValue>,
-    event_context: Option<EffectControlEventContext>,
+    previous: HashMap<String, ControlValue>,
 }
 
 async fn normalize_against_layer(
@@ -930,7 +821,7 @@ async fn normalize_against_layer(
     let Some((effect_id, layer_controls)) = effect else {
         return Ok(NormalizedLayerControls {
             values,
-            event_context: None,
+            previous: HashMap::new(),
         });
     };
     let metadata = {
@@ -956,13 +847,7 @@ async fn normalize_against_layer(
         values
     };
 
-    Ok(NormalizedLayerControls {
-        values,
-        event_context: Some(EffectControlEventContext {
-            effect_id,
-            previous,
-        }),
-    })
+    Ok(NormalizedLayerControls { values, previous })
 }
 
 fn scene_commit_was_superseded(error: &DomainError) -> bool {
@@ -974,19 +859,6 @@ fn scene_commit_was_superseded(error: &DomainError) -> bool {
         } if details.get("kind").and_then(serde_json::Value::as_str)
             == Some("scene_commit_superseded")
     )
-}
-
-fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
-    match value {
-        ControlValue::Float(_) | ControlValue::Integer(_) => {
-            value.as_f32().map(EventControlValue::Number)
-        }
-        ControlValue::Boolean(value) => Some(EventControlValue::Boolean(*value)),
-        ControlValue::Enum(value) | ControlValue::Text(value) => {
-            Some(EventControlValue::String(value.clone()))
-        }
-        ControlValue::Color(_) | ControlValue::Rect(_) | ControlValue::Gradient(_) => None,
-    }
 }
 
 // ── Member resolution ────────────────────────────────────────────────────
@@ -1148,7 +1020,7 @@ fn layout_from_placements(
 /// the same way the structural zone services do.
 async fn reconcile_member_exclusions(state: &AppState, scene_id: SceneId, previous: &[Zone]) {
     let updated = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .get(&scene_id)
             .map(|scene| scene.zones.clone())

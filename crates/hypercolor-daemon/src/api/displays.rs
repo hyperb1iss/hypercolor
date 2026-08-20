@@ -244,7 +244,7 @@ pub async fn set_display_face(
 
         let (scene_assigned, _) = display_face_layer_state(&state, device_id).await;
         let scene_id = {
-            let scene_manager = state.scene_manager.read().await;
+            let scene_manager = state.scene_manager.snapshot().await;
             scene_manager
                 .active_scene()
                 .map(|scene| scene.id)
@@ -441,7 +441,7 @@ pub async fn delete_display_face(
             }
         };
         let scene_assigned = {
-            let scene_manager = state.scene_manager.read().await;
+            let scene_manager = state.scene_manager.snapshot().await;
             scene_manager
                 .active_scene()
                 .and_then(|scene| scene.display_zone_for(device_id))
@@ -457,7 +457,7 @@ pub async fn delete_display_face(
                 {
                     zone.layers.clear();
                     let scene_id = {
-                        let scene_manager = state.scene_manager.read().await;
+                        let scene_manager = state.scene_manager.snapshot().await;
                         scene_manager
                             .active_scene()
                             .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
@@ -753,7 +753,7 @@ async fn current_display_face_assignment(
     device_id: DeviceId,
 ) -> Result<DisplayFaceResponse, DomainError> {
     let (scene_id, group) = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         let Some(active_scene) = scene_manager.active_scene() else {
             return Err(DomainError::not_found(ResourceKind::Scene, "active"));
         };
@@ -909,7 +909,7 @@ pub(crate) async fn sync_display_preference_overlays(state: &Arc<AppState>) {
 /// Resolve both assignment layers for a display.
 async fn display_face_layer_state(state: &AppState, device_id: DeviceId) -> (bool, bool) {
     let scene_assigned = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
             .active_scene()
             .and_then(|scene| scene.display_zone_for(device_id))
@@ -947,7 +947,7 @@ async fn current_default_face_assignment(
         entry.metadata.clone()
     };
     let scene_id = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_scene().map_or_else(
             || hypercolor_types::scene::SceneId::DEFAULT.to_string(),
             |scene| scene.id.to_string(),

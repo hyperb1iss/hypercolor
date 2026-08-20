@@ -76,11 +76,20 @@ async fn seeded_scene(state: &AppState) -> SceneId {
         .zones
         .push(hypercolor_core::scene::default_primary_group(layout));
     let scene_id = scene.id;
-    let mut manager = state.scene_manager.write().await;
-    manager.create(scene).expect("scene should be created");
-    manager
-        .activate(&scene_id, None)
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene)
+        .expect("scene should be created");
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
         .expect("scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+        .await
+        .expect("scene should commit");
     scene_id
 }
 
@@ -109,7 +118,7 @@ fn create_command(name: &str) -> CreateZone {
 async fn create_zone_adds_a_custom_zone_and_announces_it() {
     let (state, _tempdir) = isolated_state();
     let scene_id = seeded_scene(&state).await;
-    let before = state.scene_commits.revision();
+    let before = state.scene_manager.revision();
     let mut events = state.event_bus.subscribe_all();
 
     let written = create_zone(&state, create_command("Desk"), MutationContext::api())
@@ -121,7 +130,7 @@ async fn create_zone_adds_a_custom_zone_and_announces_it() {
     assert!(written.commit.revision() > before);
     assert_eq!(written.commit.durability(), CommitDurability::Written);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scene = manager.get(&scene_id).expect("scene should still exist");
     assert!(scene.zones.iter().any(|zone| zone.id == written.zone.id));
     drop(manager);
@@ -162,7 +171,7 @@ async fn a_stale_scene_revision_is_refused_before_the_mutation() {
     create_zone(&state, create_command("Desk"), MutationContext::api())
         .await
         .expect("first zone should be created");
-    let current = state.scene_commits.revision();
+    let current = state.scene_manager.revision();
 
     let mut command = create_command("Shelf");
     command.expected_revision = Some(current.saturating_sub(1));
@@ -181,7 +190,7 @@ async fn a_stale_scene_revision_is_refused_before_the_mutation() {
         other => panic!("expected PreconditionFailed, got {other:?}"),
     }
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scene = manager.get(&scene_id).expect("scene should still exist");
     assert!(
         !scene.zones.iter().any(|zone| zone.name == "Shelf"),
@@ -197,7 +206,7 @@ async fn a_cosmetic_zone_patch_honors_the_scene_revision() {
         .await
         .expect("zone should be created");
 
-    let current = state.scene_commits.revision();
+    let current = state.scene_manager.revision();
     let written = update_zone(
         &state,
         UpdateZone {
@@ -276,7 +285,7 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     .expect("zone should be removed");
 
     assert_eq!(removed.zone.id, created.zone.id);
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scene = manager.get(&scene_id).expect("scene should still exist");
     assert!(!scene.zones.iter().any(|zone| zone.id == created.zone.id));
     drop(manager);
@@ -307,7 +316,7 @@ async fn delete_zone_refuses_the_primary_zone() {
     let (state, _tempdir) = isolated_state();
     let scene_id = seeded_scene(&state).await;
     let primary_id = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .get(&scene_id)
             .and_then(Scene::primary_zone)

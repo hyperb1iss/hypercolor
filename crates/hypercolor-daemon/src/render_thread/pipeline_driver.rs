@@ -112,7 +112,7 @@ async fn handle_inactive_render_loop(
 
 async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
     let active_group_count = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_render_groups()
             .iter()

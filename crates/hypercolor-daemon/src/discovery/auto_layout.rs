@@ -244,7 +244,7 @@ async fn active_auto_exclusion_keys(
     layout: &SpatialLayout,
 ) -> Vec<LayoutAutoExclusionKey> {
     let mut keys = vec![LayoutAutoExclusionKey::layout(layout.id.as_str())];
-    let manager = runtime.scene_manager.read().await;
+    let manager = runtime.scene_manager.snapshot().await;
     if let Some(scene) = manager.active_scene()
         && let Some(group) = scene.primary_zone()
     {

@@ -95,15 +95,23 @@ async fn install_effect_invalidates_active_render_group_revision() {
     let app = api::build_router(Arc::clone(&state), None);
     let metadata = sample_effect_metadata("seed");
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
-            .expect("primary group should be created");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            sample_layout(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("primary group should be created");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("primary group should commit");
 
     let revision_before = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 
@@ -132,7 +140,7 @@ async fn install_effect_invalidates_active_render_group_revision() {
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let revision_after = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 
@@ -149,15 +157,23 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
     let app = api::build_router(Arc::clone(&state), None);
     let metadata = sample_effect_metadata("seed");
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
-            .expect("primary group should be created");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            sample_layout(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("primary group should be created");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("primary group should commit");
 
     let revision_before = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 
@@ -193,7 +209,7 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let revision_after = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 

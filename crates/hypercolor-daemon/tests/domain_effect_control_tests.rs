@@ -106,14 +106,14 @@ async fn invalidating_the_active_zones_advances_the_revision_every_time() {
     running_effect(&state, &metadata).await;
 
     let before = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager.active_render_groups_revision()
     };
     invalidate_active_zones(&state)
         .await
         .expect("the invalidation should land");
     let after = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager.active_render_groups_revision()
     };
     assert!(

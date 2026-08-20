@@ -383,7 +383,7 @@ pub(super) async fn active_layout_targets_enabled_device(
     // a device placed only through a scene zone is invisible above. Without
     // this arm it stays Deferred forever: discovered, never connected, and
     // never surfacing an error to explain why.
-    let scene_manager = runtime.scene_manager.read().await;
+    let scene_manager = runtime.scene_manager.snapshot().await;
     scene_manager
         .active_render_groups()
         .iter()

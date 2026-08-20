@@ -28,6 +28,7 @@ use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, SceneManager, ScenePlanSnapshot, ZoneMetaPatch,
     ZoneMutationError, default_primary_group,
 };
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::api::scenes::{
     ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest, SceneLayoutActivationOutcome,
@@ -35,15 +36,17 @@ use hypercolor_types::api::scenes::{
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::effect::{ControlBinding, ControlValue, EffectMetadata};
 use hypercolor_types::event::{
-    HypercolorEvent, SceneChangeReason, SceneLibraryChangeKind, Severity, ZoneChangeKind,
+    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, HypercolorEvent,
+    LayerStackChangeKind, SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind,
+    Severity, ZoneChangeKind,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceBlendMode, EasingFunction, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
+    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
 };
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
@@ -53,7 +56,7 @@ use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
-use crate::scene_transactions::LayoutUpdateGuard;
+use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
 
 // ── Owning service ───────────────────────────────────────────────────────
 
@@ -129,6 +132,177 @@ impl SceneService {
             preview_zones_to_clear: HashSet::new(),
         }
     }
+
+    pub(crate) async fn stage_zone_layout_preview<E, F>(
+        &self,
+        store: &crate::zone_layout_preview::ZoneLayoutPreviewStore,
+        owner: crate::zone_layout_preview::ZoneLayoutPreviewOwner,
+        zone_id: ZoneId,
+        validate: F,
+    ) -> Result<Option<SceneId>, E>
+    where
+        F: FnOnce(&Scene) -> Result<SpatialLayout, E>,
+    {
+        let manager = self.0.manager.read().await;
+        let Some(scene) = manager.active_scene() else {
+            return Ok(None);
+        };
+        let scene_id = scene.id;
+        let layout = validate(scene)?;
+        store.set(owner, scene_id, zone_id, layout).await;
+        Ok(Some(scene_id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scene_write_is_blocked_for_test(&self) -> bool {
+        self.0.manager.try_write().is_err()
+    }
+
+    /// Admit an owned candidate through persistence and ordered publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::Conflict`] when the candidate revision is
+    /// stale, or [`DomainError::Internal`] when persistence cannot be
+    /// reserved before admission.
+    pub async fn commit_mutation(
+        &self,
+        scene_store: &tokio::sync::RwLock<crate::scene_store::SceneStore>,
+        zone_layout_previews: &crate::zone_layout_preview::ZoneLayoutPreviewStore,
+        mutation: SceneMutation,
+    ) -> Result<SceneCommit, DomainError> {
+        let SceneMutation {
+            candidate,
+            base_revision,
+            events,
+            persists_scene_content,
+            preview_scenes_to_clear,
+            preview_zones_to_clear,
+        } = mutation;
+
+        let coordinator = if persists_scene_content {
+            Some(scene_store.read().await.clone())
+        } else {
+            None
+        };
+
+        let (ticket, pending) = {
+            let mut manager = self.0.manager.write().await;
+            let current_revision = self.0.commits.revision();
+            if current_revision != base_revision {
+                return Err(DomainError::conflict_details(
+                    format!(
+                        "Scene state changed while applying this request; current revision is {current_revision}"
+                    ),
+                    serde_json::json!({
+                        "kind": "scene_commit_superseded",
+                        "expected_revision": base_revision,
+                        "current_revision": current_revision,
+                    }),
+                ));
+            }
+
+            let pending = if let Some(coordinator) = coordinator.as_ref() {
+                match coordinator.reserve_save(candidate.list().into_iter().cloned()) {
+                    Ok(pending) => Some(pending),
+                    Err(error) => {
+                        return Err(DomainError::Internal(anyhow::anyhow!(
+                            "Failed to persist scene: {error}"
+                        )));
+                    }
+                }
+            } else {
+                None
+            };
+
+            zone_layout_previews
+                .clear_at_scene_commit(
+                    &preview_scenes_to_clear.into_iter().collect::<Vec<_>>(),
+                    &preview_zones_to_clear.into_iter().collect::<Vec<_>>(),
+                )
+                .await;
+            *manager = candidate;
+            let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+            self.0
+                .plan
+                .store(Arc::new(manager.plan_snapshot(ticket.generation())));
+            (ticket, pending)
+        };
+
+        let generation = ticket.generation();
+        let Some(pending) = pending else {
+            ticket.release(events);
+            return Ok(SceneCommit::new(
+                generation,
+                generation,
+                CommitDurability::Written,
+                None,
+            ));
+        };
+
+        let outcome = scene_store.write().await.save_reserved(pending);
+        match outcome {
+            Ok(AtomicWriteOutcome::Written) => {
+                ticket.release(events);
+                Ok(SceneCommit::new(
+                    generation,
+                    generation,
+                    CommitDurability::Written,
+                    None,
+                ))
+            }
+            Ok(AtomicWriteOutcome::Superseded) => {
+                ticket.discard();
+                Ok(SceneCommit::new(
+                    generation,
+                    generation,
+                    CommitDurability::Superseded,
+                    None,
+                ))
+            }
+            Err(error) => {
+                ticket.release(events);
+                Ok(SceneCommit::new(
+                    generation,
+                    generation,
+                    CommitDurability::Retrying,
+                    Some(error.to_string()),
+                ))
+            }
+        }
+    }
+
+    pub(crate) async fn publish_layout_activation<F>(
+        &self,
+        spatial_engine: &Arc<tokio::sync::RwLock<SpatialEngine>>,
+        candidate_spatial_engine: SpatialEngine,
+        expected_layout: &SpatialLayout,
+        expected_active_scene_id: Option<SceneId>,
+        expected_active_zones_revision: u64,
+        publish_renderer_state: F,
+    ) -> Result<(), LayoutTransactionRejection>
+    where
+        F: FnOnce(SpatialEngine),
+    {
+        let mut manager = self.0.manager.write().await;
+        let mut authoritative_spatial_engine = spatial_engine.write().await;
+        let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
+            && manager.active_render_groups_revision() == expected_active_zones_revision
+            && authoritative_spatial_engine.layout().as_ref() == expected_layout;
+        if !source_is_current {
+            return Err(LayoutTransactionRejection::Superseded);
+        }
+
+        manager.sync_primary_group_layout(candidate_spatial_engine.layout().as_ref());
+        let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        self.0
+            .plan
+            .store(Arc::new(manager.plan_snapshot(ticket.generation())));
+        *authoritative_spatial_engine = candidate_spatial_engine.clone();
+        publish_renderer_state(candidate_spatial_engine);
+        ticket.release(Vec::new());
+        Ok(())
+    }
 }
 
 // ── Owned candidate ──────────────────────────────────────────────────────
@@ -150,6 +324,54 @@ pub struct SceneMutation {
 }
 
 impl SceneMutation {
+    fn record_zone_change(&mut self, scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) {
+        self.events.retain(|event| {
+            !matches!(
+                event,
+                HypercolorEvent::ZoneChanged {
+                    scene_id: existing_scene_id,
+                    zone_id,
+                    ..
+                } if *existing_scene_id == scene_id && *zone_id == zone.id
+            )
+        });
+        self.events.push(zone_changed_event(scene_id, zone, kind));
+    }
+
+    fn record_layer_change(&mut self, scene_id: SceneId, zone: &Zone, kind: LayerStackChangeKind) {
+        let zone_kind = if kind == LayerStackChangeKind::ControlsPatched {
+            ZoneChangeKind::ControlsPatched
+        } else {
+            ZoneChangeKind::Updated
+        };
+        self.record_zone_change(scene_id, zone, zone_kind);
+        self.record_layer_stack_event(scene_id, zone, kind);
+    }
+
+    fn record_layer_stack_event(
+        &mut self,
+        scene_id: SceneId,
+        zone: &Zone,
+        kind: LayerStackChangeKind,
+    ) {
+        self.events.retain(|event| {
+            !matches!(
+                event,
+                HypercolorEvent::LayerStackChanged {
+                    scene_id: existing_scene_id,
+                    zone_id,
+                    ..
+                } if *existing_scene_id == scene_id && *zone_id == zone.id
+            )
+        });
+        self.events.push(HypercolorEvent::LayerStackChanged {
+            scene_id,
+            zone_id: zone.id,
+            revision: self.base_revision.saturating_add(1),
+            kind,
+        });
+    }
+
     /// The revision this candidate was snapshotted from.
     #[must_use]
     pub const fn base_revision(&self) -> SceneRevision {
@@ -161,14 +383,6 @@ impl SceneMutation {
     #[must_use]
     pub const fn scenes(&self) -> &SceneManager {
         &self.candidate
-    }
-
-    /// Record an event for ordered publication at commit time.
-    ///
-    /// Events never publish from a mutation that is dropped, and never
-    /// publish out of admission order.
-    pub fn record(&mut self, event: HypercolorEvent) {
-        self.events.push(event);
     }
 
     pub fn retire_scene_previews(&mut self, scene_id: SceneId) {
@@ -216,7 +430,19 @@ impl SceneMutation {
         controls: HashMap<String, ControlValue>,
         preset_id: Option<PresetId>,
         layout: SpatialLayout,
+        trigger: ChangeTrigger,
+        previous: Option<EffectRef>,
     ) -> Result<Zone, DomainError> {
+        let scene_id = self
+            .candidate
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
+        let kind = if self.primary_zone_id().is_some() {
+            ZoneChangeKind::Updated
+        } else {
+            ZoneChangeKind::Created
+        };
         let zone = self
             .candidate
             .upsert_primary_group(metadata, controls, preset_id, layout)
@@ -227,6 +453,8 @@ impl SceneMutation {
             })?
             .clone();
         self.persists_scene_content = true;
+        self.record_effect_started(metadata, &zone, trigger, previous);
+        self.record_zone_change(scene_id, &zone, kind);
         Ok(zone)
     }
 
@@ -237,7 +465,14 @@ impl SceneMutation {
         metadata: &EffectMetadata,
         controls: HashMap<String, ControlValue>,
         preset_id: Option<PresetId>,
+        trigger: ChangeTrigger,
+        previous: Option<EffectRef>,
     ) -> Result<Zone, DomainError> {
+        let scene_id = self
+            .candidate
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
         let zone = self
             .candidate
             .apply_effect_to_group(zone_id, metadata, controls, preset_id)
@@ -246,7 +481,30 @@ impl SceneMutation {
             })?
             .clone();
         self.persists_scene_content = true;
+        self.record_effect_started(metadata, &zone, trigger, previous);
+        self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
         Ok(zone)
+    }
+
+    fn record_effect_started(
+        &mut self,
+        metadata: &EffectMetadata,
+        zone: &Zone,
+        trigger: ChangeTrigger,
+        previous: Option<EffectRef>,
+    ) {
+        self.events.push(HypercolorEvent::EffectStarted {
+            effect: EffectRef {
+                id: metadata.id.to_string(),
+                name: metadata.name.clone(),
+                engine: "servo".to_owned(),
+            },
+            trigger,
+            previous,
+            transition: None,
+            zone_id: Some(zone.id),
+            zone_name: Some(zone.name.clone()),
+        });
     }
 
     /// Make a scene the exclusive current one.
@@ -258,48 +516,118 @@ impl SceneMutation {
         &mut self,
         scene_id: SceneId,
         transition: Option<TransitionSpec>,
+        reason: SceneChangeReason,
     ) -> Result<(), DomainError> {
+        let previous_scene_id = self.candidate.active_scene_id().copied();
         self.candidate
             .activate(&scene_id, transition)
             .map_err(|error| {
                 DomainError::Internal(anyhow::anyhow!("Failed to activate scene: {error}"))
-            })
+            })?;
+        if previous_scene_id != Some(scene_id) {
+            if let Some(previous_scene_id) = previous_scene_id {
+                self.retire_scene_previews(previous_scene_id);
+            }
+            if let Some(current) = self.candidate.active_scene() {
+                self.events.push(active_scene_changed_event(
+                    previous_scene_id,
+                    current,
+                    reason,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Return to the synthesized default scene.
     ///
     /// Like [`Self::activate`], this moves only the priority stack.
-    pub fn deactivate_current(&mut self) {
+    pub fn deactivate_current(&mut self, reason: SceneChangeReason) {
+        let previous_scene = self.candidate.active_scene().cloned();
         self.candidate.deactivate_current();
+        let current_scene = self.candidate.active_scene().cloned();
+        if previous_scene.as_ref().map(|scene| scene.id)
+            != current_scene.as_ref().map(|scene| scene.id)
+            && let Some(current) = current_scene.as_ref()
+        {
+            if let Some(previous) = previous_scene.as_ref() {
+                self.retire_scene_previews(previous.id);
+            }
+            self.events.push(active_scene_changed_event(
+                previous_scene.as_ref().map(|scene| scene.id),
+                current,
+                reason,
+            ));
+        }
+    }
+
+    /// Align the active primary zone with a newly authoritative layout.
+    pub fn sync_primary_layout(&mut self, layout: &SpatialLayout) {
+        self.candidate.sync_primary_group_layout(layout);
+    }
+
+    /// Restore a persisted scene without scheduling a redundant store write.
+    pub fn restore_scene(&mut self, scene: Scene) -> Result<(), DomainError> {
+        self.candidate.update(scene).map_err(|error| {
+            DomainError::Internal(anyhow::anyhow!("Failed to restore scene: {error}"))
+        })
     }
 
     // ── Scene library ────────────────────────────────────────────────
 
     /// Add a scene to the library.
     pub fn create_scene(&mut self, scene: Scene) -> Result<(), DomainError> {
+        let event = HypercolorEvent::SceneLibraryChanged {
+            scene_id: scene.id,
+            kind: SceneLibraryChangeKind::Created,
+            name: Some(scene.name.clone()),
+        };
         self.candidate
             .create(scene)
             .map_err(|error| DomainError::conflict(format!("Failed to create scene: {error}")))?;
         self.persists_scene_content = true;
+        self.events.push(event);
         Ok(())
     }
 
     /// Replace a scene's stored definition.
     pub fn update_scene(&mut self, scene: Scene) -> Result<(), DomainError> {
+        let event = HypercolorEvent::SceneLibraryChanged {
+            scene_id: scene.id,
+            kind: SceneLibraryChangeKind::Updated,
+            name: Some(scene.name.clone()),
+        };
         self.candidate.update(scene).map_err(|error| {
             DomainError::Internal(anyhow::anyhow!("Failed to update scene: {error}"))
         })?;
         self.persists_scene_content = true;
+        self.events.push(event);
         Ok(())
     }
 
     /// Remove a scene from the library.
     pub fn delete_scene(&mut self, scene_id: &SceneId) -> Result<Scene, DomainError> {
+        let previous_scene_id = self.candidate.active_scene_id().copied();
         let scene = self
             .candidate
             .delete(scene_id)
             .map_err(|error| DomainError::not_found(ResourceKind::Scene, error))?;
         self.persists_scene_content = true;
+        let current_scene = self.candidate.active_scene().cloned();
+        if previous_scene_id != current_scene.as_ref().map(|current| current.id)
+            && let Some(current) = current_scene.as_ref()
+        {
+            self.events.push(active_scene_changed_event(
+                previous_scene_id,
+                current,
+                SceneChangeReason::UserDeactivate,
+            ));
+        }
+        self.events.push(HypercolorEvent::SceneLibraryChanged {
+            scene_id: *scene_id,
+            kind: SceneLibraryChangeKind::Deleted,
+            name: None,
+        });
         Ok(scene)
     }
 
@@ -317,6 +645,14 @@ impl SceneMutation {
             self.candidate
                 .create_render_group(&scene_id, name, color, fallback_canvas)?;
         self.persists_scene_content = true;
+        if let Some(zone) = self
+            .candidate
+            .get(&scene_id)
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+        {
+            self.events
+                .push(zone_changed_event(scene_id, zone, ZoneChangeKind::Created));
+        }
         Ok(zone_id)
     }
 
@@ -331,6 +667,8 @@ impl SceneMutation {
             .candidate
             .update_render_group_meta(&scene_id, zone_id, patch)?;
         self.persists_scene_content = true;
+        self.events
+            .push(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
         Ok(zone)
     }
 
@@ -340,8 +678,17 @@ impl SceneMutation {
         scene_id: SceneId,
         zone_id: ZoneId,
     ) -> Result<(), ZoneMutationError> {
+        let removed = self
+            .candidate
+            .get(&scene_id)
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .cloned();
         self.candidate.delete_render_group(&scene_id, zone_id)?;
         self.persists_scene_content = true;
+        if let Some(zone) = removed {
+            self.events
+                .push(zone_changed_event(scene_id, &zone, ZoneChangeKind::Removed));
+        }
         Ok(())
     }
 
@@ -356,6 +703,14 @@ impl SceneMutation {
         self.candidate
             .assign_device_zone(&scene_id, zone_id, output, placement)?;
         self.persists_scene_content = true;
+        if let Some(zone) = self
+            .candidate
+            .get(&scene_id)
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .cloned()
+        {
+            self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
+        }
         Ok(())
     }
 
@@ -365,8 +720,28 @@ impl SceneMutation {
         scene_id: SceneId,
         output_id: &str,
     ) -> Result<(), ZoneMutationError> {
+        let zone_id = self.candidate.get(&scene_id).and_then(|scene| {
+            scene
+                .zones
+                .iter()
+                .find(|zone| {
+                    zone.layout
+                        .zones
+                        .iter()
+                        .any(|output| output.id == output_id)
+                })
+                .map(|zone| zone.id)
+        });
         self.candidate.unassign_device_zone(&scene_id, output_id)?;
         self.persists_scene_content = true;
+        if let Some(zone) = zone_id.and_then(|zone_id| {
+            self.candidate
+                .get(&scene_id)
+                .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+                .cloned()
+        }) {
+            self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
+        }
         Ok(())
     }
 
@@ -381,6 +756,7 @@ impl SceneMutation {
             .candidate
             .update_zone_layout(&scene_id, zone_id, layout)?;
         self.persists_scene_content = true;
+        self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
         Ok(zone)
     }
 
@@ -394,15 +770,35 @@ impl SceneMutation {
             .candidate
             .set_unassigned_behavior(&scene_id, behavior)?;
         self.persists_scene_content = true;
+        self.events.push(HypercolorEvent::SceneSettingsChanged {
+            scene_id,
+            revision: self.base_revision.saturating_add(1),
+            kind: SceneSettingsChangeKind::UnassignedBehavior,
+        });
         Ok(behavior)
     }
 
     // ── Effect slots and controls ────────────────────────────────────
 
     /// Unload whatever effect a zone runs.
-    pub fn clear_zone_effect(&mut self, zone_id: ZoneId) -> Option<Zone> {
+    pub fn clear_zone_effect(
+        &mut self,
+        zone_id: ZoneId,
+        stopped_effect: Option<EffectRef>,
+        reason: EffectStopReason,
+    ) -> Option<Zone> {
+        let scene_id = self.candidate.active_scene_id().copied()?;
         let zone = self.candidate.clear_group_effect(zone_id).cloned()?;
         self.persists_scene_content = true;
+        if let Some(effect) = stopped_effect {
+            self.events.push(HypercolorEvent::EffectStopped {
+                effect,
+                reason,
+                zone_id: Some(zone.id),
+                zone_name: Some(zone.name.clone()),
+            });
+        }
+        self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
         Some(zone)
     }
 
@@ -412,11 +808,30 @@ impl SceneMutation {
         zone_id: ZoneId,
         updates: HashMap<String, ControlValue>,
     ) -> Option<Zone> {
+        let scene_id = self.candidate.active_scene_id().copied()?;
         let zone = self
             .candidate
             .patch_group_controls(zone_id, updates)?
             .clone();
         self.persists_scene_content = true;
+        self.record_zone_change(scene_id, &zone, ZoneChangeKind::ControlsPatched);
+        Some(zone)
+    }
+
+    /// Attach one live control binding to an effect zone.
+    pub fn set_zone_control_binding(
+        &mut self,
+        zone_id: ZoneId,
+        control_id: String,
+        binding: ControlBinding,
+    ) -> Option<Zone> {
+        let scene_id = self.candidate.active_scene_id().copied()?;
+        let zone = self
+            .candidate
+            .set_group_control_binding(zone_id, control_id, binding)?
+            .clone();
+        self.persists_scene_content = true;
+        self.record_zone_change(scene_id, &zone, ZoneChangeKind::ControlsPatched);
         Some(zone)
     }
 
@@ -448,6 +863,7 @@ impl SceneMutation {
         )?;
         let zone = zone.clone();
         self.persists_scene_content = true;
+        self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Created);
         Ok(zone)
     }
 
@@ -467,6 +883,27 @@ impl SceneMutation {
         )?;
         let zone = zone.clone();
         self.persists_scene_content = true;
+        self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Removed);
+        Ok(zone)
+    }
+
+    /// Replace one layer in place while publishing one coherent stack change.
+    pub fn replace_layer(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layer_id: SceneLayerId,
+        layer: SceneLayer,
+        index: usize,
+    ) -> Result<Zone, LayerMutationError> {
+        self.candidate
+            .remove_scene_group_layer(scene_id, zone_id, layer_id, None)?;
+        let (zone, _version) =
+            self.candidate
+                .insert_scene_group_layer(scene_id, zone_id, layer, Some(index), None)?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Updated);
         Ok(zone)
     }
 
@@ -486,6 +923,7 @@ impl SceneMutation {
         )?;
         let zone = zone.clone();
         self.persists_scene_content = true;
+        self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Reordered);
         Ok(zone)
     }
 
@@ -507,6 +945,7 @@ impl SceneMutation {
         )?;
         let zone = zone.clone();
         self.persists_scene_content = true;
+        self.record_layer_change(scene_id, &zone, LayerStackChangeKind::ControlsPatched);
         Ok(zone)
     }
 
@@ -520,7 +959,19 @@ impl SceneMutation {
         updates: HashMap<String, ControlValue>,
         clear_bindings: &[String],
         expected_version: Option<u64>,
+        trigger: ChangeTrigger,
+        previous_values: &HashMap<String, ControlValue>,
     ) -> Result<Zone, LayerMutationError> {
+        let effect_id = self
+            .candidate
+            .get(&scene_id)
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .and_then(|zone| zone.layers.iter().find(|layer| layer.id == layer_id))
+            .and_then(|layer| match &layer.source {
+                LayerSource::Effect { effect_id, .. } => Some(*effect_id),
+                _ => None,
+            });
+        let changed_values = updates.clone();
         let (zone, _version) = self.candidate.patch_scene_layer_controls_and_bindings(
             scene_id,
             zone_id,
@@ -531,6 +982,33 @@ impl SceneMutation {
         )?;
         let zone = zone.clone();
         self.persists_scene_content = true;
+        self.record_zone_change(scene_id, &zone, ZoneChangeKind::ControlsPatched);
+        if let Some(effect_id) = effect_id {
+            for (control_id, new_value) in changed_values {
+                let Some(old_value) = previous_values.get(&control_id) else {
+                    continue;
+                };
+                if old_value == &new_value {
+                    continue;
+                }
+                let (Some(old_value), Some(new_value)) = (
+                    event_control_value(old_value),
+                    event_control_value(&new_value),
+                ) else {
+                    continue;
+                };
+                self.events.push(HypercolorEvent::EffectControlChanged {
+                    effect_id: effect_id.to_string(),
+                    control_id,
+                    old_value,
+                    new_value,
+                    zone_id,
+                    layer_id,
+                    trigger: trigger.clone(),
+                });
+            }
+        }
+        self.record_layer_stack_event(scene_id, &zone, LayerStackChangeKind::ControlsPatched);
         Ok(zone)
     }
 
@@ -545,15 +1023,38 @@ impl SceneMutation {
         effect: &EffectMetadata,
         controls: HashMap<String, ControlValue>,
         layout: SpatialLayout,
+        target: DisplayFaceTarget,
     ) -> Result<Zone, DomainError> {
-        let zone = self
+        let scene_id = self
+            .candidate
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
+        let kind = if self
+            .candidate
+            .active_scene()
+            .is_some_and(|scene| scene.display_zone_for(device_id).is_some())
+        {
+            ZoneChangeKind::Updated
+        } else {
+            ZoneChangeKind::Created
+        };
+        let zone_id = self
             .candidate
             .upsert_display_group(device_id, device_name, effect, controls, layout)
             .map_err(|error| {
                 DomainError::Internal(anyhow::anyhow!("Failed to update active scene: {error}"))
             })?
+            .id;
+        let zone = self
+            .candidate
+            .patch_display_group_target(zone_id, Some(target.blend_mode), Some(target.opacity))
+            .ok_or_else(|| {
+                DomainError::Internal(anyhow::anyhow!("Failed to update display face composition"))
+            })?
             .clone();
         self.persists_scene_content = true;
+        self.record_zone_change(scene_id, &zone, kind);
         Ok(zone)
     }
 
@@ -567,6 +1068,7 @@ impl SceneMutation {
         device_name: &str,
         layout: SpatialLayout,
     ) -> Result<bool, DomainError> {
+        let scene_id = self.candidate.active_scene_id().copied();
         let before = self.active_zones_revision();
         self.candidate
             .ensure_display_group_surface(device_id, device_name, layout)
@@ -578,6 +1080,15 @@ impl SceneMutation {
         let changed = self.active_zones_revision() != before;
         if changed {
             self.persists_scene_content = true;
+            if let (Some(scene_id), Some(zone)) = (
+                scene_id,
+                self.candidate
+                    .active_scene()
+                    .and_then(|scene| scene.display_zone_for(device_id))
+                    .cloned(),
+            ) {
+                self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
+            }
         }
         Ok(changed)
     }
@@ -593,21 +1104,27 @@ impl SceneMutation {
             .get(&scene_id)
             .cloned()
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
-        let mut changed = false;
+        let mut changed_zones = Vec::new();
         for (device_id, _, layout) in displays {
             let Some(zone) = scene.display_zone_for_mut(*device_id) else {
                 continue;
             };
             if zone.layout != *layout {
                 zone.layout.clone_from(layout);
-                changed = true;
+                changed_zones.push(zone.clone());
             }
         }
-        if changed {
+        if !changed_zones.is_empty() {
             scene.zones_revision = scene.zones_revision.saturating_add(1);
-            self.update_scene(scene)?;
+            self.candidate.update(scene).map_err(|error| {
+                DomainError::Internal(anyhow::anyhow!("Failed to update scene: {error}"))
+            })?;
+            self.persists_scene_content = true;
+            for zone in &changed_zones {
+                self.record_zone_change(scene_id, zone, ZoneChangeKind::Updated);
+            }
         }
-        Ok(changed)
+        Ok(!changed_zones.is_empty())
     }
 
     /// Update how a display zone's face composes over the effect layer.
@@ -617,11 +1134,13 @@ impl SceneMutation {
         blend_mode: Option<DisplayFaceBlendMode>,
         opacity: Option<f32>,
     ) -> Option<Zone> {
+        let scene_id = self.candidate.active_scene_id().copied()?;
         let zone = self
             .candidate
             .patch_display_group_target(zone_id, blend_mode, opacity)?
             .clone();
         self.persists_scene_content = true;
+        self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
         Some(zone)
     }
 
@@ -632,6 +1151,20 @@ impl SceneMutation {
         device_name: &str,
         layout: SpatialLayout,
     ) -> Result<Zone, DomainError> {
+        let scene_id = self
+            .candidate
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
+        let kind = if self
+            .candidate
+            .active_scene()
+            .is_some_and(|scene| scene.display_zone_for(device_id).is_some())
+        {
+            ZoneChangeKind::Updated
+        } else {
+            ZoneChangeKind::Created
+        };
         let zone = self
             .candidate
             .clear_display_group_assignment(device_id, device_name, layout)
@@ -640,6 +1173,7 @@ impl SceneMutation {
             })?
             .clone();
         self.persists_scene_content = true;
+        self.record_zone_change(scene_id, &zone, kind);
         Ok(zone)
     }
 
@@ -648,6 +1182,9 @@ impl SceneMutation {
         let removed = self.candidate.remove_display_groups_for_device(device_id);
         if !removed.is_empty() {
             self.persists_scene_content = true;
+            for (scene_id, zone) in &removed {
+                self.record_zone_change(*scene_id, zone, ZoneChangeKind::Removed);
+            }
         }
         removed
     }
@@ -670,25 +1207,36 @@ impl SceneMutation {
         let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
             return false;
         };
-        let unchanged = self
-            .candidate
-            .default_display_group_for(device_id)
-            .is_some_and(|installed| {
-                let mut candidate = zone.clone();
-                candidate.id = installed.id;
-                if candidate.layers.len() == installed.layers.len() {
-                    for (candidate_layer, installed_layer) in
-                        candidate.layers.iter_mut().zip(&installed.layers)
-                    {
-                        candidate_layer.id = installed_layer.id;
-                    }
+        let previous = self.candidate.default_display_group_for(device_id).cloned();
+        let unchanged = previous.as_ref().is_some_and(|installed| {
+            let mut candidate = zone.clone();
+            candidate.id = installed.id;
+            if candidate.layers.len() == installed.layers.len() {
+                for (candidate_layer, installed_layer) in
+                    candidate.layers.iter_mut().zip(&installed.layers)
+                {
+                    candidate_layer.id = installed_layer.id;
                 }
-                *installed == candidate
-            });
+            }
+            *installed == candidate
+        });
         if unchanged {
             return false;
         }
         self.candidate.set_default_display_group(zone);
+        if let Some(installed) = self.candidate.default_display_group_for(device_id).cloned() {
+            let scene_id = self
+                .candidate
+                .active_scene_id()
+                .copied()
+                .unwrap_or(SceneId::DEFAULT);
+            let kind = if previous.is_some() {
+                ZoneChangeKind::Updated
+            } else {
+                ZoneChangeKind::Created
+            };
+            self.record_zone_change(scene_id, &installed, kind);
+        }
         true
     }
 
@@ -696,6 +1244,14 @@ impl SceneMutation {
     pub fn remove_default_display_zone(&mut self, device_id: DeviceId) -> Option<Zone> {
         let existing = self.candidate.default_display_group_for(device_id).cloned();
         self.candidate.remove_default_display_group(device_id);
+        if let Some(zone) = existing.as_ref() {
+            let scene_id = self
+                .candidate
+                .active_scene_id()
+                .copied()
+                .unwrap_or(SceneId::DEFAULT);
+            self.record_zone_change(scene_id, zone, ZoneChangeKind::Removed);
+        }
         existing
     }
 
@@ -703,25 +1259,6 @@ impl SceneMutation {
         self.candidate
             .active_scene()
             .map_or(0, |scene| scene.zones_revision)
-    }
-}
-
-impl AppState {
-    /// Snapshot the live scene state into an owned candidate.
-    ///
-    /// The read lock is held for exactly one clone. Everything the
-    /// caller does afterwards happens on its own copy.
-    pub async fn begin_scene_mutation(&self) -> SceneMutation {
-        let manager = self.scene_manager.read().await;
-        let base_revision = self.scene_commits.revision();
-        SceneMutation {
-            candidate: manager.clone(),
-            base_revision,
-            events: Vec::new(),
-            persists_scene_content: false,
-            preview_scenes_to_clear: HashSet::new(),
-            preview_zones_to_clear: HashSet::new(),
-        }
     }
 }
 
@@ -736,8 +1273,7 @@ impl AppState {
 /// [`SceneCommitSequencer::admit`](crate::domain::commit::SceneCommitSequencer),
 /// which this function and the frame-boundary layout transaction call,
 /// and every scene mutation the daemon serves joins that admission
-/// order. The remaining direct writers are named and fenced by
-/// `no_scene_writer_lives_outside_the_commit_path` in the service tests.
+/// order.
 ///
 /// # Errors
 ///
@@ -750,130 +1286,14 @@ pub async fn commit_scene(
     state: &AppState,
     mutation: SceneMutation,
 ) -> Result<SceneCommit, DomainError> {
-    let SceneMutation {
-        candidate,
-        base_revision,
-        events,
-        persists_scene_content,
-        preview_scenes_to_clear,
-        preview_zones_to_clear,
-    } = mutation;
-
-    // Only a mutation that changes persisted scene content needs the
-    // store handle, and cloning it is a deep copy plus a yield point
-    // that would widen every activation's swap window for nothing.
-    let coordinator = if persists_scene_content {
-        Some(state.scene_store.read().await.clone())
-    } else {
-        None
-    };
-
-    let (ticket, pending) = {
-        let mut manager = state.scene_manager.write().await;
-        let current_revision = state.scene_commits.revision();
-        if current_revision != base_revision {
-            // Losing the commit compare-and-swap is a state conflict, not
-            // a failed caller precondition: no request carries a scene
-            // commit revision, so a 412 here would be indistinguishable
-            // from the `If-Match` failures the zone and layer routes
-            // really do serve, and a client would rebase its version
-            // token onto a counter it does not track.
-            return Err(DomainError::conflict_details(
-                format!(
-                    "Scene state changed while applying this request; current revision is {current_revision}"
-                ),
-                serde_json::json!({
-                    "kind": "scene_commit_superseded",
-                    "expected_revision": base_revision,
-                    "current_revision": current_revision,
-                }),
-            ));
-        }
-
-        let pending = if let Some(coordinator) = coordinator.as_ref() {
-            match coordinator.reserve_save(candidate.list().into_iter().cloned()) {
-                Ok(pending) => Some(pending),
-                Err(error) => {
-                    return Err(DomainError::Internal(anyhow::anyhow!(
-                        "Failed to persist scene: {error}"
-                    )));
-                }
-            }
-        } else {
-            None
-        };
-
-        state
-            .zone_layout_previews
-            .clear_at_scene_commit(
-                &preview_scenes_to_clear.into_iter().collect::<Vec<_>>(),
-                &preview_zones_to_clear.into_iter().collect::<Vec<_>>(),
-            )
-            .await;
-        *manager = candidate;
-
-        // The generation is assigned under the same guard that installed
-        // the candidate, so admission order and revision order agree.
-        let ticket = state.scene_commits.admit(Arc::clone(&state.event_bus));
-        (ticket, pending)
-    };
-
-    let generation = ticket.generation();
-
-    let Some(pending) = pending else {
-        // Nothing persisted scene content, so there is nothing that
-        // could be superseded or retried.
-        ticket.release(events);
-        return Ok(SceneCommit::new(
-            generation,
-            generation,
-            CommitDurability::Written,
-            None,
-        ));
-    };
-
-    let outcome = state.scene_store.write().await.save_reserved(pending);
-    match outcome {
-        Ok(AtomicWriteOutcome::Written) => {
-            ticket.release(events);
-            Ok(SceneCommit::new(
-                generation,
-                generation,
-                CommitDurability::Written,
-                None,
-            ))
-        }
-        Ok(AtomicWriteOutcome::Superseded) => {
-            // A newer generation owns the destination. Its payload
-            // already contains this commit's changes and its own
-            // publication is what subscribers should see, so this
-            // commit's announcement would only walk state backwards.
-            ticket.discard();
-            Ok(SceneCommit::new(
-                generation,
-                generation,
-                CommitDurability::Superseded,
-                None,
-            ))
-        }
-        Err(error) => {
-            // The bytes stay the destination's newest admitted intent
-            // and the retry supervisor converges on them, so this
-            // commit is authoritative and announces itself like any
-            // other. Withholding the events here would leave every
-            // client blind to a change that is going to land, and the
-            // web UI is event-driven with no polling to fall back on.
-            // `retry_error` carries the attempt's failure for logging.
-            let message = format!("{error}");
-            ticket.release(events);
-            Ok(SceneCommit::new(
-                generation,
-                generation,
-                CommitDurability::Retrying,
-                Some(message),
-            ))
-        }
-    }
+    state
+        .scene_manager
+        .commit_mutation(
+            state.scene_store.as_ref(),
+            state.zone_layout_previews.as_ref(),
+            mutation,
+        )
+        .await
 }
 
 /// How many times an idempotent reconciliation rebuilds its candidate
@@ -905,7 +1325,7 @@ pub async fn commit_retrying<T>(
 ) -> Result<Option<(T, SceneCommit)>, DomainError> {
     let mut last_conflict = None;
     for _ in 0..COMMIT_ATTEMPTS {
-        let mut mutation = state.begin_scene_mutation().await;
+        let mut mutation = state.scene_manager.begin_mutation().await;
         let Some(value) = build(&mut mutation)? else {
             return Ok(None);
         };
@@ -1083,7 +1503,7 @@ pub async fn activate_scene(
         .await;
     let layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
 
     let scene = mutation
@@ -1099,21 +1519,11 @@ pub async fn activate_scene(
     }
     mutation.hydrate_existing_display_surfaces(command.scene_id, &display_surfaces)?;
 
-    mutation.activate(command.scene_id, command.transition)?;
-
-    let current_scene = mutation.scenes().active_scene().cloned();
-    if previous_scene_id != current_scene.as_ref().map(|scene| scene.id)
-        && let Some(current) = current_scene.as_ref()
-    {
-        if let Some(previous_scene_id) = previous_scene_id {
-            mutation.retire_scene_previews(previous_scene_id);
-        }
-        mutation.record(active_scene_changed_event(
-            previous_scene_id,
-            current,
-            SceneChangeReason::UserActivate,
-        ));
-    }
+    mutation.activate(
+        command.scene_id,
+        command.transition,
+        SceneChangeReason::UserActivate,
+    )?;
 
     let commit = commit_scene(state, mutation).await?;
 
@@ -1314,13 +1724,8 @@ pub async fn create_scene(
         mutation_mode: command.mutation_mode.unwrap_or(SceneMutationMode::Live),
     };
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     mutation.create_scene(scene.clone())?;
-    mutation.record(HypercolorEvent::SceneLibraryChanged {
-        scene_id: scene.id,
-        kind: SceneLibraryChangeKind::Created,
-        name: Some(scene.name.clone()),
-    });
     let commit = commit_scene(state, mutation).await?;
 
     Ok(SceneWritten { scene, commit })
@@ -1345,7 +1750,7 @@ pub async fn snapshot_scene(
     let _ = meta;
 
     let _layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let active = mutation
         .scenes()
         .active_scene()
@@ -1369,11 +1774,6 @@ pub async fn snapshot_scene(
     };
 
     mutation.create_scene(scene.clone())?;
-    mutation.record(HypercolorEvent::SceneLibraryChanged {
-        scene_id: scene.id,
-        kind: SceneLibraryChangeKind::Created,
-        name: Some(scene.name.clone()),
-    });
     let commit = commit_scene(state, mutation).await?;
 
     Ok(SceneWritten { scene, commit })
@@ -1406,7 +1806,7 @@ pub async fn replace_scene(
     }
 
     let default_layout = crate::api::effects::resolve_full_scope_layout(state).await;
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
     let existing = mutation
         .scenes()
@@ -1452,11 +1852,6 @@ pub async fn replace_scene(
     mutation.update_scene(updated.clone())?;
     crate::domain::layer::validate_candidate_media_admission(state, &mutation, updated.id).await?;
     mutation.retire_scene_previews(updated.id);
-    mutation.record(HypercolorEvent::SceneLibraryChanged {
-        scene_id: updated.id,
-        kind: SceneLibraryChangeKind::Updated,
-        name: Some(updated.name.clone()),
-    });
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
     crate::api::sync_connectivity(state).await;
@@ -1690,32 +2085,24 @@ pub async fn delete_scene(
         .scene_transactions
         .acquire_scene_activation_guard()
         .await;
-    let is_active = state.scene_manager.read().await.active_scene_id().copied() == Some(scene_id);
+    let is_active = state
+        .scene_manager
+        .snapshot()
+        .await
+        .active_scene_id()
+        .copied()
+        == Some(scene_id);
     let layout_guard = if is_active {
         Some(state.scene_transactions.acquire_layout_update_guard().await)
     } else {
         None
     };
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
     let scene = mutation.delete_scene(&scene_id)?;
     let current_scene = mutation.scenes().active_scene().cloned();
 
-    if previous_scene_id != current_scene.as_ref().map(|scene| scene.id)
-        && let Some(current) = current_scene.as_ref()
-    {
-        mutation.record(active_scene_changed_event(
-            previous_scene_id,
-            current,
-            SceneChangeReason::UserDeactivate,
-        ));
-    }
-    mutation.record(HypercolorEvent::SceneLibraryChanged {
-        scene_id,
-        kind: SceneLibraryChangeKind::Deleted,
-        name: None,
-    });
     mutation.retire_scene_previews(scene_id);
     let commit = commit_scene(state, mutation).await?;
     drop(layout_guard);
@@ -1750,23 +2137,11 @@ pub async fn deactivate_scene(
         .await;
     let layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let previous_scene = mutation.scenes().active_scene().cloned();
-    mutation.deactivate_current();
+    mutation.deactivate_current(SceneChangeReason::UserDeactivate);
     let current_scene = mutation.scenes().active_scene().cloned();
 
-    if previous_scene.as_ref().map(|scene| scene.id) != current_scene.as_ref().map(|scene| scene.id)
-        && let Some(current) = current_scene.as_ref()
-    {
-        if let Some(previous_scene) = previous_scene.as_ref() {
-            mutation.retire_scene_previews(previous_scene.id);
-        }
-        mutation.record(active_scene_changed_event(
-            previous_scene.as_ref().map(|scene| scene.id),
-            current,
-            SceneChangeReason::UserDeactivate,
-        ));
-    }
     let commit = commit_scene(state, mutation).await?;
     drop(layout_guard);
     crate::api::save_runtime_session_snapshot(state).await;
@@ -1837,5 +2212,18 @@ pub fn zone_changed_event(scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) 
         zone_id: zone.id,
         role: zone.role,
         kind,
+    }
+}
+
+fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
+    match value {
+        ControlValue::Float(_) | ControlValue::Integer(_) => {
+            value.as_f32().map(EventControlValue::Number)
+        }
+        ControlValue::Boolean(value) => Some(EventControlValue::Boolean(*value)),
+        ControlValue::Enum(value) | ControlValue::Text(value) => {
+            Some(EventControlValue::String(value.clone()))
+        }
+        ControlValue::Color(_) | ControlValue::Rect(_) | ControlValue::Gradient(_) => None,
     }
 }

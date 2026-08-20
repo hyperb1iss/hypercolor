@@ -1115,7 +1115,7 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
     )
     .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert!(
         scenes.active_scene_id().is_some_and(SceneId::is_default),
         "default scene should be active initially"
@@ -1137,7 +1137,7 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
     )
     .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(
         scenes.scene_count(),
         1,
@@ -1166,7 +1166,7 @@ async fn named_scenes_persist_across_restart() {
     )
     .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.scene_count(), 2);
     assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
     assert_eq!(
@@ -1440,15 +1440,21 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
             let spatial = state.spatial_engine.read().await;
             spatial.layout().as_ref().clone()
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(
+        let api_state = AppState::from_daemon_state(&state);
+        let mut mutation = api_state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_primary_zone(
                 &metadata,
                 std::collections::HashMap::new(),
                 Some(preset_id),
                 layout,
+                hypercolor_types::event::ChangeTrigger::System,
+                None,
             )
             .expect("native effect should activate");
+        hypercolor_daemon::domain::scene::commit_scene(&api_state, mutation)
+            .await
+            .expect("native effect should commit");
     }
 
     let mut wled_metadata = std::collections::HashMap::new();
@@ -1563,7 +1569,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
 
     state.start().await.expect("start should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.active_scene_id(), Some(&named_scene_id));
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
@@ -1615,7 +1621,7 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
     state.start().await.expect("start should succeed");
 
     assert_eq!(
-        state.scene_manager.read().await.active_scene_id(),
+        state.scene_manager.snapshot().await.active_scene_id(),
         Some(&named_scene_id)
     );
     assert!((current_global_brightness(&state.power_state) - 0.35).abs() < f32::EPSILON);
@@ -1648,7 +1654,7 @@ async fn daemon_start_activates_configured_scene_id() {
     state.start().await.expect("start should succeed");
 
     assert_eq!(
-        state.scene_manager.read().await.active_scene_id(),
+        state.scene_manager.snapshot().await.active_scene_id(),
         Some(&named_scene_id)
     );
 
@@ -1726,7 +1732,7 @@ async fn default_scene_contents_restore_on_restart() {
 
     state.start().await.expect("start should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
@@ -2940,11 +2946,23 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
             let spatial = state.spatial_engine.read().await;
             spatial.layout().as_ref().clone()
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, std::collections::HashMap::new(), None, layout)
+        let api_state = AppState::from_daemon_state(&state);
+        let mut mutation = api_state.scene_manager.begin_mutation().await;
+        let group_id = mutation
+            .upsert_primary_zone(
+                &metadata,
+                std::collections::HashMap::new(),
+                None,
+                layout,
+                hypercolor_types::event::ChangeTrigger::System,
+                None,
+            )
             .expect("native effect should activate")
-            .id
+            .id;
+        hypercolor_daemon::domain::scene::commit_scene(&api_state, mutation)
+            .await
+            .expect("native effect should commit");
+        group_id
     };
 
     let mut rx = state.event_bus.subscribe_all();
@@ -2989,7 +3007,7 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
     .expect("effect-error fallback worker should react");
 
     let cleared_effect = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
             .active_scene()
             .and_then(|scene| scene.zones.iter().find(|group| group.id == group_id))

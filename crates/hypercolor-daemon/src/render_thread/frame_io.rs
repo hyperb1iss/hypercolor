@@ -820,6 +820,7 @@ mod tests {
         publish_frame_updates, published_surface_publication_identity, update_published_frame,
     };
     use crate::device_settings::DeviceSettingsStore;
+    use crate::domain::scene::SceneService;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
     use crate::render_thread::producer_queue::ProducerFrame;
@@ -872,6 +873,8 @@ mod tests {
 
     fn minimal_render_thread_state() -> RenderThreadState {
         let event_bus = Arc::new(HypercolorBus::new());
+        let scene_manager = SceneService::new(SceneManager::new(), Arc::clone(&event_bus));
+        let scene_plan = scene_manager.plan_reader();
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
         let asset_dir = asset_tempdir.path().join("assets");
@@ -892,7 +895,8 @@ mod tests {
                 crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
             ),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+            scene_manager,
+            scene_plan,
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,

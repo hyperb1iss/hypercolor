@@ -1062,15 +1062,13 @@ where
                         SceneTransaction::PrepareLayout(transaction) => {
                             applied.push(transaction.spatial_engine().layout().as_ref().clone());
                             let spatial_engine = Arc::clone(&state.spatial_engine);
-                            let scene_manager = Arc::clone(&state.scene_manager);
-                            let scene_transactions = state.scene_transactions.clone();
+                            let scene_manager = state.scene_manager.clone();
                             let before_publication = before_publication.clone();
                             publications.push(tokio::spawn(async move {
                                 transaction
                                     .accept_and_publish_for_test(
                                         &spatial_engine,
                                         &scene_manager,
-                                        &scene_transactions,
                                         before_publication,
                                     )
                                     .await
@@ -1112,7 +1110,6 @@ async fn run_two_layout_publications_with_gates(
                             .accept_and_publish_for_test(
                                 &state.spatial_engine,
                                 &state.scene_manager,
-                                &state.scene_transactions,
                                 move || async move {
                                     if index == 0 {
                                         entered.notify_one();
@@ -1169,7 +1166,6 @@ async fn run_one_layout_publication_with_gate(
                             .accept_and_publish_for_test(
                                 &state.spatial_engine,
                                 &state.scene_manager,
-                                &state.scene_transactions,
                                 move || async move {
                                     entered.notify_one();
                                     let _permit = release
@@ -1217,7 +1213,6 @@ async fn run_layout_publications(
                             .accept_and_publish_for_test(
                                 &state.spatial_engine,
                                 &state.scene_manager,
-                                &state.scene_transactions,
                                 || async {},
                             )
                             .await
@@ -3675,13 +3670,20 @@ async fn activate_empty_test_scene_with_mode(
         mutation_mode,
     };
 
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .create(scene.clone())
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene.clone())
         .expect("test scene should be created");
-    manager
-        .activate(&scene.id, None)
+    mutation
+        .activate(
+            scene.id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
         .expect("test scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+        .await
+        .expect("test scene should commit");
     scene.id
 }
 
@@ -3758,13 +3760,20 @@ async fn activate_display_face_test_scene_with_layers(
         mutation_mode: SceneMutationMode::Live,
     };
 
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .create(scene.clone())
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene.clone())
         .expect("display face scene should be created");
-    manager
-        .activate(&scene.id, None)
+    mutation
+        .activate(
+            scene.id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
         .expect("display face scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+        .await
+        .expect("display face scene should commit");
     scene.id
 }
 
@@ -5695,7 +5704,7 @@ async fn apply_effect_upserts_primary_group() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let primary = manager
         .active_scene()
         .and_then(Scene::primary_zone)
@@ -5713,14 +5722,18 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
     // target, and remember the Primary's effect so the apply can be shown
     // to leave it alone.
     let (custom_id, primary_effect_before) = {
-        let mut manager = state.scene_manager.write().await;
-        let custom_id = manager
-            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let custom_id = mutation
+            .create_zone(SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
             .expect("custom zone should be created");
-        let primary_effect = manager
+        let primary_effect = mutation
+            .scenes()
             .active_scene()
             .and_then(Scene::primary_zone)
             .and_then(|group| group.effect_ids().next());
+        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("custom zone should commit");
         (custom_id, primary_effect)
     };
 
@@ -5743,7 +5756,7 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scene = manager.active_scene().expect("a scene should be active");
     let custom = scene
         .zones
@@ -5769,10 +5782,14 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
     insert_test_effect(&state, "solid_color").await;
 
     let custom_id = {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
-            .expect("custom zone should be created")
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let zone_id = mutation
+            .create_zone(SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created");
+        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("custom zone should commit");
+        zone_id
     };
 
     let mut events = state.event_bus.subscribe_all();
@@ -6390,7 +6407,7 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
         .expect("failed to execute request");
     assert_eq!(first_response.status(), StatusCode::OK);
     let first_primary_effect_id = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(Scene::primary_zone)
@@ -6411,7 +6428,7 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
         .expect("failed to execute request");
     assert_eq!(second_response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let active_scene = manager.active_scene().expect("active scene should remain");
     assert_eq!(active_scene.zones.len(), 1);
     let primary = active_scene
@@ -6465,7 +6482,7 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let primary = manager
         .active_scene()
         .and_then(Scene::primary_zone)
@@ -6776,7 +6793,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
     assert!(state.power_state.borrow().manually_paused());
 
     let first_layer_id = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(hypercolor_types::scene::Scene::primary_zone)
@@ -6800,7 +6817,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
     assert!(state.power_state.borrow().manually_paused());
 
     let second_layer_id = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let primary = manager
             .active_scene()
             .and_then(hypercolor_types::scene::Scene::primary_zone)
@@ -7252,7 +7269,7 @@ async fn snapshot_scene_creates_a_locked_copy_of_the_live_tree() {
     let state = Arc::new(isolated_state());
     let active = state
         .scene_manager
-        .read()
+        .snapshot()
         .await
         .active_scene()
         .cloned()
@@ -7283,7 +7300,7 @@ async fn snapshot_scene_creates_a_locked_copy_of_the_live_tree() {
         .parse::<Uuid>()
         .expect("snapshot UUID");
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let saved = manager
         .get(&SceneId(scene_id))
         .expect("snapshot should be stored");
@@ -9724,7 +9741,7 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let default_scene = manager
         .get(&SceneId::DEFAULT)
         .expect("default scene should still exist");
@@ -9776,7 +9793,7 @@ async fn apply_effect_conflicts_when_snapshot_scene_is_active() {
             .contains("snapshot mode"),
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .active_scene()
@@ -10889,7 +10906,7 @@ async fn patch_face_controls_updates_display_group() {
         "gpu"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let display_group = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(display_id))
@@ -10933,7 +10950,7 @@ async fn put_face_conflicts_when_snapshot_scene_is_active() {
             .contains("snapshot mode"),
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .active_scene()
@@ -11013,7 +11030,7 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
         "replace mode should normalize opacity back to the default"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let group = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(display_id))
@@ -11094,7 +11111,7 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
         "reassigning a face should reset opacity to the default"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let group = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(display_id))
@@ -11875,9 +11892,9 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
     {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_display_zone(
                 display_id,
                 "Pump LCD",
                 &face,
@@ -11894,15 +11911,20 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
                     spaces: None,
                     version: 1,
                 },
+                hypercolor_types::scene::DisplayFaceTarget::new(display_id),
             )
             .expect("default scene face should be assigned");
+        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+            .await
+            .expect("default scene face should commit");
     }
     let named_scene_id =
         activate_display_face_test_scene(&state, "Desk Scene", face.id, display_id).await;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.deactivate_current();
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("default scene should reactivate");
 
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
@@ -11951,7 +11973,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
     assert!(removed_scene_ids.contains(&named_scene_id));
 
     {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let default_scene = manager
             .active_scene()
             .expect("default scene should remain active");

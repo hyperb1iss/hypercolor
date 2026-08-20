@@ -27,7 +27,6 @@ use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
-use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -42,6 +41,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::domain::scene::SceneService;
 use crate::extensions::{ApiExtension, DaemonLifecycleExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
@@ -107,16 +107,10 @@ pub struct DaemonState {
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// Scene manager — scene lifecycle, priority stack, transitions.
-    pub scene_manager: Arc<RwLock<SceneManager>>,
+    pub scene_manager: SceneService,
 
     /// Persisted named-scene store.
     pub scene_store: Arc<RwLock<SceneStore>>,
-
-    /// Ordered publication chain and revision counter for scene commits
-    /// (Spec 76 §2.3). Shared with every `AppState` built from this
-    /// state: the compare-and-swap and the publication order are only
-    /// meaningful when one sequencer sees every commit.
-    pub scene_commits: Arc<crate::domain::commit::SceneCommitSequencer>,
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,

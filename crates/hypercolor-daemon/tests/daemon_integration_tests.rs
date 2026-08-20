@@ -189,7 +189,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     // Verify initial state — all subsystems created but not started
     assert!(state.device_registry.is_empty().await);
     {
-        let scenes = state.scene_manager.read().await;
+        let scenes = state.scene_manager.snapshot().await;
         assert_eq!(scenes.scene_count(), 1);
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
         assert_eq!(scenes.active_render_groups().len(), 1);
@@ -219,7 +219,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
 
     // Verify scene-backed runtime state returns to the default zone.
     {
-        let scenes = state.scene_manager.read().await;
+        let scenes = state.scene_manager.snapshot().await;
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
         assert_eq!(scenes.active_render_groups().len(), 1);
     }
@@ -381,7 +381,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         .await
         .expect("start should ignore invalid runtime state");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     let primary = scenes
         .active_scene()
         .and_then(|scene| scene.primary_zone())
@@ -552,14 +552,14 @@ async fn api_state_default_scene_starts_with_default_zone() {
 
     // Verify the default scene is active with a selectable Default zone.
     {
-        let scenes = state.scene_manager.read().await;
+        let scenes = state.scene_manager.snapshot().await;
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
         assert_eq!(scenes.active_render_groups().len(), 1);
     }
 }
 
 #[tokio::test]
-async fn api_state_scene_manager_accessible_through_rwlock() {
+async fn daemon_scene_service_returns_owned_snapshots() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
@@ -569,22 +569,14 @@ async fn api_state_scene_manager_accessible_through_rwlock() {
     )
     .expect("initialization should succeed");
 
-    // Write lock: create a scene
-    {
-        let mut scenes = state.scene_manager.write().await;
-        let scene = hypercolor_core::scene::make_scene("Test Scene");
-        scenes.create(scene).expect("create scene");
-    }
+    let mut snapshot = state.scene_manager.snapshot().await;
+    snapshot
+        .create(hypercolor_core::scene::make_scene("Detached Scene"))
+        .expect("owned snapshot should remain mutable");
 
-    // Read lock: verify scene exists
-    {
-        let scenes = state.scene_manager.read().await;
-        assert_eq!(scenes.scene_count(), 2);
-        let listed = scenes.list();
-        assert_eq!(listed.len(), 2);
-        assert!(listed.iter().any(|scene| scene.id.is_default()));
-        assert!(listed.iter().any(|scene| scene.name == "Test Scene"));
-    }
+    let current = state.scene_manager.snapshot().await;
+    assert_eq!(current.scene_count(), 1);
+    assert!(current.list().iter().all(|scene| scene.id.is_default()));
 }
 
 #[tokio::test]

@@ -187,7 +187,6 @@ impl DaemonState {
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
-        let scene_commits = Arc::new(crate::domain::commit::SceneCommitSequencer::new());
         let macos_daemon_ownership = Arc::new(ArcSwapOption::empty());
         #[cfg(target_os = "macos")]
         let mut pending_macos_owner_watch = macos_owner_snapshot
@@ -222,8 +221,7 @@ impl DaemonState {
         info!(path = %asset_library_path.display(), "Asset library ready");
 
         let (power_state, _) = watch::channel(OutputPowerState::default());
-        let scene_transactions =
-            SceneTransactionQueue::new(Arc::clone(&scene_commits), Arc::clone(&event_bus));
+        let scene_transactions = SceneTransactionQueue::default();
         info!("Session power state channel created");
 
         // ── Device Registry ─────────────────────────────────────────────
@@ -313,7 +311,8 @@ impl DaemonState {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
-        let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
+        let scene_manager =
+            crate::domain::scene::SceneService::new(scene_manager_inner, Arc::clone(&event_bus));
         let scene_store = Arc::new(RwLock::new(scene_store_inner));
         info!(path = %scenes_path.display(), "Scene manager created");
 
@@ -558,7 +557,7 @@ impl DaemonState {
             Arc::clone(&reconnect_tasks),
             Arc::clone(&event_bus),
             Arc::clone(&spatial_engine),
-            Arc::clone(&scene_manager),
+            scene_manager.clone(),
             Arc::clone(&layouts),
             layouts_path.clone(),
             Arc::clone(&layout_auto_exclusions),
@@ -617,7 +616,6 @@ impl DaemonState {
             effect_registry,
             scene_manager,
             scene_store,
-            scene_commits,
             event_bus,
             macos_daemon_ownership,
             #[cfg(target_os = "macos")]

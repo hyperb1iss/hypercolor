@@ -589,7 +589,7 @@ async fn scene_creation_rolls_back_when_serialization_fails_before_admission() {
         .expect("scene response");
 
     assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .list()

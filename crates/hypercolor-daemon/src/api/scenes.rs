@@ -37,7 +37,7 @@ pub use hypercolor_types::api::scenes::{
 
 /// `GET /api/v1/scenes` — List all scenes.
 pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scenes = manager.list();
 
     let items: Vec<SceneSummary> = scenes
@@ -56,7 +56,7 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
 
 /// `GET /api/v1/scenes/{id}` — Get a single scene.
 pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
@@ -65,7 +65,7 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    let revision = state.scene_commits.revision();
+    let revision = state.scene_manager.revision();
     crate::api::scene::with_revision(
         envelope::ok(crate::domain::scene_tree::scene_document(scene, revision)),
         revision,
@@ -130,7 +130,8 @@ pub async fn update_scene(
         Ok(revision) => revision,
         Err(error) => return error.into_response(),
     };
-    let Some(scene_id) = resolve_stored_scene_id(&*state.scene_manager.read().await, &id) else {
+    let manager = state.scene_manager.snapshot().await;
+    let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
@@ -166,7 +167,8 @@ pub async fn update_scene(
 
 /// `DELETE /api/v1/scenes/{id}` — Delete a scene.
 pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
+    let manager = state.scene_manager.snapshot().await;
+    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
@@ -201,7 +203,7 @@ pub async fn activate_scene(
     let (scene_id, admission) = {
         let asset_mime_types = asset_mime_types(state.as_ref()).await;
         let media_config = current_media_config(state.as_ref());
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let Some(scene_id) = resolve_scene_id(&manager, &id) else {
             return DomainError::not_found(ResourceKind::Scene, &id).into_response();
         };

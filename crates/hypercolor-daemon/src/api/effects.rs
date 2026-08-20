@@ -879,7 +879,7 @@ async fn resolve_effect_preset(
 }
 
 pub(crate) async fn active_primary_group(state: &AppState) -> Option<Zone> {
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     scene_manager.active_scene()?.primary_zone().cloned()
 }
 

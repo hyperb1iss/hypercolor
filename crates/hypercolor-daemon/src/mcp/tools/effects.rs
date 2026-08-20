@@ -181,7 +181,7 @@ pub(super) async fn handle_set_effect_with_state(
     // so the reason is resolved here and rendered in the tool's own
     // frozen shape.
     {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         crate::domain::scene::active_scene_for_runtime_mutation(
             &scene_manager,
             "applying an effect",
@@ -316,7 +316,7 @@ pub(super) async fn handle_set_color_with_state(
     // so the reason is resolved here and rendered in the tool's own
     // frozen shape.
     {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         crate::domain::scene::active_scene_for_runtime_mutation(
             &scene_manager,
             "applying an effect",

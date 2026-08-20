@@ -23,7 +23,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{commit_retrying, commit_scene, zone_changed_event};
+use crate::domain::scene::{commit_retrying, commit_scene};
 use crate::domain::{DomainError, MutationContext};
 
 // ── Commands ─────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ pub async fn set_display_face(
 ) -> Result<DisplayZoneWritten, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning a display face")?;
     let change = if scene_display_zone(&mutation, command.device_id).is_some() {
         ZoneChangeKind::Updated
@@ -122,21 +122,8 @@ pub async fn set_display_face(
         &command.effect,
         command.controls,
         command.layout,
+        command.target,
     )?;
-    // The upsert seeds the target as Replace; the caller's composition
-    // lands on top so the face layers over the live effect rather than
-    // blacking it out.
-    let zone = mutation
-        .patch_display_target(
-            zone.id,
-            Some(command.target.blend_mode),
-            Some(command.target.opacity),
-        )
-        .ok_or_else(|| {
-            DomainError::Internal(anyhow::anyhow!("Failed to update display face composition"))
-        })?;
-
-    mutation.record(zone_changed_event(scene_id, &zone, change));
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
 
@@ -161,7 +148,7 @@ pub async fn clear_display_face(
 ) -> Result<DisplayZoneWritten, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("removing a display face")?;
     let change = if scene_display_zone(&mutation, command.device_id).is_some() {
         ZoneChangeKind::Updated
@@ -175,7 +162,6 @@ pub async fn clear_display_face(
         command.layout,
     )?;
 
-    mutation.record(zone_changed_event(scene_id, &zone, change));
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
 
@@ -202,7 +188,7 @@ pub async fn patch_display_composition(
 ) -> Result<Option<DisplayZoneWritten>, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let scene_id =
         mutation.active_scene_for_runtime_mutation("updating display face composition")?;
     let Some(zone) =
@@ -211,7 +197,6 @@ pub async fn patch_display_composition(
         return Ok(None);
     };
 
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
 
@@ -237,17 +222,12 @@ pub async fn patch_display_face_controls(
 ) -> Result<Option<DisplayZoneWritten>, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("updating display face controls")?;
     let Some(zone) = mutation.patch_zone_controls(command.zone_id, command.controls) else {
         return Ok(None);
     };
 
-    mutation.record(zone_changed_event(
-        scene_id,
-        &zone,
-        ZoneChangeKind::ControlsPatched,
-    ));
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;
 
@@ -348,21 +328,6 @@ pub async fn prune_display_zones_for_device(
         let removed_default = mutation.remove_default_display_zone(device_id);
         if removed_zones.is_empty() && removed_default.is_none() {
             return Ok(None);
-        }
-        let active_scene_id = mutation
-            .scenes()
-            .active_scene()
-            .map_or(SceneId::DEFAULT, |scene| scene.id);
-
-        for (scene_id, zone) in &removed_zones {
-            mutation.record(zone_changed_event(*scene_id, zone, ZoneChangeKind::Removed));
-        }
-        if let Some(zone) = removed_default.as_ref() {
-            mutation.record(zone_changed_event(
-                active_scene_id,
-                zone,
-                ZoneChangeKind::Removed,
-            ));
         }
         Ok(Some((removed_zones, removed_default)))
     })

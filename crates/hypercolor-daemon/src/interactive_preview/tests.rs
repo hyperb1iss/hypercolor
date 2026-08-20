@@ -53,11 +53,15 @@ impl PreviewTestRig {
             InteractionRoutePolicy::Browser,
         );
         let demands = InputPublicationDemandHandle::new();
+        let event_bus = Arc::new(HypercolorBus::new());
         let executor = InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
-            scene_manager: Arc::new(RwLock::new(scene_manager(color))),
+            scene_manager: crate::domain::scene::SceneService::new(
+                scene_manager(color),
+                Arc::clone(&event_bus),
+            ),
             effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
             asset_library: None,
-            event_bus: Arc::new(HypercolorBus::new()),
+            event_bus,
             input_graph: InputManager::new().input_graph_handle(),
             sensor_snapshots: None,
             interaction_routing: routing,

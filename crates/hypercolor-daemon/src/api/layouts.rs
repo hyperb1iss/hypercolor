@@ -562,7 +562,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
     };
     if let Err(error) = crate::scene_transactions::apply_prepared_layout_update_under_guard(
         Arc::clone(&state.spatial_engine),
-        Arc::clone(&state.scene_manager),
+        state.scene_manager.clone(),
         state.scene_transactions.clone(),
         &guard,
         prepared,
@@ -749,7 +749,7 @@ async fn admit_persisted_layout_update_under_guard(
     let persistence_context = LayoutPersistenceContext::from_state(state);
     apply_prepared_layout_update_under_guard_with_persistence(
         Arc::clone(&state.spatial_engine),
-        Arc::clone(&state.scene_manager),
+        state.scene_manager.clone(),
         state.scene_transactions.clone(),
         guard,
         prepared,

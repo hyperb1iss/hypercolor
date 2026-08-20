@@ -16,13 +16,13 @@ use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
-use hypercolor_types::event::{EffectRef, HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::event::{EffectRef, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{commit_scene, zone_changed_event};
+use crate::domain::scene::commit_scene;
 use crate::domain::{DomainError, MutationContext};
 
 /// A transition the caller asked for.
@@ -200,7 +200,7 @@ pub async fn apply_effect(
 
     let layout = crate::api::effects::resolve_full_scope_layout(state).await;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("applying an effect")?;
 
@@ -225,6 +225,8 @@ pub async fn apply_effect(
             &metadata,
             command.controls,
             command.preset_id,
+            meta.trigger,
+            previous_effect.clone(),
         )?;
         (zone, ZoneChangeKind::Updated)
     } else {
@@ -233,21 +235,18 @@ pub async fn apply_effect(
         } else {
             ZoneChangeKind::Created
         };
-        let zone =
-            mutation.upsert_primary_zone(&metadata, command.controls, command.preset_id, layout)?;
+        let zone = mutation.upsert_primary_zone(
+            &metadata,
+            command.controls,
+            command.preset_id,
+            layout,
+            meta.trigger,
+            previous_effect.clone(),
+        )?;
         (zone, zone_change)
     };
 
     let effect = crate::api::effects::effect_ref(&metadata);
-    mutation.record(HypercolorEvent::EffectStarted {
-        effect: effect.clone(),
-        trigger: meta.trigger,
-        previous: previous_effect.clone(),
-        transition: None,
-        zone_id: Some(zone.id),
-        zone_name: Some(zone.name.clone()),
-    });
-    mutation.record(zone_changed_event(scene_id, &zone, zone_change));
 
     let commit = commit_scene(state, mutation).await?;
 

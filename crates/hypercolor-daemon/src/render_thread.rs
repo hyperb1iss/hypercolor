@@ -80,6 +80,7 @@ pub(crate) use self::render_groups::{RenderSceneContext, ZoneFrameInputs};
 pub(crate) use self::scene_dependency::SceneDependencyKey;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
+use crate::domain::scene::{ScenePlanReader, SceneService};
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
@@ -92,7 +93,6 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
-use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
@@ -291,7 +291,10 @@ pub struct RenderThreadState {
     pub render_loop: Arc<RwLock<RenderLoop>>,
 
     /// Active scene stack and transition runtime.
-    pub scene_manager: Arc<RwLock<SceneManager>>,
+    pub scene_manager: SceneService,
+
+    /// Lock-free scene plan projection read once per frame.
+    pub scene_plan: ScenePlanReader,
 
     /// Input orchestrator owned by the dedicated publication pump and demand control.
     pub input_manager: Arc<Mutex<InputManager>>,

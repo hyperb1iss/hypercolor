@@ -187,7 +187,7 @@ async fn default_only_is_live_on_the_default_layer() {
     assert_eq!(payload["data"]["effect"]["id"], effect_id.to_string());
 
     // The default zone reaches the render groups.
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     assert!(scene_manager.active_render_groups().iter().any(|zone| {
         zone.display_target
             .as_ref()
@@ -230,7 +230,7 @@ async fn scene_layer_wins_when_both_are_assigned() {
     assert_eq!(payload["data"]["effect"]["id"], scene_effect.to_string());
 
     // Only the scene zone renders for the device — the overlay is suppressed.
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     let groups_for_device = scene_manager
         .active_render_groups()
         .iter()
@@ -467,7 +467,7 @@ async fn default_face_survives_scene_switches() {
             payload["data"]["live_scope"], "default",
             "after activating {name}"
         );
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         assert!(
             scene_manager.active_render_groups().iter().any(|zone| {
                 zone.display_target
@@ -491,7 +491,7 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
 
     put_face(&app, device_id, effect_id, "default").await;
     {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         assert!(
             scene_manager.default_display_group_for(device_id).is_some(),
             "default face should be live before deletion"
@@ -507,7 +507,7 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
     let payload = body_json(response).await;
     assert_eq!(payload["data"]["deleted"], true);
 
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     assert!(
         scene_manager.default_display_group_for(device_id).is_none(),
         "deleted display must not keep a runtime default face zone"

@@ -7,12 +7,11 @@
 //! it validates and commits.
 
 use hypercolor_core::scene::{ZoneMetaPatch, ZoneMutationError};
-use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{SceneMutation, commit_scene, zone_changed_event};
+use crate::domain::scene::{SceneMutation, commit_scene};
 use crate::domain::scene_tree::check_scene_revision;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::layout_auto_exclusions;
@@ -97,7 +96,7 @@ pub async fn create_zone(
         ));
     }
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
 
@@ -110,7 +109,6 @@ pub async fn create_zone(
         )
         .map_err(|error| zone_error(error, scene_id, None, None))?;
     let zone = zone_in_scene(&mutation, scene_id, zone_id)?;
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Created));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
@@ -131,7 +129,7 @@ pub async fn update_zone(
 ) -> Result<ZoneWritten, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("updating a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
@@ -139,7 +137,6 @@ pub async fn update_zone(
     let zone = mutation
         .update_zone_meta(scene_id, command.zone_id, command.patch)
         .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;
@@ -161,7 +158,7 @@ pub async fn delete_zone(
 ) -> Result<ZoneRemoved, DomainError> {
     let _ = meta;
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("deleting a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
@@ -171,7 +168,6 @@ pub async fn delete_zone(
         .delete_zone(scene_id, command.zone_id)
         .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
     mutation.retire_zone_preview(scene_id, command.zone_id);
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Removed));
 
     let commit = commit_scene(state, mutation).await?;
     settle_zone_mutation(state).await;

@@ -373,17 +373,20 @@ async fn hello_handshake_names_the_scene_but_not_its_contents() {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().as_ref().clone()
     };
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(
-                &effect,
-                std::collections::HashMap::new(),
-                Some(preset_id),
-                layout,
-            )
-            .expect("hello test should install a primary group");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &effect,
+            std::collections::HashMap::new(),
+            Some(preset_id),
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("hello test should install a primary group");
+    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        .await
+        .expect("hello test scene should commit");
 
     let addr = spawn_test_daemon_with_state(state).await;
     let mut stream = ws_connect(addr)

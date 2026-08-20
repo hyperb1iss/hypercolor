@@ -30,6 +30,7 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
@@ -41,7 +42,9 @@ use hypercolor_types::event::{
 };
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
+use hypercolor_types::scene::{
+    DisplayFaceTarget, Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole,
+};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -56,6 +59,7 @@ use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
     InputPublicationDemandRegistration, RenderThread, RenderThreadState,
 };
+use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_daemon::scene_transactions::{SceneTransactionQueue, apply_layout_update};
 use hypercolor_daemon::session::OutputPowerState;
 
@@ -1101,6 +1105,8 @@ fn make_render_state(
             )
             .expect("test render state should seed a default primary group");
     }
+    let scene_manager = SceneService::new(scene_manager, Arc::clone(&event_bus));
+    let scene_plan = scene_manager.plan_reader();
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
@@ -1115,7 +1121,8 @@ fn make_render_state(
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(scene_manager)),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
@@ -1132,6 +1139,72 @@ fn make_render_state(
         configured_max_fps_tier: FpsTier::Full.into(),
         face_fps_cap: 30,
     }
+}
+
+async fn commit_render_mutation(state: &RenderThreadState, mutation: SceneMutation) {
+    let tempdir = tempfile::tempdir().expect("render scene store tempdir should be created");
+    let scene_store = RwLock::new(
+        SceneStore::new(tempdir.path().join("scenes.json"))
+            .expect("render scene store should open"),
+    );
+    state
+        .scene_manager
+        .commit_mutation(&scene_store, &state.zone_layout_previews, mutation)
+        .await
+        .expect("render scene mutation should commit");
+}
+
+async fn install_render_scenes(
+    state: &RenderThreadState,
+    scenes: impl IntoIterator<Item = Scene>,
+    active_scene_id: SceneId,
+) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    for scene in scenes {
+        mutation
+            .create_scene(scene)
+            .expect("render scene should be created");
+    }
+    mutation
+        .activate(
+            active_scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("render scene should activate");
+    commit_render_mutation(state, mutation).await;
+}
+
+async fn activate_render_scene(state: &RenderThreadState, scene_id: SceneId) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("render scene should activate");
+    commit_render_mutation(state, mutation).await;
+}
+
+async fn install_render_effect(
+    state: &RenderThreadState,
+    metadata: &EffectMetadata,
+    controls: HashMap<String, ControlValue>,
+    layout: SpatialLayout,
+) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            metadata,
+            controls,
+            None,
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("render effect should install");
+    commit_render_mutation(state, mutation).await;
 }
 
 async fn wait_for_device_state(
@@ -1452,10 +1525,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
             let registry = state.effect_registry.read().await;
             builtin_effect_metadata(&registry, "audio_pulse")
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, test_layout(Vec::new()))
-            .expect("activate audio-reactive primary group");
+        install_render_effect(&state, &metadata, HashMap::new(), test_layout(Vec::new())).await;
     }
 
     wait_for_audio_capture_transition(&transitions, true).await;
@@ -1465,15 +1535,13 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
             let registry = state.effect_registry.read().await;
             builtin_effect_metadata(&registry, "solid_color")
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(
-                &metadata,
-                solid_color_controls(8, 16, 24),
-                None,
-                test_layout(Vec::new()),
-            )
-            .expect("reactivate non-audio primary group");
+        install_render_effect(
+            &state,
+            &metadata,
+            solid_color_controls(8, 16, 24),
+            test_layout(Vec::new()),
+        )
+        .await;
     }
 
     wait_for_audio_capture_transition(&transitions, false).await;
@@ -1607,21 +1675,7 @@ async fn render_thread_advances_active_scene_transitions() {
 
     let scene_a = make_scene("Scene A");
     let scene_b = make_scene("Scene B");
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene_a.clone())
-            .expect("create scene a");
-        scene_manager
-            .create(scene_b.clone())
-            .expect("create scene b");
-        scene_manager
-            .activate(&scene_a.id, None)
-            .expect("activate scene a");
-        scene_manager
-            .activate(&scene_b.id, None)
-            .expect("activate scene b");
-    }
+    install_render_scenes(&state, vec![scene_a.clone(), scene_b.clone()], scene_b.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1637,7 +1691,7 @@ async fn render_thread_advances_active_scene_transitions() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     let transition = scene_manager
         .active_transition()
         .expect("scene transition should still be active");
@@ -1675,18 +1729,7 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
         solid_color_controls(0, 0, 255),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
     )];
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene_a.clone())
-            .expect("create scene a");
-        scene_manager
-            .create(scene_b.clone())
-            .expect("create scene b");
-        scene_manager
-            .activate(&scene_a.id, None)
-            .expect("activate scene a");
-    }
+    install_render_scenes(&state, vec![scene_a.clone(), scene_b.clone()], scene_a.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1702,12 +1745,7 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     let initial_pixel = &initial_canvas.rgba_bytes()[0..4];
     assert_eq!(initial_pixel, [255, 0, 0, 255].as_slice());
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&scene_b.id, None)
-            .expect("activate scene b");
-    }
+    activate_render_scene(&state, scene_b.id).await;
 
     let blended_canvas =
         wait_for_next_canvas_frame(&mut canvas_rx, initial_canvas.frame_number).await;
@@ -1753,15 +1791,7 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create grouped scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate grouped scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1829,15 +1859,7 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create grouped canvas scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate grouped canvas scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1905,15 +1927,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     )];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create display face scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate display face scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1993,15 +2007,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create gpu display face scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate gpu display face scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2077,18 +2083,12 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     )];
     second_scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(first_scene.clone())
-            .expect("create first face scene");
-        scene_manager
-            .create(second_scene.clone())
-            .expect("create second face scene");
-        scene_manager
-            .activate(&first_scene.id, None)
-            .expect("activate first face scene");
-    }
+    install_render_scenes(
+        &state,
+        vec![first_scene.clone(), second_scene.clone()],
+        first_scene.id,
+    )
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2111,12 +2111,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     })
     .await;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&second_scene.id, None)
-            .expect("activate second face scene");
-    }
+    activate_render_scene(&state, second_scene.id).await;
 
     let second_frame = wait_for_next_frame(&mut frame_rx, first_frame.frame_number).await;
     assert!(second_frame.frame_number > first_frame.frame_number);
@@ -2189,18 +2184,12 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     )];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(audio_scene.clone())
-            .expect("create audio scene");
-        scene_manager
-            .create(solid_scene.clone())
-            .expect("create solid scene");
-        scene_manager
-            .activate(&audio_scene.id, None)
-            .expect("activate audio scene");
-    }
+    install_render_scenes(
+        &state,
+        vec![audio_scene.clone(), solid_scene.clone()],
+        audio_scene.id,
+    )
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2211,12 +2200,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
 
     wait_for_audio_capture_transition(&transitions, true).await;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&solid_scene.id, None)
-            .expect("activate solid scene");
-    }
+    activate_render_scene(&state, solid_scene.id).await;
 
     wait_for_audio_capture_transition(&transitions, false).await;
 
@@ -2287,18 +2271,12 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     )];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(screen_scene.clone())
-            .expect("create screen scene");
-        scene_manager
-            .create(solid_scene.clone())
-            .expect("create solid scene");
-        scene_manager
-            .activate(&screen_scene.id, None)
-            .expect("activate screen scene");
-    }
+    install_render_scenes(
+        &state,
+        vec![screen_scene.clone(), solid_scene.clone()],
+        screen_scene.id,
+    )
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2309,12 +2287,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
 
     wait_for_screen_capture_transition(&transitions, true).await;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&solid_scene.id, None)
-            .expect("activate solid scene");
-    }
+    activate_render_scene(&state, solid_scene.id).await;
 
     wait_for_screen_capture_transition(&transitions, false).await;
 
@@ -2797,7 +2770,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
         spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+        scene_manager: SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus)),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
@@ -2838,6 +2811,8 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
             layout.clone(),
         )
         .expect("failing-device test should seed a primary group");
+    let scene_manager = SceneService::new(scene_manager, Arc::clone(&event_bus));
+    let scene_plan = scene_manager.plan_reader();
 
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
@@ -2854,7 +2829,8 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(scene_manager)),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
@@ -2994,7 +2970,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
         spatial_engine,
-        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+        scene_manager: SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus)),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
@@ -4550,6 +4526,8 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
 
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
+    let scene_manager = SceneService::new(scene_manager, Arc::clone(&event_bus));
+    let scene_plan = scene_manager.plan_reader();
     let state = RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
@@ -4564,7 +4542,8 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(scene_manager)),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
