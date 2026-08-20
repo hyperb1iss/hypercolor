@@ -25,7 +25,7 @@ use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::RuntimeSessionSnapshotReader;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::{persist_layout_auto_exclusions, persist_layouts};
 use crate::discovery;
 use crate::domain::{DomainError, ResourceKind};
@@ -217,14 +217,14 @@ pub async fn list_layouts(
     let total = items.len();
     let paged_items: Vec<LayoutSummary> = items.into_iter().skip(offset).take(limit).collect();
     let has_more = offset.saturating_add(limit) < total;
-    ApiResponse::ok(LayoutListResponse {
+    envelope::ok(LayoutListResponse {
         items: paged_items,
-        pagination: super::devices::Pagination {
-            offset,
-            limit,
-            total,
+        total: u64::try_from(total).expect("layout count fits in u64"),
+        page: Some(hypercolor_types::api::PageInfo {
+            offset: u64::try_from(offset).expect("layout offset fits in u64"),
+            limit: u64::try_from(limit).expect("layout limit fits in u64"),
             has_more,
-        },
+        }),
     })
 }
 
@@ -241,7 +241,7 @@ pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     };
 
     let layout = layouts.get(&key).expect("resolved layout key must exist");
-    ApiResponse::ok(layout)
+    envelope::ok(layout)
 }
 
 /// `GET /api/v1/layouts/active` — Get currently active layout.
@@ -250,7 +250,7 @@ pub async fn get_active_layout(State(state): State<Arc<AppState>>) -> Response {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().as_ref().clone()
     };
-    ApiResponse::ok(active)
+    envelope::ok(active)
 }
 
 /// `POST /api/v1/layouts` — Create a new layout.
@@ -342,7 +342,7 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
         return layout_store_persistence_error_response("create", error, rollback_errors);
     }
     drop(guard);
-    ApiResponse::created(summary)
+    envelope::created(summary)
 }
 
 /// `PUT /api/v1/layouts/{id}` — Update an existing layout.
@@ -474,7 +474,7 @@ async fn update_layout_workflow(
         update_layout_auto_exclusions(&state, &layout_id, &previous_zones, &updated_zones).await;
     }
     drop(guard);
-    ApiResponse::ok(summary)
+    envelope::ok(summary)
 }
 
 /// `POST /api/v1/layouts/{id}/apply` — Apply a saved layout to the spatial engine.
@@ -592,7 +592,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
         )
         .await;
 
-    ApiResponse::ok(serde_json::json!({ "previewing": true }))
+    envelope::ok(serde_json::json!({ "previewing": true }))
 }
 
 /// `DELETE /api/v1/layouts/{id}` — Delete a layout.
@@ -868,8 +868,8 @@ fn layout_persistence_response(
     persistence: LayoutPersistenceStatus,
 ) -> Response {
     match persistence {
-        LayoutPersistenceStatus::Synchronized => ApiResponse::ok(data),
-        LayoutPersistenceStatus::Pending => ApiResponse::accepted(data),
+        LayoutPersistenceStatus::Synchronized => envelope::ok(data),
+        LayoutPersistenceStatus::Pending => envelope::accepted(data),
     }
 }
 

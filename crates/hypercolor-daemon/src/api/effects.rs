@@ -37,7 +37,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::discovery;
 use crate::domain;
 // One definition of the source spelling, shared with the `source`
@@ -268,9 +268,7 @@ fn elapsed_ms_u32(state: &AppState) -> u32 {
 /// a comma-separated list of expansions (`controls`, `presets`) that add
 /// optional fields to each summary.
 ///
-/// Parameters this type does not name stay ignored, which keeps the v1
-/// contract for the paging arguments the fabricated pagination block
-/// has always discarded.
+/// Parameters this type does not name stay ignored.
 #[derive(Debug, Clone, Default, serde::Deserialize, utoipa::IntoParams)]
 pub struct EffectListQuery {
     /// Exact effect category.
@@ -371,14 +369,10 @@ pub async fn list_effects(
         .collect();
 
     let total = items.len();
-    ApiResponse::ok(EffectListResponse {
+    envelope::ok(EffectListResponse {
         items,
-        pagination: super::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("effect count fits in u64"),
+        page: None,
     })
 }
 
@@ -435,7 +429,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 
     let cover_image_url = effect_cover_image_url(&meta);
 
-    ApiResponse::ok(EffectDetailResponse {
+    envelope::ok(EffectDetailResponse {
         id: meta.id.to_string(),
         name: meta.name,
         description: meta.description,
@@ -485,14 +479,10 @@ pub async fn list_effect_presets(
     let items = effect_preset_stack(state.as_ref(), &metadata).await;
     let total = items.len();
 
-    ApiResponse::ok(EffectPresetListResponse {
+    envelope::ok(EffectPresetListResponse {
         items,
-        pagination: super::devices::Pagination {
-            offset: 0,
-            limit: total,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("effect preset count fits in u64"),
+        page: None,
     })
 }
 
@@ -639,7 +629,7 @@ pub async fn apply_effect(
     );
 
     let revision = applied.commit.revision();
-    let mut response = ApiResponse::ok(SceneApplyEffectResponse {
+    let mut response = envelope::ok(SceneApplyEffectResponse {
         zone: crate::domain::scene_tree::zone_resource(&applied.zone),
         transition: TransitionType::Cut,
         output: applied.output,
@@ -692,7 +682,7 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
         },
     );
 
-    ApiResponse::ok(RescanResponse {
+    envelope::ok(RescanResponse {
         added: report.added,
         removed: report.removed,
         updated: report.updated,
@@ -804,7 +794,7 @@ pub async fn install_effect(
         "Installed uploaded effect"
     );
 
-    ApiResponse::created(InstalledEffectResponse {
+    envelope::created(InstalledEffectResponse {
         id: entry.metadata.id.to_string(),
         name: entry.metadata.name,
         source: "user".to_owned(),

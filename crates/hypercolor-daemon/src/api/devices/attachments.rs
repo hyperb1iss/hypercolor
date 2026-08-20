@@ -16,7 +16,7 @@ use hypercolor_types::attachment::{
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 
@@ -57,7 +57,7 @@ pub async fn get_attachments(
     normalize_attachment_profile_slots(&tracked.info, &mut profile);
     let registry = state.attachment_registry.read().await;
 
-    ApiResponse::ok(summarize_attachment_profile(
+    envelope::ok(summarize_attachment_profile(
         &tracked.info,
         profile,
         &registry,
@@ -115,7 +115,7 @@ pub async fn update_attachments(
     let needs_layout_update =
         active_layout_targets_device(&state, tracked.info.id, &layout_device_id).await;
 
-    ApiResponse::ok(DeviceComponentsUpdateResponse {
+    envelope::ok(DeviceComponentsUpdateResponse {
         device_id: tracked.info.id.to_string(),
         device_name: tracked.info.name.clone(),
         slots,
@@ -152,7 +152,7 @@ pub async fn delete_attachments(
     };
     state.usb_protocol_configs.remove_device(device_id).await;
 
-    ApiResponse::ok(DeleteAttachmentsResponse {
+    envelope::ok(DeleteAttachmentsResponse {
         device_id: tracked.info.id.to_string(),
         deleted,
     })

@@ -10,7 +10,7 @@ use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollect
 
 use crate::api::AppState;
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
 
 use super::unix_epoch_ms;
@@ -48,14 +48,10 @@ pub async fn list_favorites(State(state): State<Arc<AppState>>) -> Response {
         .collect();
 
     let total = items.len();
-    ApiResponse::ok(FavoriteListResponse {
+    envelope::ok(FavoriteListResponse {
         items,
-        pagination: crate::api::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("favorite count fits in u64"),
+        page: None,
     })
 }
 
@@ -94,7 +90,7 @@ pub async fn add_favorite(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::ok(AddFavoriteResponse {
+    envelope::ok(AddFavoriteResponse {
         favorite: FavoriteSummary {
             effect_id: favorite.effect_id.to_string(),
             effect_name: effect.name,
@@ -132,7 +128,7 @@ pub async fn remove_favorite(
             kind: LibraryChangeKind::Removed,
         });
 
-    ApiResponse::ok(DeleteFavoriteResponse {
+    envelope::ok(DeleteFavoriteResponse {
         effect_id: effect.id.to_string(),
         deleted: true,
     })

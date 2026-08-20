@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::api::scene::{SceneDocument, SideEffectOutcome, ZoneLayoutResource, ZoneMember};
 use crate::identity::LayoutId;
 use crate::layer::{
@@ -17,11 +17,7 @@ use crate::scene::{
 };
 
 /// Response for `GET /api/v1/scenes`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SceneListResponse {
-    pub items: Vec<SceneSummary>,
-    pub pagination: Pagination,
-}
+pub type SceneListResponse = ListResponse<SceneSummary>;
 
 /// One saved scene as listed by `GET /api/v1/scenes`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

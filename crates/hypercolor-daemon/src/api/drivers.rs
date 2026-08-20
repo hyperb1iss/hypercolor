@@ -14,7 +14,7 @@ use hypercolor_types::device::{
 };
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
 
@@ -102,7 +102,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         })
         .collect();
 
-    ApiResponse::ok(DriverListResponse { items })
+    envelope::ok(DriverListResponse { items })
 }
 
 /// `GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
@@ -143,7 +143,7 @@ pub async fn get_driver_config(
         .config()
         .map(hypercolor_driver_api::DriverConfigProvider::default_config);
 
-    ApiResponse::ok(DriverConfigResponse {
+    envelope::ok(DriverConfigResponse {
         config_key: format!("drivers.{driver_id}"),
         configurable: default.is_some(),
         driver_id,

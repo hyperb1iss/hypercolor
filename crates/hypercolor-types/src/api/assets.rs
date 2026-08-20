@@ -2,14 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::envelope::ListResponse;
 use crate::asset::MediaAssetRecord;
 
 /// Response from `GET /api/v1/assets`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AssetListResponse {
-    pub items: Vec<MediaAssetRecord>,
-    pub total: usize,
-}
+pub type AssetListResponse = ListResponse<MediaAssetRecord>;
 
 /// Response from `POST /api/v1/assets`.
 ///

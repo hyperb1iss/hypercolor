@@ -16,7 +16,7 @@ use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId, SceneKind, Zone};
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
 
 const MEDIA_SOFT_PRODUCER_COST_US: u64 = 60_000;
@@ -47,14 +47,10 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
         .collect();
 
     let total = items.len();
-    ApiResponse::ok(SceneListResponse {
+    envelope::ok(SceneListResponse {
         items,
-        pagination: super::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("scene count fits in u64"),
+        page: None,
     })
 }
 
@@ -71,7 +67,7 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
 
     let revision = state.scene_commits.revision();
     crate::api::scene::with_revision(
-        ApiResponse::ok(crate::domain::scene_tree::scene_document(scene, revision)),
+        envelope::ok(crate::domain::scene_tree::scene_document(scene, revision)),
         revision,
     )
 }
@@ -98,7 +94,7 @@ pub async fn create_scene(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::created(scene_summary(&created.scene))
+    envelope::created(scene_summary(&created.scene))
 }
 
 /// `POST /api/v1/scenes/snapshot` — Save the current runtime scene.
@@ -120,7 +116,7 @@ pub async fn snapshot_scene(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::created(scene_summary(&created.scene))
+    envelope::created(scene_summary(&created.scene))
 }
 
 /// `PUT /api/v1/scenes/{id}` — Replace a complete stored scene document.
@@ -160,7 +156,7 @@ pub async fn update_scene(
 
     let revision = updated.commit.revision();
     crate::api::scene::with_revision(
-        ApiResponse::ok(crate::domain::scene_tree::scene_document(
+        envelope::ok(crate::domain::scene_tree::scene_document(
             &updated.scene,
             revision,
         )),
@@ -191,7 +187,7 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
         };
     }
 
-    ApiResponse::ok(DeleteSceneResponse { id, deleted: true })
+    envelope::ok(DeleteSceneResponse { id, deleted: true })
 }
 
 /// `POST /api/v1/scenes/{id}/activate` — Manually activate a scene.
@@ -245,7 +241,7 @@ pub async fn activate_scene(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(ActivateSceneResponse {
+    envelope::ok(ActivateSceneResponse {
         scene: ActivatedSceneRef {
             id: activated.scene_id.to_string(),
             name: activated.scene_name,

@@ -14,7 +14,7 @@ use hypercolor_types::library::{EffectPreset, PresetId};
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
 
 use super::{normalize_tags, resolve_preset_id, store_error_to_response, unix_epoch_ms};
@@ -32,14 +32,10 @@ pub async fn list_presets(State(state): State<Arc<AppState>>) -> Response {
     let items = state.library_store.list_presets().await;
     let total = items.len();
 
-    ApiResponse::ok(PresetListResponse {
+    envelope::ok(PresetListResponse {
         items,
-        pagination: crate::api::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("preset count fits in u64"),
+        page: None,
     })
 }
 
@@ -53,7 +49,7 @@ pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    ApiResponse::ok(preset)
+    envelope::ok(preset)
 }
 
 /// `POST /api/v1/library/presets` — create a new saved preset.
@@ -107,7 +103,7 @@ pub async fn create_preset(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::created(preset)
+    envelope::created(preset)
 }
 
 /// `PUT /api/v1/library/presets/{id}` — update an existing preset.
@@ -168,7 +164,7 @@ pub async fn update_preset(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::ok(preset)
+    envelope::ok(preset)
 }
 
 /// `DELETE /api/v1/library/presets/{id}` — remove a preset.
@@ -192,7 +188,7 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
             kind: LibraryChangeKind::Removed,
         });
 
-    ApiResponse::ok(DeletePresetResponse {
+    envelope::ok(DeletePresetResponse {
         id: preset_id.to_string(),
         deleted: true,
     })

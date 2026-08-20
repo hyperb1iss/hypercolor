@@ -33,7 +33,7 @@ use tracing::{debug, warn};
 use utoipa::ToSchema;
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::macos_owner::{MacosDaemonOwner, MacosHandoverPhase, MacosOwnerSnapshot};
 use crate::performance::LatestFrameMetrics;
@@ -1355,7 +1355,7 @@ fn duration_ms(duration: Duration) -> u64 {
 
 /// Build a full status response for trusted in-process callers.
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
-    ApiResponse::ok(system_status_with_privacy(state, true).await)
+    envelope::ok(system_status_with_privacy(state, true).await)
 }
 
 async fn system_status_with_privacy(
@@ -1680,12 +1680,12 @@ pub(crate) async fn get_system(
         None
     };
 
-    ApiResponse::ok(SystemResource { identity, status })
+    envelope::ok(SystemResource { identity, status })
 }
 
 /// `GET /api/v1/system/sensors` — Latest system sensor snapshot.
 pub async fn get_sensors(State(state): State<Arc<AppState>>) -> Response {
-    ApiResponse::ok(latest_sensor_snapshot(&state).await.as_ref().clone())
+    envelope::ok(latest_sensor_snapshot(&state).await.as_ref().clone())
 }
 
 async fn server_info(state: &AppState) -> ServerInfo {
@@ -2324,7 +2324,7 @@ pub async fn list_audio_devices(State(state): State<Arc<AppState>>) -> Response 
     let current = current_audio_device_id(&state);
     let devices = audio_device_options(&current);
 
-    ApiResponse::ok(AudioDevicesResponse { devices, current })
+    envelope::ok(AudioDevicesResponse { devices, current })
 }
 
 pub(crate) fn capture_input_available() -> bool {

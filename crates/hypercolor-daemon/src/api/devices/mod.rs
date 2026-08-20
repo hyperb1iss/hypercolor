@@ -26,7 +26,7 @@ use hypercolor_types::device::{
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -47,8 +47,6 @@ pub use pairing::{
 
 // Wire contracts live in hypercolor-types::api::devices — shared with the
 // web UI and the TUI so request/response drift is a compile error. Local
-// re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
-pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
     DeleteDeviceResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
     IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest, IdentifySegmentResponse,
@@ -215,17 +213,17 @@ pub async fn list_devices(
         }
     }
     let has_more = offset.saturating_add(limit) < total;
-    ApiResponse::ok(DeviceListResponse {
+    envelope::ok(DeviceListResponse {
         items: paged_items
             .into_iter()
             .map(|(summary, _)| summary)
             .collect(),
-        pagination: Pagination {
-            offset,
-            limit,
-            total,
+        total: u64::try_from(total).expect("device count fits in u64"),
+        page: Some(hypercolor_types::api::PageInfo {
+            offset: u64::try_from(offset).expect("device offset fits in u64"),
+            limit: u64::try_from(limit).expect("device limit fits in u64"),
             has_more,
-        },
+        }),
     })
 }
 
@@ -264,7 +262,7 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         .metadata_for_id(&tracked.info.id)
         .await;
 
-    ApiResponse::ok(
+    envelope::ok(
         summarize_device_for_response(
             &state,
             &tracked.info,
@@ -380,7 +378,7 @@ pub async fn update_device(
         .metadata_for_id(&updated.info.id)
         .await;
 
-    ApiResponse::ok(
+    envelope::ok(
         summarize_device_for_response(
             &state,
             &updated.info,
@@ -439,7 +437,7 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     }
     crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
 
-    ApiResponse::ok(DeleteDeviceResponse {
+    envelope::ok(DeleteDeviceResponse {
         id: device_id.to_string(),
         removed: true,
     })
@@ -552,7 +550,7 @@ pub async fn identify_device(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifyDeviceResponse {
+    envelope::ok(IdentifyDeviceResponse {
         device_id: device_id.to_string(),
         identifying: true,
         duration_ms,
@@ -664,7 +662,7 @@ pub async fn identify_segment(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifySegmentResponse {
+    envelope::ok(IdentifySegmentResponse {
         device_id: device_id.to_string(),
         segment,
         segment_name,
@@ -798,7 +796,7 @@ pub async fn identify_attachment(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifyAttachmentResponse {
+    envelope::ok(IdentifyAttachmentResponse {
         device_id: device_id.to_string(),
         slot_id,
         binding_index,

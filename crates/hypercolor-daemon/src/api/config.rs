@@ -26,7 +26,7 @@ use axum::Extension;
 
 use crate::api::AppState;
 use crate::api::capture::protected_control_rejection;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -71,13 +71,13 @@ pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
         Err(error) => return internal_config_error(format!("Failed to serialize config: {error}")),
     };
 
-    ApiResponse::ok(redact_document(value))
+    envelope::ok(redact_document(value))
 }
 
 /// `GET /api/v1/config/schema` — the key registry clients read to learn
 /// how each key applies, renders, and validates.
 pub async fn get_config_schema() -> Response {
-    ApiResponse::ok(config_registry::schema_entries())
+    envelope::ok(config_registry::schema_entries())
 }
 
 /// `GET /api/v1/config/keys/{key}` — read one dotted config key.
@@ -99,7 +99,7 @@ pub async fn get_config_key(
         return DomainError::not_found(ResourceKind::ConfigKey, key).into_response();
     };
 
-    ApiResponse::ok(serde_json::json!({
+    envelope::ok(serde_json::json!({
         "key": key,
         "value": redact_key(&key, found.clone()),
     }))
@@ -240,7 +240,7 @@ async fn write_config_key(
             key,
             live_requested, "Skipping config update because value is unchanged"
         );
-        return ApiResponse::ok(mutation_result(
+        return envelope::ok(mutation_result(
             manager,
             Some(key.clone()),
             Some(redact_key(&key, parsed_value)),
@@ -285,7 +285,7 @@ async fn write_config_key(
                         "Canonicalized config is missing expected key: {key}"
                     ));
                 };
-                return ApiResponse::ok(mutation_result(
+                return envelope::ok(mutation_result(
                     manager,
                     Some(key.clone()),
                     Some(redact_key(&key, effective_value)),
@@ -365,7 +365,7 @@ async fn write_config_key(
             new_value: redact_key(&key, effective_value.clone()),
         });
 
-    ApiResponse::ok(mutation_result(
+    envelope::ok(mutation_result(
         manager,
         Some(key.clone()),
         Some(redact_key(&key, effective_value)),
@@ -665,7 +665,7 @@ async fn reset_config_state(
             .ok()
             .and_then(|root| get_json_path(&root, key).cloned())
             .map(|value| redact_key(key, value));
-        return ApiResponse::ok(mutation_result(
+        return envelope::ok(mutation_result(
             manager,
             Some(key.to_owned()),
             effective_value,
@@ -722,7 +722,7 @@ async fn reset_config_state(
             new_value: new_value.clone().unwrap_or(serde_json::Value::Null),
         });
 
-    ApiResponse::ok(mutation_result(
+    envelope::ok(mutation_result(
         manager,
         requested_key,
         new_value,

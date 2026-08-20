@@ -31,7 +31,7 @@ use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::domain::scene_tree::{
     AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
     ZoneWritten,
@@ -47,7 +47,7 @@ pub async fn get_scene(State(state): State<Arc<AppState>>) -> Response {
     match scene_tree::read_document(state.as_ref()).await {
         Ok(document) => {
             let revision = document.revision;
-            with_revision(ApiResponse::ok(document), revision)
+            with_revision(envelope::ok(document), revision)
         }
         Err(error) => error.into_response(),
     }
@@ -161,7 +161,7 @@ pub async fn create_zone(
             with_revision(
                 (
                     StatusCode::CREATED,
-                    ApiResponse::ok(scene_tree::zone_resource(&written.zone)),
+                    envelope::ok(scene_tree::zone_resource(&written.zone)),
                 )
                     .into_response(),
                 revision,
@@ -178,7 +178,7 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
         Err(error) => return error.into_response(),
     };
     match scene_tree::read_zone(state.as_ref(), zone_id).await {
-        Ok((resource, revision)) => with_revision(ApiResponse::ok(resource), revision),
+        Ok((resource, revision)) => with_revision(envelope::ok(resource), revision),
         Err(error) => error.into_response(),
     }
 }
@@ -339,7 +339,7 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
         Ok((resource, revision)) => {
             let total = resource.layers.len() as u64;
             with_revision(
-                ApiResponse::ok(ListResponse {
+                envelope::ok(ListResponse {
                     items: resource.layers,
                     total,
                     page: None,
@@ -382,7 +382,7 @@ pub async fn create_layer(
             with_revision(
                 (
                     StatusCode::CREATED,
-                    ApiResponse::ok(scene_tree::zone_resource(written.zone())),
+                    envelope::ok(scene_tree::zone_resource(written.zone())),
                 )
                     .into_response(),
                 revision,
@@ -526,7 +526,7 @@ fn tree_response(result: Result<TreeWritten, DomainError>) -> Response {
     match result {
         Ok(written) => {
             let revision = written.document.revision;
-            with_revision(ApiResponse::ok(written.document), revision)
+            with_revision(envelope::ok(written.document), revision)
         }
         Err(error) => error.into_response(),
     }
@@ -534,7 +534,7 @@ fn tree_response(result: Result<TreeWritten, DomainError>) -> Response {
 
 fn written_response(result: Result<ZoneWritten, DomainError>) -> Response {
     match result {
-        Ok(written) => with_revision(ApiResponse::ok(written.zone), written.revision),
+        Ok(written) => with_revision(envelope::ok(written.zone), written.revision),
         Err(error) => error.into_response(),
     }
 }
@@ -544,7 +544,7 @@ fn zone_written_response(
 ) -> Response {
     match result {
         Ok(written) => with_revision(
-            ApiResponse::ok(scene_tree::zone_resource(&written.zone)),
+            envelope::ok(scene_tree::zone_resource(&written.zone)),
             written.commit.revision(),
         ),
         Err(error) => error.into_response(),
@@ -559,7 +559,7 @@ fn layer_stack_response(
         Ok(Ok(written)) => {
             let revision = written.commit.revision();
             with_revision(
-                ApiResponse::ok(scene_tree::zone_resource(written.zone())),
+                envelope::ok(scene_tree::zone_resource(written.zone())),
                 revision,
             )
         }

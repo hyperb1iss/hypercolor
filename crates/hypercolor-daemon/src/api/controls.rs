@@ -24,7 +24,7 @@ use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::devices;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
@@ -98,7 +98,7 @@ pub async fn list_control_surfaces(
             .into_response();
     }
 
-    ApiResponse::ok(ControlSurfaceListResponse { surfaces })
+    envelope::ok(ControlSurfaceListResponse { surfaces })
 }
 
 /// `GET /api/v1/drivers/{id}/controls` - Return a driver-level control surface.
@@ -107,7 +107,7 @@ pub async fn get_driver_control_surface(
     Path(driver_id): Path<String>,
 ) -> Response {
     match driver_control_surface_document(&state, &driver_id).await {
-        Ok(Some(surface)) => ApiResponse::ok(surface),
+        Ok(Some(surface)) => envelope::ok(surface),
         Ok(None) => {
             DomainError::not_found(ResourceKind::ControlSurface, &driver_id).into_response()
         }
@@ -131,7 +131,7 @@ pub async fn get_control_surface(
                 .into_response();
         }
         return match driver_device_control_surface(&state, &tracked.info, tracked.state).await {
-            Ok(Some(surface)) => ApiResponse::ok(surface),
+            Ok(Some(surface)) => envelope::ok(surface),
             Ok(None) => {
                 DomainError::not_found(ResourceKind::ControlSurface, &surface_id).into_response()
             }
@@ -141,7 +141,7 @@ pub async fn get_control_surface(
 
     if let Some(driver_id) = parse_driver_surface_id(&surface_id) {
         return match driver_control_surface_document(&state, &driver_id).await {
-            Ok(Some(surface)) => ApiResponse::ok(surface),
+            Ok(Some(surface)) => envelope::ok(surface),
             Ok(None) => {
                 DomainError::not_found(ResourceKind::ControlSurface, &surface_id).into_response()
             }
@@ -154,7 +154,7 @@ pub async fn get_control_surface(
             return DomainError::not_found(ResourceKind::ControlSurface, &surface_id)
                 .into_response();
         };
-        return ApiResponse::ok(device_control_surface(
+        return envelope::ok(device_control_surface(
             &tracked.info,
             &tracked.user_settings,
             tracked.revision,
@@ -251,7 +251,7 @@ pub async fn get_device_control_surface(
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
-    ApiResponse::ok(device_control_surface(
+    envelope::ok(device_control_surface(
         &tracked.info,
         &tracked.user_settings,
         tracked.revision,
@@ -343,7 +343,7 @@ pub async fn apply_control_surface_values(
     if !body.dry_run {
         publish_values_changed(state.as_ref(), &response);
     }
-    ApiResponse::ok(response)
+    envelope::ok(response)
 }
 
 /// `POST /api/v1/control-surfaces/{id}/actions/{action}` - Invoke a
@@ -406,7 +406,7 @@ async fn invoke_host_device_control_action(
         revision: tracked.revision,
     };
     publish_action_progress(&state, &result);
-    ApiResponse::ok(result)
+    envelope::ok(result)
 }
 
 async fn invoke_driver_control_action(
@@ -445,7 +445,7 @@ async fn invoke_driver_control_action(
                 driver_control_revision(&driver_config_entry_for_state(state, &driver_id)),
             );
             publish_action_progress(state, &result);
-            ApiResponse::ok(result)
+            envelope::ok(result)
         }
         Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
     }
@@ -484,7 +484,7 @@ async fn invoke_device_control_action(
         Ok(result) => {
             let result = normalize_action_result(result, surface_id, action_id, tracked.revision);
             publish_action_progress(state, &result);
-            ApiResponse::ok(result)
+            envelope::ok(result)
         }
         Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
     }
@@ -539,7 +539,7 @@ async fn invoke_driver_device_control_action(
         Ok(result) => {
             let result = normalize_action_result(result, surface_id, action_id, revision);
             publish_action_progress(state, &result);
-            ApiResponse::ok(result)
+            envelope::ok(result)
         }
         Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
     }
@@ -749,7 +749,7 @@ async fn apply_driver_control_surface_values(
     }
 
     if body.dry_run {
-        return ApiResponse::ok(ApplyControlChangesResponse {
+        return envelope::ok(ApplyControlChangesResponse {
             surface_id,
             previous_revision,
             revision: previous_revision,
@@ -797,7 +797,7 @@ async fn apply_driver_control_surface_values(
     response.revision = driver_control_revision(&updated_entry);
     response.values = driver_surface_values(provider, state, &driver_id, &updated_entry).await;
     publish_values_changed(state, &response);
-    ApiResponse::ok(response)
+    envelope::ok(response)
 }
 
 async fn apply_driver_device_control_surface_values(
@@ -868,7 +868,7 @@ async fn apply_driver_device_control_surface_values(
     }
 
     if body.dry_run {
-        return ApiResponse::ok(ApplyControlChangesResponse {
+        return envelope::ok(ApplyControlChangesResponse {
             surface_id,
             previous_revision,
             revision: previous_revision,
@@ -917,7 +917,7 @@ async fn apply_driver_device_control_surface_values(
                 .into_response();
             }
             publish_values_changed(state, &response);
-            ApiResponse::ok(response)
+            envelope::ok(response)
         }
         Err(error) => DomainError::Internal(anyhow::anyhow!(
             "Failed to apply device controls for {surface_id}: {error}"

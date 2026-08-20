@@ -1,19 +1,14 @@
 //! Canonical response envelope conventions (Spec 76 §4.3).
 //!
-//! These are the shapes canonical routes adopt as Phase 2 rolls out.
-//! Pure data — no Axum, no transport. The daemon's REST adapter wraps
-//! payloads in these; MCP and WS command results project the same
-//! error body. Legacy v1 paths keep their current shapes (including
-//! [`super::common::Pagination`]'s fabricated blocks), frozen by the
-//! v1 compat matrix — these types never retrofit onto v1 paths.
+//! Pure data with no transport dependencies. The daemon's REST adapter
+//! wraps payloads in these; MCP and WS command results project the same
+//! error body.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Response metadata included in every envelope.
 ///
-/// Field-for-field the wire shape v1 already emits, so canonical and
-/// legacy envelopes stay mergeable in clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ResponseMeta {
     /// API version string.
@@ -60,7 +55,7 @@ pub struct ApiErrorDetail {
 /// `page: None` means the response is complete — no fabricated
 /// `limit`/`has_more` block pretending a paging contract that doesn't
 /// exist. `page: Some` means the endpoint genuinely pages.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ListResponse<T> {
     /// The items.
     pub items: Vec<T>,

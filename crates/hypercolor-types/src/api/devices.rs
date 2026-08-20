@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::attachment::{ComponentBinding, ComponentSlot, ComponentSuggestedZone};
 use crate::device::{DeviceOrigin, DriverPresentation};
 use crate::pairing::{DeviceAuthSummary, PairDeviceStatus};
@@ -31,11 +31,7 @@ pub struct ListDevicesQuery {
 }
 
 /// Response for `GET /api/v1/devices`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct DeviceListResponse {
-    pub items: Vec<DeviceSummary>,
-    pub pagination: Pagination,
-}
+pub type DeviceListResponse = ListResponse<DeviceSummary>;
 
 /// One device in the list/detail responses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]

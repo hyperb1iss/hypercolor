@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::spatial::Output;
 
 /// Summary row from `GET /api/v1/layouts`.
@@ -18,11 +18,7 @@ pub struct LayoutSummary {
 }
 
 /// Paginated response from `GET /api/v1/layouts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LayoutListResponse {
-    pub items: Vec<LayoutSummary>,
-    pub pagination: Pagination,
-}
+pub type LayoutListResponse = ListResponse<LayoutSummary>;
 
 /// Query parameters for `GET /api/v1/layouts`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

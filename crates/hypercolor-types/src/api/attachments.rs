@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::attachment::{
     ComponentCanvasSize, ComponentCategory, ComponentCompatibility, ComponentOrigin,
 };
@@ -60,13 +60,7 @@ pub struct ListTemplatesQuery {
 // proves transitively that nothing in this response is a float. A float
 // here would be a wire hazard, because the shapes these types replace
 // were built with `json!`, which widens f32 to f64 and reprints it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TemplateListResponse {
-    #[serde(default)]
-    pub items: Vec<TemplateSummary>,
-    #[serde(default)]
-    pub pagination: Pagination,
-}
+pub type TemplateListResponse = ListResponse<TemplateSummary>;
 
 /// One template in the catalog listing.
 ///

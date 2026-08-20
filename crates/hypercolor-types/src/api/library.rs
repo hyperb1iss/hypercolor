@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::library::{EffectPlaylist, EffectPreset};
 
 /// Request body for `POST /api/v1/library/favorites`.
@@ -26,13 +26,7 @@ pub struct FavoriteSummary {
 }
 
 /// Response for `GET /api/v1/library/favorites`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FavoriteListResponse {
-    #[serde(default)]
-    pub items: Vec<FavoriteSummary>,
-    #[serde(default)]
-    pub pagination: Pagination,
-}
+pub type FavoriteListResponse = ListResponse<FavoriteSummary>;
 
 /// Response for `POST /api/v1/library/favorites`.
 ///
@@ -98,13 +92,7 @@ pub struct SavePresetRequest {
 }
 
 /// Response for `GET /api/v1/library/presets`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PresetListResponse {
-    #[serde(default)]
-    pub items: Vec<EffectPreset>,
-    #[serde(default)]
-    pub pagination: Pagination,
-}
+pub type PresetListResponse = ListResponse<EffectPreset>;
 
 /// Response for `DELETE /api/v1/library/presets/{id}`.
 ///
@@ -122,13 +110,7 @@ pub struct DeletePresetResponse {
 // widened digits. Naming the shape would change the bytes on the wire.
 
 /// Response for `GET /api/v1/library/playlists`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PlaylistListResponse {
-    #[serde(default)]
-    pub items: Vec<EffectPlaylist>,
-    #[serde(default)]
-    pub pagination: Pagination,
-}
+pub type PlaylistListResponse = ListResponse<EffectPlaylist>;
 
 /// Response for `DELETE /api/v1/library/playlists/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

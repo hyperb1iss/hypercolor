@@ -21,7 +21,6 @@
 pub mod assets;
 pub mod attachments;
 pub mod capture;
-pub mod common;
 pub mod config;
 pub mod controls;
 pub mod devices;
@@ -36,4 +35,4 @@ pub mod scene;
 pub mod scenes;
 pub mod simulators;
 
-pub use common::Pagination;
+pub use envelope::{ApiResponse, ListResponse, PageInfo, ResponseMeta};

@@ -142,36 +142,24 @@ client-side routing work; `/health` has no sub-paths to protect.
 
 ---
 
-## 2. Frozen list endpoints and the fabricated pagination block
+## 2. Canonical list responses
 
-Five list endpoints share one deliberate lie. Each returns **every** row in
-`items` while reporting a `limit` of 50 and `has_more: false`. Four take no
-query extractor at all, and the fifth (`/api/v1/effects`, see below) names no
-paging arguments, so `?offset=` and `?limit=` are silently discarded on every
-row.
+Every collection uses `ListResponse<T>`. Complete collections omit `page`;
+collections that accept `offset` and `limit` include a real `PageInfo`.
 
 ```json
 {
   "data": {
     "items": [ ],
-    "pagination": { "offset": 0, "limit": 50, "total": 2, "has_more": false }
+    "total": 2
   },
   "meta": { }
 }
 ```
 
-| Method | Path | Items key | `offset` | `limit` | `total` | `has_more` | Query params |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| GET | `/api/v1/effects` | `items` | `0` | `50` | count **after** filtering | `false` | honored (below) |
-| GET | `/api/v1/scenes` | `items` | `0` | `50` | real count **after** ephemeral scenes are filtered out | `false` | ignored |
-| GET | `/api/v1/library/favorites` | `items` | `0` | `50` | real count | `false` | ignored |
-| GET | `/api/v1/library/presets` | `items` | `0` | `50` | real count | `false` | ignored |
-| GET | `/api/v1/library/playlists` | `items` | `0` | `50` | real count | `false` | ignored |
-
-Consequence worth stating plainly: with more than fifty rows registered, a v1
-client sees `total > limit` alongside `has_more: false`, and every row is in the
-payload anyway. Spec 76 wave 3.3 fixes pagination on canonical routes only; the
-block above stays exactly as written on v1.
+The complete collections are effects, effect presets, scenes, assets,
+favorites, saved presets, and playlists. `total` counts the rows after any
+server-side filtering.
 
 `GET /api/v1/effects` is the one row that reads its query string (Spec 78
 wave 78.0a). It honors `category`, `audio_reactive`, `screen_reactive`,
@@ -183,38 +171,21 @@ an empty list. Summaries carry **no** `controls` or `presets` key unless
 `include` asked for it, so the default shape is byte-identical to the pre-78.0
 payload. Pinned by `tests/effect_catalog_tests.rs`.
 
-The scene list has a second frozen quirk: the daemon's default scene is
+The scene list has one notable semantic: the daemon's default scene is
 `Ephemeral`, and the filter runs before the count, so a freshly started daemon
 reports `total: 0` from `/api/v1/scenes` even though a scene is active.
 
-The `Pagination` struct itself lives in `hypercolor-types::api::common` and is
-shared by honest and fabricated callers alike, so it cannot be redefined to suit
-either one:
-
-```rust
-pub struct Pagination { pub offset: usize, pub limit: usize, pub total: usize, pub has_more: bool }
-```
-
-### 2.1 Endpoints that really paginate
+### 2.1 Paged endpoints
 
 Three endpoints honor `offset`/`limit` and compute `has_more` from the real
-total. They are frozen too, because a refactor that flattens all pagination into
-one shape would break these in the opposite direction.
+total. Their `page` object carries only `offset`, `limit`, and `has_more`; the
+collection-wide count remains the top-level `total`.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
 | GET | `/api/v1/devices` | Slices by `offset`/`limit`, `has_more = offset + limit < total` |
 | GET | `/api/v1/layouts` | Same |
 | GET | `/api/v1/attachments/templates` | Same |
-
-### 2.2 A third pagination dialect
-
-One more endpoint self-describes with `limit == total` rather than the
-hardcoded 50, which is a distinct shape from both groups above.
-
-| Method | Path | Block |
-| --- | --- | --- |
-| GET | `/api/v1/effects/{id}/presets` | `offset: 0, limit: total, total, has_more: false` |
 
 ---
 

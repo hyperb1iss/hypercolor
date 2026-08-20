@@ -20,7 +20,7 @@ use tracing::warn;
 use crate::api::AppState;
 use crate::api::devices;
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::publish_render_group_changed;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::{DomainError, ResourceKind};
@@ -79,7 +79,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
     }
 
     displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-    ApiResponse::ok(displays)
+    envelope::ok(displays)
 }
 
 /// `GET /api/v1/displays/{id}/frame` — latest composited frame for a display.
@@ -140,18 +140,18 @@ pub async fn get_display_face(
     let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
     if scene_assigned {
         return match current_display_face_assignment(&state, device_id).await {
-            Ok(response) => ApiResponse::ok(Some(response)),
+            Ok(response) => envelope::ok(Some(response)),
             Err(error) => error.into_response(),
         };
     }
     if default_assigned {
         return match current_default_face_assignment(&state, device_id).await {
-            Ok(response) => ApiResponse::ok(Some(response)),
+            Ok(response) => envelope::ok(Some(response)),
             Err(error) => error.into_response(),
         };
     }
 
-    ApiResponse::ok(None::<DisplayFaceResponse>)
+    envelope::ok(None::<DisplayFaceResponse>)
 }
 
 /// `PUT /api/v1/displays/{id}/face` — assign or update a face in the active scene.
@@ -253,7 +253,7 @@ pub async fn set_display_face(
             publish_render_group_changed(state.as_ref(), scene_id, &zone, ZoneChangeKind::Updated);
         }
 
-        return ApiResponse::ok(DisplayFaceResponse {
+        return envelope::ok(DisplayFaceResponse {
             default_assigned: true,
             device_id: device_id.to_string(),
             effect,
@@ -291,7 +291,7 @@ pub async fn set_display_face(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(DisplayFaceResponse {
+    envelope::ok(DisplayFaceResponse {
         default_assigned,
         device_id: device_id.to_string(),
         effect,
@@ -366,7 +366,7 @@ pub async fn patch_display_face_composition(
                     &response.zone,
                     ZoneChangeKind::Updated,
                 );
-                ApiResponse::ok(response)
+                envelope::ok(response)
             }
             Err(error) => error.into_response(),
         };
@@ -396,7 +396,7 @@ pub async fn patch_display_face_composition(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(DisplayFaceResponse {
+    envelope::ok(DisplayFaceResponse {
         default_assigned: {
             let store = state.display_preferences.read().await;
             store.get(device_id).is_some()
@@ -473,7 +473,7 @@ pub async fn delete_display_face(
             Err(error) => return error.into_response(),
         }
 
-        return ApiResponse::ok(serde_json::json!({
+        return envelope::ok(serde_json::json!({
             "device_id": device_id.to_string(),
             "scope": DisplayFaceScope::Default,
             "deleted": removed,
@@ -505,7 +505,7 @@ pub async fn delete_display_face(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(serde_json::json!({
+    envelope::ok(serde_json::json!({
         "device_id": device_id.to_string(),
         "scene_id": cleared.scene_id.to_string(),
         "scope": DisplayFaceScope::Scene,
@@ -593,7 +593,7 @@ pub async fn patch_display_face_controls(
                     &response.zone,
                     ZoneChangeKind::ControlsPatched,
                 );
-                ApiResponse::ok(response)
+                envelope::ok(response)
             }
             Err(error) => error.into_response(),
         };
@@ -632,7 +632,7 @@ pub async fn patch_display_face_controls(
         );
     }
 
-    ApiResponse::ok(DisplayFaceResponse {
+    envelope::ok(DisplayFaceResponse {
         default_assigned: {
             let store = state.display_preferences.read().await;
             store.get(device_id).is_some()

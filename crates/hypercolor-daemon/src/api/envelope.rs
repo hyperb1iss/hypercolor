@@ -8,72 +8,44 @@
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use serde::Serialize;
 use uuid::Uuid;
 
 // ── Meta ─────────────────────────────────────────────────────────────────
 
-/// Response metadata included in every envelope.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Meta {
-    /// API version string.
-    pub api_version: String,
-    /// Per-request correlation ID, prefixed `req_`.
-    pub request_id: String,
-    /// ISO 8601 UTC timestamp of response generation.
-    pub timestamp: String,
-}
+pub use hypercolor_types::api::envelope::{ApiResponse, ResponseMeta as Meta};
 
-impl Meta {
-    /// Generate a fresh metadata block with a new request ID.
-    fn now() -> Self {
-        Self {
-            api_version: "1.0".to_owned(),
-            request_id: format!("req_{}", Uuid::now_v7()),
-            timestamp: iso8601_now(),
-        }
+fn meta_now() -> Meta {
+    Meta {
+        api_version: "1.0".to_owned(),
+        request_id: format!("req_{}", Uuid::now_v7()),
+        timestamp: iso8601_now(),
     }
 }
 
 // ── Success Envelope ─────────────────────────────────────────────────────
 
-/// Standard success response wrapper.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ApiResponse<T: Serialize> {
-    /// The response payload.
-    pub data: T,
-    /// Response metadata.
-    pub meta: Meta,
+fn respond<T: Serialize>(status: StatusCode, data: T) -> Response {
+    let body = ApiResponse {
+        data,
+        meta: meta_now(),
+    };
+    (status, axum::Json(body)).into_response()
 }
 
-impl<T: Serialize> ApiResponse<T> {
-    /// Wrap data in a 200 OK envelope.
-    pub fn ok(data: T) -> Response {
-        let body = Self {
-            data,
-            meta: Meta::now(),
-        };
-        (StatusCode::OK, axum::Json(body)).into_response()
-    }
+/// Wrap data in a 200 OK envelope.
+pub fn ok<T: Serialize>(data: T) -> Response {
+    respond(StatusCode::OK, data)
+}
 
-    /// Wrap data in a 201 Created envelope.
-    pub fn created(data: T) -> Response {
-        let body = Self {
-            data,
-            meta: Meta::now(),
-        };
-        (StatusCode::CREATED, axum::Json(body)).into_response()
-    }
+/// Wrap data in a 201 Created envelope.
+pub fn created<T: Serialize>(data: T) -> Response {
+    respond(StatusCode::CREATED, data)
+}
 
-    /// Wrap data in a 202 Accepted envelope.
-    pub fn accepted(data: T) -> Response {
-        let body = Self {
-            data,
-            meta: Meta::now(),
-        };
-        (StatusCode::ACCEPTED, axum::Json(body)).into_response()
-    }
+/// Wrap data in a 202 Accepted envelope.
+pub fn accepted<T: Serialize>(data: T) -> Response {
+    respond(StatusCode::ACCEPTED, data)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

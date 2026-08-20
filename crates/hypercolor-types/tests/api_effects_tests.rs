@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use hypercolor_types::api::Pagination;
 use hypercolor_types::api::effects::{
     EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
 };
@@ -19,12 +18,8 @@ fn effect_preset_stack_round_trips_origin_and_editability() {
             origin: EffectPresetOrigin::Saved,
             editable: true,
         }],
-        pagination: Pagination {
-            offset: 0,
-            limit: 1,
-            total: 1,
-            has_more: false,
-        },
+        total: 1,
+        page: None,
     };
 
     let json = serde_json::to_value(&response).expect("preset stack should serialize");

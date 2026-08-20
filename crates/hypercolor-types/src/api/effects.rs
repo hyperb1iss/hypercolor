@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::effect::{ControlDefinition, ControlValue, PresetTemplate};
 
 /// Origin of a preset in an effect's unified preset stack.
@@ -31,18 +31,10 @@ pub struct EffectPresetSummary {
 }
 
 /// Response for `GET /api/v1/effects/{id}/presets`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct EffectPresetListResponse {
-    pub items: Vec<EffectPresetSummary>,
-    pub pagination: Pagination,
-}
+pub type EffectPresetListResponse = ListResponse<EffectPresetSummary>;
 
 /// Response for `GET /api/v1/effects`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct EffectListResponse {
-    pub items: Vec<EffectSummary>,
-    pub pagination: Pagination,
-}
+pub type EffectListResponse = ListResponse<EffectSummary>;
 
 /// One effect in the list response.
 ///

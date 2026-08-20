@@ -16,7 +16,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
 
 use super::{refreshed_device_summary, resolve_device_id_or_error};
@@ -39,7 +39,7 @@ pub async fn pair_device(
     };
 
     match pair_device_for_ui(&state, device_id, payload).await {
-        Ok(paired) => ApiResponse::ok(paired),
+        Ok(paired) => envelope::ok(paired),
         Err(error) => error.into_response(),
     }
 }
@@ -55,7 +55,7 @@ pub async fn delete_pairing(
     };
 
     match delete_device_pairing(&state, device_id).await {
-        Ok(deleted) => ApiResponse::ok(deleted),
+        Ok(deleted) => envelope::ok(deleted),
         Err(error) => error.into_response(),
     }
 }

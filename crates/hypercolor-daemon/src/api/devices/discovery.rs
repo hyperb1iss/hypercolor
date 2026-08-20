@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::discovery;
 use crate::domain::DomainError;
 
@@ -59,7 +59,7 @@ pub async fn discover_devices(
         )
         .await;
 
-        return ApiResponse::ok(serde_json::json!({
+        return envelope::ok(serde_json::json!({
             "scan_id": scan_id,
             "status": "completed",
             "result": result,
@@ -80,7 +80,7 @@ pub async fn discover_devices(
         .await;
     });
 
-    ApiResponse::accepted(serde_json::json!({
+    envelope::accepted(serde_json::json!({
         "scan_id": scan_id,
         "status": "scanning",
         "targets": target_names,

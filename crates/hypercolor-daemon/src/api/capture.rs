@@ -18,7 +18,7 @@ use hypercolor_types::api::capture::{
 };
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::domain::DomainError;
 
@@ -217,7 +217,7 @@ pub(crate) async fn authorize_input_monitoring(
     match tokio::task::spawn_blocking(move || action.execute()).await {
         Ok(Ok(authorized)) => {
             info!(authorized, "Input Monitoring authorization requested");
-            ApiResponse::ok(CaptureAuthorizationResponse {
+            envelope::ok(CaptureAuthorizationResponse {
                 authorized,
                 grant_owner: protected_action_owner(grant_owner),
             })
@@ -285,7 +285,7 @@ pub(crate) async fn authorize_screen_recording(
     match tokio::task::spawn_blocking(move || action.execute()).await {
         Ok(Ok(authorized)) => {
             info!(authorized, "Screen Recording authorization requested");
-            ApiResponse::ok(CaptureAuthorizationResponse {
+            envelope::ok(CaptureAuthorizationResponse {
                 authorized,
                 grant_owner: protected_action_owner(grant_owner),
             })
@@ -431,7 +431,7 @@ pub(crate) async fn set_capture_source(
     }
 
     info!("Screen capture source picker requested");
-    ApiResponse::ok(CapturePickerResponse {
+    envelope::ok(CapturePickerResponse {
         picking: true,
         grant_owner: protected_action_owner(grant_owner),
     })
@@ -478,7 +478,7 @@ pub(crate) async fn list_capture_monitors(
         })
         .collect();
 
-    ApiResponse::ok(monitors)
+    envelope::ok(monitors)
 }
 
 #[cfg(test)]

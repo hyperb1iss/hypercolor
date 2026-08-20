@@ -191,43 +191,18 @@ fn assert_error_envelope(body: &Value, code: &str) {
     );
 }
 
-/// The frozen v1 pagination block.
-///
-/// Six list endpoints fabricate this: they return every row while reporting
-/// `limit: 50, has_more: false`, and they take no query parameters at all.
-/// Spec 76 wave 3.3 corrects pagination on canonical routes only, so the lie
-/// is contract on v1 and is asserted verbatim.
-fn assert_frozen_pagination(pagination: &Value, total: usize) {
-    assert_keys(
-        pagination,
-        &["offset", "limit", "total", "has_more"],
-        "v1 pagination block",
-    );
-    assert_eq!(
-        pagination["offset"],
-        json!(0),
-        "pagination.offset is frozen"
-    );
-    assert_eq!(pagination["limit"], json!(50), "pagination.limit is frozen");
-    assert_eq!(
-        pagination["total"],
-        json!(total),
-        "pagination.total counts every row"
-    );
-    assert_eq!(
-        pagination["has_more"],
-        json!(false),
-        "pagination.has_more is frozen"
-    );
+fn assert_page(page: &Value, offset: usize, limit: usize, has_more: bool) {
+    assert_keys(page, &["offset", "limit", "has_more"], "paging block");
+    assert_eq!(page["offset"], json!(offset));
+    assert_eq!(page["limit"], json!(limit));
+    assert_eq!(page["has_more"], json!(has_more));
 }
 
-/// A frozen list body: `{ items: [...], pagination: {...} }`, where every row
-/// ships in `items` regardless of the `limit` the block advertises.
-fn assert_frozen_list(data: &Value, expected_items: usize) {
-    assert_keys(data, &["items", "pagination"], "v1 frozen list body");
+fn assert_complete_list(data: &Value, expected_items: usize) {
+    assert_keys(data, &["items", "total"], "complete list body");
     let items = data["items"].as_array().expect("items should be an array");
     assert_eq!(items.len(), expected_items, "the list returns every row");
-    assert_frozen_pagination(&data["pagination"], expected_items);
+    assert_eq!(data["total"], json!(expected_items));
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
@@ -342,10 +317,10 @@ async fn health_probe_reports_503_when_degraded() {
     assert_eq!(json["checks"]["render_loop"], json!("degraded"));
 }
 
-// ── Pagination: the six frozen list endpoints ────────────────────────────
+// ── List semantics ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn effects_list_freezes_the_fabricated_pagination_block() {
+async fn effects_list_reports_a_complete_list() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     register_effect(&state, "rainbow").await;
@@ -356,11 +331,11 @@ async fn effects_list_freezes_the_fabricated_pagination_block() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    assert_frozen_list(&json["data"], 2);
+    assert_complete_list(&json["data"], 2);
 }
 
 #[tokio::test]
-async fn scenes_list_freezes_the_fabricated_pagination_block() {
+async fn scenes_list_reports_a_complete_list() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
@@ -368,7 +343,7 @@ async fn scenes_list_freezes_the_fabricated_pagination_block() {
     // out before counting, so a fresh daemon reports zero rows.
     let empty = send(&app, get("/api/v1/scenes")).await;
     assert_eq!(empty.status(), StatusCode::OK);
-    assert_frozen_list(&body_json(empty).await["data"], 0);
+    assert_complete_list(&body_json(empty).await["data"], 0);
 
     let created = send(
         &app,
@@ -382,11 +357,11 @@ async fn scenes_list_freezes_the_fabricated_pagination_block() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    assert_frozen_list(&json["data"], 1);
+    assert_complete_list(&json["data"], 1);
 }
 
 #[tokio::test]
-async fn library_favorites_list_freezes_the_fabricated_pagination_block() {
+async fn library_favorites_list_reports_a_complete_list() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
@@ -407,11 +382,11 @@ async fn library_favorites_list_freezes_the_fabricated_pagination_block() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    assert_frozen_list(&json["data"], 1);
+    assert_complete_list(&json["data"], 1);
 }
 
 #[tokio::test]
-async fn library_presets_list_freezes_the_fabricated_pagination_block() {
+async fn library_presets_list_reports_a_complete_list() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
@@ -432,11 +407,11 @@ async fn library_presets_list_freezes_the_fabricated_pagination_block() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    assert_frozen_list(&json["data"], 1);
+    assert_complete_list(&json["data"], 1);
 }
 
 #[tokio::test]
-async fn library_playlists_list_freezes_the_fabricated_pagination_block() {
+async fn library_playlists_list_reports_a_complete_list() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     let app = test_app(&state);
@@ -463,32 +438,26 @@ async fn library_playlists_list_freezes_the_fabricated_pagination_block() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    assert_frozen_list(&json["data"], 1);
+    assert_complete_list(&json["data"], 1);
 }
 
 #[tokio::test]
-async fn frozen_list_endpoints_ignore_offset_and_limit_query_params() {
+async fn complete_list_endpoints_ignore_unknown_paging_query_params() {
     let (state, _tmp) = isolated_state();
     register_effect(&state, "solid_color").await;
     register_effect(&state, "rainbow").await;
     register_effect(&state, "aurora").await;
     let app = test_app(&state);
 
-    // Effects is the one row of the six with a `Query` extractor, and it
-    // names only the Spec 78 §2.1 filters. Paging arguments fall outside
-    // that set, so they stay silently discarded rather than rejected.
     let response = send(&app, get("/api/v1/effects?offset=2&limit=1")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_frozen_list(&json["data"], 3);
+    assert_complete_list(&json["data"], 3);
 }
 
 #[tokio::test]
 async fn devices_list_pagination_stays_honest() {
-    // The shared `Pagination` type is also used by endpoints that really page.
-    // Freezing the honest sites alongside the fabricated ones keeps a later
-    // pagination refactor from "fixing" v1 by flattening both into one shape.
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
@@ -497,15 +466,8 @@ async fn devices_list_pagination_stays_honest() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    let pagination = &json["data"]["pagination"];
-    assert_keys(
-        pagination,
-        &["offset", "limit", "total", "has_more"],
-        "devices pagination block",
-    );
-    assert_eq!(pagination["offset"], json!(0));
-    assert_eq!(pagination["limit"], json!(10), "devices honors ?limit=");
-    assert_eq!(pagination["has_more"], json!(false));
+    assert_keys(&json["data"], &["items", "total", "page"], "paged list");
+    assert_page(&json["data"]["page"], 0, 10, false);
 }
 
 // ── Legacy paths stay routed and legacy-shaped ───────────────────────────

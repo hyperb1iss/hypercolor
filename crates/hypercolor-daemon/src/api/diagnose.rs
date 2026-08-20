@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::api::AppState;
 use crate::api::capture::protected_control_rejection;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::api::system::{InputStatus, actionable_input_diagnostics, input_status_snapshot};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -225,7 +225,7 @@ pub(crate) async fn run_diagnostics(
 
     let include_system = body.as_ref().and_then(|b| b.system).unwrap_or(false);
     let response = collect_diagnostics(&state, &requested, include_system).await;
-    ApiResponse::ok(response)
+    envelope::ok(response)
 }
 
 pub(crate) async fn collect_default_diagnostics(state: &AppState) -> DiagnoseResponse {
