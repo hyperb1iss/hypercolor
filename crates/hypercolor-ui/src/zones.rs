@@ -22,7 +22,7 @@ use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_zones};
 pub struct ZonesContext {
     /// The active scene, shared by every consumer. `None` while loading
     /// or when only the ephemeral default is running with no zones yet.
-    pub active_scene: Memo<Option<api::LiveSceneView>>,
+    pub active_scene: Memo<Option<api::SceneDocument>>,
     /// All zones of the active scene in scene order (LED zones and
     /// display Screens), as the UI presents them.
     pub zones: Memo<Vec<Surface>>,
@@ -125,7 +125,7 @@ pub struct ScenesContext {
     /// Every saved scene (the daemon omits the ephemeral default).
     pub scenes: Memo<Vec<api::SceneSummary>>,
     /// The shared active scene — same memo as [`ZonesContext::active_scene`].
-    pub active: Memo<Option<api::LiveSceneView>>,
+    pub active: Memo<Option<api::SceneDocument>>,
     /// Scene id mid-activation. Switchers disable and spin on this row;
     /// the displayed value flips only when the daemon confirms.
     pub switching: ReadSignal<Option<String>>,
@@ -167,8 +167,7 @@ pub fn provide_scene_contexts(
 
     // Memo (not derive) so refetches that return identical state don't
     // wake every zone-aware surface in the app.
-    let active_scene =
-        Memo::new(move |_| active_scene_resource.get().and_then(Result::ok).flatten());
+    let active_scene = Memo::new(move |_| active_scene_resource.get().and_then(Result::ok));
     let scenes = Memo::new(move |_| {
         scenes_resource
             .get()

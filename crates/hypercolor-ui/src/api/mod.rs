@@ -65,6 +65,5 @@ pub use library::*;
 pub use output::*;
 pub use scenes::*;
 pub use system::*;
-// `zones` is referenced by its module path (`api::zones::…`) rather than
-// flat-globbed, to avoid colliding `ZoneResponse`/`ZoneListResponse` with
-// other domains.
+// Zone mutations stay under `api::zones` so their revision precondition is
+// visible at call sites.

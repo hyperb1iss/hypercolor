@@ -47,7 +47,7 @@ pub fn SceneSelector() -> impl IntoView {
     let (menu_open, set_menu_open) = signal(false);
 
     let active_id = Signal::derive(move || {
-        active_scene.with(|scene| scene.as_ref().map(|scene| scene.id.clone()))
+        active_scene.with(|scene| scene.as_ref().map(|scene| scene.id.to_string()))
     });
     let active_name = Signal::derive(move || {
         active_scene.with(|scene| scene.as_ref().map(|scene| scene.name.clone()))
@@ -64,9 +64,9 @@ pub fn SceneSelector() -> impl IntoView {
             .collect();
         active_scene.with(|scene| {
             if let Some(scene) = scene
-                && !opts.iter().any(|(id, _)| id == &scene.id)
+                && !opts.iter().any(|(id, _)| id == &scene.id.to_string())
             {
-                opts.insert(0, (scene.id.clone(), scene.name.clone()));
+                opts.insert(0, (scene.id.to_string(), scene.name.clone()));
             }
         });
         opts

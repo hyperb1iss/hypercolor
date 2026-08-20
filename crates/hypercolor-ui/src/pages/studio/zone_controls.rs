@@ -243,7 +243,7 @@ fn scene_context(studio: StudioContext) -> Option<(String, u64)> {
     studio
         .active_scene
         .get_untracked()
-        .map(|scene| (scene.id, scene.revision))
+        .map(|scene| (scene.id.to_string(), scene.revision))
 }
 
 /// Create a zone from a typed name. Returns whether the request was sent
@@ -259,7 +259,7 @@ pub fn create_zone_from(studio: StudioContext, name: &str) -> bool {
         return false;
     };
     spawn_local(async move {
-        match api::zones::create_zone(&name, None, Some(revision)).await {
+        match api::zones::create_zone(&name, None, revision).await {
             Ok(ZoneOutcome::Applied(zone)) => {
                 studio.selected_surface_id.set(Some(zone.id.to_string()));
                 toasts::toast_success(&format!("Zone \"{}\" created", zone.name));
@@ -324,7 +324,7 @@ fn apply_zone_update(
     };
     let zone_id = zone_id.to_owned();
     spawn_local(async move {
-        match api::zones::update_zone(&zone_id, &request, Some(revision)).await {
+        match api::zones::update_zone(&zone_id, &request, revision).await {
             Ok(ZoneOutcome::Applied(_)) => {
                 toasts::toast_success(success);
                 studio.refresh_scene.run(());
@@ -345,7 +345,7 @@ fn commit_zone_delete(studio: StudioContext, zone_id: &str) {
     };
     let zone_id = zone_id.to_owned();
     spawn_local(async move {
-        match api::zones::delete_zone(&zone_id, Some(revision)).await {
+        match api::zones::delete_zone(&zone_id, revision).await {
             Ok(ZoneOutcome::Applied(())) => {
                 toasts::toast_success("Zone deleted");
                 studio.refresh_scene.run(());

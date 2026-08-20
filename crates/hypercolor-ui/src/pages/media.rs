@@ -226,7 +226,13 @@ pub fn MediaPage() -> impl IntoView {
                         {move || {
                             let total = total_count.get();
                             let shown = filtered_media.get().len();
-                            if shown == total {
+                            #[allow(
+                                clippy::useless_conversion,
+                                reason = "wire totals can exceed the browser's index width"
+                            )]
+                            let all_visible =
+                                usize::try_from(total).is_ok_and(|total| shown == total);
+                            if all_visible {
                                 format!("{total} files")
                             } else {
                                 format!("{shown}/{total} files")

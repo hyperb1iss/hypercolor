@@ -1,11 +1,10 @@
-//! Leptos-free grouping of a zone's device outputs by physical device.
+//! Leptos-free grouping of a zone's members by physical device.
 //!
-//! A zone's `Zone.layout.zones` is a flat list of `Output`
-//! outputs — a multi-segment controller contributes several. The Studio
+//! A multi-segment controller contributes several members. The Studio
 //! zone tree shows each physical device once under its zone, so this
-//! module collapses those outputs by `device_id` and resolves display
+//! module collapses those members by `device_id` and resolves display
 //! names against the device registry. It also derives the Unassigned
-//! group: devices the scene places in no zone at all.
+//! group: devices the scene assigns to no zone at all.
 //!
 //! Deliberately free of `leptos` and `crate::` paths so the contract is
 //! exercisable from `tests/studio_device_grouping_tests.rs` via a
@@ -13,8 +12,7 @@
 
 use std::collections::HashSet;
 
-use crate::api::LiveZoneView;
-use hypercolor_types::spatial::Output;
+use crate::api::ZoneResource;
 
 /// Device-registry metadata the grouping needs. The caller builds this
 /// from `DeviceSummary`, keeping this module free of `crate::` paths.
@@ -38,30 +36,39 @@ pub struct ZoneDeviceRow {
     /// Resolved display name, or the bare `device_id` when the device is
     /// not in the registry (offline or removed).
     pub name: String,
-    /// LEDs across this device's outputs within this zone.
+    /// LEDs across this device's placed members within this zone.
     pub led_count: u32,
-    /// Output count — a multi-segment controller contributes more than one.
-    pub output_count: usize,
+    /// Member count. A multi-segment controller contributes more than one.
+    pub member_count: usize,
     /// Whether `device_id` resolved to a known registry device.
     pub resolved: bool,
 }
 
-/// Group a zone's `Output` outputs by `device_id` — one row per
-/// physical device, in first-seen output order. LED counts sum each
-/// output's topology; names resolve against `devices`.
+/// Group a zone's canonical members by `device_id`, one row per physical
+/// device in first-seen member order. Placements provide LED counts when
+/// present; names resolve against `devices`.
 #[must_use]
-pub fn device_rows_for_zone(outputs: &[Output], devices: &[DeviceMeta]) -> Vec<ZoneDeviceRow> {
+pub fn device_rows_for_zone(zone: &ZoneResource, devices: &[DeviceMeta]) -> Vec<ZoneDeviceRow> {
     let mut rows: Vec<ZoneDeviceRow> = Vec::new();
-    for output in outputs {
-        let leds = output.topology.led_count();
+    for member in &zone.members {
+        let leds = zone
+            .layout
+            .as_ref()
+            .and_then(|layout| {
+                layout
+                    .placements
+                    .iter()
+                    .find(|placement| placement.member == member.id)
+            })
+            .map_or(0, |placement| placement.topology.led_count());
         if let Some(row) = rows
             .iter_mut()
-            .find(|row| row.device_id == output.device_id)
+            .find(|row| row.device_id == member.device_id)
         {
             row.led_count = row.led_count.saturating_add(leds);
-            row.output_count += 1;
+            row.member_count += 1;
         } else {
-            rows.push(resolve_row(&output.device_id, leds, devices));
+            rows.push(resolve_row(&member.device_id, leds, devices));
         }
     }
     rows
@@ -82,17 +89,17 @@ pub fn sort_device_rows(rows: &mut [ZoneDeviceRow]) {
 }
 
 /// Rows for devices the scene places in no zone — the Unassigned group.
-/// Every registry device that has LEDs and whose id is the `device_id`
-/// of no placed `Output` anywhere in the scene.
+/// Every registry device that has LEDs and has no member anywhere in the
+/// scene.
 #[must_use]
 pub fn unassigned_device_rows(
-    groups: &[LiveZoneView],
+    groups: &[ZoneResource],
     devices: &[DeviceMeta],
 ) -> Vec<ZoneDeviceRow> {
     let placed: HashSet<&str> = groups
         .iter()
-        .flat_map(|group| group.layout.zones.iter())
-        .map(|zone| zone.device_id.as_str())
+        .flat_map(|group| group.members.iter())
+        .map(|member| member.device_id.as_str())
         .collect();
     devices
         .iter()
@@ -102,15 +109,14 @@ pub fn unassigned_device_rows(
             device_id: device.layout_device_id.clone(),
             name: device.name.clone(),
             led_count: device.total_leds,
-            output_count: 0,
+            member_count: 0,
             resolved: true,
         })
         .collect()
 }
 
-/// Build a fresh row for a device's first output, resolving its id
-/// against the registry. `output_count` starts at one; callers fold in
-/// any further outputs of the same device.
+/// Build a fresh row for a device's first member, resolving its id against
+/// the registry. Callers fold in any further members of the same device.
 fn resolve_row(device_id: &str, led_count: u32, devices: &[DeviceMeta]) -> ZoneDeviceRow {
     let meta = devices
         .iter()
@@ -119,7 +125,7 @@ fn resolve_row(device_id: &str, led_count: u32, devices: &[DeviceMeta]) -> ZoneD
         device_id: device_id.to_owned(),
         name: meta.map_or_else(|| device_id.to_owned(), |device| device.name.clone()),
         led_count,
-        output_count: 1,
+        member_count: 1,
         resolved: meta.is_some(),
     }
 }

@@ -23,36 +23,19 @@ pub(super) struct ActiveEffectSnapshot {
     preset_id: Option<String>,
 }
 
-pub(super) fn preferences_restore_inline(prefs: Option<&EffectPreferences>) -> bool {
-    prefs.is_some_and(|prefs| {
-        prefs
-            .preset_id
-            .as_deref()
-            .is_none_or(|preset_id| uuid::Uuid::parse_str(preset_id).is_ok())
-    })
-}
-
 pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effect_id: String) {
     // Bake remembered preferences into the layer source, mirroring the
     // primary-zone apply path — an all-zones apply should start every
     // zone in the user's saved state, not at defaults.
-    let mut prefs = ctx.preferences.get(&effect_id);
-    if let Some(prefs) = prefs.as_mut()
-        && let Some(preset_id) = prefs.preset_id.as_deref()
-        && uuid::Uuid::parse_str(preset_id).is_err()
-        && let Some(resolved) = resolve_remembered_preset_id(&effect_id, preset_id).await
-    {
-        prefs.preset_id = Some(resolved);
-        ctx.preferences.save(effect_id.clone(), prefs.clone());
-    }
+    let prefs = ctx.preferences.get(&effect_id);
     let Some(source) = effect_layer_source(&effect_id, prefs.as_ref()) else {
         toasts::toast_error("That effect has an invalid identifier");
         return;
     };
     let scene = match api::fetch_active_scene().await {
-        Ok(Some(scene)) => scene,
-        _ => {
-            toasts::toast_error("No active scene is available");
+        Ok(scene) => scene,
+        Err(error) => {
+            toasts::toast_error(&format!("Couldn't load the active scene: {error}"));
             return;
         }
     };
@@ -220,25 +203,19 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
             return;
         }
 
-        let resolved_preset_id = match prefs.preset_id.as_deref() {
-            Some(preset_id) => resolve_remembered_preset_id(&effect_id, preset_id).await,
-            None => None,
-        };
-        let preset_applied = if let Some(preset_id) = resolved_preset_id.as_ref() {
-            let applied = match api::apply_effect_preset(&effect_id, preset_id, None).await {
-                Ok(()) => true,
-                Err(error) => {
-                    crate::toasts::toast_error(&format!("Couldn't restore preset: {error}"));
-                    false
-                }
-            };
+        let resolved_preset_id = prefs
+            .preset_id
+            .as_deref()
+            .filter(|preset_id| uuid::Uuid::parse_str(preset_id).is_ok())
+            .map(str::to_owned);
+        if let Some(preset_id) = resolved_preset_id.as_ref() {
+            if let Err(error) = api::apply_effect_preset(&effect_id, preset_id, None).await {
+                crate::toasts::toast_error(&format!("Couldn't restore preset: {error}"));
+            }
             if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
                 return;
             }
-            applied
-        } else {
-            false
-        };
+        }
 
         if !prefs.control_values.is_empty() {
             let controls_json = serde_json::Value::Object(controls_to_json(&prefs.control_values));
@@ -250,7 +227,7 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
             }
         }
 
-        if preset_applied && prefs.preset_id != resolved_preset_id {
+        if prefs.preset_id != resolved_preset_id {
             ctx.preferences.save(
                 effect_id.clone(),
                 EffectPreferences {
@@ -267,41 +244,6 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
     });
 }
 
-async fn resolve_remembered_preset_id(effect_id: &str, preset_id: &str) -> Option<String> {
-    if uuid::Uuid::parse_str(preset_id).is_ok() {
-        return Some(preset_id.to_owned());
-    }
-    let presets = api::fetch_effect_presets(effect_id).await.ok()?;
-    resolve_legacy_preset_id(preset_id, &presets)
-}
-
-fn resolve_legacy_preset_id(
-    preset_id: &str,
-    presets: &[api::EffectPresetSummary],
-) -> Option<String> {
-    let bundled = presets
-        .iter()
-        .filter(|preset| preset.origin == api::EffectPresetOrigin::Bundled)
-        .collect::<Vec<_>>();
-    if let Some(name) = preset_id.strip_prefix("bundled:name:") {
-        return bundled
-            .into_iter()
-            .find(|preset| preset.name.eq_ignore_ascii_case(name))
-            .map(|preset| preset.id.clone());
-    }
-    let selector = preset_id.strip_prefix("bundled:")?;
-    selector
-        .parse::<usize>()
-        .ok()
-        .and_then(|index| bundled.get(index).copied())
-        .or_else(|| {
-            bundled
-                .into_iter()
-                .find(|preset| preset.name.eq_ignore_ascii_case(selector))
-        })
-        .map(|preset| preset.id.clone())
-}
-
 pub(super) fn clear_active_effect_state(ctx: &EffectsContext) {
     ctx.set_active_effect_id.set(None);
     ctx.set_active_effect_name.set(None);
@@ -312,7 +254,7 @@ pub(super) fn clear_active_effect_state(ctx: &EffectsContext) {
     ctx.set_is_playing.set(false);
 }
 
-pub(super) fn apply_active_scene_snapshot(ctx: &EffectsContext, active_scene: api::LiveSceneView) {
+pub(super) fn apply_active_scene_snapshot(ctx: &EffectsContext, active_scene: api::SceneDocument) {
     ctx.set_active_scene_name.set(Some(active_scene.name));
     ctx.set_active_scene_kind.set(Some(active_scene.kind));
     ctx.set_active_scene_mutation_mode
@@ -369,71 +311,5 @@ pub(super) fn restore_active_effect_state(ctx: &EffectsContext, snapshot: Active
             ctx.set_active_preset_id.set(snapshot.preset_id);
         }
         None => clear_active_effect_state(ctx),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use crate::{
-        api::{EffectPresetOrigin, EffectPresetSummary},
-        preferences::EffectPreferences,
-    };
-
-    use super::{preferences_restore_inline, resolve_legacy_preset_id};
-
-    fn bundled(id: &str, name: &str) -> EffectPresetSummary {
-        EffectPresetSummary {
-            id: id.to_owned(),
-            name: name.to_owned(),
-            description: None,
-            effect_id: "effect-id".to_owned(),
-            controls: HashMap::new(),
-            tags: Vec::new(),
-            origin: EffectPresetOrigin::Bundled,
-            editable: false,
-        }
-    }
-
-    #[test]
-    fn legacy_bundled_preferences_resolve_to_canonical_stack_ids() {
-        let presets = [
-            bundled("first-id", "First Light"),
-            bundled("night-id", "Night Drive"),
-            bundled("numeric-id", "1"),
-        ];
-
-        for legacy in [
-            "bundled:1",
-            "bundled:Night Drive",
-            "bundled:name:Night Drive",
-        ] {
-            assert_eq!(
-                resolve_legacy_preset_id(legacy, &presets).as_deref(),
-                Some("night-id")
-            );
-        }
-        assert_eq!(
-            resolve_legacy_preset_id("bundled:name:1", &presets).as_deref(),
-            Some("numeric-id")
-        );
-        assert_eq!(resolve_legacy_preset_id("bundled:9", &presets), None);
-    }
-
-    #[test]
-    fn legacy_preferences_wait_for_async_migration() {
-        assert!(!preferences_restore_inline(None));
-        assert!(preferences_restore_inline(Some(
-            &EffectPreferences::default()
-        )));
-        assert!(preferences_restore_inline(Some(&EffectPreferences {
-            preset_id: Some("018f4dc1-89ab-7def-8012-3456789abcde".to_owned()),
-            ..EffectPreferences::default()
-        })));
-        assert!(!preferences_restore_inline(Some(&EffectPreferences {
-            preset_id: Some("bundled:name:Night Drive".to_owned()),
-            ..EffectPreferences::default()
-        })));
     }
 }

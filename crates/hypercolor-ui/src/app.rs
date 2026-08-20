@@ -50,7 +50,7 @@ mod effect_state;
 use effect_state::{
     apply_active_effect_snapshot, apply_active_scene_snapshot, apply_effect_to_current_led_zones,
     capture_active_effect_state, clear_active_scene_state, effect_error_toast_message,
-    preferences_restore_inline, restore_active_effect_state,
+    restore_active_effect_state,
 };
 
 /// Global WebSocket state provided via Leptos context.
@@ -264,7 +264,6 @@ impl EffectsContext {
     pub fn apply_effect(&self, id: String) {
         let apply_target = self.apply_target.get_untracked();
         let stored_prefs = self.preferences.get(&id);
-        let restores_inline = preferences_restore_inline(stored_prefs.as_ref());
         if apply_target == ApplyTarget::AllZones {
             let ctx = *self;
             leptos::task::spawn_local(async move {
@@ -313,10 +312,8 @@ impl EffectsContext {
             return;
         }
 
-        // Legacy bundled IDs require the asynchronous migration path, even
-        // though their control snapshot can be sent with the initial apply.
         self.restored_effects.update_value(|set| {
-            if restores_inline {
+            if stored_prefs.is_some() {
                 set.insert(id.clone());
             } else {
                 set.remove(&id);
@@ -626,15 +623,20 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 .zip(surfaces)
                 .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)
                 .map(|(group, surface)| {
-                    let effect_id = group.effect_id.as_ref().map(ToString::to_string);
+                    let effect = api::zone_effect(group);
+                    let effect_id = effect.map(|effect| effect.effect_id.to_string());
                     let indexed = effect_id
                         .as_ref()
                         .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
                     crate::zones::ZoneEffectState {
                         effect_name: indexed.map(|entry| entry.effect.name.clone()),
                         effect_category: indexed.map(|entry| entry.effect.category.clone()),
-                        control_values: group.controls.clone(),
-                        preset_id: group.preset_id.as_ref().map(ToString::to_string),
+                        control_values: effect
+                            .map(|effect| effect.controls.clone())
+                            .unwrap_or_default(),
+                        preset_id: effect
+                            .and_then(|effect| effect.preset_id)
+                            .map(|preset_id| preset_id.to_string()),
                         revision: scene.revision,
                         effect_id,
                         zone: surface,

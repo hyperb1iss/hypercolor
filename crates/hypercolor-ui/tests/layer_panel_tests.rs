@@ -11,7 +11,6 @@ use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use hypercolor_ui::components::layer_panel::source::{
@@ -322,37 +321,19 @@ fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
 
 // ── Add-layer target scope (§6.6) ───────────────────────────────────────
 
-fn sample_layout() -> SpatialLayout {
-    SpatialLayout {
-        id: "layout".to_owned(),
-        name: "Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    }
-}
-
-fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::LiveZoneView {
-    hypercolor_ui::api::LiveZoneView {
+fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource {
+    hypercolor_ui::api::ZoneResource {
         id: ZoneId::new(),
         name: name.to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
-        layout: sample_layout(),
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target: None,
         role,
+        members: Vec::new(),
+        layout: None,
+        layers: Vec::new(),
     }
 }
 

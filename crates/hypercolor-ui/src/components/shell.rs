@@ -209,7 +209,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
         // scene is marked so Enter on it is an honest no-op.
         let active_id = scenes_ctx
             .active
-            .with(|active| active_saved_scene_id(active.as_ref()).map(str::to_owned));
+            .with(|active| active_saved_scene_id(active.as_ref()));
         entries.extend(
             scenes_ctx
                 .scenes

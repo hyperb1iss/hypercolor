@@ -77,7 +77,7 @@ fn empty_layer_stack() -> api::LayerStackResponse {
 #[derive(Clone, Copy)]
 pub struct StudioContext {
     pub selected_surface_id: RwSignal<Option<String>>,
-    pub active_scene: Signal<Option<api::LiveSceneView>>,
+    pub active_scene: Signal<Option<api::SceneDocument>>,
     /// Re-fetch the active scene. Zone mutations call this so the tree and
     /// Stage pick up the new zone set and scene revision.
     pub refresh_scene: Callback<()>,
@@ -114,7 +114,7 @@ pub fn StudioPage() -> impl IntoView {
     // keep it fresh, so zone changes made from other pages, other
     // clients, or the CLI land here without a Studio-local refetch.
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
-    let active_scene: Signal<Option<api::LiveSceneView>> = zones_ctx.active_scene.into();
+    let active_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
 
     let selected_surface_id = RwSignal::new(None::<String>);
 

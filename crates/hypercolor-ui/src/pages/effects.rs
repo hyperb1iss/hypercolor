@@ -64,7 +64,7 @@ const CATEGORY_CHIPS: &[(&str, &str)] = &[
 /// lands in; reads and writes `EffectsContext::apply_target`. The empty value
 /// is the scene's default zone.
 #[component]
-fn ApplyTargetSelect(#[prop(into)] scene: Signal<Option<api::LiveSceneView>>) -> impl IntoView {
+fn ApplyTargetSelect(#[prop(into)] scene: Signal<Option<api::SceneDocument>>) -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
     let zones_ctx = expect_context::<ZonesContext>();
 
@@ -430,7 +430,7 @@ pub fn EffectsPage() -> impl IntoView {
     // one zone — a single-zone scene keeps the unchanged "apply effect"
     // behavior with no extra control. The shared scene resource keeps the
     // zone options fresh across external scene/zone changes.
-    let apply_target_scene: Signal<Option<api::LiveSceneView>> = zones_ctx.active_scene.into();
+    let apply_target_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
         let is_display_face = fx.effects_index.with(|effects| {

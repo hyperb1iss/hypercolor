@@ -1,14 +1,10 @@
 //! Contract tests for the Studio device-grouping logic.
 
-use std::collections::HashMap;
-
+use hypercolor_types::api::scene::{MemberPlacement, ZoneLayoutResource, ZoneMember, ZoneMemberId};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
-use hypercolor_types::spatial::{
-    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
-    StripDirection,
-};
+use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 
-use hypercolor_ui::api::LiveZoneView;
+use hypercolor_ui::api::ZoneResource;
 use hypercolor_ui::pages::studio::device_grouping::{
     DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
@@ -49,33 +45,41 @@ fn meta(layout_device_id: &str, name: &str, total_leds: u32) -> DeviceMeta {
     }
 }
 
-fn group_with(zones: Vec<Output>) -> LiveZoneView {
-    LiveZoneView {
+fn group_with(zones: Vec<Output>) -> ZoneResource {
+    let (members, placements) = zones
+        .into_iter()
+        .map(|output| {
+            let member_id = ZoneMemberId(output.id);
+            let member = ZoneMember {
+                id: member_id.clone(),
+                device_id: output.device_id,
+                segment: output.zone_name,
+                name: output.name,
+            };
+            let placement = MemberPlacement {
+                member: member_id,
+                position: output.position,
+                size: output.size,
+                rotation: output.rotation,
+                scale: output.scale,
+                orientation: output.orientation,
+                topology: output.topology,
+            };
+            (member, placement)
+        })
+        .unzip();
+    ZoneResource {
         id: ZoneId::new(),
         name: "Zone".to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
-        layout: SpatialLayout {
-            id: "layout".to_owned(),
-            name: "Layout".to_owned(),
-            description: None,
-            canvas_width: 320,
-            canvas_height: 200,
-            zones,
-            default_sampling_mode: SamplingMode::Bilinear,
-            default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
-            version: 1,
-        },
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target: None,
         role: ZoneRole::Primary,
+        members,
+        layout: Some(ZoneLayoutResource { placements }),
+        layers: Vec::new(),
     }
 }
 
@@ -90,15 +94,16 @@ fn device_rows_collapse_outputs_of_one_device() {
         meta("usb:keeb", "Corsair K70", 68),
         meta("smbus:dram", "ASUS Aura DRAM", 8),
     ];
-    let rows = device_rows_for_zone(&outputs, &devices);
+    let zone = group_with(outputs);
+    let rows = device_rows_for_zone(&zone, &devices);
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].device_id, "usb:keeb");
     assert_eq!(rows[0].name, "Corsair K70");
     assert_eq!(rows[0].led_count, 68);
-    assert_eq!(rows[0].output_count, 2);
+    assert_eq!(rows[0].member_count, 2);
     assert!(rows[0].resolved);
     assert_eq!(rows[1].device_id, "smbus:dram");
-    assert_eq!(rows[1].output_count, 1);
+    assert_eq!(rows[1].member_count, 1);
 }
 
 #[test]
@@ -109,7 +114,8 @@ fn device_rows_keep_first_seen_order() {
         output("c", None, 1),
         output("b", None, 1),
     ];
-    let rows = device_rows_for_zone(&outputs, &[]);
+    let zone = group_with(outputs);
+    let rows = device_rows_for_zone(&zone, &[]);
     let ids: Vec<&str> = rows.iter().map(|row| row.device_id.as_str()).collect();
     assert_eq!(ids, ["c", "a", "b"]);
 }
@@ -123,7 +129,8 @@ fn sort_device_rows_orders_connected_then_name_offline_last() {
         output("usb:apex", None, 7),
     ];
     let devices = vec![meta("usb:zed", "Zebra", 5), meta("usb:apex", "Apex", 7)];
-    let mut rows = device_rows_for_zone(&outputs, &devices);
+    let zone = group_with(outputs);
+    let mut rows = device_rows_for_zone(&zone, &devices);
     sort_device_rows(&mut rows);
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     // Connected devices first, alphabetical; the offline row sinks last.
@@ -134,7 +141,8 @@ fn sort_device_rows_orders_connected_then_name_offline_last() {
 
 #[test]
 fn device_rows_fall_back_to_id_when_unresolved() {
-    let rows = device_rows_for_zone(&[output("usb:ghost", None, 12)], &[]);
+    let zone = group_with(vec![output("usb:ghost", None, 12)]);
+    let rows = device_rows_for_zone(&zone, &[]);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "usb:ghost");
     assert!(!rows[0].resolved);

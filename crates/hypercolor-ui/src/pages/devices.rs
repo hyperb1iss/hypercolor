@@ -125,8 +125,8 @@ pub fn DevicesPage() -> impl IntoView {
                 } else {
                     group.name.clone()
                 };
-                for output in &group.layout.zones {
-                    map.entry(output.device_id.clone())
+                for member in &group.members {
+                    map.entry(member.device_id.clone())
                         .or_insert_with(|| label.clone());
                 }
             }
