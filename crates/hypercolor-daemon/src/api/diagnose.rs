@@ -22,9 +22,10 @@ pub use hypercolor_types::api::diagnose::DiagnoseRequest;
 
 const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
 const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
+const DEFAULT_SAFE_CHECKS: [&str; 6] = ["daemon", "render", "devices", "config", "input", "memory"];
 
 #[derive(Debug, Serialize)]
-struct DiagnoseResponse {
+pub(crate) struct DiagnoseResponse {
     checks: Vec<DiagnoseCheck>,
     summary: DiagnoseSummary,
     snapshot: DiagnoseSnapshot,
@@ -205,10 +206,6 @@ struct DiagnoseDeviceOutputItem {
 }
 
 /// `POST /api/v1/diagnose` — Run lightweight daemon diagnostics.
-#[expect(
-    clippy::too_many_lines,
-    reason = "diagnostics response assembly keeps checks and snapshot state in one handler"
-)]
 pub(crate) async fn run_diagnostics(
     State(state): State<Arc<AppState>>,
     Extension(auth_context): Extension<RequestAuthContext>,
@@ -218,16 +215,7 @@ pub(crate) async fn run_diagnostics(
         .as_ref()
         .and_then(|b| b.checks.as_ref())
         .cloned()
-        .unwrap_or_else(|| {
-            vec![
-                "daemon".to_owned(),
-                "render".to_owned(),
-                "devices".to_owned(),
-                "config".to_owned(),
-                "input".to_owned(),
-                "memory".to_owned(),
-            ]
-        });
+        .unwrap_or_else(default_safe_checks);
 
     // The parity check actuates a real screenshot-reference capture, so
     // it rides the protected-capture credential like every other capture
@@ -239,7 +227,28 @@ pub(crate) async fn run_diagnostics(
     }
 
     let include_system = body.as_ref().and_then(|b| b.system).unwrap_or(false);
+    let response = collect_diagnostics(&state, &requested, include_system).await;
+    ApiResponse::ok(response)
+}
 
+pub(crate) async fn collect_default_diagnostics(state: &AppState) -> DiagnoseResponse {
+    let checks = default_safe_checks();
+    collect_diagnostics(state, &checks, false).await
+}
+
+fn default_safe_checks() -> Vec<String> {
+    DEFAULT_SAFE_CHECKS.into_iter().map(str::to_owned).collect()
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "diagnostics response assembly keeps checks and snapshot state together"
+)]
+async fn collect_diagnostics(
+    state: &AppState,
+    requested: &[String],
+    include_system: bool,
+) -> DiagnoseResponse {
     let render_elapsed_ms = state.start_time.elapsed().as_secs_f64() * 1000.0;
     let performance = state.performance.read().await.snapshot();
     let usb_actor_metrics = usb_actor_metrics_snapshot();
@@ -434,7 +443,7 @@ pub(crate) async fn run_diagnostics(
             "memory" => checks.push(servo_memory_check().await),
             "macos_screen_parity" => {
                 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-                match super::macos_screen_parity::run_macos_screen_parity(&state).await {
+                match super::macos_screen_parity::run_macos_screen_parity(state).await {
                     Ok(report) => {
                         let detail = report.detail();
                         match serde_json::to_value(report) {
@@ -507,7 +516,7 @@ pub(crate) async fn run_diagnostics(
         }
     }
 
-    ApiResponse::ok(DiagnoseResponse {
+    DiagnoseResponse {
         checks,
         summary: DiagnoseSummary {
             passed,
@@ -515,7 +524,7 @@ pub(crate) async fn run_diagnostics(
             failed,
         },
         snapshot,
-    })
+    }
 }
 
 fn render_frame_liveness_status(

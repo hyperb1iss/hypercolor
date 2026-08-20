@@ -4,10 +4,14 @@
 //! is handled by `execute_tool_with_state`, which dispatches to the appropriate
 //! handler in a per-cluster submodule.
 
-use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use jsonschema::error::ValidationErrorKind;
+use serde_json::{Value, json};
+
 use crate::api::AppState;
+use crate::mcp::selector::SelectorError;
 
 mod devices;
 mod displays;
@@ -50,7 +54,8 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         effects::build_set_effect(),
         effects::build_list_effects(),
         system::build_set_output_power(),
-        effects::build_stop_effect(),
+        scenes::build_clear_zone(),
+        scenes::build_adjust_controls(),
         effects::build_set_color(),
         devices::build_get_devices(),
         devices::build_set_brightness(),
@@ -66,39 +71,218 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-/// Refuse arguments a tool's schema does not declare.
-///
-/// `additionalProperties: false` is a promise to the caller, and nothing
-/// downstream of `rmcp` enforces it, so a deleted parameter would keep
-/// being accepted and silently dropped. Silently dropping an argument is
-/// the exact failure the phantom-parameter rule exists to prevent: a
-/// caller who asks for a transition and gets a cut must learn that,
-/// whether the parameter was never real or has since been removed.
-///
-/// Tools whose schema does not close stay permissive, so this adds no
-/// refusal a tool did not ask for.
-fn reject_undeclared_params(name: &str, params: &Value) -> Result<(), ToolError> {
-    let Some(arguments) = params.as_object() else {
-        return Ok(());
-    };
-    static DEFINITIONS: LazyLock<Vec<ToolDefinition>> = LazyLock::new(build_tool_definitions);
+struct InputContract {
+    schema: Value,
+    validator: jsonschema::Validator,
+}
 
-    let Some(tool) = DEFINITIONS.iter().find(|tool| tool.name == name) else {
-        return Ok(());
+static INPUT_CONTRACTS: LazyLock<Result<HashMap<String, InputContract>, String>> =
+    LazyLock::new(|| {
+        build_tool_definitions()
+            .into_iter()
+            .map(|tool| {
+                jsonschema::validator_for(&tool.input_schema)
+                    .map(|validator| {
+                        (
+                            tool.name.clone(),
+                            InputContract {
+                                schema: tool.input_schema,
+                                validator,
+                            },
+                        )
+                    })
+                    .map_err(|error| format!("invalid input schema for {}: {error}", tool.name))
+            })
+            .collect()
+    });
+
+fn validate_params(name: &str, params: &Value) -> Result<Value, ToolError> {
+    let contracts = INPUT_CONTRACTS
+        .as_ref()
+        .map_err(|error| ToolError::Internal(error.clone()))?;
+    let Some(contract) = contracts.get(name) else {
+        return Ok(params.clone());
     };
-    if tool.input_schema["additionalProperties"] != Value::Bool(false) {
-        return Ok(());
+    if let Some(param) = undeclared_parameter(&contract.schema, params, "") {
+        return Err(ToolError::InvalidParam {
+            reason: format!("{name} does not accept a '{param}' argument"),
+            param,
+        });
+    }
+    let errors = contract.validator.iter_errors(params).collect::<Vec<_>>();
+    if let Some(error) = errors
+        .iter()
+        .find(|error| {
+            matches!(
+                error.kind(),
+                ValidationErrorKind::AdditionalProperties { .. }
+            )
+        })
+        .or_else(|| errors.first())
+    {
+        return Err(tool_validation_error(name, error));
     }
 
-    let declared = tool.input_schema["properties"].as_object();
-    for key in arguments.keys() {
-        if !declared.is_some_and(|declared| declared.contains_key(key)) {
-            return Err(ToolError::InvalidParam {
-                param: key.clone(),
-                reason: format!("{name} does not accept a '{key}' argument"),
-            });
+    let mut normalized = params.clone();
+    normalize_integer_values(&contract.schema, &mut normalized, "")?;
+    Ok(normalized)
+}
+
+fn tool_validation_error(name: &str, error: &jsonschema::ValidationError<'_>) -> ToolError {
+    match error.kind() {
+        ValidationErrorKind::Required { property } => {
+            let pointer = error.instance_path().to_string();
+            let parent = parameter_path(&pointer);
+            let property = property.as_str().unwrap_or("arguments");
+            let param = parent.map_or_else(
+                || property.to_owned(),
+                |parent| format!("{parent}.{property}"),
+            );
+            ToolError::MissingParam(param)
+        }
+        ValidationErrorKind::AdditionalProperties { unexpected } => {
+            let property = unexpected
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "arguments".to_owned());
+            let pointer = error.instance_path().to_string();
+            let parent = parameter_path(&pointer);
+            let param =
+                parent.map_or_else(|| property.clone(), |parent| format!("{parent}.{property}"));
+            ToolError::InvalidParam {
+                reason: format!("{name} does not accept a '{param}' argument"),
+                param,
+            }
+        }
+        _ => {
+            let pointer = error.instance_path().to_string();
+            let param = parameter_path(&pointer).unwrap_or_else(|| "arguments".to_owned());
+            ToolError::InvalidParam {
+                param,
+                reason: error.masked().to_string(),
+            }
         }
     }
+}
+
+fn parameter_path(pointer: &str) -> Option<String> {
+    pointer
+        .strip_prefix('/')
+        .filter(|path| !path.is_empty())
+        .map(|path| path.replace('/', "."))
+}
+
+fn undeclared_parameter(schema: &Value, instance: &Value, parameter: &str) -> Option<String> {
+    if let Some(object) = instance.as_object() {
+        let properties = schema["properties"].as_object();
+        if schema["additionalProperties"] == Value::Bool(false) {
+            for name in object.keys() {
+                if !properties.is_some_and(|properties| properties.contains_key(name)) {
+                    return Some(if parameter.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{parameter}.{name}")
+                    });
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (name, child_schema) in properties {
+                let Some(child) = object.get(name) else {
+                    continue;
+                };
+                let child_parameter = if parameter.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{parameter}.{name}")
+                };
+                if let Some(param) = undeclared_parameter(child_schema, child, &child_parameter) {
+                    return Some(param);
+                }
+            }
+        }
+    }
+
+    if let (Some(item_schema), Some(items)) = (schema.get("items"), instance.as_array()) {
+        for (index, item) in items.iter().enumerate() {
+            let item_parameter = if parameter.is_empty() {
+                index.to_string()
+            } else {
+                format!("{parameter}.{index}")
+            };
+            if let Some(param) = undeclared_parameter(item_schema, item, &item_parameter) {
+                return Some(param);
+            }
+        }
+    }
+
+    None
+}
+
+/// Preserve JSON Schema's mathematical integer semantics for Serde readers.
+///
+/// Values such as `50.0` satisfy an `integer` schema, but Serde retains their
+/// floating representation and `as_u64` rejects them. Normalizing only the
+/// schema-approved integer nodes prevents handlers from silently substituting
+/// defaults for valid calls.
+fn normalize_integer_values(
+    schema: &Value,
+    instance: &mut Value,
+    parameter: &str,
+) -> Result<(), ToolError> {
+    if schema["type"] == "integer" {
+        let Value::Number(number) = instance else {
+            return Ok(());
+        };
+        if number.as_i64().is_some() || number.as_u64().is_some() {
+            return Ok(());
+        }
+
+        let value = number.as_f64().ok_or_else(|| ToolError::InvalidParam {
+            param: parameter.to_owned(),
+            reason: "integer cannot be represented by the daemon".into(),
+        })?;
+        let normalized = if (0.0..18_446_744_073_709_551_616.0).contains(&value) {
+            serde_json::Number::from(value as u64)
+        } else if (-9_223_372_036_854_775_808.0..0.0).contains(&value) {
+            serde_json::Number::from(value as i64)
+        } else {
+            return Err(ToolError::InvalidParam {
+                param: parameter.to_owned(),
+                reason: "integer is outside the daemon's supported range".into(),
+            });
+        };
+        *instance = Value::Number(normalized);
+        return Ok(());
+    }
+
+    if let (Some(properties), Some(instance)) =
+        (schema["properties"].as_object(), instance.as_object_mut())
+    {
+        for (name, child_schema) in properties {
+            let Some(child) = instance.get_mut(name) else {
+                continue;
+            };
+            let child_parameter = if parameter.is_empty() {
+                name.clone()
+            } else {
+                format!("{parameter}.{name}")
+            };
+            normalize_integer_values(child_schema, child, &child_parameter)?;
+        }
+    }
+
+    if let (Some(item_schema), Some(items)) = (schema.get("items"), instance.as_array_mut()) {
+        for (index, item) in items.iter_mut().enumerate() {
+            let item_parameter = if parameter.is_empty() {
+                index.to_string()
+            } else {
+                format!("{parameter}.{index}")
+            };
+            normalize_integer_values(item_schema, item, &item_parameter)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -115,24 +299,25 @@ pub async fn execute_tool_with_state(
     params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    reject_undeclared_params(name, params)?;
+    let params = validate_params(name, params)?;
     match name {
-        "set_effect" => effects::handle_set_effect_with_state(params, state).await,
-        "list_effects" => effects::handle_list_effects_with_state(params, state).await,
-        "set_output_power" => system::handle_set_output_power_with_state(params, state).await,
-        "stop_effect" => effects::handle_stop_effect_with_state(params, state).await,
-        "set_color" => effects::handle_set_color_with_state(params, state).await,
-        "get_devices" => devices::handle_get_devices_with_state(params, state).await,
-        "set_brightness" => devices::handle_set_brightness_with_state(params, state).await,
+        "set_effect" => effects::handle_set_effect_with_state(&params, state).await,
+        "list_effects" => effects::handle_list_effects_with_state(&params, state).await,
+        "set_output_power" => system::handle_set_output_power_with_state(&params, state).await,
+        "clear_zone" => scenes::handle_clear_zone_with_state(&params, state).await,
+        "adjust_controls" => scenes::handle_adjust_controls_with_state(&params, state).await,
+        "set_color" => effects::handle_set_color_with_state(&params, state).await,
+        "get_devices" => devices::handle_get_devices_with_state(&params, state).await,
+        "set_brightness" => devices::handle_set_brightness_with_state(&params, state).await,
         "get_status" => system::handle_get_status_with_state(state).await,
-        "activate_scene" => scenes::handle_activate_scene_with_state(params, state).await,
-        "list_scenes" => scenes::handle_list_scenes_with_state(params, state).await,
-        "create_scene" => scenes::handle_create_scene_with_state(params, state).await,
+        "activate_scene" => scenes::handle_activate_scene_with_state(&params, state).await,
+        "list_scenes" => scenes::handle_list_scenes_with_state(&params, state).await,
+        "create_scene" => scenes::handle_create_scene_with_state(&params, state).await,
         "get_audio_state" => Ok(system::handle_get_audio_state_with_state(state)),
-        "get_sensor_data" => system::handle_get_sensor_data_with_state(params, state).await,
-        "set_display_face" => displays::handle_set_display_face_with_state(params, state).await,
+        "get_sensor_data" => system::handle_get_sensor_data_with_state(&params, state).await,
+        "set_display_face" => displays::handle_set_display_face_with_state(&params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
-        "diagnose" => system::handle_diagnose_with_state(params, state).await,
+        "diagnose" => system::handle_diagnose_with_state(&params, state).await,
         _ => Err(ToolError::NotFound(name.to_owned())),
     }
 }
@@ -154,6 +339,14 @@ pub enum ToolError {
         /// What was wrong with it.
         reason: String,
     },
+    /// A human-friendly resource selector did not resolve uniquely.
+    #[error("invalid parameter '{param}': {source}")]
+    InvalidSelector {
+        /// Parameter name.
+        param: String,
+        /// Structured selector failure.
+        source: SelectorError,
+    },
     /// Current daemon state rejects the requested mutation.
     #[error("operation conflict: {0}")]
     Conflict(String),
@@ -167,9 +360,35 @@ impl ToolError {
     pub const fn error_code(&self) -> i64 {
         match self {
             Self::NotFound(_) => -32601, // Method not found
-            Self::MissingParam(_) | Self::InvalidParam { .. } => -32602, // Invalid params
+            Self::MissingParam(_) | Self::InvalidParam { .. } | Self::InvalidSelector { .. } => {
+                -32602
+            } // Invalid params
             Self::Conflict(_) => -32000, // Server error / state conflict
             Self::Internal(_) => -32603, // Internal error
+        }
+    }
+
+    /// Build an invalid-parameter error from the shared selector policy.
+    pub fn selector(param: impl Into<String>, source: SelectorError) -> Self {
+        Self::InvalidSelector {
+            param: param.into(),
+            source,
+        }
+    }
+
+    /// Structured details rendered alongside the MCP error code and message.
+    #[must_use]
+    pub fn details(&self) -> Option<Value> {
+        match self {
+            Self::MissingParam(parameter) => Some(json!({ "parameter": parameter })),
+            Self::InvalidParam { param, .. } => Some(json!({ "parameter": param })),
+            Self::InvalidSelector { param, source } => Some(json!({
+                "kind": source.kind(),
+                "parameter": param,
+                "query": source.query(),
+                "candidates": source.candidates(),
+            })),
+            Self::NotFound(_) | Self::Conflict(_) | Self::Internal(_) => None,
         }
     }
 }
@@ -187,6 +406,29 @@ pub(super) async fn find_effect_metadata(
             metadata.name.eq_ignore_ascii_case(primary_name)
                 || metadata.name.eq_ignore_ascii_case(fallback_name)
         })
+}
+
+pub(super) async fn resolve_effect_selector(
+    state: &AppState,
+    parameter: &str,
+    query: &str,
+) -> Result<hypercolor_types::effect::EffectMetadata, ToolError> {
+    let candidates = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .map(|(_, entry)| {
+                let metadata = entry.metadata.clone();
+                crate::mcp::selector::SelectorCandidate::named(
+                    metadata.id.to_string(),
+                    metadata.name.clone(),
+                    metadata,
+                )
+            })
+            .collect()
+    };
+    crate::mcp::selector::resolve(query, candidates)
+        .map_err(|error| ToolError::selector(parameter, error))
 }
 
 /// Convert a 0.0–1.0 brightness float to a 0–100 percentage. The

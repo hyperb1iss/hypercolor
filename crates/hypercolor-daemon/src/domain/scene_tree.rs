@@ -249,6 +249,8 @@ pub struct PatchLayerControls {
     pub values: HashMap<String, hypercolor_types::effect::ControlValue>,
     /// Bindings to remove in the same commit.
     pub clear_bindings: Vec<String>,
+    /// The revision an adapter resolved names against, when it did so.
+    pub expected_revision: Option<u64>,
 }
 
 /// What a tree mutation reports back.
@@ -491,9 +493,10 @@ pub async fn replace_layer(
 
 /// Write control values and drop named bindings on one layer.
 ///
-/// Unguarded by contract: value writes take no revision token, and a
-/// patch addressing a replaced layer 404s rather than landing on the
-/// newer effect (Spec 78 §1.6).
+/// The REST contract stays unguarded: a patch addressing a replaced layer
+/// 404s rather than landing on the newer effect. Name-resolving adapters may
+/// carry the revision of their selector snapshot to keep resolution and
+/// mutation atomic (Spec 78 §1.6).
 ///
 /// # Errors
 ///
@@ -513,6 +516,7 @@ pub async fn patch_layer_controls(
 
     loop {
         let mut mutation = state.begin_scene_mutation().await;
+        check_scene_revision(&mutation, command.expected_revision)?;
         let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
         ensure_live_zone_mutable(&mutation, command.zone_id)?;
         let normalized = normalize_against_layer(

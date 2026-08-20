@@ -14,7 +14,7 @@ The MCP server ships this exact instruction to every client: start with `get_sta
 
 ## Before you start
 
-Two surfaces drive Hypercolor, and a complete workflow often uses both. The [MCP server](@/agents/mcp-setup.md) gives a model 16 structured tools, 5 browsable resources, and 3 prompts over Streamable HTTP at `http://127.0.0.1:9420/mcp`. The [`hypercolor` CLI](@/agents/cli-scripting.md) gives any agent that can run a shell command a machine-readable contract through `--json` output and exit codes. Local agents need no credentials, since loopback requests bypass auth entirely.
+Two surfaces drive Hypercolor, and a complete workflow often uses both. The [MCP server](@/agents/mcp-setup.md) gives a model 17 structured tools, 5 browsable resources, and 3 prompts over Streamable HTTP at `http://127.0.0.1:9420/mcp`. The [`hypercolor` CLI](@/agents/cli-scripting.md) gives any agent that can run a shell command a machine-readable contract through `--json` output and exit codes. Local agents need no credentials, since loopback requests bypass auth entirely.
 
 One thing trips agents up constantly, so fix it in your head now. There are two different `hypercolor` command-line tools:
 
@@ -55,9 +55,24 @@ Browse the catalog instead of guessing an effect name. Filter `list_effects` to 
 // list_effects with { "category": "ambient", "limit": 10 }
 {
   "effects": [
-    { "id": "borealis", "name": "Borealis", "category": "ambient", "audio_reactive": false },
-    { "id": "deep-current", "name": "Deep Current", "category": "ambient", "audio_reactive": false },
-    { "id": "nebula-drift", "name": "Nebula Drift", "category": "ambient", "audio_reactive": false }
+    {
+      "id": "borealis",
+      "name": "Borealis",
+      "category": "ambient",
+      "audio_reactive": false
+    },
+    {
+      "id": "deep-current",
+      "name": "Deep Current",
+      "category": "ambient",
+      "audio_reactive": false
+    },
+    {
+      "id": "nebula-drift",
+      "name": "Nebula Drift",
+      "category": "ambient",
+      "audio_reactive": false
+    }
   ],
   "total": 3,
   "has_more": false,
@@ -70,27 +85,38 @@ Browse the catalog instead of guessing an effect name. Filter `list_effects` to 
 
 ### 3. Apply it
 
-Call `set_effect`. The required argument is `query`, which does fuzzy and natural-language matching, so a description works as well as an exact name. Pass `controls` to tune it. Those two are the whole schema: effect switches are immediate cuts, so the tool takes no transition argument, and sending one is refused rather than ignored.
+Call `set_effect` with one catalog identity. The `query` resolves by exact ID, exact case-insensitive name, or a unique case-insensitive name substring. The optional `transition` object accepts only `{ "type": "cut" }`, and omission also means cut. Choose once, apply once, then tune the returned layer instead of reapplying candidates.
 
 ```json
 // set_effect with
 {
-  "query": "calm blue borealis",
-  "controls": { "speed": 2 }
+  "query": "Borealis",
+  "transition": { "type": "cut" }
 }
 // → returns (abridged)
 {
-  "matched_effect": { "id": "borealis", "name": "Borealis" },
-  "confidence": 0.94,
-  "alternatives": [
-    { "id": "deep-current", "name": "Deep Current", "score": 0.71 },
-    { "id": "nebula-drift", "name": "Nebula Drift", "score": 0.64 }
-  ],
-  "applied": true
+  "zone": {
+    "id": "0199...",
+    "name": "Primary",
+    "layers": [{ "id": "0199...", "source": { "type": "effect", "effect_id": "borealis", "controls": {} }]
+  },
+  "transition": { "type": "cut" },
+  "output": { "applied": true }
 }
 ```
 
-Read `confidence` and `alternatives` back to the user when the match is uncertain. A display-face effect cannot be applied through `set_effect`; for LCD faces use `set_display_face` instead.
+Use the returned zone and layer IDs to tune the running layer atomically:
+
+```json
+// adjust_controls with
+{
+  "zone": "0199...",
+  "layer": "0199...",
+  "values": { "speed": { "float": 0.2 } }
+}
+```
+
+An ambiguous substring returns structured candidates rather than selecting one silently. A display-face effect cannot be applied through `set_effect`; for LCD faces use `set_display_face` instead.
 
 ### 4. Settle the brightness
 
@@ -102,7 +128,7 @@ Read `confidence` and `alternatives` back to the user when the match is uncertai
 
 ### 5. Prepare it for automation (optional)
 
-The MCP `create_scene` tool creates a reusable scene with a seeded Primary zone. It takes a name plus optional description, enabled state, and mutation mode. It is the only non-idempotent tool, so call it once. Hypercolor does not schedule scenes, so an external automation system must call `activate_scene` when its own conditions match.
+The MCP `create_scene` tool creates an empty reusable scene with a seeded Primary zone. It takes a name plus optional description, enabled state, and mutation mode. Creating a scene does not capture the current output. Configure the new scene explicitly, then let an external automation system call `activate_scene` when its own conditions match.
 
 ```json
 // create_scene with
@@ -110,6 +136,9 @@ The MCP `create_scene` tool creates a reusable scene with a seeded Primary zone.
   "name": "Evening Calm",
   "description": "Calm lighting for an external sunset automation"
 }
+// activate_scene with { "name": "Evening Calm" }
+// set_effect with { "query": "Borealis" }
+// adjust_controls with the returned zone and layer identities
 ```
 
 {% callout(type="info") %}
@@ -195,7 +224,7 @@ A device stops responding, or the frame rate drops. This playbook narrows from t
 
 ### 1. Check the whole system
 
-Start broad. `get_status` shows whether the engine is running and whether the actual frame rate is tracking the target.
+Start broad. `get_status` shows whether the engine is running and whether the delivered frame rate is tracking the target.
 
 ```json
 // get_status → returns (abridged)
@@ -216,7 +245,13 @@ Filter `get_devices` by connection status to surface the disconnected device.
 // get_devices with { "status": "disconnected" } → returns (abridged)
 {
   "devices": [
-    { "id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90", "name": "Desk Strip", "state": "disconnected", "transport": "network", "led_count": 90 }
+    {
+      "id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90",
+      "name": "Desk Strip",
+      "state": "disconnected",
+      "transport": "network",
+      "led_count": 90
+    }
   ],
   "summary": { "total": 1, "connected": 0, "total_leds": 90 }
 }
@@ -230,36 +265,37 @@ hypercolor devices list --status disconnected -j
 
 ### 3. Run diagnostics
 
-Call the `diagnose` tool. It takes no arguments: every call runs the full-system pass across every device, which is what this playbook wants anyway, since that pass includes the per-device output queues you need. The tool returns an `overall_status`, a `findings[]` array with per-finding `severity`, and a deep `metrics` object covering frame rate, render-window timing, and per-device output queues.
+Call the `diagnose` tool. It takes no arguments and runs the canonical default-safe diagnostic pass. The tool returns the same `checks`, `summary`, and `snapshot` payload as the REST diagnostic collector, including render timing and per-device output queues.
 
 ```json
 // diagnose with {} → returns (abridged)
 {
-  "overall_status": "warning",
-  "findings": [
+  "checks": [
     {
-      "severity": "info",
-      "message": "1 of 4 devices are disconnected."
-    },
-    {
-      "severity": "warning",
-      "message": "Device output queues show lag/drops: lagging=1, dropped_total=184."
+      "category": "devices",
+      "name": "output_queues",
+      "status": "warning",
+      "detail": "queues=4, lagging=1, dropped_total=184, errors_total=41"
     }
   ],
-  "metrics": {
-    "fps": 22.4,
-    "target_fps": 60,
-    "consecutive_misses": 2,
+  "summary": { "passed": 8, "warnings": 1, "failed": 0 },
+  "snapshot": {
     "device_output": {
       "items": [
-        { "id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90", "delivered_fps": 0, "accepted_fps": 60, "coalesced_backend_overrun": 184, "transport_failed": 41 }
+        {
+          "id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90",
+          "delivered_fps": 0,
+          "accepted_fps": 60,
+          "coalesced_backend_overrun": 184,
+          "transport_failed": 41
+        }
       ]
     }
   }
 }
 ```
 
-The `metrics.device_output.items[]` block is the signal: `accepted_fps` of 60 against `delivered_fps` of 0, with climbing backend-overrun coalescing and transport failures, means the render loop is producing frames the transport cannot deliver. That is a connectivity failure, not a rendering one.
+The `snapshot.device_output.items[]` block is the signal: `accepted_fps` of 60 against `delivered_fps` of 0, with climbing backend-overrun coalescing and transport failures, means the render loop is producing frames the transport cannot deliver. That is a connectivity failure, not a rendering one.
 
 The CLI equivalent runs named checks and can write a full report file for a bug report:
 
@@ -270,7 +306,7 @@ hypercolor diagnose --report ./hypercolor-report.json --system
 
 ### 4. Interpret and act
 
-Read the findings before acting. A network device that drops to `delivered_fps: 0` with rising transport failures is almost always off the network: powered down, on a different VLAN, or behind AP isolation. The fix lives in [Network devices](@/hardware/_index.md), not in Hypercolor. A device that is connected but rendering wrong colors is a different class of problem, covered in [Color science for LEDs](@/effects/color-science.md). Distinguishing the two is exactly what the metrics let an agent do.
+Read the checks before acting. A network device that drops to `delivered_fps: 0` with rising transport failures is usually outside the daemon's control: powered down, on a different VLAN, or behind AP isolation. The fix lives in [Network devices](@/hardware/_index.md), not in a nonexistent reconnect tool. A device that is connected but rendering wrong colors is a different class of problem, covered in [Color science for LEDs](@/effects/color-science.md). Distinguishing the two is exactly what the diagnostic snapshot lets an agent do.
 
 {% callout(type="success") %}
 The pattern repeats across all three workflows: orient on shared state, narrow with a filtered query, act with a structured call, and verify by reading state back. An agent that follows it never operates blind.

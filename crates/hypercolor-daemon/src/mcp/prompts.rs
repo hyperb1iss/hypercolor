@@ -101,10 +101,17 @@ fn build_mood_lighting_messages(arguments: &Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("a cozy vibe");
 
-    let _audio_reactive = arguments
+    let audio_reactive = arguments
         .get("audio_reactive")
         .and_then(Value::as_str)
         .unwrap_or("auto");
+    let audio_guidance = match audio_reactive.to_ascii_lowercase().as_str() {
+        "yes" => "Only consider catalog effects marked audio_reactive.",
+        "no" => "Exclude catalog effects marked audio_reactive.",
+        _ => {
+            "Consider audio-reactive catalog effects only when they are the strongest match for the requested mood."
+        }
+    };
 
     json!({
         "description": "Configure Hypercolor RGB lighting to match a mood",
@@ -157,7 +164,7 @@ fn build_mood_lighting_messages(arguments: &Value) -> Value {
                 "role": "user",
                 "content": {
                     "type": "text",
-                    "text": "Based on the available effects, connected devices, and current state, suggest an effect and control settings that match the requested mood. Consider the hardware setup and which effects work best with the device count and spatial layout. Provide your top 2-3 recommendations with explanations, then apply the best match after confirming."
+                    "text": format!("{audio_guidance} Choose one deterministic best match from the catalog for the requested mood and hardware. Call set_effect exactly once. Use the returned zone and layer identities with adjust_controls to tune the applied layer. Explain the selection and final controls without applying alternate candidates.")
                 }
             }
         ]
@@ -211,7 +218,7 @@ fn build_troubleshoot_messages(arguments: &Value) -> Value {
                 "role": "user",
                 "content": {
                     "type": "text",
-                    "text": "Use the diagnose tool to run a full diagnostic. Based on the results and the device/state information above, identify the root cause, explain it clearly, and provide step-by-step instructions to fix the issue. If the fix can be applied through Hypercolor tools (reconnecting a device, adjusting settings), offer to do it."
+                    "text": "Use the diagnose tool to collect the canonical safe diagnostic report. Based on those results and the device/state information above, identify the root cause and provide concrete remediation steps. Use only registered Hypercolor tools for actions they actually support, and state plainly when remediation must happen outside Hypercolor."
                 }
             }
         ]
@@ -257,10 +264,20 @@ fn build_setup_automation_messages(arguments: &Value) -> Value {
                 }
             },
             {
+                "role": "assistant",
+                "content": {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "hypercolor://effects",
+                        "mimeType": "application/json"
+                    }
+                }
+            },
+            {
                 "role": "user",
                 "content": {
                     "type": "text",
-                    "text": "Hypercolor does not schedule or trigger scenes. Based on the available scenes and current state, help me define a reusable scene for an external automation system. Ask what lighting state the scene should represent, then use create_scene if a new scene is needed. Explain that the external system must call activate_scene when its own conditions match."
+                    "text": "Hypercolor does not schedule or trigger scenes. Define the desired reusable state, then create_scene to make an empty named scene when needed. Activate that scene, choose one catalog effect, and call set_effect once. Use the returned zone and layer identities with adjust_controls for final tuning. Creating a scene does not capture the current output. The external scheduler must call activate_scene when its own conditions match."
                 }
             }
         ]

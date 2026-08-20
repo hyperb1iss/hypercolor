@@ -1,15 +1,19 @@
-//! Scene-related MCP tools: `activate_scene`, `list_scenes`, `create_scene`.
+//! Scene-related MCP tools and live-tree mutations.
 
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
 use crate::api::AppState;
 use crate::api::scenes::{asset_mime_types, current_media_config};
-use crate::domain::MutationContext;
 use crate::domain::scene::{
     ActivateScene, CreateScene, activate_scene, create_scene, evaluate_scene_media_admission,
 };
+use crate::domain::scene_tree::{ClearScene, PatchLayerControls};
+use crate::domain::{DomainError, MutationContext};
+use crate::mcp::selector::SelectorCandidate;
+use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::scene::TransitionSpec;
+use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -24,7 +28,7 @@ pub(super) fn build_activate_scene() -> ToolDefinition {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Scene name or fuzzy query to match against"
+                    "description": "Scene ID, exact name, or unique name substring"
                 },
                 "transition_ms": {
                     "type": "integer",
@@ -85,7 +89,7 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Whether the scene is active immediately",
+                    "description": "Whether the scene may be activated",
                     "default": true
                 },
                 "mutation_mode": {
@@ -102,6 +106,67 @@ pub(super) fn build_create_scene() -> ToolDefinition {
         read_only: false,
         destructive: false,
         idempotent: false,
+    }
+}
+
+pub(super) fn build_clear_zone() -> ToolDefinition {
+    ToolDefinition {
+        name: "clear_zone".into(),
+        title: "Clear Scene Zone".into(),
+        description: "Clear one non-display zone's layer stack by ID, exact name, or unique name substring. Omit zone to clear every non-display zone and quiesce output.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "zone": {
+                    "type": "string",
+                    "description": "Optional zone ID, exact name, or unique name substring"
+                }
+            },
+            "additionalProperties": false
+        }),
+        output_schema: default_output_schema(),
+        read_only: false,
+        destructive: true,
+        idempotent: true,
+    }
+}
+
+pub(super) fn build_adjust_controls() -> ToolDefinition {
+    ToolDefinition {
+        name: "adjust_controls".into(),
+        title: "Adjust Layer Controls".into(),
+        description: "Atomically patch typed control values and clear bindings on one live scene layer. Zones and named layers accept IDs, exact names, or unique name substrings; unnamed layers require their ID.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "zone": {
+                    "type": "string",
+                    "description": "Zone ID, exact name, or unique name substring"
+                },
+                "layer": {
+                    "type": "string",
+                    "description": "Layer ID, exact name, or unique name substring"
+                },
+                "values": {
+                    "type": "object",
+                    "description": "Canonical typed ControlValue entries keyed by control ID",
+                    "default": {},
+                    "additionalProperties": true
+                },
+                "clear_bindings": {
+                    "type": "array",
+                    "description": "Control bindings to remove in the same atomic commit",
+                    "default": [],
+                    "items": { "type": "string" }
+                }
+            },
+            "required": ["zone", "layer"],
+            "additionalProperties": false
+        }),
+        output_schema: default_output_schema(),
+        read_only: false,
+        destructive: false,
+        idempotent: true,
     }
 }
 
@@ -123,25 +188,17 @@ pub(super) async fn handle_activate_scene_with_state(
     let asset_mime_types = asset_mime_types(state).await;
     let media_config = current_media_config(state);
 
-    // Fuzzy name matching is an adapter concern, and a miss stays a
-    // structured success payload rather than a JSON-RPC error.
-    let matched_scene = {
+    let scene = {
         let scene_manager = state.scene_manager.read().await;
-        scene_manager
+        let candidates = scene_manager
             .list()
             .into_iter()
-            .find(|scene| {
-                scene.name.eq_ignore_ascii_case(name)
-                    || scene.name.to_lowercase().contains(&name.to_lowercase())
+            .map(|scene| {
+                SelectorCandidate::named(scene.id.to_string(), scene.name.clone(), scene.clone())
             })
-            .cloned()
-    };
-
-    let Some(scene) = matched_scene else {
-        return Ok(json!({
-            "activated": false,
-            "message": format!("No scene matching '{name}' found. Use list_scenes to browse available scenes.")
-        }));
+            .collect();
+        crate::mcp::selector::resolve(name, candidates)
+            .map_err(|error| ToolError::selector("name", error))?
     };
 
     let admission = evaluate_scene_media_admission(&scene, &asset_mime_types, &media_config);
@@ -178,6 +235,154 @@ pub(super) async fn handle_activate_scene_with_state(
         },
         "transition_ms": transition_ms
     }))
+}
+
+pub(super) async fn handle_clear_zone_with_state(
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    let Some(zone) = params.get("zone") else {
+        let written = crate::domain::scene_tree::clear_scene(
+            state,
+            ClearScene {
+                zone: None,
+                expected_revision: None,
+            },
+            MutationContext::mcp(),
+        )
+        .await?;
+        return serde_json::to_value(written.document)
+            .map_err(|error| ToolError::Internal(error.to_string()));
+    };
+    let Value::String(query) = zone else {
+        return Err(ToolError::InvalidParam {
+            param: "zone".into(),
+            reason: "must be a string".into(),
+        });
+    };
+
+    loop {
+        let document = crate::domain::scene_tree::read_document(state).await?;
+        let revision = document.revision;
+        let candidates = document
+            .zones
+            .into_iter()
+            .map(|zone| SelectorCandidate::named(zone.id.to_string(), zone.name.clone(), zone))
+            .collect();
+        let zone = crate::mcp::selector::resolve(query, candidates)
+            .map_err(|error| ToolError::selector("zone", error))?;
+        if zone.role == ZoneRole::Display {
+            return Err(ToolError::InvalidParam {
+                param: "zone".into(),
+                reason: "display zones are cleared through the display-face tools".into(),
+            });
+        }
+
+        match crate::domain::scene_tree::clear_scene(
+            state,
+            ClearScene {
+                zone: Some(zone.id),
+                expected_revision: Some(revision),
+            },
+            MutationContext::mcp(),
+        )
+        .await
+        {
+            Ok(written) => {
+                return serde_json::to_value(written.document)
+                    .map_err(|error| ToolError::Internal(error.to_string()));
+            }
+            Err(error) if scene_snapshot_was_superseded(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+pub(super) async fn handle_adjust_controls_with_state(
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    let zone_query = params
+        .get("zone")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("zone".into()))?;
+    let layer_query = params
+        .get("layer")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("layer".into()))?;
+
+    let patch: PatchControlsRequest = serde_json::from_value(json!({
+        "values": params.get("values").cloned().unwrap_or_else(|| json!({})),
+        "clear_bindings": params
+            .get("clear_bindings")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    }))
+    .map_err(|error| ToolError::InvalidParam {
+        param: "values".into(),
+        reason: error.to_string(),
+    })?;
+
+    loop {
+        let document = crate::domain::scene_tree::read_document(state).await?;
+        let revision = document.revision;
+        let zone_candidates = document
+            .zones
+            .into_iter()
+            .map(|zone| SelectorCandidate::named(zone.id.to_string(), zone.name.clone(), zone))
+            .collect();
+        let zone = crate::mcp::selector::resolve(zone_query, zone_candidates)
+            .map_err(|error| ToolError::selector("zone", error))?;
+        if zone.role == ZoneRole::Display {
+            return Err(ToolError::InvalidParam {
+                param: "zone".into(),
+                reason: "display-face controls are adjusted through the display tools".into(),
+            });
+        }
+
+        let layer_candidates = zone
+            .layers
+            .iter()
+            .cloned()
+            .map(|layer| match layer.name.clone() {
+                Some(name) => SelectorCandidate::named(layer.id.to_string(), name, layer),
+                None => SelectorCandidate::unnamed(layer.id.to_string(), layer),
+            })
+            .collect();
+        let layer = crate::mcp::selector::resolve(layer_query, layer_candidates)
+            .map_err(|error| ToolError::selector("layer", error))?;
+
+        match crate::domain::scene_tree::patch_layer_controls(
+            state,
+            PatchLayerControls {
+                zone_id: zone.id,
+                layer_id: layer.id,
+                values: patch
+                    .values
+                    .iter()
+                    .map(|(id, value)| (id.clone(), value.clone()))
+                    .collect(),
+                clear_bindings: patch.clear_bindings.clone(),
+                expected_revision: Some(revision),
+            },
+            MutationContext::mcp(),
+        )
+        .await
+        {
+            Ok(written) => {
+                return Ok(json!({
+                    "zone": written.zone,
+                    "revision": written.revision,
+                }));
+            }
+            Err(error) if scene_snapshot_was_superseded(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn scene_snapshot_was_superseded(error: &DomainError) -> bool {
+    matches!(error, DomainError::PreconditionFailed { .. })
 }
 
 pub(super) async fn handle_list_scenes_with_state(

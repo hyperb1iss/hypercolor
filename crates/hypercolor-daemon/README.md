@@ -1,6 +1,6 @@
 # hypercolor-daemon
 
-*The beating heart of Hypercolor — render loop, hardware orchestration, and API server.*
+_The beating heart of Hypercolor — render loop, hardware orchestration, and API server._
 
 This crate is the Hypercolor daemon binary. It owns the full runtime: device discovery and
 management, effect composition via SparkleFlinger (up to 60 fps, adaptive across five tiers),
@@ -17,8 +17,8 @@ hypercolor-leptos-ext. Nothing in the workspace depends on this crate.
 
 ## Binary
 
-| Binary | Command |
-|--------|---------|
+| Binary              | Command                                        |
+| ------------------- | ---------------------------------------------- |
 | `hypercolor-daemon` | `just daemon` (preview profile, debug logging) |
 
 Notable secondary binaries built from `src/bin/`: `hypercolor-debug` (diagnostics) and
@@ -26,12 +26,12 @@ Notable secondary binaries built from `src/bin/`: `hypercolor-debug` (diagnostic
 
 ## Cargo Features
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `builtin-drivers` | yes | Bundles all HAL device drivers via hypercolor-driver-builtin |
-| `wgpu` | yes | GPU-accelerated effect rendering |
-| `servo` | yes | Servo HTML effect rendering |
-| `servo-gpu-import` | no | Servo/wgpu GPU texture sharing on Linux |
+| Feature            | Default | Description                                                  |
+| ------------------ | ------- | ------------------------------------------------------------ |
+| `builtin-drivers`  | yes     | Bundles all HAL device drivers via hypercolor-driver-builtin |
+| `wgpu`             | yes     | GPU-accelerated effect rendering                             |
+| `servo`            | yes     | Servo HTML effect rendering                                  |
+| `servo-gpu-import` | no      | Servo/wgpu GPU texture sharing on Linux                      |
 
 ## API Surface
 
@@ -49,7 +49,7 @@ The daemon serves on `:9420`:
 - `GET|POST /api/v1/layouts` — spatial layout CRUD
 - `WebSocket /api/v1/ws` — real-time events, canvas frames, metrics, spectrum
 - `GET /swagger-ui` — interactive API docs
-- MCP server: 16 tools, 5 resources for AI integration
+- MCP server: 17 tools, 5 resources for AI integration
 
 ## Usage
 

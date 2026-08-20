@@ -519,6 +519,7 @@ pub async fn patch_layer_controls(
                 layer_id,
                 values,
                 clear_bindings: body.clear_bindings,
+                expected_revision: None,
             },
             MutationContext::api(),
         )

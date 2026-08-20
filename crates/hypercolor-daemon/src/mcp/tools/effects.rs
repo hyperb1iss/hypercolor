@@ -1,17 +1,20 @@
-//! Effect-related MCP tools: `set_effect`, `list_effects`, `stop_effect`, `set_color`.
+//! Effect-related MCP tools: `set_effect`, `list_effects`, `set_color`.
 
 use std::cmp::min;
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metadata};
+use super::{
+    ToolDefinition, ToolError, default_output_schema, find_effect_metadata, resolve_effect_selector,
+};
 use crate::api::AppState;
 use crate::api::effects::normalize_control_payload;
 use crate::domain::MutationContext;
 use crate::domain::effect::{
-    ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog, stop_effect,
+    ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog,
 };
+use hypercolor_types::api::scene::{ApplyEffectResponse, TransitionType};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use strum::VariantNames;
 
@@ -21,18 +24,30 @@ pub(super) fn build_set_effect() -> ToolDefinition {
     ToolDefinition {
         name: "set_effect".into(),
         title: "Set Lighting Effect".into(),
-        description: "Apply a lighting effect to the RGB setup. Accepts exact effect names, partial matches, or natural language descriptions of the desired visual (e.g., 'aurora', 'something with northern lights', 'calm blue waves'). Returns the matched effect and confidence score. Use list_effects first if unsure what's available.".into(),
+        description: "Replace the target zone's layer stack with one lighting effect. The selector accepts an exact effect ID, exact name, or unique name substring. Use list_effects first if unsure what's available.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Effect name or natural language description of the desired lighting"
+                    "description": "Effect ID, exact name, or unique name substring"
                 },
                 "controls": {
                     "type": "object",
                     "description": "Optional effect parameter overrides as key-value pairs",
                     "additionalProperties": true
+                },
+                "transition": {
+                    "type": "object",
+                    "description": "Applied transition. Only an immediate cut is currently supported.",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["cut"]
+                        }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
                 }
             },
             "required": ["query"],
@@ -41,7 +56,7 @@ pub(super) fn build_set_effect() -> ToolDefinition {
         output_schema: default_output_schema(),
         read_only: false,
         destructive: true,
-        idempotent: true,
+        idempotent: false,
     }
 }
 
@@ -92,23 +107,6 @@ pub(super) fn build_list_effects() -> ToolDefinition {
     }
 }
 
-pub(super) fn build_stop_effect() -> ToolDefinition {
-    ToolDefinition {
-        name: "stop_effect".into(),
-        title: "Stop Current Effect".into(),
-        description: "Destructively stop the current effect, clear its live controls and preset provenance, and release network-device ownership. Use set_output_power with state 'paused' for a reversible blackout.".into(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-        }),
-        output_schema: default_output_schema(),
-        read_only: false,
-        destructive: true,
-        idempotent: true,
-    }
-}
-
 pub(super) fn build_set_color() -> ToolDefinition {
     ToolDefinition {
         name: "set_color".into(),
@@ -126,13 +124,6 @@ pub(super) fn build_set_color() -> ToolDefinition {
                     "description": "Optional brightness override (0-100)",
                     "minimum": 0,
                     "maximum": 100
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade duration in milliseconds. Effect transitions are not implemented yet, so only 0 (immediate cut) is accepted.",
-                    "default": 0,
-                    "minimum": 0,
-                    "maximum": 0
                 }
             },
             "required": ["color"],
@@ -141,7 +132,7 @@ pub(super) fn build_set_color() -> ToolDefinition {
         output_schema: default_output_schema(),
         read_only: false,
         destructive: true,
-        idempotent: true,
+        idempotent: false,
     }
 }
 
@@ -156,41 +147,30 @@ pub(super) async fn handle_set_effect_with_state(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("query".into()))?;
 
-    let effect_catalog = {
-        let registry = state.effect_registry.read().await;
-        registry
-            .iter()
-            .map(|(_, entry)| entry.metadata.clone())
-            .collect::<Vec<_>>()
-    };
-
-    let matches = crate::mcp::fuzzy::match_effect(query, &effect_catalog);
-    let Some(best_match) = matches.first() else {
-        return Ok(json!({
-            "matched_effect": null,
-            "confidence": 0.0,
-            "alternatives": [],
-            "applied": false,
-            "message": format!("No effects matching '{query}' found. Use list_effects to browse available effects.")
-        }));
-    };
-    if best_match.effect.category == EffectCategory::Display {
+    let effect = resolve_effect_selector(state, "query", query).await?;
+    if effect.category == EffectCategory::Display {
         return Err(ToolError::InvalidParam {
             param: "query".into(),
             reason: format!(
                 "effect '{}' is a display face and must be assigned to a display device, not applied to the LED pipeline",
-                best_match.effect.name
+                effect.name
             ),
         });
     }
+    parse_transition(params.get("transition"))?;
 
     let controls = params
         .get("controls")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let (normalized_controls, rejected_controls) =
-        normalize_control_payload(&best_match.effect, &controls);
+    let (normalized_controls, rejected_controls) = normalize_control_payload(&effect, &controls);
+    if !rejected_controls.is_empty() {
+        return Err(ToolError::InvalidParam {
+            param: "controls".into(),
+            reason: format!("rejected values: {}", rejected_controls.join(", ")),
+        });
+    }
 
     // The service enforces this too, but its DomainError::Internal for a
     // missing active scene would reach MCP as -32603 "internal error".
@@ -209,8 +189,8 @@ pub(super) async fn handle_set_effect_with_state(
     let applied = apply_effect(
         state,
         ApplyEffect {
-            effect: best_match.effect.clone(),
-            controls: normalized_controls.clone(),
+            effect,
+            controls: normalized_controls,
             preset_id: None,
             target_zone: None,
             expected_revision: None,
@@ -221,25 +201,7 @@ pub(super) async fn handle_set_effect_with_state(
     )
     .await?;
 
-    Ok(json!({
-        "matched_effect": {
-            "id": best_match.effect.id.to_string(),
-            "name": best_match.effect.name,
-            "description": best_match.effect.description,
-            "category": format!("{}", best_match.effect.category)
-        },
-        "confidence": best_match.score,
-        "alternatives": matches.iter().skip(1).take(5).map(|candidate| json!({
-            "id": candidate.effect.id.to_string(),
-            "name": candidate.effect.name,
-            "score": candidate.score
-        })).collect::<Vec<_>>(),
-        "applied": true,
-        "applied_controls": normalized_controls,
-        "rejected_controls": rejected_controls,
-        "transition_ms": applied.transition.duration_ms,
-        "warnings": []
-    }))
+    serialize_apply_response(applied)
 }
 
 pub(super) async fn handle_list_effects_with_state(
@@ -299,27 +261,6 @@ pub(super) async fn handle_list_effects_with_state(
     }))
 }
 
-pub(super) async fn handle_stop_effect_with_state(
-    _params: &Value,
-    state: &AppState,
-) -> Result<Value, ToolError> {
-    let Some(stopped) = stop_effect(state, MutationContext::mcp()).await? else {
-        return Ok(json!({
-            "stopped": false,
-            "effect": null
-        }));
-    };
-
-    Ok(json!({
-        "stopped": true,
-        "released_network_devices": stopped.released_network_devices,
-        "effect": {
-            "id": stopped.effect.id,
-            "name": stopped.effect.name
-        }
-    }))
-}
-
 pub(super) async fn handle_set_color_with_state(
     params: &Value,
     state: &AppState,
@@ -328,15 +269,6 @@ pub(super) async fn handle_set_color_with_state(
         .get("color")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("color".into()))?;
-    // The schema has always advertised transition_ms here. It now runs
-    // the same rule set_effect does instead of being dropped on the
-    // floor, so a caller asking for a crossfade learns it cannot have
-    // one.
-    let transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-
     let resolved =
         crate::mcp::fuzzy::resolve_color(color_str).ok_or_else(|| ToolError::InvalidParam {
             param: "color".into(),
@@ -387,35 +319,56 @@ pub(super) async fn handle_set_color_with_state(
         .map_err(|error| ToolError::Conflict(error.to_string()))?;
     }
 
-    apply_effect(
+    let applied = apply_effect(
         state,
         ApplyEffect {
             effect: solid_effect.clone(),
-            controls: controls.clone(),
+            controls,
             preset_id: None,
             target_zone: None,
             expected_revision: None,
-            transition: RequestedTransition::of_duration(transition_ms),
+            transition: RequestedTransition::cut(),
             wake_output: true,
         },
         MutationContext::mcp(),
     )
     .await?;
 
-    let device_count = state.device_registry.len().await;
-    Ok(json!({
-        "resolved_color": {
-            "hex": resolved.hex,
-            "name": resolved.name,
-            "rgb": {
-                "r": resolved.r,
-                "g": resolved.g,
-                "b": resolved.b
-            }
-        },
-        "applied": true,
-        "applied_controls": controls,
-        "device_count": device_count,
-        "warnings": []
-    }))
+    serialize_apply_response(applied)
+}
+
+fn parse_transition(value: Option<&Value>) -> Result<(), ToolError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let Some(object) = value.as_object() else {
+        return Err(ToolError::InvalidParam {
+            param: "transition".into(),
+            reason: "must be an object with type 'cut'".into(),
+        });
+    };
+    if object.len() != 1 || !object.contains_key("type") {
+        return Err(ToolError::InvalidParam {
+            param: "transition".into(),
+            reason: "accepts exactly one field: type".into(),
+        });
+    }
+    if object.get("type").and_then(Value::as_str) != Some("cut") {
+        return Err(ToolError::InvalidParam {
+            param: "transition".into(),
+            reason: "type must be 'cut'".into(),
+        });
+    }
+    Ok(())
+}
+
+fn serialize_apply_response(
+    applied: crate::domain::effect::EffectApplied,
+) -> Result<Value, ToolError> {
+    serde_json::to_value(ApplyEffectResponse {
+        zone: crate::domain::scene_tree::zone_resource(&applied.zone),
+        transition: TransitionType::Cut,
+        output: applied.output,
+    })
+    .map_err(|error| ToolError::Internal(error.to_string()))
 }

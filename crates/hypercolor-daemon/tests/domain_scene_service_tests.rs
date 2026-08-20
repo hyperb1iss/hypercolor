@@ -18,7 +18,7 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, Severity, ZoneChangeKind};
 use hypercolor_types::identity::LayoutId;
@@ -41,7 +41,9 @@ use hypercolor_daemon::domain::scene::{
     ActivateScene, CreateScene, SnapshotScene, UpdateScene, activate_scene, commit_scene,
     create_scene, deactivate_scene, delete_scene, snapshot_scene, update_scene,
 };
-use hypercolor_daemon::domain::scene_tree::{ClearScene, clear_scene};
+use hypercolor_daemon::domain::scene_tree::{
+    ClearScene, PatchLayerControls, clear_scene, patch_layer_controls, read_document,
+};
 use hypercolor_daemon::domain::{DomainError, MutationContext};
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
@@ -114,6 +116,58 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
             .scene_overrides(SceneId::DEFAULT)
             .await
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
+    let (state, _tempdir) = isolated_state();
+    let stale = read_document(&state)
+        .await
+        .expect("default scene should be readable");
+    let next_scene = named_scene("next");
+    let next_scene_id = next_scene.id;
+    state
+        .scene_manager
+        .write()
+        .await
+        .create(next_scene)
+        .expect("next scene should be created");
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: next_scene_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("next scene should activate");
+
+    let error = patch_layer_controls(
+        &state,
+        PatchLayerControls {
+            zone_id: stale.zones[0].id,
+            layer_id: SceneLayerId::new(),
+            values: HashMap::from([("speed".to_owned(), ControlValue::Float(1.0))]),
+            clear_bindings: Vec::new(),
+            expected_revision: Some(stale.revision),
+        },
+        MutationContext::mcp(),
+    )
+    .await
+    .expect_err("the selector snapshot must not target the replacement scene");
+
+    assert!(
+        matches!(
+            error,
+            DomainError::PreconditionFailed {
+                expected,
+                current,
+                ..
+            } if expected == stale.revision && current > expected
+        ),
+        "scene revision must fail before zone or layer lookup: {error:?}"
     );
 }
 

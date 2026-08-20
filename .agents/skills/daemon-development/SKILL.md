@@ -186,31 +186,38 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 
 ## MCP Server Integration
 
-16 tools exposed via Model Context Protocol for AI control:
+17 tools exposed via Model Context Protocol for AI control:
 
-| Tool               | Purpose                                                         |
-| ------------------ | --------------------------------------------------------------- |
-| `set_effect`       | Apply effect by name/query (fuzzy match) with optional controls |
-| `list_effects`     | Browse effect catalog with category/audio_reactive filters      |
-| `stop_effect`      | Stop the active effect and clear its controls (destructive)     |
-| `set_color`        | Apply a solid color effect                                      |
-| `set_output_power` | Pause or resume output without discarding effect state          |
-| `get_devices`      | List connected devices                                          |
-| `set_brightness`   | Set global brightness (0-100 percent)                           |
-| `get_status`       | Current daemon state snapshot                                   |
-| `activate_scene`   | Activate a scene by name/ID                                     |
-| `list_scenes`      | List all scenes                                                 |
-| `create_scene`     | Create a new scene                                              |
-| `get_audio_state`  | Audio analysis snapshot                                         |
-| `get_sensor_data`  | System telemetry snapshot or one named sensor reading           |
-| `set_display_face` | Assign an HTML display face to a display device                 |
-| `get_layout`       | Get the active spatial layout                                   |
-| `diagnose`         | Full-system diagnostics                                         |
+| Tool               | Purpose                                                            |
+| ------------------ | ------------------------------------------------------------------ |
+| `set_effect`       | Apply one deterministically selected effect with optional controls |
+| `list_effects`     | Browse effect catalog with category/audio_reactive filters         |
+| `set_color`        | Apply a solid color effect                                         |
+| `set_output_power` | Pause or resume output without discarding effect state             |
+| `clear_zone`       | Clear one non-display zone or every non-display zone               |
+| `adjust_controls`  | Patch typed values and clear bindings on one live layer            |
+| `get_devices`      | List connected devices                                             |
+| `set_brightness`   | Set global brightness (0-100 percent)                              |
+| `get_status`       | Current daemon state snapshot                                      |
+| `activate_scene`   | Activate a scene by name/ID                                        |
+| `list_scenes`      | List all scenes                                                    |
+| `create_scene`     | Create a new scene                                                 |
+| `get_audio_state`  | Audio analysis snapshot                                            |
+| `get_sensor_data`  | System telemetry snapshot or one named sensor reading              |
+| `set_display_face` | Assign an HTML display face to a display device                    |
+| `get_layout`       | Get the active spatial layout                                      |
+| `diagnose`         | Canonical safe diagnostics from the shared REST collector          |
 
-Every tool declares its own `read_only` and `destructive` annotations; a tool
-is destructive when it discards state the caller cannot recover.
+Every tool declares `read_only`, `destructive`, and `idempotent` annotations.
+The destructive set is `set_effect`, `set_color`, `clear_zone`,
+`activate_scene`, and `set_display_face`. `adjust_controls` is a
+non-destructive atomic patch.
 
-5 resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://scenes`, `hypercolor://audio`. The MCP server uses fuzzy matching for effect and scene names.
+`diagnose` accepts only an empty closed object and returns the canonical REST
+diagnostic data object: `checks`, `summary`, and `snapshot`. It always runs the
+safe default checks and never exposes the protected `macos_screen_parity` check.
+
+5 resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://scenes`, `hypercolor://audio`. Empty `get_status` and `get_devices` calls use the same builders as their matching resources. Effect, scene, zone, layer, device, and display-face selectors resolve exact IDs, exact case-insensitive names, or unique case-insensitive name substrings; ambiguity returns structured candidates. Color text uses its separate fuzzy resolver.
 
 ## Detailed References
 

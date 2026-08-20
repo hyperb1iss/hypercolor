@@ -9,8 +9,8 @@
 //!   outcome via [`respond`]. `DomainError` renders itself — the first
 //!   `IntoResponse` error type in the codebase. ETags attach in one
 //!   layer keyed on [`Versioned`].
-//! - **MCP**: argument parse + one service call; fuzzy name matching
-//!   stays an MCP-adapter concern. `DomainError` converts to
+//! - **MCP**: schema validation, deterministic selector resolution, and
+//!   one service call. `DomainError` converts to
 //!   [`ToolError`](crate::mcp::tools::ToolError) via `From`.
 //! - **WS commands**: call services directly; versions ride in-band
 //!   via [`Versioned`].
@@ -24,11 +24,10 @@
 //! serialized events, so new variants ship under the §0 dual-accept
 //! process, not as a side effect here.
 //!
-//! MCP fuzzy-lookup misses are an ADAPTER concern: today they return
-//! structured success payloads ("did you mean …"), and migrating
-//! workers must keep that behavior rather than projecting them
-//! through [`DomainError::NotFound`] (which would surface as a
-//! JSON-RPC error the client never saw before).
+//! MCP selector failures are an adapter concern. The adapter returns a
+//! JSON-RPC invalid-params error with the normalized query, failure kind,
+//! and deterministic candidates instead of asking the domain to resolve
+//! transport-facing identity.
 //!
 //! [`DomainError`]'s `IntoResponse` is the ONLY error rendering in the
 //! daemon. There is no second factory, no per-family projection, and no

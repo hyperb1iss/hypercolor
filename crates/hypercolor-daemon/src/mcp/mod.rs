@@ -6,9 +6,11 @@
 pub mod fuzzy;
 pub mod prompts;
 pub mod resources;
+pub mod selector;
 pub mod tools;
 
 mod device_payload;
+mod payload;
 
 use std::future::ready;
 use std::sync::Arc;
@@ -158,10 +160,7 @@ impl ServerHandler for HypercolorMcpServer {
                 .await
             {
                 Ok(payload) => Ok(CallToolResult::structured(payload)),
-                Err(error) => Ok(CallToolResult::structured_error(json!({
-                    "code": error.error_code(),
-                    "message": error.to_string()
-                }))),
+                Err(error) => Ok(CallToolResult::structured_error(tool_error_payload(&error))),
             }
         }
     }
@@ -243,6 +242,17 @@ impl ServerHandler for HypercolorMcpServer {
     ) -> impl Future<Output = Result<GetPromptResult, ErrorData>> + Send + '_ {
         ready(build_prompt_result(request))
     }
+}
+
+fn tool_error_payload(error: &tools::ToolError) -> Value {
+    let mut payload = serde_json::Map::from_iter([
+        ("code".to_owned(), json!(error.error_code())),
+        ("message".to_owned(), json!(error.to_string())),
+    ]);
+    if let Some(details) = error.details() {
+        payload.insert("details".to_owned(), details);
+    }
+    Value::Object(payload)
 }
 
 fn tool_to_mcp(tool: &tools::ToolDefinition) -> Tool {

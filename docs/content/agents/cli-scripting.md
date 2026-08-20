@@ -67,13 +67,13 @@ hypercolor effects list -j
 
 The CLI reads connection settings from flags or environment variables, with the flag winning when both are set. For an agent that runs many commands, exporting the environment once is cleaner than threading flags through every call.
 
-| Variable | Flag | Default | Purpose |
-| --- | --- | --- | --- |
-| `HYPERCOLOR_HOST` | `--host` | `localhost` | Daemon hostname or IP. |
-| `HYPERCOLOR_PORT` | `--port` | `9420` | Daemon port. |
-| `HYPERCOLOR_API_KEY` | `--api-key` | _(none)_ | Bearer token for authenticated requests. |
-| `HYPERCOLOR_PROFILE` | `--profile` | _(none)_ | Named connection profile from `cli.toml`. |
-| `HYPERCOLOR_THEME` | `--theme` | _(none)_ | Color theme for table output (irrelevant under `-j`). |
+| Variable             | Flag        | Default     | Purpose                                               |
+| -------------------- | ----------- | ----------- | ----------------------------------------------------- |
+| `HYPERCOLOR_HOST`    | `--host`    | `localhost` | Daemon hostname or IP.                                |
+| `HYPERCOLOR_PORT`    | `--port`    | `9420`      | Daemon port.                                          |
+| `HYPERCOLOR_API_KEY` | `--api-key` | _(none)_    | Bearer token for authenticated requests.              |
+| `HYPERCOLOR_PROFILE` | `--profile` | _(none)_    | Named connection profile from `cli.toml`.             |
+| `HYPERCOLOR_THEME`   | `--theme`   | _(none)_    | Color theme for table output (irrelevant under `-j`). |
 
 ```bash
 export HYPERCOLOR_HOST=127.0.0.1
@@ -91,11 +91,11 @@ The reliable pattern for an agent is read, then act, then verify. Never guess th
 
 {% mermaid() %}
 graph TD
-    A[Read state: hypercolor status -j] --> B[Discover: effects list / devices list]
-    B --> C[Act: effects activate / brightness set / scenes activate]
-    C --> D[Verify: status -j, branch on exit code]
-    D -->|drifted| B
-    D -->|matches intent| E[Done]
+A[Read state: hypercolor status -j] --> B[Discover: effects list / devices list]
+B --> C[Act: effects activate / brightness set / scenes activate]
+C --> D[Verify: status -j, branch on exit code]
+D -->|drifted| B
+D -->|matches intent| E[Done]
 {% end %}
 
 ### 1. Read the live state
@@ -212,11 +212,11 @@ hypercolor server health -j
 
 The CLI has three top-level commands whose names overlap. Picking the wrong one is a frequent agent error, so keep them straight:
 
-| Command | Scope | Use it to |
-| --- | --- | --- |
-| `server` | The daemon you are connected to | Read its identity, version, and health (`server info`, `server health`). |
-| `servers` | The local network | Discover other Hypercolor daemons via mDNS (`servers discover`). |
-| `service` | The OS service manager | Manage the daemon process lifecycle through systemd or launchd (`service start`, `service stop`, `service status`, `service logs`). |
+| Command   | Scope                           | Use it to                                                                                                                           |
+| --------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `server`  | The daemon you are connected to | Read its identity, version, and health (`server info`, `server health`).                                                            |
+| `servers` | The local network               | Discover other Hypercolor daemons via mDNS (`servers discover`).                                                                    |
+| `service` | The OS service manager          | Manage the daemon process lifecycle through systemd or launchd (`service start`, `service stop`, `service status`, `service logs`). |
 
 In short: `server` queries the connected daemon, `servers` finds daemons on the LAN, and `service` controls the local daemon process.
 
@@ -241,7 +241,7 @@ hypercolor effects activate aurora
 ## Where to go next
 
 - [MCP setup](@/agents/mcp-setup.md): the typed, schema-validated alternative to shell scripting.
-- [Tools reference](@/agents/tools-reference.md): all 16 MCP tools with arguments and return shapes.
+- [Tools reference](@/agents/tools-reference.md): all 17 MCP tools with arguments and return shapes.
 - [Prompt templates](@/agents/prompt-templates.md): the three shipped prompts agents can invoke.
 - [CLI reference](@/api/cli.md): the complete command tree, human-facing.
 - [REST API reference](@/api/rest.md): the daemon contract the CLI sits on top of.

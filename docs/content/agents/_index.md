@@ -1,6 +1,6 @@
 +++
 title = "Agents & MCP"
-description = "Drive Hypercolor with AI agents over MCP and the CLI: 16 tools, 5 resources, 3 prompts, plus a scriptable command line."
+description = "Drive Hypercolor with AI agents over MCP and the CLI: 17 tools, 5 resources, 3 prompts, plus a scriptable command line."
 sort_by = "weight"
 weight = 0
 template = "section.html"
@@ -16,10 +16,10 @@ Hypercolor exposes the same engine through every interface. Whether an agent cal
 
 There are two ways to put an agent in control. They are not competitors. Most real workflows cross between them.
 
-| Surface | Transport | Best for |
-| --- | --- | --- |
-| **MCP server** | Streamable HTTP at `http://127.0.0.1:9420/mcp` | Conversational assistants (Claude, Cursor, Zed) that speak the Model Context Protocol natively |
-| **CLI** (`hypercolor`) | HTTP to the daemon on `:9420` | Shell scripts, cron jobs, CI, and agents that shell out and branch on exit codes |
+| Surface                | Transport                                      | Best for                                                                                       |
+| ---------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **MCP server**         | Streamable HTTP at `http://127.0.0.1:9420/mcp` | Conversational assistants (Claude, Cursor, Zed) that speak the Model Context Protocol natively |
+| **CLI** (`hypercolor`) | HTTP to the daemon on `:9420`                  | Shell scripts, cron jobs, CI, and agents that shell out and branch on exit codes               |
 
 The MCP server gives a model structured tools, browsable resources, and ready-made prompts. The CLI gives any agent that can run a command a machine-readable contract through `--json` output and exit codes. When a job needs both, for example building an effect with the SDK and then applying it, you reach across the line: the SDK authoring CLI installs the effect, then an MCP tool or the daemon CLI applies it.
 
@@ -33,16 +33,16 @@ The MCP server speaks in three kinds of building blocks. Knowing which is which 
 
 {% mermaid() %}
 graph TD
-    A[AI Agent] -->|calls| T[Tools]
-    A -->|reads| R[Resources]
-    A -->|invokes| P[Prompts]
-    T -->|act on| E[Hypercolor Engine]
-    R -->|reflect| E
-    P -->|orchestrate| T
-    P -->|reference| R
+A[AI Agent] -->|calls| T[Tools]
+A -->|reads| R[Resources]
+A -->|invokes| P[Prompts]
+T -->|act on| E[Hypercolor Engine]
+R -->|reflect| E
+P -->|orchestrate| T
+P -->|reference| R
 {% end %}
 
-**Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **16**: `set_effect`, `list_effects`, `stop_effect`, `set_color`, `set_output_power`, `get_devices`, `set_brightness`, `get_status`, `activate_scene`, `list_scenes`, `create_scene`, `get_audio_state`, `get_sensor_data`, `set_display_face`, `get_layout`, and `diagnose`. Eight are read-only (`get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`); the other eight mutate state, and five of those eight are destructive. See the [tools reference](@/agents/tools-reference.md).
+**Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **17**: `get_status`, `get_devices`, `list_effects`, `list_scenes`, `get_audio_state`, `get_layout`, `get_sensor_data`, `diagnose`, `set_brightness`, `set_output_power`, `set_effect`, `set_color`, `clear_zone`, `adjust_controls`, `activate_scene`, `create_scene`, and `set_display_face`. The first eight are read-only. The other nine mutate state, and five of those mutations are destructive. See the [tools reference](@/agents/tools-reference.md).
 
 **Resources** are browsable, read-only views of live state under the `hypercolor://` scheme, the nouns. There are **5**: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://scenes`, and `hypercolor://audio`. An agent reads a resource to orient itself before acting. See the [resources reference](@/agents/resources-reference.md).
 
@@ -59,7 +59,7 @@ New to agent control? Walk it in order: enable the server, learn the tools, then
 {% end %}
 
 - **[MCP setup](@/agents/mcp-setup.md)**: Turn the server on, then copy-paste connection config for Claude Code, Claude Desktop, Cursor, Zed, and generic MCP clients.
-- **[Tools reference](@/agents/tools-reference.md)**: All 16 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
+- **[Tools reference](@/agents/tools-reference.md)**: All 17 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources, their payload shapes, and how fresh each one is.
 - **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts, their arguments, and when each one fits.
 - **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell: `--json` output, exit codes, env vars, and a state-first workflow.
