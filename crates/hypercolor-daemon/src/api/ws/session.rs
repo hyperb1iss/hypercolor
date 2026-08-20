@@ -20,9 +20,7 @@ use hypercolor_leptos_ext::ws::registry::{
     ScreenZonesConfig, SpectrumConfig, TopicId,
 };
 use hypercolor_leptos_ext::ws::topic::ActiveSubscription;
-use hypercolor_leptos_ext::ws::{
-    HYPERCOLOR_WS_VERSION, PreviewStreamId, PreviewTransportCapability,
-};
+use hypercolor_leptos_ext::ws::{HYPERCOLOR_WS_VERSION, PreviewStreamId, PreviewTransportLimits};
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
@@ -324,8 +322,8 @@ async fn handle_socket(
     let mut ping_sent_at = Instant::now();
     let zone_layout_preview_owner = ZoneLayoutPreviewOwner::new();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    let mut preview_capability = PreviewTransportCapability::default();
-    let mut preview_cursors = PreviewCursorQueue::with_capability(preview_capability);
+    let preview_limits = PreviewTransportLimits::default();
+    let mut preview_cursors = PreviewCursorQueue::with_limits(preview_limits);
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
@@ -376,7 +374,7 @@ async fn handle_socket(
                     PreviewOutboundItem::Publication(publication) => {
                         let stream = publication.stream().clone();
                         let publication_id = publication.publication_id();
-                        match PreviewSendCursor::with_capability(publication, preview_capability) {
+                        match PreviewSendCursor::with_limits(publication, preview_limits) {
                             Ok(cursor) => match preview_cursors.try_insert(cursor) {
                                 Ok(Some(replaced)) => preview_rx.complete(replaced.publication()),
                                 Ok(None) => {}
@@ -488,8 +486,6 @@ async fn handle_socket(
                             &mut zone_layout_preview_keys,
                             &mut browser_previews,
                             &preview_tx,
-                            &mut preview_capability,
-                            &mut preview_cursors,
                             &mut socket,
                         )
                         .await;
@@ -848,17 +844,6 @@ impl BrowserPreviewSession {
         &mut self,
         subscriptions: &SubscriptionState,
     ) -> Result<(), WsProtocolError> {
-        self.reconcile_with_commit(subscriptions, || Ok(())).await
-    }
-
-    pub(super) async fn reconcile_with_commit<F>(
-        &mut self,
-        subscriptions: &SubscriptionState,
-        commit: F,
-    ) -> Result<(), WsProtocolError>
-    where
-        F: FnOnce() -> Result<(), WsProtocolError>,
-    {
         let desired =
             subscriptions.keyed_configs::<InteractivePreviewConfig>(TopicId::InteractivePreview);
 
@@ -911,12 +896,6 @@ impl BrowserPreviewSession {
             self.resume_relays(&changed_existing);
             return Err(WsProtocolError::invalid_request(error.to_string()));
         }
-        if let Err(error) = commit() {
-            self.undo(applied).await;
-            self.resume_relays(&changed_existing);
-            return Err(error);
-        }
-
         let changed = applied
             .iter()
             .map(|change| match change {
@@ -1332,72 +1311,6 @@ fn subscription_projection(
     projection
 }
 
-/// A transport capability both ends have agreed on but neither has
-/// adopted yet.
-pub(super) struct StagedPreviewTransport {
-    peer: PreviewTransportCapability,
-    negotiated: PreviewTransportCapability,
-}
-
-/// Work out the capability this subscribe would settle on, touching
-/// nothing. A subscribe that goes on to fail its demand projection must
-/// leave the connection speaking exactly the transport it spoke before.
-pub(super) fn stage_preview_transport(
-    encoded_capability: &str,
-    preview_outbound: &PreviewOutboundSender,
-    preview_cursors: &PreviewCursorQueue,
-) -> Result<StagedPreviewTransport, WsProtocolError> {
-    let peer = PreviewTransportCapability::decode(encoded_capability).map_err(|error| {
-        WsProtocolError::invalid_request(format!("Invalid preview_transport capability: {error}"))
-    })?;
-    let negotiated = preview_outbound
-        .project_negotiation(peer)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    preview_cursors
-        .check_capability(negotiated)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    Ok(StagedPreviewTransport { peer, negotiated })
-}
-
-/// Adopt a staged capability. The sender re-checks and swaps under one
-/// lock, and the cursor queue already proved it fits, so this either
-/// lands whole or refuses without changing anything.
-pub(super) fn commit_preview_transport(
-    staged: StagedPreviewTransport,
-    preview_outbound: &PreviewOutboundSender,
-    preview_cursors: &mut PreviewCursorQueue,
-    preview_capability: &mut PreviewTransportCapability,
-) -> Result<PreviewTransportCapability, WsProtocolError> {
-    let negotiated = preview_outbound
-        .negotiate_transport(staged.peer)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    debug_assert_eq!(
-        negotiated, staged.negotiated,
-        "committing a staged transport must settle on what staging projected"
-    );
-    preview_cursors
-        .set_capability(negotiated)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    *preview_capability = negotiated;
-    Ok(negotiated)
-}
-
-#[cfg(test)]
-pub(super) fn negotiate_preview_transport(
-    encoded_capability: &str,
-    preview_outbound: &PreviewOutboundSender,
-    preview_cursors: &mut PreviewCursorQueue,
-    preview_capability: &mut PreviewTransportCapability,
-) -> Result<PreviewTransportCapability, WsProtocolError> {
-    let staged = stage_preview_transport(encoded_capability, preview_outbound, preview_cursors)?;
-    commit_preview_transport(
-        staged,
-        preview_outbound,
-        preview_cursors,
-        preview_capability,
-    )
-}
-
 /// Process a client subscription/unsubscription message.
 async fn handle_client_message(
     text: &str,
@@ -1410,8 +1323,6 @@ async fn handle_client_message(
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     browser_previews: &mut BrowserPreviewSession,
     preview_outbound: &PreviewOutboundSender,
-    preview_capability: &mut PreviewTransportCapability,
-    preview_cursors: &mut PreviewCursorQueue,
     socket: &mut SessionSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -1428,10 +1339,7 @@ async fn handle_client_message(
     };
 
     match msg {
-        ClientMessage::Subscribe {
-            topics,
-            preview_transport,
-        } => {
+        ClientMessage::Subscribe { topics } => {
             // Validate the whole request first. Every step below builds
             // a candidate and refuses on its own terms, so a request
             // that names four subscriptions and mis-configures the fourth
@@ -1461,18 +1369,6 @@ async fn handle_client_message(
                 }
             };
 
-            let staged_transport = match preview_transport
-                .as_deref()
-                .map(|encoded| stage_preview_transport(encoded, preview_outbound, preview_cursors))
-                .transpose()
-            {
-                Ok(staged) => staged,
-                Err(error) => {
-                    let _ = send_json(socket, &error.into_message()).await;
-                    return;
-                }
-            };
-
             let projected_demand = match input_demand_leases.project(&next_subscriptions) {
                 Ok(projected) => projected,
                 Err(error) => {
@@ -1481,28 +1377,7 @@ async fn handle_client_message(
                 }
             };
 
-            // Commit phase, ordered by what a refusal costs. The
-            // interactive preview lanes go first because they are the only
-            // step whose refusal is undoable: reconciling back to the
-            // subscriptions this request is abandoning to closes whatever
-            // it opened. Adopting the transport goes second because it
-            // refuses without having changed anything, so a refusal there
-            // only has to undo the lanes.
-            let transport_commit = || {
-                if let Some(staged) = staged_transport {
-                    commit_preview_transport(
-                        staged,
-                        preview_outbound,
-                        preview_cursors,
-                        preview_capability,
-                    )?;
-                }
-                Ok(())
-            };
-            if let Err(error) = browser_previews
-                .reconcile_with_commit(&next_subscriptions, transport_commit)
-                .await
-            {
+            if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
@@ -1511,7 +1386,6 @@ async fn handle_client_message(
 
             let ack = ServerMessage::Subscribed {
                 topics: subscription_projection(subscriptions, browser_previews),
-                preview_transport: preview_capability.encode(),
             };
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;

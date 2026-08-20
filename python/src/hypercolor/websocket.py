@@ -23,28 +23,25 @@ from .ws_protocol import (
     BINARY_MESSAGE_TAGS,
     CANVAS_FORMAT_TAGS,
     PREVIEW_TOPIC_TAGS,
-    WS_CAPABILITIES,
+    PREVIEW_TRANSPORT,
 )
 
 type JsonObject = dict[str, Any]
 type EventHandler = Callable[[Any], Any]
 
-_PREVIEW_TRANSPORT_PREFIX = "preview_transport_v2:"
 _PREVIEW_CHUNK_HEADER_LEN = 55
 _PREVIEW_CANCEL_HEADER_LEN = 14
-_PREVIEW_TRANSPORT_CAPABILITY = next(
-    capability
-    for capability in WS_CAPABILITIES
-    if capability.startswith(_PREVIEW_TRANSPORT_PREFIX)
-)
-
-
-def _preview_transport_limits() -> dict[str, int]:
-    fields = _PREVIEW_TRANSPORT_CAPABILITY.removeprefix(_PREVIEW_TRANSPORT_PREFIX).split(",")
-    return {name: int(value) for name, value in (field.split("=", 1) for field in fields)}
-
-
-_PREVIEW_TRANSPORT_LIMITS = _preview_transport_limits()
+_PREVIEW_TRANSPORT_LIMITS = {
+    "decoded": int(PREVIEW_TRANSPORT["max_publication_decoded_bytes"]),
+    "encoded": int(PREVIEW_TRANSPORT["max_publication_encoded_bytes"]),
+    "connection": int(PREVIEW_TRANSPORT["max_connection_bytes"]),
+    "reassembly": int(PREVIEW_TRANSPORT["max_reassembly_state_bytes"]),
+    "tombstones": int(PREVIEW_TRANSPORT["max_tombstone_bytes"]),
+    "sender": int(PREVIEW_TRANSPORT["max_sender_state_bytes"]),
+    "cursors": int(PREVIEW_TRANSPORT["max_cursor_state_bytes"]),
+    "idle_ms": int(PREVIEW_TRANSPORT["partial_idle_ms"]),
+    "message": int(PREVIEW_TRANSPORT["max_message_bytes"]),
+}
 
 
 @dataclass(slots=True)
@@ -81,7 +78,6 @@ class SubscribedMessage:
     """Acknowledgment of the connection's complete live subscription set."""
 
     topics: list[ActiveSubscription]
-    preview_transport: str
 
 
 @dataclass(slots=True)
@@ -327,7 +323,7 @@ def _validate_preview_chunk_layout(
         or (chunk_index + 1 == chunk_count and end != total_encoded_bytes)
         or (chunk_index + 1 < chunk_count and end >= total_encoded_bytes)
     ):
-        msg = "Preview chunk layout exceeds negotiated bounds"
+        msg = "Preview chunk layout exceeds protocol bounds"
         raise ValueError(msg)
 
 
@@ -373,7 +369,7 @@ def _validate_preview_publication_admission(
 
 def _parse_preview_chunk(payload: bytes) -> _PreviewChunk:
     if len(payload) > _PREVIEW_TRANSPORT_LIMITS["message"]:
-        msg = "Preview chunk exceeds the negotiated message-byte limit"
+        msg = "Preview chunk exceeds the protocol message-byte limit"
         raise ValueError(msg)
     if len(payload) < _PREVIEW_CHUNK_HEADER_LEN:
         msg = "Preview chunk is shorter than its 55-byte header"
@@ -785,8 +781,6 @@ class HypercolorEventStream:
         self._send_lock = asyncio.Lock()
         self._screen_zones_reassembler = _ScreenZonesChunkReassembler()
         self._screen_zones_expiry: asyncio.TimerHandle | None = None
-        self._preview_transport_offered = False
-        self._router_activity_started = False
         self.hello: HelloMessage | None = None
 
     async def __aenter__(self) -> HypercolorEventStream:
@@ -852,12 +846,7 @@ class HypercolorEventStream:
             "type": "subscribe",
             "topics": [dict(topic) for topic in topics],
         }
-        offer_transport = not self._preview_transport_offered and not self._router_activity_started
-        if offer_transport:
-            payload["preview_transport"] = _PREVIEW_TRANSPORT_CAPABILITY
         await self._send_json(payload)
-        if offer_transport:
-            self._preview_transport_offered = True
         acknowledgment = await self._wait_for_subscription_ack(SubscribedMessage)
         assert isinstance(acknowledgment, SubscribedMessage)
         return acknowledgment
@@ -1003,8 +992,6 @@ class HypercolorEventStream:
         }
         async with self._send_lock:
             await connection.send(_encode_text(payload))
-        self._router_activity_started = True
-
         while not future.done():
             await self.receive()
         return await future
@@ -1037,7 +1024,6 @@ class HypercolorEventStream:
         connection = self._require_connection()
         async with self._send_lock:
             await connection.send(_encode_text(payload))
-        self._router_activity_started = True
 
     def _require_connection(self) -> ClientConnection:
         if self._connection is None:
@@ -1160,8 +1146,6 @@ class HypercolorEventStream:
             self._screen_zones_expiry.cancel()
             self._screen_zones_expiry = None
         self._screen_zones_reassembler.reset()
-        self._preview_transport_offered = False
-        self._router_activity_started = False
 
     @staticmethod
     def _parse_special_binary(message_type: int, payload: bytes) -> _BinaryWsMessage:
@@ -1615,7 +1599,6 @@ def _decode_subscription_message(
     if message_type == "subscribed":
         return SubscribedMessage(
             topics=_parse_subscriptions(payload.get("topics")),
-            preview_transport=str(payload["preview_transport"]),
         )
     if message_type == "unsubscribed":
         return UnsubscribedMessage(

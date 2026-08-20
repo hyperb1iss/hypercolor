@@ -42,7 +42,6 @@ pub const DEFAULT_PREVIEW_MAX_CONNECTION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES * 2;
 pub const DEFAULT_PREVIEW_MAX_IDLE_MS: u64 = 5_000;
 pub const DEFAULT_PREVIEW_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
-pub const PREVIEW_TRANSPORT_CAPABILITY_PREFIX: &str = "preview_transport_v2:";
 pub const DEFAULT_PREVIEW_MAX_REASSEMBLY_STATE_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_TOMBSTONE_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_SENDER_STATE_BYTES: usize = 8 * 1024 * 1024;
@@ -1046,30 +1045,30 @@ pub fn split_preview_publication(
     metadata: &PreviewPublicationMetadata,
     max_message_bytes: usize,
 ) -> Result<Vec<Bytes>, PreviewChunkError> {
-    split_preview_publication_with_capability(
+    split_preview_publication_with_limits(
         encoded,
         metadata,
         max_message_bytes,
-        PreviewTransportCapability::default(),
+        PreviewTransportLimits::default(),
     )
 }
 
-pub fn split_preview_publication_with_capability(
+pub fn split_preview_publication_with_limits(
     encoded: &Bytes,
     metadata: &PreviewPublicationMetadata,
     max_message_bytes: usize,
-    capability: PreviewTransportCapability,
+    limits: PreviewTransportLimits,
 ) -> Result<Vec<Bytes>, PreviewChunkError> {
-    if encoded.len() > capability.max_encoded_publication_bytes {
+    if encoded.len() > limits.max_encoded_publication_bytes {
         return Err(PreviewChunkError::PublicationBudgetExceeded {
             requested: encoded.len(),
-            limit: capability.max_encoded_publication_bytes,
+            limit: limits.max_encoded_publication_bytes,
         });
     }
-    if max_message_bytes > capability.max_message_bytes {
+    if max_message_bytes > limits.max_message_bytes {
         return Err(PreviewChunkError::MessageBudgetExceeded {
             requested: max_message_bytes,
-            limit: capability.max_message_bytes,
+            limit: limits.max_message_bytes,
         });
     }
     let (_, _, identity) = metadata
@@ -1092,7 +1091,7 @@ pub fn split_preview_publication_with_capability(
     let chunk_count = encoded.len().div_ceil(payload_capacity);
     let chunk_count_u32 =
         u32::try_from(chunk_count).map_err(|_| PreviewChunkError::LengthOverflow)?;
-    let max_chunk_count = capability.effective_max_chunk_count(identity.len());
+    let max_chunk_count = limits.effective_max_chunk_count(identity.len());
     if chunk_count_u32 > max_chunk_count {
         return Err(PreviewChunkError::ChunkCountBudgetExceeded {
             requested: chunk_count_u32,
@@ -1139,7 +1138,7 @@ pub struct PreviewReassemblyLimits {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PreviewTransportCapability {
+pub struct PreviewTransportLimits {
     pub max_decoded_publication_bytes: usize,
     pub max_encoded_publication_bytes: usize,
     pub max_connection_bytes: usize,
@@ -1151,122 +1150,14 @@ pub struct PreviewTransportCapability {
     pub max_cursor_state_bytes: usize,
 }
 
-impl PreviewTransportCapability {
-    #[must_use]
-    pub fn negotiated_with(self, peer: Self) -> Self {
-        let mut negotiated = Self {
-            max_decoded_publication_bytes: self
-                .max_decoded_publication_bytes
-                .min(peer.max_decoded_publication_bytes),
-            max_encoded_publication_bytes: self
-                .max_encoded_publication_bytes
-                .min(peer.max_encoded_publication_bytes),
-            max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
-            max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
-            max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
-            max_reassembly_state_bytes: self
-                .max_reassembly_state_bytes
-                .min(peer.max_reassembly_state_bytes),
-            max_tombstone_bytes: self.max_tombstone_bytes.min(peer.max_tombstone_bytes),
-            max_sender_state_bytes: self.max_sender_state_bytes.min(peer.max_sender_state_bytes),
-            max_cursor_state_bytes: self.max_cursor_state_bytes.min(peer.max_cursor_state_bytes),
-        };
-        negotiated.max_encoded_publication_bytes = negotiated
-            .max_encoded_publication_bytes
-            .min(negotiated.max_connection_bytes);
-        negotiated
-    }
-
-    #[must_use]
-    pub fn encode(self) -> String {
-        format!(
-            "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},reassembly={},tombstones={},sender={},cursors={},idle_ms={},message={}",
-            self.max_decoded_publication_bytes,
-            self.max_encoded_publication_bytes,
-            self.max_connection_bytes,
-            self.max_reassembly_state_bytes,
-            self.max_tombstone_bytes,
-            self.max_sender_state_bytes,
-            self.max_cursor_state_bytes,
-            self.max_idle_ms,
-            self.max_message_bytes,
-        )
-    }
-
-    pub fn decode(value: &str) -> Result<Self, PreviewCapabilityError> {
-        let fields = value
-            .strip_prefix(PREVIEW_TRANSPORT_CAPABILITY_PREFIX)
-            .ok_or(PreviewCapabilityError::UnknownCapability)?;
-        let mut decoded = None;
-        let mut encoded = None;
-        let mut connection = None;
-        let mut idle_ms = None;
-        let mut message = None;
-        let mut reassembly = None;
-        let mut tombstone_bytes = None;
-        let mut sender = None;
-        let mut cursors = None;
-        for field in fields.split(',') {
-            let (name, value) = field
-                .split_once('=')
-                .ok_or(PreviewCapabilityError::InvalidField)?;
-            match name {
-                "decoded" => parse_capability_field(value, &mut decoded)?,
-                "encoded" => parse_capability_field(value, &mut encoded)?,
-                "connection" => parse_capability_field(value, &mut connection)?,
-                "tombstones" => parse_capability_field(value, &mut tombstone_bytes)?,
-                "idle_ms" => parse_capability_field(value, &mut idle_ms)?,
-                "message" => parse_capability_field(value, &mut message)?,
-                "reassembly" => parse_capability_field(value, &mut reassembly)?,
-                "sender" => parse_capability_field(value, &mut sender)?,
-                "cursors" => parse_capability_field(value, &mut cursors)?,
-                _ => return Err(PreviewCapabilityError::InvalidField),
-            }
-        }
-        let capability = Self {
-            max_decoded_publication_bytes: decoded.ok_or(PreviewCapabilityError::MissingField)?,
-            max_encoded_publication_bytes: encoded.ok_or(PreviewCapabilityError::MissingField)?,
-            max_connection_bytes: connection.ok_or(PreviewCapabilityError::MissingField)?,
-            max_idle_ms: idle_ms.ok_or(PreviewCapabilityError::MissingField)?,
-            max_message_bytes: message.ok_or(PreviewCapabilityError::MissingField)?,
-            max_reassembly_state_bytes: reassembly.ok_or(PreviewCapabilityError::MissingField)?,
-            max_tombstone_bytes: tombstone_bytes.ok_or(PreviewCapabilityError::MissingField)?,
-            max_sender_state_bytes: sender.ok_or(PreviewCapabilityError::MissingField)?,
-            max_cursor_state_bytes: cursors.ok_or(PreviewCapabilityError::MissingField)?,
-        };
-        capability.validate()?;
-        Ok(capability)
-    }
-
-    pub fn from_capabilities<'a>(capabilities: impl IntoIterator<Item = &'a str>) -> Option<Self> {
-        capabilities
-            .into_iter()
-            .find_map(|encoded| Self::decode(encoded).ok())
-    }
-
-    fn validate(self) -> Result<(), PreviewCapabilityError> {
-        if self.max_decoded_publication_bytes == 0
-            || self.max_encoded_publication_bytes == 0
-            || self.max_connection_bytes < self.max_encoded_publication_bytes
-            || self.max_idle_ms == 0
-            || self.max_message_bytes < PREVIEW_MIN_MESSAGE_BYTES
-            || self.max_reassembly_state_bytes == 0
-            || self.max_tombstone_bytes == 0
-            || self.max_sender_state_bytes == 0
-            || self.max_cursor_state_bytes == 0
-        {
-            return Err(PreviewCapabilityError::InvalidLimits);
-        }
-        Ok(())
-    }
-
+impl PreviewTransportLimits {
     #[must_use]
     pub fn effective_max_chunk_count(self, _identity_bytes: usize) -> u32 {
         u32::try_from(self.max_encoded_publication_bytes).unwrap_or(u32::MAX)
     }
 }
 
-impl Default for PreviewTransportCapability {
+impl Default for PreviewTransportLimits {
     fn default() -> Self {
         Self {
             max_decoded_publication_bytes: DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
@@ -1284,33 +1175,8 @@ impl Default for PreviewTransportCapability {
 
 impl PreviewReassemblyLimits {
     #[must_use]
-    pub fn negotiated_with(self, peer: PreviewTransportCapability) -> Self {
-        let negotiated = PreviewTransportCapability {
-            max_decoded_publication_bytes: self.max_decoded_publication_bytes,
-            max_encoded_publication_bytes: self.max_encoded_publication_bytes,
-            max_connection_bytes: self.max_connection_bytes,
-            max_idle_ms: self.max_idle_ms,
-            max_message_bytes: self.max_message_bytes,
-            max_reassembly_state_bytes: self.max_reassembly_state_bytes,
-            max_tombstone_bytes: self.max_tombstone_bytes,
-            max_sender_state_bytes: usize::MAX,
-            max_cursor_state_bytes: usize::MAX,
-        }
-        .negotiated_with(peer);
-        Self {
-            max_decoded_publication_bytes: negotiated.max_decoded_publication_bytes,
-            max_encoded_publication_bytes: negotiated.max_encoded_publication_bytes,
-            max_connection_bytes: negotiated.max_connection_bytes,
-            max_idle_ms: negotiated.max_idle_ms,
-            max_message_bytes: negotiated.max_message_bytes,
-            max_reassembly_state_bytes: negotiated.max_reassembly_state_bytes,
-            max_tombstone_bytes: negotiated.max_tombstone_bytes,
-        }
-    }
-
-    #[must_use]
     pub fn effective_max_chunk_count(self, identity_bytes: usize) -> u32 {
-        PreviewTransportCapability {
+        PreviewTransportLimits {
             max_decoded_publication_bytes: self.max_decoded_publication_bytes,
             max_encoded_publication_bytes: self.max_encoded_publication_bytes,
             max_connection_bytes: self.max_connection_bytes,
@@ -1327,32 +1193,17 @@ impl PreviewReassemblyLimits {
 
 impl Default for PreviewReassemblyLimits {
     fn default() -> Self {
-        let capability = PreviewTransportCapability::default();
+        let limits = PreviewTransportLimits::default();
         Self {
-            max_decoded_publication_bytes: capability.max_decoded_publication_bytes,
-            max_encoded_publication_bytes: capability.max_encoded_publication_bytes,
-            max_connection_bytes: capability.max_connection_bytes,
-            max_idle_ms: capability.max_idle_ms,
-            max_message_bytes: capability.max_message_bytes,
-            max_reassembly_state_bytes: capability.max_reassembly_state_bytes,
-            max_tombstone_bytes: capability.max_tombstone_bytes,
+            max_decoded_publication_bytes: limits.max_decoded_publication_bytes,
+            max_encoded_publication_bytes: limits.max_encoded_publication_bytes,
+            max_connection_bytes: limits.max_connection_bytes,
+            max_idle_ms: limits.max_idle_ms,
+            max_message_bytes: limits.max_message_bytes,
+            max_reassembly_state_bytes: limits.max_reassembly_state_bytes,
+            max_tombstone_bytes: limits.max_tombstone_bytes,
         }
     }
-}
-
-fn parse_capability_field<T: std::str::FromStr>(
-    value: &str,
-    slot: &mut Option<T>,
-) -> Result<(), PreviewCapabilityError> {
-    if slot.is_some() {
-        return Err(PreviewCapabilityError::DuplicateField);
-    }
-    *slot = Some(
-        value
-            .parse()
-            .map_err(|_| PreviewCapabilityError::InvalidField)?,
-    );
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2137,20 +1988,6 @@ fn identity_publication_header_len(
     })
     .checked_add(identity.len())
     .ok_or(PreviewChunkError::LengthOverflow)
-}
-
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum PreviewCapabilityError {
-    #[error("preview transport capability has an unknown schema")]
-    UnknownCapability,
-    #[error("preview transport capability contains an invalid field")]
-    InvalidField,
-    #[error("preview transport capability contains a duplicate field")]
-    DuplicateField,
-    #[error("preview transport capability is missing a required field")]
-    MissingField,
-    #[error("preview transport capability contains invalid resource limits")]
-    InvalidLimits,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]

@@ -27,10 +27,10 @@ use hypercolor_leptos_ext::ws::registry::{
 use hypercolor_leptos_ext::ws::topic::{TopicSelector, TopicSubscription};
 use hypercolor_leptos_ext::ws::{
     DisplayPreviewFrame as WireDisplayPreviewFrame, HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION,
-    InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FRAME_TAG,
-    PREVIEW_MIN_MESSAGE_BYTES, PreviewChunkFrame, PreviewFrame as WirePreviewFrame,
-    PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId,
-    PreviewTransportCapability, TimedInputEventPayload,
+    InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_MIN_MESSAGE_BYTES,
+    PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
+    PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId, PreviewTransportLimits,
+    TimedInputEventPayload,
 };
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
@@ -131,19 +131,17 @@ fn websocket_native_errors_project_canonical_domain_codes() {
     );
 }
 use super::relays::{
-    PreviewCursorQueue, PreviewOutboundError, PreviewOutboundItem, PreviewOutboundLimits,
-    PreviewOutboundReceiver, PreviewOutboundSender, PreviewPublication, PreviewPublishOutcome,
-    PreviewRelayPublish, PreviewSendCursor, build_device_metrics_message, build_metrics_message,
-    preview_outbound_channel, preview_outbound_channel_with_limits,
-    publish_preview_until_cancelled, publish_preview_while_subscribed, publish_subscriptions,
-    relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
-    relay_screen_zones, relay_sensors, relay_spectrum, relay_zone_preview, sync_preview_receiver,
-    try_enqueue_json,
+    PreviewOutboundItem, PreviewOutboundLimits, PreviewOutboundReceiver, PreviewOutboundSender,
+    PreviewPublication, PreviewPublishOutcome, PreviewRelayPublish, PreviewSendCursor,
+    build_device_metrics_message, build_metrics_message, preview_outbound_channel,
+    preview_outbound_channel_with_limits, publish_preview_until_cancelled,
+    publish_preview_while_subscribed, publish_subscriptions, relay_device_metrics,
+    relay_display_preview, relay_events, relay_frames, relay_metrics, relay_screen_zones,
+    relay_sensors, relay_spectrum, relay_zone_preview, sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics, build_hello_state,
-    commit_preview_transport, negotiate_preview_transport, spawn_test_local_socket,
-    stage_preview_transport, validated_zone_layout_preview,
+    spawn_test_local_socket, validated_zone_layout_preview,
 };
 
 #[tokio::test]
@@ -1865,153 +1863,13 @@ fn jpeg_test_payload(width: u16, height: u16, payload_len: usize) -> Vec<u8> {
 }
 
 #[test]
-fn subscribe_wire_negotiates_preview_transport_before_publication() {
-    let peer = PreviewTransportCapability {
-        max_decoded_publication_bytes: 1024 * 1024,
-        max_encoded_publication_bytes: 1024,
-        max_connection_bytes: 2048,
-        max_idle_ms: 1000,
-        max_message_bytes: 256,
-        ..PreviewTransportCapability::default()
-    };
-    let message: ClientMessage = serde_json::from_value(serde_json::json!({
-        "type": "subscribe",
-        "topics": [{ "topic": "canvas", "config": { "format": "jpeg" } }],
-        "preview_transport": peer.encode()
-    }))
-    .expect("capability-bearing subscribe parses");
-    let ClientMessage::Subscribe {
-        preview_transport: Some(encoded_capability),
-        ..
-    } = message
-    else {
-        panic!("expected capability-bearing subscribe");
-    };
-
-    let (sender, receiver) = preview_outbound_channel();
-    let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::with_capability(capability);
-    let negotiated =
-        negotiate_preview_transport(&encoded_capability, &sender, &mut cursors, &mut capability)
-            .expect("transport negotiation succeeds before publication");
-    assert_eq!(negotiated, peer);
-    assert_eq!(capability, peer);
-
-    sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            preview_test_frame(PreviewFrameChannel::Canvas, 1, 512),
-            None,
-        )
-        .expect("publication fits negotiated byte budgets");
-    let publication =
-        try_receive_preview_publication(&receiver).expect("negotiated publication arrives");
-    let mut cursor = PreviewSendCursor::with_capability(publication, negotiated)
-        .expect("negotiated cursor builds");
-    let mut message_count = 0_u32;
-    while let Some(message) = cursor.next_message().expect("chunk encoding") {
-        assert!(message.len() <= peer.max_message_bytes);
-        assert_eq!(message[0], PREVIEW_CHUNK_FRAME_TAG);
-        let chunk = PreviewChunkFrame::decode_bytes(&message).expect("chunk decodes");
-        assert!(chunk.chunk_count <= peer.effective_max_chunk_count(0));
-        message_count += 1;
-    }
-    assert!(message_count > 1);
-
-    sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            preview_test_frame(PreviewFrameChannel::Canvas, 2, 512),
-            None,
-        )
-        .expect("negotiated headroom admits a latest replacement while the old cursor is active");
-    let Some(PreviewOutboundItem::Cancellation(cancellation)) = receiver.try_recv() else {
-        panic!("latest replacement must cancel the active publication first");
-    };
-    assert_eq!(
-        cancellation.publication_id,
-        cursor.publication().publication_id()
-    );
-    receiver.complete(cursor.publication());
-    let replacement = try_receive_preview_publication(&receiver)
-        .expect("latest replacement follows its cancellation");
-    assert!(replacement.publication_id() > cancellation.publication_id);
-    assert!(receiver.is_current(&replacement));
-    receiver.complete(&replacement);
-    assert!(!receiver.is_current(&replacement));
-
-    let ack = serde_json::to_value(ServerMessage::Subscribed {
-        topics: Vec::new(),
-        preview_transport: negotiated.encode(),
-    })
-    .expect("subscribe acknowledgment serializes");
-    assert_eq!(ack["preview_transport"], peer.encode());
-
-    let (byte_sender, byte_receiver) = preview_outbound_channel();
-    let mut byte_capability = PreviewTransportCapability::default();
-    let mut byte_cursors = PreviewCursorQueue::with_capability(byte_capability);
-    negotiate_preview_transport(
-        &peer.encode(),
-        &byte_sender,
-        &mut byte_cursors,
-        &mut byte_capability,
-    )
-    .expect("byte-accounting transport negotiation");
-    byte_sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            preview_test_frame(PreviewFrameChannel::Canvas, 1, 512),
-            None,
-        )
-        .expect("first byte-accounted publication");
-    let _in_flight_one =
-        try_receive_preview_publication(&byte_receiver).expect("first publication moves in flight");
-    assert!(matches!(
-        byte_sender.negotiate_transport(peer),
-        Err(PreviewOutboundError::TransportAlreadyActive)
-    ));
-    byte_sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
-            preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 700),
-            None,
-        )
-        .expect("second byte-accounted publication");
-    let _in_flight_two = try_receive_preview_publication(&byte_receiver)
-        .expect("second publication moves in flight");
-    byte_sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
-            preview_test_frame(PreviewFrameChannel::WebViewportCanvas, 3, 700),
-            None,
-        )
-        .expect("third byte-accounted publication");
-    let _in_flight_three =
-        try_receive_preview_publication(&byte_receiver).expect("third publication moves in flight");
-    assert!(matches!(
-        byte_sender.publish(
-            PreviewStreamId::Display(test_display_device().to_string()),
-            display_preview_test_frame(4, 700),
-            None,
-        ),
-        Err(PreviewOutboundError::ConnectionBusy { .. })
-    ));
-}
-
-#[test]
-fn a_subscribe_without_a_transport_capability_stays_on_the_server_default() {
+fn subscribe_wire_has_no_transport_negotiation() {
     let message: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "subscribe",
         "topics": [{ "topic": "events" }]
     }))
-    .expect("a subscribe without preview_transport parses");
-    assert!(matches!(
-        message,
-        ClientMessage::Subscribe {
-            preview_transport: None,
-            ..
-        }
-    ));
+    .expect("subscribe parses");
+    assert!(matches!(message, ClientMessage::Subscribe { .. }));
 }
 
 async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
@@ -3406,50 +3264,6 @@ fn one_topic_holds_a_subscription_per_key() {
 }
 
 #[test]
-fn staging_a_preview_transport_does_not_adopt_it() {
-    let peer = PreviewTransportCapability {
-        max_encoded_publication_bytes: 1024,
-        max_connection_bytes: 2048,
-        max_message_bytes: 256,
-        ..PreviewTransportCapability::default()
-    };
-    let (sender, receiver) = preview_outbound_channel();
-    let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::with_capability(capability);
-
-    let staged =
-        stage_preview_transport(&peer.encode(), &sender, &cursors).expect("capability stages");
-    assert_eq!(
-        capability,
-        PreviewTransportCapability::default(),
-        "staging must not adopt the peer's capability"
-    );
-
-    // The peer's byte budget is not in force yet, so a publication that
-    // only the server's own budget admits still goes through.
-    let frame = preview_test_frame(PreviewFrameChannel::Canvas, 1, 4096);
-    assert!(
-        frame.len() > peer.max_encoded_publication_bytes,
-        "the fixture frame must exceed the peer's budget to be a real test"
-    );
-    sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            frame,
-            None,
-        )
-        .expect("the staged budget is not in force");
-    try_receive_preview_publication(&receiver).expect("publication under the old budget");
-
-    // Adopting it now refuses, because the transport is busy — and it
-    // refuses without having changed anything.
-    let error = commit_preview_transport(staged, &sender, &mut cursors, &mut capability)
-        .expect_err("an active transport cannot renegotiate");
-    assert_eq!(error.code, "malformed_request");
-    assert_eq!(capability, PreviewTransportCapability::default());
-}
-
-#[test]
 fn event_message_parts_unwraps_payload() {
     let event = HypercolorEvent::DeviceDiscoveryStarted {
         targets: vec!["fixture-driver".to_owned()],
@@ -4595,39 +4409,6 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
 }
 
 #[tokio::test]
-async fn interactive_preview_transport_commits_before_its_relay_resumes() {
-    let (_source, handle, routing) = browser_preview_test_context();
-    let executor = browser_preview_test_executor(routing.clone()).await;
-    let (mut session, outbound, frames) = browser_preview_session(handle, routing, executor);
-    let peer = PreviewTransportCapability::default();
-    let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::with_capability(capability);
-    let staged = stage_preview_transport(&peer.encode(), &outbound, &cursors)
-        .expect("initial transport should stage");
-    let subscriptions = SubscriptionState::default()
-        .subscribed(vec![
-            TopicSubscription::keyed("interactive_preview", "main").with_config(
-                serde_json::to_value(interactive_preview_config()).expect("config serializes"),
-            ),
-        ])
-        .expect("interactive preview subscribe applies");
-
-    session
-        .reconcile_with_commit(&subscriptions, || {
-            assert!(
-                frames.try_recv().is_none(),
-                "the interactive relay stays quiescent until transport commit"
-            );
-            commit_preview_transport(staged, &outbound, &mut cursors, &mut capability).map(|_| ())
-        })
-        .await
-        .expect("transport and preview commit together");
-
-    assert_eq!(capability, peer);
-    assert!(session.publication_id("main").is_some());
-}
-
-#[tokio::test]
 async fn interactive_preview_input_requires_same_connection_open_and_stays_isolated() {
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
@@ -5026,7 +4807,7 @@ fn websocket_manifest_matches_protocol_constants() {
         manifest["default_subscriptions"],
         serde_json::json!(default_subscriptions)
     );
-    let preview_defaults = PreviewTransportCapability::default();
+    let preview_defaults = PreviewTransportLimits::default();
     assert_eq!(
         manifest["preview_transport"]["max_publication_decoded_bytes"],
         preview_defaults.max_decoded_publication_bytes
@@ -5068,14 +4849,7 @@ fn websocket_manifest_matches_protocol_constants() {
         PREVIEW_MIN_MESSAGE_BYTES
     );
     assert_eq!(manifest["preview_transport"]["jpeg_max_axis"], u16::MAX);
-    assert_eq!(
-        manifest["preview_transport"]["negotiation"]["client_subscribe_field"],
-        "preview_transport"
-    );
-    assert_eq!(
-        manifest["preview_transport"]["negotiation"]["server_subscribed_field"],
-        "preview_transport"
-    );
+    assert!(manifest["preview_transport"].get("negotiation").is_none());
     for channel in [
         "canvas",
         "screen_canvas",

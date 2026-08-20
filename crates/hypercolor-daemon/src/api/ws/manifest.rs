@@ -27,7 +27,7 @@ use serde_json::{Map, Value, json};
 
 use hypercolor_leptos_ext::ws::{
     HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION, PREVIEW_MIN_MESSAGE_BYTES,
-    PreviewTransportCapability, codec_binary_messages, codec_frame_layouts,
+    PreviewTransportLimits, codec_binary_messages, codec_frame_layouts,
 };
 
 use super::protocol::{
@@ -273,7 +273,7 @@ fn preview_transport(descriptions: &Value) -> anyhow::Result<Value> {
         .as_object()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("preview_transport must be an object"))?;
-    let defaults = PreviewTransportCapability::default();
+    let defaults = PreviewTransportLimits::default();
     block.insert(
         "max_publication_decoded_bytes".to_owned(),
         json!(defaults.max_decoded_publication_bytes),

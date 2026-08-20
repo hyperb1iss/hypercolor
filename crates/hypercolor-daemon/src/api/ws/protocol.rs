@@ -20,7 +20,6 @@ use hypercolor_leptos_ext::ws::topic::{
 };
 use hypercolor_leptos_ext::ws::{
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
-    PreviewTransportCapability,
 };
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -515,11 +514,7 @@ define_client_messages! {
     /// can only ever target a subscription the same request establishes,
     /// and the topic that owns the config validates it through the
     /// registry vtable.
-    Subscribe {
-        topics: Vec<TopicSubscription>,
-        #[serde(default)]
-        preview_transport: Option<String>,
-    },
+    Subscribe { topics: Vec<TopicSubscription> },
     /// Unsubscribe from one or more topics.
     Unsubscribe { topics: Vec<TopicSelector> },
     /// REST-equivalent command execution over WS.
@@ -937,10 +932,7 @@ define_server_messages! {
     /// Subscribe acknowledgment: the connection's whole live subscription
     /// set, so a client always learns the state it ended up in rather
     /// than only the delta it asked for.
-    Subscribed {
-        topics: Vec<ActiveSubscription>,
-        preview_transport: String,
-    },
+    Subscribed { topics: Vec<ActiveSubscription> },
     /// Unsubscribe acknowledgment, carrying what remains.
     Unsubscribed { topics: Vec<ActiveSubscription> },
     /// Addressed input injection acknowledgment.
@@ -1665,8 +1657,6 @@ pub(crate) fn ws_capabilities() -> Vec<String> {
     capabilities.push("interactive_previews".to_owned());
     capabilities.push("wide_preview_frames".to_owned());
     capabilities.push("preview_chunking".to_owned());
-    let preview_transport = PreviewTransportCapability::default();
-    capabilities.push(preview_transport.encode());
     capabilities
 }
 

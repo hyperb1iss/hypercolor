@@ -11,7 +11,7 @@ use hypercolor_leptos_ext::ws::{
     PREVIEW_CHUNK_SCHEMA, PREVIEW_FRAME_HEADER_LEN, PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame,
     PreviewChunkError, PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame,
     PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
+    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportLimits,
     SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame, SpectrumFrame,
     WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
     WIDE_SCREEN_ZONES_FRAME_HEADER_LEN, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
@@ -2128,57 +2128,11 @@ fn chunked_zone_publication_reassembles_for_shared_ui_decoder() {
 }
 
 #[test]
-fn preview_transport_capability_roundtrips_shared_resource_budgets() {
-    let capability = PreviewTransportCapability::default();
-    let encoded = capability.encode();
+fn preview_transport_limits_cover_chunking_and_connection_headroom() {
+    let limits = PreviewTransportLimits::default();
 
-    assert_eq!(PreviewTransportCapability::decode(&encoded), Ok(capability));
-    assert_eq!(
-        PreviewTransportCapability::from_capabilities(["preview_chunking", encoded.as_str()]),
-        Some(capability)
-    );
-    assert!(capability.max_connection_bytes >= capability.max_encoded_publication_bytes * 2);
-}
-
-#[test]
-fn preview_transport_capability_fits_every_stream_identity() {
-    let capability = PreviewTransportCapability {
-        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES - 1,
-        ..PreviewTransportCapability::default()
-    };
-    assert!(
-        hypercolor_leptos_ext::ws::PreviewTransportCapability::decode(&capability.encode())
-            .is_err()
-    );
-}
-
-#[test]
-fn preview_transport_negotiation_uses_each_peers_physical_minimum() {
-    let local = PreviewReassemblyLimits::default();
-    let peer = PreviewTransportCapability {
-        max_decoded_publication_bytes: local.max_decoded_publication_bytes / 2,
-        max_encoded_publication_bytes: local.max_encoded_publication_bytes / 2,
-        max_connection_bytes: local.max_connection_bytes / 2,
-        max_idle_ms: local.max_idle_ms / 2,
-        max_message_bytes: local.max_message_bytes / 2,
-        max_reassembly_state_bytes: local.max_reassembly_state_bytes / 2,
-        max_tombstone_bytes: local.max_tombstone_bytes / 2,
-        max_sender_state_bytes: PreviewTransportCapability::default().max_sender_state_bytes / 2,
-        max_cursor_state_bytes: PreviewTransportCapability::default().max_cursor_state_bytes / 2,
-    };
-
-    assert_eq!(
-        local.negotiated_with(peer),
-        PreviewReassemblyLimits {
-            max_decoded_publication_bytes: peer.max_decoded_publication_bytes,
-            max_encoded_publication_bytes: peer.max_encoded_publication_bytes,
-            max_connection_bytes: peer.max_connection_bytes,
-            max_idle_ms: peer.max_idle_ms,
-            max_message_bytes: peer.max_message_bytes,
-            max_reassembly_state_bytes: peer.max_reassembly_state_bytes,
-            max_tombstone_bytes: peer.max_tombstone_bytes,
-        }
-    );
+    assert!(limits.max_message_bytes >= PREVIEW_MIN_MESSAGE_BYTES);
+    assert!(limits.max_connection_bytes >= limits.max_encoded_publication_bytes * 2);
 }
 
 #[test]

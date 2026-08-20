@@ -26,7 +26,7 @@ use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
     PreviewCancelFrame, PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
-    PreviewTransportCapability, ScreenZonesFrame as WireScreenZonesFrame,
+    PreviewTransportLimits, ScreenZonesFrame as WireScreenZonesFrame,
     ZonePreviewFrame as WireZonePreviewFrame,
 };
 use hypercolor_types::canvas::{PublishedSurfaceStorageIdentity, SurfaceDescriptor};
@@ -78,10 +78,10 @@ pub(super) struct PreviewOutboundLimits {
 
 impl Default for PreviewOutboundLimits {
     fn default() -> Self {
-        let capability = PreviewTransportCapability::default();
+        let limits = PreviewTransportLimits::default();
         Self {
-            max_publication_bytes: capability.max_encoded_publication_bytes,
-            max_connection_bytes: capability.max_connection_bytes,
+            max_publication_bytes: limits.max_encoded_publication_bytes,
+            max_connection_bytes: limits.max_connection_bytes,
         }
     }
 }
@@ -122,8 +122,6 @@ pub(super) enum PreviewOutboundError {
     PublicationIdExhausted,
     #[error("preview chunk encoding failed: {0}")]
     ChunkEncoding(String),
-    #[error("preview transport must be negotiated before preview activation")]
-    TransportAlreadyActive,
 }
 
 #[derive(Debug)]
@@ -173,7 +171,7 @@ struct PreviewOutboundState {
     cancellation_order: VecDeque<PreviewStreamId>,
     next_publication_id: u64,
     limits: PreviewOutboundLimits,
-    capability: PreviewTransportCapability,
+    transport_limits: PreviewTransportLimits,
 }
 
 impl Drop for PreviewOutboundState {
@@ -241,9 +239,9 @@ impl PreviewOutboundState {
                     .saturating_mul(preview_queued_state_bytes(stream)),
             );
         let requested = self.sender_state_bytes().saturating_add(additional);
-        if requested > self.capability.max_sender_state_bytes {
+        if requested > self.transport_limits.max_sender_state_bytes {
             return Err(PreviewOutboundError::SenderStateBudgetExceeded {
-                maximum: self.capability.max_sender_state_bytes,
+                maximum: self.transport_limits.max_sender_state_bytes,
                 actual: requested,
             });
         }
@@ -257,9 +255,9 @@ impl PreviewOutboundState {
     ) -> Result<(), PreviewOutboundError> {
         let entries = self.pending_cancellations.len().saturating_add(additional);
         let requested = self.sender_state_bytes().saturating_add(additional_bytes);
-        if requested > self.capability.max_sender_state_bytes {
+        if requested > self.transport_limits.max_sender_state_bytes {
             return Err(PreviewOutboundError::SenderStateBudgetExceeded {
-                maximum: self.capability.max_sender_state_bytes,
+                maximum: self.transport_limits.max_sender_state_bytes,
                 actual: requested,
             });
         }
@@ -397,6 +395,7 @@ pub(super) fn preview_outbound_channel() -> (PreviewOutboundSender, PreviewOutbo
 pub(super) fn preview_outbound_channel_with_limits(
     limits: PreviewOutboundLimits,
 ) -> (PreviewOutboundSender, PreviewOutboundReceiver) {
+    let protocol_limits = PreviewTransportLimits::default();
     let shared = Arc::new(PreviewOutboundShared {
         state: StdMutex::new(PreviewOutboundState {
             queued: HashMap::new(),
@@ -410,7 +409,15 @@ pub(super) fn preview_outbound_channel_with_limits(
             cancellation_order: VecDeque::new(),
             next_publication_id: 1,
             limits,
-            capability: PreviewTransportCapability::default(),
+            transport_limits: PreviewTransportLimits {
+                max_encoded_publication_bytes: protocol_limits
+                    .max_encoded_publication_bytes
+                    .min(limits.max_publication_bytes),
+                max_connection_bytes: protocol_limits
+                    .max_connection_bytes
+                    .min(limits.max_connection_bytes),
+                ..protocol_limits
+            },
         }),
         item_notify: Notify::new(),
         capacity_notify: Notify::new(),
@@ -424,65 +431,6 @@ pub(super) fn preview_outbound_channel_with_limits(
 }
 
 impl PreviewOutboundSender {
-    /// The capability this sender would agree on with `peer`, without
-    /// agreeing to it. Staging the answer lets a subscribe reject on
-    /// something else entirely with the transport still untouched.
-    pub(super) fn project_negotiation(
-        &self,
-        peer: PreviewTransportCapability,
-    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        Self::negotiated_capability(&state, peer)
-    }
-
-    pub(super) fn negotiate_transport(
-        &self,
-        peer: PreviewTransportCapability,
-    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        // Checked and applied under one lock: either the whole
-        // capability swap lands or the transport is left as it was.
-        let negotiated = Self::negotiated_capability(&state, peer)?;
-        state.capability = negotiated;
-        state.limits = PreviewOutboundLimits {
-            max_publication_bytes: negotiated.max_encoded_publication_bytes,
-            max_connection_bytes: negotiated.max_connection_bytes,
-        };
-        Ok(negotiated)
-    }
-
-    fn negotiated_capability(
-        state: &PreviewOutboundState,
-        peer: PreviewTransportCapability,
-    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
-        if !state.current.is_empty()
-            || !state.queued.is_empty()
-            || !state.in_flight.is_empty()
-            || !state.pending_cancellations.is_empty()
-        {
-            return Err(PreviewOutboundError::TransportAlreadyActive);
-        }
-        let supported = PreviewTransportCapability::default();
-        let local = PreviewTransportCapability {
-            max_encoded_publication_bytes: supported
-                .max_encoded_publication_bytes
-                .min(state.limits.max_publication_bytes),
-            max_connection_bytes: supported
-                .max_connection_bytes
-                .min(state.limits.max_connection_bytes),
-            ..supported
-        };
-        Ok(local.negotiated_with(peer))
-    }
-
     pub(super) fn publish(
         &self,
         stream: PreviewStreamId,
@@ -537,9 +485,9 @@ impl PreviewOutboundSender {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if decoded_bytes > state.capability.max_decoded_publication_bytes {
+        if decoded_bytes > state.transport_limits.max_decoded_publication_bytes {
             return Err(PreviewOutboundError::DecodedPublicationBudgetExceeded {
-                maximum: state.capability.max_decoded_publication_bytes,
+                maximum: state.transport_limits.max_decoded_publication_bytes,
                 actual: decoded_bytes,
             });
         }
@@ -867,27 +815,27 @@ impl PreviewSendCursor {
         publication: PreviewPublication,
         max_message_bytes: usize,
     ) -> Result<Self, PreviewOutboundError> {
-        let capability = PreviewTransportCapability::default();
-        if max_message_bytes > capability.max_message_bytes {
+        let limits = PreviewTransportLimits::default();
+        if max_message_bytes > limits.max_message_bytes {
             return Err(PreviewOutboundError::ChunkEncoding(format!(
-                "message budget {max_message_bytes} exceeds advertised limit {}",
-                capability.max_message_bytes
+                "message budget {max_message_bytes} exceeds protocol limit {}",
+                limits.max_message_bytes
             )));
         }
-        Self::with_capability(
+        Self::with_limits(
             publication,
-            PreviewTransportCapability {
+            PreviewTransportLimits {
                 max_message_bytes,
-                ..capability
+                ..limits
             },
         )
     }
 
-    pub(super) fn with_capability(
+    pub(super) fn with_limits(
         publication: PreviewPublication,
-        capability: PreviewTransportCapability,
+        limits: PreviewTransportLimits,
     ) -> Result<Self, PreviewOutboundError> {
-        let max_message_bytes = capability.max_message_bytes;
+        let max_message_bytes = limits.max_message_bytes;
         let identity_len = publication.stream().identity_bytes();
         let envelope_len = PREVIEW_CHUNK_FIXED_HEADER_LEN
             .checked_add(identity_len)
@@ -914,10 +862,10 @@ impl PreviewSendCursor {
         } else {
             1
         };
-        let max_chunk_count = capability.effective_max_chunk_count(identity_len);
+        let max_chunk_count = limits.effective_max_chunk_count(identity_len);
         if chunk_count > max_chunk_count {
             return Err(PreviewOutboundError::ChunkEncoding(format!(
-                "chunk count {chunk_count} exceeds advertised limit {}",
+                "chunk count {chunk_count} exceeds protocol limit {}",
                 max_chunk_count
             )));
         }
@@ -994,37 +942,14 @@ pub(super) struct PreviewCursorQueue {
 }
 
 impl PreviewCursorQueue {
-    pub(super) fn with_capability(capability: PreviewTransportCapability) -> Self {
+    pub(super) fn with_limits(limits: PreviewTransportLimits) -> Self {
         Self {
             cursors: HashMap::new(),
             head: None,
             tail: None,
-            max_state_bytes: capability.max_cursor_state_bytes,
+            max_state_bytes: limits.max_cursor_state_bytes,
             state_bytes: 0,
         }
-    }
-
-    /// Whether the queue's live cursors fit inside `capability`.
-    pub(super) fn check_capability(
-        &self,
-        capability: PreviewTransportCapability,
-    ) -> Result<(), PreviewOutboundError> {
-        if self.state_bytes > capability.max_cursor_state_bytes {
-            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
-                maximum: capability.max_cursor_state_bytes,
-                actual: self.state_bytes,
-            });
-        }
-        Ok(())
-    }
-
-    pub(super) fn set_capability(
-        &mut self,
-        capability: PreviewTransportCapability,
-    ) -> Result<(), PreviewOutboundError> {
-        self.check_capability(capability)?;
-        self.max_state_bytes = capability.max_cursor_state_bytes;
-        Ok(())
     }
 
     pub(super) fn try_insert(
