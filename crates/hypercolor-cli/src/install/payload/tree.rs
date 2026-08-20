@@ -32,6 +32,12 @@ pub(super) fn read_installed_manifest_bytes(
     read_manifest_with_mode(root, MANIFEST_INSTALLED_MODE)
 }
 
+pub(super) fn read_retained_manifest_bytes(
+    root: &ReadOnlyDirectoryAuthority,
+) -> Result<Vec<u8>, ReleasePayloadError> {
+    read_manifest_with_mode(root, MANIFEST_INSTALLED_MODE)
+}
+
 fn read_manifest_with_mode<T: ReadTree>(
     directory: &T,
     expected_mode: u32,
@@ -245,14 +251,31 @@ pub(super) fn validate_source(
     root: &ReadOnlyDirectoryAuthority,
     manifest: &ValidatedManifest,
 ) -> Result<(), ReleasePayloadError> {
-    validate_tree(root, manifest, TreeMode::Source)
+    validate_tree(root, manifest, TreeMode::Source, EnumerationMode::Existing)
 }
 
 pub(super) fn validate_installed(
     root: &DirectoryAuthority,
     manifest: &ValidatedManifest,
 ) -> Result<(), ReleasePayloadError> {
-    validate_tree(root, manifest, TreeMode::Installed)
+    validate_tree(
+        root,
+        manifest,
+        TreeMode::Installed,
+        EnumerationMode::Existing,
+    )
+}
+
+pub(super) fn validate_retained(
+    root: &ReadOnlyDirectoryAuthority,
+    manifest: &ValidatedManifest,
+) -> Result<(), ReleasePayloadError> {
+    validate_tree(
+        root,
+        manifest,
+        TreeMode::Installed,
+        EnumerationMode::Retained,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -261,10 +284,17 @@ enum TreeMode {
     Installed,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum EnumerationMode {
+    Existing,
+    Retained,
+}
+
 fn validate_tree<T: ReadTree>(
     root: &T,
     manifest: &ValidatedManifest,
     mode: TreeMode,
+    enumeration: EnumerationMode,
 ) -> Result<(), ReleasePayloadError> {
     let root_metadata = root
         .metadata()
@@ -277,7 +307,7 @@ fn validate_tree<T: ReadTree>(
     {
         return Err(tree_error(mode, "release tree root metadata is invalid"));
     }
-    validate_directory(root, "", manifest, mode)
+    validate_directory(root, "", manifest, mode, enumeration)
 }
 
 fn validate_directory<T: ReadTree>(
@@ -285,13 +315,16 @@ fn validate_directory<T: ReadTree>(
     prefix: &str,
     manifest: &ValidatedManifest,
     mode: TreeMode,
+    enumeration: EnumerationMode,
 ) -> Result<(), ReleasePayloadError> {
-    let actual_names = directory
-        .entries()
-        .map_err(|source| ReleasePayloadError::Filesystem {
-            operation: "enumerate a release tree directory",
-            source,
-        })?;
+    let actual_names = match enumeration {
+        EnumerationMode::Existing => directory.entries(),
+        EnumerationMode::Retained => directory.child_names(),
+    }
+    .map_err(|source| ReleasePayloadError::Filesystem {
+        operation: "enumerate a release tree directory",
+        source,
+    })?;
     let mut actual = BTreeSet::new();
     for name in actual_names {
         actual.insert(os_string_to_manifest_name(name, mode)?);
@@ -366,7 +399,7 @@ fn validate_directory<T: ReadTree>(
                         format!("directory mode changed for {path}"),
                     ));
                 }
-                validate_directory(&child, &path, manifest, mode)?;
+                validate_directory(&child, &path, manifest, mode, enumeration)?;
                 require_same_metadata(
                     opened_metadata,
                     child
@@ -507,6 +540,7 @@ trait ReadTree: Sized {
     fn metadata(&self) -> io::Result<DirectoryEntryMetadata>;
     fn open_child_directory(&self, name: &Path) -> io::Result<Self>;
     fn entries(&self) -> io::Result<Vec<OsString>>;
+    fn child_names(&self) -> io::Result<Vec<OsString>>;
     fn entry_metadata(&self, name: &Path) -> io::Result<Option<DirectoryEntryMetadata>>;
     fn open_regular_file(&self, name: &Path) -> io::Result<OpenedRegularFile>;
 }
@@ -524,6 +558,10 @@ macro_rules! impl_read_tree {
 
             fn entries(&self) -> io::Result<Vec<OsString>> {
                 Self::entries(self)
+            }
+
+            fn child_names(&self) -> io::Result<Vec<OsString>> {
+                Self::child_names(self)
             }
 
             fn entry_metadata(&self, name: &Path) -> io::Result<Option<DirectoryEntryMetadata>> {

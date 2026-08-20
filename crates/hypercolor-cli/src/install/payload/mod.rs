@@ -7,9 +7,13 @@ use hypercolor_platform_fs::{
     DirectoryAuthority, DirectoryEntryKind, PrivateStagingDirectory, ReadOnlyDirectoryAuthority,
 };
 
+#[cfg(target_os = "macos")]
+mod macos;
 mod manifest;
 mod tree;
 
+#[cfg(target_os = "macos")]
+pub use macos::{MacosReleaseProvenance, bind_macos_release_provenance};
 pub use manifest::{
     MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
     MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES,

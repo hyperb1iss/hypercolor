@@ -7,6 +7,8 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+use hypercolor_cli::install::bind_macos_release_provenance;
 use hypercolor_cli::install::{
     InstallLock, InstallStore, MAX_RELEASE_MANIFEST_BYTES, ReleasePayloadError, UnitId, UnitRecord,
     retain_linux_unit, stage_release_payload, stage_release_payload_from_authority,
@@ -77,26 +79,48 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
         "share/hypercolor/agents/skills",
         "share/hypercolor/agents/agents",
         "share/hypercolor/site",
+        "share/hypercolor/launchd",
     ];
-    let files = [
-        ("bin/hypercolor-daemon", b"daemon".as_slice()),
-        ("bin/hypercolor", b"candidate".as_slice()),
-        ("bin/hypercolor-app", b"app".as_slice()),
-        ("bin/hypercolor-tui", b"tui".as_slice()),
-        ("bin/hypercolor-open", b"open".as_slice()),
-        ("share/hypercolor/ui/index.html", b"ui".as_slice()),
+    let designated_requirement = concat!(
+        "designated => identifier \"tech.hyperbliss.hypercolor.daemon\" and ",
+        "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] ",
+        "/* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] ",
+        "/* exists */ and certificate leaf[subject.OU] = \"AB12CD34EF\""
+    );
+    let (_, rust_target) = native_macos_identity();
+    let provenance = serde_json::to_vec_pretty(&json!({
+        "team_id": "AB12CD34EF",
+        "target": rust_target,
+        "objects": [{
+            "path": "bin/hypercolor-daemon",
+            "identifier": "tech.hyperbliss.hypercolor.daemon",
+            "designated_requirement": designated_requirement,
+        }],
+        "notarization": {
+            "id": "2efe2717-52ef-43a5-96dc-0797e4ca1041",
+            "message": "Processing complete",
+            "status": "Accepted",
+        },
+    }))
+    .expect("encode macOS provenance");
+    let files = vec![
+        ("bin/hypercolor-daemon", b"daemon".to_vec()),
+        ("bin/hypercolor", b"candidate".to_vec()),
+        ("bin/hypercolor-app", b"app".to_vec()),
+        ("bin/hypercolor-tui", b"tui".to_vec()),
+        ("bin/hypercolor-open", b"open".to_vec()),
+        ("share/hypercolor/ui/index.html", b"ui".to_vec()),
         (
             "share/hypercolor/effects/bundled/effect.html",
-            b"effect".as_slice(),
+            b"effect".to_vec(),
         ),
+        ("share/hypercolor/agents/skills/skill.md", b"skill".to_vec()),
+        ("share/hypercolor/agents/agents/agent.md", b"agent".to_vec()),
         (
-            "share/hypercolor/agents/skills/skill.md",
-            b"skill".as_slice(),
+            "share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist",
+            b"plist".to_vec(),
         ),
-        (
-            "share/hypercolor/agents/agents/agent.md",
-            b"agent".as_slice(),
-        ),
+        ("share/hypercolor/macos-notarization.json", provenance),
     ];
     let mut members = Vec::new();
     for directory in directories {
@@ -106,7 +130,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
         members.push(json!({"path": directory, "type": "directory", "mode": 0o755}));
     }
     for (path, bytes) in files {
-        fs::write(root.join(path), bytes).expect("write release file");
+        fs::write(root.join(path), &bytes).expect("write release file");
         let mode = if path.starts_with("bin/") {
             0o755
         } else {
@@ -119,15 +143,16 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
             "type": "file",
             "mode": mode,
             "size": bytes.len(),
-            "sha256": sha256(bytes),
+            "sha256": sha256(&bytes),
         }));
     }
     members.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    let (platform, rust_target) = native_macos_identity();
     let manifest = serde_json::to_vec_pretty(&json!({
         "name": "hypercolor",
         "version": "0.3.2",
-        "platform": "macos-arm64",
-        "rust_target": "aarch64-apple-darwin",
+        "platform": platform,
+        "rust_target": rust_target,
         "binaries": BINARIES,
         "assets": {
             "ui_files": 1,
@@ -148,6 +173,14 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
     .expect("set release manifest mode");
     let candidate = File::open(root.join("bin/hypercolor")).expect("open candidate executable");
     (candidate, manifest)
+}
+
+fn native_macos_identity() -> (&'static str, &'static str) {
+    match std::env::consts::ARCH {
+        "aarch64" => ("macos-arm64", "aarch64-apple-darwin"),
+        "x86_64" => ("macos-amd64", "x86_64-apple-darwin"),
+        architecture => panic!("unsupported test architecture {architecture}"),
+    }
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -269,6 +302,15 @@ fn member_mut<'a>(manifest: &'a mut Value, path: &str) -> &'a mut Value {
         .expect("manifest member")
 }
 
+fn rewrite_member(fixture: &ReleaseFixture, path: &str, bytes: &[u8]) {
+    fs::write(fixture.path().join(path), bytes).expect("rewrite release member");
+    let mut manifest = fixture.manifest_value();
+    let member = member_mut(&mut manifest, path);
+    member["size"] = json!(bytes.len());
+    member["sha256"] = json!(sha256(bytes));
+    fixture.write_manifest(&manifest);
+}
+
 #[test]
 fn valid_payload_stages_immutable_digest_unit_and_reuses_exact_unit() {
     let fixture = ReleaseFixture::new();
@@ -314,6 +356,120 @@ fn valid_payload_stages_immutable_digest_unit_and_reuses_exact_unit() {
         inode
     );
     assert_no_private_residue(&store);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn retained_macos_unit_binds_manifest_and_notarized_daemon_identity() {
+    let fixture = ReleaseFixture::new();
+    let (_install_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("install lock");
+    let unit = stage_fixture(&store, &lock, &fixture).expect("stage release");
+
+    let provenance = bind_macos_release_provenance(&unit).expect("bind macOS provenance");
+    let daemon = unit
+        .directory()
+        .open_child_directory(Path::new("bin"))
+        .expect("open retained bin directory")
+        .open_regular_file(Path::new("hypercolor-daemon"))
+        .expect("open retained daemon");
+
+    assert_eq!(provenance.daemon_sha256(), sha256(b"daemon"));
+    assert_eq!(provenance.daemon_size(), 6);
+    assert_eq!(provenance.daemon_mode(), 0o555);
+    assert_eq!(provenance.daemon_device(), daemon.metadata().device());
+    assert_eq!(provenance.daemon_inode(), daemon.metadata().inode());
+    assert_eq!(provenance.team_id(), "AB12CD34EF");
+    assert_eq!(
+        provenance.designated_requirement(),
+        concat!(
+            "identifier \"tech.hyperbliss.hypercolor.daemon\" and ",
+            "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] ",
+            "/* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] ",
+            "/* exists */ and certificate leaf[subject.OU] = \"AB12CD34EF\""
+        )
+    );
+    assert_eq!(
+        provenance.designated_requirement_sha256(),
+        sha256(provenance.designated_requirement().as_bytes())
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_provenance_rejects_malformed_or_mismatched_identity() {
+    for case in [
+        "platform",
+        "daemon-identifier",
+        "designated-requirement",
+        "designated-requirement-broadened",
+        "notarization-field",
+        "notarization-message-bound",
+        "object-count",
+    ] {
+        let fixture = ReleaseFixture::new();
+        match case {
+            "platform" => {
+                let mut manifest = fixture.manifest_value();
+                manifest["platform"] = json!("linux-x86_64");
+                fixture.write_manifest(&manifest);
+            }
+            "daemon-identifier"
+            | "designated-requirement"
+            | "designated-requirement-broadened"
+            | "notarization-field"
+            | "notarization-message-bound"
+            | "object-count" => {
+                let path = "share/hypercolor/macos-notarization.json";
+                let mut provenance: Value = serde_json::from_slice(
+                    &fs::read(fixture.path().join(path)).expect("read provenance"),
+                )
+                .expect("decode provenance");
+                match case {
+                    "daemon-identifier" => {
+                        provenance["objects"][0]["identifier"] =
+                            json!("tech.hyperbliss.hypercolor.attacker");
+                    }
+                    "designated-requirement" => {
+                        provenance["objects"][0]["designated_requirement"] = json!("bogus");
+                    }
+                    "designated-requirement-broadened" => {
+                        let requirement = provenance["objects"][0]["designated_requirement"]
+                            .as_str()
+                            .expect("fixture designated requirement");
+                        provenance["objects"][0]["designated_requirement"] =
+                            json!(format!("{requirement} or anchor trusted"));
+                    }
+                    "notarization-field" => {
+                        provenance["notarization"]["attacker"] = json!(true);
+                    }
+                    "notarization-message-bound" => {
+                        provenance["notarization"]["message"] = json!("x".repeat(900 * 1024));
+                    }
+                    "object-count" => {
+                        let object = provenance["objects"][0].clone();
+                        provenance["objects"] =
+                            Value::Array(std::iter::repeat_n(object, 129).collect());
+                    }
+                    _ => unreachable!("known provenance case"),
+                }
+                rewrite_member(
+                    &fixture,
+                    path,
+                    &serde_json::to_vec_pretty(&provenance).expect("encode provenance"),
+                );
+            }
+            _ => unreachable!("known case"),
+        }
+        let (_install_parent, store) = new_store();
+        let lock = store.acquire_lock().expect("install lock");
+        let unit = stage_fixture(&store, &lock, &fixture).expect("stage release");
+
+        let error = bind_macos_release_provenance(&unit)
+            .expect_err("mismatched macOS identity must fail closed");
+
+        assert!(matches!(error, ReleasePayloadError::InvalidUnit(_)));
+    }
 }
 
 #[test]

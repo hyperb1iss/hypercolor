@@ -33,4 +33,6 @@ pub use payload::{
     stage_release_payload_from_authority, validate_release_payload,
     validate_release_payload_from_authority,
 };
+#[cfg(target_os = "macos")]
+pub use payload::{MacosReleaseProvenance, bind_macos_release_provenance};
 pub use store::{InstallLock, InstallStore, InstallStoreError};

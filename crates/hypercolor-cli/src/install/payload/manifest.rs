@@ -31,6 +31,8 @@ const REQUIRED_BINARIES: [&str; 5] = [
 pub(super) struct ValidatedManifest {
     pub(super) bytes: Vec<u8>,
     pub(super) unit_id: UnitId,
+    pub(super) platform: String,
+    pub(super) rust_target: String,
     pub(super) members: BTreeMap<String, ValidatedMember>,
     pub(super) children: BTreeMap<String, Vec<String>>,
 }
@@ -161,6 +163,8 @@ impl RawManifest {
         Ok(ValidatedManifest {
             bytes,
             unit_id,
+            platform: self.platform,
+            rust_target: self.rust_target,
             members,
             children,
         })
