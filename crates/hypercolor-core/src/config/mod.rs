@@ -692,6 +692,21 @@ impl ConfigManager {
         paths::set_data_dir_override(path);
     }
 
+    /// Returns the platform-appropriate machine-local state directory.
+    ///
+    /// Delegates to [`paths::state_dir`].
+    pub fn state_dir() -> PathBuf {
+        paths::state_dir()
+    }
+
+    /// Override the resolved machine-local state directory.
+    ///
+    /// This is intended for integration tests that need isolated daemon state.
+    #[doc(hidden)]
+    pub fn set_state_dir_override(path: Option<PathBuf>) {
+        paths::set_state_dir_override(path);
+    }
+
     /// Returns the platform-appropriate cache directory.
     ///
     /// Delegates to [`paths::cache_dir`].

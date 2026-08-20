@@ -11,6 +11,7 @@ const APP_DIR: &str = "hypercolor";
 
 static DATA_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
 static CONFIG_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
+static STATE_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Returns the platform-appropriate configuration directory.
 ///
@@ -97,6 +98,35 @@ pub fn data_dir() -> PathBuf {
 #[doc(hidden)]
 pub fn set_data_dir_override(path: Option<PathBuf>) {
     let mut override_path = DATA_DIR_OVERRIDE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    *override_path = path;
+}
+
+/// Returns the platform-appropriate machine-local state directory.
+///
+/// Linux uses `$XDG_STATE_HOME/hypercolor/` (default
+/// `~/.local/state/hypercolor/`). Platforms without a distinct state home use
+/// the local application-data directory.
+pub fn state_dir() -> PathBuf {
+    if let Some(override_path) = STATE_DIR_OVERRIDE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+    {
+        return override_path;
+    }
+
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .expect("state directory must be resolvable")
+        .join(APP_DIR)
+}
+
+/// Override the resolved machine-local state directory.
+#[doc(hidden)]
+pub fn set_state_dir_override(path: Option<PathBuf>) {
+    let mut override_path = STATE_DIR_OVERRIDE
         .write()
         .unwrap_or_else(PoisonError::into_inner);
     *override_path = path;

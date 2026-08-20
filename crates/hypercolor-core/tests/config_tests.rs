@@ -503,6 +503,20 @@ fn data_dir_override_replaces_default_resolution() {
 }
 
 #[test]
+fn state_dir_uses_an_independent_override() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_path = dir.path().join("data");
+    let state_path = dir.path().join("state");
+
+    ConfigManager::set_data_dir_override(Some(data_path.clone()));
+    ConfigManager::set_state_dir_override(Some(state_path.clone()));
+    assert_eq!(ConfigManager::data_dir(), data_path);
+    assert_eq!(ConfigManager::state_dir(), state_path);
+    ConfigManager::set_state_dir_override(None);
+    ConfigManager::set_data_dir_override(None);
+}
+
+#[test]
 fn cache_dir_contains_hypercolor() {
     let dir = ConfigManager::cache_dir();
     assert!(
@@ -515,5 +529,6 @@ fn cache_dir_contains_hypercolor() {
 fn all_dirs_are_absolute() {
     assert!(ConfigManager::config_dir().is_absolute());
     assert!(ConfigManager::data_dir().is_absolute());
+    assert!(ConfigManager::state_dir().is_absolute());
     assert!(ConfigManager::cache_dir().is_absolute());
 }
