@@ -17,6 +17,8 @@ pub trait InstallPlatform {
         target: &PlatformState,
     ) -> Result<PreparedPlatformTransaction, InstallPlatformError>;
 
+    /// Layout checkpoints must prove the exact operation prefix because the
+    /// coarse logical layout unit is platform-specific during itemized mutation.
     fn matches_exact_state(
         &mut self,
         checkpoint: PlatformCheckpoint,
@@ -855,7 +857,18 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         record: &PlatformTransactionRecord,
         candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<bool, InstallCoordinatorError> {
-        if actual.active_unit != expected.active_unit || actual.platform != expected.platform {
+        let platform_matches = if matches!(
+            checkpoint,
+            PlatformCheckpoint::CandidateLayout | PlatformCheckpoint::PriorLayoutRestored
+        ) {
+            actual.platform.launcher_unit == expected.platform.launcher_unit
+                && actual.platform.loaded == expected.platform.loaded
+                && actual.platform.running_unit == expected.platform.running_unit
+                && actual.platform.autostart_enabled == expected.platform.autostart_enabled
+        } else {
+            actual.platform == expected.platform
+        };
+        if actual.active_unit != expected.active_unit || !platform_matches {
             return Ok(false);
         }
         self.platform

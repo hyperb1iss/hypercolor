@@ -220,7 +220,7 @@ impl InstallPlatform for FakePlatform {
             self.restore_directory_permissions = true;
         }
         let active = self.active_unit();
-        if self.layout_operation_progress > 0 && !self.layout_state_drifted {
+        if self.layout_operation_progress == 3 && !self.layout_state_drifted {
             self.state.layout_unit.clone_from(&active);
         }
         if self.candidate_launcher_installed {
@@ -281,11 +281,24 @@ impl InstallPlatform for FakePlatform {
                     | PlatformCheckpoint::CandidateRuntime
                     | PlatformCheckpoint::PriorActiveRestored
             );
+        let layout_checkpoint = matches!(
+            checkpoint,
+            PlatformCheckpoint::CandidateLayout | PlatformCheckpoint::PriorLayoutRestored
+        );
+        let state_matches = if layout_checkpoint {
+            self.state.launcher_unit == expected.launcher_unit
+                && self.state.loaded == expected.loaded
+                && self.state.running_unit == expected.running_unit
+                && self.state.autostart_enabled == expected.autostart_enabled
+        } else {
+            &self.state == expected
+        };
         Ok(self.exact_state_valid
             && incarnation_matches
             && self.layout_operation_progress == layout_operation_index
             && self.candidate_launcher_installed == candidate_launcher
-            && &self.state == expected)
+            && (!layout_checkpoint || !self.layout_state_drifted)
+            && state_matches)
     }
 
     fn capture_candidate_owner_receipt(
@@ -378,11 +391,14 @@ impl InstallPlatform for FakePlatform {
         if action == InstallAction::InstallCandidateLayout {
             assert_eq!(operation_index, self.layout_operation_progress);
             self.layout_operation_progress += 1;
+            if self.layout_operation_progress == 3 {
+                self.state.layout_unit = unit.is_some().then(|| self.active_unit()).flatten();
+            }
         } else {
             assert_eq!(operation_index + 1, self.layout_operation_progress);
             self.layout_operation_progress -= 1;
+            self.state.layout_unit = unit.cloned();
         }
-        self.state.layout_unit = unit.is_some().then(|| self.active_unit()).flatten();
         if injection == Some(InjectionKind::DriftAfter) {
             self.state.layout_unit = Some(UnitId::new(THIRD_ID).expect("third-state unit ID"));
             self.layout_state_drifted = true;
@@ -1727,6 +1743,38 @@ fn layout_error_after_mutation_advances_the_cursor_before_rollback() {
     let journal = fixture.journal();
     assert_eq!(journal.disposition, InstallDisposition::RolledBack);
     assert_eq!(journal.layout_operation_index, 0);
+}
+
+#[test]
+fn first_conversion_reconciles_platform_specific_layout_progress() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let lock = fixture.store.acquire_lock().expect("clear active lock");
+    fixture
+        .store
+        .set_active(None, &lock)
+        .expect("clear active unit");
+    drop(lock);
+    let mut platform = FakePlatform::new(prior.clone(), &fixture.store);
+    platform.inject(
+        InstallAction::InstallCandidateLayout,
+        InjectionKind::FailAfter,
+    );
+
+    let outcome = install(&fixture, &mut platform);
+
+    assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(fixture.active_unit(), None);
+    assert_eq!(platform.state, prior);
+    assert_eq!(platform.layout_operation_progress, 0);
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::RestorePriorLayout)
+            .count(),
+        1
+    );
 }
 
 #[test]
