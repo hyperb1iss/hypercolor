@@ -29,7 +29,7 @@ builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/d
 media-lottie = ["hypercolor-core/media-lottie"]
 media-video = ["hypercolor-core/media-video"]
 macos-tcc-canary = ["screen-capture"]
-persistence-test-hooks = []
+persistence-test-hooks = ["hypercolor-core/persistence-test-hooks"]
 wgpu = [
     "dep:wgpu",
     "dep:pollster",

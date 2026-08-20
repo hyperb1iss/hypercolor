@@ -1,4 +1,4 @@
-//! Durable cross-platform file replacement for daemon state stores.
+//! Durable cross-platform file replacement for Hypercolor stores.
 //!
 //! Coordinators order writers inside this process. The daemon's single-instance
 //! guard is the cross-process ownership contract for these files.

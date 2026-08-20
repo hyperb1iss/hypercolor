@@ -29,7 +29,7 @@ pub mod mdns;
 pub mod network;
 pub mod path_migration;
 pub mod performance;
-pub mod persistence;
+pub use hypercolor_core::persistence;
 pub mod playlist_runtime;
 pub mod preview_runtime;
 pub mod process;
