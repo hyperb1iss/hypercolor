@@ -23,5 +23,9 @@ test("cli can inspect status and run an effect lifecycle against the live daemon
   expect(afterActivation.parsed.active_effect).toBe(runnableEffect.name);
 
   const stop = await callCli(["effects", "stop"]);
-  expect(stop.parsed.stopped).toBe(true);
+  expect(
+    stop.parsed.zones.every(
+      (zone) => zone.role === "display" || zone.layers.length === 0,
+    ),
+  ).toBe(true);
 });
