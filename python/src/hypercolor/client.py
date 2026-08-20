@@ -383,7 +383,10 @@ class HypercolorClient:
         body = _drop_none(
             {
                 "controls": (
-                    {str(name): _effect_control_value(value) for name, value in controls.items()}
+                    {
+                        str(name): _canonical_control_value(value)
+                        for name, value in controls.items()
+                    }
                     if controls is not None
                     else None
                 ),
@@ -414,7 +417,10 @@ class HypercolorClient:
         body = _drop_none(
             {
                 "controls": (
-                    {str(name): _effect_control_value(value) for name, value in controls.items()}
+                    {
+                        str(name): _canonical_control_value(value)
+                        for name, value in controls.items()
+                    }
                     if controls is not None
                     else None
                 ),
@@ -468,7 +474,9 @@ class HypercolorClient:
     ) -> Zone:
         """Patch values on one live scene layer."""
         body: dict[str, Any] = {
-            "values": {str(name): _effect_control_value(value) for name, value in values.items()}
+            "values": {
+                str(name): _canonical_control_value(value) for name, value in values.items()
+            }
         }
         if clear_bindings:
             body["clear_bindings"] = clear_bindings
@@ -1342,29 +1350,48 @@ def _display_control_value(value: Any) -> dict[str, Any]:
     return result
 
 
-def _effect_control_value(value: Any) -> dict[str, Any]:
+def _canonical_control_value(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
-        tags = {"float", "integer", "boolean", "color", "gradient", "enum", "text", "rect"}
-        if len(value) == 1 and set(value) <= tags:
+        if "kind" in value:
             result = {str(key): item for key, item in value.items()}
         elif {"x", "y", "width", "height"} <= set(value):
-            result = {"rect": {str(key): item for key, item in value.items()}}
+            result = {"kind": "rect", "value": {str(key): item for key, item in value.items()}}
         else:
-            message = "effect control mappings must be tagged values or rectangles"
-            raise ValueError(message)
+            result = {
+                "kind": "map",
+                "value": {str(key): _canonical_control_value(item) for key, item in value.items()},
+            }
+    elif value is None:
+        result = {"kind": "null"}
     elif isinstance(value, bool):
-        result = {"boolean": value}
+        result = {"kind": "bool", "value": value}
     elif isinstance(value, int):
-        result = {"integer": value}
+        result = {"kind": "int", "value": value}
     elif isinstance(value, float):
-        result = {"float": value}
+        result = {"kind": "float", "value": value}
     elif isinstance(value, str):
         color = _hex_color_value(value)
-        result = {"color": color} if color is not None else {"text": value}
-    elif isinstance(value, list) and len(value) == 4:
-        result = {"color": value}
+        result = (
+            {
+                "kind": "color_linear",
+                "value": dict(zip(("r", "g", "b", "a"), color, strict=True)),
+            }
+            if color is not None
+            else {"kind": "text", "value": value}
+        )
+    elif (
+        isinstance(value, list)
+        and len(value) == 4
+        and all(isinstance(channel, int | float) for channel in value)
+    ):
+        result = {
+            "kind": "color_linear",
+            "value": dict(zip(("r", "g", "b", "a"), value, strict=True)),
+        }
+    elif isinstance(value, list):
+        result = {"kind": "list", "value": [_canonical_control_value(item) for item in value]}
     else:
-        message = "unsupported effect control value"
+        message = "unsupported control value"
         raise ValueError(message)
     return result
 

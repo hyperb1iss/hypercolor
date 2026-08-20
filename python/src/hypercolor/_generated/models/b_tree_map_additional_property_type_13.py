@@ -11,14 +11,7 @@ from ..models.b_tree_map_additional_property_type_13_kind import (
 )
 
 if TYPE_CHECKING:
-    from ..models.control_value_type_0 import ControlValueType0
-    from ..models.control_value_type_1 import ControlValueType1
-    from ..models.control_value_type_2 import ControlValueType2
-    from ..models.control_value_type_3 import ControlValueType3
-    from ..models.control_value_type_4 import ControlValueType4
-    from ..models.control_value_type_5 import ControlValueType5
-    from ..models.control_value_type_6 import ControlValueType6
-    from ..models.control_value_type_7 import ControlValueType7
+    from ..models.driver_control_value import DriverControlValue
 
 
 T = TypeVar("T", bound="BTreeMapAdditionalPropertyType13")
@@ -30,54 +23,19 @@ class BTreeMapAdditionalPropertyType13:
 
     Attributes:
         kind (BTreeMapAdditionalPropertyType13Kind):
-        value (list[ControlValueType0 | ControlValueType1 | ControlValueType2 | ControlValueType3 | ControlValueType4 |
-            ControlValueType5 | ControlValueType6 | ControlValueType7]): Homogeneous list.
+        value (list[DriverControlValue]): Homogeneous list.
     """
 
     kind: BTreeMapAdditionalPropertyType13Kind
-    value: list[
-        ControlValueType0
-        | ControlValueType1
-        | ControlValueType2
-        | ControlValueType3
-        | ControlValueType4
-        | ControlValueType5
-        | ControlValueType6
-        | ControlValueType7
-    ]
+    value: list[DriverControlValue]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.control_value_type_0 import ControlValueType0
-        from ..models.control_value_type_1 import ControlValueType1
-        from ..models.control_value_type_2 import ControlValueType2
-        from ..models.control_value_type_3 import ControlValueType3
-        from ..models.control_value_type_4 import ControlValueType4
-        from ..models.control_value_type_5 import ControlValueType5
-        from ..models.control_value_type_6 import ControlValueType6
-
         kind = self.kind.value
 
         value = []
         for value_item_data in self.value:
-            value_item: dict[str, Any]
-            if isinstance(value_item_data, ControlValueType0):
-                value_item = value_item_data.to_dict()
-            elif isinstance(value_item_data, ControlValueType1):
-                value_item = value_item_data.to_dict()
-            elif isinstance(value_item_data, ControlValueType2):
-                value_item = value_item_data.to_dict()
-            elif isinstance(value_item_data, ControlValueType3):
-                value_item = value_item_data.to_dict()
-            elif isinstance(value_item_data, ControlValueType4):
-                value_item = value_item_data.to_dict()
-            elif isinstance(value_item_data, ControlValueType5):
-                value_item = value_item_data.to_dict()
-            elif isinstance(value_item_data, ControlValueType6):
-                value_item = value_item_data.to_dict()
-            else:
-                value_item = value_item_data.to_dict()
-
+            value_item = value_item_data.to_dict()
             value.append(value_item)
 
         field_dict: dict[str, Any] = {}
@@ -93,14 +51,7 @@ class BTreeMapAdditionalPropertyType13:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.control_value_type_0 import ControlValueType0
-        from ..models.control_value_type_1 import ControlValueType1
-        from ..models.control_value_type_2 import ControlValueType2
-        from ..models.control_value_type_3 import ControlValueType3
-        from ..models.control_value_type_4 import ControlValueType4
-        from ..models.control_value_type_5 import ControlValueType5
-        from ..models.control_value_type_6 import ControlValueType6
-        from ..models.control_value_type_7 import ControlValueType7
+        from ..models.driver_control_value import DriverControlValue
 
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType13Kind(d.pop("kind"))
@@ -108,98 +59,7 @@ class BTreeMapAdditionalPropertyType13:
         value = []
         _value = d.pop("value")
         for value_item_data in _value:
-
-            def _parse_value_item(
-                data: object,
-            ) -> (
-                ControlValueType0
-                | ControlValueType1
-                | ControlValueType2
-                | ControlValueType3
-                | ControlValueType4
-                | ControlValueType5
-                | ControlValueType6
-                | ControlValueType7
-            ):
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_control_value_type_0 = (
-                        ControlValueType0.from_dict(data)
-                    )
-
-                    return componentsschemas_control_value_type_0
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_control_value_type_1 = (
-                        ControlValueType1.from_dict(data)
-                    )
-
-                    return componentsschemas_control_value_type_1
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_control_value_type_2 = (
-                        ControlValueType2.from_dict(data)
-                    )
-
-                    return componentsschemas_control_value_type_2
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_control_value_type_3 = (
-                        ControlValueType3.from_dict(data)
-                    )
-
-                    return componentsschemas_control_value_type_3
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_control_value_type_4 = (
-                        ControlValueType4.from_dict(data)
-                    )
-
-                    return componentsschemas_control_value_type_4
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_control_value_type_5 = (
-                        ControlValueType5.from_dict(data)
-                    )
-
-                    return componentsschemas_control_value_type_5
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_control_value_type_6 = (
-                        ControlValueType6.from_dict(data)
-                    )
-
-                    return componentsschemas_control_value_type_6
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_control_value_type_7 = ControlValueType7.from_dict(
-                    data
-                )
-
-                return componentsschemas_control_value_type_7
-
-            value_item = _parse_value_item(value_item_data)
+            value_item = DriverControlValue.from_dict(value_item_data)
 
             value.append(value_item)
 

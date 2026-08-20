@@ -6,6 +6,7 @@ use gloo_net::http::Method;
 use hypercolor_types::api::scene::{
     ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest, SceneDocument,
 };
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
@@ -280,6 +281,7 @@ async fn patch_controls(
         .iter()
         .map(|(name, value)| {
             control_value_from_json(value)
+                .and_then(|value| CanonicalControlValue::try_from(value).ok())
                 .map(|value| (name.clone(), value))
                 .ok_or_else(|| format!("Unsupported control value for {name}"))
         })

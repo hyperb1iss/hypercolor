@@ -26,7 +26,6 @@ use hypercolor_types::api::scene::{
     PatchControlsRequest, PatchZoneRequest, ReorderLayersRequest, ReplaceLayerRequest,
     ScenePatchRequest, ZoneLayoutRequest, ZoneMemberId,
 };
-use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
@@ -503,7 +502,17 @@ pub async fn patch_layer_controls(
         Err(error) => return error.into_response(),
     };
 
-    let values: HashMap<String, ControlValue> = body.values.into_iter().collect();
+    let mut values = HashMap::with_capacity(body.values.len());
+    for (name, value) in body.values {
+        let projected = match value.to_effect_wire() {
+            Ok(value) => value,
+            Err(error) => {
+                return DomainError::validation_field(format!("values.{name}"), error.to_string())
+                    .into_response();
+            }
+        };
+        values.insert(name, projected);
+    }
     written_response(
         scene_tree::patch_layer_controls(
             state.as_ref(),

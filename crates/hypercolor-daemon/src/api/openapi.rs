@@ -257,7 +257,7 @@ impl OperationDoc {
         self
     }
 
-    fn component<T: utoipa::ToSchema>(mut self) -> Self {
+    pub(crate) fn component<T: utoipa::ToSchema>(mut self) -> Self {
         self.additional_schemas.push(register_schema::<T>);
         self
     }

@@ -1,33 +1,33 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="ControlValueType0")
+T = TypeVar("T", bound="EffectControlValueType3")
 
 
 @_attrs_define
-class ControlValueType0:
-    """Floating-point numeric value. Used by `Slider` controls.
+class EffectControlValueType3:
+    """Linear RGBA color. Used by `ColorPicker` controls.
 
     Attributes:
-        float_ (float): Floating-point numeric value. Used by `Slider` controls.
+        color (list[float]): Linear RGBA color. Used by `ColorPicker` controls.
     """
 
-    float_: float
+    color: list[float]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        float_ = self.float_
+        color = self.color
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "float": float_,
+                "color": color,
             }
         )
 
@@ -36,14 +36,14 @@ class ControlValueType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        float_ = d.pop("float")
+        color = cast(list[float], d.pop("color"))
 
-        control_value_type_0 = cls(
-            float_=float_,
+        effect_control_value_type_3 = cls(
+            color=color,
         )
 
-        control_value_type_0.additional_properties = d
-        return control_value_type_0
+        effect_control_value_type_3.additional_properties = d
+        return effect_control_value_type_3
 
     @property
     def additional_keys(self) -> list[str]:

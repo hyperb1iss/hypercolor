@@ -6,28 +6,38 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="ControlValueType2")
+T = TypeVar("T", bound="Rgb")
 
 
 @_attrs_define
-class ControlValueType2:
-    """Boolean on/off value. Used by `Toggle` controls.
+class Rgb:
+    """Encoded sRGB color, no alpha. This is what device backends receive.
 
     Attributes:
-        boolean (bool): Boolean on/off value. Used by `Toggle` controls.
+        b (int): Blue channel (0–255, sRGB encoded).
+        g (int): Green channel (0–255, sRGB encoded).
+        r (int): Red channel (0–255, sRGB encoded).
     """
 
-    boolean: bool
+    b: int
+    g: int
+    r: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        boolean = self.boolean
+        b = self.b
+
+        g = self.g
+
+        r = self.r
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "boolean": boolean,
+                "b": b,
+                "g": g,
+                "r": r,
             }
         )
 
@@ -36,14 +46,20 @@ class ControlValueType2:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        boolean = d.pop("boolean")
+        b = d.pop("b")
 
-        control_value_type_2 = cls(
-            boolean=boolean,
+        g = d.pop("g")
+
+        r = d.pop("r")
+
+        rgb = cls(
+            b=b,
+            g=g,
+            r=r,
         )
 
-        control_value_type_2.additional_properties = d
-        return control_value_type_2
+        rgb.additional_properties = d
+        return rgb
 
     @property
     def additional_keys(self) -> list[str]:

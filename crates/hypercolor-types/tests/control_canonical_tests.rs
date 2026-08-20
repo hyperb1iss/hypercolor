@@ -77,6 +77,61 @@ fn effect_samples() -> Vec<effect::ControlValue> {
 }
 
 #[test]
+fn canonical_wire_roundtrips_every_projected_variant() {
+    let canonical = driver_samples()
+        .into_iter()
+        .map(|value| ControlValue::try_from(value).expect("driver value canonicalizes"))
+        .chain(
+            effect_samples()
+                .into_iter()
+                .map(|value| ControlValue::try_from(value).expect("effect value canonicalizes")),
+        )
+        .collect::<Vec<_>>();
+
+    for original in canonical {
+        let wire = serde_json::to_value(&original).expect("canonical value serializes");
+        assert_eq!(
+            wire["kind"],
+            original.kind_name(),
+            "canonical tag drifted for {original:?}"
+        );
+        let roundtrip: ControlValue =
+            serde_json::from_value(wire).expect("canonical value deserializes");
+        assert_eq!(roundtrip, original);
+    }
+
+    assert_eq!(
+        serde_json::to_value(ControlValue::Duration(Duration::from_millis(1500)))
+            .expect("duration serializes"),
+        serde_json::json!({"kind": "duration", "value": 1500})
+    );
+}
+
+#[test]
+fn canonical_wire_enforces_validation_on_both_directions() {
+    assert!(
+        serde_json::to_value(ControlValue::Float(f64::NAN)).is_err(),
+        "non-finite values must not serialize as null"
+    );
+    assert!(
+        serde_json::from_value::<ControlValue>(
+            serde_json::json!({"kind": "ip", "value": "not-an-ip"})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ControlValue>(
+            serde_json::json!({"kind": "mac", "value": "not-a-mac"})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::to_value(ControlValue::Duration(Duration::from_micros(1500))).is_err(),
+        "sub-millisecond precision must not truncate on the wire"
+    );
+}
+
+#[test]
 fn every_driver_value_roundtrips_byte_identically() {
     for original in driver_samples() {
         let original_json = serde_json::to_value(&original).expect("driver value serializes");

@@ -1430,7 +1430,7 @@ async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers
         &json!({
             "zone": zone_name,
             "layer": "aurora",
-            "values": { "speed": { "float": 8.5 } }
+            "values": { "speed": { "kind": "float", "value": 8.5 } }
         }),
         state.as_ref(),
     )
@@ -1446,7 +1446,7 @@ async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers
         &json!({
             "zone": zone_name,
             "layer": layer_id,
-            "values": { "speed": { "float": 8.5 } }
+            "values": { "speed": { "kind": "float", "value": 8.5 } }
         }),
         state.as_ref(),
     )

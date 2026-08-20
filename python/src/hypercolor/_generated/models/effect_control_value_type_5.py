@@ -1,37 +1,33 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-if TYPE_CHECKING:
-    from ..models.viewport_rect import ViewportRect
-
-
-T = TypeVar("T", bound="ControlValueType7")
+T = TypeVar("T", bound="EffectControlValueType5")
 
 
 @_attrs_define
-class ControlValueType7:
-    """Normalized rectangular viewport.
+class EffectControlValueType5:
+    """Named enum variant. Used by `Dropdown` controls.
 
     Attributes:
-        rect (ViewportRect): Normalized viewport rectangle in `[0.0, 1.0]` source space.
+        enum (str): Named enum variant. Used by `Dropdown` controls.
     """
 
-    rect: ViewportRect
+    enum: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        rect = self.rect.to_dict()
+        enum = self.enum
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "rect": rect,
+                "enum": enum,
             }
         )
 
@@ -39,17 +35,15 @@ class ControlValueType7:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.viewport_rect import ViewportRect
-
         d = dict(src_dict)
-        rect = ViewportRect.from_dict(d.pop("rect"))
+        enum = d.pop("enum")
 
-        control_value_type_7 = cls(
-            rect=rect,
+        effect_control_value_type_5 = cls(
+            enum=enum,
         )
 
-        control_value_type_7.additional_properties = d
-        return control_value_type_7
+        effect_control_value_type_5.additional_properties = d
+        return effect_control_value_type_5
 
     @property
     def additional_keys(self) -> list[str]:

@@ -225,14 +225,9 @@ pub fn MediaPage() -> impl IntoView {
                     <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
                         {move || {
                             let total = total_count.get();
-                            let shown = filtered_media.get().len();
-                            #[allow(
-                                clippy::useless_conversion,
-                                reason = "wire totals can exceed the browser's index width"
-                            )]
-                            let all_visible =
-                                usize::try_from(total).is_ok_and(|total| shown == total);
-                            if all_visible {
+                            let shown = u64::try_from(filtered_media.get().len())
+                                .expect("media item count fits in u64");
+                            if shown == total {
                                 format!("{total} files")
                             } else {
                                 format!("{shown}/{total} files")

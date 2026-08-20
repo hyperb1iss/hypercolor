@@ -8,11 +8,10 @@
 //! is preserved, so every value from either system round-trips through
 //! canonical losslessly.
 //!
-//! The canonical type is deliberately **not serializable**. Wires and
-//! persisted files speak the two existing projections; the write-side
-//! flip to any canonical encoding is its own reviewed wave under the §0
-//! lockstep doctrine. Keeping serde off the canonical type makes "which
-//! encoding is this?" unrepresentable.
+//! The canonical JSON wire is internally tagged as
+//! `{ "kind": "...", "value": ... }`. Every REST control mutation
+//! speaks this encoding. Effect and driver values remain projections at
+//! their internal engine boundaries, never competing public wires.
 //!
 //! # Per-variant contract
 //!
@@ -64,6 +63,8 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use hypercolor_color::{LinearRgba, Rgb, Rgba};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use utoipa::{PartialSchema, ToSchema};
 
 use crate::controls as driver;
 use crate::effect::{self, GradientStop};
@@ -236,12 +237,169 @@ pub enum ControlValue {
     /// Structured object (driver-only).
     Map(BTreeMap<String, ControlValue>),
     /// Value whose `kind` a newer schema minted. Round-trips as the
-    /// unit `unknown` variant — the legacy driver deserializer already
-    /// discards unrecognized payloads at the wire, so the payload loss
-    /// is inherited, not introduced here. The §0 write-side flip must
-    /// solve unknown-payload preservation before any canonical
-    /// encoding becomes a storage format.
+    /// unit `unknown` variant, matching the established driver value
+    /// semantics.
     Unknown,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+enum ControlValueRef<'a> {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(&'a str),
+    SecretRef(&'a str),
+    Ip(&'a str),
+    Mac(&'a str),
+    Duration(u64),
+    ColorRgb(Rgb),
+    ColorRgba(Rgba),
+    ColorLinear(LinearRgba),
+    Gradient(&'a [GradientStop]),
+    Rect(NormalizedRect),
+    Enum(&'a str),
+    Flags(&'a [String]),
+    List(&'a [ControlValue]),
+    Map(&'a BTreeMap<String, ControlValue>),
+    Unknown,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[schema(no_recursion)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+enum ControlValueWire {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+    SecretRef(String),
+    Ip(String),
+    Mac(String),
+    Duration(u64),
+    ColorRgb(Rgb),
+    ColorRgba(Rgba),
+    ColorLinear(LinearRgba),
+    Gradient(Vec<GradientStop>),
+    Rect(NormalizedRect),
+    Enum(String),
+    Flags(Vec<String>),
+    List(Vec<ControlValue>),
+    Map(BTreeMap<String, ControlValue>),
+    Unknown,
+}
+
+impl utoipa::__dev::ComposeSchema for ControlValue {
+    fn compose(
+        _new_generics: Vec<utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>>,
+    ) -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        ControlValueWire::schema()
+    }
+}
+
+impl ToSchema for ControlValue {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("ControlValue")
+    }
+
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        ControlValueWire::schemas(schemas);
+        for (name, schema) in [
+            (Rgb::name().into_owned(), Rgb::schema()),
+            (Rgba::name().into_owned(), Rgba::schema()),
+            (LinearRgba::name().into_owned(), LinearRgba::schema()),
+            (GradientStop::name().into_owned(), GradientStop::schema()),
+            (
+                NormalizedRect::name().into_owned(),
+                NormalizedRect::schema(),
+            ),
+        ] {
+            schemas.push((name, schema));
+        }
+    }
+}
+
+impl Serialize for ControlValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate().map_err(serde::ser::Error::custom)?;
+        let wire = match self {
+            Self::Null => ControlValueRef::Null,
+            Self::Bool(value) => ControlValueRef::Bool(*value),
+            Self::Int(value) => ControlValueRef::Int(*value),
+            Self::Float(value) => ControlValueRef::Float(*value),
+            Self::Text(value) => ControlValueRef::Text(value),
+            Self::SecretRef(value) => ControlValueRef::SecretRef(value.as_str()),
+            Self::Ip(value) => ControlValueRef::Ip(value.as_str()),
+            Self::Mac(value) => ControlValueRef::Mac(value.as_str()),
+            Self::Duration(value) => {
+                if value.subsec_nanos() % 1_000_000 != 0 {
+                    return Err(serde::ser::Error::custom(
+                        DriverProjectionError::SubMillisecondDuration,
+                    ));
+                }
+                let millis = u64::try_from(value.as_millis()).map_err(|_| {
+                    serde::ser::Error::custom(DriverProjectionError::DurationOverflow)
+                })?;
+                ControlValueRef::Duration(millis)
+            }
+            Self::ColorRgb(value) => ControlValueRef::ColorRgb(*value),
+            Self::ColorRgba(value) => ControlValueRef::ColorRgba(*value),
+            Self::ColorLinear(value) => ControlValueRef::ColorLinear(*value),
+            Self::Gradient(value) => ControlValueRef::Gradient(value),
+            Self::Rect(value) => ControlValueRef::Rect(*value),
+            Self::Enum(value) => ControlValueRef::Enum(value),
+            Self::Flags(value) => ControlValueRef::Flags(value),
+            Self::List(value) => ControlValueRef::List(value),
+            Self::Map(value) => ControlValueRef::Map(value),
+            Self::Unknown => ControlValueRef::Unknown,
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = match ControlValueWire::deserialize(deserializer)? {
+            ControlValueWire::Null => Self::Null,
+            ControlValueWire::Bool(value) => Self::Bool(value),
+            ControlValueWire::Int(value) => Self::Int(value),
+            ControlValueWire::Float(value) => Self::Float(value),
+            ControlValueWire::Text(value) => Self::Text(value),
+            ControlValueWire::SecretRef(value) => Self::SecretRef(SecretRef::new(value)),
+            ControlValueWire::Ip(value) => {
+                Self::Ip(IpText::new(value).map_err(serde::de::Error::custom)?)
+            }
+            ControlValueWire::Mac(value) => {
+                Self::Mac(MacText::new(value).map_err(serde::de::Error::custom)?)
+            }
+            ControlValueWire::Duration(value) => Self::Duration(Duration::from_millis(value)),
+            ControlValueWire::ColorRgb(value) => Self::ColorRgb(value),
+            ControlValueWire::ColorRgba(value) => Self::ColorRgba(value),
+            ControlValueWire::ColorLinear(value) => Self::ColorLinear(value),
+            ControlValueWire::Gradient(value) => Self::Gradient(value),
+            ControlValueWire::Rect(value) => Self::Rect(value),
+            ControlValueWire::Enum(value) => Self::Enum(value),
+            ControlValueWire::Flags(value) => Self::Flags(value),
+            ControlValueWire::List(value) => Self::List(value),
+            ControlValueWire::Map(value) => Self::Map(value),
+            ControlValueWire::Unknown => Self::Unknown,
+        };
+        value.validate().map_err(serde::de::Error::custom)?;
+        Ok(value)
+    }
 }
 
 /// Why a value violates the canonical invariants.

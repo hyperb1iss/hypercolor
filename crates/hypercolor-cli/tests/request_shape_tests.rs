@@ -102,15 +102,15 @@ async fn effects_activate_serializes_scalar_params() -> Result<()> {
         .context("server did not capture effect apply request body")?;
     assert_eq!(
         body["controls"]["speed"],
-        serde_json::json!({ "float": 12.5 })
+        serde_json::json!({ "kind": "float", "value": 12.5 })
     );
     assert_eq!(
         body["controls"]["enabled"],
-        serde_json::json!({ "boolean": true })
+        serde_json::json!({ "kind": "bool", "value": true })
     );
     assert_eq!(
         body["controls"]["label"],
-        serde_json::json!({ "text": "aurora" })
+        serde_json::json!({ "kind": "text", "value": "aurora" })
     );
     assert!(body.get("transition").is_none());
 

@@ -250,6 +250,7 @@ pub enum ControlKind {
 /// | `Asset`          | `Text(String)`             |
 /// | `Rect`           | `Rect(ViewportRect)`       |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(as = EffectControlValue)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlValue {
     /// Floating-point numeric value. Used by `Slider` controls.

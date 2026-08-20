@@ -404,7 +404,7 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{original_layer}/controls"),
-            json!({ "values": { "speed": { "float": 0.5 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.5 } } }),
         ),
     )
     .await;
@@ -506,7 +506,7 @@ async fn structural_writes_honor_if_match_and_control_writes_do_not() {
             json_request(
                 "PATCH",
                 format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-                json!({ "values": { "speed": { "float": 0.5 } } }),
+                json!({ "values": { "speed": { "kind": "float", "value": 0.5 } } }),
             ),
             revision + 99,
         ),
@@ -548,7 +548,7 @@ async fn concurrent_control_writes_rebase_until_every_write_commits() {
                 json_request(
                     "PATCH",
                     route,
-                    json!({ "values": { "speed": { "float": value } } }),
+                    json!({ "values": { "speed": { "kind": "float", "value": value } } }),
                 ),
             )
             .await
@@ -637,7 +637,7 @@ async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() 
             "POST",
             format!("/api/v1/effects/{effect_id}/presets/{preset_id}/apply"),
             json!({
-                "controls": { "speed": { "float": 0.7 } },
+                "controls": { "speed": { "kind": "float", "value": 0.7 } },
                 "preset_id": PresetId::stable("body-value-must-not-win"),
                 "zone": zone_id,
                 "transition": { "type": "cut" }
@@ -695,7 +695,7 @@ async fn a_control_patch_event_names_its_zone_and_real_layer() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.75 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
         ),
     )
     .await;
@@ -769,7 +769,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.5 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.5 } } }),
         ),
     )
     .await;
@@ -789,7 +789,10 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.5 } }, "clear_bindings": ["speed"] }),
+            json!({
+                "values": { "speed": { "kind": "float", "value": 0.5 } },
+                "clear_bindings": ["speed"]
+            }),
         ),
     )
     .await;
@@ -1421,7 +1424,7 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.75 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
         ),
     ];
 
@@ -1663,7 +1666,7 @@ async fn live_layer_replacement_and_controls_publish_stack_events() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{replacement}/controls"),
-            json!({ "values": { "speed": { "float": 0.75 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
         ),
     )
     .await;

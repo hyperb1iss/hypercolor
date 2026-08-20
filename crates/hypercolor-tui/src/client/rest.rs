@@ -16,6 +16,7 @@ use hypercolor_types::api::scene::{
     ApplyEffectRequest, PatchControlsRequest, PatchZoneRequest, ReplaceLayerRequest, SceneDocument,
 };
 use hypercolor_types::api::scenes::SceneListResponse as ApiSceneListResponse;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
     ControlSurfaceDocument, ControlValueMap,
@@ -230,6 +231,7 @@ impl DaemonClient {
                     .iter()
                     .map(|(name, value)| {
                         api_control_value_from_json(value)
+                            .and_then(|value| CanonicalControlValue::try_from(value).ok())
                             .map(|value| (name.clone(), value))
                             .with_context(|| format!("Unsupported control value for {name}"))
                     })
@@ -344,6 +346,7 @@ impl DaemonClient {
             .iter()
             .map(|(name, value)| {
                 api_control_value_from_json(value)
+                    .and_then(|value| CanonicalControlValue::try_from(value).ok())
                     .map(|value| (name.clone(), value))
                     .with_context(|| format!("Unsupported control value for {name}"))
             })

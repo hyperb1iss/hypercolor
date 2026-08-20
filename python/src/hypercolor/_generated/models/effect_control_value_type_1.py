@@ -6,28 +6,28 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="ControlValueType5")
+T = TypeVar("T", bound="EffectControlValueType1")
 
 
 @_attrs_define
-class ControlValueType5:
-    """Named enum variant. Used by `Dropdown` controls.
+class EffectControlValueType1:
+    """Signed integer value.
 
     Attributes:
-        enum (str): Named enum variant. Used by `Dropdown` controls.
+        integer (int): Signed integer value.
     """
 
-    enum: str
+    integer: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        enum = self.enum
+        integer = self.integer
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "enum": enum,
+                "integer": integer,
             }
         )
 
@@ -36,14 +36,14 @@ class ControlValueType5:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        enum = d.pop("enum")
+        integer = d.pop("integer")
 
-        control_value_type_5 = cls(
-            enum=enum,
+        effect_control_value_type_1 = cls(
+            integer=integer,
         )
 
-        control_value_type_5.additional_properties = d
-        return control_value_type_5
+        effect_control_value_type_1.additional_properties = d
+        return effect_control_value_type_1
 
     @property
     def additional_keys(self) -> list[str]:

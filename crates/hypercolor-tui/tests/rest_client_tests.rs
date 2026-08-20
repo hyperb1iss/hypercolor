@@ -116,12 +116,7 @@ async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
                                     "controls": controls,
                                     "presets": presets
                                 }],
-                                "pagination": {
-                                    "offset": 0,
-                                    "limit": 50,
-                                    "total": 1,
-                                    "has_more": false
-                                }
+                                "total": 1
                             }
                         }))
                     }
@@ -338,12 +333,7 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
                             "total_leds": 120,
                             "zones": []
                         }],
-                        "pagination": {
-                            "offset": 0,
-                            "limit": 50,
-                            "total": 1,
-                            "has_more": false
-                        }
+                        "total": 1
                     }
                 }))
             }),
@@ -358,12 +348,7 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
                             "effect_name": "Rainbow Wave",
                             "added_at_ms": 1234
                         }],
-                        "pagination": {
-                            "offset": 0,
-                            "limit": 50,
-                            "total": 1,
-                            "has_more": false
-                        }
+                        "total": 1
                     }
                 }))
             }),
@@ -740,7 +725,7 @@ async fn update_control_targets_the_real_scene_layer() {
 
     assert_eq!(
         captured.lock().await.clone().expect("captured payload"),
-        json!({"values": {"speed": {"float": 0.5}}})
+        json!({"values": {"speed": {"kind": "float", "value": 0.5}}})
     );
 }
 
@@ -863,7 +848,7 @@ async fn apply_effect_uses_canonical_zone_and_control_values() {
         captured.lock().await.clone().expect("captured apply body"),
         json!({
             "zone": ZONE_B,
-            "controls": {"speed": {"float": 0.5}}
+            "controls": {"speed": {"kind": "float", "value": 0.5}}
         })
     );
 }
@@ -896,7 +881,10 @@ async fn zone_mutations_use_live_scene_routes() {
                     assert_eq!(zone, ZONE_B);
                     assert_eq!(layer, LAYER_ID);
                     assert!(headers.get(header::IF_MATCH).is_none());
-                    assert_eq!(body, json!({"values": {"speed": {"float": 0.9}}}));
+                    assert_eq!(
+                        body,
+                        json!({"values": {"speed": {"kind": "float", "value": 0.9_f32}}})
+                    );
                     Json(json!({"data": {}}))
                 },
             ),

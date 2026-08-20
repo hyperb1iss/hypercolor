@@ -273,6 +273,7 @@ impl ControlValueType {
 /// Typed value payload matching a [`ControlValueType`].
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 #[schema(no_recursion)]
+#[schema(as = DriverControlValue)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum ControlValue {
     /// Empty value.

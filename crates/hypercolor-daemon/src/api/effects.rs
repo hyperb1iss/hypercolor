@@ -525,7 +525,20 @@ pub async fn apply_effect(
     {
         normalize_control_values(&metadata, &preset.controls)
     } else {
-        let owned: HashMap<String, ControlValue> = requested_controls.into_iter().collect();
+        let mut owned = HashMap::with_capacity(requested_controls.len());
+        for (name, value) in requested_controls {
+            let projected = match value.to_effect_wire() {
+                Ok(value) => value,
+                Err(error) => {
+                    return DomainError::validation_field(
+                        format!("controls.{name}"),
+                        error.to_string(),
+                    )
+                    .into_response();
+                }
+            };
+            owned.insert(name, projected);
+        }
         normalize_control_values(&metadata, &owned)
     };
     if !dropped_controls.is_empty() {

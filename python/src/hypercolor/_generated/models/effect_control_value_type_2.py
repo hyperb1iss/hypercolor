@@ -6,28 +6,28 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="ControlValueType6")
+T = TypeVar("T", bound="EffectControlValueType2")
 
 
 @_attrs_define
-class ControlValueType6:
-    """Free-form text. Used by `TextInput` controls.
+class EffectControlValueType2:
+    """Boolean on/off value. Used by `Toggle` controls.
 
     Attributes:
-        text (str): Free-form text. Used by `TextInput` controls.
+        boolean (bool): Boolean on/off value. Used by `Toggle` controls.
     """
 
-    text: str
+    boolean: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        text = self.text
+        boolean = self.boolean
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "text": text,
+                "boolean": boolean,
             }
         )
 
@@ -36,14 +36,14 @@ class ControlValueType6:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        text = d.pop("text")
+        boolean = d.pop("boolean")
 
-        control_value_type_6 = cls(
-            text=text,
+        effect_control_value_type_2 = cls(
+            boolean=boolean,
         )
 
-        control_value_type_6.additional_properties = d
-        return control_value_type_6
+        effect_control_value_type_2.additional_properties = d
+        return effect_control_value_type_2
 
     @property
     def additional_keys(self) -> list[str]:

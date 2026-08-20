@@ -9,12 +9,12 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.scene_layer import SceneLayer
     from ..models.zone_layout_resource import ZoneLayoutResource
     from ..models.zone_member import ZoneMember
     from ..models.zone_resource_display_target_type_0 import (
         ZoneResourceDisplayTargetType0,
     )
-    from ..models.zone_resource_layers_item import ZoneResourceLayersItem
 
 
 T = TypeVar("T", bound="ZoneResource")
@@ -28,7 +28,7 @@ class ZoneResource:
         brightness (float):
         enabled (bool):
         id (str):
-        layers (list[ZoneResourceLayersItem]): The authored bottom-to-top layer stack. Layers are the real,
+        layers (list[SceneLayer]): The authored bottom-to-top layer stack. Layers are the real,
             addressable unit: clients patch the layer id they read here.
         members (list[ZoneMember]): Device segments assigned to this zone, addressed by membership
             id (Spec 78 §1.2) — never by device-scoped segment name.
@@ -43,7 +43,7 @@ class ZoneResource:
     brightness: float
     enabled: bool
     id: str
-    layers: list[ZoneResourceLayersItem]
+    layers: list[SceneLayer]
     members: list[ZoneMember]
     name: str
     color: None | str | Unset = UNSET
@@ -134,12 +134,12 @@ class ZoneResource:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.scene_layer import SceneLayer
         from ..models.zone_layout_resource import ZoneLayoutResource
         from ..models.zone_member import ZoneMember
         from ..models.zone_resource_display_target_type_0 import (
             ZoneResourceDisplayTargetType0,
         )
-        from ..models.zone_resource_layers_item import ZoneResourceLayersItem
 
         d = dict(src_dict)
         brightness = d.pop("brightness")
@@ -151,7 +151,7 @@ class ZoneResource:
         layers = []
         _layers = d.pop("layers")
         for layers_item_data in _layers:
-            layers_item = ZoneResourceLayersItem.from_dict(layers_item_data)
+            layers_item = SceneLayer.from_dict(layers_item_data)
 
             layers.append(layers_item)
 

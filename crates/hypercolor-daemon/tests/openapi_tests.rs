@@ -444,6 +444,23 @@ fn runtime_document_records_real_statuses_bodies_and_media_types() {
         );
     }
 
+    let schemas = &document["components"]["schemas"];
+    let control_variants = schemas["ControlValue"]["oneOf"]
+        .as_array()
+        .expect("canonical ControlValue should be a tagged union");
+    let control_kinds = control_variants
+        .iter()
+        .filter_map(|variant| variant["properties"]["kind"]["enum"][0].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(control_kinds.len(), 19);
+    assert!(control_kinds.contains("float"));
+    assert!(control_kinds.contains("map"));
+    assert!(schemas["EffectControlValue"].is_object());
+    assert_eq!(
+        schemas["PatchControlsRequest"]["properties"]["values"]["additionalProperties"]["$ref"],
+        "#/components/schemas/ControlValue"
+    );
+
     for (path, content_type) in [
         ("/api/v1/assets/{id}/blob", "application/octet-stream"),
         ("/api/v1/assets/{id}/thumbnail", "image/webp"),

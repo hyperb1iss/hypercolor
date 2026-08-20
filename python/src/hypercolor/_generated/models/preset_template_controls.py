@@ -7,14 +7,14 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.control_value_type_0 import ControlValueType0
-    from ..models.control_value_type_1 import ControlValueType1
-    from ..models.control_value_type_2 import ControlValueType2
-    from ..models.control_value_type_3 import ControlValueType3
-    from ..models.control_value_type_4 import ControlValueType4
-    from ..models.control_value_type_5 import ControlValueType5
-    from ..models.control_value_type_6 import ControlValueType6
-    from ..models.control_value_type_7 import ControlValueType7
+    from ..models.effect_control_value_type_0 import EffectControlValueType0
+    from ..models.effect_control_value_type_1 import EffectControlValueType1
+    from ..models.effect_control_value_type_2 import EffectControlValueType2
+    from ..models.effect_control_value_type_3 import EffectControlValueType3
+    from ..models.effect_control_value_type_4 import EffectControlValueType4
+    from ..models.effect_control_value_type_5 import EffectControlValueType5
+    from ..models.effect_control_value_type_6 import EffectControlValueType6
+    from ..models.effect_control_value_type_7 import EffectControlValueType7
 
 
 T = TypeVar("T", bound="PresetTemplateControls")
@@ -26,40 +26,40 @@ class PresetTemplateControls:
 
     additional_properties: dict[
         str,
-        ControlValueType0
-        | ControlValueType1
-        | ControlValueType2
-        | ControlValueType3
-        | ControlValueType4
-        | ControlValueType5
-        | ControlValueType6
-        | ControlValueType7,
+        EffectControlValueType0
+        | EffectControlValueType1
+        | EffectControlValueType2
+        | EffectControlValueType3
+        | EffectControlValueType4
+        | EffectControlValueType5
+        | EffectControlValueType6
+        | EffectControlValueType7,
     ] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.control_value_type_0 import ControlValueType0
-        from ..models.control_value_type_1 import ControlValueType1
-        from ..models.control_value_type_2 import ControlValueType2
-        from ..models.control_value_type_3 import ControlValueType3
-        from ..models.control_value_type_4 import ControlValueType4
-        from ..models.control_value_type_5 import ControlValueType5
-        from ..models.control_value_type_6 import ControlValueType6
+        from ..models.effect_control_value_type_0 import EffectControlValueType0
+        from ..models.effect_control_value_type_1 import EffectControlValueType1
+        from ..models.effect_control_value_type_2 import EffectControlValueType2
+        from ..models.effect_control_value_type_3 import EffectControlValueType3
+        from ..models.effect_control_value_type_4 import EffectControlValueType4
+        from ..models.effect_control_value_type_5 import EffectControlValueType5
+        from ..models.effect_control_value_type_6 import EffectControlValueType6
 
         field_dict: dict[str, Any] = {}
         for prop_name, prop in self.additional_properties.items():
-            if isinstance(prop, ControlValueType0):
+            if isinstance(prop, EffectControlValueType0):
                 field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, ControlValueType1):
+            elif isinstance(prop, EffectControlValueType1):
                 field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, ControlValueType2):
+            elif isinstance(prop, EffectControlValueType2):
                 field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, ControlValueType3):
+            elif isinstance(prop, EffectControlValueType3):
                 field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, ControlValueType4):
+            elif isinstance(prop, EffectControlValueType4):
                 field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, ControlValueType5):
+            elif isinstance(prop, EffectControlValueType5):
                 field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, ControlValueType6):
+            elif isinstance(prop, EffectControlValueType6):
                 field_dict[prop_name] = prop.to_dict()
             else:
                 field_dict[prop_name] = prop.to_dict()
@@ -68,14 +68,14 @@ class PresetTemplateControls:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.control_value_type_0 import ControlValueType0
-        from ..models.control_value_type_1 import ControlValueType1
-        from ..models.control_value_type_2 import ControlValueType2
-        from ..models.control_value_type_3 import ControlValueType3
-        from ..models.control_value_type_4 import ControlValueType4
-        from ..models.control_value_type_5 import ControlValueType5
-        from ..models.control_value_type_6 import ControlValueType6
-        from ..models.control_value_type_7 import ControlValueType7
+        from ..models.effect_control_value_type_0 import EffectControlValueType0
+        from ..models.effect_control_value_type_1 import EffectControlValueType1
+        from ..models.effect_control_value_type_2 import EffectControlValueType2
+        from ..models.effect_control_value_type_3 import EffectControlValueType3
+        from ..models.effect_control_value_type_4 import EffectControlValueType4
+        from ..models.effect_control_value_type_5 import EffectControlValueType5
+        from ..models.effect_control_value_type_6 import EffectControlValueType6
+        from ..models.effect_control_value_type_7 import EffectControlValueType7
 
         d = dict(src_dict)
         preset_template_controls = cls()
@@ -86,92 +86,92 @@ class PresetTemplateControls:
             def _parse_additional_property(
                 data: object,
             ) -> (
-                ControlValueType0
-                | ControlValueType1
-                | ControlValueType2
-                | ControlValueType3
-                | ControlValueType4
-                | ControlValueType5
-                | ControlValueType6
-                | ControlValueType7
+                EffectControlValueType0
+                | EffectControlValueType1
+                | EffectControlValueType2
+                | EffectControlValueType3
+                | EffectControlValueType4
+                | EffectControlValueType5
+                | EffectControlValueType6
+                | EffectControlValueType7
             ):
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_control_value_type_0 = (
-                        ControlValueType0.from_dict(data)
+                    componentsschemas_effect_control_value_type_0 = (
+                        EffectControlValueType0.from_dict(data)
                     )
 
-                    return componentsschemas_control_value_type_0
+                    return componentsschemas_effect_control_value_type_0
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_control_value_type_1 = (
-                        ControlValueType1.from_dict(data)
+                    componentsschemas_effect_control_value_type_1 = (
+                        EffectControlValueType1.from_dict(data)
                     )
 
-                    return componentsschemas_control_value_type_1
+                    return componentsschemas_effect_control_value_type_1
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_control_value_type_2 = (
-                        ControlValueType2.from_dict(data)
+                    componentsschemas_effect_control_value_type_2 = (
+                        EffectControlValueType2.from_dict(data)
                     )
 
-                    return componentsschemas_control_value_type_2
+                    return componentsschemas_effect_control_value_type_2
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_control_value_type_3 = (
-                        ControlValueType3.from_dict(data)
+                    componentsschemas_effect_control_value_type_3 = (
+                        EffectControlValueType3.from_dict(data)
                     )
 
-                    return componentsschemas_control_value_type_3
+                    return componentsschemas_effect_control_value_type_3
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_control_value_type_4 = (
-                        ControlValueType4.from_dict(data)
+                    componentsschemas_effect_control_value_type_4 = (
+                        EffectControlValueType4.from_dict(data)
                     )
 
-                    return componentsschemas_control_value_type_4
+                    return componentsschemas_effect_control_value_type_4
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_control_value_type_5 = (
-                        ControlValueType5.from_dict(data)
+                    componentsschemas_effect_control_value_type_5 = (
+                        EffectControlValueType5.from_dict(data)
                     )
 
-                    return componentsschemas_control_value_type_5
+                    return componentsschemas_effect_control_value_type_5
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_control_value_type_6 = (
-                        ControlValueType6.from_dict(data)
+                    componentsschemas_effect_control_value_type_6 = (
+                        EffectControlValueType6.from_dict(data)
                     )
 
-                    return componentsschemas_control_value_type_6
+                    return componentsschemas_effect_control_value_type_6
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_7 = ControlValueType7.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_7 = (
+                    EffectControlValueType7.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_7
+                return componentsschemas_effect_control_value_type_7
 
             additional_property = _parse_additional_property(prop_dict)
 
@@ -187,28 +187,28 @@ class PresetTemplateControls:
     def __getitem__(
         self, key: str
     ) -> (
-        ControlValueType0
-        | ControlValueType1
-        | ControlValueType2
-        | ControlValueType3
-        | ControlValueType4
-        | ControlValueType5
-        | ControlValueType6
-        | ControlValueType7
+        EffectControlValueType0
+        | EffectControlValueType1
+        | EffectControlValueType2
+        | EffectControlValueType3
+        | EffectControlValueType4
+        | EffectControlValueType5
+        | EffectControlValueType6
+        | EffectControlValueType7
     ):
         return self.additional_properties[key]
 
     def __setitem__(
         self,
         key: str,
-        value: ControlValueType0
-        | ControlValueType1
-        | ControlValueType2
-        | ControlValueType3
-        | ControlValueType4
-        | ControlValueType5
-        | ControlValueType6
-        | ControlValueType7,
+        value: EffectControlValueType0
+        | EffectControlValueType1
+        | EffectControlValueType2
+        | EffectControlValueType3
+        | EffectControlValueType4
+        | EffectControlValueType5
+        | EffectControlValueType6
+        | EffectControlValueType7,
     ) -> None:
         self.additional_properties[key] = value
 

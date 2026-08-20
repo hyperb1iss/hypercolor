@@ -7,34 +7,31 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.gradient_stop import GradientStop
+    from ..models.viewport_rect import ViewportRect
 
 
-T = TypeVar("T", bound="ControlValueType4")
+T = TypeVar("T", bound="EffectControlValueType7")
 
 
 @_attrs_define
-class ControlValueType4:
-    """Multi-stop gradient. Used by `GradientEditor` controls.
+class EffectControlValueType7:
+    """Normalized rectangular viewport.
 
     Attributes:
-        gradient (list[GradientStop]): Multi-stop gradient. Used by `GradientEditor` controls.
+        rect (ViewportRect): Normalized viewport rectangle in `[0.0, 1.0]` source space.
     """
 
-    gradient: list[GradientStop]
+    rect: ViewportRect
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        gradient = []
-        for gradient_item_data in self.gradient:
-            gradient_item = gradient_item_data.to_dict()
-            gradient.append(gradient_item)
+        rect = self.rect.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "gradient": gradient,
+                "rect": rect,
             }
         )
 
@@ -42,22 +39,17 @@ class ControlValueType4:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.gradient_stop import GradientStop
+        from ..models.viewport_rect import ViewportRect
 
         d = dict(src_dict)
-        gradient = []
-        _gradient = d.pop("gradient")
-        for gradient_item_data in _gradient:
-            gradient_item = GradientStop.from_dict(gradient_item_data)
+        rect = ViewportRect.from_dict(d.pop("rect"))
 
-            gradient.append(gradient_item)
-
-        control_value_type_4 = cls(
-            gradient=gradient,
+        effect_control_value_type_7 = cls(
+            rect=rect,
         )
 
-        control_value_type_4.additional_properties = d
-        return control_value_type_4
+        effect_control_value_type_7.additional_properties = d
+        return effect_control_value_type_7
 
     @property
     def additional_keys(self) -> list[str]:

@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use crate::effect::ControlValue;
+use crate::control::ControlValue;
 use crate::identity::LayoutId;
 use crate::layer::{
     LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
@@ -120,7 +120,6 @@ pub struct ZoneResource {
     pub layout: Option<ZoneLayoutResource>,
     /// The authored bottom-to-top layer stack. Layers are the real,
     /// addressable unit: clients patch the layer id they read here.
-    #[schema(value_type = Vec<Object>)]
     pub layers: Vec<SceneLayer>,
 }
 

@@ -472,7 +472,7 @@ async def test_apply_effect(client: HypercolorClient) -> None:
 
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
-        "controls": {"effectSpeed": {"integer": 70}},
+        "controls": {"effectSpeed": {"kind": "int", "value": 70}},
         "transition": {"type": "cut"},
     }
     assert route.calls[0].request.headers["if-match"] == '"7"'
@@ -781,8 +781,11 @@ async def test_patch_layer_controls_addresses_real_layer(client: HypercolorClien
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
         "values": {
-            "speed": {"integer": 80},
-            "tint": {"color": [128 / 255, 64 / 255, 1.0, 1.0]},
+            "speed": {"kind": "int", "value": 80},
+            "tint": {
+                "kind": "color_linear",
+                "value": {"r": 128 / 255, "g": 64 / 255, "b": 1.0, "a": 1.0},
+            },
         },
         "clear_bindings": ["speed"],
     }

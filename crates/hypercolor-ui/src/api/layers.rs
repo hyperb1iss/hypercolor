@@ -8,6 +8,7 @@ use serde::Deserialize;
 use hypercolor_types::api::scene::{
     PatchControlsRequest, ReorderLayersRequest, SceneDocument, ZoneResource,
 };
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 
@@ -111,6 +112,7 @@ pub async fn patch_layer_controls(
         .iter()
         .map(|(name, value)| {
             control_value_from_json(value)
+                .and_then(|value| CanonicalControlValue::try_from(value).ok())
                 .map(|value| (name.clone(), value))
                 .ok_or_else(|| format!("Unsupported control value for {name}"))
         })

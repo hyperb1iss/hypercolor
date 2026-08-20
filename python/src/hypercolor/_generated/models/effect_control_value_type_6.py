@@ -6,28 +6,28 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="ControlValueType1")
+T = TypeVar("T", bound="EffectControlValueType6")
 
 
 @_attrs_define
-class ControlValueType1:
-    """Signed integer value.
+class EffectControlValueType6:
+    """Free-form text. Used by `TextInput` controls.
 
     Attributes:
-        integer (int): Signed integer value.
+        text (str): Free-form text. Used by `TextInput` controls.
     """
 
-    integer: int
+    text: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        integer = self.integer
+        text = self.text
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "integer": integer,
+                "text": text,
             }
         )
 
@@ -36,14 +36,14 @@ class ControlValueType1:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        integer = d.pop("integer")
+        text = d.pop("text")
 
-        control_value_type_1 = cls(
-            integer=integer,
+        effect_control_value_type_6 = cls(
+            text=text,
         )
 
-        control_value_type_1.additional_properties = d
-        return control_value_type_1
+        effect_control_value_type_6.additional_properties = d
+        return effect_control_value_type_6
 
     @property
     def additional_keys(self) -> list[str]:

@@ -9,6 +9,7 @@ use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest,
 };
+use hypercolor_types::control::ControlValue as ApiControlValue;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
@@ -224,6 +225,11 @@ async fn execute_activate(
         );
     }
 
+    let controls = controls
+        .into_iter()
+        .map(|(name, value)| ApiControlValue::try_from(value).map(|value| (name, value)))
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+
     let body = ApplyEffectRequest {
         controls: (!controls.is_empty()).then_some(controls),
         ..ApplyEffectRequest::default()
@@ -334,7 +340,7 @@ async fn execute_patch(
     for (key, value) in &args.param {
         values.insert(
             key.clone(),
-            control_value_from_json(parse_control_value(value))?,
+            ApiControlValue::try_from(control_value_from_json(parse_control_value(value))?)?,
         );
     }
 

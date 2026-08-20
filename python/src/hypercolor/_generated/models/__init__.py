@@ -214,14 +214,8 @@ from .control_surface_document_values import ControlSurfaceDocumentValues
 from .control_surface_list_response import ControlSurfaceListResponse
 from .control_surface_scope import ControlSurfaceScope
 from .control_type import ControlType
-from .control_value_type_0 import ControlValueType0
-from .control_value_type_1 import ControlValueType1
-from .control_value_type_2 import ControlValueType2
-from .control_value_type_3 import ControlValueType3
-from .control_value_type_4 import ControlValueType4
-from .control_value_type_5 import ControlValueType5
-from .control_value_type_6 import ControlValueType6
-from .control_value_type_7 import ControlValueType7
+from .control_value import ControlValue
+from .control_value_kind import ControlValueKind
 from .control_visibility import ControlVisibility
 from .corner import Corner
 from .create_layer_request import CreateLayerRequest
@@ -308,6 +302,8 @@ from .display_summary_list_item import DisplaySummaryListItem
 from .driver_capability_set import DriverCapabilitySet
 from .driver_config_entry import DriverConfigEntry
 from .driver_config_response import DriverConfigResponse
+from .driver_control_value import DriverControlValue
+from .driver_control_value_kind import DriverControlValueKind
 from .driver_list_response import DriverListResponse
 from .driver_module_descriptor import DriverModuleDescriptor
 from .driver_module_kind import DriverModuleKind
@@ -325,6 +321,14 @@ from .driver_transport_kind_type_7 import DriverTransportKindType7
 from .edge_behavior import EdgeBehavior
 from .effect_capability_set import EffectCapabilitySet
 from .effect_category import EffectCategory
+from .effect_control_value_type_0 import EffectControlValueType0
+from .effect_control_value_type_1 import EffectControlValueType1
+from .effect_control_value_type_2 import EffectControlValueType2
+from .effect_control_value_type_3 import EffectControlValueType3
+from .effect_control_value_type_4 import EffectControlValueType4
+from .effect_control_value_type_5 import EffectControlValueType5
+from .effect_control_value_type_6 import EffectControlValueType6
+from .effect_control_value_type_7 import EffectControlValueType7
 from .effect_detail_response import EffectDetailResponse
 from .effect_health_status import EffectHealthStatus
 from .effect_metadata import EffectMetadata
@@ -418,6 +422,7 @@ from .led_topology_type_5 import LedTopologyType5
 from .led_topology_type_5_type import LedTopologyType5Type
 from .led_topology_type_6 import LedTopologyType6
 from .led_topology_type_6_type import LedTopologyType6Type
+from .linear_rgba import LinearRgba
 from .list_assets_response_200 import ListAssetsResponse200
 from .list_audio_devices_response_200 import ListAudioDevicesResponse200
 from .list_capture_monitors_response_200 import ListCaptureMonitorsResponse200
@@ -536,6 +541,8 @@ from .rescan_effects_response_200 import RescanEffectsResponse200
 from .rescan_response import RescanResponse
 from .reset_config_response_200 import ResetConfigResponse200
 from .response_meta import ResponseMeta
+from .rgb import Rgb
+from .rgba import Rgba
 from .ring_def import RingDef
 from .room_adjacency import RoomAdjacency
 from .room_dimensions import RoomDimensions
@@ -625,7 +632,6 @@ from .zone_layout_resource import ZoneLayoutResource
 from .zone_member import ZoneMember
 from .zone_resource import ZoneResource
 from .zone_resource_display_target_type_0 import ZoneResourceDisplayTargetType0
-from .zone_resource_layers_item import ZoneResourceLayersItem
 from .zone_shape_type_0 import ZoneShapeType0
 from .zone_shape_type_0_shape_type import ZoneShapeType0ShapeType
 from .zone_shape_type_1 import ZoneShapeType1
@@ -808,14 +814,8 @@ __all__ = (
     "ControlSurfaceListResponse",
     "ControlSurfaceScope",
     "ControlType",
-    "ControlValueType0",
-    "ControlValueType1",
-    "ControlValueType2",
-    "ControlValueType3",
-    "ControlValueType4",
-    "ControlValueType5",
-    "ControlValueType6",
-    "ControlValueType7",
+    "ControlValue",
+    "ControlValueKind",
     "ControlVisibility",
     "Corner",
     "CreateLayerRequest",
@@ -902,6 +902,8 @@ __all__ = (
     "DriverCapabilitySet",
     "DriverConfigEntry",
     "DriverConfigResponse",
+    "DriverControlValue",
+    "DriverControlValueKind",
     "DriverListResponse",
     "DriverModuleDescriptor",
     "DriverModuleKind",
@@ -919,6 +921,14 @@ __all__ = (
     "EdgeBehavior",
     "EffectCapabilitySet",
     "EffectCategory",
+    "EffectControlValueType0",
+    "EffectControlValueType1",
+    "EffectControlValueType2",
+    "EffectControlValueType3",
+    "EffectControlValueType4",
+    "EffectControlValueType5",
+    "EffectControlValueType6",
+    "EffectControlValueType7",
     "EffectDetailResponse",
     "EffectHealthStatus",
     "EffectMetadata",
@@ -1010,6 +1020,7 @@ __all__ = (
     "LedTopologyType5Type",
     "LedTopologyType6",
     "LedTopologyType6Type",
+    "LinearRgba",
     "ListAssetsResponse200",
     "ListAudioDevicesResponse200",
     "ListCaptureMonitorsResponse200",
@@ -1118,6 +1129,8 @@ __all__ = (
     "RescanResponse",
     "ResetConfigResponse200",
     "ResponseMeta",
+    "Rgb",
+    "Rgba",
     "RingDef",
     "RoomAdjacency",
     "RoomDimensions",
@@ -1207,7 +1220,6 @@ __all__ = (
     "ZoneMember",
     "ZoneResource",
     "ZoneResourceDisplayTargetType0",
-    "ZoneResourceLayersItem",
     "ZoneShapeType0",
     "ZoneShapeType0ShapeType",
     "ZoneShapeType1",
