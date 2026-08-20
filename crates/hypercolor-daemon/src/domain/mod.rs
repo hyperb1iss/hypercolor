@@ -6,14 +6,11 @@
 //!
 //! - **REST**: parse → service → envelope. The route handler converts
 //!   wire input, calls one service function, and wraps the typed
-//!   outcome via [`respond`]. `DomainError` renders itself — the first
-//!   `IntoResponse` error type in the codebase. ETags attach in one
-//!   layer keyed on [`Versioned`].
+//!   outcome. `DomainError` owns the shared error projection.
 //! - **MCP**: schema validation, deterministic selector resolution, and
 //!   one service call. `DomainError` converts to
 //!   [`ToolError`](crate::mcp::tools::ToolError) via `From`.
-//! - **WS commands**: call services directly; versions ride in-band
-//!   via [`Versioned`].
+//! - **WS commands**: call services directly; versions ride in-band.
 //! - **CLI**: speaks the REST wire and deserializes
 //!   `hypercolor_types::api::envelope::ApiResponse<Outcome>`.
 //!
@@ -48,7 +45,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail, ApiResponse, ResponseMeta};
+use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail, ResponseMeta};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::ChangeTrigger;
 
@@ -66,7 +63,7 @@ pub enum ResourceKind {
     DisplayFrame,
     SimulatedDisplay,
     Driver,
-    Profile,
+    AttachmentProfile,
     Layout,
     Preset,
     Playlist,
@@ -96,7 +93,7 @@ impl std::fmt::Display for ResourceKind {
             Self::DisplayFrame => "display frame",
             Self::SimulatedDisplay => "simulated display",
             Self::Driver => "driver",
-            Self::Profile => "profile",
+            Self::AttachmentProfile => "attachment profile",
             Self::Layout => "layout",
             Self::Preset => "preset",
             Self::Playlist => "playlist",
@@ -516,13 +513,6 @@ impl From<DomainError> for ToolError {
     }
 }
 
-/// Versioned resources expose one `u64` the ETag layer keys on and WS
-/// results carry in-band.
-pub trait Versioned {
-    /// The optimistic-concurrency version of this resource.
-    fn version(&self) -> u64;
-}
-
 /// Transport provenance for a mutation. Rides beside the command,
 /// never inside it — command payloads stay transport-free.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -547,14 +537,6 @@ impl MutationContext {
             trigger: ChangeTrigger::Mcp,
         }
     }
-
-    /// Provenance for a CLI-initiated mutation.
-    #[must_use]
-    pub const fn cli() -> Self {
-        Self {
-            trigger: ChangeTrigger::Cli,
-        }
-    }
 }
 
 /// Fresh canonical metadata under the same emission policy as the v1
@@ -567,38 +549,6 @@ pub fn response_meta() -> ResponseMeta {
         request_id: format!("req_{}", uuid::Uuid::now_v7()),
         timestamp: crate::api::envelope::iso8601_system_time(std::time::SystemTime::now()),
     }
-}
-
-/// Wrap a typed service outcome in the canonical success envelope.
-pub fn respond<T: serde::Serialize>(status: StatusCode, data: T) -> Response {
-    let body = ApiResponse {
-        data,
-        meta: response_meta(),
-    };
-    (status, Json(body)).into_response()
-}
-
-/// Wrap a versioned outcome and attach its ETag in one step, so call
-/// sites cannot forget the header or fight ownership.
-pub fn respond_versioned<T: serde::Serialize + Versioned>(status: StatusCode, data: T) -> Response {
-    let version = data.version();
-    let response = respond(status, data);
-    attach_version_etag(response, version)
-}
-
-fn attach_version_etag(mut response: Response, version: u64) -> Response {
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
-        response.headers_mut().insert(header::ETAG, etag);
-    }
-    response
-}
-
-/// Attach a [`Versioned`] resource's ETag to a response — the one
-/// ETag layer, replacing the three hand-rolled implementations as
-/// waves 2.2/2.3 migrate call sites.
-#[must_use]
-pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
-    attach_version_etag(response, resource.version())
 }
 
 #[cfg(test)]
@@ -791,7 +741,7 @@ mod tests {
                 | ResourceKind::DisplayFrame
                 | ResourceKind::SimulatedDisplay
                 | ResourceKind::Driver
-                | ResourceKind::Profile
+                | ResourceKind::AttachmentProfile
                 | ResourceKind::Layout
                 | ResourceKind::Preset
                 | ResourceKind::Playlist
@@ -819,7 +769,7 @@ mod tests {
             ResourceKind::DisplayFrame,
             ResourceKind::SimulatedDisplay,
             ResourceKind::Driver,
-            ResourceKind::Profile,
+            ResourceKind::AttachmentProfile,
             ResourceKind::Layout,
             ResourceKind::Preset,
             ResourceKind::Playlist,
@@ -859,29 +809,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn respond_versioned_wraps_and_tags_in_one_step() {
-        #[derive(serde::Serialize)]
-        struct Doc {
-            version: u64,
-        }
-        impl Versioned for Doc {
-            fn version(&self) -> u64 {
-                self.version
-            }
-        }
-        let response = respond_versioned(StatusCode::OK, Doc { version: 5 });
-        assert_eq!(
-            response
-                .headers()
-                .get(header::ETAG)
-                .and_then(|value| value.to_str().ok()),
-            Some("\"5\"")
-        );
-        let json = body_json(response).await;
-        assert_eq!(json["data"]["version"], 5);
-    }
-
     #[test]
     fn tool_error_projection_keeps_codes_sane() {
         let not_found: ToolError = DomainError::NotFound {
@@ -901,23 +828,5 @@ mod tests {
         }
         .into();
         assert_eq!(precondition.error_code(), -32000);
-    }
-
-    #[test]
-    fn versioned_etag_attaches_quoted() {
-        struct Doc(u64);
-        impl Versioned for Doc {
-            fn version(&self) -> u64 {
-                self.0
-            }
-        }
-        let response = with_etag(respond(StatusCode::OK, serde_json::json!({})), &Doc(12));
-        assert_eq!(
-            response
-                .headers()
-                .get(header::ETAG)
-                .and_then(|value| value.to_str().ok()),
-            Some("\"12\"")
-        );
     }
 }

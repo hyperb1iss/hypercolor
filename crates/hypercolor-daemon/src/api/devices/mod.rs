@@ -1532,7 +1532,7 @@ fn build_attachment_identify_frame(
     let device_key = device_id.to_string();
     let profile = profiles
         .get(&device_key)
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Profile, device_id))?;
+        .ok_or_else(|| DomainError::not_found(ResourceKind::AttachmentProfile, device_id))?;
 
     let slot = profile
         .slots
