@@ -11,8 +11,8 @@ use futures_util::{SinkExt, StreamExt};
 use hypercolor_leptos_ext::ws::{
     PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkReassembler,
     PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewReassemblyLimits,
-    PreviewStreamId, PreviewTransportCapability, ReassembledPreviewPublication, SPECTRUM_FRAME_TAG,
-    SpectrumFrame, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    PreviewStreamId, ReassembledPreviewPublication, SPECTRUM_FRAME_TAG, SpectrumFrame,
+    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -25,7 +25,6 @@ const SUBSCRIPTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 #[derive(Debug, serde::Deserialize)]
 pub struct SubscribedAck {
     pub topics: Vec<serde_json::Value>,
-    pub preview_transport: String,
 }
 
 /// Messages decoded from the WebSocket stream.
@@ -62,10 +61,8 @@ pub async fn connect(
     let (mut write, mut read) = ws_stream.split();
 
     // Send subscription message
-    let preview_transport = PreviewTransportCapability::default();
     let subscribe = serde_json::json!({
         "type": "subscribe",
-        "preview_transport": preview_transport.encode(),
         "topics": [
             { "topic": "canvas", "config": { "fps": TUI_CANVAS_FPS, "format": "rgb" } },
             { "topic": "spectrum", "config": { "fps": 15, "bins": 64 } },
@@ -80,7 +77,7 @@ pub async fn connect(
 
     let mut binary_decoder = WsBinaryDecoder::new();
     let (hello, acknowledgment) =
-        wait_for_subscription_ack(&mut read, &mut binary_decoder, SUBSCRIPTION_TIMEOUT).await?;
+        wait_for_subscription_ack(&mut read, SUBSCRIPTION_TIMEOUT).await?;
     tx.send(WsMessage::Subscribed(acknowledgment))
         .context("TUI bridge closed before subscription admission")?;
     if let Some(hello) = hello {
@@ -114,13 +111,7 @@ pub async fn connect(
 
         let decoded = match msg {
             Message::Binary(data) => binary_decoder.decode(&data),
-            Message::Text(text) => {
-                let decoded = decode_json(&text);
-                if let Some(WsMessage::Hello(hello)) = &decoded {
-                    binary_decoder.apply_hello_capabilities(hello);
-                }
-                decoded
-            }
+            Message::Text(text) => decode_json(&text),
             Message::Close(_) => Some(WsMessage::Closed),
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => None,
         };
@@ -139,7 +130,6 @@ pub async fn connect(
 
 async fn wait_for_subscription_ack<S>(
     read: &mut S,
-    binary_decoder: &mut WsBinaryDecoder,
     timeout: std::time::Duration,
 ) -> Result<(Option<serde_json::Value>, SubscribedAck)>
 where
@@ -155,7 +145,6 @@ where
                     };
                     match value.get("type").and_then(serde_json::Value::as_str) {
                         Some("hello") => {
-                            binary_decoder.apply_hello_capabilities(&value);
                             hello = Some(value);
                         }
                         Some("subscribed") => {
@@ -232,22 +221,6 @@ impl WsBinaryDecoder {
             preview_chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits::default()),
             started_at: std::time::Instant::now(),
         }
-    }
-
-    fn apply_hello_capabilities(&mut self, message: &serde_json::Value) {
-        let Some(capability) = message
-            .get("capabilities")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|capabilities| {
-                PreviewTransportCapability::from_capabilities(
-                    capabilities.iter().filter_map(serde_json::Value::as_str),
-                )
-            })
-        else {
-            return;
-        };
-        let limits = PreviewReassemblyLimits::default().negotiated_with(capability);
-        self.preview_chunks = PreviewChunkReassembler::new(limits);
     }
 
     pub fn decode(&mut self, data: &Bytes) -> Option<WsMessage> {
@@ -428,7 +401,7 @@ mod tests {
     use futures_util::stream;
     use tokio_tungstenite::tungstenite::{Error, Message};
 
-    use super::{WsBinaryDecoder, build_ws_url, wait_for_subscription_ack};
+    use super::{build_ws_url, wait_for_subscription_ack};
 
     #[test]
     fn websocket_url_includes_percent_encoded_api_key() {
@@ -451,9 +424,7 @@ mod tests {
         let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
             r#"{"type":"error","message":"forbidden"}"#.into(),
         ))]);
-        let mut decoder = WsBinaryDecoder::new();
-
-        let error = wait_for_subscription_ack(&mut messages, &mut decoder, Duration::from_secs(1))
+        let error = wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
             .await
             .expect_err("subscription rejection must fail admission");
 
@@ -463,9 +434,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_timeout_fails_connection_admission() {
         let mut messages = stream::pending::<Result<Message, Error>>();
-        let mut decoder = WsBinaryDecoder::new();
-
-        let error = wait_for_subscription_ack(&mut messages, &mut decoder, Duration::ZERO)
+        let error = wait_for_subscription_ack(&mut messages, Duration::ZERO)
             .await
             .expect_err("missing acknowledgment must fail admission");
 

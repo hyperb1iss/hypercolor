@@ -11,8 +11,8 @@ use hypercolor_leptos_ext::ws::{
     EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
     InteractivePreviewFrameView, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG,
     PreviewCancelFrame, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
-    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
+    PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
+    SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
     WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
     ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
 };
@@ -578,23 +578,6 @@ impl Default for PreviewBinaryDecoder {
 }
 
 impl PreviewBinaryDecoder {
-    pub(super) fn apply_hello_capabilities(&mut self, message: &serde_json::Value) {
-        let Some(capability) = message
-            .get("capabilities")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|capabilities| {
-                PreviewTransportCapability::from_capabilities(
-                    capabilities.iter().filter_map(serde_json::Value::as_str),
-                )
-            })
-        else {
-            return;
-        };
-        self.chunks = PreviewChunkReassembler::new(
-            PreviewReassemblyLimits::default().negotiated_with(capability),
-        );
-    }
-
     pub(super) fn decode_at(
         &mut self,
         buffer: js_sys::ArrayBuffer,
@@ -930,7 +913,7 @@ pub(super) fn handle_json_message(
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
-    set_preview_transport_cap: &WriteSignal<u32>,
+    set_preview_backpressure_cap: &WriteSignal<u32>,
     set_last_backpressure_at_ms: &WriteSignal<Option<f64>>,
     set_backpressure_probe_epoch: &WriteSignal<u64>,
 ) {
@@ -1031,7 +1014,7 @@ pub(super) fn handle_json_message(
                     .filter(|_| message.topic == "canvas" && message.recommendation == "reduce_fps")
                     .and_then(whole_fps)
                 {
-                    set_preview_transport_cap
+                    set_preview_backpressure_cap
                         .update(|current| *current = (*current).min(suggested_fps));
                     set_last_backpressure_at_ms.set(Some(now_ms()));
                 }

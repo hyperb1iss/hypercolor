@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::get;
@@ -18,6 +18,19 @@ struct TestState {
     status_calls: Arc<AtomicUsize>,
     scene_calls: Arc<AtomicUsize>,
     control_surface_calls: Arc<AtomicUsize>,
+}
+
+async fn assert_canonical_subscription(socket: &mut WebSocket) {
+    let Some(Ok(Message::Text(message))) = socket.recv().await else {
+        panic!("expected a text subscription request");
+    };
+    let subscription: serde_json::Value =
+        serde_json::from_str(&message).expect("subscription request should be JSON");
+    assert_eq!(
+        subscription.get("type").and_then(serde_json::Value::as_str),
+        Some("subscribe")
+    );
+    assert!(subscription.get("preview_transport").is_none());
 }
 
 #[tokio::test]
@@ -194,10 +207,10 @@ async fn effects_handler() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "data": {
             "items": [],
-            "pagination": {
+            "total": 0,
+            "page": {
                 "offset": 0,
                 "limit": 50,
-                "total": 0,
                 "has_more": false
             }
         }
@@ -208,10 +221,10 @@ async fn devices_handler() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "data": {
             "items": [],
-            "pagination": {
+            "total": 0,
+            "page": {
                 "offset": 0,
                 "limit": 50,
-                "total": 0,
                 "has_more": false
             }
         }
@@ -222,12 +235,7 @@ async fn favorites_handler() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "data": {
             "items": [],
-            "pagination": {
-                "offset": 0,
-                "limit": 50,
-                "total": 0,
-                "has_more": false
-            }
+            "total": 0
         }
     }))
 }
@@ -281,11 +289,10 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
             .await
             .expect("send hello");
 
-        let _ = socket.recv().await;
+        assert_canonical_subscription(&mut socket).await;
         let subscribed = serde_json::json!({
             "type": "subscribed",
-            "topics": [],
-            "preview_transport": "preview_transport_v2"
+            "topics": []
         });
         socket
             .send(Message::Text(subscribed.to_string().into()))
@@ -329,11 +336,10 @@ async fn control_surface_ws_handler(ws: WebSocketUpgrade) -> Response {
             .await
             .expect("send hello");
 
-        let _ = socket.recv().await;
+        assert_canonical_subscription(&mut socket).await;
         let subscribed = serde_json::json!({
             "type": "subscribed",
-            "topics": [],
-            "preview_transport": "preview_transport_v2"
+            "topics": []
         });
         socket
             .send(Message::Text(subscribed.to_string().into()))

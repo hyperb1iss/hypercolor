@@ -335,18 +335,15 @@ fn decode_json_metrics_with_data_envelope() {
 
 #[test]
 fn decode_json_exposes_typed_subscription_acknowledgment() {
-    let transport = hypercolor_leptos_ext::ws::PreviewTransportCapability::default().encode();
     let json = serde_json::json!({
         "type": "subscribed",
         "topics": [{"topic": "events"}],
-        "preview_transport": transport.clone(),
     })
     .to_string();
     let Some(WsMessage::Subscribed(acknowledgment)) = ws::decode_json(&json) else {
         panic!("expected subscribed acknowledgment");
     };
     assert_eq!(acknowledgment.topics.len(), 1);
-    assert_eq!(acknowledgment.preview_transport, transport);
 }
 
 #[test]
