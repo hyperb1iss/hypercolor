@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::sync::LazyLock;
 
 use crate::api::AppState;
+use crate::mcp::selector::SelectorError;
 
 mod devices;
 mod displays;
@@ -50,7 +51,8 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         effects::build_set_effect(),
         effects::build_list_effects(),
         system::build_set_output_power(),
-        effects::build_stop_effect(),
+        scenes::build_clear_zone(),
+        scenes::build_adjust_controls(),
         effects::build_set_color(),
         devices::build_get_devices(),
         devices::build_set_brightness(),
@@ -120,7 +122,8 @@ pub async fn execute_tool_with_state(
         "set_effect" => effects::handle_set_effect_with_state(params, state).await,
         "list_effects" => effects::handle_list_effects_with_state(params, state).await,
         "set_output_power" => system::handle_set_output_power_with_state(params, state).await,
-        "stop_effect" => effects::handle_stop_effect_with_state(params, state).await,
+        "clear_zone" => scenes::handle_clear_zone_with_state(params, state).await,
+        "adjust_controls" => scenes::handle_adjust_controls_with_state(params, state).await,
         "set_color" => effects::handle_set_color_with_state(params, state).await,
         "get_devices" => devices::handle_get_devices_with_state(params, state).await,
         "set_brightness" => devices::handle_set_brightness_with_state(params, state).await,
@@ -154,6 +157,14 @@ pub enum ToolError {
         /// What was wrong with it.
         reason: String,
     },
+    /// A human-friendly resource selector did not resolve uniquely.
+    #[error("invalid parameter '{param}': {source}")]
+    InvalidSelector {
+        /// Parameter name.
+        param: String,
+        /// Structured selector failure.
+        source: SelectorError,
+    },
     /// Current daemon state rejects the requested mutation.
     #[error("operation conflict: {0}")]
     Conflict(String),
@@ -167,9 +178,35 @@ impl ToolError {
     pub const fn error_code(&self) -> i64 {
         match self {
             Self::NotFound(_) => -32601, // Method not found
-            Self::MissingParam(_) | Self::InvalidParam { .. } => -32602, // Invalid params
+            Self::MissingParam(_) | Self::InvalidParam { .. } | Self::InvalidSelector { .. } => {
+                -32602
+            } // Invalid params
             Self::Conflict(_) => -32000, // Server error / state conflict
             Self::Internal(_) => -32603, // Internal error
+        }
+    }
+
+    /// Build an invalid-parameter error from the shared selector policy.
+    pub fn selector(param: impl Into<String>, source: SelectorError) -> Self {
+        Self::InvalidSelector {
+            param: param.into(),
+            source,
+        }
+    }
+
+    /// Structured details rendered alongside the MCP error code and message.
+    #[must_use]
+    pub fn details(&self) -> Option<Value> {
+        match self {
+            Self::MissingParam(parameter) => Some(json!({ "parameter": parameter })),
+            Self::InvalidParam { param, .. } => Some(json!({ "parameter": param })),
+            Self::InvalidSelector { param, source } => Some(json!({
+                "kind": source.kind(),
+                "parameter": param,
+                "query": source.query(),
+                "candidates": source.candidates(),
+            })),
+            Self::NotFound(_) | Self::Conflict(_) | Self::Internal(_) => None,
         }
     }
 }
@@ -187,6 +224,29 @@ pub(super) async fn find_effect_metadata(
             metadata.name.eq_ignore_ascii_case(primary_name)
                 || metadata.name.eq_ignore_ascii_case(fallback_name)
         })
+}
+
+pub(super) async fn resolve_effect_selector(
+    state: &AppState,
+    parameter: &str,
+    query: &str,
+) -> Result<hypercolor_types::effect::EffectMetadata, ToolError> {
+    let candidates = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .map(|(_, entry)| {
+                let metadata = entry.metadata.clone();
+                crate::mcp::selector::SelectorCandidate::named(
+                    metadata.id.to_string(),
+                    metadata.name.clone(),
+                    metadata,
+                )
+            })
+            .collect()
+    };
+    crate::mcp::selector::resolve(query, candidates)
+        .map_err(|error| ToolError::selector(parameter, error))
 }
 
 /// Convert a 0.0–1.0 brightness float to a 0–100 percentage. The
