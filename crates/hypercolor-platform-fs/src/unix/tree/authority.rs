@@ -16,13 +16,14 @@ use rustix::io::Errno;
 use super::staging::validate_staging_name;
 use super::traversal::{
     copy_exact, directory_entries, duplicate_directory, entry_metadata_at, entry_name,
-    metadata_for_file, open_directory_at, open_regular_file_at, rustix_mode, set_exact_mode,
-    validate_mode, validate_symlink_target, write_secret_contents,
+    metadata_for_file, open_absolute_directory_components, open_directory_at, open_regular_file_at,
+    rustix_mode, set_exact_mode, validate_mode, validate_symlink_target, write_secret_contents,
 };
 use super::{
-    DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, ExclusiveDirectory,
-    ExclusiveDirectoryShared, OpenedRegularFile, PRIVATE_DIRECTORY_MODE, PrivateStagingDirectory,
-    ReadOnlyDirectoryAuthority, SECRET_FILE_MODE, SYMLINK_SEQUENCE,
+    DirectoryAnchor, DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata,
+    ExclusiveDirectory, ExclusiveDirectoryShared, OpenedRegularFile, PRIVATE_DIRECTORY_MODE,
+    PrivateStagingDirectory, PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
+    SECRET_FILE_MODE, SYMLINK_SEQUENCE,
 };
 
 impl ReadOnlyDirectoryAuthority {
@@ -175,6 +176,36 @@ impl ExclusiveDirectory {
             directory: duplicate_directory(&self.shared.directory)?,
             shared: Arc::clone(&self.shared),
             protected_name: Some(self.shared.lock_name.clone()),
+        })
+    }
+
+    /// Open one absolute public directory without following any path component.
+    ///
+    /// The returned authority retains this exclusive directory's global lock
+    /// and operation gate. It also retains every opened parent and child
+    /// identity required to prove that the final directory remains reachable
+    /// through the same absolute pathname.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input for a non-absolute path, the filesystem root, or
+    /// unsafe components. Returns the operating-system error when traversal or
+    /// identity inspection fails.
+    pub fn open_public_directory(&self, directory: &Path) -> io::Result<PublicDirectoryAuthority> {
+        let _operation = self.operation_guard()?;
+        let (directory, ancestry) = open_absolute_directory_components(directory)?;
+        let ancestry = ancestry
+            .into_iter()
+            .map(|(parent, name, expected)| DirectoryAnchor {
+                parent,
+                name,
+                expected,
+            })
+            .collect();
+        Ok(PublicDirectoryAuthority {
+            directory,
+            ancestry,
+            shared: Arc::clone(&self.shared),
         })
     }
 

@@ -16,8 +16,9 @@ mod windows;
 
 #[cfg(unix)]
 pub use unix::{
-    DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, ExclusiveDirectory,
-    OpenedRegularFile, PrivateStagingDirectory, ReadOnlyDirectoryAuthority,
+    DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, EntryReplacement, ExactEntry,
+    ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES, OpenedRegularFile, PrivateStagingDirectory,
+    PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
 };
 #[cfg(target_os = "windows")]
 pub use windows::DestinationIdentity;

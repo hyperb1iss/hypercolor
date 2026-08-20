@@ -1,13 +1,16 @@
 use std::ffi::OsString;
 use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 mod authority;
 mod publication;
+mod replacement;
 mod staging;
 mod traversal;
 
+pub use replacement::MAX_EXACT_ENTRY_BYTES;
 pub(super) use traversal::write_secret_contents;
 
 const SECRET_FILE_MODE: u32 = 0o600;
@@ -50,6 +53,25 @@ pub struct DirectoryAuthority {
     pub(super) protected_name: Option<OsString>,
 }
 
+/// An ancestry-anchored mutation authority for one absolute public directory.
+///
+/// The authority retains the global [`ExclusiveDirectory`] lock without
+/// creating another lock file in the public directory. Every mutation proves
+/// that each opened ancestor still occupies its original absolute pathname.
+#[derive(Debug)]
+pub struct PublicDirectoryAuthority {
+    pub(super) directory: File,
+    pub(super) ancestry: Vec<DirectoryAnchor>,
+    pub(super) shared: Arc<ExclusiveDirectoryShared>,
+}
+
+#[derive(Debug)]
+pub(super) struct DirectoryAnchor {
+    pub(super) parent: File,
+    pub(super) name: OsString,
+    pub(super) expected: DirectoryEntryMetadata,
+}
+
 /// Read-only handle-relative authority for one opened Unix directory.
 ///
 /// This capability never creates a lock entry and exposes no mutation
@@ -58,6 +80,53 @@ pub struct DirectoryAuthority {
 #[derive(Debug)]
 pub struct ReadOnlyDirectoryAuthority {
     pub(super) directory: File,
+}
+
+/// Exact supported state of one public directory entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExactEntry {
+    /// No entry exists under the governed name.
+    Absent,
+    /// One single-link regular file with exact bytes and ordinary mode.
+    RegularFile {
+        /// Exact ordinary permission bits.
+        mode: u32,
+        /// Exact byte length.
+        size: u64,
+        /// SHA-256 of the exact opened file contents.
+        sha256: [u8; 32],
+        /// Filesystem device identity used for conditional mutation.
+        device: u64,
+        /// Filesystem inode identity used for conditional mutation.
+        inode: u64,
+    },
+    /// One symbolic link with its exact uninterpreted target.
+    Symlink {
+        /// Exact target bytes represented as a platform path.
+        target: PathBuf,
+        /// Filesystem device identity used for conditional mutation.
+        device: u64,
+        /// Filesystem inode identity used for conditional mutation.
+        inode: u64,
+    },
+}
+
+/// Content to publish as one exact public directory entry.
+#[derive(Debug, Clone, Copy)]
+pub enum EntryReplacement<'a> {
+    /// A regular file with exact bytes and ordinary mode.
+    RegularFile {
+        /// Exact ordinary permission bits for the published file.
+        mode: u32,
+        /// Complete file contents.
+        contents: &'a [u8],
+    },
+    /// A stable symbolic link target.
+    Symlink {
+        /// Absolute target or relative target using normal and parent
+        /// components. The target is stored without dereferencing it.
+        target: &'a Path,
+    },
 }
 
 /// One opened regular file paired with metadata from the same file handle.

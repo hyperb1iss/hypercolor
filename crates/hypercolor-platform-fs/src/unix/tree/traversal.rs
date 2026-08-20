@@ -1,6 +1,8 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read, Write as _};
+#[cfg(target_os = "linux")]
+use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path};
@@ -18,6 +20,8 @@ use super::{
     ALL_PERMISSION_BITS, DirectoryEntryKind, DirectoryEntryMetadata, OpenedRegularFile,
     PERMISSION_BITS, PRIVATE_DIRECTORY_MODE, SECRET_FILE_MODE,
 };
+
+type OpenedAbsoluteDirectory = (File, Vec<(File, OsString, DirectoryEntryMetadata)>);
 pub(super) fn duplicate_directory(directory: &File) -> io::Result<File> {
     openat(
         directory,
@@ -27,6 +31,58 @@ pub(super) fn duplicate_directory(directory: &File) -> io::Result<File> {
     )
     .map(File::from)
     .map_err(io::Error::from)
+}
+
+pub(super) fn open_absolute_directory_components(
+    path: &Path,
+) -> io::Result<OpenedAbsoluteDirectory> {
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "public directory path must be absolute",
+        ));
+    }
+    let root = openat(
+        rustix::fs::CWD,
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(io::Error::from)?;
+    let mut current = root;
+    let mut ancestry = Vec::new();
+    for component in components {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "public directory path must contain only normal absolute components",
+            ));
+        };
+        let child = open_directory_at(&current, name)?;
+        let expected = metadata_for_file(&child)?;
+        let named = entry_metadata_at(&current, name)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "public directory component disappeared during acquisition",
+            )
+        })?;
+        require_same_entry(
+            expected,
+            named,
+            "public directory component changed during acquisition",
+        )?;
+        ancestry.push((current, name.to_os_string(), expected));
+        current = child;
+    }
+    if ancestry.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to govern the filesystem root as a public directory",
+        ));
+    }
+    Ok((current, ancestry))
 }
 
 pub(super) fn open_directory_at(directory: &File, name: &OsStr) -> io::Result<File> {
@@ -151,6 +207,27 @@ pub(super) fn directory_entries(directory: &File) -> io::Result<Vec<OsString>> {
     Ok(names)
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn directory_is_empty(directory: &File) -> io::Result<bool> {
+    let iteration = duplicate_directory(directory)?;
+    let mut buffer = [MaybeUninit::<u8>::uninit(); DIRECTORY_BUFFER_BYTES];
+    let mut entries = RawDir::new(&iteration, &mut buffer);
+    while let Some(entry) = entries.next() {
+        match entry {
+            Ok(entry) if matches!(entry.file_name().to_bytes(), b"." | b"..") => {}
+            Ok(_) => return Ok(false),
+            Err(Errno::INVAL) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry exceeds the fixed proof buffer",
+                ));
+            }
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(not(target_os = "linux"))]
 pub(super) fn directory_entries(directory: &File) -> io::Result<Vec<OsString>> {
     let mut entries = Dir::read_from(directory).map_err(io::Error::from)?;
@@ -161,6 +238,18 @@ pub(super) fn directory_entries(directory: &File) -> io::Result<Vec<OsString>> {
     }
     names.sort_by(|left, right| left.as_encoded_bytes().cmp(right.as_encoded_bytes()));
     Ok(names)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn directory_is_empty(directory: &File) -> io::Result<bool> {
+    let mut entries = Dir::read_from(directory).map_err(io::Error::from)?;
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(io::Error::from)?;
+        if !matches!(entry.file_name().to_bytes(), b"." | b"..") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn push_directory_entry(bytes: &[u8], names: &mut Vec<OsString>) -> io::Result<()> {

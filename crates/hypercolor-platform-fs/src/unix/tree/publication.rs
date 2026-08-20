@@ -17,9 +17,9 @@ static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub(super) struct PublicationRecoverySlot {
-    name: OsString,
-    placeholder: File,
-    baseline: DirectoryEntryMetadata,
+    pub(super) name: OsString,
+    pub(super) placeholder: File,
+    pub(super) baseline: DirectoryEntryMetadata,
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux"))]
@@ -125,7 +125,7 @@ impl Drop for ArmedRecoveryReservation<'_> {
 
 #[cfg(any(target_vendor = "apple", target_os = "linux"))]
 impl PublicationRecoverySlot {
-    fn reserve(parent: &File) -> io::Result<Self> {
+    pub(super) fn reserve(parent: &File) -> io::Result<Self> {
         Self::reserve_with(parent, || Ok(()), || Ok(()))
     }
 
@@ -224,13 +224,16 @@ impl PublicationRecoverySlot {
         ))
     }
 
-    fn validate_handle(&self, message: &'static str) -> io::Result<DirectoryEntryMetadata> {
+    pub(super) fn validate_handle(
+        &self,
+        message: &'static str,
+    ) -> io::Result<DirectoryEntryMetadata> {
         let current = metadata_for_file(&self.placeholder)?;
         validate_recovery_placeholder(self.baseline, current, message)?;
         Ok(current)
     }
 
-    fn validate_name(
+    pub(super) fn validate_name(
         &self,
         parent: &File,
         handle_message: &'static str,
@@ -526,7 +529,7 @@ fn publication_before_visibility_failed<T>(
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux"))]
-fn remove_publication_recovery_slot(
+pub(super) fn remove_publication_recovery_slot(
     parent: &File,
     recovery_slot: &PublicationRecoverySlot,
 ) -> io::Result<()> {
