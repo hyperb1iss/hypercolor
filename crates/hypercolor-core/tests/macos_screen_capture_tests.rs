@@ -15,7 +15,8 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     CapabilityActionDisposition, InputData, InputManager, InputSource, InteractionData,
-    ManagedSourceRole, SourceCapabilityConflict, SourceCapabilityContext, SourceStatus,
+    ManagedSourceRole, ScreenSource, SourceCapabilityConflict, SourceCapabilityContext,
+    SourceStatus,
 };
 use hypercolor_macos_capture::{
     MacosAttachment, MacosCaptureCadence, MacosCaptureCapabilities, MacosCaptureColorimetry,
