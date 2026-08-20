@@ -8,6 +8,9 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use hypercolor_tui::client::rest::DaemonClient;
+use hypercolor_tui::state::{
+    primary_zone, scene_is_multi_zone, zone_effect_controls, zone_effect_id, zone_effect_layer,
+};
 use hypercolor_types::controls::{
     ApplyControlChangesRequest, ControlActionStatus, ControlChange,
     ControlValue as SurfaceControlValue,
@@ -180,9 +183,6 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
                     "running": true,
                     "global_brightness": 42,
                     "device_count": 3,
-                    "active_effect": "Rainbow Wave",
-                    "active_scene": "Focus",
-                    "active_scene_snapshot_locked": true,
                     "render_loop": {
                         "state": "running",
                         "fps_tier": "sixty",
@@ -204,8 +204,6 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
 
     assert!(status.running);
     assert_eq!(status.brightness, 42);
-    assert_eq!(status.scene_name.as_deref(), Some("Focus"));
-    assert!(status.scene_snapshot_locked);
     assert_eq!(status.device_count, 3);
     // FPS lives under render_loop. A flat field here would read zero and
     // the status view would render a stalled render loop forever.
@@ -289,10 +287,7 @@ async fn rest_client_sends_bearer_token_when_configured() {
                 "data": { "status": {
                     "running": true,
                     "global_brightness": 1,
-                    "device_count": 0,
-                    "active_effect": null,
-                    "active_scene": null,
-                    "active_scene_snapshot_locked": false
+                    "device_count": 0
                 }}
             }))
         }),
@@ -672,6 +667,7 @@ fn scene_document() -> Value {
         "name": "Desk",
         "kind": "named",
         "is_default": false,
+        "mutation_mode": "snapshot",
         "unassigned_behavior": "off",
         "layout_id": null,
         "revision": 42,
@@ -710,20 +706,6 @@ fn scene_document() -> Value {
                 "layers": []
             }
         ]
-    })
-}
-
-fn scenes_response(mutation_mode: &str) -> Value {
-    json!({
-        "items": [{
-            "id": SCENE_ID,
-            "name": "Desk",
-            "description": null,
-            "enabled": true,
-            "priority": 0,
-            "mutation_mode": mutation_mode
-        }],
-        "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": false}
     })
 }
 
@@ -822,35 +804,31 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
 }
 
 #[tokio::test]
-async fn get_active_scene_maps_real_layers_and_saved_mutation_mode() {
-    let router = Router::new()
-        .route(
-            "/api/v1/scene",
-            get(|| async { Json(json!({"data": scene_document()})) }),
-        )
-        .route(
-            "/api/v1/scenes",
-            get(|| async { Json(json!({"data": scenes_response("snapshot")})) }),
-        );
+async fn get_active_scene_returns_the_canonical_document_without_a_scene_list_fetch() {
+    let router = Router::new().route(
+        "/api/v1/scene",
+        get(|| async { Json(json!({"data": scene_document()})) }),
+    );
 
     let client = client_for(spawn_server(router).await);
-    let scene = client
-        .get_active_scene()
-        .await
-        .expect("fetch active scene")
-        .expect("scene should be present");
+    let scene = client.get_active_scene().await.expect("fetch active scene");
 
-    assert_eq!(scene.id, SCENE_ID);
-    assert!(scene.snapshot_locked);
-    assert_eq!(scene.revision, 42);
-    assert!(scene.multi_zone());
-
-    let primary = scene.primary().expect("primary zone");
-    assert_eq!(primary.layer_id.as_deref(), Some(LAYER_ID));
-    assert_eq!(primary.effect_id.as_deref(), Some(EFFECT_RAINBOW));
+    assert_eq!(scene.id.to_string(), SCENE_ID);
     assert_eq!(
-        primary
-            .controls
+        scene.mutation_mode,
+        hypercolor_types::scene::SceneMutationMode::Snapshot
+    );
+    assert_eq!(scene.revision, 42);
+    assert!(scene_is_multi_zone(&scene));
+
+    let primary = primary_zone(&scene).expect("primary zone");
+    assert_eq!(
+        zone_effect_layer(primary).map(|layer| layer.id.to_string()),
+        Some(LAYER_ID.to_owned())
+    );
+    assert_eq!(zone_effect_id(primary).as_deref(), Some(EFFECT_RAINBOW));
+    assert_eq!(
+        zone_effect_controls(primary)
             .get("speed")
             .and_then(hypercolor_tui::state::ControlValue::as_f32),
         Some(0.6)

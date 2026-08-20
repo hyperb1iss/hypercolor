@@ -1,7 +1,5 @@
 //! REST client for the Hypercolor daemon HTTP API.
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use hypercolor_types::api::controls::InvokeControlActionRequest;
@@ -16,7 +14,6 @@ use hypercolor_types::api::envelope::ApiErrorBody;
 use hypercolor_types::api::library::{AddFavoriteRequest, FavoriteListResponse};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, PatchControlsRequest, PatchZoneRequest, ReplaceLayerRequest, SceneDocument,
-    ZoneResource,
 };
 use hypercolor_types::api::scenes::SceneListResponse as ApiSceneListResponse;
 use hypercolor_types::controls::{
@@ -28,15 +25,15 @@ use hypercolor_types::effect::{
     ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer};
-use hypercolor_types::scene::{SceneMutationMode, ZoneRole};
+use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::viewport::ViewportRect;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::state::{
-    ActiveScene, CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary,
-    EffectSummary, PresetTemplate, SceneSummary, SimulatedDisplaySummary, ZoneSummary,
+    CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary,
+    PresetTemplate, SceneSummary, SimulatedDisplaySummary,
 };
 
 /// HTTP client for the daemon REST API.
@@ -80,8 +77,6 @@ impl DaemonClient {
             brightness: status.global_brightness,
             fps_target: status.render_loop.target_fps,
             fps_actual: status.render_loop.actual_fps,
-            scene_name: status.active_scene,
-            scene_snapshot_locked: status.active_scene_snapshot_locked,
             device_count,
             total_leds: 0,
         })
@@ -269,16 +264,10 @@ impl DaemonClient {
         Ok(response.items)
     }
 
-    /// Fetch the live scene tree and its saved-scene mutation policy.
-    pub async fn get_active_scene(&self) -> Result<Option<ActiveScene>> {
+    /// Fetch the canonical live scene tree.
+    pub async fn get_active_scene(&self) -> Result<SceneDocument> {
         let document: SceneDocument = self.get_data("/scene").await?;
-        let mutation_mode = self
-            .get_scenes()
-            .await?
-            .into_iter()
-            .find(|scene| scene.id == document.id.to_string())
-            .map_or(SceneMutationMode::Live, |scene| scene.mutation_mode);
-        Ok(Some(map_active_scene(document, mutation_mode)))
+        Ok(document)
     }
 
     /// Activate a saved scene by ID.
@@ -591,9 +580,6 @@ struct SystemStatusResponse {
     running: bool,
     global_brightness: u8,
     device_count: usize,
-    active_scene: Option<String>,
-    #[serde(default)]
-    active_scene_snapshot_locked: bool,
     /// The daemon nests every FPS figure here. A flat `fps` field would
     /// silently deserialize to its default and read as a stalled render
     /// loop, which is exactly what the status view used to show.
@@ -611,9 +597,7 @@ struct SystemResponse {
 struct RenderLoopStatus {
     #[serde(default)]
     target_fps: f32,
-    /// Matches the `actual` figure the WebSocket `metrics` topic
-    /// publishes, so REST refreshes and metrics ticks agree on what the
-    /// number means.
+    /// Current delivered render cadence from the daemon status resource.
     #[serde(default)]
     actual_fps: f32,
 }
@@ -646,7 +630,7 @@ fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
 /// Map a control definition, preserving the effect's TRUE defaults.
 ///
 /// Live values are deliberately NOT merged in here — they are per-zone
-/// (`ZoneSummary::controls`) and overlaying the primary zone's values onto
+/// (selected from the canonical zone resource) and overlaying the primary zone's values onto
 /// "defaults" made reset-to-default and zone-scoped editing impossible.
 fn map_control_definition(control: &ApiControlDefinition) -> ControlDefinition {
     let control_id = control.control_id().to_owned();
@@ -733,48 +717,6 @@ fn map_preset_template(template: &ApiPresetTemplate) -> PresetTemplate {
             .iter()
             .map(|(name, value)| (name.clone(), map_control_value(value)))
             .collect(),
-    }
-}
-
-fn map_active_scene(response: SceneDocument, mutation_mode: SceneMutationMode) -> ActiveScene {
-    ActiveScene {
-        snapshot_locked: mutation_mode == SceneMutationMode::Snapshot,
-        id: response.id.to_string(),
-        name: response.name,
-        kind: response.kind,
-        mutation_mode,
-        revision: response.revision,
-        zones: response.zones.iter().map(map_zone_summary).collect(),
-    }
-}
-
-fn map_zone_summary(zone: &ZoneResource) -> ZoneSummary {
-    let effect_layer = zone.layers.iter().rev().find_map(|layer| {
-        let LayerSource::Effect {
-            effect_id,
-            controls,
-            ..
-        } = &layer.source
-        else {
-            return None;
-        };
-        Some((layer.id.to_string(), effect_id.to_string(), controls))
-    });
-    ZoneSummary {
-        id: zone.id.to_string(),
-        name: zone.name.clone(),
-        layer_id: effect_layer.as_ref().map(|(id, _, _)| id.clone()),
-        effect_id: effect_layer.as_ref().map(|(_, id, _)| id.clone()),
-        brightness: zone.brightness,
-        enabled: zone.enabled,
-        is_primary: zone.role == ZoneRole::Primary,
-        color: zone.color.clone(),
-        controls: effect_layer.map_or_else(HashMap::new, |(_, _, controls)| {
-            controls
-                .iter()
-                .map(|(name, value)| (name.clone(), map_control_value(value)))
-                .collect()
-        }),
     }
 }
 

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::screen::ScreenId;
 use crate::state::{
-    ActiveScene, CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary,
-    Notification, PreviewSource, SceneSummary, SimulatedDisplaySummary, SpectrumSnapshot,
+    CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary, Notification,
+    PreviewSource, SceneDocument, SceneSummary, SimulatedDisplaySummary, SpectrumSnapshot,
 };
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
@@ -71,8 +71,8 @@ pub enum Action {
     SpectrumUpdated(Arc<SpectrumSnapshot>),
     /// Saved-scene list refreshed.
     ScenesUpdated(Arc<Vec<SceneSummary>>),
-    /// Active scene (with zones) refreshed. `None` = no active scene.
-    ActiveSceneUpdated(Option<Arc<ActiveScene>>),
+    /// Canonical live scene tree refreshed.
+    ActiveSceneUpdated(Arc<SceneDocument>),
 
     // ── Scenes & Zones ──────────────────────────────────────
     /// Activate a saved scene by ID.

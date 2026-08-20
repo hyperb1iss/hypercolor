@@ -17,8 +17,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
-    ActiveScene, CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
-    SimulatedDisplaySummary, ZoneSummary,
+    CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
+    SceneDocument, SimulatedDisplaySummary, ZoneResource, primary_zone, scene_is_multi_zone,
+    scene_zone, zone_effect_controls, zone_effect_id,
 };
 use crate::widgets::{
     ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
@@ -64,7 +65,7 @@ pub struct EffectBrowserView {
     all_effects: Vec<EffectSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
-    active_scene: Option<Arc<ActiveScene>>,
+    active_scene: Option<Arc<SceneDocument>>,
     focused_zone: Option<String>,
     selected_index: usize,
     scroll_offset: Cell<usize>,
@@ -262,12 +263,12 @@ impl EffectBrowserView {
     }
 
     /// The zone that apply/control actions currently target.
-    fn target_zone(&self) -> Option<&ZoneSummary> {
+    fn target_zone(&self) -> Option<&ZoneResource> {
         let scene = self.active_scene.as_deref()?;
         self.focused_zone
             .as_deref()
-            .and_then(|id| scene.zone(id))
-            .or_else(|| scene.primary())
+            .and_then(|id| scene_zone(scene, id))
+            .or_else(|| primary_zone(scene))
     }
 
     /// Label for the apply target, shown only in multi-zone scenes.
@@ -275,7 +276,7 @@ impl EffectBrowserView {
         if !self
             .active_scene
             .as_deref()
-            .is_some_and(ActiveScene::multi_zone)
+            .is_some_and(scene_is_multi_zone)
         {
             return None;
         }
@@ -315,15 +316,10 @@ impl EffectBrowserView {
         let Some(zone) = self.target_zone() else {
             return;
         };
-        if zone.effect_id.as_deref() != Some(effect_id.as_str()) {
+        if zone_effect_id(zone).as_deref() != Some(effect_id.as_str()) {
             return;
         }
-        let live: Vec<_> = zone
-            .controls
-            .iter()
-            .map(|(id, value)| (id.clone(), value.clone()))
-            .collect();
-        for (id, value) in live {
+        for (id, value) in zone_effect_controls(zone) {
             self.control_values.insert(id, value);
         }
     }
@@ -1656,7 +1652,7 @@ impl Component for EffectBrowserView {
                 self.favorites.clone_from(favs);
             }
             Action::ActiveSceneUpdated(scene) => {
-                self.active_scene.clone_from(scene);
+                self.active_scene = Some(scene.clone());
                 self.overlay_zone_controls();
             }
             Action::ZoneFocusChanged(zone) => {

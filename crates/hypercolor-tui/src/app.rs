@@ -26,7 +26,8 @@ use crate::scene_picker::{ScenePicker, ScenePickerAction};
 use crate::screen::ScreenId;
 use crate::state::{
     AppState, CanvasFrame, ConnectionStatus, ControlValue, Notification, NotificationLevel,
-    PreviewSource, SimulatedDisplaySummary,
+    PreviewSource, SimulatedDisplaySummary, scene_is_multi_zone, scene_zone,
+    set_zone_effect_control, zone_effect_layer,
 };
 use crate::theme_picker::ThemePicker;
 use opaline::widgets::ThemeSelectorAction;
@@ -738,13 +739,13 @@ impl App {
                 }
             }
             Action::ActiveSceneUpdated(scene) => {
-                self.state.active_scene.clone_from(scene);
+                self.state.active_scene = Some(scene.clone());
                 // Drop the zone focus when its zone left the scene.
                 let focus_stale = self.state.focused_zone.as_deref().is_some_and(|id| {
                     self.state
                         .active_scene
                         .as_deref()
-                        .is_none_or(|scene| scene.zone(id).is_none())
+                        .is_none_or(|scene| scene_zone(scene, id).is_none())
                 });
                 if focus_stale {
                     self.state.focused_zone = None;
@@ -912,14 +913,14 @@ impl App {
                             match client.patch_zone_controls(&zone_id, &layer_id, &body).await {
                                 Ok(()) => Ok(Vec::new()), // silent success
                                 Err(error) => {
-                                    let scene = client.get_active_scene().await.ok().flatten();
-                                    Ok(vec![
-                                        Action::ActiveSceneUpdated(scene.map(Arc::new)),
-                                        Action::Notify(Notification {
-                                            message: format!("Zone control update failed: {error}"),
-                                            level: NotificationLevel::Error,
-                                        }),
-                                    ])
+                                    let mut actions = vec![Action::Notify(Notification {
+                                        message: format!("Zone control update failed: {error}"),
+                                        level: NotificationLevel::Error,
+                                    })];
+                                    if let Ok(scene) = client.get_active_scene().await {
+                                        actions.push(Action::ActiveSceneUpdated(Arc::new(scene)));
+                                    }
+                                    Ok(actions)
                                 }
                             }
                         }
@@ -1019,8 +1020,11 @@ impl App {
                             .await;
                         // Refetch either way: success confirms, failure
                         // (e.g. 412 stale revision) resyncs.
-                        let scene = client.get_active_scene().await.ok().flatten();
-                        let mut actions = vec![Action::ActiveSceneUpdated(scene.map(Arc::new))];
+                        let scene = client.get_active_scene().await.ok();
+                        let mut actions = Vec::new();
+                        if let Some(scene) = scene {
+                            actions.push(Action::ActiveSceneUpdated(Arc::new(scene)));
+                        }
                         match result {
                             Ok(()) => actions.push(Action::Notify(Notification {
                                 message: if enabled {
@@ -1260,21 +1264,26 @@ impl App {
     /// Primary targeting relies on the canonical apply route's default.
     fn non_primary_target(&self) -> Option<(String, String)> {
         let zone = self.state.target_zone()?;
-        (!zone.is_primary).then(|| (zone.id.clone(), zone.name.clone()))
+        (zone.role != hypercolor_types::scene::ZoneRole::Primary)
+            .then(|| (zone.id.to_string(), zone.name.clone()))
     }
 
     /// Zone and real effect-layer ids for control mutations.
     fn zone_patch_target(&self) -> Option<(String, String)> {
         let zone = self.state.target_zone()?;
-        Some((zone.id.clone(), zone.layer_id.clone()?))
+        Some((zone.id.to_string(), zone_effect_layer(zone)?.id.to_string()))
     }
 
     /// Optimistically write a control value into the local copy of a zone.
     fn update_local_zone_control(&mut self, zone_id: &str, control_id: &str, value: ControlValue) {
         if let Some(scene) = self.state.active_scene.as_mut() {
             let scene = Arc::make_mut(scene);
-            if let Some(zone) = scene.zones.iter_mut().find(|zone| zone.id == zone_id) {
-                zone.controls.insert(control_id.to_string(), value);
+            if let Some(zone) = scene
+                .zones
+                .iter_mut()
+                .find(|zone| zone.id.to_string() == zone_id)
+            {
+                set_zone_effect_control(zone, control_id, &value);
             }
         }
     }
@@ -1299,7 +1308,7 @@ impl App {
                 (current + count - 1) % count
             };
             let zone = &scene.zones[next];
-            (zone.id.clone(), zone.name.clone())
+            (zone.id.to_string(), zone.name.clone())
         };
         self.state.focused_zone = Some(zone_id);
         self.notify(format!("Zone target: {zone_name}"), NotificationLevel::Info);
@@ -1666,7 +1675,7 @@ impl App {
             .state
             .active_scene
             .as_deref()
-            .filter(|scene| scene.multi_zone())
+            .filter(|scene| scene_is_multi_zone(scene))
             .map(|scene| format!("{} \u{00B7} {} zones", scene.name, scene.zones.len()));
         let effect_name = if let Some(simulator_id) = self.active_effect_browser_simulator_id() {
             self.simulator_preview
@@ -1740,7 +1749,7 @@ async fn refresh_status_and_scene(client: DaemonClient) -> anyhow::Result<Vec<Ac
     let (status, scene) = tokio::join!(client.get_status(), client.get_active_scene());
     let mut actions = vec![Action::DaemonStateUpdated(Box::new(status?))];
     if let Ok(scene) = scene {
-        actions.push(Action::ActiveSceneUpdated(scene.map(std::sync::Arc::new)));
+        actions.push(Action::ActiveSceneUpdated(std::sync::Arc::new(scene)));
     }
     Ok(actions)
 }

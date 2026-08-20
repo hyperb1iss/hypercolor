@@ -16,14 +16,17 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 struct TestState {
     status_calls: Arc<AtomicUsize>,
+    scene_calls: Arc<AtomicUsize>,
     control_surface_calls: Arc<AtomicUsize>,
 }
 
 #[tokio::test]
-async fn active_scene_event_refreshes_daemon_status() {
+async fn active_scene_event_refreshes_the_canonical_document() {
     let status_calls = Arc::new(AtomicUsize::new(0));
+    let scene_calls = Arc::new(AtomicUsize::new(0));
     let state = TestState {
         status_calls: Arc::clone(&status_calls),
+        scene_calls: Arc::clone(&scene_calls),
         control_surface_calls: Arc::new(AtomicUsize::new(0)),
     };
 
@@ -32,6 +35,7 @@ async fn active_scene_event_refreshes_daemon_status() {
         .route("/api/v1/effects", get(effects_handler))
         .route("/api/v1/devices", get(devices_handler))
         .route("/api/v1/library/favorites", get(favorites_handler))
+        .route("/api/v1/scene", get(scene_handler))
         .route("/api/v1/ws", get(ws_handler))
         .with_state(state);
 
@@ -61,19 +65,23 @@ async fn active_scene_event_refreshes_daemon_status() {
 
     let updated = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Some(Action::DaemonStateUpdated(state)) = action_rx.recv().await
-                && state.scene_name.as_deref() == Some("Movie Night")
+            if let Some(Action::ActiveSceneUpdated(scene)) = action_rx.recv().await
+                && scene.name == "Movie Night"
             {
-                break (state.scene_name.clone(), state.scene_snapshot_locked);
+                break (scene.name.clone(), scene.mutation_mode);
             }
         }
     })
     .await
     .expect("timed out waiting for scene status refresh");
 
-    assert_eq!(updated.0.as_deref(), Some("Movie Night"));
-    assert!(updated.1);
+    assert_eq!(updated.0, "Movie Night");
+    assert_eq!(
+        updated.1,
+        hypercolor_types::scene::SceneMutationMode::Snapshot
+    );
     assert_eq!(status_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(scene_calls.load(Ordering::SeqCst), 3);
 
     cancel.cancel();
     bridge.await.expect("bridge task should join");
@@ -85,6 +93,7 @@ async fn control_surface_event_refreshes_device_surface() {
     let control_surface_calls = Arc::new(AtomicUsize::new(0));
     let state = TestState {
         status_calls: Arc::new(AtomicUsize::new(0)),
+        scene_calls: Arc::new(AtomicUsize::new(0)),
         control_surface_calls: Arc::clone(&control_surface_calls),
     };
 
@@ -147,12 +156,7 @@ async fn control_surface_event_refreshes_device_surface() {
 }
 
 async fn status_handler(State(state): State<TestState>) -> Json<serde_json::Value> {
-    let call = state.status_calls.fetch_add(1, Ordering::SeqCst);
-    let (scene_name, snapshot_locked) = if call <= 1 {
-        ("Default", false)
-    } else {
-        ("Movie Night", true)
-    };
+    state.status_calls.fetch_add(1, Ordering::SeqCst);
 
     Json(serde_json::json!({
         "data": {
@@ -160,10 +164,28 @@ async fn status_handler(State(state): State<TestState>) -> Json<serde_json::Valu
             "running": true,
             "global_brightness": 42,
             "device_count": 3,
-            "active_effect": serde_json::Value::Null,
-            "active_scene": scene_name,
-            "active_scene_snapshot_locked": snapshot_locked
+            "active_effect": serde_json::Value::Null
           }
+        }
+    }))
+}
+
+async fn scene_handler(State(state): State<TestState>) -> Json<serde_json::Value> {
+    let call = state.scene_calls.fetch_add(1, Ordering::SeqCst);
+    let (name, mutation_mode) = if call <= 1 {
+        ("Default", "live")
+    } else {
+        ("Movie Night", "snapshot")
+    };
+    Json(serde_json::json!({
+        "data": {
+            "id": "0198c5b6-1111-7000-8000-000000000001",
+            "name": name,
+            "kind": "named",
+            "is_default": false,
+            "mutation_mode": mutation_mode,
+            "revision": call + 1,
+            "zones": []
         }
     }))
 }
@@ -276,8 +298,6 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
             "data": {
                 "previous": "default",
                 "current": "scene_movie_night",
-                "current_name": "Movie Night",
-                "current_snapshot_locked": true,
                 "reason": "user_activate"
             }
         });
