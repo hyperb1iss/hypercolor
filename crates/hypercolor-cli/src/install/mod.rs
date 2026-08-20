@@ -1,6 +1,8 @@
 mod coordinator;
 #[cfg(unix)]
 mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 mod model;
 #[cfg(unix)]
 mod payload;
