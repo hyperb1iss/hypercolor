@@ -5042,6 +5042,7 @@ dependencies = [
  "toml 0.8.2",
  "tracing-subscriber",
  "unicode-width",
+ "zbus",
 ]
 
 [[package]]
