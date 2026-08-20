@@ -6,9 +6,6 @@
 use serde_json::{Value, json};
 
 use crate::api::AppState;
-use crate::api::effects::active_effect_metadata;
-use crate::api::system::input_status_snapshot;
-use crate::session::current_global_brightness;
 
 /// Definition of a single MCP resource.
 #[derive(Debug, Clone)]
@@ -66,25 +63,17 @@ pub fn build_resource_definitions() -> Vec<ResourceDefinition> {
     ]
 }
 
-/// Read a resource by URI, returning its JSON content.
-///
-/// Returns `None` if the URI is not recognized.
-pub fn read_resource(uri: &str) -> Option<Value> {
-    match uri {
-        "hypercolor://state" => Some(read_state()),
-        "hypercolor://devices" => Some(read_devices()),
-        "hypercolor://effects" => Some(read_effects()),
-        "hypercolor://scenes" => Some(read_scenes()),
-        "hypercolor://audio" => Some(read_audio()),
-        _ => None,
-    }
-}
-
 /// Read a resource by URI using live daemon state.
 pub async fn read_resource_with_state(uri: &str, state: &AppState) -> Option<Value> {
     match uri {
-        "hypercolor://state" => Some(read_state_with_state(state).await),
-        "hypercolor://devices" => Some(read_devices_with_state(state).await),
+        "hypercolor://state" => Some(super::payload::build_status_payload(state).await),
+        "hypercolor://devices" => Some(
+            super::payload::build_device_inventory_payload(
+                state,
+                super::payload::DeviceInventoryFilter::default(),
+            )
+            .await,
+        ),
         "hypercolor://effects" => Some(read_effects_with_state(state).await),
         "hypercolor://scenes" => Some(read_scenes_with_state(state).await),
         "hypercolor://audio" => Some(read_audio_with_state(state)),
@@ -105,190 +94,6 @@ pub fn is_valid_resource_uri(uri: &str) -> bool {
 }
 
 // ── Resource Readers ──────────────────────────────────────────────────────
-
-fn read_state() -> Value {
-    // Would read from DaemonState in a real implementation
-    json!({
-        "running": true,
-        "paused": false,
-        "brightness": 100,
-        "fps": {
-            "target": 60,
-            "actual": 0.0
-        },
-        "effect": null,
-        "devices": {
-            "connected": 0,
-            "total": 0,
-            "total_leds": 0
-        },
-        "inputs": {
-            "audio": "disabled",
-            "screen": "disabled"
-        },
-        "uptime_seconds": 0,
-        "version": env!("CARGO_PKG_VERSION")
-    })
-}
-
-fn read_devices() -> Value {
-    // Would enumerate from device manager
-    json!({
-        "devices": [],
-        "summary": {
-            "total": 0,
-            "connected": 0,
-            "total_leds": 0
-        }
-    })
-}
-
-fn read_effects() -> Value {
-    // Would enumerate from effect registry
-    json!({
-        "effects": [],
-        "total": 0
-    })
-}
-
-fn read_scenes() -> Value {
-    json!({
-        "scenes": [],
-        "total": 0
-    })
-}
-
-fn read_audio() -> Value {
-    // Would read from spectrum watch channel
-    json!({
-        "enabled": false,
-        "source": null,
-        "sample_rate": null,
-        "levels": {
-            "overall": 0.0,
-            "bass": 0.0,
-            "mid": 0.0,
-            "treble": 0.0
-        },
-        "beat": {
-            "detected": false,
-            "confidence": 0.0,
-            "bpm_estimate": null
-        },
-        "spectrum_summary": null
-    })
-}
-
-async fn read_state_with_state(state: &AppState) -> Value {
-    let render_stats = {
-        let render_loop = state.render_loop.read().await;
-        render_loop.stats()
-    };
-    let target_fps = render_stats.tier.fps();
-    let capacity_fps = super::tools::render_capacity_fps(&render_stats);
-    let delivered_fps = if matches!(
-        render_stats.state,
-        hypercolor_core::engine::RenderLoopState::Running
-    ) {
-        state.performance.read().await.snapshot().delivered_fps
-    } else {
-        0.0
-    };
-    let brightness =
-        super::tools::brightness_percent(current_global_brightness(&state.power_state));
-
-    let active_effect = active_effect_metadata(state).await.map(|metadata| {
-        json!({
-            "id": metadata.id.to_string(),
-            "name": metadata.name
-        })
-    });
-    let devices = state.device_registry.list().await;
-    let connected = devices
-        .iter()
-        .filter(|device| device.state.is_renderable())
-        .count();
-    let total_leds: u64 = devices
-        .iter()
-        .map(|device| u64::from(device.info.total_led_count()))
-        .sum();
-
-    let (audio_status, screen_status) = if let Some(config_manager) = state.config_manager.as_ref()
-    {
-        let config = config_manager.get();
-        (
-            if config.audio.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            if config.capture.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-        )
-    } else {
-        ("unknown", "unknown")
-    };
-    let input = input_status_snapshot(state);
-
-    let power = *state.power_state.borrow();
-    let paused = power.reported_paused();
-
-    json!({
-        "running": !power.sleeping(),
-        "paused": paused,
-        "brightness": brightness,
-        "fps": {
-            "target": target_fps,
-            "capacity": capacity_fps,
-            "delivered": delivered_fps,
-            "actual": capacity_fps
-        },
-        "effect": active_effect,
-        "devices": {
-            "connected": connected,
-            "total": devices.len(),
-            "total_leds": total_leds
-        },
-        "inputs": {
-            "audio": audio_status,
-            "screen": screen_status,
-            "input": input
-        },
-        "uptime_seconds": state.start_time.elapsed().as_secs(),
-        "version": env!("CARGO_PKG_VERSION")
-    })
-}
-
-async fn read_devices_with_state(state: &AppState) -> Value {
-    let devices = state.device_registry.list().await;
-    let connected = devices
-        .iter()
-        .filter(|device| device.state.is_renderable())
-        .count();
-    let total_leds: u64 = devices
-        .iter()
-        .map(|device| u64::from(device.info.total_led_count()))
-        .sum();
-
-    let payload = devices
-        .iter()
-        .map(|device| {
-            super::device_payload::inventory_device_payload(state, &device.info, &device.state)
-        })
-        .collect::<Vec<_>>();
-
-    json!({
-        "devices": payload,
-        "summary": {
-            "total": payload.len(),
-            "connected": connected,
-            "total_leds": total_leds
-        }
-    })
-}
 
 async fn read_effects_with_state(state: &AppState) -> Value {
     let effects = {

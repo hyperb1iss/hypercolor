@@ -73,63 +73,8 @@ pub(super) async fn handle_get_devices_with_state(
     params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    let status_filter = params
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("all");
-    let driver_filter = params
-        .get("driver_id")
-        .and_then(Value::as_str)
-        .map(str::to_ascii_lowercase);
-    let backend_filter = params
-        .get("backend_id")
-        .and_then(Value::as_str)
-        .map(str::to_ascii_lowercase);
-
-    let devices = state.device_registry.list().await;
-    let filtered = devices
-        .into_iter()
-        .filter(|device| match status_filter {
-            "connected" => device.state.is_renderable(),
-            "disconnected" => !device.state.is_renderable(),
-            _ => true,
-        })
-        .filter(|device| {
-            driver_filter
-                .as_deref()
-                .is_none_or(|expected| device.info.driver_id().to_ascii_lowercase() == expected)
-        })
-        .filter(|device| {
-            backend_filter.as_deref().is_none_or(|expected| {
-                device.info.output_backend_id().to_ascii_lowercase() == expected
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let connected = filtered
-        .iter()
-        .filter(|device| device.state.is_renderable())
-        .count();
-    let total_leds: u64 = filtered
-        .iter()
-        .map(|device| u64::from(device.info.total_led_count()))
-        .sum();
-
-    let payload = filtered
-        .iter()
-        .map(|device| {
-            crate::mcp::device_payload::inventory_device_payload(state, &device.info, &device.state)
-        })
-        .collect::<Vec<_>>();
-
-    Ok(json!({
-        "devices": payload,
-        "summary": {
-            "total": filtered.len(),
-            "connected": connected,
-            "total_leds": total_leds
-        }
-    }))
+    let filter = crate::mcp::payload::DeviceInventoryFilter::from_params(params);
+    Ok(crate::mcp::payload::build_device_inventory_payload(state, filter).await)
 }
 
 pub(super) async fn handle_set_brightness_with_state(

@@ -9,6 +9,7 @@ pub mod resources;
 pub mod tools;
 
 mod device_payload;
+mod payload;
 
 use std::future::ready;
 use std::sync::Arc;

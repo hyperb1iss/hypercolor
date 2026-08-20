@@ -17,7 +17,7 @@ use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
 };
 use hypercolor_daemon::mcp::resources::{
-    build_resource_definitions, is_valid_resource_uri, read_resource, read_resource_with_state,
+    build_resource_definitions, is_valid_resource_uri, read_resource_with_state,
 };
 use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool_with_state};
 use hypercolor_daemon::runtime_state;
@@ -219,7 +219,7 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
 }
 
 #[tokio::test]
-async fn mcp_input_status_surfaces_do_not_wait_for_input_manager() {
+async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
     let state = fresh_app_state();
     state
         .input_manager
@@ -246,8 +246,9 @@ async fn mcp_input_status_surfaces_do_not_wait_for_input_manager() {
     .await
     .expect("state resource must not wait for the input manager")
     .expect("state resource should exist");
+    assert_eq!(status, resource, "tool and resource payloads must be exact");
     assert_eq!(
-        resource["inputs"]["input"]["sources"][0]["source_id"],
+        resource["inputs"]["sources"][0]["source_id"],
         "browser_input"
     );
 
@@ -1790,31 +1791,31 @@ async fn set_brightness_tool_projects_the_output_service() {
 }
 
 #[test]
-fn resource_definitions_are_readable() {
+fn resource_definitions_match_live_uri_validation() {
     let resources = build_resource_definitions();
     assert_eq!(resources.len(), 5);
     assert!(
         resources
             .iter()
-            .all(|resource| resource.uri.starts_with("hypercolor://"))
+            .all(|resource| is_valid_resource_uri(&resource.uri))
     );
     assert!(is_valid_resource_uri("hypercolor://state"));
     assert!(is_valid_resource_uri("hypercolor://scenes"));
     assert!(!is_valid_resource_uri("hypercolor://profiles"));
-    assert!(read_resource("hypercolor://state").is_some());
-    assert!(read_resource("hypercolor://scenes").is_some());
-    assert!(read_resource("hypercolor://profiles").is_none());
-    assert!(read_resource("hypercolor://nope").is_none());
 }
 
 #[tokio::test]
-async fn mcp_device_inventory_exposes_driver_origin_and_presentation() {
+async fn mcp_device_inventory_surfaces_are_exact_and_filterable() {
     let state = Arc::new(fresh_app_state());
     let device_id = insert_test_display_device(&state, "Case Display").await;
 
     let resource = read_resource_with_state("hypercolor://devices", state.as_ref())
         .await
         .expect("devices resource should exist");
+    let tool = execute_tool_with_state("get_devices", &json!({}), state.as_ref())
+        .await
+        .expect("get_devices should succeed");
+    assert_eq!(tool, resource, "tool and resource payloads must be exact");
     let resource_device = &resource["devices"][0];
     assert_eq!(resource_device["id"], device_id.to_string());
     assert_eq!(resource_device["origin"]["driver_id"], "wled");

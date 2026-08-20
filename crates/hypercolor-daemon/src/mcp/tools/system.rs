@@ -2,15 +2,9 @@
 
 use serde_json::{Value, json};
 
-use super::{
-    ToolDefinition, ToolError, brightness_percent, default_output_schema, render_capacity_fps,
-};
+use super::{ToolDefinition, ToolError, default_output_schema};
 use crate::api::AppState;
-use crate::api::effects::active_effect_metadata;
-use crate::api::system::input_status_snapshot;
 use crate::domain::output;
-use crate::session::current_global_brightness;
-use hypercolor_core::input::InteractionDegradation;
 use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
@@ -169,118 +163,7 @@ fn parse_output_power_mode(params: &Value) -> Result<OutputPowerMode, ToolError>
 }
 
 pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Value, ToolError> {
-    let render_stats = {
-        let render_loop = state.render_loop.read().await;
-        render_loop.stats()
-    };
-    let target_fps = render_stats.tier.fps();
-    let capacity_fps = render_capacity_fps(&render_stats);
-    let delivered_fps = if matches!(
-        render_stats.state,
-        hypercolor_core::engine::RenderLoopState::Running
-    ) {
-        state.performance.read().await.snapshot().delivered_fps
-    } else {
-        0.0
-    };
-
-    let brightness = brightness_percent(current_global_brightness(&state.power_state));
-
-    let active_effect = active_effect_metadata(state).await;
-
-    let effect_count = state.effect_registry.read().await.len();
-    let scene_count = state.scene_manager.read().await.scene_count();
-    let devices = state.device_registry.list().await;
-    let connected_devices = devices
-        .iter()
-        .filter(|device| device.state.is_renderable())
-        .count();
-    let total_leds: u64 = devices
-        .iter()
-        .map(|device| u64::from(device.info.total_led_count()))
-        .sum();
-
-    let (audio_status, screen_status) = if let Some(config_manager) = state.config_manager.as_ref()
-    {
-        let config = config_manager.get();
-        (
-            if config.audio.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            if config.capture.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-        )
-    } else {
-        ("unknown", "unknown")
-    };
-    let input = input_status_snapshot(state);
-    let input_state = interaction_state(input.enabled, input.degraded.as_deref());
-
-    let power = *state.power_state.borrow();
-    let paused = power.reported_paused();
-
-    Ok(json!({
-        "running": !power.sleeping(),
-        "paused": paused,
-        "brightness": brightness,
-        "fps": {
-            "target": target_fps,
-            "capacity": capacity_fps,
-            "delivered": delivered_fps,
-            "actual": capacity_fps
-        },
-        "effect": active_effect.map(|metadata| json!({
-            "id": metadata.id.to_string(),
-            "name": metadata.name,
-        })),
-        "effect_count": effect_count,
-        "scene_count": scene_count,
-        "devices": {
-            "connected": connected_devices,
-            "total": devices.len(),
-            "total_leds": total_leds
-        },
-        "inputs": {
-            "audio": audio_status,
-            "screen": screen_status,
-            "input": input_state,
-            "input_devices_opened": input.devices_opened,
-            "input_devices_denied": input.devices_denied,
-            "input_degraded": input.degraded,
-            "source_graph_generation": input.source_graph_generation,
-            "sources": input.sources
-        },
-        "uptime_seconds": state.start_time.elapsed().as_secs(),
-        "version": env!("CARGO_PKG_VERSION")
-    }))
-}
-
-fn interaction_state(enabled: bool, degraded: Option<&str>) -> &'static str {
-    if enabled {
-        match degraded {
-            Some(code) if code == InteractionDegradation::AccessDenied.code() => {
-                "blocked_permissions"
-            }
-            Some(code) if code == InteractionDegradation::NoInteractiveSession.code() => {
-                "no_interactive_session"
-            }
-            Some(code)
-                if code == InteractionDegradation::InputMonitoringPermissionDenied.code()
-                    || code == InteractionDegradation::InputMonitoringPermissionRevoked.code() =>
-            {
-                "blocked_permissions"
-            }
-            Some(_) => "unavailable",
-            None => "enabled",
-        }
-    } else {
-        "disabled"
-    }
+    Ok(crate::mcp::payload::build_status_payload(state).await)
 }
 
 pub(super) async fn handle_get_sensor_data_with_state(
@@ -363,23 +246,4 @@ pub(super) async fn handle_diagnose_with_state(
 ) -> Result<Value, ToolError> {
     serde_json::to_value(crate::api::diagnose::collect_default_diagnostics(state).await)
         .map_err(|error| ToolError::Internal(error.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::interaction_state;
-    use hypercolor_core::input::InteractionDegradation;
-
-    #[test]
-    fn macos_permission_failures_report_blocked_permissions() {
-        for degradation in [
-            InteractionDegradation::InputMonitoringPermissionDenied,
-            InteractionDegradation::InputMonitoringPermissionRevoked,
-        ] {
-            assert_eq!(
-                interaction_state(true, Some(degradation.code())),
-                "blocked_permissions"
-            );
-        }
-    }
 }
