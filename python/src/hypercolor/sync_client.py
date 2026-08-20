@@ -8,6 +8,16 @@ from typing import Any, Self
 
 import httpx
 
+from ._generated.models.activate_scene_response import ActivateSceneResponse
+from ._generated.models.apply_effect_response import ApplyEffectResponse
+from ._generated.models.delete_scene_response import DeleteSceneResponse
+from ._generated.models.effect_detail_response import EffectDetailResponse
+from ._generated.models.effect_preset_summary import EffectPresetSummary
+from ._generated.models.effect_summary import EffectSummary
+from ._generated.models.replace_scene_request import ReplaceSceneRequest
+from ._generated.models.scene_document import SceneDocument
+from ._generated.models.scene_summary import SceneSummary
+from ._generated.models.zone_resource import ZoneResource
 from .client import _UNSET_SENTINEL, HypercolorClient, _Unset
 from .models.audio import AudioDevices, SpectrumSnapshot
 from .models.common import (
@@ -19,17 +29,9 @@ from .models.common import (
 from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
 from .models.driver import Driver
-from .models.effect import (
-    ApplyEffectResponse,
-    Effect,
-    EffectCoverImage,
-    EffectPreset,
-    EffectSummary,
-)
+from .models.effect import EffectCoverImage
 from .models.layout import Layout, LayoutSummary
-from .models.scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
 from .models.system import HealthStatus, OutputState, SystemState
-from .models.zone import Zone
 
 
 class SyncHypercolorClient:
@@ -77,9 +79,6 @@ class SyncHypercolorClient:
     def get_status(self) -> SystemState:
         return self._run(self._client.get_status())
 
-    def get_state(self) -> SystemState:
-        return self._run(self._client.get_state())
-
     def get_output(self) -> OutputState:
         return self._run(self._client.get_output())
 
@@ -103,8 +102,28 @@ class SyncHypercolorClient:
     def resume_rendering(self) -> OutputState:
         return self._run(self._client.resume_rendering())
 
-    def get_devices(self, **filters: Any) -> list[Device]:
-        return self._run(self._client.get_devices(**filters))
+    def get_devices(
+        self,
+        *,
+        offset: int | None = None,
+        limit: int | None = None,
+        status: str | None = None,
+        backend_id: str | None = None,
+        driver: str | None = None,
+        q: str | None = None,
+        include: str | None = None,
+    ) -> list[Device]:
+        return self._run(
+            self._client.get_devices(
+                offset=offset,
+                limit=limit,
+                status=status,
+                backend_id=backend_id,
+                driver=driver,
+                q=q,
+                include=include,
+            )
+        )
 
     def get_device(self, device_id: str) -> Device:
         return self._run(self._client.get_device(device_id))
@@ -133,13 +152,33 @@ class SyncHypercolorClient:
     def get_drivers(self) -> list[Driver]:
         return self._run(self._client.get_drivers())
 
-    def get_effects(self, **filters: Any) -> list[EffectSummary]:
-        return self._run(self._client.get_effects(**filters))
+    def get_effects(
+        self,
+        *,
+        category: str | None = None,
+        audio_reactive: bool | None = None,
+        screen_reactive: bool | None = None,
+        input_reactive: bool | None = None,
+        source: str | None = None,
+        q: str | None = None,
+        include: str | None = None,
+    ) -> list[EffectSummary]:
+        return self._run(
+            self._client.get_effects(
+                category=category,
+                audio_reactive=audio_reactive,
+                screen_reactive=screen_reactive,
+                input_reactive=input_reactive,
+                source=source,
+                q=q,
+                include=include,
+            )
+        )
 
-    def get_effect(self, effect_id: str) -> Effect:
+    def get_effect(self, effect_id: str) -> EffectDetailResponse:
         return self._run(self._client.get_effect(effect_id))
 
-    def get_effect_presets(self, effect_id: str) -> list[EffectPreset]:
+    def get_effect_presets(self, effect_id: str) -> list[EffectPresetSummary]:
         return self._run(self._client.get_effect_presets(effect_id))
 
     def effect_cover_image_url(self, effect_id: str) -> str:
@@ -197,7 +236,7 @@ class SyncHypercolorClient:
         values: Mapping[str, Any],
         *,
         clear_bindings: list[str] | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         return self._run(
             self._client.patch_layer_controls(
                 zone,
@@ -262,8 +301,8 @@ class SyncHypercolorClient:
     def apply_layout(self, layout_id: str) -> MutationResult:
         return self._run(self._client.apply_layout(layout_id))
 
-    def get_scenes(self, **filters: Any) -> list[Scene]:
-        return self._run(self._client.get_scenes(**filters))
+    def get_scenes(self) -> list[SceneSummary]:
+        return self._run(self._client.get_scenes())
 
     def get_scene(self, scene_id: str) -> SceneDocument:
         return self._run(self._client.get_scene(scene_id))
@@ -301,7 +340,7 @@ class SyncHypercolorClient:
         description: str | None = None,
         enabled: bool | None = None,
         mutation_mode: str | None = None,
-    ) -> Scene:
+    ) -> SceneSummary:
         return self._run(
             self._client.create_scene(
                 name, description=description, enabled=enabled, mutation_mode=mutation_mode
@@ -313,7 +352,7 @@ class SyncHypercolorClient:
         name: str,
         *,
         description: str | None = None,
-    ) -> Scene:
+    ) -> SceneSummary:
         return self._run(self._client.snapshot_scene(name, description=description))
 
     def update_scene(
@@ -331,16 +370,16 @@ class SyncHypercolorClient:
             )
         )
 
-    def delete_scene(self, scene_id: str) -> MutationResult:
+    def delete_scene(self, scene_id: str) -> DeleteSceneResponse:
         return self._run(self._client.delete_scene(scene_id))
 
-    def activate_scene(self, scene_id: str) -> ActivateSceneResult:
+    def activate_scene(self, scene_id: str) -> ActivateSceneResponse:
         return self._run(self._client.activate_scene(scene_id))
 
     def deactivate_scene(self) -> SceneDocument:
         return self._run(self._client.deactivate_scene())
 
-    def get_zone(self, zone: str) -> Zone:
+    def get_zone(self, zone: str) -> ZoneResource:
         return self._run(self._client.get_zone(zone))
 
     def create_zone(
@@ -350,7 +389,7 @@ class SyncHypercolorClient:
         role: str | None = None,
         color: str | None = None,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         return self._run(
             self._client.create_zone(
                 name,
@@ -369,7 +408,7 @@ class SyncHypercolorClient:
         brightness: float | None = None,
         enabled: bool | None = None,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         return self._run(
             self._client.update_zone(
                 zone,
@@ -396,7 +435,7 @@ class SyncHypercolorClient:
         *,
         segments: list[str] | None = None,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         return self._run(
             self._client.assign_members(
                 zone,
@@ -412,7 +451,7 @@ class SyncHypercolorClient:
         member: str,
         *,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         return self._run(self._client.unassign_member(zone, member, if_match=if_match))
 
     def set_zone_layout(
@@ -421,7 +460,7 @@ class SyncHypercolorClient:
         layout: Mapping[str, Any],
         *,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         return self._run(self._client.set_zone_layout(zone, layout, if_match=if_match))
 
     def set_unassigned_behavior(

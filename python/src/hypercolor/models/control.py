@@ -21,11 +21,6 @@ class ControlSurface(msgspec.Struct, kw_only=True):
     availability: dict[str, Any] = msgspec.field(default_factory=dict)
     action_availability: dict[str, Any] = msgspec.field(default_factory=dict)
 
-    @property
-    def id(self) -> str:
-        """Alias for callers that expect resource-like identifiers."""
-        return self.surface_id
-
 
 class ControlApplyResult(msgspec.Struct, kw_only=True):
     """Response from applying control values."""

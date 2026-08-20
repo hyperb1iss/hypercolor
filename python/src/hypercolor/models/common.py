@@ -34,15 +34,6 @@ class ErrorEnvelope(msgspec.Struct, kw_only=True):
     meta: Meta
 
 
-class Pagination(msgspec.Struct, kw_only=True):
-    """Pagination metadata for list endpoints."""
-
-    offset: int
-    limit: int
-    total: int
-    has_more: bool
-
-
 class NamedRef(msgspec.Struct, kw_only=True):
     """Compact object references used throughout the API."""
 
@@ -91,10 +82,3 @@ class ConfigMutationResult(msgspec.Struct, kw_only=True):
     requires_restart: bool | None = None
     pending_restart: list[str] | None = None
     path: str | None = None
-
-
-class TransitionSpec(msgspec.Struct, kw_only=True):
-    """Transition description for effect and scene application."""
-
-    type: str
-    duration_ms: int = 300

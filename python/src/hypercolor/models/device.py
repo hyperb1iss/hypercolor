@@ -59,26 +59,12 @@ class Device(msgspec.Struct, kw_only=True):
     brightness: int
     total_leds: int
     segments: list[DeviceSegment]
-    legacy_backend: str | None = msgspec.field(default=None, name="backend")
     origin: DeviceOrigin | None = None
     presentation: DevicePresentation | None = None
     connection: DeviceConnection | None = None
     firmware_version: str | None = None
-    legacy_network_ip: str | None = msgspec.field(default=None, name="network_ip")
-    legacy_network_hostname: str | None = msgspec.field(default=None, name="network_hostname")
-    legacy_connection_label: str | None = msgspec.field(default=None, name="connection_label")
     auth: dict[str, Any] | None = None
     attachments: DeviceAttachments | None = None
-
-    @property
-    def backend(self) -> str:
-        """Return the output backend ID for legacy callers."""
-
-        if self.legacy_backend:
-            return self.legacy_backend
-        if self.origin is not None:
-            return self.origin.backend_id or self.origin.driver_id or "unknown"
-        return "unknown"
 
     @property
     def driver_id(self) -> str | None:
@@ -93,32 +79,6 @@ class Device(msgspec.Struct, kw_only=True):
         if self.connection is not None and self.connection.transport:
             return self.connection.transport
         return self.origin.transport if self.origin is not None else None
-
-    @property
-    def connection_label(self) -> str | None:
-        """Return a human-readable connection label."""
-
-        if self.legacy_connection_label:
-            return self.legacy_connection_label
-        if self.connection is not None:
-            return self.connection.label or self.connection.endpoint
-        return None
-
-    @property
-    def network_ip(self) -> str | None:
-        """Return the network IP when the daemon exposes one."""
-
-        if self.legacy_network_ip:
-            return self.legacy_network_ip
-        return self.connection.ip if self.connection is not None else None
-
-    @property
-    def network_hostname(self) -> str | None:
-        """Return the network hostname when the daemon exposes one."""
-
-        if self.legacy_network_hostname:
-            return self.legacy_network_hostname
-        return self.connection.hostname if self.connection is not None else None
 
     @property
     def enabled(self) -> bool:

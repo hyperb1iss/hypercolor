@@ -7,7 +7,8 @@ import json
 import httpx
 import msgspec
 
-from hypercolor.models.effect import EffectPresetOrigin
+from hypercolor._generated.types import Unset
+from hypercolor.models import EffectPresetOrigin
 from hypercolor.sync_client import SyncHypercolorClient
 
 
@@ -77,7 +78,10 @@ def test_sync_client_preserves_included_device_attachments() -> None:
                             "id": "controller",
                             "layout_device_id": "controller",
                             "name": "Controller",
-                            "backend": "hid",
+                            "origin": {
+                                "driver_id": "razer",
+                                "transport": "usb",
+                            },
                             "status": "connected",
                             "brightness": 100,
                             "total_leds": 60,
@@ -109,10 +113,10 @@ def test_sync_client_preserves_included_device_attachments() -> None:
                             },
                         }
                     ],
-                    "pagination": {
+                    "total": 1,
+                    "page": {
                         "offset": 0,
                         "limit": 50,
-                        "total": 1,
                         "has_more": False,
                     },
                 },
@@ -187,7 +191,8 @@ def test_sync_client_round_trips_complete_stored_scene() -> None:
     finally:
         client.close()
 
-    assert document.metadata == {"room": "office"}
+    assert not isinstance(document.metadata, Unset)
+    assert document.metadata.to_dict() == {"room": "office"}
     assert updated.activation_brightness == 0.75
 
 
@@ -226,7 +231,7 @@ def test_sync_client_snapshots_the_live_scene() -> None:
     finally:
         client.close()
 
-    assert scene.snapshot_locked is True
+    assert scene.mutation_mode == "snapshot"
 
 
 def test_sync_client_delegates_driver_inventory() -> None:
@@ -329,7 +334,7 @@ def test_sync_client_delegates_control_values() -> None:
         client.close()
 
     assert result.revision == 2
-    assert result.values["enabled"] is True
+    assert result.values["enabled"] == {"kind": "bool", "value": True}
 
 
 def test_sync_client_delegates_effect_preset_stack() -> None:
@@ -349,7 +354,7 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
                         "editable": True,
                     }
                 ],
-                "pagination": {"offset": 0, "limit": 1, "total": 1, "has_more": False},
+                "total": 1,
             }
         else:
             expected_prefix = b"/api/v1/effects/aurora%2Fmain/presets/"
@@ -384,8 +389,20 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
                             },
                             "blend": "replace",
                             "opacity": 1.0,
-                            "transform": {},
-                            "adjust": {},
+                            "transform": {
+                                "anchor": {"x": 0.5, "y": 0.5},
+                                "scale": [1.0, 1.0],
+                                "rotation": 0.0,
+                                "fit": "cover",
+                            },
+                            "adjust": {
+                                "brightness": 1.0,
+                                "saturation": 1.0,
+                                "hue_shift": 0.0,
+                                "tint": [1.0, 1.0, 1.0, 1.0],
+                                "tint_strength": 0.0,
+                                "contrast": 0.0,
+                            },
                             "enabled": True,
                         }
                     ],

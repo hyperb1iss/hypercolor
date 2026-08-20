@@ -9,40 +9,16 @@ import msgspec
 import pytest
 import respx
 
-from hypercolor.client import HypercolorClient, _normalize_payload
+from hypercolor._generated.types import Unset
+from hypercolor.client import HypercolorClient
 from hypercolor.exceptions import (
     HypercolorAuthenticationError,
     HypercolorConnectionError,
     HypercolorNotFoundError,
 )
+from hypercolor.models import EffectDetailResponse, EffectPresetOrigin
 from hypercolor.models.control import ControlSurface
 from hypercolor.models.driver import Driver
-from hypercolor.models.effect import (
-    ControlDefinition,
-    Effect,
-    EffectPresetOrigin,
-)
-
-
-def test_normalize_payload_bridges_dropdown_labels_to_options() -> None:
-    """Dropdown choices ship under `labels`; expose them as model `options`."""
-    control = {
-        "id": "palette",
-        "name": "Palette",
-        "control_type": "dropdown",
-        "kind": "combobox",
-        "default_value": {"enum": "Sunset"},
-        "labels": ["Sunset", "Ocean"],
-    }
-
-    normalized = _normalize_payload(control)
-
-    assert normalized["options"] == ["Sunset", "Ocean"]
-    assert normalized["type"] == "select"
-    assert normalized["label"] == "Palette"
-    # And the choices survive conversion into the typed model the client returns.
-    definition = msgspec.convert(normalized, ControlDefinition)
-    assert definition.options == ["Sunset", "Ocean"]
 
 
 def _envelope(data: object) -> bytes:
@@ -111,8 +87,20 @@ def _applied_zone(effect_id: str = "aurora") -> dict[str, object]:
                 },
                 "blend": "replace",
                 "opacity": 1.0,
-                "transform": {},
-                "adjust": {},
+                "transform": {
+                    "anchor": {"x": 0.5, "y": 0.5},
+                    "scale": [1.0, 1.0],
+                    "rotation": 0.0,
+                    "fit": "cover",
+                },
+                "adjust": {
+                    "brightness": 1.0,
+                    "saturation": 1.0,
+                    "hue_shift": 0.0,
+                    "tint": [1.0, 1.0, 1.0, 1.0],
+                    "tint_strength": 0.0,
+                    "contrast": 0.0,
+                },
                 "enabled": True,
             }
         ],
@@ -124,7 +112,7 @@ def _device_with_attachments() -> dict[str, object]:
         "id": "controller",
         "layout_device_id": "controller",
         "name": "Controller",
-        "backend": "hid",
+        "origin": {"driver_id": "hid", "backend_id": "hid", "transport": "usb"},
         "status": "connected",
         "brightness": 100,
         "total_leds": 60,
@@ -187,7 +175,11 @@ async def test_get_devices(client: HypercolorClient) -> None:
                             "id": "keyboard",
                             "layout_device_id": "keyboard",
                             "name": "Keyboard",
-                            "backend": "hid",
+                            "origin": {
+                                "driver_id": "hid",
+                                "backend_id": "hid",
+                                "transport": "usb",
+                            },
                             "status": "connected",
                             "brightness": 88,
                             "firmware_version": None,
@@ -201,12 +193,11 @@ async def test_get_devices(client: HypercolorClient) -> None:
                                     "topology_hint": {"type": "matrix", "rows": 6, "cols": 18},
                                 }
                             ],
-                            "connection_label": "USB HID",
-                            "network_ip": None,
-                            "network_hostname": None,
+                            "connection": {"transport": "usb", "label": "USB HID"},
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
+                    "page": {"offset": 0, "limit": 50, "has_more": False},
                 }
             ),
         )
@@ -267,7 +258,8 @@ async def test_get_devices_accepts_origin_connection_shape(
                             ],
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
+                    "page": {"offset": 0, "limit": 50, "has_more": False},
                 }
             ),
         )
@@ -276,14 +268,16 @@ async def test_get_devices_accepts_origin_connection_shape(
     devices = await client.get_devices()
 
     assert route.called
-    assert devices[0].backend == "wled"
-    assert devices[0].network_ip == "10.4.22.169"
-    assert devices[0].connection_label == "wled-studio.local"
+    assert devices[0].origin is not None
+    assert devices[0].origin.backend_id == "wled"
+    assert devices[0].connection is not None
+    assert devices[0].connection.ip == "10.4.22.169"
+    assert devices[0].connection.endpoint == "wled-studio.local"
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_get_devices_maps_backend_alias_to_backend_id(
+async def test_get_devices_sends_canonical_backend_id_filter(
     client: HypercolorClient,
 ) -> None:
     route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
@@ -292,19 +286,19 @@ async def test_get_devices_maps_backend_alias_to_backend_id(
             content=_envelope(
                 {
                     "items": [],
-                    "pagination": {"offset": 0, "limit": 50, "total": 0, "has_more": False},
+                    "total": 0,
+                    "page": {"offset": 0, "limit": 50, "has_more": False},
                 }
             ),
         )
     )
 
-    devices = await client.get_devices(backend="hid", driver="razer")
+    devices = await client.get_devices(backend_id="hid", driver="razer")
 
     assert route.called
     params = route.calls[0].request.url.params
     assert params["backend_id"] == "hid"
     assert params["driver"] == "razer"
-    assert "backend" not in params
     assert devices == []
 
 
@@ -317,10 +311,10 @@ async def test_get_devices_preserves_included_attachments(client: HypercolorClie
             content=_envelope(
                 {
                     "items": [_device_with_attachments()],
-                    "pagination": {
+                    "total": 1,
+                    "page": {
                         "offset": 0,
                         "limit": 50,
-                        "total": 1,
                         "has_more": False,
                     },
                 }
@@ -349,7 +343,11 @@ async def test_get_device_quotes_generated_path_parameters(client: HypercolorCli
                     "id": "keyboard/main",
                     "layout_device_id": "keyboard",
                     "name": "Keyboard",
-                    "backend": "hid",
+                    "origin": {
+                        "driver_id": "hid",
+                        "backend_id": "hid",
+                        "transport": "usb",
+                    },
                     "status": "connected",
                     "brightness": 88,
                     "firmware_version": None,
@@ -363,9 +361,7 @@ async def test_get_device_quotes_generated_path_parameters(client: HypercolorCli
                             "topology_hint": {"type": "matrix", "rows": 6, "cols": 18},
                         }
                     ],
-                    "connection_label": "USB HID",
-                    "network_ip": None,
-                    "network_hostname": None,
+                    "connection": {"transport": "usb", "label": "USB HID"},
                 }
             ),
         )
@@ -536,7 +532,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
                             "editable": True,
                         },
                     ],
-                    "pagination": {"offset": 0, "limit": 2, "total": 2, "has_more": False},
+                    "total": 2,
                 }
             ),
         )
@@ -789,7 +785,7 @@ async def test_patch_layer_controls_addresses_real_layer(client: HypercolorClien
         },
         "clear_bindings": ["speed"],
     }
-    assert result.layers[0].id
+    assert str(result.layers[0].id) == layer
 
 
 @respx.mock
@@ -817,7 +813,7 @@ async def test_get_control_surfaces_uses_pythonic_filters(client: HypercolorClie
     assert route.calls[0].request.url.params["device_id"] == "keyboard/main"
     assert route.calls[0].request.url.params["include_driver"] == "true"
     assert isinstance(surfaces[0], ControlSurface)
-    assert surfaces[0].id == "device:keyboard"
+    assert surfaces[0].surface_id == "device:keyboard"
 
 
 @respx.mock
@@ -840,8 +836,8 @@ async def test_get_device_controls_quotes_generated_path_parameters(
     surface = await client.get_device_controls("keyboard/main")
 
     assert route.called
-    assert surface.id == "device:keyboard/main"
-    assert surface.values["brightness"] == 88
+    assert surface.surface_id == "device:keyboard/main"
+    assert surface.values["brightness"] == {"kind": "integer", "value": 88}
 
 
 @respx.mock
@@ -882,7 +878,7 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
         "expected_revision": 4,
     }
     assert result.revision == 5
-    assert result.values["brightness"] == 88
+    assert result.values["brightness"] == {"kind": "integer", "value": 88}
 
 
 @respx.mock
@@ -919,7 +915,7 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
         }
     }
     assert result.status == "completed"
-    assert result.result == "Identifying keyboard"
+    assert result.result == {"kind": "string", "value": "Identifying keyboard"}
 
 
 @respx.mock
@@ -992,7 +988,6 @@ async def test_get_status_uses_current_daemon_shape(client: HypercolorClient) ->
     status = await client.get_status()
 
     assert status.global_brightness == 65
-    assert status.brightness == 65
     assert status.paused is False
     assert status.active_effect == "Aurora"
 
@@ -1051,10 +1046,11 @@ async def test_injected_httpx_client_uses_absolute_url_and_request_auth() -> Non
                             "category": "ambient",
                             "source": "native",
                             "runnable": True,
+                            "tags": [],
                             "version": "1.0.0",
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
                 }
             ),
         )
@@ -1098,7 +1094,7 @@ async def test_library_helpers(client: HypercolorClient) -> None:
                             "updated_at_ms": 2,
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
                 }
             ),
         )
@@ -1252,7 +1248,7 @@ async def test_scene_display_and_diagnostics_helpers(
         "mutation_mode": "live",
     }
     assert snapshot.name == "Evening"
-    assert snapshot.snapshot_locked is True
+    assert snapshot.mutation_mode == "snapshot"
     assert json.loads(snapshot_route.calls[0].request.content) == {
         "name": "Evening",
         "description": "soft",
@@ -1300,8 +1296,13 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
                             "default_value": {"integer": 40},
                         }
                     ],
-                    "presets": [{"name": "Default", "controls": {"effectSpeed": {"integer": 40}}}],
-                    "active_control_values": {"effectSpeed": {"integer": 40}},
+                    "presets": [
+                        {
+                            "id": "default",
+                            "name": "Default",
+                            "controls": {"effectSpeed": {"integer": 40}},
+                        }
+                    ],
                 }
             ),
         )
@@ -1309,11 +1310,13 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
 
     effect = await client.get_effect("aurora")
 
-    assert isinstance(effect, Effect)
-    assert effect.controls[0].label == "Animation Speed"
-    assert effect.active_control_values == {"effectSpeed": 40}
+    assert isinstance(effect, EffectDetailResponse)
+    assert not isinstance(effect.controls, Unset)
+    assert effect.controls[0].name == "Animation Speed"
+    assert not isinstance(effect.presets, Unset)
     assert effect.presets[0].name == "Default"
-    assert effect.presets[0].controls == {"effectSpeed": 40}
+    assert not isinstance(effect.presets[0].controls, Unset)
+    assert effect.presets[0].controls.to_dict() == {"effectSpeed": {"integer": 40}}
 
 
 @respx.mock

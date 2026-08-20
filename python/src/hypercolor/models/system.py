@@ -61,12 +61,6 @@ class SystemState(msgspec.Struct, kw_only=True):
     active_effect: str | None = None
 
     @property
-    def brightness(self) -> int:
-        """Backward-compatible alias for the global brightness."""
-
-        return self.global_brightness
-
-    @property
     def paused(self) -> bool:
         """Return whether the render loop is currently paused."""
 

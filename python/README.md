@@ -91,7 +91,7 @@ async def main() -> None:
         await client.apply_effect(
             aurora.id,
             controls={"speed": 72, "palette": "silkcircuit"},
-            transition={"type": "fade", "duration_ms": 400},
+            transition="cut",
         )
 
 
@@ -100,8 +100,8 @@ asyncio.run(main())
 
 ## Control Surfaces
 
-Control surfaces are dynamic device and driver settings. The generated OpenAPI
-models stay private; the public client accepts normal Python values.
+Control surfaces are dynamic device and driver settings. Request helpers accept
+normal Python values and return the canonical API resource contracts.
 
 ```python
 import asyncio
@@ -114,7 +114,7 @@ async def main() -> None:
         surface = await client.get_device_controls("keyboard")
 
         await client.set_control_values(
-            surface.id,
+            surface.surface_id,
             {
                 "enabled": True,
                 "brightness": 88,
@@ -123,7 +123,7 @@ async def main() -> None:
         )
 
         await client.invoke_control_action(
-            surface.id,
+            surface.surface_id,
             "identify",
             {"duration_ms": 750},
         )
