@@ -1,11 +1,12 @@
 //! Persisted output settings: global brightness plus per-device user settings.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use hypercolor_core::device::DeviceRegistry;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::ControlValueMap;
 use hypercolor_types::device::DeviceId;
 use serde::{Deserialize, Serialize};
@@ -14,11 +15,11 @@ use tracing::{info, warn};
 
 use crate::persistence::write_atomic;
 
-/// Current schema for `device-settings.json`. Version 2 is the
-/// canonical-key-space store: device rows live under the portable key
-/// when the hardware has one, else the local fingerprint, with
+/// Current schema for `device-settings.json`. Version 3 stores driver control
+/// values in the canonical control algebra. Device rows live under the
+/// portable key when the hardware has one, else the local fingerprint, with
 /// UUID-shaped legacy rows retained as machine-scoped configuration.
-pub const DEVICE_SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const DEVICE_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 /// An unversioned file predates the envelope and is always v1, never
 /// "current": assuming current is how an old file gets rewritten in a
@@ -76,13 +77,36 @@ struct PersistedSettingsSnapshot {
     #[serde(default = "default_brightness")]
     global_brightness: f32,
     devices: HashMap<String, StoredDeviceSettings>,
-    driver_controls: HashMap<String, ControlValueMap>,
+    driver_controls: HashMap<String, BTreeMap<String, CanonicalControlValue>>,
 }
 
 impl Default for PersistedSettingsSnapshot {
     fn default() -> Self {
         Self {
             schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+            global_brightness: default_brightness(),
+            devices: HashMap::new(),
+            driver_controls: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+struct LegacySettingsSnapshot {
+    #[serde(default = "legacy_schema_version")]
+    schema_version: u32,
+    #[serde(default = "default_brightness")]
+    global_brightness: f32,
+    devices: HashMap<String, StoredDeviceSettings>,
+    driver_controls: HashMap<String, ControlValueMap>,
+}
+
+impl Default for LegacySettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            schema_version: legacy_schema_version(),
             global_brightness: default_brightness(),
             devices: HashMap::new(),
             driver_controls: HashMap::new(),
@@ -123,8 +147,8 @@ impl DeviceSettingsStore {
 
     /// Load an existing store or create an empty one when absent.
     ///
-    /// A v1 file (no envelope) migrates to the current schema, leaving
-    /// the previous file as `device-settings.pre-v2.bak`; keys are not
+    /// A v1 or v2 file migrates to the current schema, leaving the previous
+    /// file as `device-settings.pre-v3.bak`; keys are not
     /// reclassified from disk, because a persisted string cannot prove
     /// what it was derived from — rows move to canonical keys as live
     /// devices prove their identities. A file whose schema is newer
@@ -153,16 +177,29 @@ impl DeviceSettingsStore {
             return Ok(store);
         }
 
-        let snapshot = serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
-            .with_context(|| format!("failed to parse device settings at {}", path.display()))?;
+        let loaded_version = probe.schema_version;
+        let snapshot = if loaded_version < DEVICE_SETTINGS_SCHEMA_VERSION {
+            let legacy =
+                serde_json::from_str::<LegacySettingsSnapshot>(&raw).with_context(|| {
+                    format!("failed to parse device settings at {}", path.display())
+                })?;
+            PersistedSettingsSnapshot {
+                schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+                global_brightness: legacy.global_brightness,
+                devices: legacy.devices,
+                driver_controls: canonicalize_driver_controls(legacy.driver_controls)?,
+            }
+        } else {
+            serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
+                .with_context(|| format!("failed to parse device settings at {}", path.display()))?
+        };
 
-        let loaded_version = snapshot.schema_version;
         let mut store = Self {
             path: path.to_path_buf(),
             snapshot,
             refuse_writes: None,
         };
-        store.normalize();
+        store.normalize()?;
 
         if loaded_version < DEVICE_SETTINGS_SCHEMA_VERSION {
             let backup = migration_backup_path(path);
@@ -237,21 +274,26 @@ impl DeviceSettingsStore {
         self.set_device_settings(key, settings);
     }
 
-    #[must_use]
-    pub fn driver_control_values_for_key(&self, key: &str) -> ControlValueMap {
-        self.snapshot
-            .driver_controls
-            .get(key)
-            .cloned()
-            .unwrap_or_default()
+    pub fn driver_control_values_for_key(&self, key: &str) -> anyhow::Result<ControlValueMap> {
+        self.snapshot.driver_controls.get(key).map_or_else(
+            || Ok(ControlValueMap::new()),
+            |values| project_driver_controls(key, values),
+        )
     }
 
-    pub fn set_driver_control_values(&mut self, key: &str, values: ControlValueMap) {
+    pub fn set_driver_control_values(
+        &mut self,
+        key: &str,
+        values: ControlValueMap,
+    ) -> anyhow::Result<()> {
         if values.is_empty() {
             self.snapshot.driver_controls.remove(key);
         } else {
-            self.snapshot.driver_controls.insert(key.to_owned(), values);
+            self.snapshot
+                .driver_controls
+                .insert(key.to_owned(), canonicalize_control_map(key, values)?);
         }
+        Ok(())
     }
 
     /// Move a device row persisted under a legacy key to its canonical
@@ -314,7 +356,7 @@ impl DeviceSettingsStore {
         Ok(())
     }
 
-    fn normalize(&mut self) {
+    fn normalize(&mut self) -> anyhow::Result<()> {
         self.snapshot.global_brightness = self.snapshot.global_brightness.clamp(0.0, 1.0);
         self.snapshot.devices.retain(|_, settings| {
             *settings = settings.clone().normalized();
@@ -323,7 +365,57 @@ impl DeviceSettingsStore {
         self.snapshot
             .driver_controls
             .retain(|_, values| !values.is_empty());
+        for (device_key, values) in &self.snapshot.driver_controls {
+            project_driver_controls(device_key, values)?;
+        }
+        Ok(())
     }
+}
+
+fn canonicalize_driver_controls(
+    controls: HashMap<String, ControlValueMap>,
+) -> anyhow::Result<HashMap<String, BTreeMap<String, CanonicalControlValue>>> {
+    controls
+        .into_iter()
+        .map(|(device_key, values)| {
+            canonicalize_control_map(&device_key, values).map(|values| (device_key, values))
+        })
+        .collect()
+}
+
+fn canonicalize_control_map(
+    device_key: &str,
+    values: ControlValueMap,
+) -> anyhow::Result<BTreeMap<String, CanonicalControlValue>> {
+    values
+        .into_iter()
+        .map(|(control_id, value)| {
+            CanonicalControlValue::try_from(value)
+                .with_context(|| {
+                    format!("device settings control '{control_id}' for '{device_key}' is invalid")
+                })
+                .map(|value| (control_id, value))
+        })
+        .collect()
+}
+
+fn project_driver_controls(
+    device_key: &str,
+    values: &BTreeMap<String, CanonicalControlValue>,
+) -> anyhow::Result<ControlValueMap> {
+    values
+        .iter()
+        .map(|(control_id, value)| {
+            value
+                .to_driver_wire()
+                .with_context(|| {
+                    format!(
+                        "device settings control '{control_id}' for '{device_key}' is not a driver value"
+                    )
+                })
+                .map(|value| (control_id.clone(), value))
+        })
+        .collect()
 }
 
 /// The backup name for a schema migration, suffixed when it already
@@ -503,27 +595,27 @@ mod tests {
         );
 
         let migrated = fs::read_to_string(&path).expect("file rewritten");
-        assert!(migrated.contains("\"schema_version\": 2"));
-        assert!(dir.path().join("device-settings.pre-v2.bak").exists());
+        assert!(migrated.contains("\"schema_version\": 3"));
+        assert!(dir.path().join("device-settings.pre-v3.bak").exists());
 
         // A second v1 appearance must not clobber the first backup.
         fs::write(&path, v1_payload()).expect("reseed v1 file");
         DeviceSettingsStore::load(&path).expect("second migration");
-        assert!(dir.path().join("device-settings.pre-v2.2.bak").exists());
-        assert!(dir.path().join("device-settings.pre-v2.bak").exists());
+        assert!(dir.path().join("device-settings.pre-v3.2.bak").exists());
+        assert!(dir.path().join("device-settings.pre-v3.bak").exists());
     }
 
     #[test]
     fn newer_schema_loads_read_only_and_never_writes_back() {
         let dir = TempDir::new().expect("tempdir");
         let path = store_path(&dir);
-        let newer = r#"{ "schema_version": 3, "future_field": true }"#;
+        let newer = r#"{ "schema_version": 4, "future_field": true }"#;
         fs::write(&path, newer).expect("seed newer file");
 
         let mut store = DeviceSettingsStore::load(&path).expect("newer file loads safely");
         store.set_device_brightness("net:wled:aaa", 0.5);
         let error = store.save().expect_err("writes are refused");
-        assert!(error.to_string().contains("schema v3"));
+        assert!(error.to_string().contains("schema v4"));
         assert_eq!(
             fs::read_to_string(&path).expect("file survives"),
             newer,

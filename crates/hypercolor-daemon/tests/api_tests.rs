@@ -4464,7 +4464,8 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
                     SurfaceControlValue::Integer(8),
                 ),
             ]),
-        );
+        )
+        .expect("driver controls should canonicalize");
     let app = test_app_with_state(state);
     let surface_id = format!("driver:wled:device:{device_id}");
 

@@ -341,14 +341,14 @@ impl DeviceControlStore for DaemonDriverHost {
     async fn load_device_values(&self, device_id: DeviceId) -> Result<ControlValueMap> {
         let key = self.device_control_settings_key(device_id).await;
         let store = self.device_settings.read().await;
-        Ok(store.driver_control_values_for_key(&key))
+        store.driver_control_values_for_key(&key)
     }
 
     async fn save_device_values(&self, device_id: DeviceId, values: ControlValueMap) -> Result<()> {
         let key = self.device_control_settings_key(device_id).await;
         {
             let mut store = self.device_settings.write().await;
-            store.set_driver_control_values(&key, values);
+            store.set_driver_control_values(&key, values)?;
             store.save()?;
         }
         // Driver control rows live in their own map, not the per-device
