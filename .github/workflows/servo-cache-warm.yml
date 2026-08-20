@@ -40,7 +40,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
