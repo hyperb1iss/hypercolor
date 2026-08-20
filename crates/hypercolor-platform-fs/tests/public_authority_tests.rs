@@ -415,6 +415,80 @@ fn exact_removal_and_single_child_creation_retain_global_lock() {
 }
 
 #[test]
+fn monotone_child_ensure_replays_nested_scaffolding_and_retains_global_lock() {
+    let fixture = Fixture::new();
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+    let first = authority
+        .durable_ensure_child_directory(Path::new("share"), 0o755)
+        .expect("ensure first scaffold");
+    fs::write(fixture.public.join("share/retained"), b"retained")
+        .expect("populate retained scaffold");
+    let replay = authority
+        .durable_ensure_child_directory(Path::new("share"), 0o755)
+        .expect("replay existing scaffold");
+    let nested = replay
+        .durable_ensure_child_directory(Path::new("applications"), 0o755)
+        .expect("ensure nested scaffold topologically");
+    drop(lock);
+    drop(first);
+    drop(replay);
+
+    assert_eq!(
+        fs::read(fixture.public.join("share/retained")).expect("read retained contents"),
+        b"retained"
+    );
+    assert_eq!(
+        fs::symlink_metadata(fixture.public.join("share/applications"))
+            .expect("inspect nested scaffold")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o755
+    );
+    assert!(
+        ExclusiveDirectory::try_acquire(&fixture.lock_root, Path::new("install.lock"))
+            .expect("probe retained global lock")
+            .is_none()
+    );
+    nested
+        .validate_ancestry()
+        .expect("nested authority retains exact ancestry");
+}
+
+#[test]
+fn monotone_child_ensure_rejects_unsupported_existing_states() {
+    let fixture = Fixture::new();
+    fs::write(fixture.public.join("file"), b"file").expect("create regular file");
+    symlink("file", fixture.public.join("link")).expect("create symlink");
+    fs::create_dir(fixture.public.join("wrong-mode")).expect("create wrong-mode directory");
+    fs::set_permissions(
+        fixture.public.join("wrong-mode"),
+        fs::Permissions::from_mode(0o750),
+    )
+    .expect("set wrong mode");
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+
+    for name in ["file", "link", "wrong-mode"] {
+        authority
+            .durable_ensure_child_directory(Path::new(name), 0o755)
+            .expect_err("unsupported state must be rejected");
+    }
+    authority
+        .durable_ensure_child_directory(Path::new("nested/name"), 0o755)
+        .expect_err("nested name must be rejected");
+    authority
+        .durable_ensure_child_directory(Path::new("unsafe-mode"), 0o1755)
+        .expect_err("special permission bits must be rejected");
+    assert!(!fixture.public.join("unsafe-mode").exists());
+}
+
+#[test]
 fn exact_empty_child_create_observe_remove_retains_global_lock() {
     let fixture = Fixture::new();
     let lock = fixture.lock();

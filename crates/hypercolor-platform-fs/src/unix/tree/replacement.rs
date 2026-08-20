@@ -1,5 +1,6 @@
 mod child;
 mod directory;
+mod ensure;
 mod exact;
 mod operation;
 mod read;
@@ -85,6 +86,34 @@ impl PublicDirectoryAuthority {
         self.create_child_directory_with(
             name,
             mode,
+            || Ok(()),
+            || Ok(()),
+            |directory| directory.sync_all(),
+        )
+    }
+
+    /// Durably ensure one normal child directory exists with an exact mode.
+    ///
+    /// This monotone operation never removes or rolls back the directory. An
+    /// interrupted creation can therefore be healed by replay. Existing
+    /// directories are accepted only at the requested mode or at a private
+    /// creation mode narrowed by the process umask.
+    ///
+    /// Namespace exclusion is provided by the global install lock only among
+    /// cooperating users of that lock. Noncooperating namespace mutation,
+    /// including mutation by the same user ID, is outside this guarantee.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input for an unsafe name, mode, or existing entry.
+    /// Returns an error when creation, no-follow opening, exact identity proof,
+    /// ancestry validation, or a durability barrier fails. The directory is
+    /// intentionally retained after any error that follows creation.
+    pub fn durable_ensure_child_directory(&self, name: &Path, mode: u32) -> io::Result<Self> {
+        self.ensure_child_directory_with(
+            name,
+            mode,
+            || Ok(()),
             || Ok(()),
             || Ok(()),
             |directory| directory.sync_all(),
@@ -266,5 +295,7 @@ impl PreparedExtendedAncestry {
 
 #[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
 mod directory_tests;
+#[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
+mod ensure_tests;
 #[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
 mod tests;
