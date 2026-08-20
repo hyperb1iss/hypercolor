@@ -66,13 +66,19 @@ pub fn build_resource_definitions() -> Vec<ResourceDefinition> {
 /// Read a resource by URI using live daemon state.
 pub async fn read_resource_with_state(uri: &str, state: &AppState) -> Option<Value> {
     match uri {
-        "hypercolor://state" => Some(super::payload::build_status_payload(state).await),
+        "hypercolor://state" => Some(
+            serde_json::to_value(super::payload::build_status_payload(state).await)
+                .expect("typed MCP status resources should serialize"),
+        ),
         "hypercolor://devices" => Some(
-            super::payload::build_device_inventory_payload(
-                state,
-                super::payload::DeviceInventoryFilter::default(),
+            serde_json::to_value(
+                super::payload::build_device_inventory_payload(
+                    state,
+                    super::payload::DeviceInventoryFilter::default(),
+                )
+                .await,
             )
-            .await,
+            .expect("typed MCP device resources should serialize"),
         ),
         "hypercolor://effects" => Some(read_effects_with_state(state).await),
         "hypercolor://scenes" => Some(read_scenes_with_state(state).await),

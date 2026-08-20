@@ -387,6 +387,16 @@ fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> Effect
     }
 }
 
+pub(crate) fn effect_summary_with_details(meta: &EffectMetadata) -> EffectSummary {
+    effect_summary(
+        meta,
+        EffectListIncludes {
+            controls: true,
+            presets: true,
+        },
+    )
+}
+
 /// `GET /api/v1/effects/{id}` — Get a single effect's metadata.
 pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let registry = state.effect_registry.read().await;

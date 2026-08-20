@@ -204,7 +204,7 @@ Activate a scene by exact ID, exact case-insensitive name, or unique case-insens
 { "name": "activate_scene", "arguments": { "name": "Evening Calm" } }
 ```
 
-No match or an ambiguous substring returns the structured selector error described above. A scene that exceeds current media limits returns `"activated": false` with admission details, without changing the active scene.
+No match or an ambiguous substring returns the structured selector error described above. A scene that exceeds current media limits returns a structured conflict without changing the active scene.
 
 {{ img(path="img/ui/ui-scenes.webp", alt="Scenes in the Hypercolor UI") }}
 

@@ -776,7 +776,7 @@ fn sanitize_family_id(value: &str) -> String {
 ///
 /// Transitions are enforced by `DeviceStateMachine` in `hypercolor-core`.
 /// This enum is the serializable snapshot used by frontends and persistence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum DeviceState {
     /// Discovered but not yet connected.
     Known,

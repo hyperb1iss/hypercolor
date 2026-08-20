@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, default_output_schema, resolve_effect_selector};
+use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
 use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
 use crate::api::{AppState, publish_render_group_changed};
 use crate::domain::MutationContext;
@@ -10,6 +10,7 @@ use crate::domain::display::{
     ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
     set_display_face,
 };
+use crate::mcp::results::{DisplayDeviceResult, DisplayFaceResult};
 use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
@@ -50,7 +51,7 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
             "required": ["device"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<DisplayFaceResult>(),
         read_only: false,
         destructive: true,
         idempotent: false,
@@ -99,14 +100,15 @@ pub(super) async fn handle_set_display_face_with_state(
         )
         .await?;
         let live_scope = live_scope_payload(state, device_id).await;
-        return Ok(json!({
-            "device": display_device_payload(&info, surface),
-            "scene_id": cleared.scene_id.to_string(),
-            "zone": cleared.zone,
-            "scope": "scene",
-            "live_scope": live_scope,
-            "cleared": true,
-        }));
+        return serialize_result(DisplayFaceResult {
+            device: display_device_payload(&info, surface),
+            scope,
+            live_scope,
+            cleared: true,
+            scene_id: Some(cleared.scene_id.to_string()),
+            effect: None,
+            zone: Some(crate::domain::scene_tree::zone_resource(&cleared.zone)),
+        });
     }
 
     let effect_lookup = params
@@ -153,19 +155,22 @@ pub(super) async fn handle_set_display_face_with_state(
     )
     .await?;
 
-    Ok(json!({
-        "device": display_device_payload(&info, surface),
-        "scene_id": written.scene_id.to_string(),
-        "effect": effect,
-        "zone": written.zone,
-        "scope": "scene",
-        "live_scope": "scene",
-        "cleared": false,
-    }))
+    serialize_result(DisplayFaceResult {
+        device: display_device_payload(&info, surface),
+        scope,
+        live_scope: Some(crate::api::displays::DisplayFaceScope::Scene),
+        cleared: false,
+        scene_id: Some(written.scene_id.to_string()),
+        effect: Some(crate::api::effects::effect_summary_with_details(&effect)),
+        zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),
+    })
 }
 
 /// Which layer currently drives the display, mirroring the REST contract.
-async fn live_scope_payload(state: &AppState, device_id: DeviceId) -> Value {
+async fn live_scope_payload(
+    state: &AppState,
+    device_id: DeviceId,
+) -> Option<crate::api::displays::DisplayFaceScope> {
     let scene_assigned = {
         let scene_manager = state.scene_manager.read().await;
         scene_manager
@@ -174,16 +179,16 @@ async fn live_scope_payload(state: &AppState, device_id: DeviceId) -> Value {
             .is_some_and(|zone| zone.effect_ids().next().is_some())
     };
     if scene_assigned {
-        return json!("scene");
+        return Some(crate::api::displays::DisplayFaceScope::Scene);
     }
     let default_assigned = {
         let store = state.display_preferences.read().await;
         store.get(device_id).is_some()
     };
     if default_assigned {
-        json!("default")
+        Some(crate::api::displays::DisplayFaceScope::Default)
     } else {
-        Value::Null
+        None
     }
 }
 
@@ -226,12 +231,15 @@ async fn handle_default_scope(
             publish_render_group_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
         }
         let live_scope = live_scope_payload(state, device_id).await;
-        return Ok(json!({
-            "device": display_device_payload(info, surface),
-            "scope": "default",
-            "live_scope": live_scope,
-            "cleared": removed,
-        }));
+        return serialize_result(DisplayFaceResult {
+            device: display_device_payload(info, surface),
+            scope: crate::api::displays::DisplayFaceScope::Default,
+            live_scope,
+            cleared: removed,
+            scene_id: None,
+            effect: None,
+            zone: None,
+        });
     }
 
     let effect_lookup = params
@@ -282,7 +290,7 @@ async fn handle_default_scope(
         ));
     };
     let live_scope = live_scope_payload(state, device_id).await;
-    if live_scope == json!("default") {
+    if live_scope == Some(crate::api::displays::DisplayFaceScope::Default) {
         let scene_id = {
             let scene_manager = state.scene_manager.read().await;
             scene_manager
@@ -293,14 +301,15 @@ async fn handle_default_scope(
         publish_render_group_changed(state, scene_id, &group, ZoneChangeKind::Updated);
     }
 
-    Ok(json!({
-        "device": display_device_payload(info, surface),
-        "effect": effect,
-        "zone": group,
-        "scope": "default",
-        "live_scope": live_scope,
-        "cleared": false,
-    }))
+    serialize_result(DisplayFaceResult {
+        device: display_device_payload(info, surface),
+        scope: crate::api::displays::DisplayFaceScope::Default,
+        live_scope,
+        cleared: false,
+        scene_id: None,
+        effect: Some(crate::api::effects::effect_summary_with_details(&effect)),
+        zone: Some(crate::domain::scene_tree::zone_resource(&group)),
+    })
 }
 
 fn parse_controls_map(
@@ -401,14 +410,14 @@ async fn resolve_display_device(
     Ok((device.info.id, device.info, surface))
 }
 
-fn display_device_payload(info: &DeviceInfo, surface: DisplaySurfaceInfo) -> Value {
-    json!({
-        "id": info.id.to_string(),
-        "name": info.name.clone(),
-        "vendor": info.vendor.clone(),
-        "family": format!("{}", info.family),
-        "width": surface.width,
-        "height": surface.height,
-        "circular": surface.circular,
-    })
+fn display_device_payload(info: &DeviceInfo, surface: DisplaySurfaceInfo) -> DisplayDeviceResult {
+    DisplayDeviceResult {
+        id: info.id.to_string(),
+        name: info.name.clone(),
+        vendor: info.vendor.clone(),
+        family: info.family.to_string(),
+        width: surface.width,
+        height: surface.height,
+        circular: surface.circular,
+    }
 }

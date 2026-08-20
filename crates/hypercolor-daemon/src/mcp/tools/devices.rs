@@ -2,9 +2,10 @@
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, brightness_percent, default_output_schema};
+use super::{ToolDefinition, ToolError, brightness_percent, output_schema, serialize_result};
 use crate::api::AppState;
 use crate::domain::output;
+use crate::mcp::results::{BrightnessResult, BrightnessScope, DeviceInventoryResult};
 use crate::session::current_global_brightness;
 use hypercolor_types::api::output::OutputPatchRequest;
 
@@ -35,7 +36,7 @@ pub(super) fn build_get_devices() -> ToolDefinition {
             },
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<DeviceInventoryResult>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -60,7 +61,7 @@ pub(super) fn build_set_brightness() -> ToolDefinition {
             "required": ["brightness"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<BrightnessResult>(),
         read_only: false,
         destructive: false,
         idempotent: true,
@@ -74,7 +75,7 @@ pub(super) async fn handle_get_devices_with_state(
     state: &AppState,
 ) -> Result<Value, ToolError> {
     let filter = crate::mcp::payload::DeviceInventoryFilter::from_params(params);
-    Ok(crate::mcp::payload::build_device_inventory_payload(state, filter).await)
+    serialize_result(crate::mcp::payload::build_device_inventory_payload(state, filter).await)
 }
 
 pub(super) async fn handle_set_brightness_with_state(
@@ -107,9 +108,9 @@ pub(super) async fn handle_set_brightness_with_state(
     )
     .await?;
 
-    Ok(json!({
-        "brightness": brightness_percent(outcome.brightness),
-        "scope": "global",
-        "previous_brightness": previous
-    }))
+    serialize_result(BrightnessResult {
+        brightness: brightness_percent(outcome.brightness),
+        scope: BrightnessScope::Global,
+        previous_brightness: previous,
+    })
 }

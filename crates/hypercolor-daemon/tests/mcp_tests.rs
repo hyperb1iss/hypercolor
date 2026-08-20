@@ -1026,8 +1026,11 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(assign_result["zone"]["layout"]["canvas_width"], 320);
-    assert_eq!(assign_result["zone"]["controls"]["title"]["text"], "CPU");
+    assert_eq!(assign_result["device"]["width"], 320);
+    assert_eq!(
+        assign_result["zone"]["layers"][0]["source"]["controls"]["title"]["text"],
+        "CPU"
+    );
 
     let assign_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -1073,7 +1076,6 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         clear_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert!(clear_result["zone"]["effect_id"].is_null());
     assert_eq!(
         clear_result["zone"]["layers"].as_array().map(Vec::len),
         Some(0)
@@ -1803,6 +1805,24 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
     assert_eq!(active_group.layout, expected_layout);
 }
 
+#[tokio::test]
+async fn read_only_tool_results_match_their_declared_schemas() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    for (name, params) in [
+        ("list_effects", json!({})),
+        ("get_audio_state", json!({})),
+        ("get_sensor_data", json!({})),
+        ("get_layout", json!({})),
+    ] {
+        execute_tool_with_state(name, &params, state.as_ref())
+            .await
+            .unwrap_or_else(|error| panic!("{name} should match its output schema: {error}"));
+    }
+}
+
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
@@ -1812,7 +1832,33 @@ fn tool_definitions_have_valid_schemas() {
             .iter()
             .all(|tool| tool.input_schema["type"] == "object")
     );
-    assert!(tools.iter().all(|tool| tool.output_schema.is_object()));
+    for tool in &tools {
+        assert!(tool.output_schema.is_object(), "{} output", tool.name);
+        assert!(
+            jsonschema::validator_for(&tool.output_schema).is_ok(),
+            "{} must publish a valid, self-contained output schema",
+            tool.name
+        );
+        assert_eq!(
+            tool.output_schema["additionalProperties"],
+            json!(false),
+            "{} must close its typed output shape",
+            tool.name
+        );
+        assert!(
+            tool.output_schema["properties"].is_object(),
+            "{} must publish field-level output properties",
+            tool.name
+        );
+        assert!(
+            !tool
+                .output_schema
+                .to_string()
+                .contains("intentionally broad"),
+            "{} still advertises the deleted fallback schema",
+            tool.name
+        );
+    }
     assert!(tools.iter().any(|tool| tool.name == "set_display_face"));
     assert!(tools.iter().any(|tool| tool.name == "clear_zone"));
     assert!(tools.iter().any(|tool| tool.name == "adjust_controls"));
