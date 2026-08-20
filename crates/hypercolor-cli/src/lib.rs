@@ -7,6 +7,9 @@
 pub mod client;
 pub mod commands;
 pub mod config;
+#[cfg(unix)]
+#[doc(hidden)]
+pub mod install;
 pub mod output;
 
 use std::future::Future;
