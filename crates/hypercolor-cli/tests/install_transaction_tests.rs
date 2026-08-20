@@ -557,8 +557,10 @@ impl Fixture {
 fn prepare_unit(store: &InstallStore, value: &str) -> UnitRecord {
     let release = tempfile::tempdir().expect("transaction release root");
     let candidate = write_transaction_release(release.path(), value);
+    let manifest = fs::read(release.path().join("manifest.json")).expect("read release manifest");
+    let expected_unit = UnitId::new(transaction_sha256(&manifest)).expect("valid manifest digest");
     let lock = store.acquire_lock().expect("transaction release lock");
-    stage_release_payload(store, &lock, release.path(), &candidate)
+    stage_release_payload(store, &lock, release.path(), &candidate, &expected_unit)
         .expect("stage transaction release")
 }
 

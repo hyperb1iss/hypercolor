@@ -26,6 +26,10 @@ const MANIFEST_NAME: &str = "manifest.json";
 
 /// Validate and stage one verifier-extracted release payload.
 ///
+/// `expected_unit` must be the SHA-256 digest of the exact manifest bytes
+/// accepted by the verifier. The digest is checked before any install-unit or
+/// staging mutation.
+///
 /// `candidate_executable` must already identify the running candidate. The
 /// function never reopens a public executable pathname. Source member modes
 /// must match the manifest exactly. Installed modes remove every write bit,
@@ -46,6 +50,7 @@ pub fn stage_release_payload(
     lock: &InstallLock,
     source_root: &Path,
     candidate_executable: &File,
+    expected_unit: &UnitId,
 ) -> Result<UnitRecord, ReleasePayloadError> {
     let source = ReadOnlyDirectoryAuthority::open(source_root).map_err(|source| {
         ReleasePayloadError::Filesystem {
@@ -53,7 +58,7 @@ pub fn stage_release_payload(
             source,
         }
     })?;
-    stage_release_payload_from_authority(store, lock, &source, candidate_executable)
+    stage_release_payload_from_authority(store, lock, &source, candidate_executable, expected_unit)
 }
 
 /// Validate and stage a release through an already-open source authority.
@@ -70,9 +75,16 @@ pub fn stage_release_payload_from_authority(
     lock: &InstallLock,
     source: &ReadOnlyDirectoryAuthority,
     candidate_executable: &File,
+    expected_unit: &UnitId,
 ) -> Result<UnitRecord, ReleasePayloadError> {
     let manifest_bytes = tree::read_manifest_bytes(source)?;
     let manifest = ValidatedManifest::parse(manifest_bytes)?;
+    if manifest.unit_id != *expected_unit {
+        return Err(ReleasePayloadError::UnexpectedManifestDigest {
+            expected: expected_unit.as_str().to_owned(),
+            actual: manifest.unit_id.as_str().to_owned(),
+        });
+    }
     tree::validate_source(source, &manifest)?;
     tree::bind_candidate_executable(source, candidate_executable, &manifest)?;
 
@@ -187,6 +199,9 @@ pub enum ReleasePayloadError {
     /// Manifest semantics or inventory are invalid.
     #[error("invalid release manifest: {0}")]
     InvalidManifest(String),
+    /// The extracted manifest does not match the verifier-accepted digest.
+    #[error("release manifest digest {actual} does not match verified digest {expected}")]
+    UnexpectedManifestDigest { expected: String, actual: String },
     /// The extracted source tree does not exactly match the manifest.
     #[error("invalid release source: {0}")]
     InvalidSource(String),

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use hypercolor_cli::install::{
-    InstallStore, MAX_RELEASE_MANIFEST_BYTES, ReleasePayloadError, stage_release_payload,
-    stage_release_payload_from_authority,
+    InstallLock, InstallStore, MAX_RELEASE_MANIFEST_BYTES, ReleasePayloadError, UnitId, UnitRecord,
+    stage_release_payload, stage_release_payload_from_authority,
 };
 use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
 use serde_json::{Value, json};
@@ -55,6 +55,11 @@ impl ReleaseFixture {
             serde_json::to_vec_pretty(value).expect("encode manifest"),
         )
         .expect("rewrite manifest");
+    }
+
+    fn expected_unit(&self) -> UnitId {
+        let manifest = fs::read(self.path().join("manifest.json")).expect("read manifest");
+        UnitId::new(sha256(&manifest)).expect("valid manifest digest")
     }
 }
 
@@ -160,6 +165,29 @@ fn new_store() -> (tempfile::TempDir, InstallStore) {
     (parent, store)
 }
 
+fn stage_fixture(
+    store: &InstallStore,
+    lock: &InstallLock,
+    fixture: &ReleaseFixture,
+) -> Result<UnitRecord, ReleasePayloadError> {
+    stage_fixture_with_candidate(store, lock, fixture, &fixture.candidate)
+}
+
+fn stage_fixture_with_candidate(
+    store: &InstallStore,
+    lock: &InstallLock,
+    fixture: &ReleaseFixture,
+    candidate: &File,
+) -> Result<UnitRecord, ReleasePayloadError> {
+    stage_release_payload(
+        store,
+        lock,
+        fixture.path(),
+        candidate,
+        &fixture.expected_unit(),
+    )
+}
+
 fn assert_no_private_residue(store: &InstallStore) {
     let units = store.root().join("units");
     if !units.exists() {
@@ -246,8 +274,7 @@ fn valid_payload_stages_immutable_digest_unit_and_reuses_exact_unit() {
     let (_install_parent, store) = new_store();
     let lock = store.acquire_lock().expect("install lock");
 
-    let first = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-        .expect("stage release");
+    let first = stage_fixture(&store, &lock, &fixture).expect("stage release");
     assert_eq!(first.id().as_str(), sha256(&fixture.manifest));
     assert_eq!(
         read_authority_file(first.directory(), &["manifest.json"]),
@@ -275,8 +302,7 @@ fn valid_payload_stages_immutable_digest_unit_and_reuses_exact_unit() {
     assert_tree_is_immutable(first.directory());
     let inode = first.directory().metadata().expect("unit metadata").inode();
 
-    let second = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-        .expect("reuse exact release");
+    let second = stage_fixture(&store, &lock, &fixture).expect("reuse exact release");
     assert_eq!(second, first);
     assert_eq!(
         second
@@ -286,6 +312,47 @@ fn valid_payload_stages_immutable_digest_unit_and_reuses_exact_unit() {
             .inode(),
         inode
     );
+    assert_no_private_residue(&store);
+}
+
+#[test]
+fn verified_manifest_digest_mismatch_fails_before_install_state_mutation() {
+    let fixture = ReleaseFixture::new();
+    let (_install_parent, store) = new_store();
+    fs::create_dir_all(store.root()).expect("create store");
+    fs::write(
+        store.root().join("install-journal.json"),
+        b"journal-sentinel",
+    )
+    .expect("seed journal");
+    symlink(
+        "units/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        store.root().join("active"),
+    )
+    .expect("seed active link");
+    let lock = store.acquire_lock().expect("install lock");
+    let expected = UnitId::new("0".repeat(64)).expect("valid expected digest");
+    let actual = fixture.expected_unit();
+
+    let error = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate, &expected)
+        .expect_err("unverified manifest digest must fail");
+
+    assert!(matches!(
+        error,
+        ReleasePayloadError::UnexpectedManifestDigest {
+            expected: ref reported_expected,
+            actual: ref reported_actual,
+        } if reported_expected == expected.as_str() && reported_actual == actual.as_str()
+    ));
+    assert_eq!(
+        fs::read(store.root().join("install-journal.json")).expect("read journal"),
+        b"journal-sentinel"
+    );
+    assert_eq!(
+        fs::read_link(store.root().join("active")).expect("read active"),
+        PathBuf::from("units/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert!(!store.root().join("units").exists());
     assert_no_private_residue(&store);
 }
 
@@ -311,7 +378,7 @@ fn current_executable_mismatch_fails_before_install_state_mutation() {
     let running = File::open(std::env::current_exe().expect("current executable"))
         .expect("open current executable");
 
-    let error = stage_release_payload(&store, &lock, fixture.path(), &running)
+    let error = stage_fixture_with_candidate(&store, &lock, &fixture, &running)
         .expect_err("mismatched running executable must fail");
     assert!(matches!(error, ReleasePayloadError::CandidateMismatch));
     assert_eq!(
@@ -353,8 +420,7 @@ fn strict_manifest_rejects_unknown_duplicate_traversal_and_oversized_inputs() {
         fixture.write_manifest(&manifest);
         let (_parent, store) = new_store();
         let lock = store.acquire_lock().expect("install lock");
-        stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-            .expect_err("malformed manifest must fail");
+        stage_fixture(&store, &lock, &fixture).expect_err("malformed manifest must fail");
         assert!(!store.root().join("units").exists());
     }
 
@@ -366,8 +432,7 @@ fn strict_manifest_rejects_unknown_duplicate_traversal_and_oversized_inputs() {
     .expect("write oversized manifest");
     let (_parent, store) = new_store();
     let lock = store.acquire_lock().expect("install lock");
-    let error = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-        .expect_err("oversized manifest must fail");
+    let error = stage_fixture(&store, &lock, &fixture).expect_err("oversized manifest must fail");
     assert!(matches!(
         error,
         ReleasePayloadError::ManifestTooLarge { .. }
@@ -387,8 +452,7 @@ fn exact_inventory_rejects_missing_and_unexpected_entries() {
         }
         let (_parent, store) = new_store();
         let lock = store.acquire_lock().expect("install lock");
-        let error = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-            .expect_err("inventory drift must fail");
+        let error = stage_fixture(&store, &lock, &fixture).expect_err("inventory drift must fail");
         assert!(matches!(error, ReleasePayloadError::InvalidSource(_)));
         assert!(!store.root().join("units").exists());
     }
@@ -427,8 +491,7 @@ fn source_mode_digest_size_and_type_drift_are_rejected() {
         }
         let (_parent, store) = new_store();
         let lock = store.acquire_lock().expect("install lock");
-        stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-            .expect_err("source metadata drift must fail");
+        stage_fixture(&store, &lock, &fixture).expect_err("source metadata drift must fail");
         assert!(!store.root().join("units").exists());
     }
 }
@@ -460,8 +523,8 @@ fn manifest_rejects_unreadable_files_untraversable_directories_and_uppercase_dig
         fixture.write_manifest(&manifest);
         let (_parent, store) = new_store();
         let lock = store.acquire_lock().expect("install lock");
-        let error = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-            .expect_err("unsafe manifest metadata must fail");
+        let error =
+            stage_fixture(&store, &lock, &fixture).expect_err("unsafe manifest metadata must fail");
         assert!(
             matches!(
                 error,
@@ -498,8 +561,7 @@ fn source_symlinks_hardlinks_and_special_files_are_rejected() {
         };
         let (_parent, store) = new_store();
         let lock = store.acquire_lock().expect("install lock");
-        stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-            .expect_err("unsafe source member must fail");
+        stage_fixture(&store, &lock, &fixture).expect_err("unsafe source member must fail");
         assert!(!store.root().join("units").exists());
     }
 }
@@ -518,8 +580,10 @@ fn retained_source_authority_ignores_parent_and_name_replacement() {
     let (_install_parent, store) = new_store();
     let lock = store.acquire_lock().expect("install lock");
 
-    let record = stage_release_payload_from_authority(&store, &lock, &authority, &candidate)
-        .expect("stage through retained source authority");
+    let expected_unit = UnitId::new(sha256(&manifest)).expect("valid manifest digest");
+    let record =
+        stage_release_payload_from_authority(&store, &lock, &authority, &candidate, &expected_unit)
+            .expect("stage through retained source authority");
     assert_eq!(record.id().as_str(), sha256(&manifest));
     assert_eq!(
         read_authority_file(record.directory(), &["bin", "hypercolor"]),
@@ -538,8 +602,14 @@ fn returned_unit_authority_survives_install_root_path_replacement() {
     fs::create_dir(store.root()).expect("replace install root pathname");
     fs::write(store.root().join("attacker-sentinel"), b"attacker").expect("seed replacement root");
 
-    let record = stage_release_payload_from_authority(&store, &lock, &source, &fixture.candidate)
-        .expect("stage beneath retained install root");
+    let record = stage_release_payload_from_authority(
+        &store,
+        &lock,
+        &source,
+        &fixture.candidate,
+        &fixture.expected_unit(),
+    )
+    .expect("stage beneath retained install root");
 
     assert_eq!(
         read_authority_file(record.directory(), &["bin", "hypercolor"]),
@@ -600,7 +670,7 @@ fn source_mutation_after_initial_validation_cleans_private_staging() {
                 std::thread::yield_now();
             }
         });
-        let result = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
+        let result = stage_fixture(&store, &lock, &fixture)
             .expect_err("concurrent source mutation must fail");
         mutator.join().expect("source mutator");
         result
@@ -632,8 +702,7 @@ fn corrupt_existing_digest_unit_is_refused_without_replacement() {
     let fixture = ReleaseFixture::new();
     let (_install_parent, store) = new_store();
     let lock = store.acquire_lock().expect("install lock");
-    let record = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-        .expect("stage release");
+    let record = stage_fixture(&store, &lock, &fixture).expect("stage release");
     let unit_root = store.unit_path(record.id());
     let binary = unit_root.join("bin/hypercolor");
     let inode = record
@@ -644,8 +713,8 @@ fn corrupt_existing_digest_unit_is_refused_without_replacement() {
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
         .expect("corrupt immutable mode");
 
-    let error = stage_release_payload(&store, &lock, fixture.path(), &fixture.candidate)
-        .expect_err("corrupt existing digest unit must fail");
+    let error =
+        stage_fixture(&store, &lock, &fixture).expect_err("corrupt existing digest unit must fail");
     assert!(matches!(error, ReleasePayloadError::InvalidUnit(_)));
     assert_eq!(
         record
