@@ -6,8 +6,8 @@
 
 use std::sync::LazyLock;
 
-#[path = "support/effect_engine.rs"]
-mod effect_engine;
+#[path = "support/frame_state.rs"]
+mod frame_state;
 
 use hypercolor_core::device::mock::{
     MockCall, MockDeviceBackend, MockDeviceConfig, MockEffectRenderer, MockTransportScanner,
@@ -23,9 +23,22 @@ use hypercolor_types::spatial::{
     LedTopology, NormalizedPosition, Output, SpatialLayout, StripDirection,
 };
 
-use effect_engine::EffectEngine;
+use frame_state::TestFrameState;
 
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
+
+fn initialized_renderer(
+    mut renderer: MockEffectRenderer,
+    name: &str,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> (MockEffectRenderer, TestFrameState) {
+    let state = TestFrameState::new(canvas_width, canvas_height);
+    state
+        .initialize(&mut renderer, &MockEffectRenderer::sample_metadata(name))
+        .expect("renderer should initialize");
+    (renderer, state)
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -378,16 +391,11 @@ async fn write_failure_propagates() {
 
 #[test]
 fn solid_renderer_produces_uniform_canvas() {
-    let mut engine = EffectEngine::new().with_canvas_size(64, 64);
-    let renderer = Box::new(MockEffectRenderer::solid(255, 0, 0));
-    let meta = MockEffectRenderer::sample_metadata("solid-red");
-
-    engine
-        .activate(renderer, meta)
-        .expect("activation should succeed");
-
-    let audio = AudioData::silence();
-    let canvas = engine.tick(0.016, &audio).expect("tick should succeed");
+    let (mut renderer, mut frame_state) =
+        initialized_renderer(MockEffectRenderer::solid(255, 0, 0), "solid-red", 64, 64);
+    let canvas = frame_state
+        .render(&mut renderer, 0.016, &AudioData::silence())
+        .expect("renderer should produce a frame");
 
     // Every pixel should be solid red
     let pixel = canvas.get_pixel(0, 0);
@@ -402,16 +410,11 @@ fn solid_renderer_produces_uniform_canvas() {
 
 #[test]
 fn rainbow_renderer_produces_gradient() {
-    let mut engine = EffectEngine::new().with_canvas_size(360, 1);
-    let renderer = Box::new(MockEffectRenderer::rainbow());
-    let meta = MockEffectRenderer::sample_metadata("rainbow");
-
-    engine
-        .activate(renderer, meta)
-        .expect("activation should succeed");
-
-    let audio = AudioData::silence();
-    let canvas = engine.tick(0.016, &audio).expect("tick should succeed");
+    let (mut renderer, mut frame_state) =
+        initialized_renderer(MockEffectRenderer::rainbow(), "rainbow", 360, 1);
+    let canvas = frame_state
+        .render(&mut renderer, 0.016, &AudioData::silence())
+        .expect("renderer should produce a frame");
 
     // First pixel should be near red (hue ~0)
     let left = canvas.get_pixel(0, 0);
@@ -440,17 +443,18 @@ fn rainbow_renderer_produces_gradient() {
 
 #[test]
 fn audio_reactive_renderer_scales_with_level() {
-    let mut engine = EffectEngine::new().with_canvas_size(10, 10);
-    let renderer = Box::new(MockEffectRenderer::audio_reactive(200, 100, 50));
-    let meta = MockEffectRenderer::sample_metadata("audio-pulse");
-
-    engine
-        .activate(renderer, meta)
-        .expect("activation should succeed");
+    let (mut renderer, mut frame_state) = initialized_renderer(
+        MockEffectRenderer::audio_reactive(200, 100, 50),
+        "audio-pulse",
+        10,
+        10,
+    );
 
     // Silence -> all black
     let silence = AudioData::silence();
-    let canvas_silent = engine.tick(0.016, &silence).expect("tick silent");
+    let canvas_silent = frame_state
+        .render(&mut renderer, 0.016, &silence)
+        .expect("render silence");
     let px = canvas_silent.get_pixel(5, 5);
     assert_eq!(px.r, 0, "silence should produce black");
     assert_eq!(px.g, 0);
@@ -459,7 +463,9 @@ fn audio_reactive_renderer_scales_with_level() {
     // Full volume -> base color at full intensity
     let mut loud = AudioData::silence();
     loud.rms_level = 1.0;
-    let canvas_loud = engine.tick(0.016, &loud).expect("tick loud");
+    let canvas_loud = frame_state
+        .render(&mut renderer, 0.016, &loud)
+        .expect("render loud input");
     let px_loud = canvas_loud.get_pixel(5, 5);
     assert_eq!(px_loud.r, 200, "full volume should produce base color");
     assert_eq!(px_loud.g, 100);
@@ -468,7 +474,9 @@ fn audio_reactive_renderer_scales_with_level() {
     // Half volume -> roughly half intensity
     let mut half = AudioData::silence();
     half.rms_level = 0.5;
-    let canvas_half = engine.tick(0.016, &half).expect("tick half");
+    let canvas_half = frame_state
+        .render(&mut renderer, 0.016, &half)
+        .expect("render half-level input");
     let px_half = canvas_half.get_pixel(5, 5);
     assert_eq!(px_half.r, 100, "half volume should produce half intensity");
     assert_eq!(px_half.g, 50);
@@ -525,19 +533,11 @@ async fn full_pipeline_solid_red_through_strip() {
         .await
         .expect("connect should succeed");
 
-    // Create effect engine with solid red renderer
-    let mut effect_engine = EffectEngine::new().with_canvas_size(320, 200);
-    let renderer = Box::new(MockEffectRenderer::solid(255, 0, 0));
-    let meta = MockEffectRenderer::sample_metadata("solid-red");
-    effect_engine
-        .activate(renderer, meta)
-        .expect("activate effect");
-
-    // Tick to produce a canvas
-    let audio = AudioData::silence();
-    let canvas = effect_engine
-        .tick(0.016, &audio)
-        .expect("tick should produce canvas");
+    let (mut renderer, mut frame_state) =
+        initialized_renderer(MockEffectRenderer::solid(255, 0, 0), "solid-red", 320, 200);
+    let canvas = frame_state
+        .render(&mut renderer, 0.016, &AudioData::silence())
+        .expect("renderer should produce a canvas");
 
     // Build spatial layout for the strip
     let layout = build_layout_for_device(
@@ -588,16 +588,15 @@ async fn full_pipeline_dual_devices() {
     backend.connect(&strip_id).await.expect("connect strip");
     backend.connect(&matrix_id).await.expect("connect matrix");
 
-    // Solid green effect
-    let mut effect_engine = EffectEngine::new().with_canvas_size(320, 200);
-    let renderer = Box::new(MockEffectRenderer::solid(0, 255, 0));
-    let meta = MockEffectRenderer::sample_metadata("solid-green");
-    effect_engine
-        .activate(renderer, meta)
-        .expect("activate effect");
-
-    let audio = AudioData::silence();
-    let canvas = effect_engine.tick(0.016, &audio).expect("tick");
+    let (mut renderer, mut frame_state) = initialized_renderer(
+        MockEffectRenderer::solid(0, 255, 0),
+        "solid-green",
+        320,
+        200,
+    );
+    let canvas = frame_state
+        .render(&mut renderer, 0.016, &AudioData::silence())
+        .expect("renderer should produce a canvas");
 
     // Build dual-zone layout
     let layout = build_dual_zone_layout(strip_id, 60, matrix_id, 10, 10);
@@ -647,11 +646,8 @@ async fn multiple_frames_increment_and_update() {
     let mut backend = MockDeviceBackend::new().with_device(&config);
     backend.connect(&device_id).await.expect("connect");
 
-    // Rainbow renderer — output changes each frame due to time offset
-    let mut effect_engine = EffectEngine::new().with_canvas_size(320, 200);
-    let renderer = Box::new(MockEffectRenderer::rainbow());
-    let meta = MockEffectRenderer::sample_metadata("rainbow-multi");
-    effect_engine.activate(renderer, meta).expect("activate");
+    let (mut renderer, mut frame_state) =
+        initialized_renderer(MockEffectRenderer::rainbow(), "rainbow-multi", 320, 200);
 
     let layout = build_layout_for_device(
         device_id,
@@ -668,9 +664,9 @@ async fn multiple_frames_increment_and_update() {
     let delta = 0.1; // 100ms per frame so time advances enough for visible change
 
     for frame_idx in 0..10u64 {
-        let canvas = effect_engine
-            .tick(delta, &audio)
-            .expect("tick should succeed");
+        let canvas = frame_state
+            .render(&mut renderer, delta, &audio)
+            .expect("renderer should produce a frame");
 
         let zone_colors = spatial.sample(&canvas);
         assert_eq!(zone_colors.len(), 1);
@@ -725,13 +721,16 @@ async fn effect_switching_produces_different_output() {
     let spatial = SpatialEngine::new(layout);
     let audio = AudioData::silence();
 
-    // Effect A: solid red
-    let mut engine = EffectEngine::new().with_canvas_size(320, 200);
-    let renderer_a = Box::new(MockEffectRenderer::solid(255, 0, 0));
+    let mut frame_state = TestFrameState::new(320, 200);
+    let mut renderer_a = MockEffectRenderer::solid(255, 0, 0);
     let meta_a = MockEffectRenderer::sample_metadata("effect-a-red");
-    engine.activate(renderer_a, meta_a).expect("activate A");
+    frame_state
+        .initialize(&mut renderer_a, &meta_a)
+        .expect("first renderer should initialize");
 
-    let canvas_a = engine.tick(0.016, &audio).expect("tick A");
+    let canvas_a = frame_state
+        .render(&mut renderer_a, 0.016, &audio)
+        .expect("first renderer should produce a frame");
     let colors_a = spatial.sample(&canvas_a);
     backend
         .write_colors(&device_id, &colors_a[0].colors)
@@ -744,16 +743,18 @@ async fn effect_switching_produces_different_output() {
         "effect A should produce red"
     );
 
-    // Deactivate A
-    engine.deactivate();
-    assert!(!engine.is_running());
+    renderer_a.destroy();
+    assert!(renderer_a.destroyed);
 
-    // Effect B: solid blue
-    let renderer_b = Box::new(MockEffectRenderer::solid(0, 0, 255));
+    let mut renderer_b = MockEffectRenderer::solid(0, 0, 255);
     let meta_b = MockEffectRenderer::sample_metadata("effect-b-blue");
-    engine.activate(renderer_b, meta_b).expect("activate B");
+    frame_state
+        .initialize(&mut renderer_b, &meta_b)
+        .expect("second renderer should initialize");
 
-    let canvas_b = engine.tick(0.016, &audio).expect("tick B");
+    let canvas_b = frame_state
+        .render(&mut renderer_b, 0.016, &audio)
+        .expect("second renderer should produce a frame");
     let colors_b = spatial.sample(&canvas_b);
     backend
         .write_colors(&device_id, &colors_b[0].colors)
@@ -772,27 +773,6 @@ async fn effect_switching_produces_different_output() {
         "effects A and B should produce different colors"
     );
     assert_eq!(backend.write_count(), 2);
-}
-
-#[tokio::test]
-async fn effect_replacement_without_explicit_deactivate() {
-    // The engine should auto-deactivate the previous effect when activating a new one
-    let mut engine = EffectEngine::new().with_canvas_size(32, 32);
-    let audio = AudioData::silence();
-
-    // Activate effect A
-    let renderer_a = Box::new(MockEffectRenderer::solid(255, 0, 0));
-    let meta_a = MockEffectRenderer::sample_metadata("auto-replace-a");
-    engine.activate(renderer_a, meta_a).expect("activate A");
-    let canvas_a = engine.tick(0.016, &audio).expect("tick A");
-    assert_eq!(canvas_a.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
-
-    // Activate effect B directly (no deactivate call)
-    let renderer_b = Box::new(MockEffectRenderer::solid(0, 255, 0));
-    let meta_b = MockEffectRenderer::sample_metadata("auto-replace-b");
-    engine.activate(renderer_b, meta_b).expect("activate B");
-    let canvas_b = engine.tick(0.016, &audio).expect("tick B");
-    assert_eq!(canvas_b.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
 }
 
 // ── Additional Edge Case Tests ──────────────────────────────────────────────

@@ -4,12 +4,10 @@ use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
-#[path = "../../hypercolor-core/tests/support/effect_engine.rs"]
-mod effect_engine;
-
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
 use hypercolor_core::device::{BackendManager, DeviceBackend};
+use hypercolor_core::effect::{EffectRenderer, FrameDataSources, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::spatial::SpatialEngine;
 #[cfg(feature = "wgpu")]
@@ -31,8 +29,6 @@ use hypercolor_types::spatial::{
 };
 use tokio::runtime::Runtime;
 
-use effect_engine::EffectEngine;
-
 const CANVAS_WIDTH: u32 = 320;
 const CANVAS_HEIGHT: u32 = 200;
 const PREVIEW_WIDTH: u32 = 640;
@@ -53,6 +49,8 @@ const EXTREME_LEDS_PER_ZONE: u32 = 256;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
+static EMPTY_SENSORS: LazyLock<hypercolor_types::sensor::SystemSnapshot> =
+    LazyLock::new(hypercolor_types::sensor::SystemSnapshot::empty);
 
 fn benchmark_config() -> Criterion {
     Criterion::default()
@@ -414,17 +412,20 @@ fn bench_render_pipeline(c: &mut Criterion) {
     let (mut active_manager, active_spatial, total_leds) = build_backend_and_spatial(&runtime);
     let active_layout = active_spatial.layout();
     let active_bus = HypercolorBus::new();
-    let mut active_effect = EffectEngine::new().with_canvas_size(CANVAS_WIDTH, CANVAS_HEIGHT);
-    active_effect
-        .activate(
-            Box::new(MockEffectRenderer::rainbow()),
-            MockEffectRenderer::sample_metadata("daemon-bench-rainbow"),
+    let mut active_renderer = MockEffectRenderer::rainbow();
+    active_renderer
+        .init_with_canvas_size(
+            &MockEffectRenderer::sample_metadata("daemon-bench-rainbow"),
+            CANVAS_WIDTH,
+            CANVAS_HEIGHT,
         )
-        .expect("benchmark effect should activate");
+        .expect("benchmark renderer should initialize");
     let mut active_surface_pool =
         RenderSurfacePool::new(SurfaceDescriptor::rgba8888(CANVAS_WIDTH, CANVAS_HEIGHT));
     let mut active_recycled_frame = FrameData::empty();
     let mut active_frame_number = 0_u32;
+    let mut active_renderer_frame_number = 0_u64;
+    let mut active_elapsed_secs = 0.0_f64;
 
     let (mut screen_manager, screen_spatial, _) = build_backend_and_spatial(&runtime);
     let screen_layout = screen_spatial.layout();
@@ -441,15 +442,23 @@ fn bench_render_pipeline(c: &mut Criterion) {
             let mut lease = active_surface_pool
                 .dequeue()
                 .expect("render surface pool should recycle under watch semantics");
-            active_effect
-                .tick_with_inputs_into(
-                    FRAME_DT_SECONDS,
-                    black_box(&*SILENCE),
-                    black_box(&*DEFAULT_INTERACTION),
-                    None,
-                    lease.canvas_mut(),
-                )
-                .expect("active effect frame should render");
+            active_elapsed_secs += f64::from(FRAME_DT_SECONDS);
+            let frame_input = FrameInput {
+                time_secs: active_elapsed_secs,
+                delta_secs: FRAME_DT_SECONDS,
+                frame_number: active_renderer_frame_number,
+                audio: black_box(&*SILENCE),
+                interaction: black_box(&*DEFAULT_INTERACTION),
+                screen: None,
+                sensors: black_box(&*EMPTY_SENSORS),
+                sources: FrameDataSources::default(),
+                canvas_width: CANVAS_WIDTH,
+                canvas_height: CANVAS_HEIGHT,
+            };
+            active_renderer
+                .render_into(&frame_input, lease.canvas_mut())
+                .expect("active renderer frame should render");
+            active_renderer_frame_number = active_renderer_frame_number.wrapping_add(1);
 
             let active_canvas = lease.canvas_mut().clone();
             active_spatial.sample_into(black_box(&active_canvas), &mut active_recycled_frame.zones);

@@ -7,9 +7,6 @@ use std::time::Duration;
 use anyhow::Result;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-#[path = "../tests/support/effect_engine.rs"]
-mod effect_engine;
-
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
 use hypercolor_core::effect::builtin::{
@@ -27,14 +24,12 @@ use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource,
+    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 
-use effect_engine::EffectEngine;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -51,41 +46,6 @@ const SAMPLE_RATE_HZ: u32 = 48_000;
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
-static BINDING_SNAPSHOTS: LazyLock<[SystemSnapshot; 2]> =
-    LazyLock::new(|| [binding_snapshot(false), binding_snapshot(true)]);
-
-struct BindingBenchRenderer {
-    controls: HashMap<String, ControlValue>,
-}
-
-impl BindingBenchRenderer {
-    fn new() -> Self {
-        Self {
-            controls: HashMap::new(),
-        }
-    }
-}
-
-impl EffectRenderer for BindingBenchRenderer {
-    fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
-        Ok(())
-    }
-
-    fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas) -> Result<()> {
-        if target.width() != input.canvas_width || target.height() != input.canvas_height {
-            *target = Canvas::new(input.canvas_width, input.canvas_height);
-        }
-        black_box(self.controls.len());
-        Ok(())
-    }
-
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        self.controls.insert(name.to_owned(), value.clone());
-    }
-
-    fn destroy(&mut self) {}
-}
-
 struct NullBenchBackend;
 
 #[async_trait::async_trait]
@@ -140,61 +100,6 @@ fn ambient_metadata(name: &str) -> EffectMetadata {
             path: PathBuf::from(format!("builtin/{name}")),
         },
         license: None,
-    }
-}
-
-fn binding_metadata(binding_count: usize) -> EffectMetadata {
-    const SENSOR_LABELS: [&str; 5] = ["cpu_temp", "gpu_temp", "gpu_load", "ram_used", "cpu_load"];
-
-    let mut metadata = ambient_metadata("binding_bench");
-    metadata.controls = SENSOR_LABELS
-        .iter()
-        .enumerate()
-        .map(|(index, sensor)| ControlDefinition {
-            id: format!("control_{index}"),
-            name: format!("Control {index}"),
-            kind: ControlKind::Number,
-            control_type: ControlType::Slider,
-            default_value: ControlValue::Float(0.5),
-            min: Some(0.0),
-            max: Some(1.0),
-            step: Some(0.01),
-            labels: Vec::new(),
-            group: Some("Bench".to_owned()),
-            tooltip: None,
-            aspect_lock: None,
-            preview_source: None,
-            binding: (index < binding_count).then(|| ControlBinding {
-                sensor: (*sensor).to_owned(),
-                sensor_min: 0.0,
-                sensor_max: 100.0,
-                target_min: 0.0,
-                target_max: 1.0,
-                deadband: 0.0,
-                smoothing: 0.0,
-            }),
-        })
-        .collect();
-    metadata
-}
-
-fn binding_snapshot(hot: bool) -> SystemSnapshot {
-    SystemSnapshot {
-        cpu_load_percent: if hot { 71.0 } else { 41.0 },
-        cpu_loads: if hot {
-            vec![68.0, 72.0, 70.0, 74.0]
-        } else {
-            vec![38.0, 44.0, 40.0, 42.0]
-        },
-        cpu_temp_celsius: Some(if hot { 84.0 } else { 58.0 }),
-        gpu_temp_celsius: Some(if hot { 79.0 } else { 63.0 }),
-        gpu_load_percent: Some(if hot { 91.0 } else { 72.0 }),
-        gpu_vram_used_mb: Some(if hot { 3_072.0 } else { 2_048.0 }),
-        ram_used_percent: if hot { 73.0 } else { 54.0 },
-        ram_used_mb: if hot { 22_528.0 } else { 16_384.0 },
-        ram_total_mb: 32_768.0,
-        components: Vec::new(),
-        polled_at_ms: 1_715_000_000,
     }
 }
 
@@ -688,44 +593,6 @@ fn bench_render_groups(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_sensor_control_bindings(c: &mut Criterion) {
-    let mut group = c.benchmark_group("core_effect_bindings");
-
-    for binding_count in [0_usize, 1, 5] {
-        let mut engine = EffectEngine::new().with_canvas_size(CANVAS_WIDTH, CANVAS_HEIGHT);
-        engine
-            .activate(
-                Box::new(BindingBenchRenderer::new()),
-                binding_metadata(binding_count),
-            )
-            .expect("binding benchmark effect should activate");
-        let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-        let mut iteration = 0_usize;
-
-        group.bench_function(
-            BenchmarkId::new("tick_with_sensor_bindings", binding_count),
-            |b| {
-                b.iter(|| {
-                    let sensors = &BINDING_SNAPSHOTS[iteration % BINDING_SNAPSHOTS.len()];
-                    iteration = iteration.wrapping_add(1);
-                    engine
-                        .tick_with_inputs_and_sensors_into(
-                            FRAME_DT_SECONDS,
-                            &SILENCE,
-                            &DEFAULT_INTERACTION,
-                            None,
-                            black_box(sensors),
-                            black_box(&mut canvas),
-                        )
-                        .expect("binding benchmark tick should succeed");
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
 fn bench_audio_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_audio");
 
@@ -922,6 +789,6 @@ fn bench_backend_routing(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_groups, bench_sensor_control_bindings, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
+    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_groups, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
 }
 criterion_main!(benches);

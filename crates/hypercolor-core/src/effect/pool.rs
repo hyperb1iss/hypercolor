@@ -849,7 +849,10 @@ mod tests {
     use crate::input::InteractionData;
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Canvas;
-    use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+    use hypercolor_types::effect::{
+        ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+        EffectId, EffectMetadata, EffectSource,
+    };
     #[cfg(feature = "servo")]
     use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
     use hypercolor_types::layer::{SceneLayer, SceneLayerId};
@@ -865,6 +868,11 @@ mod tests {
 
     struct AdvanceSpyRenderer {
         advanced: Arc<AtomicU64>,
+    }
+
+    #[derive(Default)]
+    struct ControlSpyRenderer {
+        applied: Vec<(String, ControlValue)>,
     }
 
     impl DestroySpyRenderer {
@@ -906,6 +914,22 @@ mod tests {
         }
 
         fn set_control(&mut self, _name: &str, _value: &hypercolor_types::effect::ControlValue) {}
+
+        fn destroy(&mut self) {}
+    }
+
+    impl EffectRenderer for ControlSpyRenderer {
+        fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        fn render_into(&mut self, _input: &FrameInput<'_>, _target: &mut Canvas) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_control(&mut self, name: &str, value: &ControlValue) {
+            self.applied.push((name.to_owned(), value.clone()));
+        }
 
         fn destroy(&mut self) {}
     }
@@ -1076,6 +1100,75 @@ mod tests {
 
         assert!(after > before);
         assert_eq!(after, slot.elapsed.as_secs_f64());
+    }
+
+    #[test]
+    fn sensor_bindings_apply_and_restore_the_authored_control() {
+        let mut metadata = spy_metadata(EffectId::new(uuid::Uuid::now_v7()));
+        metadata.controls.push(ControlDefinition {
+            id: "speed".into(),
+            name: "Speed".into(),
+            kind: ControlKind::Number,
+            control_type: ControlType::Slider,
+            default_value: ControlValue::Float(5.0),
+            min: Some(0.0),
+            max: Some(10.0),
+            step: Some(1.0),
+            labels: Vec::new(),
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: Some(ControlBinding {
+                sensor: "cpu_temp".into(),
+                sensor_min: 30.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 10.0,
+                deadband: 0.0,
+                smoothing: 0.0,
+            }),
+        });
+        let controls = HashMap::from([("speed".into(), ControlValue::Float(5.0))]);
+        let mut binding_state = HashMap::new();
+        let mut renderer = ControlSpyRenderer::default();
+        let live_sensors = hypercolor_types::sensor::SystemSnapshot {
+            cpu_temp_celsius: Some(58.0),
+            ..hypercolor_types::sensor::SystemSnapshot::empty()
+        };
+
+        super::apply_sensor_bindings(
+            &mut renderer,
+            &metadata,
+            &controls,
+            &mut binding_state,
+            &live_sensors,
+        );
+        assert_eq!(
+            renderer.applied.last(),
+            Some(&("speed".into(), ControlValue::Float(4.0)))
+        );
+
+        super::apply_sensor_bindings(
+            &mut renderer,
+            &metadata,
+            &controls,
+            &mut binding_state,
+            &live_sensors,
+        );
+        assert_eq!(renderer.applied.len(), 1);
+
+        super::apply_sensor_bindings(
+            &mut renderer,
+            &metadata,
+            &controls,
+            &mut binding_state,
+            &hypercolor_types::sensor::SystemSnapshot::empty(),
+        );
+        assert_eq!(
+            renderer.applied.last(),
+            Some(&("speed".into(), ControlValue::Float(5.0)))
+        );
     }
 
     #[test]

@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use uuid::Uuid;
 
-#[path = "support/effect_engine.rs"]
-mod effect_engine;
+#[path = "support/frame_state.rs"]
+mod frame_state;
 
 use hypercolor_core::bus::{EventFilter, HypercolorBus};
 use hypercolor_core::device::{
@@ -42,7 +42,7 @@ use hypercolor_types::spatial::{
     EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 
-use effect_engine::EffectEngine;
+use frame_state::TestFrameState;
 
 // ─── Test Renderers ──────────────────────────────────────────────────────────
 // Real inline implementations — NOT mocks.
@@ -327,34 +327,31 @@ fn render_loop_lifecycle_create_start_tick_stop() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TEST 2: Effect Engine + Render Loop
+// TEST 2: Effect Renderer + Render Loop
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn effect_engine_with_render_loop_produces_canvas() {
+fn effect_renderer_with_render_loop_produces_canvas() {
     // Create and start render loop
     let mut render_loop = RenderLoop::new(60);
     render_loop.start();
 
-    // Create effect engine with gradient renderer
-    let mut effect_engine = EffectEngine::new();
-    let renderer = Box::new(TestGradientRenderer::new());
+    let mut renderer = TestGradientRenderer::new();
     let meta = test_metadata("gradient");
-    effect_engine
-        .activate(renderer, meta)
-        .expect("activation should succeed");
-
-    assert!(effect_engine.is_running());
+    let mut frame_state = TestFrameState::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    frame_state
+        .initialize(&mut renderer, &meta)
+        .expect("renderer should initialize");
 
     let audio = AudioData::silence();
 
-    // Tick render loop + effect engine together for 5 frames
+    // Tick render loop and renderer together for 5 frames
     for frame in 0..5 {
         assert!(render_loop.tick(), "render loop tick {frame}");
 
-        let canvas = effect_engine
-            .tick(0.016, &audio)
-            .expect("effect engine tick should succeed");
+        let canvas = frame_state
+            .render(&mut renderer, 0.016, &audio)
+            .expect("renderer should produce a frame");
 
         assert_eq!(canvas.width(), DEFAULT_CANVAS_WIDTH);
         assert_eq!(canvas.height(), DEFAULT_CANVAS_HEIGHT);
@@ -918,12 +915,12 @@ fn full_pipeline_render_sample_extract_colors() {
     let mut render_loop = RenderLoop::new(60);
     render_loop.start();
 
-    // Stage 2: Create effect engine with gradient renderer
-    let mut effect_engine = EffectEngine::new().with_canvas_size(100, 10);
-    let renderer = Box::new(TestGradientRenderer::new());
-    effect_engine
-        .activate(renderer, test_metadata("pipeline-gradient"))
-        .expect("activation should succeed");
+    // Stage 2: Initialize the gradient renderer
+    let mut renderer = TestGradientRenderer::new();
+    let mut frame_state = TestFrameState::new(100, 10);
+    frame_state
+        .initialize(&mut renderer, &test_metadata("pipeline-gradient"))
+        .expect("renderer should initialize");
 
     // Stage 3: Create spatial layout with a 10-LED strip
     let zone = make_strip_zone("pipeline-strip", 10);
@@ -942,11 +939,11 @@ fn full_pipeline_render_sample_extract_colors() {
 
     let audio = AudioData::silence();
 
-    // Stage 4: Frame 1 — tick render loop, tick effect engine, sample
+    // Stage 4: Frame 1 — tick render loop, render, sample
     assert!(render_loop.tick(), "render loop tick 1");
-    let canvas = effect_engine
-        .tick(0.016, &audio)
-        .expect("effect engine tick 1");
+    let canvas = frame_state
+        .render(&mut renderer, 0.016, &audio)
+        .expect("renderer frame 1");
 
     let colors = sample_zone(&canvas, &zone, &layout);
 
@@ -982,9 +979,9 @@ fn full_pipeline_render_sample_extract_colors() {
 
     // Stage 5: Frame 2 — verify frame advances
     assert!(render_loop.tick(), "render loop tick 2");
-    let canvas2 = effect_engine
-        .tick(0.016, &audio)
-        .expect("effect engine tick 2");
+    let canvas2 = frame_state
+        .render(&mut renderer, 0.016, &audio)
+        .expect("renderer frame 2");
     let colors2 = sample_zone(&canvas2, &zone, &layout);
 
     // Gradient is time-independent so colors should be the same
@@ -1001,13 +998,11 @@ fn full_pipeline_with_advancing_solid_renderer() {
     let mut render_loop = RenderLoop::new(60);
     render_loop.start();
 
-    let mut effect_engine = EffectEngine::new().with_canvas_size(10, 10);
-    effect_engine
-        .activate(
-            Box::new(TestSolidRenderer::new()),
-            test_metadata("solid-advance"),
-        )
-        .expect("activate");
+    let mut renderer = TestSolidRenderer::new();
+    let mut frame_state = TestFrameState::new(10, 10);
+    frame_state
+        .initialize(&mut renderer, &test_metadata("solid-advance"))
+        .expect("renderer should initialize");
 
     let zone = make_strip_zone("solid-strip", 3);
     let layout = SpatialLayout {
@@ -1028,9 +1023,9 @@ fn full_pipeline_with_advancing_solid_renderer() {
     let mut prev_brightness = 0u8;
     for frame in 0..5 {
         assert!(render_loop.tick());
-        let canvas = effect_engine
-            .tick(0.016, &audio)
-            .expect("tick should succeed");
+        let canvas = frame_state
+            .render(&mut renderer, 0.016, &audio)
+            .expect("renderer should produce a frame");
         let colors = sample_zone(&canvas, &zone, &layout);
 
         assert_eq!(colors.len(), 3);
@@ -1148,45 +1143,6 @@ fn fps_controller_full_downshift_cascade() {
 // ═════════════════════════════════════════════════════════════════════════════
 // Additional Integration Tests
 // ═════════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn effect_engine_activate_deactivate_cycle() {
-    let mut engine = EffectEngine::new();
-    let audio = AudioData::silence();
-
-    // Cycle 1: gradient renderer
-    engine
-        .activate(
-            Box::new(TestGradientRenderer::new()),
-            test_metadata("cycle-1"),
-        )
-        .expect("activate cycle 1");
-    assert!(engine.is_running());
-
-    let c1 = engine.tick(0.016, &audio).expect("tick cycle 1");
-    assert_eq!(c1.get_pixel(0, 0).r, 255); // red on left
-
-    // Cycle 2: solid renderer replaces gradient
-    engine
-        .activate(Box::new(TestSolidRenderer::new()), test_metadata("cycle-2"))
-        .expect("activate cycle 2");
-    assert!(engine.is_running());
-
-    let c2 = engine.tick(0.016, &audio).expect("tick cycle 2");
-    // Solid renderer frame 1: brightness = (1 * 25) % 256 = 25
-    let pixel = c2.get_pixel(0, 0);
-    assert_eq!(pixel.r, 25);
-    assert_eq!(pixel.g, 25);
-    assert_eq!(pixel.b, 25);
-
-    // Deactivate
-    engine.deactivate();
-    assert!(!engine.is_running());
-
-    // Tick after deactivation returns black canvas
-    let c3 = engine.tick(0.016, &audio).expect("tick after deactivate");
-    assert_eq!(c3.get_pixel(0, 0).r, 0);
-}
 
 #[test]
 fn effect_registry_search_and_categorize() {
@@ -1357,40 +1313,6 @@ fn spatial_layout_with_multiple_zones() {
     assert_eq!(colors_br[0][0], 255, "bottom-right should be white");
     assert_eq!(colors_br[0][1], 255);
     assert_eq!(colors_br[0][2], 255);
-}
-
-#[test]
-fn effect_engine_pause_resume_canvas_behavior() {
-    let mut engine = EffectEngine::new();
-    let audio = AudioData::silence();
-
-    engine
-        .activate(
-            Box::new(TestGradientRenderer::new()),
-            test_metadata("pause-test"),
-        )
-        .expect("activate");
-
-    // Normal tick
-    let canvas = engine.tick(0.016, &audio).expect("tick");
-    assert_eq!(canvas.get_pixel(0, 0).r, 255); // gradient starts red
-
-    // Pause
-    engine.pause();
-    assert_eq!(engine.state(), EffectState::Paused);
-
-    // Tick while paused returns black
-    let paused_canvas = engine.tick(0.016, &audio).expect("tick while paused");
-    assert_eq!(paused_canvas.get_pixel(0, 0).r, 0);
-    assert_eq!(paused_canvas.get_pixel(0, 0).a, 255); // opaque black
-
-    // Resume
-    engine.resume();
-    assert_eq!(engine.state(), EffectState::Running);
-
-    // Tick after resume should produce gradient again
-    let resumed = engine.tick(0.016, &audio).expect("tick after resume");
-    assert_eq!(resumed.get_pixel(0, 0).r, 255);
 }
 
 #[tokio::test]
