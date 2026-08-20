@@ -118,7 +118,16 @@ def _etag_revision(response: httpx.Response) -> int | None:
         return None
 
 
-_DEVICE_FILTERS = {"offset", "limit", "status", "backend", "backend_id", "driver", "q"}
+_DEVICE_FILTERS = {
+    "offset",
+    "limit",
+    "status",
+    "backend",
+    "backend_id",
+    "driver",
+    "q",
+    "include",
+}
 _SCENE_FILTERS: set[str] = set()
 
 
@@ -252,6 +261,7 @@ class HypercolorClient:
                 backend_id=_generated_param(backend_id),
                 driver=_generated_param(filters.get("driver")),
                 q=_generated_param(filters.get("q")),
+                include=_generated_param(filters.get("include")),
             ),
             Device,
         )

@@ -6,6 +6,8 @@ from typing import Any
 
 import msgspec
 
+from .attachment import DeviceAttachments
+
 
 class DeviceSegment(msgspec.Struct, kw_only=True):
     """One addressable hardware segment exposed by a device."""
@@ -66,6 +68,7 @@ class Device(msgspec.Struct, kw_only=True):
     legacy_network_hostname: str | None = msgspec.field(default=None, name="network_hostname")
     legacy_connection_label: str | None = msgspec.field(default=None, name="connection_label")
     auth: dict[str, Any] | None = None
+    attachments: DeviceAttachments | None = None
 
     @property
     def backend(self) -> str:

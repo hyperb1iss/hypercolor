@@ -1,6 +1,12 @@
 """Public model exports for the Hypercolor client."""
 
-from .attachment import AttachmentTemplate
+from .attachment import (
+    AttachmentBinding,
+    AttachmentSlot,
+    AttachmentSuggestedZone,
+    AttachmentTemplate,
+    DeviceAttachments,
+)
 from .audio import (
     AudioDeviceInfo,
     AudioDevices,
@@ -74,6 +80,9 @@ __all__ = [
     "ActivateSceneResult",
     "ApiErrorBody",
     "ApplyEffectResponse",
+    "AttachmentBinding",
+    "AttachmentSlot",
+    "AttachmentSuggestedZone",
     "AttachmentTemplate",
     "AudioDeviceInfo",
     "AudioDevices",
@@ -85,6 +94,7 @@ __all__ = [
     "ControlDefinition",
     "ControlSurface",
     "Device",
+    "DeviceAttachments",
     "DeviceSegment",
     "DeviceUpdate",
     "DiscoverResult",

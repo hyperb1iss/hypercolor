@@ -119,6 +119,61 @@ def _applied_zone(effect_id: str = "aurora") -> dict[str, object]:
     }
 
 
+def _device_with_attachments() -> dict[str, object]:
+    return {
+        "id": "controller",
+        "layout_device_id": "controller",
+        "name": "Controller",
+        "backend": "hid",
+        "status": "connected",
+        "brightness": 100,
+        "total_leds": 60,
+        "segments": [],
+        "attachments": {
+            "device_id": "controller",
+            "device_name": "Controller",
+            "slots": [
+                {
+                    "id": "channel-1",
+                    "name": "Channel 1",
+                    "led_start": 0,
+                    "led_count": 60,
+                    "suggested_categories": ["strip"],
+                    "allowed_templates": ["strip-60"],
+                    "allow_custom": True,
+                }
+            ],
+            "bindings": [
+                {
+                    "slot_id": "channel-1",
+                    "template_id": "strip-60",
+                    "template_name": "60 LED Strip",
+                    "name": None,
+                    "enabled": True,
+                    "instances": 1,
+                    "led_offset": 0,
+                    "effective_led_count": 60,
+                }
+            ],
+            "suggested_zones": [
+                {
+                    "slot_id": "channel-1",
+                    "template_id": "strip-60",
+                    "template_name": "60 LED Strip",
+                    "name": "Channel 1",
+                    "instance": 0,
+                    "led_start": 0,
+                    "led_count": 60,
+                    "category": "strip",
+                    "default_size": {"width": 0.25, "height": 0.25},
+                    "topology": {"type": "strip", "count": 60},
+                    "led_mapping": None,
+                }
+            ],
+        },
+    }
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_devices(client: HypercolorClient) -> None:
@@ -251,6 +306,36 @@ async def test_get_devices_maps_backend_alias_to_backend_id(
     assert params["driver"] == "razer"
     assert "backend" not in params
     assert devices == []
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_devices_preserves_included_attachments(client: HypercolorClient) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [_device_with_attachments()],
+                    "pagination": {
+                        "offset": 0,
+                        "limit": 50,
+                        "total": 1,
+                        "has_more": False,
+                    },
+                }
+            ),
+        )
+    )
+
+    devices = await client.get_devices(include="attachments")
+
+    assert route.calls[0].request.url.params["include"] == "attachments"
+    attachments = devices[0].attachments
+    assert attachments is not None
+    assert attachments.slots[0].allowed_templates == ["strip-60"]
+    assert attachments.bindings[0].effective_led_count == 60
+    assert attachments.suggested_zones[0].topology == {"type": "strip", "count": 60}
 
 
 @respx.mock

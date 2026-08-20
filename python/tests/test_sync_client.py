@@ -64,6 +64,78 @@ def test_sync_client_delegates_output_power() -> None:
     assert result.brightness_percent == 80
 
 
+def test_sync_client_preserves_included_device_attachments() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/devices"
+        assert request.url.params["include"] == "attachments"
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "items": [
+                        {
+                            "id": "controller",
+                            "layout_device_id": "controller",
+                            "name": "Controller",
+                            "backend": "hid",
+                            "status": "connected",
+                            "brightness": 100,
+                            "total_leds": 60,
+                            "segments": [],
+                            "attachments": {
+                                "device_id": "controller",
+                                "device_name": "Controller",
+                                "slots": [
+                                    {
+                                        "id": "channel-1",
+                                        "name": "Channel 1",
+                                        "led_start": 0,
+                                        "led_count": 60,
+                                        "allowed_templates": ["strip-60"],
+                                    }
+                                ],
+                                "bindings": [
+                                    {
+                                        "slot_id": "channel-1",
+                                        "template_id": "strip-60",
+                                        "template_name": "60 LED Strip",
+                                        "enabled": True,
+                                        "instances": 1,
+                                        "led_offset": 0,
+                                        "effective_led_count": 60,
+                                    }
+                                ],
+                                "suggested_zones": [],
+                            },
+                        }
+                    ],
+                    "pagination": {
+                        "offset": 0,
+                        "limit": 50,
+                        "total": 1,
+                        "has_more": False,
+                    },
+                },
+                "meta": {
+                    "api_version": "1.0",
+                    "request_id": "req_123",
+                    "timestamp": "2026-08-19T00:00:00Z",
+                },
+            },
+        )
+
+    client = SyncHypercolorClient(transport=httpx.MockTransport(handler))
+    try:
+        devices = client.get_devices(include="attachments")
+    finally:
+        client.close()
+
+    attachments = devices[0].attachments
+    assert attachments is not None
+    assert attachments.slots[0].allowed_templates == ["strip-60"]
+    assert attachments.bindings[0].template_name == "60 LED Strip"
+
+
 def test_sync_client_round_trips_complete_stored_scene() -> None:
     scene = {
         "id": "0193d2c0-0000-7000-8000-00000000aaaa",
