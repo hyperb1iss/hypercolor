@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -37,8 +39,8 @@ use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
 use hypercolor_daemon::domain::scene::{
-    ActivateScene, CreateScene, SnapshotScene, activate_scene, commit_scene, create_scene,
-    deactivate_scene, delete_scene, snapshot_scene,
+    ActivateScene, CreateScene, SceneService, SnapshotScene, activate_scene, commit_scene,
+    create_scene, deactivate_scene, delete_scene, snapshot_scene,
 };
 use hypercolor_daemon::domain::scene_tree::{
     ClearScene, PatchLayerControls, clear_scene, patch_layer_controls, read_document,
@@ -54,6 +56,33 @@ fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
     (Arc::new(AppState::new_with_data_dir(data_dir)), tempdir)
+}
+
+#[tokio::test]
+async fn scene_service_returns_owned_snapshots_and_lock_free_plans() {
+    let service = SceneService::new(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+    let sibling = service.clone();
+    let mut snapshot = service.snapshot().await;
+    snapshot.deactivate_current();
+
+    assert_eq!(
+        sibling.snapshot().await.active_scene_id(),
+        Some(&SceneId::DEFAULT)
+    );
+    let plan = sibling.plan_reader().load();
+    assert_eq!(plan.generation, 0);
+    assert_eq!(plan.active_scene_id, Some(SceneId::DEFAULT));
+}
+
+#[tokio::test]
+async fn scene_service_clones_share_one_commit_revision() {
+    let service = SceneService::new(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+
+    assert_eq!(service.revision(), service.clone().revision());
+    assert_eq!(
+        service.begin_mutation().await.base_revision(),
+        service.revision()
+    );
 }
 
 fn test_effect_metadata(name: &str) -> EffectMetadata {

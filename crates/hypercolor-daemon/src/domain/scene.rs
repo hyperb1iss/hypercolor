@@ -22,9 +22,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use arc_swap::{ArcSwap, Guard};
+use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
 use hypercolor_core::scene::{
-    LayerMutationError, OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError,
-    default_primary_group,
+    LayerMutationError, OutputPlacement, SceneManager, ScenePlanSnapshot, ZoneMetaPatch,
+    ZoneMutationError, default_primary_group,
 };
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::api::scenes::{
@@ -47,10 +49,87 @@ use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayou
 
 use crate::api::AppState;
 use crate::api::scenes::MediaAdmissionViolationDetails;
+use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
 use crate::scene_transactions::LayoutUpdateGuard;
+
+// ── Owning service ───────────────────────────────────────────────────────
+
+/// Cloneable authority for scene state, commit order, and scene events.
+#[derive(Clone)]
+pub struct SceneService(Arc<SceneServiceInner>);
+
+struct SceneServiceInner {
+    manager: tokio::sync::RwLock<SceneManager>,
+    commits: Arc<SceneCommitSequencer>,
+    event_bus: Arc<HypercolorBus>,
+    plan: ArcSwap<ScenePlanSnapshot>,
+}
+
+/// Lock-free render-side access to the latest admitted scene plan.
+#[derive(Clone)]
+pub struct ScenePlanReader(Arc<SceneServiceInner>);
+
+impl ScenePlanReader {
+    /// Borrow the latest admitted scene plan without cloning its `Arc`.
+    #[must_use]
+    pub fn load(&self) -> Guard<Arc<ScenePlanSnapshot>> {
+        self.0.plan.load()
+    }
+}
+
+impl SceneService {
+    /// Own a fully initialized scene manager and its private event sink.
+    #[must_use]
+    pub fn new(manager: SceneManager, event_bus: Arc<HypercolorBus>) -> Self {
+        let commits = Arc::new(SceneCommitSequencer::new());
+        let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
+        Self(Arc::new(SceneServiceInner {
+            manager: tokio::sync::RwLock::new(manager),
+            commits,
+            event_bus,
+            plan,
+        }))
+    }
+
+    /// Capture an owned scene-manager snapshot under one brief read lock.
+    pub async fn snapshot(&self) -> SceneManager {
+        self.0.manager.read().await.clone()
+    }
+
+    /// Return the current admitted scene revision.
+    #[must_use]
+    pub fn revision(&self) -> SceneRevision {
+        self.0.commits.revision()
+    }
+
+    /// Create a lock-free reader for the render thread.
+    #[must_use]
+    pub fn plan_reader(&self) -> ScenePlanReader {
+        ScenePlanReader(Arc::clone(&self.0))
+    }
+
+    /// Observe published events without gaining access to the event sink.
+    #[must_use]
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TimestampedEvent> {
+        self.0.event_bus.subscribe_all()
+    }
+
+    /// Snapshot the live scene state into an owned candidate.
+    pub async fn begin_mutation(&self) -> SceneMutation {
+        let manager = self.0.manager.read().await;
+        SceneMutation {
+            candidate: manager.clone(),
+            base_revision: self.0.commits.revision(),
+            events: Vec::new(),
+            persists_scene_content: false,
+            preview_scenes_to_clear: HashSet::new(),
+            preview_zones_to_clear: HashSet::new(),
+        }
+    }
+}
 
 // ── Owned candidate ──────────────────────────────────────────────────────
 
