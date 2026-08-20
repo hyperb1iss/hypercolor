@@ -361,6 +361,7 @@ impl InstallPlatform for FakePlatform {
 
     fn install_launcher(
         &mut self,
+        checkpoint: PlatformCheckpoint,
         unit: Option<&UnitId>,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
@@ -370,6 +371,14 @@ impl InstallPlatform for FakePlatform {
             action,
             InstallAction::InstallCandidateLauncher | InstallAction::RestorePriorLauncher
         ));
+        assert_eq!(
+            checkpoint,
+            if action == InstallAction::InstallCandidateLauncher {
+                PlatformCheckpoint::CandidateLauncher
+            } else {
+                PlatformCheckpoint::PriorLauncherRestored
+            }
+        );
         self.candidate_launcher_installed =
             action == InstallAction::InstallCandidateLauncher && unit.is_some();
         self.state.launcher_unit = unit.is_some().then(|| self.active_unit()).flatten();
@@ -378,6 +387,7 @@ impl InstallPlatform for FakePlatform {
 
     fn install_layout_operation(
         &mut self,
+        checkpoint: PlatformCheckpoint,
         unit: Option<&UnitId>,
         operation_index: u16,
         record: &PlatformTransactionRecord,
@@ -388,6 +398,14 @@ impl InstallPlatform for FakePlatform {
             action,
             InstallAction::InstallCandidateLayout | InstallAction::RestorePriorLayout
         ));
+        assert_eq!(
+            checkpoint,
+            if action == InstallAction::InstallCandidateLayout {
+                PlatformCheckpoint::CandidateLayout
+            } else {
+                PlatformCheckpoint::PriorLayoutRestored
+            }
+        );
         if action == InstallAction::InstallCandidateLayout {
             assert_eq!(operation_index, self.layout_operation_progress);
             self.layout_operation_progress += 1;
@@ -469,6 +487,7 @@ impl InstallPlatform for FakePlatform {
 
     fn wait_for_newer_owner(
         &mut self,
+        checkpoint: PlatformCheckpoint,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
         candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
@@ -483,6 +502,14 @@ impl InstallPlatform for FakePlatform {
             action,
             InstallAction::ProveCandidate | InstallAction::ProvePrior
         ));
+        assert_eq!(
+            checkpoint,
+            if action == InstallAction::ProveCandidate {
+                PlatformCheckpoint::CandidateRuntime
+            } else {
+                PlatformCheckpoint::PriorRestored
+            }
+        );
         if &self.state != expected {
             return Err(InstallPlatformError::new("publication does not match"));
         }

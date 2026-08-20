@@ -58,12 +58,14 @@ pub trait InstallPlatform {
 
     fn install_launcher(
         &mut self,
+        checkpoint: PlatformCheckpoint,
         unit: Option<&UnitId>,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError>;
 
     fn install_layout_operation(
         &mut self,
+        checkpoint: PlatformCheckpoint,
         unit: Option<&UnitId>,
         operation_index: u16,
         record: &PlatformTransactionRecord,
@@ -90,6 +92,7 @@ pub trait InstallPlatform {
 
     fn wait_for_newer_owner(
         &mut self,
+        checkpoint: PlatformCheckpoint,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
         candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
@@ -490,6 +493,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         }
         self.platform
             .install_layout_operation(
+                after_checkpoint,
                 unit,
                 current_index.min(after_index),
                 &journal.platform_record,
@@ -605,6 +609,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                     .platform
                     .wait_for_guard_release(&transition.after.platform, &journal.platform_record),
                 TransitionKind::OwnerPublication => self.platform.wait_for_newer_owner(
+                    transition.after_checkpoint,
                     &transition.after.platform,
                     &journal.platform_record,
                     journal.candidate_owner_receipt.as_ref(),
@@ -639,8 +644,14 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             )));
         }
 
-        self.apply_effect(journal, action, &transition.after, lock)
-            .map_err(StepError::Effect)?;
+        self.apply_effect(
+            journal,
+            action,
+            transition.after_checkpoint,
+            &transition.after,
+            lock,
+        )
+        .map_err(StepError::Effect)?;
         self.require_state(
             action,
             &transition.before,
@@ -658,6 +669,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         &mut self,
         journal: &InstallJournalV1,
         action: InstallAction,
+        checkpoint: PlatformCheckpoint,
         after: &InstallationState,
         lock: &super::store::InstallLock,
     ) -> Result<(), InstallCoordinatorError> {
@@ -681,6 +693,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             InstallAction::InstallCandidateLauncher => self
                 .platform
                 .install_launcher(
+                    checkpoint,
                     journal.target_platform.launcher_unit.as_ref(),
                     &journal.platform_record,
                 )
@@ -712,6 +725,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             InstallAction::RestorePriorLauncher => self
                 .platform
                 .install_launcher(
+                    checkpoint,
                     journal.prior_platform.launcher_unit.as_ref(),
                     &journal.platform_record,
                 )
