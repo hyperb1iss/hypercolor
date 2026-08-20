@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write as _};
 #[cfg(target_os = "linux")]
 use std::mem::MaybeUninit;
-use std::os::unix::ffi::OsStringExt as _;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path};
 
@@ -208,6 +208,39 @@ pub(super) fn directory_entries(directory: &File) -> io::Result<Vec<OsString>> {
 }
 
 #[cfg(target_os = "linux")]
+pub(super) fn bounded_directory_entries(
+    directory: &File,
+    max_count: usize,
+    max_name_bytes: usize,
+) -> io::Result<Vec<OsString>> {
+    let iteration = duplicate_directory(directory)?;
+    let mut buffer = [MaybeUninit::<u8>::uninit(); DIRECTORY_BUFFER_BYTES];
+    let mut entries = RawDir::new(&iteration, &mut buffer);
+    let mut names = Vec::with_capacity(max_count);
+    let mut name_bytes = 0;
+    while let Some(entry) = entries.next() {
+        match entry {
+            Ok(entry) => push_bounded_directory_entry(
+                entry.file_name().to_bytes(),
+                &mut names,
+                &mut name_bytes,
+                max_count,
+                max_name_bytes,
+            )?,
+            Err(Errno::INVAL) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry exceeds the fixed enumeration buffer",
+                ));
+            }
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    names.sort_by(|left, right| left.as_encoded_bytes().cmp(right.as_encoded_bytes()));
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
 pub(super) fn directory_is_empty(directory: &File) -> io::Result<bool> {
     let iteration = duplicate_directory(directory)?;
     let mut buffer = [MaybeUninit::<u8>::uninit(); DIRECTORY_BUFFER_BYTES];
@@ -241,6 +274,29 @@ pub(super) fn directory_entries(directory: &File) -> io::Result<Vec<OsString>> {
 }
 
 #[cfg(not(target_os = "linux"))]
+pub(super) fn bounded_directory_entries(
+    directory: &File,
+    max_count: usize,
+    max_name_bytes: usize,
+) -> io::Result<Vec<OsString>> {
+    let mut entries = Dir::read_from(directory).map_err(io::Error::from)?;
+    let mut names = Vec::with_capacity(max_count);
+    let mut name_bytes = 0;
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(io::Error::from)?;
+        push_bounded_directory_entry(
+            entry.file_name().to_bytes(),
+            &mut names,
+            &mut name_bytes,
+            max_count,
+            max_name_bytes,
+        )?;
+    }
+    names.sort_by(|left, right| left.as_encoded_bytes().cmp(right.as_encoded_bytes()));
+    Ok(names)
+}
+
+#[cfg(not(target_os = "linux"))]
 pub(super) fn directory_is_empty(directory: &File) -> io::Result<bool> {
     let mut entries = Dir::read_from(directory).map_err(io::Error::from)?;
     while let Some(entry) = entries.read() {
@@ -259,6 +315,39 @@ fn push_directory_entry(bytes: &[u8], names: &mut Vec<OsString>) -> io::Result<(
     let name = OsString::from_vec(bytes.to_vec());
     entry_name(Path::new(&name), "enumerated entry name")?;
     names.push(name);
+    Ok(())
+}
+
+fn push_bounded_directory_entry(
+    bytes: &[u8],
+    names: &mut Vec<OsString>,
+    name_bytes: &mut usize,
+    max_count: usize,
+    max_name_bytes: usize,
+) -> io::Result<()> {
+    if matches!(bytes, b"." | b"..") {
+        return Ok(());
+    }
+    entry_name(Path::new(OsStr::from_bytes(bytes)), "enumerated entry name")?;
+    if names.len() == max_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "public directory child count exceeds its bound",
+        ));
+    }
+    *name_bytes = name_bytes.checked_add(bytes.len()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "public directory child name bytes overflow",
+        )
+    })?;
+    if *name_bytes > max_name_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "public directory child name bytes exceed their bound",
+        ));
+    }
+    names.push(OsString::from_vec(bytes.to_vec()));
     Ok(())
 }
 

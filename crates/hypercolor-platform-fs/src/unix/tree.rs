@@ -10,7 +10,9 @@ mod replacement;
 mod staging;
 mod traversal;
 
-pub use replacement::MAX_EXACT_ENTRY_BYTES;
+pub use replacement::{
+    MAX_EXACT_ENTRY_BYTES, MAX_PUBLIC_DIRECTORY_CHILD_COUNT, MAX_PUBLIC_DIRECTORY_CHILD_NAMES_BYTES,
+};
 pub(super) use traversal::write_secret_contents;
 
 const SECRET_FILE_MODE: u32 = 0o600;

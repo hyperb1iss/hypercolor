@@ -1,6 +1,7 @@
 mod child;
 mod directory;
 mod ensure;
+mod enumeration;
 mod exact;
 mod operation;
 mod read;
@@ -23,6 +24,7 @@ use super::{
 use exact::observe_entry_at;
 use operation::{remove_entry_with, replace_entry_with};
 
+pub use enumeration::{MAX_PUBLIC_DIRECTORY_CHILD_COUNT, MAX_PUBLIC_DIRECTORY_CHILD_NAMES_BYTES};
 pub use exact::MAX_EXACT_ENTRY_BYTES;
 
 impl PublicDirectoryAuthority {
@@ -297,5 +299,7 @@ impl PreparedExtendedAncestry {
 mod directory_tests;
 #[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
 mod ensure_tests;
+#[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
+mod enumeration_tests;
 #[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
 mod tests;

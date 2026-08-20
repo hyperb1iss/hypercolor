@@ -1,13 +1,16 @@
 #![cfg(unix)]
 
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Read as _;
+use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
 use hypercolor_platform_fs::{
     EntryReplacement, ExactDirectoryEntry, ExactEntry, ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES,
+    MAX_PUBLIC_DIRECTORY_CHILD_COUNT, MAX_PUBLIC_DIRECTORY_CHILD_NAMES_BYTES,
 };
 
 struct Fixture {
@@ -41,6 +44,165 @@ impl Fixture {
 fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
     fs::write(path, bytes).expect("write fixture file");
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("set fixture mode");
+}
+
+#[test]
+fn public_child_names_are_bounded_sorted_and_handle_relative() {
+    let fixture = Fixture::new();
+    write_mode(&fixture.public.join("z-last"), b"last", 0o644);
+    write_mode(&fixture.public.join("a-first"), b"first", 0o644);
+    fs::create_dir(fixture.public.join("d-directory")).expect("create child directory");
+    symlink("a-first", fixture.public.join("m-link")).expect("create child symlink");
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+
+    let names = authority.child_names().expect("enumerate child names");
+    assert_eq!(
+        names,
+        ["a-first", "d-directory", "m-link", "z-last"]
+            .map(OsString::from)
+            .to_vec()
+    );
+    let mut opened = authority
+        .open_regular_file(Path::new(&names[0]))
+        .expect("open enumerated regular file");
+    let mut bytes = Vec::new();
+    opened
+        .file_mut()
+        .read_to_end(&mut bytes)
+        .expect("read enumerated regular file");
+    assert_eq!(bytes, b"first");
+    authority
+        .open_child_directory(Path::new(&names[1]))
+        .expect("open enumerated child directory");
+    assert!(matches!(
+        authority
+            .observe_entry(Path::new(&names[2]))
+            .expect("observe enumerated symlink"),
+        ExactEntry::Symlink { .. }
+    ));
+    authority
+        .open_child_directory(Path::new(&names[2]))
+        .expect_err("enumerated symlink must not open as a directory");
+}
+
+#[test]
+fn public_child_names_reject_parent_replaced_by_symlink() {
+    let fixture = Fixture::new();
+    write_mode(&fixture.public.join("entry"), b"entry", 0o644);
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+    let detached = fixture.public.with_extension("detached");
+    fs::rename(&fixture.public, &detached).expect("detach public directory");
+    symlink(&detached, &fixture.public).expect("replace public parent with symlink");
+
+    authority
+        .child_names()
+        .expect_err("symlink ancestry replacement must fail closed");
+
+    assert!(fixture.public.is_symlink());
+    assert_eq!(
+        fs::read(detached.join("entry")).expect("read detached entry"),
+        b"entry"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn public_child_names_preserve_non_utf8_platform_names() {
+    let fixture = Fixture::new();
+    let non_utf8 = OsString::from_vec(vec![b'n', 0xff]);
+    write_mode(&fixture.public.join("ascii"), b"ascii", 0o644);
+    write_mode(&fixture.public.join(&non_utf8), b"raw", 0o644);
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+
+    assert_eq!(
+        authority.child_names().expect("enumerate raw child name"),
+        vec![OsString::from("ascii"), non_utf8]
+    );
+}
+
+#[test]
+fn public_child_names_enforce_count_and_aggregate_byte_bounds() {
+    let count_fixture = Fixture::new();
+    for index in 0..=MAX_PUBLIC_DIRECTORY_CHILD_COUNT {
+        write_mode(
+            &count_fixture.public.join(format!("entry-{index:04}")),
+            b"entry",
+            0o644,
+        );
+    }
+    let count_lock = count_fixture.lock();
+    let count_authority = count_lock
+        .open_public_directory(&count_fixture.public)
+        .expect("open count authority");
+    count_authority
+        .child_names()
+        .expect_err("child count above the bound must fail");
+    assert!(count_fixture.public.join("entry-0000").is_file());
+
+    let bytes_fixture = Fixture::new();
+    let name_len = 255;
+    let entry_count = MAX_PUBLIC_DIRECTORY_CHILD_NAMES_BYTES / name_len + 1;
+    assert!(entry_count < MAX_PUBLIC_DIRECTORY_CHILD_COUNT);
+    for index in 0..entry_count {
+        let mut name = format!("{index:04}").into_bytes();
+        name.resize(name_len, b'x');
+        write_mode(
+            &bytes_fixture.public.join(OsString::from_vec(name)),
+            b"entry",
+            0o644,
+        );
+    }
+    let bytes_lock = bytes_fixture.lock();
+    let bytes_authority = bytes_lock
+        .open_public_directory(&bytes_fixture.public)
+        .expect("open aggregate-byte authority");
+    bytes_authority
+        .child_names()
+        .expect_err("aggregate child name bytes above the bound must fail");
+    assert_eq!(
+        fs::read_dir(&bytes_fixture.public)
+            .expect("read unchanged byte-bound directory")
+            .count(),
+        entry_count
+    );
+}
+
+#[test]
+fn public_child_names_retain_global_lock_lifetime() {
+    let fixture = Fixture::new();
+    write_mode(&fixture.public.join("entry"), b"entry", 0o644);
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+    drop(lock);
+
+    assert_eq!(
+        authority
+            .child_names()
+            .expect("enumerate while lock retained"),
+        [OsString::from("entry")]
+    );
+    assert!(
+        ExclusiveDirectory::try_acquire(&fixture.lock_root, Path::new("install.lock"))
+            .expect("probe retained lock")
+            .is_none()
+    );
+    drop(authority);
+    assert!(
+        ExclusiveDirectory::try_acquire(&fixture.lock_root, Path::new("install.lock"))
+            .expect("reacquire released lock")
+            .is_some()
+    );
 }
 
 #[test]

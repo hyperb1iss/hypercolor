@@ -7,7 +7,8 @@ mod tree;
 
 pub use tree::{
     DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, EntryReplacement,
-    ExactDirectoryEntry, ExactEntry, ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES, OpenedRegularFile,
+    ExactDirectoryEntry, ExactEntry, ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES,
+    MAX_PUBLIC_DIRECTORY_CHILD_COUNT, MAX_PUBLIC_DIRECTORY_CHILD_NAMES_BYTES, OpenedRegularFile,
     PrivateStagingDirectory, PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
 };
 
