@@ -3,6 +3,8 @@ mod directory;
 mod ensure;
 mod enumeration;
 mod exact;
+#[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
+mod metadata_tests;
 mod operation;
 mod read;
 mod rollback;
@@ -30,6 +32,31 @@ pub use enumeration::{MAX_PUBLIC_DIRECTORY_CHILD_COUNT, MAX_PUBLIC_DIRECTORY_CHI
 pub use exact::MAX_EXACT_ENTRY_BYTES;
 
 impl PublicDirectoryAuthority {
+    /// Return metadata from this exact retained public directory handle.
+    ///
+    /// Full absolute ancestry is validated before and after inspecting the
+    /// retained final directory descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ancestry changes or retained-handle inspection
+    /// fails.
+    pub fn metadata(&self) -> io::Result<DirectoryEntryMetadata> {
+        self.metadata_with(|| Ok(()))
+    }
+
+    fn metadata_with(
+        &self,
+        after_fstat: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<DirectoryEntryMetadata> {
+        let _operation = self.operation_guard()?;
+        self.validate_ancestry_inner()?;
+        let metadata = metadata_for_file(&self.directory)?;
+        after_fstat()?;
+        self.validate_ancestry_inner()?;
+        Ok(metadata)
+    }
+
     /// Downgrade this ancestry-anchored capability to a handle-relative one.
     ///
     /// The conversion consumes this public authority, validates its absolute
