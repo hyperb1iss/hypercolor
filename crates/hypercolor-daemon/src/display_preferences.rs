@@ -15,7 +15,12 @@ use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use serde::{Deserialize, Serialize};
 
+use crate::path_migration::{
+    MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
+};
 use crate::persistence::{AtomicFileWriter, serialize_json_pretty};
+
+const STORE_SUBJECT: &str = "display preferences";
 
 fn default_opacity() -> f32 {
     1.0
@@ -95,6 +100,40 @@ impl DisplayPreferencesStore {
                 )
             })?,
         })
+    }
+
+    /// Relocate a legacy data-tier file and open the state-tier store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either document is unreadable or invalid, the
+    /// canonical destination cannot be prepared, or retirement fails after a
+    /// durable import.
+    pub fn load_migrated(
+        legacy_path: &Path,
+        canonical_path: &Path,
+    ) -> anyhow::Result<(Self, MigrationOutcome)> {
+        let writer = AtomicFileWriter::new(canonical_path).with_context(|| {
+            format!(
+                "failed to prepare display preferences store at {}",
+                canonical_path.display()
+            )
+        })?;
+        let entry = PathMigrationEntry::new(
+            STORE_SUBJECT,
+            legacy_path.to_path_buf(),
+            canonical_path.to_path_buf(),
+        );
+        let migrated = migrate(&DisplayPreferencesCodec, &entry, &writer)?;
+        let preferences = migrated.document.unwrap_or_default();
+        Ok((
+            Self {
+                preferences,
+                path: canonical_path.to_path_buf(),
+                writer,
+            },
+            migrated.outcome,
+        ))
     }
 
     /// Persist the store to its file path.
@@ -179,5 +218,50 @@ impl DisplayPreferencesStore {
             );
         }
         Ok(())
+    }
+}
+
+struct DisplayPreferencesCodec;
+
+impl DisplayPreferencesCodec {
+    fn read(
+        path: &Path,
+    ) -> anyhow::Result<VersionedDocument<HashMap<DeviceId, DisplayPreference>>> {
+        let raw = fs::read_to_string(path).with_context(|| {
+            format!(
+                "failed to read display preferences store at {}",
+                path.display()
+            )
+        })?;
+        let preferences = serde_json::from_str(&raw).with_context(|| {
+            format!(
+                "failed to parse display preferences store at {}",
+                path.display()
+            )
+        })?;
+        Ok(VersionedDocument::unversioned(preferences))
+    }
+}
+
+impl MigratedStore for DisplayPreferencesCodec {
+    type Document = HashMap<DeviceId, DisplayPreference>;
+    type Error = anyhow::Error;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        Self::read(path)
+    }
+
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        Self::read(path).map(Some)
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        serialize_json_pretty(document).context("failed to serialize display preferences")
     }
 }

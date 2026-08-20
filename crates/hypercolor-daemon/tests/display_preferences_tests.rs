@@ -9,6 +9,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
+use hypercolor_daemon::path_migration::MigrationOutcome;
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
@@ -365,6 +366,63 @@ fn store_round_trips_preferences_to_disk() {
 
     let reloaded = DisplayPreferencesStore::load(&path).expect("store should load");
     assert_eq!(reloaded.get(device_id), Some(&preference));
+}
+
+#[test]
+fn store_moves_to_state_with_a_durable_legacy_backup() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let legacy = root.path().join("data/display-preferences.json");
+    let canonical = root.path().join("state/display-preferences.json");
+    std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    let device_id = DeviceId::new();
+    let preference = DisplayPreference {
+        effect_id: EffectId::from(Uuid::now_v7()),
+        controls: std::collections::HashMap::new(),
+        blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+        opacity: 0.75,
+    };
+    let mut legacy_store =
+        DisplayPreferencesStore::new(legacy.clone()).expect("legacy store initializes");
+    legacy_store
+        .set(device_id, preference.clone())
+        .expect("legacy preference persists");
+
+    let (migrated, outcome) =
+        DisplayPreferencesStore::load_migrated(&legacy, &canonical).expect("migration succeeds");
+    let MigrationOutcome::Imported {
+        backup: Some(backup),
+    } = outcome
+    else {
+        panic!("expected an imported backup, got {outcome:?}");
+    };
+
+    assert_eq!(migrated.get(device_id), Some(&preference));
+    assert!(canonical.exists());
+    assert!(!legacy.exists());
+    assert!(backup.exists());
+
+    let (_, second) =
+        DisplayPreferencesStore::load_migrated(&legacy, &canonical).expect("restart is idempotent");
+    assert_eq!(second, MigrationOutcome::AlreadyMigrated);
+}
+
+#[test]
+fn invalid_legacy_store_never_replaces_state() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let legacy = root.path().join("data/display-preferences.json");
+    let canonical = root.path().join("state/display-preferences.json");
+    std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    std::fs::write(&legacy, b"not json").expect("legacy fixture");
+
+    let error = DisplayPreferencesStore::load_migrated(&legacy, &canonical)
+        .expect_err("invalid legacy store is refused");
+
+    assert!(error.to_string().contains("failed to parse"));
+    assert!(!canonical.exists());
+    assert_eq!(
+        std::fs::read(&legacy).expect("legacy survives"),
+        b"not json"
+    );
 }
 
 // ── Scene-switch survival ───────────────────────────────────────────────
