@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "persistence-test-hooks")]
+#[cfg(any(test, feature = "persistence-test-hooks"))]
 use std::cell::Cell;
-#[cfg(feature = "persistence-test-hooks")]
+#[cfg(any(test, feature = "persistence-test-hooks"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Serialize;
@@ -29,7 +29,7 @@ static DESTINATIONS: LazyLock<Mutex<HashMap<PathBuf, Weak<Destination>>>> =
 static DESTINATIONS: LazyLock<Mutex<Vec<RegisteredDestination>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static RETRY_SUPERVISOR: OnceLock<Result<Arc<RetrySupervisor>, String>> = OnceLock::new();
-#[cfg(feature = "persistence-test-hooks")]
+#[cfg(any(test, feature = "persistence-test-hooks"))]
 thread_local! {
     static INJECTED_SERIALIZATION_FAILURES: Cell<usize> = const { Cell::new(0) };
 }
@@ -247,9 +247,9 @@ struct Destination {
     parent: PathBuf,
     state: Mutex<DestinationState>,
     state_changed: Condvar,
-    #[cfg(feature = "persistence-test-hooks")]
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
     injected_replace_failures: AtomicUsize,
-    #[cfg(all(unix, feature = "persistence-test-hooks"))]
+    #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
     injected_directory_sync_failures: AtomicUsize,
 }
 
@@ -357,9 +357,9 @@ impl AtomicFileWriter {
             parent: canonical_parent,
             state: Mutex::new(DestinationState::default()),
             state_changed: Condvar::new(),
-            #[cfg(feature = "persistence-test-hooks")]
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
             injected_replace_failures: AtomicUsize::new(0),
-            #[cfg(all(unix, feature = "persistence-test-hooks"))]
+            #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
             injected_directory_sync_failures: AtomicUsize::new(0),
         });
 
@@ -449,7 +449,7 @@ impl AtomicFileWriter {
     }
 
     /// Inject replacement failures for deterministic persistence tests.
-    #[cfg(feature = "persistence-test-hooks")]
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
     pub fn set_injected_replace_failures(&self, count: usize) {
         self.destination
             .injected_replace_failures
@@ -457,7 +457,7 @@ impl AtomicFileWriter {
     }
 
     /// Inject post-replacement directory-sync failures for deterministic tests.
-    #[cfg(all(unix, feature = "persistence-test-hooks"))]
+    #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
     pub fn set_injected_directory_sync_failures(&self, count: usize) {
         self.destination
             .injected_directory_sync_failures
@@ -810,7 +810,7 @@ fn try_write_stage_aware(
         return AtomicWriteCommitResult::Superseded;
     }
 
-    #[cfg(feature = "persistence-test-hooks")]
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
     if destination
         .injected_replace_failures
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
@@ -835,7 +835,7 @@ fn try_write_stage_aware(
 
     #[cfg(unix)]
     {
-        #[cfg(feature = "persistence-test-hooks")]
+        #[cfg(any(test, feature = "persistence-test-hooks"))]
         if destination
             .injected_directory_sync_failures
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
@@ -881,7 +881,7 @@ pub fn serialize_json_pretty<T>(value: &T) -> Result<Vec<u8>, serde_json::Error>
 where
     T: Serialize + ?Sized,
 {
-    #[cfg(feature = "persistence-test-hooks")]
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
     if INJECTED_SERIALIZATION_FAILURES.with(|remaining| {
         let count = remaining.get();
         remaining.set(count.saturating_sub(1));
@@ -895,7 +895,7 @@ where
 }
 
 /// Inject serialization failures for deterministic persistence tests.
-#[cfg(feature = "persistence-test-hooks")]
+#[cfg(any(test, feature = "persistence-test-hooks"))]
 pub fn set_injected_serialization_failures(count: usize) {
     INJECTED_SERIALIZATION_FAILURES.with(|remaining| remaining.set(count));
 }
