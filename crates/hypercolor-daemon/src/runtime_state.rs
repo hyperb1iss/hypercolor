@@ -8,10 +8,16 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{SceneId, Zone};
 use serde::{Deserialize, Serialize};
 
+use crate::path_migration::{
+    MigratedStore, MigrationOutcome, PathMigrationEntry, PathMigrationError, VersionedDocument,
+    migrate,
+};
 use crate::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
     serialize_json_pretty,
 };
+
+const STORE_SUBJECT: &str = "runtime session state";
 
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -44,6 +50,8 @@ pub struct RuntimeSnapshotSave {
 /// Errors produced while loading/saving runtime snapshots.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeSessionError {
+    #[error(transparent)]
+    Migration(#[from] PathMigrationError),
     #[error("failed to read runtime snapshot at {path}: {source}")]
     Read {
         path: PathBuf,
@@ -91,6 +99,46 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
         return Ok(None);
     }
 
+    let document = read_document(path)?;
+    if document.needs_rewrite {
+        save(path, &document.snapshot)?;
+    }
+    Ok(Some(document.snapshot))
+}
+
+/// Relocate a legacy data-tier snapshot and load the state-tier document.
+///
+/// # Errors
+///
+/// Returns an error when either snapshot cannot be read or decoded, the state
+/// destination cannot be prepared, or a durable import cannot be retired.
+pub fn load_migrated(
+    legacy_path: &Path,
+    canonical_path: &Path,
+) -> Result<(Option<RuntimeSessionSnapshot>, MigrationOutcome), RuntimeSessionError> {
+    let writer =
+        AtomicFileWriter::new(canonical_path).map_err(|source| RuntimeSessionError::Persist {
+            path: canonical_path.to_path_buf(),
+            source,
+        })?;
+    let entry = PathMigrationEntry::new(
+        STORE_SUBJECT,
+        legacy_path.to_path_buf(),
+        canonical_path.to_path_buf(),
+    );
+    let migrated = migrate(&RuntimeSessionCodec, &entry, &writer)?;
+    let outcome = migrated.outcome;
+    let document = migrated.document;
+    if matches!(outcome, MigrationOutcome::AlreadyMigrated)
+        && let Some(document) = document.as_ref()
+        && document.needs_rewrite
+    {
+        save(canonical_path, &document.snapshot)?;
+    }
+    Ok((document.map(|document| document.snapshot), outcome))
+}
+
+fn read_document(path: &Path) -> Result<RuntimeSessionDocument, RuntimeSessionError> {
     let raw = std::fs::read_to_string(path).map_err(|source| RuntimeSessionError::Read {
         path: path.to_path_buf(),
         source,
@@ -106,10 +154,43 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
             source,
         })?;
     let normalized = serde_json::to_value(&snapshot).map_err(RuntimeSessionError::Serialize)?;
-    if normalized != original {
-        save(path, &snapshot)?;
+    Ok(RuntimeSessionDocument {
+        snapshot,
+        needs_rewrite: normalized != original,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeSessionDocument {
+    snapshot: RuntimeSessionSnapshot,
+    needs_rewrite: bool,
+}
+
+struct RuntimeSessionCodec;
+
+impl MigratedStore for RuntimeSessionCodec {
+    type Document = RuntimeSessionDocument;
+    type Error = RuntimeSessionError;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        read_document(path).map(VersionedDocument::unversioned)
     }
-    Ok(Some(snapshot))
+
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        read_document(path)
+            .map(VersionedDocument::unversioned)
+            .map(Some)
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        serialize_json_pretty(&document.snapshot).map_err(RuntimeSessionError::Serialize)
+    }
 }
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
@@ -185,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_snapshot_persists_a_fresh_legacy_layer_id() {
+    fn runtime_snapshot_preserves_the_authored_layer_id() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("runtime-state.json");
         let manager = SceneManager::with_default();
@@ -214,15 +295,15 @@ mod tests {
         .expect("legacy snapshot should write");
 
         let loaded = load(&path)
-            .expect("legacy snapshot should migrate")
+            .expect("snapshot should load")
             .expect("snapshot should exist");
-        let migrated_id = loaded.default_scene_groups[0].layers[0].id;
-        assert_ne!(migrated_id.as_uuid(), zone_id.0);
+        let loaded_id = loaded.default_scene_groups[0].layers[0].id;
+        assert_eq!(loaded_id.as_uuid(), zone_id.0);
 
         let reloaded = load(&path)
-            .expect("migrated snapshot should reload")
+            .expect("snapshot should reload")
             .expect("snapshot should exist");
-        assert_eq!(reloaded.default_scene_groups[0].layers[0].id, migrated_id);
+        assert_eq!(reloaded.default_scene_groups[0].layers[0].id, loaded_id);
     }
 
     #[test]

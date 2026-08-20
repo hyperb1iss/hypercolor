@@ -11,10 +11,13 @@ use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferenc
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
 use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
+use hypercolor_daemon::path_migration::MigrationOutcome;
 use hypercolor_daemon::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, PersistenceError, write_atomic,
 };
-use hypercolor_daemon::runtime_state::{RuntimeSessionSnapshot, load, reserve_save, save_reserved};
+use hypercolor_daemon::runtime_state::{
+    RuntimeSessionSnapshot, load, load_migrated, reserve_save, save, save_reserved,
+};
 use hypercolor_types::device::DeviceId;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_types::effect::EffectId;
@@ -350,6 +353,52 @@ fn runtime_reservations_prevent_stale_snapshot_resurrection() {
         .expect("load runtime snapshot")
         .expect("runtime snapshot exists");
     assert_eq!(loaded.active_scene_id.as_deref(), Some("newer"));
+}
+
+#[test]
+fn runtime_snapshot_moves_to_state_with_a_durable_backup() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let legacy = directory.path().join("data/runtime-state.json");
+    let canonical = directory.path().join("state/runtime-state.json");
+    let expected = RuntimeSessionSnapshot {
+        active_scene_id: Some("active".to_owned()),
+        global_brightness: 0.7,
+        ..RuntimeSessionSnapshot::default()
+    };
+    save(&legacy, &expected).expect("seed legacy runtime snapshot");
+
+    let (loaded, outcome) = load_migrated(&legacy, &canonical).expect("runtime migration succeeds");
+    let MigrationOutcome::Imported {
+        backup: Some(backup),
+    } = outcome
+    else {
+        panic!("expected an imported backup, got {outcome:?}");
+    };
+
+    let loaded = loaded.expect("runtime snapshot exists");
+    assert_eq!(loaded.active_scene_id, expected.active_scene_id);
+    assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
+    assert!(canonical.exists());
+    assert!(!legacy.exists());
+    assert!(backup.exists());
+
+    let (_, second) = load_migrated(&legacy, &canonical).expect("restart is idempotent");
+    assert_eq!(second, MigrationOutcome::AlreadyMigrated);
+}
+
+#[test]
+fn invalid_legacy_runtime_snapshot_never_replaces_state() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let legacy = directory.path().join("data/runtime-state.json");
+    let canonical = directory.path().join("state/runtime-state.json");
+    fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    fs::write(&legacy, b"not json").expect("write invalid legacy snapshot");
+
+    let error = load_migrated(&legacy, &canonical).expect_err("invalid legacy is refused");
+
+    assert!(error.to_string().contains("failed to parse"));
+    assert_eq!(fs::read(&legacy).expect("legacy survives"), b"not json");
+    assert!(!canonical.exists());
 }
 
 #[test]
