@@ -213,7 +213,13 @@ pub(crate) fn platform_session_monitors(
         return hypercolor_windows_session::standalone_monitors();
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = config;
+        return hypercolor_macos_session::monitors();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = config;
         Vec::new()
@@ -680,6 +686,21 @@ mod tests {
         clear_output_override, fade_session_to, set_manual_pause, set_output_stopped,
         update_power_state, update_power_state_with_observer,
     };
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_platform_composition_installs_the_native_session_monitor() {
+        let monitors =
+            super::platform_session_monitors(&hypercolor_types::session::SessionConfig::default());
+
+        assert_eq!(
+            monitors
+                .iter()
+                .map(|monitor| monitor.name())
+                .collect::<Vec<_>>(),
+            ["macos-workspace-iokit"]
+        );
+    }
 
     #[test]
     fn session_wake_does_not_clear_manual_pause() {

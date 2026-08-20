@@ -926,15 +926,21 @@ Privacy purpose strings belong in `Info.plist`, not the entitlement profile:
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Hypercolor uses your microphone for audio-reactive lighting effects.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Hypercolor reads playback metadata from supported media apps for media-reactive lighting effects.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Hypercolor captures your screen to create screen-reactive lighting effects.</string>
 </dict>
 </plist>
 ```
 
-The bundle must not declare `NSAppleEventsUsageDescription`. Native keyboard
-and pointer capture uses Input Monitoring rather than Apple Events. Walk users
-through the TCC permissions in [§12.3](#123-macos-permissions).
+The signed daemon sidecar alone declares
+`com.apple.security.automation.apple-events`. Native keyboard and pointer
+capture still use Input Monitoring rather than Apple Events. The Automation
+purpose string belongs to the app bundle because the nested sidecar reads
+playback metadata from supported, already-running media apps. Standalone and
+unbundled daemon topologies remain ineligible. Walk users through the TCC
+permissions in [§12.3](#123-macos-permissions).
 
 **Output**: `Hypercolor-0.1.0-arm64.dmg` (Apple Silicon) and
 `Hypercolor-0.1.0-x86_64.dmg` (Intel). Both architectures are first-class

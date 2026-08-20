@@ -113,6 +113,8 @@ dispatch2 = "0.3.1"
 hypercolor-macos-capture = { workspace = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-input = { workspace = true }
+hypercolor-macos-media = { path = "../hypercolor-macos-media" }
+hypercolor-macos-session = { path = "../hypercolor-macos-session" }
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }

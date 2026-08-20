@@ -47,6 +47,8 @@ const TAURI_BUILD_RS: &str = include_str!("../build.rs");
 const APP_MAIN_RS: &str = include_str!("../src/main.rs");
 const MACOS_DAEMON_ENTITLEMENTS: &str =
     include_str!("../../../packaging/macos/daemon.entitlements.plist");
+const MACOS_DAEMON_SIDECAR_ENTITLEMENTS: &str =
+    include_str!("../../../packaging/macos/daemon-sidecar.entitlements.plist");
 const MACOS_LAUNCHD_PLIST: &str =
     include_str!("../../../packaging/launchd/tech.hyperbliss.hypercolor.plist");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
@@ -650,6 +652,18 @@ fn macos_daemon_entitlements_preserve_the_seven_key_profile() {
     for key in keys {
         assert!(MACOS_DAEMON_ENTITLEMENTS.contains(key));
     }
+}
+
+#[test]
+fn macos_daemon_sidecar_alone_declares_automation_access() {
+    assert_eq!(
+        MACOS_DAEMON_SIDECAR_ENTITLEMENTS.matches("<key>").count(),
+        MACOS_DAEMON_ENTITLEMENTS.matches("<key>").count() + 1
+    );
+    assert!(
+        MACOS_DAEMON_SIDECAR_ENTITLEMENTS.contains("com.apple.security.automation.apple-events")
+    );
+    assert!(!MACOS_DAEMON_ENTITLEMENTS.contains("com.apple.security.automation.apple-events"));
 }
 
 #[test]

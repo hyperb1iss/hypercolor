@@ -22,6 +22,7 @@ pub mod library;
 pub mod local;
 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
 mod macos_screen_parity;
+pub mod media;
 pub mod openapi;
 pub mod output;
 pub mod scene;
@@ -1357,6 +1358,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/system/audio-devices",
             axum::routing::get(system::list_audio_devices),
+        )
+        .route(
+            "/media/authorize",
+            axum::routing::post(media::authorize_media),
         )
         // ── Screen Capture ───────────────────────────────────────────
         .route(

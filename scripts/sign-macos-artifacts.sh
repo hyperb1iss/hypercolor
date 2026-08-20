@@ -7,8 +7,6 @@ fi
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${ROOT_DIR}/packaging/macos/signing-manifest.tsv"
-APP_ENTITLEMENTS="crates/hypercolor-app/entitlements.plist"
-DAEMON_ENTITLEMENTS="packaging/macos/daemon.entitlements.plist"
 SIGNING_TMP=""
 SIGNING_KEYCHAIN=""
 
@@ -111,8 +109,6 @@ validate_manifest() {
     || die "manifest is missing the standalone CLI identity"
   manifest_has standalone 'bin/hypercolor-app' 'tech.hyperbliss.hypercolor.app-host' \
     || die "manifest is missing the standalone app host identity"
-  cmp -s "${ROOT_DIR}/${APP_ENTITLEMENTS}" "${ROOT_DIR}/${DAEMON_ENTITLEMENTS}" \
-    || die "daemon entitlements diverge from the app profile"
 }
 
 ensure_signing_tmp() {

@@ -114,6 +114,7 @@ async fn disabled_session_config_does_not_start_injected_monitors() {
 fn deduplication_preserves_every_state_transition_pair() {
     let transitions = [
         (SessionEvent::ScreenLocked, SessionEvent::ScreenUnlocked),
+        (SessionEvent::SessionInactive, SessionEvent::SessionActive),
         (SessionEvent::Suspending, SessionEvent::Resumed),
         (
             SessionEvent::IdleEntered {

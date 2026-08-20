@@ -1164,7 +1164,7 @@ Verify:
 #### E3: Add opt-in macOS app-specific media adapters
 
 **Files:** new `hypercolor-macos-media` crate, workspace manifests, core
-media factory arm, app and daemon privacy metadata and entitlements,
+media factory arm, daemon media authorization route, app and daemon privacy metadata and entitlements,
 signing and packaging fixtures, packaging privacy contracts in design 46
 and spec 76, and media status tests.
 **Depends on:** I2 plus a signed Apple Events ownership and consent canary
@@ -1211,6 +1211,8 @@ Verify:
 - Permission fixtures prove polling never prompts, explicit authorization
   uses the exact signed sender identity, and denial or revocation remains
   recoverable.
+- The media authorization route requires protected control and names one
+  already-running adapter without launching it.
 - Packaging fixtures pin the purpose string, entitlement, and eligible owner
   topologies. Unbundled or ineligible owners publish unavailable status.
 - SDK and symbol checks find no private `MediaRemote` linkage, dynamic
@@ -1226,13 +1228,16 @@ daemon composition, session fixtures and spec 77 H7.3 status.
 
 Implementation:
 
-- Produce neutral sleep, wake, lock, and unlock events from
-  NSWorkspace/IOKit behind `SessionMonitor`.
+- Produce neutral sleep and wake events from IOKit plus session-inactive and
+  session-active events from NSWorkspace behind `SessionMonitor`. Public
+  NSWorkspace session activity notifications describe user-session switching,
+  not exact screen lock or unlock state.
 
 Verify:
 
 - The same dedup and sleep-policy fixtures pass for Linux, Windows, and
-  macOS.
+  macOS. Linux and Windows preserve exact lock events; macOS session activity
+  exercises the same configured policy without claiming a lock transition.
 - Native Apple Silicon and Intel construction/teardown tests execute with
   nonzero counts.
 

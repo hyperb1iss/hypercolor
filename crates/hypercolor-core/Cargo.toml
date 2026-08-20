@@ -110,6 +110,9 @@ ashpd = { workspace = true }
 pipewire = { workspace = true }
 zbus = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+hypercolor-macos-media = { path = "../hypercolor-macos-media" }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", default-features = false, features = [
     "Foundation",

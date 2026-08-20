@@ -198,10 +198,9 @@ Consent, and Control grants are attached to a signed code identity, so the final
 owner of Input Monitoring and Screen Recording cannot be chosen from source
 layout alone.
 
-The current app metadata also describes keyboard input with
-`NSAppleEventsUsageDescription`. Apple Events permission controls automation of
-other applications. It does not authorize `CGEventTap` listening. The key is
-wrong unless Hypercolor separately sends Apple Events.
+The app metadata uses `NSAppleEventsUsageDescription` only for the opt-in media
+adapters defined by design 72. Apple Events permission does not authorize
+`CGEventTap` listening, so keyboard and pointer access never depend on that key.
 
 The first implementation wave therefore proves TCC ownership in a signed
 package before placing irreversible weight on either process topology.
@@ -561,7 +560,7 @@ runtime option that lets two processes compete for the same capability.
 | Keyboard listening                   | Listen Event / Input Monitoring   | `CGPreflightListenEventAccess`, `CGRequestListenEventAccess` | no Apple Events key                                                      |
 | Pointer listening                    | none for passive mouse events     | event-tap construction and health                            | none                                                                     |
 | Screen frames and source enumeration | Screen Capture / Screen Recording | ScreenCaptureKit access and system picker                    | `NSScreenCaptureUsageDescription`                                        |
-| Apple application automation         | Apple Events                      | not used by this design                                      | remove `NSAppleEventsUsageDescription` unless another feature proves use |
+| Apple application automation         | Apple Events                      | nonprompting preflight; explicit media authorization action  | `NSAppleEventsUsageDescription` for the signed app sidecar only          |
 
 Apple's ScreenCaptureKit framework overview explicitly directs macOS apps to
 add `NSScreenCaptureUsageDescription` with the reason screen recording is
@@ -1815,8 +1814,8 @@ rules:
    input state and invalidate screen freshness.
 9. The broker fallback authenticates the peer by audit token and code signing,
    not merely by filesystem permissions or claimed process ID.
-10. The app ships `NSScreenCaptureUsageDescription` with direct language about
-    lighting effects. The unrelated Apple Events purpose string is removed.
+10. The app ships direct purpose strings for screen capture and design 72's
+    opt-in media Automation. Host input never uses Apple Events.
 11. Daemon-owner selection, process handover, and autostart mutation require the
     local app or CLI coordinator. No REST, WebSocket, MCP, or other network
     client can invoke them. Pre-runtime daemon recovery may execute only a
@@ -2111,7 +2110,7 @@ is:
 | Code object                            | Identifier                            | Entitlements                                |
 | -------------------------------------- | ------------------------------------- | ------------------------------------------- |
 | `Hypercolor.app`                       | `tech.hyperbliss.hypercolor`          | `crates/hypercolor-app/entitlements.plist`  |
-| embedded `hypercolor-daemon-*` sidecar | `tech.hyperbliss.hypercolor.sidecar`  | `packaging/macos/daemon.entitlements.plist` |
+| embedded `hypercolor-daemon-*` sidecar | `tech.hyperbliss.hypercolor.sidecar`  | `packaging/macos/daemon-sidecar.entitlements.plist` |
 | standalone `hypercolor-daemon`         | `tech.hyperbliss.hypercolor.daemon`   | `packaging/macos/daemon.entitlements.plist` |
 | standalone `hypercolor`                | `tech.hyperbliss.hypercolor.cli`      | none                                        |
 | standalone `hypercolor-app`            | `tech.hyperbliss.hypercolor.app-host` | `crates/hypercolor-app/entitlements.plist`  |
@@ -2124,15 +2123,17 @@ signed app executable and uses the app identifier. Bundled dylibs and any future
 Mach-O must also have a stable manifest entry with an explicit entitlements file
 or `none`; an unlisted object fails release.
 
-The daemon entitlement profile carries the six keys currently present in
+The daemon entitlement profile carries the seven keys currently present in
 `crates/hypercolor-app/entitlements.plist` forward verbatim. Audio input, JIT,
 and unsigned executable memory are hardened-runtime capabilities needed by
 microphone capture and Servo. USB, network client, and network server are
 App-Sandbox resource keys; they do not gate those capabilities while Hypercolor
 remains non-sandboxed and are not the basis for any access claim in this spec.
-They stay in the profile to preserve current signed behavior. The sidecar and
-standalone daemon both receive the exact profile. A missing or divergent profile
-is a release failure.
+They stay in the profile to preserve current signed behavior. The app sidecar
+adds `com.apple.security.automation.apple-events` for design 72's opt-in media
+adapters. The standalone daemon keeps the base profile and reports Automation
+unavailable because it has no eligible containing app bundle. A missing or
+unexpected profile is a release failure.
 
 The release job Developer ID Application-signs every object with hardened
 runtime, secure timestamps, and the expected team identifier. The app bundle is
@@ -2350,10 +2351,11 @@ each designated requirement is documented.
    `scripts/verify-release-artifact.sh` reject missing signatures, mismatched
    designated requirements, identifiers, team IDs, unlisted Mach-O files, or
    notarization receipts.
-   Create `packaging/macos/daemon.entitlements.plist` with the exact six Boolean
+   Create `packaging/macos/daemon.entitlements.plist` with the exact seven Boolean
    keys carried by the current app profile:
    `com.apple.security.cs.allow-jit`,
    `com.apple.security.cs.allow-unsigned-executable-memory`,
+   `com.apple.security.cs.disable-library-validation`,
    `com.apple.security.device.audio-input`,
    `com.apple.security.device.usb`,
    `com.apple.security.network.client`, and
@@ -2455,12 +2457,12 @@ Metal 4 decision.
 
 ### W6: packaging, diagnostics, and release hardening
 
-1. Finalize purpose strings and remove the incorrect Apple Events string.
-2. Invert `hypercolor-app/tests/config_tests.rs` to require the screen-capture
-   purpose string and forbid the Apple Events string, then update spec 67's
-   packaging inventory. The same tests parse
-   `packaging/macos/daemon.entitlements.plist` and assert its exact six-key
-   profile against the manifest contract in section 18.4.
+1. Finalize purpose strings and scope the Apple Events string to design 72's
+   opt-in media adapters.
+2. Require the screen-capture and media Automation purpose strings, then update
+   spec 67's packaging inventory. The same tests parse the base and sidecar
+   daemon entitlement profiles and assert their exact manifest contracts in
+   section 18.4.
 3. Ship each selected TCC topology and only its required broker capabilities.
 4. When direct launchd broker delegation is selected, add the
    `tech.hyperbliss.hypercolor.daemon-bootstrap` `MachServices` entry to

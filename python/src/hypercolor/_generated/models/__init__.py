@@ -67,6 +67,12 @@ from .api_response_effect_preset_list_response import (
 from .api_response_effect_preset_list_response_data import (
     ApiResponseEffectPresetListResponseData,
 )
+from .api_response_media_authorization_response import (
+    ApiResponseMediaAuthorizationResponse,
+)
+from .api_response_media_authorization_response_data import (
+    ApiResponseMediaAuthorizationResponseData,
+)
 from .api_response_output_resource import ApiResponseOutputResource
 from .api_response_output_resource_data import ApiResponseOutputResourceData
 from .api_response_rebind_device_response import ApiResponseRebindDeviceResponse
@@ -250,6 +256,9 @@ from .macos_daemon_owner_recovery_required_api_status import (
     MacosDaemonOwnerRecoveryRequiredApiStatus,
 )
 from .macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
+from .media_authorization_adapter import MediaAuthorizationAdapter
+from .media_authorization_request import MediaAuthorizationRequest
+from .media_authorization_response import MediaAuthorizationResponse
 from .meta import Meta
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
@@ -361,6 +370,8 @@ __all__ = (
     "ApiResponseEffectListResponseData",
     "ApiResponseEffectPresetListResponse",
     "ApiResponseEffectPresetListResponseData",
+    "ApiResponseMediaAuthorizationResponse",
+    "ApiResponseMediaAuthorizationResponseData",
     "ApiResponseOutputResource",
     "ApiResponseOutputResourceData",
     "ApiResponseRebindDeviceResponse",
@@ -528,6 +539,9 @@ __all__ = (
     "MacosDaemonOwnerConflictApiStatus",
     "MacosDaemonOwnerRecoveryRequiredApiStatus",
     "MacosDaemonOwnershipApiStatus",
+    "MediaAuthorizationAdapter",
+    "MediaAuthorizationRequest",
+    "MediaAuthorizationResponse",
     "Meta",
     "NormalizedPosition",
     "NormalizedRect",

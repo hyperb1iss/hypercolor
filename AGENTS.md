@@ -250,7 +250,7 @@ without the runtime cliffs of unoptimized Servo.
 
 - **Edition 2024**, Rust 1.94+
 - **Tests:** integration and public-API coverage lives in `tests/` directories, named `{feature}_tests.rs`. Small private-internals unit tests may use `#[cfg(test)]` modules; avoid large inline test bodies.
-- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
+- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden**: use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors

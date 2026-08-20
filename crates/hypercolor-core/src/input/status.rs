@@ -1300,6 +1300,11 @@ impl SourceSessionWriter {
         true
     }
 
+    /// Publish a neutral user-action issue if this session is still active.
+    pub fn set_action_issue(&self, action_issue: Option<SourceIssue>) -> bool {
+        self.publish(|status| status.action_issue = action_issue)
+    }
+
     /// Publish a sampled value with its mandatory freshness deadline.
     ///
     /// Once structurally live, steady samples only publish an allocation-free

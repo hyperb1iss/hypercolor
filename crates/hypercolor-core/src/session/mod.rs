@@ -45,10 +45,11 @@ pub struct SessionWatcher {
 #[derive(Debug, Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "session dedup tracks four orthogonal state bits"
+    reason = "session dedup tracks five orthogonal state bits"
 )]
 struct DeduplicationState {
     screen_locked: bool,
+    session_inactive: bool,
     lid_closed: bool,
     idle: bool,
     suspended: bool,
@@ -68,6 +69,18 @@ impl DeduplicationState {
                     return false;
                 }
                 self.screen_locked = false;
+            }
+            SessionEvent::SessionInactive => {
+                if self.session_inactive {
+                    return false;
+                }
+                self.session_inactive = true;
+            }
+            SessionEvent::SessionActive => {
+                if !self.session_inactive {
+                    return false;
+                }
+                self.session_inactive = false;
             }
             SessionEvent::Suspending => {
                 if self.suspended {

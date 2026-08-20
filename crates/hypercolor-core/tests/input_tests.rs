@@ -4353,6 +4353,24 @@ fn source_action_issue_updates_preserve_lifecycle_and_deduplicate() {
 }
 
 #[test]
+fn source_session_action_issue_is_generation_fenced() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let issue = SourceIssue::new("authorization_required", "authorization is required", true);
+
+    assert!(session.set_action_issue(Some(issue.clone())));
+    assert_eq!(handle.snapshot().action_issue.as_ref(), Some(&issue));
+    assert!(session.set_action_issue(None));
+    assert!(handle.snapshot().action_issue.is_none());
+
+    writer.stop();
+    assert!(!session.set_action_issue(Some(issue)));
+    assert!(handle.snapshot().action_issue.is_none());
+}
+
+#[test]
 fn terminal_failure_latch_probes_once_per_worker_session() {
     let mut latch = TerminalFailureLatch::default();
     let probes = std::cell::Cell::new(0);
