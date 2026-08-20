@@ -364,29 +364,72 @@ fi
 
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
 
-cat > "${DIST_DIR}/manifest.json" <<EOF
-{
-  "name": "hypercolor",
-  "version": "${VERSION}",
-  "platform": "${PLATFORM}",
-  "rust_target": "${RUST_TARGET}",
-  "binaries": [
-    "hypercolor-daemon",
-    "hypercolor",
-    "hypercolor-app",
-    "hypercolor-tui",
-    "hypercolor-open"
-  ],
-  "assets": {
-    "ui_files": $(count_files "${DIST_DIR}/share/hypercolor/ui"),
-    "bundled_effect_files": $(count_files "${DIST_DIR}/share/hypercolor/effects/bundled"),
-    "docs_files": $(count_files "${DIST_DIR}/share/hypercolor/docs"),
-    "skill_files": $(count_files "${DIST_DIR}/share/hypercolor/agents/skills"),
-    "agent_files": $(count_files "${DIST_DIR}/share/hypercolor/agents/agents"),
-    "site_files": $(count_files "${DIST_DIR}/share/hypercolor/site")
-  }
+DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
+RUST_TARGET="${RUST_TARGET}" python3 - <<'PY'
+import hashlib
+import json
+import os
+import stat
+from pathlib import Path
+
+root = Path(os.environ["DIST_DIR"])
+members = []
+for path in sorted(root.rglob("*")):
+    relative = path.relative_to(root).as_posix()
+    if relative == "manifest.json":
+        continue
+    metadata = path.lstat()
+    mode = stat.S_IMODE(metadata.st_mode)
+    if stat.S_ISDIR(metadata.st_mode):
+        members.append({"path": relative, "type": "directory", "mode": mode})
+        continue
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"release payload contains unsupported member: {relative}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    members.append(
+        {
+            "path": relative,
+            "type": "file",
+            "mode": mode,
+            "size": metadata.st_size,
+            "sha256": digest.hexdigest(),
+        }
+    )
+
+def count_files(relative: str) -> int:
+    directory = root / relative
+    return sum(1 for path in directory.rglob("*") if path.is_file())
+
+manifest = {
+    "name": "hypercolor",
+    "version": os.environ["VERSION"],
+    "platform": os.environ["PLATFORM"],
+    "rust_target": os.environ["RUST_TARGET"],
+    "binaries": [
+        "hypercolor-daemon",
+        "hypercolor",
+        "hypercolor-app",
+        "hypercolor-tui",
+        "hypercolor-open",
+    ],
+    "assets": {
+        "ui_files": count_files("share/hypercolor/ui"),
+        "bundled_effect_files": count_files("share/hypercolor/effects/bundled"),
+        "docs_files": count_files("share/hypercolor/docs"),
+        "skill_files": count_files("share/hypercolor/agents/skills"),
+        "agent_files": count_files("share/hypercolor/agents/agents"),
+        "site_files": count_files("share/hypercolor/site"),
+    },
+    "members": members,
 }
-EOF
+(root / "manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
 
 info "Creating tarball"
 (cd dist && tar czf "${DIST_NAME}.tar.gz" "${DIST_NAME}")

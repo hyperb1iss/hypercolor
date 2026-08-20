@@ -34,24 +34,12 @@ if [[ -z "${tarball}" ]]; then
   exit 2
 fi
 
-for cmd in tar python3; do
+for cmd in python3; do
   command -v "${cmd}" >/dev/null 2>&1 || {
     echo "missing required command: ${cmd}" >&2
     exit 1
   }
 done
-
-sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print tolower($1)}'
-  else
-    command -v shasum >/dev/null 2>&1 || {
-      echo "missing required command: sha256sum or shasum" >&2
-      exit 1
-    }
-    shasum -a 256 "$1" | awk '{print tolower($1)}'
-  fi
-}
 
 [[ -s "${tarball}" ]] || {
   echo "release tarball is missing or empty: ${tarball}" >&2
@@ -62,53 +50,108 @@ sha256_file() {
   exit 1
 }
 
-expected="$(awk 'NF { print tolower($1); exit }' "${checksum_file}")"
-if [[ ! "${expected}" =~ ^[a-f0-9]{64}$ ]]; then
-  echo "invalid SHA256 checksum in ${checksum_file}" >&2
-  exit 1
-fi
-
-actual="$(sha256_file "${tarball}")"
-if [[ "${actual}" != "${expected}" ]]; then
-  echo "checksum mismatch for ${tarball}" >&2
-  exit 1
-fi
-
-entries_file="$(mktemp)"
 tmpdir="$(mktemp -d)"
 cleanup() {
-  rm -f "${entries_file}"
   rm -rf "${tmpdir}"
 }
 trap cleanup EXIT
 
-tar tzf "${tarball}" > "${entries_file}"
-if [[ ! -s "${entries_file}" ]]; then
-  echo "release tarball is empty: ${tarball}" >&2
-  exit 1
-fi
+root_name="$(TARBALL="${tarball}" CHECKSUM="${checksum_file}" \
+EXTRACT_DIR="${tmpdir}" python3 - <<'PY'
+import hashlib
+import os
+import posixpath
+import re
+import shutil
+import stat
+import tarfile
+from pathlib import Path
 
-root_name=""
-while IFS= read -r entry; do
-  [[ "${entry}" != /* ]] || {
-    echo "archive contains absolute path: ${entry}" >&2
-    exit 1
-  }
-  [[ "${entry}" != ".." && "${entry}" != ../* && "${entry}" != */../* && "${entry}" != */.. ]] || {
-    echo "archive contains unsafe path segment: ${entry}" >&2
-    exit 1
-  }
+with open(os.environ["CHECKSUM"], encoding="utf-8") as checksum:
+    fields = checksum.read().split()
+if not fields or re.fullmatch(r"[a-fA-F0-9]{64}", fields[0]) is None:
+    raise SystemExit(f"invalid SHA256 checksum in {os.environ['CHECKSUM']}")
+expected = fields[0].lower()
 
-  top="${entry%%/*}"
-  if [[ -z "${root_name}" ]]; then
-    root_name="${top}"
-  elif [[ "${top}" != "${root_name}" ]]; then
-    echo "archive contains multiple roots: ${root_name}, ${top}" >&2
-    exit 1
-  fi
-done < "${entries_file}"
+flags = os.O_RDONLY
+if hasattr(os, "O_CLOEXEC"):
+    flags |= os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+descriptor = os.open(os.environ["TARBALL"], flags)
+destination = Path(os.environ["EXTRACT_DIR"])
+snapshot_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+if hasattr(os, "O_CLOEXEC"):
+    snapshot_flags |= os.O_CLOEXEC
+snapshot_path = destination / ".verified-artifact.snapshot"
+snapshot_descriptor = os.open(snapshot_path, snapshot_flags, 0o600)
+if os.name == "posix":
+    os.unlink(snapshot_path)
 
-tar xzf "${tarball}" -C "${tmpdir}"
+seen = set()
+root = None
+with (
+    os.fdopen(descriptor, "rb") as artifact,
+    os.fdopen(snapshot_descriptor, "w+b") as snapshot,
+):
+    if not stat.S_ISREG(os.fstat(artifact.fileno()).st_mode):
+        raise SystemExit("release artifact must be a regular file")
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+        digest.update(chunk)
+        snapshot.write(chunk)
+    actual = digest.hexdigest()
+    if actual != expected:
+        raise SystemExit(f"checksum mismatch for {os.environ['TARBALL']}")
+    snapshot.flush()
+    snapshot.seek(0)
+    archive = tarfile.open(fileobj=snapshot, mode="r:gz")
+    members = archive.getmembers()
+    if not members:
+        raise SystemExit("release tarball is empty")
+    for member in members:
+        normalized = posixpath.normpath(member.name)
+        if (
+            not member.name
+            or member.name.startswith("/")
+            or "\\" in member.name
+            or normalized != member.name.rstrip("/")
+            or normalized in (".", "..")
+            or normalized.startswith("../")
+        ):
+            raise SystemExit(f"archive contains unsafe path: {member.name}")
+        if normalized in seen:
+            raise SystemExit(f"archive contains duplicate member: {normalized}")
+        seen.add(normalized)
+        top = normalized.split("/", 1)[0]
+        if root is None:
+            root = top
+        elif root != top:
+            raise SystemExit(f"archive contains multiple roots: {root}, {top}")
+        if not (member.isdir() or member.isfile()):
+            raise SystemExit(f"archive contains unsupported member type: {normalized}")
+        if member.mode < 0 or member.mode & ~0o777:
+            raise SystemExit(f"archive contains unsupported mode: {normalized}")
+    root_members = [member for member in members if member.name.rstrip("/") == root]
+    if len(root_members) != 1 or not root_members[0].isdir():
+        raise SystemExit(f"archive root must be one directory: {root}")
+
+    for member in members:
+        path = destination / member.name.rstrip("/")
+        if member.isdir():
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                raise SystemExit(f"archive file cannot be read: {member.name}")
+            with path.open("xb") as output:
+                shutil.copyfileobj(source, output)
+        path.chmod(member.mode)
+    archive.close()
+print(root)
+PY
+)"
 root_dir="${tmpdir}/${root_name}"
 manifest="${root_dir}/manifest.json"
 [[ -d "${root_dir}" ]] || {
@@ -153,11 +196,16 @@ for bin in "${required_bins[@]}"; do
   }
 done
 
-ROOT_NAME="${root_name}" MANIFEST="${manifest}" python3 - <<'PY'
+ROOT_NAME="${root_name}" ROOT_DIR="${root_dir}" MANIFEST="${manifest}" python3 - <<'PY'
+import hashlib
 import json
 import os
+import re
+import stat
+from pathlib import Path
 
 root_name = os.environ["ROOT_NAME"]
+root = Path(os.environ["ROOT_DIR"])
 with open(os.environ["MANIFEST"], encoding="utf-8") as handle:
     manifest = json.load(handle)
 
@@ -179,16 +227,96 @@ expected_bins = {
     "hypercolor-tui",
     "hypercolor-open",
 }
-if set(manifest.get("binaries", [])) != expected_bins:
+binaries = manifest.get("binaries")
+if (
+    not isinstance(binaries, list)
+    or len(binaries) != len(expected_bins)
+    or any(not isinstance(binary, str) for binary in binaries)
+    or set(binaries) != expected_bins
+):
     raise SystemExit("manifest binaries do not match the release payload")
 
 assets = manifest.get("assets")
-if not isinstance(assets, dict):
+required_asset_counts = {
+    "ui_files",
+    "bundled_effect_files",
+    "docs_files",
+    "skill_files",
+    "agent_files",
+    "site_files",
+}
+if not isinstance(assets, dict) or set(assets) != required_asset_counts:
     raise SystemExit("manifest assets must be an object")
-for key in ("ui_files", "bundled_effect_files", "skill_files", "agent_files"):
+for key in required_asset_counts:
     value = assets.get(key)
-    if not isinstance(value, int) or value <= 0:
-        raise SystemExit(f"manifest assets.{key} must be greater than zero")
+    minimum = 0 if key in {"docs_files", "site_files"} else 1
+    if type(value) is not int or value < minimum:
+        raise SystemExit(f"manifest assets.{key} is invalid")
+
+members = manifest.get("members")
+if not isinstance(members, list) or not members:
+    raise SystemExit("manifest members must be a non-empty array")
+expected_paths = set()
+for member in members:
+    if not isinstance(member, dict):
+        raise SystemExit("manifest member must be an object")
+    relative = member.get("path")
+    member_type = member.get("type")
+    mode = member.get("mode")
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or relative.startswith("/")
+        or ".." in Path(relative).parts
+        or relative == "manifest.json"
+        or relative in expected_paths
+    ):
+        raise SystemExit(f"manifest member path is invalid or duplicated: {relative!r}")
+    if type(mode) is not int or mode < 0 or mode > 0o777:
+        raise SystemExit(f"manifest mode is invalid for {relative}")
+    expected_paths.add(relative)
+    path = root / relative
+    metadata = path.lstat()
+    if stat.S_IMODE(metadata.st_mode) != mode:
+        raise SystemExit(f"manifest mode mismatch for {relative}")
+    if member_type == "directory":
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise SystemExit(f"manifest type mismatch for {relative}")
+        if set(member) != {"path", "type", "mode"}:
+            raise SystemExit(f"manifest directory fields are invalid for {relative}")
+    elif member_type == "file":
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"manifest type mismatch for {relative}")
+        if set(member) != {"path", "type", "mode", "size", "sha256"}:
+            raise SystemExit(f"manifest file fields are invalid for {relative}")
+        size = member.get("size")
+        digest_value = member.get("sha256")
+        if type(size) is not int or size < 0:
+            raise SystemExit(f"manifest size is invalid for {relative}")
+        if not isinstance(digest_value, str) or re.fullmatch(r"[a-f0-9]{64}", digest_value) is None:
+            raise SystemExit(f"manifest digest is invalid for {relative}")
+        if metadata.st_size != size:
+            raise SystemExit(f"manifest size mismatch for {relative}")
+        digest = hashlib.sha256()
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != digest_value:
+            raise SystemExit(f"manifest digest mismatch for {relative}")
+    else:
+        raise SystemExit(f"manifest type is invalid for {relative}")
+
+actual_paths = {
+    path.relative_to(root).as_posix()
+    for path in root.rglob("*")
+    if path.relative_to(root).as_posix() != "manifest.json"
+}
+if actual_paths != expected_paths:
+    missing = sorted(expected_paths - actual_paths)
+    unexpected = sorted(actual_paths - expected_paths)
+    raise SystemExit(
+        f"manifest member set mismatch: missing={missing}, unexpected={unexpected}"
+    )
 PY
 
 platform="$(MANIFEST="${manifest}" python3 - <<'PY'

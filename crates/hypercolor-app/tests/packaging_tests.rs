@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::process::Command;
+use std::{fs, path::Path, process::Command};
 
 const CARGO_CONFIG: &str = include_str!("../../../.cargo/config.toml");
 const GET_INSTALLER: &str = include_str!("../../../scripts/get-hypercolor.sh");
@@ -826,6 +826,275 @@ fn macos_release_verifier_checks_signatures_and_notarization_provenance() {
     assert!(SIGN_MACOS_ARTIFACTS_SH.contains("app_notarization.status"));
     assert!(SIGN_MACOS_ARTIFACTS_SH.contains("dmg_notarization.status"));
     assert!(SIGN_MACOS_ARTIFACTS_SH.contains("notarization.status"));
+}
+
+#[test]
+fn release_archives_bind_every_safe_member_before_installation() {
+    for field in ["path", "type", "mode", "size", "sha256"] {
+        assert!(DIST_SH.contains(&format!("\"{field}\"")));
+    }
+    assert!(DIST_SH.contains("release payload contains unsupported member"));
+    assert!(VERIFY_RELEASE_SH.contains("archive contains duplicate member"));
+    assert!(VERIFY_RELEASE_SH.contains("archive contains unsupported member type"));
+    assert!(VERIFY_RELEASE_SH.contains("manifest member set mismatch"));
+    assert!(VERIFY_RELEASE_SH.contains("manifest digest mismatch"));
+    assert!(VERIFY_RELEASE_SH.contains("manifest mode mismatch"));
+    assert!(VERIFY_RELEASE_SH.contains("os.fdopen(descriptor, \"rb\")"));
+    assert!(VERIFY_RELEASE_SH.contains("os.O_RDWR | os.O_CREAT | os.O_EXCL"));
+    assert!(VERIFY_RELEASE_SH.contains("os.unlink(snapshot_path)"));
+    assert!(VERIFY_RELEASE_SH.contains("tarfile.open(fileobj=snapshot"));
+}
+
+#[cfg(unix)]
+#[test]
+fn release_verifier_rejects_unsafe_archive_members_before_extraction() {
+    let temp = tempfile::tempdir().expect("temporary archive directory should be created");
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/verify-release-artifact.sh");
+    let builder = r#"
+import io
+import sys
+import tarfile
+
+archive_path, case = sys.argv[1:]
+root_name = "hypercolor-0.0.0-linux-x86_64"
+with tarfile.open(archive_path, "w:gz") as archive:
+    root = tarfile.TarInfo(f"{root_name}/")
+    root.type = tarfile.DIRTYPE
+    root.mode = 0o755
+    archive.addfile(root)
+
+    name = f"{root_name}/payload"
+    if case == "traversal":
+        name = "../escape"
+    member = tarfile.TarInfo(name)
+    member.mode = 0o644
+    if case == "symlink":
+        member.type = tarfile.SYMTYPE
+        member.linkname = "/tmp/escape"
+    elif case == "hardlink":
+        member.type = tarfile.LNKTYPE
+        member.linkname = f"{root_name}/target"
+    elif case == "special":
+        member.type = tarfile.CHRTYPE
+        member.devmajor = 1
+        member.devminor = 3
+    else:
+        if case == "setuid":
+            member.mode = 0o4755
+        member.size = 1
+        archive.addfile(member, io.BytesIO(b"x"))
+        if case == "duplicate":
+            archive.addfile(member, io.BytesIO(b"x"))
+        member = None
+    if member is not None:
+        archive.addfile(member)
+"#;
+
+    for (case, expected_error) in [
+        ("traversal", "archive contains unsafe path"),
+        ("symlink", "archive contains unsupported member type"),
+        ("hardlink", "archive contains unsupported member type"),
+        ("special", "archive contains unsupported member type"),
+        ("duplicate", "archive contains duplicate member"),
+        ("setuid", "archive contains unsupported mode"),
+    ] {
+        let archive = temp.path().join(format!("{case}.tar.gz"));
+        let status = Command::new("python3")
+            .args(["-c", builder])
+            .arg(&archive)
+            .arg(case)
+            .status()
+            .expect("python should create the hostile archive fixture");
+        assert!(status.success(), "failed to build {case} fixture");
+
+        let digest = Command::new("sha256sum")
+            .arg(&archive)
+            .output()
+            .or_else(|_| {
+                Command::new("shasum")
+                    .args(["-a", "256"])
+                    .arg(&archive)
+                    .output()
+            })
+            .expect("a SHA256 tool should hash the hostile archive fixture");
+        assert!(digest.status.success(), "failed to hash {case} fixture");
+        let checksum = format!("{}.sha256", archive.display());
+        fs::write(&checksum, digest.stdout).expect("checksum fixture should be written");
+
+        let output = Command::new("bash")
+            .arg(&verifier)
+            .arg(&archive)
+            .arg(&checksum)
+            .output()
+            .expect("release verifier should inspect the hostile archive fixture");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{case} archive was accepted");
+        assert!(
+            stderr.contains(expected_error),
+            "unexpected {case} rejection: {stderr}"
+        );
+    }
+
+    assert!(!temp.path().join("escape").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn release_verifier_rejects_unbound_and_malformed_manifests() {
+    let temp = tempfile::tempdir().expect("temporary archive directory should be created");
+    let builder = r#"
+import hashlib
+import io
+import json
+import sys
+import tarfile
+
+archive_path = sys.argv[1]
+case = sys.argv[2]
+root_name = "hypercolor-0.0.0-linux-amd64"
+files = {
+    "LICENSE": (0o644, b"license"),
+    "NOTICE": (0o644, b"notice"),
+    "README.md": (0o644, b"readme"),
+    "share/applications/hypercolor.desktop": (0o644, b"desktop"),
+    "share/icons/hicolor/48x48/apps/hypercolor.png": (0o644, b"48"),
+    "share/icons/hicolor/128x128/apps/hypercolor.png": (0o644, b"128"),
+    "share/icons/hicolor/256x256/apps/hypercolor.png": (0o644, b"256"),
+    "share/hypercolor/ui/index.html": (0o644, b"ui"),
+    "share/hypercolor/effects/bundled/effect.html": (0o644, b"effect"),
+    "share/hypercolor/agents/skills/skill.md": (0o644, b"skill"),
+    "share/hypercolor/agents/agents/agent.md": (0o644, b"agent"),
+}
+if case == "nested-manifest":
+    files["extras/manifest.json"] = (0o644, b"unbound")
+for binary in [
+    "hypercolor-daemon",
+    "hypercolor",
+    "hypercolor-app",
+    "hypercolor-tui",
+    "hypercolor-open",
+]:
+    files[f"bin/{binary}"] = (0o755, b"binary")
+
+directories = set()
+for path in files:
+    fields = path.split("/")[:-1]
+    for index in range(1, len(fields) + 1):
+        directories.add("/".join(fields[:index]))
+
+members = [
+    {"path": path, "type": "directory", "mode": 0o755}
+    for path in sorted(directories)
+]
+for path, (mode, contents) in sorted(files.items()):
+    if case == "nested-manifest" and path == "extras/manifest.json":
+        continue
+    members.append(
+        {
+            "path": path,
+            "type": "file",
+            "mode": mode,
+            "size": len(contents),
+            "sha256": hashlib.sha256(contents).hexdigest(),
+        }
+    )
+manifest = {
+    "name": "hypercolor",
+    "version": "0.0.0",
+    "platform": "linux-amd64",
+    "rust_target": "x86_64-unknown-linux-gnu",
+    "binaries": [
+        "hypercolor-daemon",
+        "hypercolor",
+        "hypercolor-app",
+        "hypercolor-tui",
+        "hypercolor-open",
+    ],
+    "assets": {
+        "ui_files": 1,
+        "bundled_effect_files": 1,
+        "docs_files": 0,
+        "skill_files": 1,
+        "agent_files": 1,
+        "site_files": 0,
+    },
+    "members": members,
+}
+if case == "binaries-object":
+    manifest["binaries"] = {binary: True for binary in manifest["binaries"]}
+elif case == "binaries-duplicates":
+    manifest["binaries"].append("hypercolor")
+elif case == "docs-count-string":
+    manifest["assets"]["docs_files"] = "zero"
+files["manifest.json"] = (0o644, json.dumps(manifest).encode())
+
+with tarfile.open(archive_path, "w:gz") as output:
+    root = tarfile.TarInfo(f"{root_name}/")
+    root.type = tarfile.DIRTYPE
+    root.mode = 0o755
+    output.addfile(root)
+    for directory in sorted(directories):
+        entry = tarfile.TarInfo(f"{root_name}/{directory}/")
+        entry.type = tarfile.DIRTYPE
+        entry.mode = 0o755
+        output.addfile(entry)
+    for path, (mode, contents) in sorted(files.items()):
+        entry = tarfile.TarInfo(f"{root_name}/{path}")
+        entry.mode = mode
+        entry.size = len(contents)
+        output.addfile(entry, io.BytesIO(contents))
+"#;
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/verify-release-artifact.sh");
+    for (case, expected_error) in [
+        ("nested-manifest", "manifest member set mismatch"),
+        (
+            "binaries-object",
+            "manifest binaries do not match the release payload",
+        ),
+        (
+            "binaries-duplicates",
+            "manifest binaries do not match the release payload",
+        ),
+        ("docs-count-string", "manifest assets.docs_files is invalid"),
+    ] {
+        let archive = temp.path().join(format!("{case}.tar.gz"));
+        let status = Command::new("python3")
+            .args(["-c", builder])
+            .arg(&archive)
+            .arg(case)
+            .status()
+            .expect("python should create the malformed manifest fixture");
+        assert!(status.success(), "failed to build {case} fixture");
+
+        let digest = Command::new("sha256sum")
+            .arg(&archive)
+            .output()
+            .or_else(|_| {
+                Command::new("shasum")
+                    .args(["-a", "256"])
+                    .arg(&archive)
+                    .output()
+            })
+            .expect("a SHA256 tool should hash the malformed manifest fixture");
+        assert!(digest.status.success(), "failed to hash {case} fixture");
+        let checksum = format!("{}.sha256", archive.display());
+        fs::write(&checksum, digest.stdout).expect("checksum fixture should be written");
+
+        let output = Command::new("bash")
+            .arg(&verifier)
+            .arg(&archive)
+            .arg(&checksum)
+            .output()
+            .expect("release verifier should inspect the malformed manifest fixture");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{case} manifest was accepted");
+        assert!(
+            stderr.contains(expected_error),
+            "unexpected {case} rejection: {stderr}"
+        );
+    }
 }
 
 #[test]
