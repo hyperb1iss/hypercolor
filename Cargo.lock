@@ -5567,6 +5567,7 @@ dependencies = [
 name = "hypercolor-platform-fs"
 version = "0.3.2"
 dependencies = [
+ "rustix 1.1.4",
  "tempfile",
  "windows-sys 0.61.2",
 ]

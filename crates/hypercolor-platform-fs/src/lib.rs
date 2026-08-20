@@ -14,6 +14,8 @@ mod unix;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(unix)]
+pub use unix::ExclusiveDirectory;
 #[cfg(target_os = "windows")]
 pub use windows::DestinationIdentity;
 
