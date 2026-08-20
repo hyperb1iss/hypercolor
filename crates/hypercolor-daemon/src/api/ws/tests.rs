@@ -733,10 +733,6 @@ async fn metrics_message_includes_latest_frame_timeline() {
             render_group_count: 1,
             scene_active: true,
             scene_transition_active: true,
-            render_surface_slot_count: 6,
-            render_surface_free_slots: 1,
-            render_surface_published_slots: 4,
-            render_surface_dequeued_slots: 1,
             scene_pool_saturation_reallocs: 0,
             direct_pool_saturation_reallocs: 0,
             scene_pool_grown_slots: 0,
@@ -826,8 +822,6 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["gpu_sample_queue_saturated"], true);
     assert_eq!(json["timeline"]["gpu_sample_wait_blocked"], true);
     assert_eq!(json["timeline"]["gpu_sample_cpu_fallback"], true);
-    assert_eq!(json["timeline"]["cpu_sampling_late_readback"], false);
-    assert_eq!(json["timeline"]["led_sampling_readback"], false);
     assert_eq!(json["timeline"]["preview_surface"], true);
     assert_eq!(json["timeline"]["scene_canvas_forced_surface"], true);
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
@@ -848,8 +842,6 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_sample_queue_saturated"], 1);
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
     assert_eq!(json["pacing"]["gpu_sample_cpu_fallback"], 1);
-    assert_eq!(json["pacing"]["cpu_sampling_late_readback"], 0);
-    assert_eq!(json["pacing"]["led_sampling_readback"], 0);
     assert_eq!(json["pacing"]["preview_surface"], 1);
     assert_eq!(json["pacing"]["scene_canvas_forced_surface"], 1);
     assert_eq!(json["pacing"]["gpu_readback_failed_frames"], 1);
@@ -1255,14 +1247,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["fps"]["ceiling"], 60);
     assert_eq!(json["fps"]["capacity"], json["fps"]["actual"]);
     assert_eq!(json["fps"]["delivered"], 0.0);
-    assert_eq!(json["render_surfaces"]["slot_count"], 6);
-    assert_eq!(json["render_surfaces"]["published_slots"], 4);
     assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
-    assert_eq!(
-        json["render_surfaces"]["preview_pool_saturation_reallocs"],
-        0
-    );
-    assert_eq!(json["render_surfaces"]["preview_pool_grown_slots"], 0);
+    assert_eq!(json["render_surfaces"]["scene_pool_saturation_reallocs"], 0);
+    assert_eq!(json["render_surfaces"]["scene_pool_grown_slots"], 0);
     assert_eq!(json["preview"]["canvas_receivers"], 1);
     assert_eq!(json["preview"]["scene_canvas_receivers"], 1);
     assert_eq!(json["preview"]["screen_canvas_receivers"], 1);

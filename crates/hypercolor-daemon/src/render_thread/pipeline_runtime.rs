@@ -1824,10 +1824,6 @@ impl SceneSnapshotState {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RenderSurfaceSnapshot {
-    pub(crate) slot_count: u32,
-    pub(crate) free_slots: u32,
-    pub(crate) published_slots: u32,
-    pub(crate) dequeued_slots: u32,
     pub(crate) canvas_receivers: u32,
     /// Monotonic counter from the render-group runtime's scene surface pool:
     /// how many times a dequeue had to reuse a still-shared Published
@@ -2100,10 +2096,6 @@ impl RenderCaches {
                 .saturating_add(sparkleflinger_counts.compositor.dequeued),
         );
         let mut snapshot = RenderSurfaceSnapshot {
-            slot_count: scene_slot_count,
-            free_slots: count(scene_counts.free),
-            published_slots: count(scene_counts.published),
-            dequeued_slots: count(scene_counts.dequeued),
             canvas_receivers: u32::try_from(canvas_receiver_count).unwrap_or(u32::MAX),
             scene_pool_free_slots: count(scene_counts.free),
             scene_pool_published_slots: count(scene_counts.published),
@@ -3195,13 +3187,6 @@ mod tests {
         let snapshot = runtime.render.render_surface_snapshot(3);
 
         assert_eq!(snapshot.canvas_receivers, 3);
-        assert_eq!(snapshot.slot_count, snapshot.scene_pool_slot_count);
-        assert_eq!(snapshot.free_slots, snapshot.scene_pool_free_slots);
-        assert_eq!(
-            snapshot.published_slots,
-            snapshot.scene_pool_published_slots
-        );
-        assert_eq!(snapshot.dequeued_slots, snapshot.scene_pool_dequeued_slots);
         assert_eq!(snapshot.scene_pool_slot_count, 8);
         assert_eq!(snapshot.scene_pool_free_slots, 8);
         assert_eq!(snapshot.direct_pool_slot_count, 0);

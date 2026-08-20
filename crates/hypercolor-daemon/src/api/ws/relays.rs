@@ -3229,8 +3229,6 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_queue_saturated: performance_snapshot.pacing.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: performance_snapshot.pacing.gpu_sample_cpu_fallback,
-                cpu_sampling_late_readback: 0,
-                led_sampling_readback: 0,
                 preview_surface: performance_snapshot.pacing.preview_surface,
                 scene_canvas_forced_surface: performance_snapshot
                     .pacing
@@ -3404,8 +3402,6 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_queue_saturated: latest_frame.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: latest_frame.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: latest_frame.gpu_sample_cpu_fallback,
-                cpu_sampling_late_readback: false,
-                led_sampling_readback: false,
                 preview_surface: latest_frame.preview_surface,
                 scene_canvas_forced_surface: latest_frame.scene_canvas_forced_surface,
                 cpu_readback_skipped: latest_frame.cpu_readback_skipped,
@@ -3430,10 +3426,6 @@ pub(super) async fn build_metrics_message(
                 frame_done_ms: round_2(us_to_ms(latest_frame.timeline.frame_done_us)),
             },
             render_surfaces: MetricsRenderSurfaces {
-                slot_count: latest_frame.render_surface_slot_count,
-                free_slots: latest_frame.render_surface_free_slots,
-                published_slots: latest_frame.render_surface_published_slots,
-                dequeued_slots: latest_frame.render_surface_dequeued_slots,
                 canvas_receivers: latest_frame.canvas_receiver_count,
                 scene_pool_saturation_reallocs: latest_frame.scene_pool_saturation_reallocs,
                 direct_pool_saturation_reallocs: latest_frame.direct_pool_saturation_reallocs,

@@ -603,10 +603,6 @@ pub struct LatestFrameStatus {
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
     pub gpu_sample_cpu_fallback: bool,
-    /// Deprecated v1 compatibility field. Always `false`.
-    pub cpu_sampling_late_readback: bool,
-    /// Deprecated v1 compatibility alias. Always `false`.
-    pub led_sampling_readback: bool,
     pub preview_surface: bool,
     pub scene_canvas_forced_surface: bool,
     pub cpu_readback_skipped: bool,
@@ -647,14 +643,6 @@ pub struct LatestFrameStatus {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RenderSurfaceStatus {
-    /// Deprecated v1 alias for `scene_pool_slot_count`.
-    pub slot_count: u32,
-    /// Deprecated v1 alias for `scene_pool_free_slots`.
-    pub free_slots: u32,
-    /// Deprecated v1 alias for `scene_pool_published_slots`.
-    pub published_slots: u32,
-    /// Deprecated v1 alias for `scene_pool_dequeued_slots`.
-    pub dequeued_slots: u32,
     pub canvas_receivers: u32,
     pub scene_pool_slot_count: u32,
     pub scene_pool_free_slots: u32,
@@ -2190,8 +2178,6 @@ fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> La
         gpu_sample_queue_saturated: frame.gpu_sample_queue_saturated,
         gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
         gpu_sample_cpu_fallback: frame.gpu_sample_cpu_fallback,
-        cpu_sampling_late_readback: false,
-        led_sampling_readback: false,
         preview_surface: frame.preview_surface,
         scene_canvas_forced_surface: frame.scene_canvas_forced_surface,
         cpu_readback_skipped: frame.cpu_readback_skipped,
@@ -2232,10 +2218,6 @@ fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> La
             .map(str::to_owned),
         output_errors: frame.output_errors,
         render_surfaces: RenderSurfaceStatus {
-            slot_count: frame.render_surface_slot_count,
-            free_slots: frame.render_surface_free_slots,
-            published_slots: frame.render_surface_published_slots,
-            dequeued_slots: frame.render_surface_dequeued_slots,
             canvas_receivers: frame.canvas_receiver_count,
             scene_pool_slot_count: frame.scene_pool_slot_count,
             scene_pool_free_slots: frame.scene_pool_free_slots,
@@ -3260,15 +3242,11 @@ mod tests {
                 render_group_count: 1,
                 scene_active: true,
                 scene_transition_active: false,
-                render_surface_slot_count: 6,
-                render_surface_free_slots: 1,
-                render_surface_published_slots: 4,
-                render_surface_dequeued_slots: 1,
                 scene_pool_saturation_reallocs: 0,
                 direct_pool_saturation_reallocs: 0,
                 scene_pool_grown_slots: 0,
                 direct_pool_grown_slots: 0,
-                scene_pool_slot_count: 0,
+                scene_pool_slot_count: 6,
                 scene_pool_max_slots: 0,
                 direct_pool_slot_count: 0,
                 direct_pool_max_slots: 0,
@@ -3276,9 +3254,9 @@ mod tests {
                 scene_pool_max_ref_count: 0,
                 direct_pool_shared_published_slots: 0,
                 direct_pool_max_ref_count: 0,
-                scene_pool_free_slots: 0,
-                scene_pool_published_slots: 0,
-                scene_pool_dequeued_slots: 0,
+                scene_pool_free_slots: 1,
+                scene_pool_published_slots: 4,
+                scene_pool_dequeued_slots: 1,
                 direct_pool_free_slots: 0,
                 direct_pool_published_slots: 0,
                 direct_pool_dequeued_slots: 0,
@@ -3472,11 +3450,6 @@ mod tests {
             json["data"]["latest_frame"]["gpu_sample_cpu_fallback"],
             true
         );
-        assert_eq!(
-            json["data"]["latest_frame"]["cpu_sampling_late_readback"],
-            false
-        );
-        assert_eq!(json["data"]["latest_frame"]["led_sampling_readback"], false);
         assert_eq!(json["data"]["latest_frame"]["preview_surface"], true);
         assert_eq!(
             json["data"]["latest_frame"]["scene_canvas_forced_surface"],
@@ -3510,12 +3483,8 @@ mod tests {
         assert_eq!(json["data"]["latest_frame"]["cpu_readback_skipped"], true);
         assert_eq!(json["data"]["latest_frame"]["gpu_readback_failed"], true);
         assert_eq!(
-            json["data"]["latest_frame"]["render_surfaces"]["slot_count"],
-            6
-        );
-        assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["scene_pool_slot_count"],
-            0
+            6
         );
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["preview_pool_slot_count"],

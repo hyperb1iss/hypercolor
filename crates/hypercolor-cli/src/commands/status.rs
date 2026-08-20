@@ -475,10 +475,10 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
         // ── Pipeline ────────────────────────────────────────────────
         let surfaces = latest_frame.get("render_surfaces");
         if let Some(s) = surfaces {
-            let slot_count = u64_field(s, "slot_count");
-            let free_slots = u64_field(s, "free_slots");
-            let published_slots = u64_field(s, "published_slots");
-            let dequeued_slots = u64_field(s, "dequeued_slots");
+            let slot_count = u64_field(s, "scene_pool_slot_count");
+            let free_slots = u64_field(s, "scene_pool_free_slots");
+            let published_slots = u64_field(s, "scene_pool_published_slots");
+            let dequeued_slots = u64_field(s, "scene_pool_dequeued_slots");
             let canvas_receivers = u64_field(s, "canvas_receivers");
 
             lines.push(format!(
@@ -1073,10 +1073,10 @@ mod tests {
                 "full_frame_copy_count": 1,
                 "full_frame_copy_kb": 250.0,
                 "render_surfaces": {
-                    "slot_count": 6,
-                    "free_slots": 0,
-                    "published_slots": 4,
-                    "dequeued_slots": 2,
+                    "scene_pool_slot_count": 6,
+                    "scene_pool_free_slots": 0,
+                    "scene_pool_published_slots": 4,
+                    "scene_pool_dequeued_slots": 2,
                     "canvas_receivers": 2
                 }
             },

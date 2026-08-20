@@ -208,8 +208,6 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
         "pacing": {
             "gpu_zone_sampling": 114,
             "gpu_sample_cpu_fallback": 2,
-            "cpu_sampling_late_readback": 0,
-            "led_sampling_readback": 0,
             "gpu_readback_failed_frames": 4,
             "scene_canvas_forced_surface": 5,
             "full_frame_copy_frames": 6
@@ -237,11 +235,9 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "budget_ms": 16.67
         },
         "render_surfaces": {
-            "slot_count": 6,
-            "free_slots": 2,
-            "preview_pool_saturation_reallocs": 7,
+            "scene_pool_saturation_reallocs": 7,
             "direct_pool_saturation_reallocs": 8,
-            "preview_pool_grown_slots": 1,
+            "scene_pool_grown_slots": 1,
             "scene_pool_slot_count": 4,
             "scene_pool_shared_published_slots": 2
         },

@@ -577,7 +577,7 @@ export function analyze(
         delta(first.data, last.data, ["effect_health", "servo_page_load_failures_total"]) +
         delta(first.data, last.data, ["effect_health", "servo_detached_destroy_failures_total"])
     const poolSaturationDelta =
-        delta(first.data, last.data, ["render_surfaces", "preview_pool_saturation_reallocs"]) +
+        delta(first.data, last.data, ["render_surfaces", "scene_pool_saturation_reallocs"]) +
         delta(first.data, last.data, ["render_surfaces", "direct_pool_saturation_reallocs"])
     const displayFinalizeMissDelta = delta(first.data, last.data, [
         "effect_health",

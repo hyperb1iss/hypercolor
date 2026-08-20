@@ -155,10 +155,6 @@ pub(crate) struct LatestFrameMetrics {
     pub render_group_count: u32,
     pub scene_active: bool,
     pub scene_transition_active: bool,
-    pub render_surface_slot_count: u32,
-    pub render_surface_free_slots: u32,
-    pub render_surface_published_slots: u32,
-    pub render_surface_dequeued_slots: u32,
     /// Cumulative count of scene-surface-pool dequeues that had to allocate a
     /// fresh canvas because every slot was still shared downstream AND
     /// the pool was already at its growth cap. A rising value signals

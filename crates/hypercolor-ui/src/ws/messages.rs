@@ -170,8 +170,6 @@ pub struct MetricsPacing {
     pub gpu_sample_queue_saturated: u32,
     pub gpu_sample_wait_blocked: u32,
     pub gpu_sample_cpu_fallback: u32,
-    pub cpu_sampling_late_readback: u32,
-    pub led_sampling_readback: u32,
     pub preview_surface: u32,
     pub scene_canvas_forced_surface: u32,
     pub gpu_readback_failed_frames: u32,
@@ -252,8 +250,6 @@ pub struct MetricsTimeline {
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
     pub gpu_sample_cpu_fallback: bool,
-    pub cpu_sampling_late_readback: bool,
-    pub led_sampling_readback: bool,
     pub preview_surface: bool,
     pub scene_canvas_forced_surface: bool,
     pub cpu_readback_skipped: bool,
@@ -290,15 +286,9 @@ pub struct MetricsTimeline {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MetricsRenderSurfaces {
-    pub slot_count: u32,
-    pub free_slots: u32,
-    pub published_slots: u32,
-    pub dequeued_slots: u32,
     pub canvas_receivers: u32,
-    #[serde(rename = "preview_pool_saturation_reallocs")]
     pub scene_pool_saturation_reallocs: u64,
     pub direct_pool_saturation_reallocs: u64,
-    #[serde(rename = "preview_pool_grown_slots")]
     pub scene_pool_grown_slots: u32,
     pub direct_pool_grown_slots: u32,
     pub scene_pool_slot_count: u32,

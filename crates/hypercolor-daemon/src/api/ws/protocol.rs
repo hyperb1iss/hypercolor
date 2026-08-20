@@ -1204,8 +1204,6 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_sample_queue_saturated: u32,
     pub(super) gpu_sample_wait_blocked: u32,
     pub(super) gpu_sample_cpu_fallback: u32,
-    pub(super) cpu_sampling_late_readback: u32,
-    pub(super) led_sampling_readback: u32,
     pub(super) preview_surface: u32,
     pub(super) scene_canvas_forced_surface: u32,
     pub(super) gpu_readback_failed_frames: u32,
@@ -1329,8 +1327,6 @@ pub(super) struct MetricsTimeline {
     pub(super) gpu_sample_queue_saturated: bool,
     pub(super) gpu_sample_wait_blocked: bool,
     pub(super) gpu_sample_cpu_fallback: bool,
-    pub(super) cpu_sampling_late_readback: bool,
-    pub(super) led_sampling_readback: bool,
     pub(super) preview_surface: bool,
     pub(super) scene_canvas_forced_surface: bool,
     pub(super) cpu_readback_skipped: bool,
@@ -1386,23 +1382,17 @@ pub(super) struct MetricsCopies {
 
 #[derive(Debug, Serialize)]
 pub(super) struct MetricsRenderSurfaces {
-    pub(super) slot_count: u32,
-    pub(super) free_slots: u32,
-    pub(super) published_slots: u32,
-    pub(super) dequeued_slots: u32,
     pub(super) canvas_receivers: u32,
     /// Monotonic counter: how many times the render-group scene surface pool
     /// hit its growth cap and had to reuse a still-shared slot, forcing
     /// a fresh `Canvas::new` on every frame. A rising value means the
     /// cap is too low for current fan-out.
-    #[serde(rename = "preview_pool_saturation_reallocs")]
     pub(super) scene_pool_saturation_reallocs: u64,
     /// Same counter summed across per-group direct-canvas pools.
     pub(super) direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size.
     /// Benign when stable — the pool converged on its working set. A
     /// climbing value over time could indicate a pinned-Arc leak.
-    #[serde(rename = "preview_pool_grown_slots")]
     pub(super) scene_pool_grown_slots: u32,
     /// Same gauge summed across per-group direct-canvas pools.
     pub(super) direct_pool_grown_slots: u32,

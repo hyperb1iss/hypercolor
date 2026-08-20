@@ -215,10 +215,6 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         render_group_count,
         scene_active,
         scene_transition_active,
-        render_surface_slot_count: render_surfaces.slot_count,
-        render_surface_free_slots: render_surfaces.free_slots,
-        render_surface_published_slots: render_surfaces.published_slots,
-        render_surface_dequeued_slots: render_surfaces.dequeued_slots,
         scene_pool_saturation_reallocs: render_surfaces.scene_pool_saturation_reallocs,
         direct_pool_saturation_reallocs: render_surfaces.direct_pool_saturation_reallocs,
         scene_pool_grown_slots: render_surfaces.scene_pool_grown_slots,
@@ -345,10 +341,6 @@ pub(crate) fn build_throttle_frame_metrics(
         render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
         scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
         scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
-        render_surface_slot_count: render_surfaces.slot_count,
-        render_surface_free_slots: render_surfaces.free_slots,
-        render_surface_published_slots: render_surfaces.published_slots,
-        render_surface_dequeued_slots: render_surfaces.dequeued_slots,
         scene_pool_saturation_reallocs: render_surfaces.scene_pool_saturation_reallocs,
         direct_pool_saturation_reallocs: render_surfaces.direct_pool_saturation_reallocs,
         scene_pool_grown_slots: render_surfaces.scene_pool_grown_slots,
@@ -506,10 +498,6 @@ mod tests {
 
     fn render_surfaces() -> RenderSurfaceSnapshot {
         RenderSurfaceSnapshot {
-            slot_count: 8,
-            free_slots: 4,
-            published_slots: 2,
-            dequeued_slots: 1,
             canvas_receivers: 3,
             scene_pool_saturation_reallocs: 9,
             direct_pool_saturation_reallocs: 5,
