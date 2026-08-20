@@ -506,6 +506,42 @@ fn scenes_path(state: &AppState) -> PathBuf {
         .join("scenes.json")
 }
 
+#[derive(Debug, PartialEq)]
+struct McpMutationSnapshot {
+    power: hypercolor_daemon::session::OutputPowerState,
+    active_scene_id: Option<SceneId>,
+    revision: u64,
+    scenes: Value,
+}
+
+async fn mcp_mutation_snapshot(state: &AppState) -> McpMutationSnapshot {
+    let manager = state.scene_manager.read().await;
+    McpMutationSnapshot {
+        power: *state.power_state.borrow(),
+        active_scene_id: manager.active_scene_id().copied(),
+        revision: state.scene_commits.revision(),
+        scenes: serde_json::to_value(manager.list()).expect("scenes should serialize"),
+    }
+}
+
+async fn assert_schema_refusal_preserves_state(
+    state: &AppState,
+    tool: &str,
+    params: Value,
+    parameter: &str,
+) {
+    let before = mcp_mutation_snapshot(state).await;
+    let error = execute_tool_with_state(tool, &params, state)
+        .await
+        .expect_err(&format!("{tool} should reject malformed {parameter}"));
+    assert_eq!(error.error_code(), -32602);
+    match error {
+        ToolError::InvalidParam { param, .. } => assert_eq!(param, parameter),
+        other => panic!("expected invalid {parameter} error, got {other:?}"),
+    }
+    assert_eq!(mcp_mutation_snapshot(state).await, before);
+}
+
 async fn post_raw(client: &Client, url: &str, body: &str, session_id: Option<&str>) -> Response {
     let mut request = client
         .post(url)
@@ -917,7 +953,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
         "activate_scene",
         &json!({
             "name": "Focus",
-            "transition_ms": 250
+            "transition_ms": 250.0
         }),
         state.as_ref(),
     )
@@ -925,6 +961,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     .expect("scene activation should succeed");
     assert_eq!(activate_result["activated"], true);
     assert_eq!(activate_result["scene"]["id"], scene_id);
+    assert_eq!(activate_result["transition_ms"], 250);
 
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -1162,6 +1199,155 @@ async fn deleted_parameters_are_refused_rather_than_dropped() {
         assert!(
             format!("{error}").contains(phantom),
             "{tool}'s refusal should name '{phantom}': {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_tool_validates_the_root_argument_shape_before_dispatch() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+
+    for tool in build_tool_definitions() {
+        let error = execute_tool_with_state(&tool.name, &json!([]), &state)
+            .await
+            .expect_err(&format!("{} should reject array arguments", tool.name));
+        assert_eq!(error.error_code(), -32602);
+        match error {
+            ToolError::InvalidParam { param, .. } => assert_eq!(param, "arguments"),
+            other => panic!("expected invalid arguments error, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_declared_arguments_never_reach_mutating_handlers() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let current = insert_test_effect(&state, "Current").await;
+    let next = insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Solid Color").await;
+
+    execute_tool_with_state(
+        "set_effect",
+        &json!({ "query": current.id.to_string() }),
+        state.as_ref(),
+    )
+    .await
+    .expect("baseline effect should apply");
+
+    let (zone_id, layer_id) = {
+        let manager = state.scene_manager.read().await;
+        let zone = manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .expect("baseline primary zone should exist");
+        let layer = zone.layers.first().expect("baseline layer should exist");
+        (zone.id.to_string(), layer.id.to_string())
+    };
+
+    let created =
+        execute_tool_with_state("create_scene", &json!({ "name": "Focus" }), state.as_ref())
+            .await
+            .expect("activation target should be created");
+    let focus_id = created["scene_id"]
+        .as_str()
+        .expect("created scene id should be a string");
+
+    for (tool, params, parameter) in [
+        (
+            "set_effect",
+            json!({ "query": next.id.to_string(), "controls": [] }),
+            "controls",
+        ),
+        (
+            "set_effect",
+            json!({ "query": next.id.to_string(), "transition": { "type": 1 } }),
+            "transition.type",
+        ),
+        (
+            "set_color",
+            json!({ "color": "coral", "brightness": "bright" }),
+            "brightness",
+        ),
+        ("set_output_power", json!({ "state": false }), "state"),
+        ("clear_zone", json!({ "zone": false }), "zone"),
+        (
+            "adjust_controls",
+            json!({ "zone": zone_id, "layer": layer_id, "values": [] }),
+            "values",
+        ),
+        (
+            "adjust_controls",
+            json!({ "zone": zone_id, "layer": layer_id, "clear_bindings": {} }),
+            "clear_bindings",
+        ),
+        ("set_brightness", json!({ "brightness": -1 }), "brightness"),
+        (
+            "activate_scene",
+            json!({ "name": focus_id, "transition_ms": "instant" }),
+            "transition_ms",
+        ),
+        (
+            "create_scene",
+            json!({ "name": "Invalid description", "description": [] }),
+            "description",
+        ),
+        (
+            "create_scene",
+            json!({ "name": "Invalid enabled", "enabled": "yes" }),
+            "enabled",
+        ),
+        (
+            "create_scene",
+            json!({ "name": "Invalid mode", "mutation_mode": false }),
+            "mutation_mode",
+        ),
+    ] {
+        assert_schema_refusal_preserves_state(state.as_ref(), tool, params, parameter).await;
+    }
+
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    for (params, parameter) in [
+        (
+            json!({
+                "device": display_id.to_string(),
+                "effect_id": face.id.to_string(),
+                "clear": "yes"
+            }),
+            "clear",
+        ),
+        (
+            json!({
+                "device": display_id.to_string(),
+                "effect_id": face.id.to_string(),
+                "scope": null
+            }),
+            "scope",
+        ),
+        (
+            json!({
+                "device": display_id.to_string(),
+                "effect_id": face.id.to_string(),
+                "controls": []
+            }),
+            "controls",
+        ),
+    ] {
+        assert_schema_refusal_preserves_state(
+            state.as_ref(),
+            "set_display_face",
+            params,
+            parameter,
+        )
+        .await;
+        assert!(
+            state
+                .display_preferences
+                .read()
+                .await
+                .get(display_id)
+                .is_none()
         );
     }
 }
@@ -1545,7 +1731,7 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
         "set_color",
         &json!({
             "color": "#ff6ac1",
-            "brightness": 50
+            "brightness": 50.0
         }),
         state.as_ref(),
     )
@@ -1899,9 +2085,10 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
 async fn set_brightness_tool_projects_the_output_service() {
     let (state, _tmp) = isolated_state_with_tempdir();
 
-    let response = execute_tool_with_state("set_brightness", &json!({ "brightness": 35 }), &state)
-        .await
-        .expect("brightness should be accepted");
+    let response =
+        execute_tool_with_state("set_brightness", &json!({ "brightness": 35.0 }), &state)
+            .await
+            .expect("brightness should be accepted");
     assert_eq!(response["brightness"], 35);
     assert_eq!(response["previous_brightness"], 100);
     assert!((state.power_state.borrow().global_brightness - 0.35).abs() < 1e-6);
