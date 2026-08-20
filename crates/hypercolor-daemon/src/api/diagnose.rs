@@ -803,48 +803,40 @@ fn round_2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+#[cfg(all(feature = "servo", not(target_os = "windows")))]
 async fn servo_memory_check() -> DiagnoseCheck {
-    #[cfg(all(feature = "servo", target_os = "windows"))]
-    {
-        DiagnoseCheck {
+    match tokio::task::spawn_blocking(hypercolor_core::effect::servo_memory_report_snapshot).await {
+        Ok(Ok(snapshot)) => DiagnoseCheck {
             category: "memory".to_owned(),
             name: "servo_memory".to_owned(),
-            status: "warning".to_owned(),
-            detail: "Servo memory reporting is disabled on Windows".to_owned(),
-        }
+            status: "pass".to_owned(),
+            detail: format!(
+                "processes={}, reports={}, explicit_bytes={}, non_explicit_bytes={}",
+                snapshot.processes.len(),
+                snapshot.totals.report_count,
+                snapshot.totals.explicit_bytes,
+                snapshot.totals.non_explicit_bytes
+            ),
+        },
+        Ok(Err(error)) => servo_memory_failure(error.to_string()),
+        Err(error) => servo_memory_failure(format!("worker task failed: {error}")),
     }
+}
 
-    #[cfg(all(feature = "servo", not(target_os = "windows")))]
-    {
-        match tokio::task::spawn_blocking(hypercolor_core::effect::servo_memory_report_snapshot)
-            .await
-        {
-            Ok(Ok(snapshot)) => DiagnoseCheck {
-                category: "memory".to_owned(),
-                name: "servo_memory".to_owned(),
-                status: "pass".to_owned(),
-                detail: format!(
-                    "processes={}, reports={}, explicit_bytes={}, non_explicit_bytes={}",
-                    snapshot.processes.len(),
-                    snapshot.totals.report_count,
-                    snapshot.totals.explicit_bytes,
-                    snapshot.totals.non_explicit_bytes
-                ),
-            },
-            Ok(Err(error)) => servo_memory_failure(error.to_string()),
-            Err(error) => servo_memory_failure(format!("worker task failed: {error}")),
-        }
-    }
+#[cfg(not(all(feature = "servo", not(target_os = "windows"))))]
+fn servo_memory_check() -> std::future::Ready<DiagnoseCheck> {
+    let detail = if cfg!(all(feature = "servo", target_os = "windows")) {
+        "Servo memory reporting is disabled on Windows"
+    } else {
+        "Servo memory reporting is unavailable in this build"
+    };
 
-    #[cfg(not(feature = "servo"))]
-    {
-        DiagnoseCheck {
-            category: "memory".to_owned(),
-            name: "servo_memory".to_owned(),
-            status: "warning".to_owned(),
-            detail: "Servo memory reporting is unavailable in this build".to_owned(),
-        }
-    }
+    std::future::ready(DiagnoseCheck {
+        category: "memory".to_owned(),
+        name: "servo_memory".to_owned(),
+        status: "warning".to_owned(),
+        detail: detail.to_owned(),
+    })
 }
 
 #[cfg(all(feature = "servo", not(target_os = "windows")))]
