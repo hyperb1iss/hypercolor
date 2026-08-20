@@ -1571,6 +1571,62 @@ async fn pump_cancellation_while_lifecycle_is_busy_prevents_late_mutation() {
     );
 }
 
+#[tokio::test]
+async fn pump_shutdown_releases_active_capture_demand() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let capture_active = Arc::new(AtomicBool::new(false));
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            CountingSource::with_capture_active(
+                Arc::new(AtomicUsize::new(0)),
+                Arc::clone(&capture_active),
+            ),
+        )))
+        .expect("counting source should register");
+    manager.start_all().expect("input sources should start");
+    let demands = InputPublicationDemandHandle::new();
+    let _registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default()
+            .with_screen(60, extent(1_280, 720))
+            .with_source(SourceKind::Interaction, 120),
+    );
+    let mut pump = InputPublicationPump::start(manager, demands)
+        .await
+        .expect("publication pump should start");
+
+    wait_for_screen_demand(
+        &transitions,
+        ScreenCaptureDemand::active(extent(1_280, 720)),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while !capture_active.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("interaction capture should become active");
+
+    pump.shutdown().await.expect("publication pump should stop");
+
+    assert_eq!(
+        transitions
+            .lock()
+            .expect("screen demand transition lock")
+            .last()
+            .copied(),
+        Some(ScreenCaptureDemand::Inactive)
+    );
+    assert!(!capture_active.load(Ordering::Acquire));
+}
+
 async fn wait_for_screen_demand(
     transitions: &StdMutex<Vec<ScreenCaptureDemand>>,
     expected: ScreenCaptureDemand,

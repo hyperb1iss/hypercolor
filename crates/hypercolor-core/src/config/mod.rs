@@ -886,65 +886,6 @@ fn migrate_v4_to_v5(document: &mut toml::Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg_attr(target_os = "windows", allow(clippy::unnecessary_wraps))]
-fn sync_parent_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let parent = parent_directory(path);
-        std::fs::File::open(parent)
-            .with_context(|| format!("failed to open {} for sync", parent.display()))?
-            .sync_all()
-            .with_context(|| format!("failed to sync {}", parent.display()))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // The Windows replacement primitive itself requests write-through.
-        let _ = path;
-        Ok(())
-    }
-
-    #[cfg(not(any(unix, target_os = "windows")))]
-    anyhow::bail!("durable config replacement is unsupported on this platform")
-}
-
-#[cfg(any(unix, test))]
-fn parent_directory(path: &Path) -> &Path {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-
-||||||| parent of 8864c00f (refactor(input): unify screen source swaps)
-#[cfg_attr(target_os = "windows", allow(clippy::unnecessary_wraps))]
-fn sync_parent_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let parent = parent_directory(path);
-        std::fs::File::open(parent)
-            .with_context(|| format!("failed to open {} for sync", parent.display()))?
-            .sync_all()
-            .with_context(|| format!("failed to sync {}", parent.display()))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // The Windows replacement primitive itself requests write-through.
-        let _ = path;
-        Ok(())
-    }
-
-    #[cfg(not(any(unix, target_os = "windows")))]
-    anyhow::bail!("durable config replacement is unsupported on this platform")
-}
-
-#[cfg(any(unix, test))]
-fn parent_directory(path: &Path) -> &Path {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-
 /// The refusal text for a config file this build cannot read.
 ///
 /// Old files get the exact hand-migration; new files get told to upgrade.

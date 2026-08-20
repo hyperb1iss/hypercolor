@@ -1510,13 +1510,16 @@ async fn run_pump(
         }
     }
 
-    // Cancellation can win the wake-up race after the authoritative renderer
-    // clears its demand, so shutdown must explicitly release capture hardware.
-    let mut manager = manager.lock().await;
-    capture_demand.reconcile(
-        &mut manager,
-        CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false),
-    );
+    let inactive_capture = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
+    match capture_demand.reconcile(&manager, inactive_capture, || true) {
+        CaptureDemandReconcile::Applied => {}
+        CaptureDemandReconcile::Busy => {
+            debug!("input publication shutdown deferred capture release to source retirement");
+        }
+        CaptureDemandReconcile::Stale => {
+            debug!("input publication shutdown rejected an unexpectedly stale capture release");
+        }
+    }
     debug!("input publication worker exited");
 }
 

@@ -2015,14 +2015,10 @@ impl PipelineRuntime {
             state.interaction_routing.clone(),
         )?;
         #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-        state
-            .input_manager
-            .lock()
-            .await
-            .set_source_capability_feature(
-                "metal4",
-                pipeline.render.sparkleflinger.macos_metal4_capability(),
-            )?;
+        state.input_manager.set_source_capability_feature(
+            "metal4",
+            pipeline.render.sparkleflinger.macos_metal4_capability(),
+        )?;
         Ok(pipeline)
     }
 
