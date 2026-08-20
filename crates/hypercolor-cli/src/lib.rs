@@ -10,12 +10,16 @@ pub mod config;
 #[cfg(unix)]
 #[doc(hidden)]
 pub mod install;
+#[cfg(unix)]
+mod install_command;
 pub mod output;
 
 use std::future::Future;
 use std::pin::Pin;
 
 use anyhow::{Result, bail};
+#[cfg(unix)]
+use clap::Args;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use client::DaemonClient;
@@ -130,6 +134,10 @@ pub struct Cli {
 /// network → system.
 #[derive(Subcommand)]
 pub enum Commands {
+    #[cfg(unix)]
+    #[command(name = "__install-release", hide = true)]
+    InstallRelease(InstallReleaseArgs),
+
     // ── Lighting ──────────────────────────────────────────────
     /// System state, render loop, and active effect
     #[command(display_order = 1)]
@@ -213,6 +221,23 @@ pub enum Commands {
     External(Vec<String>),
 }
 
+#[doc(hidden)]
+#[cfg(unix)]
+#[derive(Debug, Args)]
+pub struct InstallReleaseArgs {
+    #[arg(long, value_name = "ABSOLUTE_PATH")]
+    install_prefix: std::path::PathBuf,
+
+    #[arg(long, value_name = "ABSOLUTE_PATH")]
+    install_dir: std::path::PathBuf,
+
+    #[arg(long, value_parser = install_command::parse_manifest_digest)]
+    expected_manifest_sha256: install::UnitId,
+
+    #[arg(long)]
+    no_service: bool,
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 pub async fn run() -> Result<()> {
@@ -225,6 +250,13 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
             .before_help(output::painter::help_banner())
             .get_matches(),
     )?;
+
+    #[cfg(unix)]
+    {
+        if let Commands::InstallRelease(args) = &cli.command {
+            return install_command::execute(args);
+        }
+    }
 
     // TUI takes over the terminal and routes tracing to a file instead of
     // stderr, so dispatch before CLI tracing initialization.
@@ -285,6 +317,8 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,
         Commands::Servers(args) => commands::servers::execute(args, &ctx).await,
         Commands::External(args) => execute_external_command(args, extensions, &client, &ctx).await,
+        #[cfg(unix)]
+        Commands::InstallRelease(_) => unreachable!(),
         #[cfg(feature = "tui")]
         Commands::Tui(_) => unreachable!(),
         Commands::Completions(args) => {

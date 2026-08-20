@@ -61,6 +61,49 @@ fn native_topology_rejects_a_fragment_outside_the_retained_home() {
 }
 
 #[test]
+fn native_constructor_rejects_canonical_store_path_replacement() {
+    let fixture = tempfile::Builder::new()
+        .prefix("linux-native-store-replacement-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("fixture");
+    let runtime_fixture = tempfile::tempdir().expect("runtime fixture");
+    let home = fixture.path().join("home");
+    let runtime = runtime_fixture.path();
+    fs::create_dir(&home).expect("home");
+    fs::set_permissions(runtime, fs::Permissions::from_mode(0o700)).expect("runtime mode");
+    let _bus = UnixListener::bind(runtime.join("bus")).expect("bus socket");
+    let uid = fs::metadata(runtime).expect("runtime metadata").uid();
+    let connection =
+        LinuxSystemdConnection::from_runtime_directory(runtime, uid).expect("connection");
+    let store = InstallStore::new(home.join(".local/lib/hypercolor"), 64 * 1024);
+    let lock = store
+        .acquire_anchored_lock(&home)
+        .expect("anchored install lock");
+    let tree = super::directory::LinuxPublicTree::new(&lock, &home).expect("public tree");
+    let displaced = home.join(".local/lib/displaced-hypercolor");
+    fs::rename(store.root(), &displaced).expect("displace retained store");
+    fs::create_dir(store.root()).expect("create replacement store");
+    fs::write(store.root().join("sentinel"), b"attacker").expect("replacement sentinel");
+
+    let error = LinuxNativeExecutor::new_with_connection(
+        &store,
+        &lock,
+        tree,
+        "127.0.0.1:9420".parse().expect("HTTP address"),
+        connection,
+    )
+    .expect_err("canonical replacement must fail before native inspection");
+
+    assert!(error.to_string().contains("retained store inode"));
+    assert_eq!(
+        fs::read(store.root().join("sentinel")).expect("read replacement sentinel"),
+        b"attacker"
+    );
+    assert!(!store.root().join("units").exists());
+    assert!(!store.root().join("active").exists());
+}
+
+#[test]
 fn systemctl_command_has_only_fixed_locale_and_bound_connection_environment() {
     let fixture = tempfile::tempdir().expect("fixture");
     fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700)).expect("runtime mode");

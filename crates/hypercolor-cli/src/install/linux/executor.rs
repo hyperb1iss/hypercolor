@@ -142,19 +142,15 @@ impl LinuxNativeExecutor {
         if !http_address.ip().is_loopback() {
             return Err(error("Linux owner proof HTTP address must be loopback"));
         }
-        let active_path = store.active_path();
-        let install_root = active_path
-            .parent()
-            .ok_or_else(|| error("install active path has no parent"))?;
         let active = LinuxPublicEntry::new(
-            lock.open_public_directory(install_root)
+            lock.open_store_public_directory()
                 .map_err(|source| error(source.to_string()))?,
             "active",
         );
         let units = store
             .units_authority(lock)
             .map_err(|source| error(source.to_string()))?;
-        let units_root_hint = install_root.join("units");
+        let units_root_hint = store.root().join("units");
         let runtime_manager = LinuxRuntimeManager::new(systemd_connection.clone());
         Ok(Self {
             active,
