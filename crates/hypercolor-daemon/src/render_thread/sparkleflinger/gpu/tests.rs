@@ -38,6 +38,11 @@ use hypercolor_macos_capture::{
     MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosScale, MacosTransferFunction,
     MacosYuvMatrix,
 };
+#[cfg(all(feature = "screen-capture", target_os = "macos"))]
+use hypercolor_macos_gpu_interop::{
+    MacosNativeColorTransform, MacosNativeOutputTransfer, MacosNativeReductionDescriptor,
+    MacosNativeReductionFilter, MacosNativeTargetFormat,
+};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::ZoneColors;
@@ -52,6 +57,8 @@ use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
+#[cfg(all(feature = "screen-capture", target_os = "macos"))]
+use super::PreparedMacosScreenTarget;
 use super::compositor::{ComposeShaderMode, encode_compose_params};
 use super::screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
@@ -64,13 +71,6 @@ use super::{
     MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap,
     PendingPreviewReadback, ensure_readback_buffer_capacity, ensure_storage_buffer_capacity,
     gpu_canvas_admission,
-};
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-use super::{
-    MacosNativeColorTransform, MacosNativeOutputTransfer, MacosNativeReductionDescriptor,
-    MacosNativeReductionFilter, MacosNativeTargetFormat, PreparedMacosScreenTarget,
-    UnsupportedMacosNativeTargetFormat, macos_native_target_format,
-    native_screen_copy_error_invalidates_frame,
 };
 #[cfg(target_os = "windows")]
 use super::{
@@ -1615,13 +1615,6 @@ fn native_screen_copy_failure_policy_separates_pressure_from_stale_structure() {
     );
 }
 
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn macos_native_screen_copy_errors_invalidate_retained_output() {
-    let error = anyhow::anyhow!("structural native screen copy failure");
-    assert!(native_screen_copy_error_invalidates_frame(&error));
-}
-
 #[cfg(target_os = "windows")]
 #[test]
 fn native_screen_storage_turnover_purges_only_changed_targets() {
@@ -1704,26 +1697,6 @@ fn metal_compositor_registers_and_composes_native_capture() {
             .rgba_bytes()
             .chunks_exact(4)
             .all(|pixel| pixel == [91, 43, 17, 255])
-    );
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn native_metal_target_formats_reject_disguised_source_storage() {
-    assert_eq!(
-        macos_native_target_format(CapturePixelFormat::Rgba8)
-            .expect("RGBA8 is a truthful compositor target"),
-        MacosNativeTargetFormat::Rgba8,
-    );
-    assert_eq!(
-        macos_native_target_format(CapturePixelFormat::Bgra8)
-            .expect("BGRA8 is a truthful compositor target"),
-        MacosNativeTargetFormat::Bgra8,
-    );
-    assert_eq!(
-        macos_native_target_format(CapturePixelFormat::Argb2101010)
-            .expect_err("packed source storage cannot masquerade as a compositor target"),
-        UnsupportedMacosNativeTargetFormat(CapturePixelFormat::Argb2101010),
     );
 }
 
