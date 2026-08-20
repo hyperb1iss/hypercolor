@@ -133,6 +133,24 @@ pub fn stage_release_payload_from_authority(
     unit_record(store, manifest.unit_id, &published)
 }
 
+pub(crate) fn retain_installed_release_unit(
+    store: &InstallStore,
+    lock: &InstallLock,
+    expected_unit: &UnitId,
+) -> Result<UnitRecord, ReleasePayloadError> {
+    let directory = store.open_unit_directory(lock, expected_unit)?;
+    let manifest_bytes = tree::read_installed_manifest_bytes(&directory)?;
+    let manifest = ValidatedManifest::parse(manifest_bytes)?;
+    if manifest.unit_id != *expected_unit {
+        return Err(ReleasePayloadError::UnexpectedManifestDigest {
+            expected: expected_unit.as_str().to_owned(),
+            actual: manifest.unit_id.as_str().to_owned(),
+        });
+    }
+    tree::validate_installed(&directory, &manifest)?;
+    unit_record(store, manifest.unit_id, &directory)
+}
+
 fn unit_record(
     store: &InstallStore,
     unit_id: UnitId,

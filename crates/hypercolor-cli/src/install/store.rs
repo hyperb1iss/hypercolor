@@ -205,6 +205,26 @@ impl InstallStore {
             Some(_) => Err(InstallStoreError::InvalidUnitsDirectory),
         }
     }
+
+    /// Open one immutable unit through this transaction's retained authority.
+    ///
+    /// The caller must use the lock acquired from this store. The returned
+    /// capability shares that lock's operation gate and never reopens the
+    /// install root pathname.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign lock, invalid units directory, missing
+    /// unit, or a unit entry that is not an exact child directory.
+    pub fn open_unit_directory(
+        &self,
+        lock: &InstallLock,
+        unit: &UnitId,
+    ) -> Result<DirectoryAuthority, InstallStoreError> {
+        self.units_authority(lock)?
+            .open_child_directory(Path::new(unit.as_str()))
+            .map_err(InstallStoreError::OpenUnit)
+    }
 }
 
 fn stage_journal(
@@ -278,6 +298,8 @@ pub enum InstallStoreError {
     CreateUnits(io::Error),
     #[error("failed to open the immutable unit directory: {0}")]
     OpenUnits(io::Error),
+    #[error("failed to open the exact immutable unit: {0}")]
+    OpenUnit(io::Error),
     #[error("failed to inspect active unit: {0}")]
     InspectActive(io::Error),
     #[error("invalid active unit link: {0}")]

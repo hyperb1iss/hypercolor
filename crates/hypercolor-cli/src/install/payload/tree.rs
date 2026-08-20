@@ -23,16 +23,29 @@ const UNIT_ROOT_MODE: u32 = 0o555;
 pub(super) fn read_manifest_bytes(
     source: &ReadOnlyDirectoryAuthority,
 ) -> Result<Vec<u8>, ReleasePayloadError> {
-    let opened = source
+    read_manifest_with_mode(source, MANIFEST_SOURCE_MODE)
+}
+
+pub(super) fn read_installed_manifest_bytes(
+    root: &DirectoryAuthority,
+) -> Result<Vec<u8>, ReleasePayloadError> {
+    read_manifest_with_mode(root, MANIFEST_INSTALLED_MODE)
+}
+
+fn read_manifest_with_mode<T: ReadTree>(
+    directory: &T,
+    expected_mode: u32,
+) -> Result<Vec<u8>, ReleasePayloadError> {
+    let opened = directory
         .open_regular_file(Path::new(MANIFEST_NAME))
         .map_err(|source| ReleasePayloadError::Filesystem {
             operation: "open manifest.json",
             source,
         })?;
     let metadata = opened.metadata();
-    if metadata.mode() != MANIFEST_SOURCE_MODE {
+    if metadata.mode() != expected_mode {
         return Err(ReleasePayloadError::InvalidManifest(format!(
-            "manifest.json mode must be {MANIFEST_SOURCE_MODE:#o}"
+            "manifest.json mode must be {expected_mode:#o}"
         )));
     }
     if metadata.size() > MAX_RELEASE_MANIFEST_BYTES as u64 {

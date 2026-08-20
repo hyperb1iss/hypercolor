@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use hypercolor_cli::install::{
     InstallLock, InstallStore, MAX_RELEASE_MANIFEST_BYTES, ReleasePayloadError, UnitId, UnitRecord,
-    stage_release_payload, stage_release_payload_from_authority,
+    retain_linux_unit, stage_release_payload, stage_release_payload_from_authority,
 };
 use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
 use serde_json::{Value, json};
@@ -627,6 +627,102 @@ fn returned_unit_authority_survives_install_root_path_replacement() {
         b"attacker"
     );
     assert!(!store.root().join("units").exists());
+}
+
+#[test]
+fn cold_rebind_validates_the_exact_installed_release() {
+    let fixture = ReleaseFixture::new();
+    let (_install_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("install lock");
+    let staged = stage_fixture(&store, &lock, &fixture).expect("stage release");
+    let unit = staged.id().clone();
+    drop(staged);
+
+    let rebound = retain_linux_unit(&store, &lock, &unit).expect("rebind installed release");
+
+    assert_eq!(rebound.id(), &unit);
+    assert_eq!(
+        read_authority_file(rebound.directory(), &["bin", "hypercolor"]),
+        b"candidate"
+    );
+}
+
+#[test]
+fn cold_rebind_rejects_wrong_lock_missing_unit_and_manifest_id_mismatch() {
+    let fixture = ReleaseFixture::new();
+    let (_install_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("install lock");
+    let staged = stage_fixture(&store, &lock, &fixture).expect("stage release");
+    let unit = staged.id().clone();
+    drop(staged);
+    let (_foreign_parent, foreign_store) = new_store();
+    let foreign_lock = foreign_store.acquire_lock().expect("foreign install lock");
+
+    let wrong_lock = retain_linux_unit(&store, &foreign_lock, &unit)
+        .expect_err("foreign lock must not retain a unit");
+    assert!(wrong_lock.to_string().contains("another prefix"));
+
+    let missing = UnitId::new("a".repeat(64)).expect("valid missing unit id");
+    let missing_error =
+        retain_linux_unit(&store, &lock, &missing).expect_err("missing unit must not be retained");
+    assert!(
+        missing_error
+            .to_string()
+            .contains("open the exact immutable unit")
+    );
+
+    fs::rename(store.unit_path(&unit), store.unit_path(&missing))
+        .expect("rename unit beneath retained store");
+    let mismatch = retain_linux_unit(&store, &lock, &missing)
+        .expect_err("manifest identity mismatch must fail");
+    assert!(
+        mismatch
+            .to_string()
+            .contains("does not match verified digest")
+    );
+}
+
+#[test]
+fn cold_rebind_rejects_installed_content_drift() {
+    let fixture = ReleaseFixture::new();
+    let (_install_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("install lock");
+    let staged = stage_fixture(&store, &lock, &fixture).expect("stage release");
+    let unit = staged.id().clone();
+    drop(staged);
+    let binary = store.unit_path(&unit).join("bin/hypercolor");
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
+        .expect("make installed binary writable for adversarial mutation");
+    fs::write(&binary, b"corrupt!!").expect("replace installed bytes");
+
+    let error = retain_linux_unit(&store, &lock, &unit)
+        .expect_err("content drift must prevent cold rebind");
+
+    assert!(error.to_string().contains("invalid immutable release unit"));
+}
+
+#[test]
+fn cold_rebind_uses_retained_root_after_path_replacement() {
+    let fixture = ReleaseFixture::new();
+    let (install_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("install lock");
+    let staged = stage_fixture(&store, &lock, &fixture).expect("stage release");
+    let unit = staged.id().clone();
+    drop(staged);
+    let displaced_root = install_parent.path().join("cold-rebind-store");
+    fs::rename(store.root(), &displaced_root).expect("displace locked install root");
+    fs::create_dir(store.root()).expect("replace install root pathname");
+    fs::write(store.root().join("attacker-sentinel"), b"attacker").expect("seed replacement root");
+
+    let rebound =
+        retain_linux_unit(&store, &lock, &unit).expect("rebind through retained install authority");
+
+    assert_eq!(
+        read_authority_file(rebound.directory(), &["bin", "hypercolor"]),
+        b"candidate"
+    );
+    assert!(!store.root().join("units").exists());
+    assert!(displaced_root.join("units").join(unit.as_str()).is_dir());
 }
 
 #[test]
