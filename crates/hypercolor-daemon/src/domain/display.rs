@@ -468,6 +468,6 @@ fn scene_display_zone(
     mutation
         .scenes()
         .active_scene()?
-        .display_group_for(device_id)
+        .display_zone_for(device_id)
         .cloned()
 }

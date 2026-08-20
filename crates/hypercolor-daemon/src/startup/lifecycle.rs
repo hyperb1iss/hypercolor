@@ -668,7 +668,7 @@ impl DaemonState {
                     anyhow::bail!("default scene is missing during runtime restore");
                 };
                 default_scene
-                    .groups
+                    .zones
                     .clone_from(&snapshot.default_scene_groups);
                 scene_manager
                     .update(default_scene)

@@ -384,10 +384,10 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
     let scenes = state.scene_manager.read().await;
     let primary = scenes
         .active_scene()
-        .and_then(|scene| scene.primary_group())
+        .and_then(|scene| scene.primary_zone())
         .expect("startup should keep the seeded Default zone");
     assert!(
-        primary.effect_id.is_none() && primary.controls.is_empty(),
+        primary.layers.is_empty(),
         "startup should not hydrate removed runtime fields"
     );
     drop(scenes);

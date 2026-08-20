@@ -910,7 +910,7 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
                 .active_scene()
                 .expect("default scene should be active");
             let group = scene
-                .primary_group()
+                .primary_zone()
                 .expect("default scene should have a primary zone");
             (scene.id, group.id)
         };

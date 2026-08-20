@@ -5,16 +5,14 @@
 //! state — serializable, composable, restorable snapshots that describe what
 //! every targeted LED should look like.
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use uuid::{Uuid, uuid};
 
 use crate::canvas::BlendMode;
 use crate::device::DeviceId;
-use crate::effect::{ControlBinding, ControlValue, EffectId};
-use crate::layer::{LayerSource, SceneLayer, SceneLayerId};
-use crate::library::PresetId;
+use crate::layer::{LayerSource, SceneLayer};
 use crate::spatial::SpatialLayout;
 
 // ── Scene Identity ───────────────────────────────────────────────────────
@@ -76,8 +74,9 @@ impl fmt::Display for ZoneId {
     }
 }
 
-/// An independent rendering pipeline within a scene.
-#[derive(Debug, Clone, PartialEq)]
+/// An independently laid out layer stack within a scene.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Zone {
     /// Unique identifier.
     pub id: ZoneId,
@@ -88,34 +87,26 @@ pub struct Zone {
     /// Optional long-form description.
     pub description: Option<String>,
 
-    /// Effect assigned to this group. `None` means the group is intentionally empty.
-    pub effect_id: Option<EffectId>,
-
-    /// Effect control overrides for this group.
-    pub controls: HashMap<String, ControlValue>,
-
-    /// Live sensor bindings applied to controls in this group.
-    pub control_bindings: HashMap<String, ControlBinding>,
-
-    /// Optional preset applied to the group.
-    pub preset_id: Option<PresetId>,
-
-    /// Authored bottom-to-top layer stack for this group.
+    /// Authored bottom-to-top layer stack for this zone.
+    #[serde(default)]
     pub layers: Vec<SceneLayer>,
 
-    /// Spatial layout used to sample this group.
+    /// Spatial layout used to sample this zone.
     pub layout: SpatialLayout,
 
-    /// Per-group brightness multiplier.
+    /// Per-zone brightness multiplier.
+    #[serde(default = "default_zone_brightness")]
     pub brightness: f32,
 
-    /// Whether this group is currently active.
+    /// Whether this zone is currently active.
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// Optional UI accent color.
     pub color: Option<String>,
 
     /// Direct display target for face-style zones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_target: Option<DisplayFaceTarget>,
 
     /// Semantic role inside the scene.
@@ -123,198 +114,28 @@ pub struct Zone {
 
     /// Monotonic version counter for the control mutation stream.
     ///
-    /// Bumped every time `controls` or `control_bindings` is patched so
-    /// clients can detect concurrent edits via an `If-Match` header on
-    /// the controls PATCH endpoint. Serialized with `#[serde(default)]`
-    /// so older persisted scenes load at version 0 without migration.
+    /// Bumped every time controls on any effect layer are patched.
+    #[serde(default)]
     pub controls_version: u64,
 
     /// Monotonic version counter for the layer mutation stream.
+    #[serde(default)]
     pub layers_version: u64,
 }
 
-#[derive(Serialize)]
-struct ZoneSerialize {
-    id: ZoneId,
-    name: String,
-    description: Option<String>,
-    effect_id: Option<EffectId>,
-    controls: HashMap<String, ControlValue>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    control_bindings: HashMap<String, ControlBinding>,
-    preset_id: Option<PresetId>,
-    layers: Vec<SceneLayer>,
-    layout: SpatialLayout,
-    #[serde(default = "default_group_brightness")]
-    brightness: f32,
-    #[serde(default = "default_true")]
-    enabled: bool,
-    color: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    display_target: Option<DisplayFaceTarget>,
-    role: ZoneRole,
-    #[serde(default)]
-    controls_version: u64,
-    #[serde(default)]
-    layers_version: u64,
-}
-
-#[derive(Deserialize)]
-struct ZoneDeserialize {
-    id: ZoneId,
-    name: String,
-    description: Option<String>,
-    #[serde(default)]
-    effect_id: Option<EffectId>,
-    #[serde(default)]
-    controls: HashMap<String, ControlValue>,
-    #[serde(default)]
-    control_bindings: HashMap<String, ControlBinding>,
-    #[serde(default)]
-    preset_id: Option<PresetId>,
-    layers: Option<Vec<SceneLayer>>,
-    layout: SpatialLayout,
-    #[serde(default = "default_group_brightness")]
-    brightness: f32,
-    #[serde(default = "default_true")]
-    enabled: bool,
-    color: Option<String>,
-    #[serde(default)]
-    display_target: Option<DisplayFaceTarget>,
-    role: ZoneRole,
-    #[serde(default)]
-    controls_version: u64,
-    #[serde(default)]
-    layers_version: u64,
-}
-
-impl Serialize for Zone {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let layers = self.effective_layers();
-        let legacy = legacy_effect_fields_from_layers(&layers).unwrap_or_else(empty_effect_fields);
-
-        ZoneSerialize {
-            id: self.id,
-            name: self.name.clone(),
-            description: self.description.clone(),
-            effect_id: legacy.0,
-            controls: legacy.1,
-            control_bindings: legacy.2,
-            preset_id: legacy.3,
-            layers,
-            layout: self.layout.clone(),
-            brightness: self.brightness,
-            enabled: self.enabled,
-            color: self.color.clone(),
-            display_target: self.display_target.clone(),
-            role: self.role,
-            controls_version: self.controls_version,
-            layers_version: self.layers_version,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Zone {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let helper = ZoneDeserialize::deserialize(deserializer)?;
-        let layers_were_present = helper.layers.is_some();
-        let mut layers = helper.layers.unwrap_or_else(|| {
-            legacy_effect_layer(
-                helper.effect_id,
-                &helper.controls,
-                &helper.control_bindings,
-                helper.preset_id,
-            )
-            .into_iter()
-            .collect()
-        });
-        for layer in &mut layers {
-            if matches!(layer.source, LayerSource::Effect { .. }) && layer.id.0 == helper.id.0 {
-                layer.id = SceneLayerId::new();
-            }
-        }
-        let legacy = if layers_were_present {
-            legacy_effect_fields_from_layers(&layers).unwrap_or_else(empty_effect_fields)
-        } else {
-            legacy_effect_fields_from_layers(&layers).unwrap_or((
-                helper.effect_id,
-                helper.controls,
-                helper.control_bindings,
-                helper.preset_id,
-            ))
-        };
-
-        Ok(Self {
-            id: helper.id,
-            name: helper.name,
-            description: helper.description,
-            effect_id: legacy.0,
-            controls: legacy.1,
-            control_bindings: legacy.2,
-            preset_id: legacy.3,
-            layers,
-            layout: helper.layout,
-            brightness: helper.brightness,
-            enabled: helper.enabled,
-            color: helper.color,
-            display_target: helper.display_target,
-            role: helper.role,
-            controls_version: helper.controls_version,
-            layers_version: helper.layers_version,
+impl Zone {
+    /// Effect identities authored into this zone's layer stack.
+    pub fn effect_ids(&self) -> impl Iterator<Item = crate::effect::EffectId> + '_ {
+        self.layers.iter().filter_map(|layer| match layer.source {
+            LayerSource::Effect { effect_id, .. } => Some(effect_id),
+            _ => None,
         })
     }
-}
 
-type LegacyEffectFields = (
-    Option<EffectId>,
-    HashMap<String, ControlValue>,
-    HashMap<String, ControlBinding>,
-    Option<PresetId>,
-);
-
-fn empty_effect_fields() -> LegacyEffectFields {
-    (None, HashMap::new(), HashMap::new(), None)
-}
-
-fn legacy_effect_fields_from_layers(layers: &[SceneLayer]) -> Option<LegacyEffectFields> {
-    layers.iter().find_map(|layer| match &layer.source {
-        LayerSource::Effect {
-            effect_id,
-            controls,
-            control_bindings,
-            preset_id,
-        } => Some((
-            Some(*effect_id),
-            controls.clone(),
-            control_bindings.clone(),
-            *preset_id,
-        )),
-        _ => None,
-    })
-}
-
-fn legacy_effect_layer(
-    effect_id: Option<EffectId>,
-    controls: &HashMap<String, ControlValue>,
-    control_bindings: &HashMap<String, ControlBinding>,
-    preset_id: Option<PresetId>,
-) -> Option<SceneLayer> {
-    effect_id.map(|effect_id| {
-        SceneLayer::from_effect(
-            SceneLayerId::new(),
-            effect_id,
-            controls.clone(),
-            control_bindings.clone(),
-            preset_id,
-        )
-    })
+    #[must_use]
+    pub fn has_effect(&self, effect_id: crate::effect::EffectId) -> bool {
+        self.effect_ids().any(|candidate| candidate == effect_id)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -423,11 +244,6 @@ impl DisplayFaceTarget {
 }
 
 impl Zone {
-    #[must_use]
-    pub fn effective_layers(&self) -> Vec<SceneLayer> {
-        self.layers.clone()
-    }
-
     /// Validate layer-stack invariants owned by this group.
     pub fn validate_layers(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
@@ -454,60 +270,14 @@ impl Zone {
             Err(errors)
         }
     }
-
-    /// Flatten this zone into zone assignments.
-    #[must_use]
-    pub fn zone_assignments(&self) -> Vec<ZoneAssignment> {
-        if !self.enabled {
-            return Vec::new();
-        }
-
-        let Some(effect_id) = self.effect_id else {
-            return Vec::new();
-        };
-
-        let parameters = self
-            .controls
-            .iter()
-            .map(|(key, value)| (key.clone(), control_value_parameter(value)))
-            .collect::<HashMap<_, _>>();
-
-        self.layout
-            .zones
-            .iter()
-            .map(|zone| ZoneAssignment {
-                zone_name: zone.id.clone(),
-                effect_name: effect_id.to_string(),
-                parameters: parameters.clone(),
-                brightness: Some(self.brightness),
-            })
-            .collect()
-    }
 }
 
-fn default_group_brightness() -> f32 {
+fn default_zone_brightness() -> f32 {
     1.0
 }
 
 fn default_true() -> bool {
     true
-}
-
-fn control_value_parameter(value: &ControlValue) -> String {
-    match value {
-        ControlValue::Float(value) => value.to_string(),
-        ControlValue::Integer(value) => value.to_string(),
-        ControlValue::Boolean(value) => value.to_string(),
-        ControlValue::Enum(value) | ControlValue::Text(value) => value.clone(),
-        ControlValue::Color([r, g, b, a]) => format!("{r:.6},{g:.6},{b:.6},{a:.6}"),
-        ControlValue::Rect(value) => {
-            format!(
-                "{:.6},{:.6},{:.6},{:.6}",
-                value.x, value.y, value.width, value.height
-            )
-        }
-        ControlValue::Gradient(_) => serde_json::to_string(value).unwrap_or_default(),
-    }
 }
 
 /// How zones not claimed by any zone should behave.
@@ -531,10 +301,10 @@ fn is_default_unassigned_behavior(value: &UnassignedBehavior) -> bool {
 
 /// A complete lighting state definition.
 ///
-/// Scenes are self-contained: they carry their own transition preference,
-/// their target scope, and every zone assignment needed to reproduce the
-/// lighting state from scratch. No ambient state is assumed.
+/// Scenes are self-contained: they carry their transition preference and
+/// every authored zone needed to reproduce the lighting state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Scene {
     /// UUID v7 — time-sortable, globally unique.
     pub id: SceneId,
@@ -545,20 +315,13 @@ pub struct Scene {
     /// Optional long-form description. Rendered in web UI and scene galleries.
     pub description: Option<String>,
 
-    /// Which devices/zones this scene targets.
-    pub scope: SceneScope,
-
-    /// Per-zone effect + parameter assignments.
-    /// Each zone must appear at most once.
-    pub zone_assignments: Vec<ZoneAssignment>,
-
-    /// Independent render pipelines owned by this scene.
+    /// Independently laid out layer stacks owned by this scene.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<Zone>,
+    pub zones: Vec<Zone>,
 
-    /// Monotonic version counter for render-group structure.
+    /// Monotonic version counter for zone structure.
     #[serde(default)]
-    pub groups_revision: u64,
+    pub zones_revision: u64,
 
     /// Default transition used when activating this scene.
     pub transition: TransitionSpec,
@@ -614,74 +377,34 @@ pub enum SceneMutationMode {
 }
 
 impl Scene {
-    /// Whether this scene uses zones instead of flat zone assignments.
     #[must_use]
-    pub fn has_render_groups(&self) -> bool {
-        !self.groups.is_empty()
-    }
-
-    /// Derive the effective scope for the currently active scene representation.
-    #[must_use]
-    pub fn effective_scope(&self) -> SceneScope {
-        if !self.has_render_groups() {
-            return self.scope.clone();
-        }
-
-        let zone_ids = self
-            .groups
+    pub fn primary_zone(&self) -> Option<&Zone> {
+        self.zones
             .iter()
-            .filter(|group| group.enabled)
-            .flat_map(|group| group.layout.zones.iter().map(|zone| zone.id.clone()))
-            .collect::<Vec<_>>();
-
-        if zone_ids.is_empty() {
-            SceneScope::Full
-        } else {
-            SceneScope::Zones(zone_ids)
-        }
+            .find(|zone| zone.role == ZoneRole::Primary)
     }
 
-    /// Flatten the active scene into zone assignments.
-    #[must_use]
-    pub fn effective_zone_assignments(&self) -> Vec<ZoneAssignment> {
-        if !self.has_render_groups() {
-            return self.zone_assignments.clone();
-        }
-
-        self.groups
-            .iter()
-            .flat_map(Zone::zone_assignments)
-            .collect()
-    }
-
-    #[must_use]
-    pub fn primary_group(&self) -> Option<&Zone> {
-        self.groups
-            .iter()
-            .find(|group| group.role == ZoneRole::Primary)
-    }
-
-    pub fn primary_group_mut(&mut self) -> Option<&mut Zone> {
-        self.groups
+    pub fn primary_zone_mut(&mut self) -> Option<&mut Zone> {
+        self.zones
             .iter_mut()
-            .find(|group| group.role == ZoneRole::Primary)
+            .find(|zone| zone.role == ZoneRole::Primary)
     }
 
     #[must_use]
-    pub fn display_group_for(&self, device_id: DeviceId) -> Option<&Zone> {
-        self.groups.iter().find(|group| {
-            group.role == ZoneRole::Display
-                && group
+    pub fn display_zone_for(&self, device_id: DeviceId) -> Option<&Zone> {
+        self.zones.iter().find(|zone| {
+            zone.role == ZoneRole::Display
+                && zone
                     .display_target
                     .as_ref()
                     .is_some_and(|target| target.device_id == device_id)
         })
     }
 
-    pub fn display_group_for_mut(&mut self, device_id: DeviceId) -> Option<&mut Zone> {
-        self.groups.iter_mut().find(|group| {
-            group.role == ZoneRole::Display
-                && group
+    pub fn display_zone_for_mut(&mut self, device_id: DeviceId) -> Option<&mut Zone> {
+        self.zones.iter_mut().find(|zone| {
+            zone.role == ZoneRole::Display
+                && zone
                     .display_target
                     .as_ref()
                     .is_some_and(|target| target.device_id == device_id)
@@ -694,20 +417,18 @@ impl Scene {
     }
 
     /// Ensure no zone is claimed by multiple zones.
-    pub fn validate_group_exclusivity(&self) -> Result<(), Vec<String>> {
-        if !self.has_render_groups() {
-            return Ok(());
-        }
-
+    pub fn validate_zone_exclusivity(&self) -> Result<(), Vec<String>> {
         let mut seen = HashMap::<&str, &str>::new();
         let mut conflicts = Vec::new();
 
-        for group in &self.groups {
-            for zone in &group.layout.zones {
-                if let Some(existing_group) = seen.insert(zone.id.as_str(), group.name.as_str()) {
+        for authored_zone in &self.zones {
+            for output in &authored_zone.layout.zones {
+                if let Some(existing_zone) =
+                    seen.insert(output.id.as_str(), authored_zone.name.as_str())
+                {
                     conflicts.push(format!(
                         "zone '{}' claimed by both '{}' and '{}'",
-                        zone.id, existing_group, group.name
+                        output.id, existing_zone, authored_zone.name
                     ));
                 }
             }
@@ -730,7 +451,7 @@ impl Scene {
             errors.push("scene name must be at most 128 characters".to_owned());
         }
 
-        if let Err(mut conflicts) = self.validate_group_exclusivity() {
+        if let Err(mut conflicts) = self.validate_zone_exclusivity() {
             errors.append(&mut conflicts);
         }
 
@@ -751,30 +472,30 @@ impl Scene {
         }
 
         let primary_count = self
-            .groups
+            .zones
             .iter()
-            .filter(|group| group.role == ZoneRole::Primary)
+            .filter(|zone| zone.role == ZoneRole::Primary)
             .count();
         if primary_count > 1 {
             errors.push("scene has more than one primary zone".to_owned());
         }
 
         let mut display_targets = HashMap::<DeviceId, ZoneId>::new();
-        for group in &self.groups {
-            if let Err(mut layer_errors) = group.validate_layers() {
+        for zone in &self.zones {
+            if let Err(mut layer_errors) = zone.validate_layers() {
                 errors.append(&mut layer_errors);
             }
 
-            match (&group.role, &group.display_target) {
+            match (&zone.role, &zone.display_target) {
                 (ZoneRole::Display, None) => errors.push(format!(
                     "display zone '{}' is missing a display target",
-                    group.name
+                    zone.name
                 )),
                 (ZoneRole::Custom | ZoneRole::Primary, Some(_)) => {
                     errors.push(format!(
                         "zone '{}' has a display target but role '{}'",
-                        group.name,
-                        match group.role {
+                        zone.name,
+                        match zone.role {
                             ZoneRole::Custom => "custom",
                             ZoneRole::Primary => "primary",
                             ZoneRole::Display => "display",
@@ -782,10 +503,10 @@ impl Scene {
                     ));
                 }
                 (ZoneRole::Display, Some(target)) => {
-                    if let Some(existing) = display_targets.insert(target.device_id, group.id) {
+                    if let Some(existing) = display_targets.insert(target.device_id, zone.id) {
                         errors.push(format!(
                             "duplicate display zones for device {} ({} and {})",
-                            target.device_id, existing, group.id
+                            target.device_id, existing, zone.id
                         ));
                     }
                 }

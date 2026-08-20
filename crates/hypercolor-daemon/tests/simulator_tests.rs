@@ -691,11 +691,11 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
         let default_scene = manager
             .active_scene()
             .expect("default scene should remain active");
-        assert!(default_scene.display_group_for(device_id).is_none());
+        assert!(default_scene.display_zone_for(device_id).is_none());
         let named_scene = manager
             .get(&named_scene_id)
             .expect("named scene should remain present");
-        assert!(named_scene.display_group_for(device_id).is_none());
+        assert!(named_scene.display_zone_for(device_id).is_none());
     }
 
     let persisted =
@@ -717,7 +717,7 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
         .find(|scene| scene.id == named_scene_id)
         .expect("named scene should be persisted");
     assert!(
-        named_scene.groups.iter().all(|group| {
+        named_scene.zones.iter().all(|group| {
             group
                 .display_target
                 .as_ref()

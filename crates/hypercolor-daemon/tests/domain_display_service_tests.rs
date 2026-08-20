@@ -17,11 +17,11 @@ use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
-use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
-    ZoneId, ZoneRole,
+    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, ZoneId,
+    ZoneRole,
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
@@ -95,10 +95,8 @@ fn named_scene(name: &str) -> Scene {
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -136,7 +134,6 @@ fn overlay_zone(device_id: DeviceId, effect_id: EffectId) -> hypercolor_types::s
     zone.id = ZoneId::new();
     "Kraken Face".clone_into(&mut zone.name);
     zone.role = ZoneRole::Display;
-    zone.effect_id = Some(effect_id);
     zone.layers = vec![SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
@@ -146,6 +143,13 @@ fn overlay_zone(device_id: DeviceId, effect_id: EffectId) -> hypercolor_types::s
     )];
     zone.display_target = Some(DisplayFaceTarget::new(device_id));
     zone
+}
+
+fn zone_controls(zone: &hypercolor_types::scene::Zone) -> Option<&HashMap<String, ControlValue>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => Some(controls),
+        _ => None,
+    })
 }
 
 fn drain_events(
@@ -178,7 +182,7 @@ async fn set_display_face_creates_the_zone_then_updates_it() {
     .await
     .expect("the face should be assigned");
     assert_eq!(created.change, ZoneChangeKind::Created);
-    assert_eq!(created.zone.effect_id, Some(first.id));
+    assert_eq!(created.zone.effect_ids().next(), Some(first.id));
     assert_eq!(created.zone.role, ZoneRole::Display);
 
     let updated = set_display_face(
@@ -189,7 +193,7 @@ async fn set_display_face_creates_the_zone_then_updates_it() {
     .await
     .expect("the face should be replaced");
     assert_eq!(updated.change, ZoneChangeKind::Updated);
-    assert_eq!(updated.zone.effect_id, Some(second.id));
+    assert_eq!(updated.zone.effect_ids().next(), Some(second.id));
     assert_eq!(updated.zone.id, created.zone.id, "the zone is reused");
 
     let seen = drain_events(&mut events);
@@ -261,7 +265,7 @@ async fn clear_display_face_keeps_the_zone_and_drops_the_effect() {
     .expect("the face should be cleared");
 
     assert_eq!(cleared.zone.id, created.zone.id);
-    assert!(cleared.zone.effect_id.is_none());
+    assert!(cleared.zone.effect_ids().next().is_none());
     assert_eq!(cleared.change, ZoneChangeKind::Updated);
 }
 
@@ -360,7 +364,7 @@ async fn patch_display_face_controls_merges_onto_the_zone() {
     .expect("the zone exists");
 
     assert_eq!(
-        written.zone.controls.get("accent"),
+        zone_controls(&written.zone).and_then(|controls| controls.get("accent")),
         Some(&ControlValue::Float(0.5))
     );
     assert_eq!(written.change, ZoneChangeKind::ControlsPatched);
@@ -445,7 +449,7 @@ async fn prune_display_zones_removes_both_layers_for_a_deleted_device() {
     assert!(
         manager
             .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
+            .and_then(|scene| scene.display_zone_for(device_id))
             .is_none()
     );
 }
@@ -466,7 +470,7 @@ async fn the_default_overlay_installs_and_retracts_without_persisting() {
             .await
             .expect("the overlay should install")
             .expect("the overlay is readable back");
-    assert_eq!(installed.effect_id, Some(effect.id));
+    assert_eq!(installed.effect_ids().next(), Some(effect.id));
 
     let removed = remove_default_display_overlay(&state, device_id)
         .await
@@ -480,7 +484,7 @@ async fn the_default_overlay_installs_and_retracts_without_persisting() {
         manager
             .list()
             .iter()
-            .all(|scene| scene.display_group_for(device_id).is_none()),
+            .all(|scene| scene.display_zone_for(device_id).is_none()),
         "the default layer never writes into a stored scene"
     );
 }
@@ -512,7 +516,7 @@ async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
             .await
             .expect("a repeat install succeeds")
             .expect("it reports the installed overlay");
-        assert_eq!(installed.effect_id, Some(effect.id));
+        assert_eq!(installed.effect_ids().next(), Some(effect.id));
     }
 
     assert_eq!(
@@ -558,7 +562,7 @@ async fn a_changed_default_overlay_still_commits() {
             .expect("the replacement lands")
             .expect("it reports the installed overlay");
 
-    assert_eq!(installed.effect_id, Some(second.id));
+    assert_eq!(installed.effect_ids().next(), Some(second.id));
     assert!(
         state.scene_commits.revision() > after_first,
         "a real change must advance the revision"

@@ -79,8 +79,8 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
-    Zone, ZoneId, ZoneRole,
+    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+    ZoneRole,
 };
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
@@ -91,6 +91,20 @@ use hypercolor_types::spatial::{
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
 static COVER_DATA_DIR_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
+
+fn zone_effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => Some(controls),
+        _ => None,
+    })
+}
+
+fn zone_effect_preset(zone: &Zone) -> Option<String> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { preset_id, .. } => preset_id.map(|id| id.to_string()),
+        _ => None,
+    })
+}
 
 std::thread_local! {
     static ISOLATED_STATE_DATA_DIRS: std::cell::RefCell<Vec<tempfile::TempDir>> =
@@ -3692,10 +3706,8 @@ async fn activate_empty_test_scene_with_mode(
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,
@@ -3738,20 +3750,25 @@ async fn activate_display_face_test_scene_with_layers(
     device_id: DeviceId,
     layers: Vec<SceneLayer>,
 ) -> SceneId {
+    let layers = if layers.is_empty() {
+        vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        )]
+    } else {
+        layers
+    };
     let scene = Scene {
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: vec![Zone {
+        zones: vec![Zone {
             id: hypercolor_types::scene::ZoneId::new(),
             name: "Display Face".to_owned(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers,
             layout: SpatialLayout {
                 id: "display-face-layout".to_owned(),
@@ -3773,7 +3790,7 @@ async fn activate_display_face_test_scene_with_layers(
             controls_version: 0,
             layers_version: 0,
         }],
-        groups_revision: 0,
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,
@@ -6008,10 +6025,10 @@ async fn apply_effect_upserts_primary_group() {
     let manager = state.scene_manager.read().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
+        .and_then(Scene::primary_zone)
         .expect("active scene should contain a primary group");
     assert_eq!(primary.role, ZoneRole::Primary);
-    assert!(primary.effect_id.is_some());
+    assert!(primary.effect_ids().next().is_some());
 }
 
 #[tokio::test]
@@ -6029,8 +6046,8 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
             .expect("custom zone should be created");
         let primary_effect = manager
             .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|group| group.effect_id);
+            .and_then(Scene::primary_zone)
+            .and_then(|group| group.effect_ids().next());
         (custom_id, primary_effect)
     };
 
@@ -6056,16 +6073,18 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
     let manager = state.scene_manager.read().await;
     let scene = manager.active_scene().expect("a scene should be active");
     let custom = scene
-        .groups
+        .zones
         .iter()
         .find(|group| group.id == custom_id)
         .expect("the targeted zone should still exist");
     assert!(
-        custom.effect_id.is_some(),
+        custom.effect_ids().next().is_some(),
         "the effect should land in the targeted zone"
     );
     assert_eq!(
-        scene.primary_group().and_then(|group| group.effect_id),
+        scene
+            .primary_zone()
+            .and_then(|group| group.effect_ids().next()),
         primary_effect_before,
         "a named-zone apply must leave the Primary zone untouched",
     );
@@ -6701,8 +6720,8 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
         let manager = state.scene_manager.read().await;
         manager
             .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|group| group.effect_id)
+            .and_then(Scene::primary_zone)
+            .and_then(|group| group.effect_ids().next())
             .expect("first effect apply should populate the primary group")
     };
 
@@ -6721,12 +6740,12 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
 
     let manager = state.scene_manager.read().await;
     let active_scene = manager.active_scene().expect("active scene should remain");
-    assert_eq!(active_scene.groups.len(), 1);
+    assert_eq!(active_scene.zones.len(), 1);
     let primary = active_scene
-        .primary_group()
+        .primary_zone()
         .expect("primary group should exist after effect swap");
-    assert_ne!(primary.effect_id, Some(first_primary_effect_id));
-    assert!(primary.effect_id.is_some());
+    assert_ne!(primary.effect_ids().next(), Some(first_primary_effect_id));
+    assert!(primary.effect_ids().next().is_some());
 }
 
 #[tokio::test]
@@ -6776,15 +6795,15 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
     let manager = state.scene_manager.read().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
+        .and_then(Scene::primary_zone)
         .expect("primary group should exist after apply");
     assert_eq!(
-        primary.preset_id.map(|id| id.to_string()),
+        zone_effect_preset(primary),
         Some(preset_id),
         "preset_id should be set on the zone in the same transaction as the effect start"
     );
-    let speed = primary
-        .controls
+    let speed = zone_effect_controls(primary)
+        .expect("primary effect layer should exist")
         .get("speed")
         .expect("preset controls should be baked into the group");
     assert!(matches!(
@@ -7087,7 +7106,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
         let manager = state.scene_manager.read().await;
         manager
             .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
             .and_then(|zone| zone.layers.first())
             .map(|layer| layer.id)
             .expect("playlist activation should create one primary layer")
@@ -7111,7 +7130,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
         let manager = state.scene_manager.read().await;
         let primary = manager
             .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
             .expect("playlist activation should retain the primary zone");
         assert_eq!(primary.layers.len(), 1);
         primary.layers[0].id
@@ -7595,7 +7614,7 @@ async fn snapshot_scene_creates_a_locked_copy_of_the_live_tree() {
     let saved = manager
         .get(&SceneId(scene_id))
         .expect("snapshot should be stored");
-    assert_eq!(saved.groups, active.groups);
+    assert_eq!(saved.zones, active.zones);
     assert_eq!(saved.activation_brightness, None);
     assert_eq!(manager.active_scene_id(), Some(&active.id));
 }
@@ -10039,10 +10058,10 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
         .get(&SceneId::DEFAULT)
         .expect("default scene should still exist");
     let default_primary = default_scene
-        .primary_group()
+        .primary_zone()
         .expect("default scene should keep its Default zone");
     assert!(
-        default_primary.effect_id.is_none(),
+        default_primary.effect_ids().next().is_none(),
         "default scene should not be mutated while a named scene is active"
     );
 
@@ -10052,8 +10071,8 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
     assert_eq!(active_scene.id, named_scene_id);
     assert!(
         active_scene
-            .primary_group()
-            .and_then(|group| group.effect_id)
+            .primary_zone()
+            .and_then(|group| group.effect_ids().next())
             .is_some()
     );
 }
@@ -10090,7 +10109,7 @@ async fn apply_effect_conflicts_when_snapshot_scene_is_active() {
     assert!(
         manager
             .active_scene()
-            .and_then(Scene::primary_group)
+            .and_then(Scene::primary_zone)
             .is_none(),
         "snapshot scene should not be rewritten by effect apply",
     );
@@ -11376,10 +11395,10 @@ async fn patch_face_controls_updates_display_group() {
     let manager = state.scene_manager.read().await;
     let display_group = manager
         .active_scene()
-        .and_then(|scene| scene.display_group_for(display_id))
+        .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
     assert_eq!(
-        display_group.controls.get("label"),
+        zone_effect_controls(display_group).and_then(|controls| controls.get("label")),
         Some(&ControlValue::Text("gpu".to_owned()))
     );
 }
@@ -11421,7 +11440,7 @@ async fn put_face_conflicts_when_snapshot_scene_is_active() {
     assert!(
         manager
             .active_scene()
-            .and_then(|scene| scene.display_group_for(display_id))
+            .and_then(|scene| scene.display_zone_for(display_id))
             .is_none(),
         "snapshot scene should not be rewritten by face assignment",
     );
@@ -11500,7 +11519,7 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     let manager = state.scene_manager.read().await;
     let group = manager
         .active_scene()
-        .and_then(|scene| scene.display_group_for(display_id))
+        .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
     let target = group
         .display_target
@@ -11581,7 +11600,7 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
     let manager = state.scene_manager.read().await;
     let group = manager
         .active_scene()
-        .and_then(|scene| scene.display_group_for(display_id))
+        .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
     let target = group
         .display_target
@@ -12439,11 +12458,11 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         let default_scene = manager
             .active_scene()
             .expect("default scene should remain active");
-        assert!(default_scene.display_group_for(display_id).is_none());
+        assert!(default_scene.display_zone_for(display_id).is_none());
         let named_scene = manager
             .get(&named_scene_id)
             .expect("named scene should remain present");
-        assert!(named_scene.display_group_for(display_id).is_none());
+        assert!(named_scene.display_zone_for(display_id).is_none());
     }
 
     let persisted =
@@ -12465,7 +12484,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         .find(|scene| scene.id == named_scene_id)
         .expect("named scene should be persisted");
     assert!(
-        named_scene.groups.iter().all(|group| {
+        named_scene.zones.iter().all(|group| {
             group
                 .display_target
                 .as_ref()

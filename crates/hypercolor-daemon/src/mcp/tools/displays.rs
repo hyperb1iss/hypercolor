@@ -170,8 +170,8 @@ async fn live_scope_payload(state: &AppState, device_id: DeviceId) -> Value {
         let scene_manager = state.scene_manager.read().await;
         scene_manager
             .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
-            .is_some_and(|zone| zone.effect_id.is_some())
+            .and_then(|scene| scene.display_zone_for(device_id))
+            .is_some_and(|zone| zone.effect_ids().next().is_some())
     };
     if scene_assigned {
         return json!("scene");
@@ -208,15 +208,14 @@ async fn handle_default_scope(
             let scene_manager = state.scene_manager.read().await;
             scene_manager
                 .active_scene()
-                .and_then(|scene| scene.display_group_for(device_id))
-                .is_some_and(|zone| zone.effect_id.is_some())
+                .and_then(|scene| scene.display_zone_for(device_id))
+                .is_some_and(|zone| zone.effect_ids().next().is_some())
         };
         let cleared_zone = remove_default_display_overlay(state, device_id).await?;
         if removed
             && !scene_assigned
             && let Some(mut zone) = cleared_zone
         {
-            zone.effect_id = None;
             zone.layers.clear();
             let scene_id = {
                 let scene_manager = state.scene_manager.read().await;

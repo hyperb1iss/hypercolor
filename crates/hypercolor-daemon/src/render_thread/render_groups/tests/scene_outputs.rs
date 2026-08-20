@@ -59,10 +59,6 @@ fn single_full_scene_group_renders_directly_into_surface() {
         id: ZoneId::new(),
         name: "Direct".into(),
         description: None,
-        effect_id: Some(solid_id),
-        controls: controls.clone(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![effect_layer(solid_id, controls)],
         layout: SpatialLayout {
             id: "direct-group".into(),
@@ -178,8 +174,6 @@ fn empty_display_group_does_not_publish_direct_surface() {
     let registry = builtin_registry();
     let mut group = sample_display_group(4, 4);
     group.name = "Display Shell".into();
-    group.effect_id = None;
-    group.controls.clear();
     group.layers.clear();
     let mut zones = Vec::new();
     let display_group_target_fps = HashMap::new();
@@ -292,10 +286,6 @@ fn multiple_custom_groups_render_distinct_zone_colors() {
             id: ZoneId::new(),
             name: "Left".into(),
             description: None,
-            effect_id: Some(solid_id),
-            controls: left_controls.clone(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![effect_layer(solid_id, left_controls)],
             layout: SpatialLayout {
                 id: "left-group".into(),
@@ -321,10 +311,6 @@ fn multiple_custom_groups_render_distinct_zone_colors() {
             id: ZoneId::new(),
             name: "Right".into(),
             description: None,
-            effect_id: Some(solid_id),
-            controls: right_controls.clone(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![effect_layer(solid_id, right_controls)],
             layout: SpatialLayout {
                 id: "right-group".into(),

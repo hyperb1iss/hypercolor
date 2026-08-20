@@ -3058,7 +3058,7 @@ async fn zone_layout_preview_rejects_invalid_sampling_radii() {
     let scene = manager
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    let group = scene.primary_group().expect("primary zone should exist");
+    let group = scene.primary_zone().expect("primary zone should exist");
 
     for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let mut layout = group.layout.clone();

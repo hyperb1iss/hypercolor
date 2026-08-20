@@ -2,16 +2,11 @@
   "id": "01931234-5678-7abc-9def-0123456789ab",
   "name": "Wire compat scene",
   "description": "Locks the wire format Plan 55 P3 must preserve",
-  "scope": "Full",
-  "zone_assignments": [],
-  "groups": [
+  "zones": [
     {
       "id": "01931234-5678-7def-9abc-0123456789cd",
       "name": "Default zone",
       "description": "Fixture render group",
-      "effect_id": "01931234-5678-7111-9222-0123456789ef",
-      "controls": {},
-      "preset_id": null,
       "layers": [
         {
           "id": "01931234-5678-7333-9444-0123456789aa",
@@ -113,7 +108,7 @@
       "layers_version": 0
     }
   ],
-  "groups_revision": 7,
+  "zones_revision": 7,
   "transition": {
     "duration_ms": 750,
     "easing": "EaseInOut",

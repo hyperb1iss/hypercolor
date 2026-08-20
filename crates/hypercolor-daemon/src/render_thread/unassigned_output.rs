@@ -241,7 +241,6 @@ pub(crate) fn unassigned_behavior_generation(behavior: &UnassignedBehavior) -> u
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     use hypercolor_core::device::{BackendManager, SegmentRange};
@@ -299,10 +298,6 @@ mod tests {
             id,
             name: "fallback".to_owned(),
             description: None,
-            effect_id: None,
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: Vec::new(),
             layout,
             brightness: 1.0,

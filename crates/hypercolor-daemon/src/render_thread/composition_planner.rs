@@ -257,10 +257,6 @@ mod tests {
             id: ZoneId::new(),
             name: "Desk".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,

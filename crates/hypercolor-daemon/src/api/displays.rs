@@ -443,7 +443,7 @@ pub async fn delete_display_face(
             let scene_manager = state.scene_manager.read().await;
             scene_manager
                 .active_scene()
-                .and_then(|scene| scene.display_group_for(device_id))
+                .and_then(|scene| scene.display_zone_for(device_id))
                 .is_some_and(display_zone_has_face_assignment)
         };
         match crate::domain::display::remove_default_display_overlay(state.as_ref(), device_id)
@@ -454,7 +454,6 @@ pub async fn delete_display_face(
                     && !scene_assigned
                     && let Some(mut zone) = cleared
                 {
-                    zone.effect_id = None;
                     zone.layers.clear();
                     let scene_id = {
                         let scene_manager = state.scene_manager.read().await;
@@ -748,7 +747,7 @@ async fn current_display_face_assignment(
         let Some(active_scene) = scene_manager.active_scene() else {
             return Err(DomainError::not_found(ResourceKind::Scene, "active"));
         };
-        let Some(group) = active_scene.display_group_for(device_id).cloned() else {
+        let Some(group) = active_scene.display_zone_for(device_id).cloned() else {
             return Err(DomainError::not_found(
                 ResourceKind::Zone,
                 format!("display-face:{device_id}"),
@@ -757,7 +756,7 @@ async fn current_display_face_assignment(
         (active_scene.id, group)
     };
 
-    let Some(effect_id) = group.effect_id else {
+    let Some(effect_id) = group.effect_ids().next() else {
         return Err(DomainError::not_found(
             ResourceKind::Effect,
             format!("zone:{}", group.id),
@@ -799,10 +798,6 @@ fn build_default_display_zone(
         id: hypercolor_types::scene::ZoneId::new(),
         name: format!("{device_name} Face"),
         description: Some(format!("Default face for {device_name}")),
-        effect_id: Some(effect_id),
-        controls: preference.controls.clone(),
-        control_bindings: std::collections::HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer::from_effect(
             SceneLayerId::new(),
             effect_id,
@@ -907,7 +902,7 @@ async fn display_face_layer_state(state: &AppState, device_id: DeviceId) -> (boo
         let scene_manager = state.scene_manager.read().await;
         scene_manager
             .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
+            .and_then(|scene| scene.display_zone_for(device_id))
             .is_some_and(display_zone_has_face_assignment)
     };
     let default_assigned = {
@@ -929,7 +924,7 @@ async fn current_default_face_assignment(
             format!("default-face:{device_id}"),
         ));
     };
-    let Some(effect_id) = zone.effect_id else {
+    let Some(effect_id) = zone.effect_ids().next() else {
         return Err(DomainError::Internal(anyhow::anyhow!(
             "Default face zone has no effect"
         )));
@@ -971,7 +966,7 @@ fn compact_display_face_assignment_zone(mut group: Zone) -> Zone {
 }
 
 fn display_zone_has_face_assignment(group: &Zone) -> bool {
-    group.effect_id.is_some()
+    group.effect_ids().next().is_some()
 }
 
 pub(crate) fn display_face_layout(

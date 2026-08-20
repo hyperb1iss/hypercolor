@@ -308,10 +308,6 @@ fn render_group(
         id: ZoneId::new(),
         name: zone_id.to_owned(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: controls.clone(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer::from_effect(
             SceneLayerId::new(),
             effect_id,

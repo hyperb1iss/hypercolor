@@ -199,7 +199,7 @@ fn zone_in_scene(
         .scenes()
         .get(&scene_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .cloned()

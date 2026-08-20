@@ -105,15 +105,11 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
 
 fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_types::scene::Scene {
     let mut scene = make_scene(name);
-    scene.groups = vec![Zone {
+    scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: format!("{name} Group"),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
+        layers: vec![effect_layer(effect_id, 0.5)],
         layout: sample_layout(zone_id),
         brightness: 0.8,
         enabled: true,
@@ -149,6 +145,20 @@ fn effect_layer(effect_id: EffectId, speed: f32) -> SceneLayer {
         HashMap::new(),
         None,
     )
+}
+
+fn zone_effect_id(zone: &Zone) -> Option<EffectId> {
+    zone.layers.iter().find_map(|layer| match layer.source {
+        LayerSource::Effect { effect_id, .. } => Some(effect_id),
+        _ => None,
+    })
+}
+
+fn zone_control<'a>(zone: &'a Zone, key: &str) -> Option<&'a ControlValue> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => controls.get(key),
+        _ => None,
+    })
 }
 
 fn effect_metadata(id: EffectId, name: &str) -> EffectMetadata {
@@ -203,15 +213,11 @@ fn scene_manager_create_duplicate_fails() {
 fn scene_manager_create_rejects_overlapping_render_groups() {
     let mut mgr = SceneManager::new();
     let mut scene = make_scene("Grouped");
-    scene.groups = vec![
+    scene.zones = vec![
         Zone {
             id: ZoneId::new(),
             name: "Desk".into(),
             description: None,
-            effect_id: Some(EffectId::from(Uuid::now_v7())),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: Vec::new(),
             layout: sample_layout("shared:zone"),
             brightness: 1.0,
@@ -226,10 +232,6 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             id: ZoneId::new(),
             name: "Room".into(),
             description: None,
-            effect_id: Some(EffectId::from(Uuid::now_v7())),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: Vec::new(),
             layout: sample_layout("shared:zone"),
             brightness: 1.0,
@@ -351,7 +353,7 @@ fn scene_manager_refreshes_active_render_group_cache_on_update() {
         "desk:main"
     );
 
-    scene.groups[0].layout = sample_layout("desk:updated");
+    scene.zones[0].layout = sample_layout("desk:updated");
     mgr.update(scene).expect("update grouped");
 
     assert_eq!(
@@ -362,16 +364,16 @@ fn scene_manager_refreshes_active_render_group_cache_on_update() {
 }
 
 #[test]
-fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
+fn scene_manager_upsert_primary_group_replaces_authored_layer_stack() {
     let mut mgr = SceneManager::new();
     let old_id = EffectId::from(Uuid::now_v7());
     let new_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Primary", "desk:main", old_id);
     let scene_id = scene.id;
-    scene.groups[0].role = ZoneRole::Primary;
-    scene.groups[0].layers = vec![effect_layer(old_id, 0.25)];
-    scene.groups[0].layers_version = 4;
-    let previous_layer_id = scene.groups[0].layers[0].id;
+    scene.zones[0].role = ZoneRole::Primary;
+    scene.zones[0].layers = vec![effect_layer(old_id, 0.25)];
+    scene.zones[0].layers_version = 4;
+    let previous_layer_id = scene.zones[0].layers[0].id;
 
     mgr.create(scene).expect("create primary scene");
     mgr.activate(&scene_id, None)
@@ -388,7 +390,7 @@ fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
         .expect("upsert primary group")
         .clone();
 
-    assert_eq!(updated.effect_id, Some(new_id));
+    assert_eq!(zone_effect_id(&updated), Some(new_id));
     assert_eq!(updated.layers_version, 5);
     assert_eq!(updated.controls_version, 1);
     let [layer] = updated.layers.as_slice() else {
@@ -409,7 +411,7 @@ fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
     assert!(control_bindings.is_empty());
     assert_eq!(*preset_id, None);
 
-    let active_layers = mgr.active_render_groups()[0].effective_layers();
+    let active_layers = mgr.active_render_groups()[0].layers.clone();
     let LayerSource::Effect { effect_id, .. } = active_layers[0].source else {
         panic!("active zone should expose the replacement effect layer");
     };
@@ -423,7 +425,7 @@ fn scene_manager_reapplying_an_effect_mints_another_layer_id() {
     let effect_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Primary", "desk:main", effect_id);
     let scene_id = scene.id;
-    scene.groups[0].role = ZoneRole::Primary;
+    scene.zones[0].role = ZoneRole::Primary;
 
     mgr.create(scene).expect("create primary scene");
     mgr.activate(&scene_id, None)
@@ -454,14 +456,14 @@ fn scene_manager_reapplying_an_effect_mints_another_layer_id() {
 }
 
 #[test]
-fn scene_manager_clear_group_effect_clears_materialized_layers() {
+fn scene_manager_clear_group_effect_clears_effect_layers() {
     let mut mgr = SceneManager::new();
     let effect_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Clearable", "desk:main", effect_id);
     let scene_id = scene.id;
-    let group_id = scene.groups[0].id;
-    scene.groups[0].layers = vec![effect_layer(effect_id, 0.5)];
-    scene.groups[0].layers_version = 2;
+    let group_id = scene.zones[0].id;
+    scene.zones[0].layers = vec![effect_layer(effect_id, 0.5)];
+    scene.zones[0].layers_version = 2;
 
     mgr.create(scene).expect("create grouped scene");
     mgr.activate(&scene_id, None)
@@ -472,26 +474,25 @@ fn scene_manager_clear_group_effect_clears_materialized_layers() {
         .expect("clear group effect")
         .clone();
 
-    assert_eq!(updated.effect_id, None);
-    assert!(updated.controls.is_empty());
+    assert_eq!(zone_effect_id(&updated), None);
     assert!(updated.layers.is_empty());
-    assert!(updated.effective_layers().is_empty());
+    assert!(updated.layers.clone().is_empty());
     assert_eq!(updated.layers_version, 3);
-    assert!(mgr.active_render_groups()[0].effective_layers().is_empty());
+    assert!(mgr.active_render_groups()[0].layers.clone().is_empty());
 }
 
 #[test]
-fn scene_manager_reset_group_controls_updates_materialized_layer() {
+fn scene_manager_reset_group_controls_updates_effect_layer() {
     let mut mgr = SceneManager::new();
     let effect_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Reset", "desk:main", effect_id);
     let scene_id = scene.id;
-    let group_id = scene.groups[0].id;
-    scene.groups[0].layers = vec![
+    let group_id = scene.zones[0].id;
+    scene.zones[0].layers = vec![
         color_layer([0.0, 0.0, 0.0, 1.0]),
         effect_layer(effect_id, 0.5),
     ];
-    scene.groups[0].layers_version = 7;
+    scene.zones[0].layers_version = 7;
 
     mgr.create(scene).expect("create grouped scene");
     mgr.activate(&scene_id, None)
@@ -506,7 +507,7 @@ fn scene_manager_reset_group_controls_updates_materialized_layer() {
         .clone();
 
     assert_eq!(
-        updated.controls.get("speed"),
+        zone_control(&updated, "speed"),
         Some(&ControlValue::Float(1.75))
     );
     assert_eq!(updated.controls_version, 1);
@@ -524,20 +525,20 @@ fn scene_manager_reset_group_controls_updates_materialized_layer() {
 }
 
 #[test]
-fn scene_manager_add_layer_materializes_legacy_effect_and_refreshes_cache() {
+fn scene_manager_add_layer_preserves_authored_effect_and_refreshes_cache() {
     let mut mgr = SceneManager::new();
     let effect_id = EffectId::from(Uuid::now_v7());
     let scene = grouped_scene("Layered", "desk:main", effect_id);
     let scene_id = scene.id;
-    let group_id = scene.groups[0].id;
+    let group_id = scene.zones[0].id;
 
     mgr.create(scene).expect("create grouped scene");
-    let materialized_layer_id = mgr
+    let authored_layer_id = mgr
         .get(&scene_id)
-        .and_then(|scene| scene.groups.first())
+        .and_then(|scene| scene.zones.first())
         .and_then(|zone| zone.layers.first())
         .map(|layer| layer.id)
-        .expect("scene creation should materialize the legacy effect");
+        .expect("grouped scene should retain its authored effect layer");
     mgr.activate(&scene_id, None)
         .expect("activate grouped scene");
     let initial_revision = mgr.active_render_groups_revision();
@@ -552,10 +553,10 @@ fn scene_manager_add_layer_materializes_legacy_effect_and_refreshes_cache() {
     assert_eq!(version, 1);
     assert_eq!(updated.layers_version, 1);
     assert_eq!(updated.layers.len(), 2);
-    assert_eq!(updated.layers[0].id, materialized_layer_id);
+    assert_eq!(updated.layers[0].id, authored_layer_id);
     assert_ne!(updated.layers[0].id.as_uuid(), group_id.0);
     assert_eq!(updated.layers[1].id, overlay_id);
-    assert_eq!(updated.effect_id, Some(effect_id));
+    assert_eq!(zone_effect_id(&updated), Some(effect_id));
     assert!(mgr.active_render_groups_revision() > initial_revision);
     assert_eq!(mgr.active_render_groups()[0].layers[1].id, overlay_id);
 }
@@ -566,12 +567,12 @@ fn scene_manager_update_and_remove_layers_bump_versions() {
     let effect_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Mutable", "desk:main", effect_id);
     let scene_id = scene.id;
-    let group_id = scene.groups[0].id;
+    let group_id = scene.zones[0].id;
     let base = effect_layer(effect_id, 0.5);
     let mut overlay = color_layer([0.0, 0.25, 1.0, 1.0]);
     let overlay_id = overlay.id;
     overlay.opacity = 0.75;
-    scene.groups[0].layers = vec![base, overlay.clone()];
+    scene.zones[0].layers = vec![base, overlay.clone()];
 
     mgr.create(scene).expect("create grouped scene");
     mgr.activate(&scene_id, None)
@@ -607,12 +608,12 @@ fn scene_manager_reorder_layers_requires_exact_permutation() {
     let effect_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Ordered", "desk:main", effect_id);
     let scene_id = scene.id;
-    let group_id = scene.groups[0].id;
+    let group_id = scene.zones[0].id;
     let base = color_layer([0.0, 0.0, 0.0, 1.0]);
     let top = effect_layer(effect_id, 0.5);
     let base_id = base.id;
     let top_id = top.id;
-    scene.groups[0].layers = vec![base, top];
+    scene.zones[0].layers = vec![base, top];
 
     mgr.create(scene).expect("create grouped scene");
     mgr.activate(&scene_id, None)
@@ -649,11 +650,11 @@ fn scene_manager_patch_layer_effect_controls_uses_layers_version() {
     let effect_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Controls", "desk:main", effect_id);
     let scene_id = scene.id;
-    let group_id = scene.groups[0].id;
+    let group_id = scene.zones[0].id;
     let base = color_layer([0.0, 0.0, 0.0, 1.0]);
     let effect = effect_layer(effect_id, 0.5);
     let layer_id = effect.id;
-    scene.groups[0].layers = vec![base, effect];
+    scene.zones[0].layers = vec![base, effect];
 
     mgr.create(scene).expect("create grouped scene");
     mgr.activate(&scene_id, None)
@@ -673,7 +674,7 @@ fn scene_manager_patch_layer_effect_controls_uses_layers_version() {
     assert_eq!(updated.layers_version, 1);
     assert_eq!(updated.controls_version, 0);
     assert_eq!(
-        updated.controls.get("speed"),
+        zone_control(&updated, "speed"),
         Some(&ControlValue::Float(1.25))
     );
     let layer = updated
@@ -745,15 +746,13 @@ fn scene_manager_deactivate_empty_is_noop() {
 }
 
 #[test]
-fn scene_manager_transition_uses_grouped_scene_assignments() {
+fn scene_manager_transition_plan_keeps_authored_zones_without_flat_assignments() {
     let mut mgr = SceneManager::new();
     let scene_a = grouped_scene("Ambient", "desk:main", EffectId::from(Uuid::now_v7()));
     let scene_b = grouped_scene("Focus", "desk:main", EffectId::from(Uuid::now_v7()));
     let id_a = scene_a.id;
     let id_b = scene_b.id;
-    let effect_b = scene_b.groups[0]
-        .effect_id
-        .expect("grouped scene should carry an effect");
+    let zone_b = scene_b.zones[0].clone();
 
     mgr.create(scene_a).expect("create scene A");
     mgr.create(scene_b).expect("create scene B");
@@ -761,16 +760,12 @@ fn scene_manager_transition_uses_grouped_scene_assignments() {
     mgr.activate(&id_b, None).expect("activate B");
 
     let transition = mgr.active_transition().expect("transition should exist");
-    let blended = transition.blend();
-    assert_eq!(blended.len(), 1);
-    assert_eq!(blended[0].zone_name, "desk:main");
+    assert!(transition.blend().is_empty());
 
-    mgr.tick_transition(0.6);
-    let blended = mgr
-        .active_transition()
-        .expect("transition should still exist")
-        .blend();
-    assert_eq!(blended[0].effect_name, effect_b.to_string());
+    let plan = mgr.plan_snapshot(7);
+    assert_eq!(plan.generation, 7);
+    assert_eq!(plan.zones.as_ref(), &[zone_b]);
+    assert!(plan.transition.is_some());
 }
 
 // ═══════════════════════════════════════════════════════════════════════

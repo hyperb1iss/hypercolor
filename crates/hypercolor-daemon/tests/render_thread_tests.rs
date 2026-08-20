@@ -303,10 +303,6 @@ fn primary_group(
         id: ZoneId::new(),
         name: "Primary".into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout,
         brightness: 1.0,
@@ -336,10 +332,6 @@ fn custom_group(
         id: ZoneId::new(),
         name: name.into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout,
         brightness: 1.0,
@@ -370,10 +362,6 @@ fn display_group(
         id: group_id,
         name: "Display".into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout,
         brightness: 1.0,
@@ -1675,14 +1663,14 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     };
 
     let mut scene_a = make_scene("Scene A");
-    scene_a.groups = vec![primary_group(
+    scene_a.zones = vec![primary_group(
         solid_id,
         solid_color_controls(255, 0, 0),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
     )];
     let mut scene_b = make_scene("Scene B");
     scene_b.transition.duration_ms = 5_000;
-    scene_b.groups = vec![primary_group(
+    scene_b.zones = vec![primary_group(
         solid_id,
         solid_color_controls(0, 0, 255),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
@@ -1749,7 +1737,7 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
     };
 
     let mut scene = make_scene("Grouped Scene");
-    scene.groups = vec![
+    scene.zones = vec![
         custom_group(
             "Left",
             solid_id,
@@ -1825,7 +1813,7 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
     };
 
     let mut scene = make_scene("Grouped Canvas Scene");
-    scene.groups = vec![
+    scene.zones = vec![
         custom_group(
             "Left",
             solid_id,
@@ -1908,7 +1896,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     let display_id = DeviceId::new();
 
     let mut scene = make_scene("Display Face Scene");
-    scene.groups = vec![display_group(
+    scene.zones = vec![display_group(
         group_id,
         display_id,
         solid_id,
@@ -1994,7 +1982,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         .blend_mode = hypercolor_types::scene::DisplayFaceBlendMode::Difference;
 
     let mut scene = make_scene("GPU Display Face Scene");
-    scene.groups = vec![
+    scene.zones = vec![
         custom_group(
             "Primary",
             solid_id,
@@ -2070,7 +2058,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let display_id = DeviceId::new();
 
     let mut first_scene = make_scene("Face Scene A");
-    first_scene.groups = vec![display_group(
+    first_scene.zones = vec![display_group(
         first_group_id,
         display_id,
         solid_id,
@@ -2080,7 +2068,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     first_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut second_scene = make_scene("Face Scene B");
-    second_scene.groups = vec![display_group(
+    second_scene.zones = vec![display_group(
         second_group_id,
         display_id,
         solid_id,
@@ -2186,7 +2174,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     };
 
     let mut audio_scene = make_scene("Audio Scene");
-    audio_scene.groups = vec![primary_group(
+    audio_scene.zones = vec![primary_group(
         audio_pulse_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
@@ -2194,7 +2182,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     audio_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.groups = vec![primary_group(
+    solid_scene.zones = vec![primary_group(
         solid_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
@@ -2284,7 +2272,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     };
 
     let mut screen_scene = make_scene("Screen Scene");
-    screen_scene.groups = vec![primary_group(
+    screen_scene.zones = vec![primary_group(
         screen_cast_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
@@ -2292,7 +2280,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     screen_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.groups = vec![primary_group(
+    solid_scene.zones = vec![primary_group(
         solid_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),

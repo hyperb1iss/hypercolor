@@ -1514,8 +1514,8 @@ async fn capture_catalog(
             .into_iter()
             .map(|scene| PreviewSceneEntry {
                 id: scene.id,
-                groups_revision: scene.groups_revision,
-                groups: scene.groups.clone().into(),
+                groups_revision: scene.zones_revision,
+                groups: scene.zones.clone().into(),
             })
             .collect::<Vec<_>>()
             .into();
@@ -1562,11 +1562,7 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
     let mut media = false;
     let mut network = false;
     for group in scene.groups.iter().filter(|group| group.enabled) {
-        for layer in group
-            .effective_layers()
-            .into_iter()
-            .filter(|layer| layer.enabled)
-        {
+        for layer in group.layers.iter().filter(|layer| layer.enabled) {
             match &layer.source {
                 LayerSource::Effect { effect_id, .. } => {
                     if let Some(entry) = scene.registry.get(effect_id) {

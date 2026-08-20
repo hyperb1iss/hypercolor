@@ -15,7 +15,7 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
+    ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 
 fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
@@ -56,10 +56,6 @@ async fn scene_template(
         id: zone_id,
         name: format!("{name} shared zone"),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![color_layer(layer_ids[0], 0), color_layer(layer_ids[1], 1)],
         layout,
         brightness: 1.0,
@@ -74,10 +70,8 @@ async fn scene_template(
         id,
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: vec![primary, zone],
-        groups_revision: 0,
+        zones: vec![primary, zone],
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -249,9 +243,9 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         "commands created while A was active must never mutate stale A"
     );
     let scene_b = manager.get(&scene_b_id).expect("scene B should remain");
-    assert!(scene_b.groups.iter().any(|zone| zone.id == created.zone.id));
+    assert!(scene_b.zones.iter().any(|zone| zone.id == created.zone.id));
     assert!(
-        scene_b.groups.iter().all(|zone| zone.id != shared_zone_id),
+        scene_b.zones.iter().all(|zone| zone.id != shared_zone_id),
         "the shared custom zone should be deleted only from active B"
     );
 }

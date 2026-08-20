@@ -44,7 +44,7 @@ use hypercolor_types::device::{
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::identity::LayoutId;
-use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -1486,11 +1486,17 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
         .expect("runtime state snapshot should exist");
     assert_eq!(snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
     assert_eq!(snapshot.default_scene_groups.len(), 1);
-    assert_eq!(
-        snapshot.default_scene_groups[0].effect_id,
-        Some(metadata.id)
-    );
-    assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
+    assert!(matches!(
+        snapshot.default_scene_groups[0]
+            .layers
+            .first()
+            .map(|layer| &layer.source),
+        Some(LayerSource::Effect {
+            effect_id,
+            preset_id: Some(candidate),
+            ..
+        }) if *effect_id == metadata.id && *candidate == preset_id
+    ));
     let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
         .expect("probe IP inventory should deserialize");
@@ -1513,10 +1519,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         id: ZoneId::new(),
         name: "Saved Default Group".to_owned(),
         description: None,
-        effect_id: None,
-        controls: std::collections::HashMap::new(),
-        control_bindings: std::collections::HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: SpatialLayout {
             id: "default_saved".to_owned(),
@@ -1566,7 +1568,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    assert_eq!(default_scene.groups, vec![default_group]);
+    assert_eq!(default_scene.zones, vec![default_group]);
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
@@ -1688,10 +1690,6 @@ async fn default_scene_contents_restore_on_restart() {
                 id: zone_id,
                 name: "Saved Default Group".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
-                effect_id: Some(effect_id),
-                controls: controls.clone(),
-                control_bindings: std::collections::HashMap::new(),
-                preset_id: None,
                 layers: vec![SceneLayer::from_effect(
                     SceneLayerId::new(),
                     effect_id,
@@ -1733,14 +1731,22 @@ async fn default_scene_contents_restore_on_restart() {
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    assert_eq!(default_scene.groups.len(), 1);
-    assert_eq!(default_scene.groups[0].name, "Saved Default Group");
-    assert_eq!(default_scene.groups[0].effect_id, Some(effect_id));
-    assert_eq!(
-        default_scene.groups[0].controls.get("speed"),
-        Some(&hypercolor_types::effect::ControlValue::Float(4.5))
-    );
-    assert_eq!(default_scene.groups[0].brightness, 0.75);
+    assert_eq!(default_scene.zones.len(), 1);
+    assert_eq!(default_scene.zones[0].name, "Saved Default Group");
+    assert!(matches!(
+        default_scene.zones[0]
+            .layers
+            .first()
+            .map(|layer| &layer.source),
+        Some(LayerSource::Effect {
+            effect_id: candidate,
+            controls,
+            ..
+        }) if *candidate == effect_id
+            && controls.get("speed")
+                == Some(&hypercolor_types::effect::ControlValue::Float(4.5))
+    ));
+    assert_eq!(default_scene.zones[0].brightness, 0.75);
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
@@ -2986,8 +2992,8 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
         let scene_manager = state.scene_manager.read().await;
         scene_manager
             .active_scene()
-            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .and_then(|group| group.effect_id)
+            .and_then(|scene| scene.zones.iter().find(|group| group.id == group_id))
+            .and_then(|group| group.effect_ids().next())
     };
     assert_eq!(cleared_effect, None);
 

@@ -73,10 +73,6 @@ fn render_group(id: ZoneId, effect_id: EffectId) -> Zone {
         id,
         name: "Desk".into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer::from_effect(
             SceneLayerId::new(),
             effect_id,
@@ -106,7 +102,6 @@ fn effect_layer(effect_id: EffectId, color: [f32; 4]) -> SceneLayer {
 }
 
 fn set_effect_control(group: &mut Zone, name: &str, value: ControlValue) {
-    group.controls.insert(name.to_owned(), value.clone());
     let controls = group
         .layers
         .iter_mut()
@@ -120,9 +115,6 @@ fn set_effect_control(group: &mut Zone, name: &str, value: ControlValue) {
 }
 
 fn set_effect_control_binding(group: &mut Zone, name: &str, binding: ControlBinding) {
-    group
-        .control_bindings
-        .insert(name.to_owned(), binding.clone());
     let bindings = group
         .layers
         .iter_mut()

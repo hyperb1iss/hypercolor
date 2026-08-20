@@ -343,7 +343,7 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
     let manager = state.scene_manager.read().await;
     let zone = manager
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("the first apply should persist a primary zone");
     let [layer] = zone.layers.as_slice() else {
         panic!("the first apply should persist exactly one real layer");
@@ -627,7 +627,7 @@ async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() 
         .read()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("seeded scene should have a primary zone")
         .id;
 
@@ -683,13 +683,9 @@ async fn a_control_patch_event_names_its_zone_and_real_layer() {
         let manager = state.scene_manager.read().await;
         let zone = manager
             .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
             .expect("primary zone should exist");
-        let layer_id = zone
-            .effective_layers()
-            .first()
-            .expect("effect layer should exist")
-            .id;
+        let layer_id = zone.layers.first().expect("effect layer should exist").id;
         (zone.id, layer_id)
     };
     let mut events = state.event_bus.subscribe_all();

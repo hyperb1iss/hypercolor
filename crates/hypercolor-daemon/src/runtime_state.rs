@@ -71,7 +71,7 @@ pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnap
     let active_scene_id = manager.active_scene_id().map(ToString::to_string);
     let default_scene_groups = manager
         .get(&SceneId::DEFAULT)
-        .map(|scene| scene.groups.clone())
+        .map(|scene| scene.zones.clone())
         .unwrap_or_default();
 
     RuntimeSessionSnapshot {
@@ -191,7 +191,7 @@ mod tests {
         let manager = SceneManager::with_default();
         let mut zone = manager
             .get(&SceneId::DEFAULT)
-            .and_then(|scene| scene.groups.first())
+            .and_then(|scene| scene.zones.first())
             .cloned()
             .expect("default scene should have a primary zone");
         let zone_id = zone.id;

@@ -869,12 +869,11 @@ async fn clear_active_scene_effect_groups(
         .active_scene()
         .map(|scene| {
             scene
-                .groups
+                .zones
                 .iter()
                 .filter(|zone| {
-                    zone.effect_id
-                        .as_ref()
-                        .is_some_and(|candidate| candidate.to_string() == effect_id)
+                    zone.effect_ids()
+                        .any(|candidate| candidate.to_string() == effect_id)
                 })
                 .map(|zone| zone.id)
                 .collect::<Vec<_>>()

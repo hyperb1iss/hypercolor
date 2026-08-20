@@ -191,7 +191,7 @@ async fn default_only_is_live_on_the_default_layer() {
         zone.display_target
             .as_ref()
             .is_some_and(|target| target.device_id == device_id)
-            && zone.effect_id == Some(effect_id)
+            && zone.has_effect(effect_id)
     }));
 }
 
@@ -241,7 +241,7 @@ async fn scene_layer_wins_when_both_are_assigned() {
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(groups_for_device.len(), 1);
-    assert_eq!(groups_for_device[0].effect_id, Some(scene_effect));
+    assert!(groups_for_device[0].has_effect(scene_effect));
 }
 
 // ── Delete semantics ────────────────────────────────────────────────────
@@ -415,7 +415,7 @@ async fn default_face_survives_scene_switches() {
                 zone.display_target
                     .as_ref()
                     .is_some_and(|target| target.device_id == device_id)
-                    && zone.effect_id == Some(effect_id)
+                    && zone.has_effect(effect_id)
             }),
             "default face should render after activating {name}"
         );

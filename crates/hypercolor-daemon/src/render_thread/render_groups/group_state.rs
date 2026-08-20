@@ -23,23 +23,16 @@ pub(super) fn enabled_layer_count(group: &Zone) -> u32 {
     if !group.enabled {
         return 0;
     }
-    u32::try_from(
-        group
-            .effective_layers()
-            .into_iter()
-            .filter(|layer| layer.enabled)
-            .count(),
-    )
-    .unwrap_or(u32::MAX)
+    u32::try_from(group.layers.iter().filter(|layer| layer.enabled).count()).unwrap_or(u32::MAX)
 }
 
 pub(super) fn desired_media_asset_ids(groups: &[Zone]) -> HashSet<AssetId> {
     groups
         .iter()
         .filter(|group| group.enabled)
-        .flat_map(Zone::effective_layers)
-        .filter_map(|layer| match layer.source {
-            LayerSource::Media { asset_id, .. } if layer.enabled => Some(asset_id),
+        .flat_map(|zone| zone.layers.iter())
+        .filter_map(|layer| match &layer.source {
+            LayerSource::Media { asset_id, .. } if layer.enabled => Some(*asset_id),
             _ => None,
         })
         .collect()

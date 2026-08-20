@@ -10,7 +10,7 @@ use hypercolor_core::scene::ZoneMetaPatch;
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, ZoneId, ZoneRole,
+    ScenePriority, TransitionSpec, UnassignedBehavior, ZoneId, ZoneRole,
 };
 
 use hypercolor_daemon::api::AppState;
@@ -35,10 +35,8 @@ fn named_scene(name: &str) -> Scene {
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -75,7 +73,7 @@ async fn seeded_scene(state: &AppState) -> SceneId {
         spatial.layout().as_ref().clone()
     };
     scene
-        .groups
+        .zones
         .push(hypercolor_core::scene::default_primary_group(layout));
     let scene_id = scene.id;
     let mut manager = state.scene_manager.write().await;
@@ -125,7 +123,7 @@ async fn create_zone_adds_a_custom_zone_and_announces_it() {
 
     let manager = state.scene_manager.read().await;
     let scene = manager.get(&scene_id).expect("scene should still exist");
-    assert!(scene.groups.iter().any(|zone| zone.id == written.zone.id));
+    assert!(scene.zones.iter().any(|zone| zone.id == written.zone.id));
     drop(manager);
 
     let seen = drain_events(&mut events);
@@ -186,7 +184,7 @@ async fn a_stale_scene_revision_is_refused_before_the_mutation() {
     let manager = state.scene_manager.read().await;
     let scene = manager.get(&scene_id).expect("scene should still exist");
     assert!(
-        !scene.groups.iter().any(|zone| zone.name == "Shelf"),
+        !scene.zones.iter().any(|zone| zone.name == "Shelf"),
         "the refused mutation must not have landed"
     );
 }
@@ -280,7 +278,7 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     assert_eq!(removed.zone.id, created.zone.id);
     let manager = state.scene_manager.read().await;
     let scene = manager.get(&scene_id).expect("scene should still exist");
-    assert!(!scene.groups.iter().any(|zone| zone.id == created.zone.id));
+    assert!(!scene.zones.iter().any(|zone| zone.id == created.zone.id));
     drop(manager);
     assert!(
         state
@@ -312,7 +310,7 @@ async fn delete_zone_refuses_the_primary_zone() {
         let manager = state.scene_manager.read().await;
         manager
             .get(&scene_id)
-            .and_then(Scene::primary_group)
+            .and_then(Scene::primary_zone)
             .expect("the seeded scene has a primary zone")
             .id
     };

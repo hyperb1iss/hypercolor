@@ -570,7 +570,7 @@ async fn current_effect_scene_snapshot(
             continue;
         }
 
-        for layer in group.effective_layers() {
+        for layer in &group.layers {
             if !layer.enabled {
                 continue;
             }
@@ -617,11 +617,7 @@ fn effect_has_tag(tags: &[String], expected: &str) -> bool {
 }
 
 fn group_has_enabled_layer(group: &Zone) -> bool {
-    group.enabled
-        && group
-            .effective_layers()
-            .into_iter()
-            .any(|layer| layer.enabled)
+    group.enabled && group.layers.iter().any(|layer| layer.enabled)
 }
 
 async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
@@ -805,10 +801,6 @@ mod tests {
             id: ZoneId::new(),
             name: "Test Group".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,
@@ -1073,7 +1065,7 @@ mod tests {
             let scene = manager
                 .active_scene()
                 .expect("default scene should be active");
-            let group = scene.groups.first().expect("primary group should exist");
+            let group = scene.zones.first().expect("primary group should exist");
             (scene.id, group.id)
         };
         state
@@ -1150,7 +1142,6 @@ mod tests {
         let effect_id = EffectId::from(Uuid::now_v7());
         let state = minimal_render_thread_state(EffectRegistry::default());
         let mut group = sample_group(effect_id);
-        group.effect_id = None;
         group.layers = vec![SceneLayer {
             id: SceneLayerId::new(),
             name: Some("Screen".into()),

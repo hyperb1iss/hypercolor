@@ -104,15 +104,11 @@ fn solid_layer(
     layer
 }
 
-fn render_group(name: &str, effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
+fn render_group(name: &str, _effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: name.into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout: test_layout(vec![full_zone("zone:all")]),
         brightness: 1.0,
@@ -181,7 +177,7 @@ fn render_state() -> RenderThreadState {
 
 async fn install_scene(state: &RenderThreadState, groups: Vec<Zone>) {
     let mut scene = make_scene("Multi Layer Scene");
-    scene.groups = groups;
+    scene.zones = groups;
     scene.unassigned_behavior = UnassignedBehavior::Off;
     let mut scene_manager = state.scene_manager.write().await;
     scene_manager.create(scene.clone()).expect("create scene");

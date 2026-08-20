@@ -958,7 +958,7 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
             .active_render_groups()
             .iter()
             .filter(|group| group.enabled)
-            .filter_map(|group| group.effect_id)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .collect::<Vec<_>>()
     };
     if active_effect_ids.is_empty() {

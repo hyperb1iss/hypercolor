@@ -378,12 +378,8 @@ pub(crate) fn scene_media_admission_counts(
 ) -> MediaAdmissionCounts {
     let mut counts = MediaAdmissionCounts::default();
 
-    for group in scene.groups.iter().filter(|group| group.enabled) {
-        for layer in group
-            .effective_layers()
-            .iter()
-            .filter(|layer| layer.enabled)
-        {
+    for group in scene.zones.iter().filter(|group| group.enabled) {
+        for layer in group.layers.iter().filter(|layer| layer.enabled) {
             let LayerSource::Media { asset_id, .. } = &layer.source else {
                 continue;
             };

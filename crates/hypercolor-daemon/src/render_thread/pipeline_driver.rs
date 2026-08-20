@@ -116,7 +116,7 @@ async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut P
         manager
             .active_render_groups()
             .iter()
-            .filter(|group| group.enabled && group.effect_id.is_some())
+            .filter(|group| group.enabled && group.effect_ids().next().is_some())
             .count()
     };
 

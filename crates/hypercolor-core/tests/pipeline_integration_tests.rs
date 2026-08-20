@@ -753,21 +753,8 @@ fn scene_manager_create_activate_transition() {
     let mut manager = SceneManager::new();
 
     // Create two scenes
-    let mut scene_a = make_scene("Ambient Glow");
-    scene_a.zone_assignments = vec![ZoneAssignment {
-        zone_name: "strip-1".to_string(),
-        effect_name: "aurora".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(0.8),
-    }];
-
-    let mut scene_b = make_scene("Party Mode");
-    scene_b.zone_assignments = vec![ZoneAssignment {
-        zone_name: "strip-1".to_string(),
-        effect_name: "strobe".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(1.0),
-    }];
+    let scene_a = make_scene("Ambient Glow");
+    let scene_b = make_scene("Party Mode");
 
     let id_a = scene_a.id;
     let id_b = scene_b.id;

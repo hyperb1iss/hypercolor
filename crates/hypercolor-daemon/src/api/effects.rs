@@ -907,12 +907,12 @@ async fn resolve_effect_preset(
 
 pub(crate) async fn active_primary_group(state: &AppState) -> Option<Zone> {
     let scene_manager = state.scene_manager.read().await;
-    scene_manager.active_scene()?.primary_group().cloned()
+    scene_manager.active_scene()?.primary_zone().cloned()
 }
 
 pub(crate) async fn active_primary_effect(state: &AppState) -> Option<(Zone, EffectMetadata)> {
     let group = active_primary_group(state).await?;
-    let effect_id = group.effect_id?;
+    let effect_id = group.effect_ids().next()?;
     let registry = state.effect_registry.read().await;
     let metadata = registry.get(&effect_id)?.metadata.clone();
     Some((group, metadata))

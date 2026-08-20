@@ -237,7 +237,7 @@ async fn renderer_and_authoritative_state_reuse_the_exact_prepared_sampling_plan
     assert_eq!(
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .expect("default scene should retain a primary group")
             .layout
             .id,

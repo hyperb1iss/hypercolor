@@ -35,7 +35,7 @@ use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
+    ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
@@ -105,10 +105,6 @@ fn build_fixture_scene() -> Scene {
         id: ZoneId(FIXTURE_GROUP_UUID),
         name: "Default zone".to_owned(),
         description: Some("Fixture render group".to_owned()),
-        effect_id: Some(EffectId(FIXTURE_EFFECT_UUID)),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer::from_effect(
             SceneLayerId::from_uuid(FIXTURE_LAYER_UUID),
             EffectId(FIXTURE_EFFECT_UUID),
@@ -130,10 +126,8 @@ fn build_fixture_scene() -> Scene {
         id: SceneId(FIXTURE_SCENE_UUID),
         name: "Wire compat scene".to_owned(),
         description: Some("Locks the wire format Plan 55 P3 must preserve".to_owned()),
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: vec![group],
-        groups_revision: 7,
+        zones: vec![group],
+        zones_revision: 7,
         transition: TransitionSpec {
             duration_ms: 750,
             easing: EasingFunction::EaseInOut,

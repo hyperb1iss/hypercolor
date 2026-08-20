@@ -424,10 +424,6 @@ fn full_scene_identity_fast_path_matches_projected_path() {
         id: ZoneId::new(),
         name: "Identity".into(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: SpatialLayout {
             id: "full-scene-identity".into(),

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::body::Body;
@@ -158,14 +157,10 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
 async fn install_media_scene(state: &Arc<AppState>, layers: Vec<SceneLayer>) -> SceneId {
     let mut scene = make_scene("Media Admission Scene");
     let scene_id = scene.id;
-    scene.groups = vec![Zone {
+    scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Media".to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout: sample_layout("media:main"),
         brightness: 1.0,
@@ -289,7 +284,7 @@ async fn live_tree_create_rejects_a_second_livestream_without_mutation() {
         .read()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("activated scene should have a primary zone")
         .id;
 
@@ -311,7 +306,7 @@ async fn live_tree_create_rejects_a_second_livestream_without_mutation() {
     let manager = state.scene_manager.read().await;
     let layers = &manager
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("active zone should remain")
         .layers;
     assert_eq!(layers.len(), 1);
@@ -341,7 +336,7 @@ async fn concurrent_livestream_creates_cannot_both_cross_the_cap() {
         .read()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("activated scene should have a primary zone")
         .id;
     let uri = format!("/api/v1/scene/zones/{zone_id}/layers");
@@ -380,7 +375,7 @@ async fn concurrent_livestream_creates_cannot_both_cross_the_cap() {
     assert_eq!(
         manager
             .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
             .expect("active zone should remain")
             .layers
             .len(),
@@ -413,7 +408,7 @@ async fn live_tree_replace_subtracts_the_addressed_livestream_before_counting() 
         .read()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("activated scene should have a primary zone")
         .id;
 
@@ -433,7 +428,7 @@ async fn live_tree_replace_subtracts_the_addressed_livestream_before_counting() 
     let manager = state.scene_manager.read().await;
     let layers = &manager
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("active zone should remain")
         .layers;
     let [replacement] = layers.as_slice() else {

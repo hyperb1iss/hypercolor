@@ -28,8 +28,7 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
@@ -85,7 +84,7 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
         let manager = state.scene_manager.read().await;
         let zone = manager
             .active_scene()
-            .and_then(Scene::primary_group)
+            .and_then(Scene::primary_zone)
             .expect("default scene should have a primary zone");
         (zone.id, zone.layout.clone())
     };
@@ -186,10 +185,8 @@ fn named_scene(name: &str) -> Scene {
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -260,10 +257,6 @@ fn imported_display_zone(device_id: DeviceId) -> Zone {
         id: ZoneId::new(),
         name: "Imported display".to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: SpatialLayout {
             canvas_width: 1,
@@ -347,9 +340,9 @@ async fn apply_effect_loads_the_primary_zone_and_commits_durably() {
     let manager = state.scene_manager.read().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
+        .and_then(Scene::primary_zone)
         .expect("the active scene should have a primary zone");
-    assert_eq!(primary.effect_id, Some(metadata.id));
+    assert!(primary.has_effect(metadata.id));
 }
 
 #[tokio::test]
@@ -517,7 +510,7 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
 
     let mut scene = named_scene("imported");
     scene.mutation_mode = SceneMutationMode::Snapshot;
-    scene.groups.push(imported_display_zone(assigned_device));
+    scene.zones.push(imported_display_zone(assigned_device));
     let scene_id = scene.id;
     state
         .scene_manager
@@ -540,11 +533,11 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
     let manager = state.scene_manager.read().await;
     let active = manager.active_scene().expect("scene should be active");
     let assigned = active
-        .display_group_for(assigned_device)
+        .display_zone_for(assigned_device)
         .expect("assigned display zone should remain");
     assert_eq!(assigned.layout.canvas_width, 320);
     assert_eq!(assigned.layout.canvas_height, 200);
-    assert!(active.display_group_for(unassigned_device).is_none());
+    assert!(active.display_zone_for(unassigned_device).is_none());
 }
 
 #[tokio::test]
@@ -902,7 +895,7 @@ async fn mcp_scene_activation_applies_media_soft_admission() {
     }
 
     let mut scene = named_scene("cinema");
-    scene.groups = vec![zone];
+    scene.zones = vec![zone];
     let scene_id = scene.id;
     {
         let mut manager = state.scene_manager.write().await;
@@ -1016,9 +1009,9 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
     let manager = state.scene_manager.read().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
+        .and_then(Scene::primary_zone)
         .expect("the active scene should have a primary zone");
-    assert_eq!(primary.effect_id, Some(metadata.id));
+    assert!(primary.has_effect(metadata.id));
     assert!(
         events.try_recv().is_err(),
         "a rejected candidate publishes nothing"
@@ -1051,8 +1044,8 @@ async fn dropping_an_uncommitted_mutation_is_a_no_op() {
     assert!(
         manager
             .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|zone| zone.effect_id)
+            .and_then(Scene::primary_zone)
+            .and_then(|zone| zone.effect_ids().next())
             .is_none(),
         "an abandoned candidate never touches live state"
     );
@@ -1140,11 +1133,11 @@ async fn create_scene_seeds_a_default_zone_and_announces_the_scene() {
     assert!(created.scene.enabled);
     assert_eq!(created.scene.mutation_mode, SceneMutationMode::Live);
     assert_eq!(
-        created.scene.groups.len(),
+        created.scene.zones.len(),
         1,
         "every scene is born with a Default zone to select"
     );
-    assert_eq!(created.scene.groups[0].role, ZoneRole::Primary);
+    assert_eq!(created.scene.zones[0].role, ZoneRole::Primary);
     assert_eq!(created.commit.durability(), CommitDurability::Written);
 
     let manager = state.scene_manager.read().await;
@@ -1190,7 +1183,7 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     assert_eq!(snapshot.scene.description.as_deref(), Some("Runtime state"));
     assert_eq!(snapshot.scene.kind, SceneKind::Named);
     assert_eq!(snapshot.scene.mutation_mode, SceneMutationMode::Snapshot);
-    assert_eq!(snapshot.scene.groups, active.groups);
+    assert_eq!(snapshot.scene.zones, active.zones);
     assert_eq!(
         snapshot.scene.layout_id.as_ref().map(LayoutId::as_str),
         Some(active_layout_id.as_str())
@@ -1218,7 +1211,7 @@ async fn create_scene_behaves_identically_for_both_transports() {
         .await
         .expect("mcp create should succeed");
 
-    assert_eq!(via_api.scene.groups.len(), via_mcp.scene.groups.len());
+    assert_eq!(via_api.scene.zones.len(), via_mcp.scene.zones.len());
     assert_eq!(via_api.scene.kind, via_mcp.scene.kind);
     assert_eq!(via_api.scene.priority, via_mcp.scene.priority);
     assert_eq!(

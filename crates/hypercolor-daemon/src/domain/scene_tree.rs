@@ -12,7 +12,7 @@
 //! One wire version governs the tree: the commit generation
 //! ([`SceneCommit::revision`](super::commit::SceneCommit::revision)),
 //! served as `ETag` and checked by [`check_scene_revision`]. The
-//! per-subresource counters the engine keeps (`groups_revision`,
+//! per-subresource counters the engine keeps (`zones_revision`,
 //! `layers_version`, `controls_version`) stay internal bookkeeping and
 //! never reach this surface.
 
@@ -77,7 +77,7 @@ pub async fn read_zone(
         .active_scene()
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
     scene
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .map(|zone| (zone_resource(zone), revision))
@@ -103,15 +103,14 @@ pub fn scene_document(scene: &Scene, revision: u64) -> SceneDocument {
         metadata: scene.metadata.clone(),
         mutation_mode: scene.mutation_mode,
         revision,
-        zones: scene.groups.iter().map(zone_resource).collect(),
+        zones: scene.zones.iter().map(zone_resource).collect(),
     }
 }
 
 /// Project one zone onto the wire resource.
 ///
-/// The layer stack comes from `effective_layers`, which is what the
-/// renderer reads, so a client patches the id the daemon actually
-/// addresses rather than synthesizing one (Spec 78 §1.3).
+/// The layer stack is the authored stack read by the renderer, so a
+/// client patches the id the daemon actually addresses.
 #[must_use]
 pub fn zone_resource(zone: &Zone) -> ZoneResource {
     ZoneResource {
@@ -125,7 +124,7 @@ pub fn zone_resource(zone: &Zone) -> ZoneResource {
         display_target: zone.display_target.clone(),
         members: zone.layout.zones.iter().map(zone_member).collect(),
         layout: zone_layout_resource(zone),
-        layers: zone.effective_layers(),
+        layers: zone.layers.clone(),
     }
 }
 
@@ -375,7 +374,7 @@ pub async fn clear_scene(
         Some(zone_id) => {
             let scene = active_scene(&mutation)?;
             let zone = scene
-                .groups
+                .zones
                 .iter()
                 .find(|zone| zone.id == zone_id)
                 .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
@@ -388,7 +387,7 @@ pub async fn clear_scene(
             vec![zone_id]
         }
         None => active_scene(&mutation)?
-            .groups
+            .zones
             .iter()
             .filter(|zone| zone.role != ZoneRole::Display)
             .map(|zone| zone.id)
@@ -397,11 +396,12 @@ pub async fn clear_scene(
 
     let stopped_effects = if command.zone.is_none() {
         active_scene(&mutation)?
-            .groups
+            .zones
             .iter()
             .filter(|zone| zone.role != ZoneRole::Display)
             .filter_map(|zone| {
-                zone.effect_id
+                zone.effect_ids()
+                    .next()
                     .and_then(|effect_id| effect_refs.get(&effect_id).cloned())
                     .map(|effect| (zone.id, (zone.name.clone(), effect)))
             })
@@ -462,11 +462,11 @@ pub async fn replace_layer(
     ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let index = active_scene(&mutation)?
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == command.zone_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, command.zone_id))?
-        .effective_layers()
+        .layers
         .iter()
         .position(|layer| layer.id == command.layer_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, command.layer_id))?;
@@ -602,10 +602,10 @@ pub async fn assign_members(
     ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let scene = active_scene(&mutation)?;
-    if !scene.groups.iter().any(|zone| zone.id == command.zone_id) {
+    if !scene.zones.iter().any(|zone| zone.id == command.zone_id) {
         return Err(DomainError::not_found(ResourceKind::Zone, command.zone_id));
     }
-    let previous_zones = scene.groups.clone();
+    let previous_zones = scene.zones.clone();
     let outputs = resolve_members(&scene, &command.request, minted)?;
 
     for output in outputs {
@@ -644,14 +644,14 @@ pub async fn unassign_member(
 
     let scene = active_scene(&mutation)?;
     let zone = scene
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
     if !zone.layout.zones.iter().any(|output| output.id == member.0) {
         return Err(DomainError::not_found(ResourceKind::Device, &member.0));
     }
-    let previous_zones = scene.groups.clone();
+    let previous_zones = scene.zones.clone();
 
     mutation
         .unassign_output(scene_id, &member.0)
@@ -691,7 +691,7 @@ pub async fn set_zone_layout(
     ensure_live_zone_mutable(&mutation, zone_id)?;
 
     let stored = active_scene(&mutation)?
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?
@@ -799,7 +799,7 @@ pub(crate) fn ensure_live_zone_mutable(
     let zone = mutation
         .scenes()
         .active_scene()
-        .and_then(|scene| scene.groups.iter().find(|zone| zone.id == zone_id))
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
     if zone.role == ZoneRole::Display {
         return Err(DomainError::validation(
@@ -813,7 +813,7 @@ fn zone_in_candidate(mutation: &SceneMutation, zone_id: ZoneId) -> Result<Zone, 
     mutation
         .scenes()
         .active_scene()
-        .and_then(|scene| scene.groups.iter().find(|zone| zone.id == zone_id).cloned())
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id).cloned())
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
 }
 
@@ -908,13 +908,14 @@ async fn normalize_against_layer(
             .active_scene()
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
         let zone = scene
-            .groups
+            .zones
             .iter()
             .find(|zone| zone.id == zone_id)
             .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
-        zone.effective_layers()
-            .into_iter()
+        zone.layers
+            .iter()
             .find(|layer| layer.id == layer_id)
+            .cloned()
             .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, layer_id))
             .map(|layer| match layer.source {
                 LayerSource::Effect {
@@ -998,7 +999,7 @@ fn resolve_members(
     minted: Vec<Output>,
 ) -> Result<Vec<Output>, DomainError> {
     let held: Vec<&Output> = scene
-        .groups
+        .zones
         .iter()
         .flat_map(|zone| zone.layout.zones.iter())
         .filter(|output| output.device_id == request.device_id)
@@ -1150,7 +1151,7 @@ async fn reconcile_member_exclusions(state: &AppState, scene_id: SceneId, previo
         let manager = state.scene_manager.read().await;
         manager
             .get(&scene_id)
-            .map(|scene| scene.groups.clone())
+            .map(|scene| scene.zones.clone())
             .unwrap_or_default()
     };
     crate::domain::zone::reconcile_zone_auto_exclusions(state, scene_id, previous, &updated).await;

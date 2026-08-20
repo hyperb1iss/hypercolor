@@ -34,7 +34,8 @@ use hypercolor_types::effect::{
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
 };
-use hypercolor_types::scene::SceneId;
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -47,6 +48,13 @@ use uuid::Uuid;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => Some(controls),
+        _ => None,
+    })
+}
 
 async fn spawn_router(router: axum::Router) -> (Client, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1080,7 +1088,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         .iter()
         .find(|group| group.role == hypercolor_types::scene::ZoneRole::Display)
         .expect("display screen surface should survive face clear");
-    assert_eq!(display_group.effect_id, None);
+    assert_eq!(display_group.effect_ids().next(), None);
     assert!(display_group.layers.is_empty());
 
     let mut saw_clear_event = false;
@@ -1239,7 +1247,7 @@ async fn malformed_declared_arguments_never_reach_mutating_handlers() {
         let manager = state.scene_manager.read().await;
         let zone = manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .expect("baseline primary zone should exist");
         let layer = zone.layers.first().expect("baseline layer should exist");
         (zone.id.to_string(), layer.id.to_string())
@@ -1375,8 +1383,8 @@ async fn a_refused_deleted_parameter_leaves_the_scene_untouched() {
     assert!(
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .and_then(|zone| zone.effect_id)
+            .and_then(|scene| scene.primary_zone())
+            .and_then(|zone| zone.effect_ids().next())
             .is_none(),
         "a refused call must not load the effect"
     );
@@ -1570,14 +1578,14 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
                 .expect("default scene should stay active"),
             manager
                 .active_scene()
-                .and_then(|scene| scene.primary_group())
+                .and_then(|scene| scene.primary_zone())
                 .cloned()
                 .expect("primary group should exist after MCP set_effect"),
         )
     };
-    assert_eq!(active_group.effect_id, Some(effect.id));
+    assert_eq!(active_group.effect_ids().next(), Some(effect.id));
     assert_eq!(
-        active_group.controls.get("speed"),
+        effect_controls(&active_group).and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -1586,13 +1594,12 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
         .expect("runtime snapshot should exist");
     assert_eq!(active_snapshot.default_scene_groups.len(), 1);
     assert_eq!(
-        active_snapshot.default_scene_groups[0].effect_id,
+        active_snapshot.default_scene_groups[0].effect_ids().next(),
         Some(effect.id)
     );
     assert_eq!(
-        active_snapshot.default_scene_groups[0]
-            .controls
-            .get("speed"),
+        effect_controls(&active_snapshot.default_scene_groups[0])
+            .and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -1649,19 +1656,17 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
     assert_eq!(stopped_snapshot.default_scene_groups.len(), 1);
-    assert_eq!(stopped_snapshot.default_scene_groups[0].effect_id, None);
-    assert!(stopped_snapshot.default_scene_groups[0].controls.is_empty());
+    assert!(stopped_snapshot.default_scene_groups[0].layers.is_empty());
 
     let cleared_group = {
         let manager = state.scene_manager.read().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
             .expect("primary group should remain present after stop")
     };
-    assert_eq!(cleared_group.effect_id, None);
-    assert!(cleared_group.controls.is_empty());
+    assert!(cleared_group.layers.is_empty());
 
     let mut saw_stopped_event = false;
     let mut saw_updated_group = false;
@@ -1713,11 +1718,11 @@ async fn stateful_set_effect_preserves_primary_assignment_when_custom_zones_exis
         let manager = state.scene_manager.read().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
             .expect("primary group should exist after MCP set_effect")
     };
-    assert_eq!(active_group.effect_id, Some(next.id));
+    assert_eq!(active_group.effect_ids().next(), Some(next.id));
     assert_eq!(active_group.layout, expected_layout);
 }
 
@@ -1749,14 +1754,17 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
         .expect("runtime snapshot should exist");
     assert_eq!(snapshot.default_scene_groups.len(), 1);
     assert_eq!(
-        snapshot.default_scene_groups[0].effect_id,
+        snapshot.default_scene_groups[0].effect_ids().next(),
         Some(solid_effect.id)
     );
     assert_eq!(
-        snapshot.default_scene_groups[0].controls.get("brightness"),
+        effect_controls(&snapshot.default_scene_groups[0])
+            .and_then(|controls| controls.get("brightness")),
         Some(&ControlValue::Float(0.5))
     );
-    match snapshot.default_scene_groups[0].controls.get("color") {
+    match effect_controls(&snapshot.default_scene_groups[0])
+        .and_then(|controls| controls.get("color"))
+    {
         Some(ControlValue::Color([r, g, b, a])) => {
             assert_eq!((*r, *g, *b, *a), (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0));
         }
@@ -1787,11 +1795,11 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
         let manager = state.scene_manager.read().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
             .expect("primary group should exist after MCP set_color")
     };
-    assert_eq!(active_group.effect_id, Some(solid_effect.id));
+    assert_eq!(active_group.effect_ids().next(), Some(solid_effect.id));
     assert_eq!(active_group.layout, expected_layout);
 }
 
@@ -2245,7 +2253,7 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
             .await
             .active_render_groups()
             .iter()
-            .any(|zone| zone.effect_id == Some(face.id))
+            .any(|zone| zone.has_effect(face.id))
     );
 
     let clear_result = execute_tool_with_state(

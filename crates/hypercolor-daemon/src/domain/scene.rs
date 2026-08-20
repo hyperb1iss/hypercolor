@@ -41,7 +41,7 @@ use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, EasingFunction, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
 };
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
@@ -114,7 +114,7 @@ impl SceneMutation {
     pub fn primary_zone_id(&self) -> Option<ZoneId> {
         self.candidate
             .active_scene()
-            .and_then(Scene::primary_group)
+            .and_then(Scene::primary_zone)
             .map(|zone| zone.id)
     }
 
@@ -123,10 +123,10 @@ impl SceneMutation {
     pub fn zone_effect(&self, zone_id: ZoneId) -> Option<hypercolor_types::effect::EffectId> {
         self.candidate
             .active_scene()?
-            .groups
+            .zones
             .iter()
             .find(|zone| zone.id == zone_id)
-            .and_then(|zone| zone.effect_id)
+            .and_then(|zone| zone.effect_ids().next())
     }
 
     /// Load an effect into the active scene's primary zone, creating the
@@ -516,7 +516,7 @@ impl SceneMutation {
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
         let mut changed = false;
         for (device_id, _, layout) in displays {
-            let Some(zone) = scene.display_group_for_mut(*device_id) else {
+            let Some(zone) = scene.display_zone_for_mut(*device_id) else {
                 continue;
             };
             if zone.layout != *layout {
@@ -525,7 +525,7 @@ impl SceneMutation {
             }
         }
         if changed {
-            scene.groups_revision = scene.groups_revision.saturating_add(1);
+            scene.zones_revision = scene.zones_revision.saturating_add(1);
             self.update_scene(scene)?;
         }
         Ok(changed)
@@ -623,7 +623,7 @@ impl SceneMutation {
     fn active_zones_revision(&self) -> u64 {
         self.candidate
             .active_scene()
-            .map_or(0, |scene| scene.groups_revision)
+            .map_or(0, |scene| scene.zones_revision)
     }
 }
 
@@ -1218,10 +1218,8 @@ pub async fn create_scene(
         id: SceneId::new(),
         name: command.name,
         description: command.description,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: vec![default_primary_group(default_layout)],
-        groups_revision: 0,
+        zones: vec![default_primary_group(default_layout)],
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -1356,10 +1354,8 @@ pub async fn replace_scene(
         id: existing.id,
         name: command.document.name,
         description: command.document.description,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups,
-        groups_revision: existing.groups_revision.saturating_add(1),
+        zones: groups,
+        zones_revision: existing.zones_revision.saturating_add(1),
         transition: command.document.transition,
         priority: command.document.priority,
         enabled: command.document.enabled,
@@ -1397,14 +1393,14 @@ fn validate_replacement_identities(
     document: &ReplaceSceneRequest,
 ) -> Result<(), DomainError> {
     let zone_ids = existing
-        .groups
+        .zones
         .iter()
         .map(|zone| zone.id)
         .collect::<HashSet<_>>();
     let layer_ids = existing
-        .groups
+        .zones
         .iter()
-        .flat_map(Zone::effective_layers)
+        .flat_map(|zone| zone.layers.iter())
         .map(|layer| layer.id)
         .collect::<HashSet<_>>();
     let mut requested_zones = HashSet::new();
@@ -1455,7 +1451,7 @@ fn replacement_zones(
         .map(|zone| {
             let zone_id = zone.id.unwrap_or_default();
             let stored = existing
-                .groups
+                .zones
                 .iter()
                 .find(|candidate| candidate.id == zone_id);
             let layout = replacement_zone_layout(stored, default_layout, &zone)?;
@@ -1464,29 +1460,10 @@ fn replacement_zones(
                 .into_iter()
                 .map(replacement_layer)
                 .collect::<Vec<_>>();
-            let legacy = layers.iter().find_map(|layer| match &layer.source {
-                hypercolor_types::layer::LayerSource::Effect {
-                    effect_id,
-                    controls,
-                    control_bindings,
-                    preset_id,
-                } => Some((
-                    Some(*effect_id),
-                    controls.clone(),
-                    control_bindings.clone(),
-                    *preset_id,
-                )),
-                _ => None,
-            });
-            let (effect_id, controls, control_bindings, preset_id) = legacy.unwrap_or_default();
             Ok(Zone {
                 id: zone_id,
                 name: zone.name,
                 description: zone.description,
-                effect_id,
-                controls,
-                control_bindings,
-                preset_id,
                 layers,
                 layout,
                 brightness: zone.brightness,

@@ -1701,7 +1701,7 @@ pub(super) fn validated_zone_layout_preview(
         )));
     }
 
-    let Some(group) = scene.groups.iter().find(|group| group.id == zone_id) else {
+    let Some(group) = scene.zones.iter().find(|group| group.id == zone_id) else {
         return Err(WsProtocolError::invalid_request(format!(
             "Zone not found: {zone_id}"
         )));
@@ -1945,7 +1945,7 @@ mod zone_layout_preview_race_tests {
             let mut manager = state.scene_manager.write().await;
             let active = manager.active_scene().expect("default scene").clone();
             let (zone_id, layout) = {
-                let zone = active.primary_group().expect("default primary zone");
+                let zone = active.primary_zone().expect("default primary zone");
                 (zone.id, zone.layout.clone())
             };
             let mut next = active;

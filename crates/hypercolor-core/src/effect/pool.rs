@@ -623,7 +623,8 @@ fn desired_effect_layers(groups: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
         .filter(|group| group.enabled)
         .flat_map(|group| {
             group
-                .effective_layers()
+                .layers
+                .clone()
                 .into_iter()
                 .filter(|layer| layer.enabled && layer_effect_source(layer).is_some())
                 .map(move |layer| (group, layer))
@@ -637,7 +638,8 @@ fn single_enabled_effect_layer(group: &Zone) -> Result<Option<SceneLayer>> {
     }
 
     let mut layers = group
-        .effective_layers()
+        .layers
+        .clone()
         .into_iter()
         .filter(|layer| layer.enabled && layer_effect_source(layer).is_some());
     let Some(layer) = layers.next() else {
@@ -1035,10 +1037,6 @@ mod tests {
             id,
             name: "Desk".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,
@@ -1150,10 +1148,11 @@ mod tests {
         let group_id = ZoneId::new();
         let group = render_group(group_id, effect_id);
         let layer = group
-            .effective_layers()
+            .layers
+            .clone()
             .into_iter()
             .next()
-            .expect("legacy effect group should expose an effective layer");
+            .expect("effect zone should expose its authored layer");
         let mut pool = EffectPool::new();
         pool.slots.insert(
             EffectSlotKey::new(group_id, layer.id),

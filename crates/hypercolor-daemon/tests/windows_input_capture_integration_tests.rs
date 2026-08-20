@@ -106,14 +106,10 @@ async fn install_effect_with_test_demand_activation(
     let mut scene = make_scene("Windows input capture fixture");
     scene.transition.duration_ms = 0;
     scene.unassigned_behavior = UnassignedBehavior::Off;
-    scene.groups = vec![Zone {
+    scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Fixture".to_owned(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: empty_layout(),
         brightness: 1.0,
