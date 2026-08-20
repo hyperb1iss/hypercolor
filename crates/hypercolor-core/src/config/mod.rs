@@ -6,6 +6,7 @@
 //! `hypercolor-types`.
 
 pub mod paths;
+pub mod servers;
 pub mod sources;
 
 pub use sources::{

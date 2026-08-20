@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use hypercolor_core::config::paths;
+use hypercolor_core::config::{paths, servers};
 use hypercolor_core::device::discover_servers;
 use hypercolor_types::api::output::{OutputPowerMode, OutputResource};
 use hypercolor_types::api::scene::SceneDocument;
@@ -620,6 +620,56 @@ where
     .map_err(|_| anyhow::anyhow!("event subscription acknowledgment timed out"))?
 }
 
+fn load_server_api_keys() -> HashMap<String, String> {
+    let path = paths::config_dir().join("servers.toml");
+    match servers::load_server_credentials(&path) {
+        Ok(credentials) => credentials
+            .into_iter()
+            .map(|credential| {
+                (
+                    credential.instance_id().to_owned(),
+                    credential.api_key().to_owned(),
+                )
+            })
+            .collect(),
+        Err(error) => {
+            debug!(path = %path.display(), %error, "Failed to load stored server credentials");
+            HashMap::new()
+        }
+    }
+}
+
+fn build_base_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}")
+}
+
+fn build_ws_url(host: &str, port: u16, api_key: Option<&str>) -> String {
+    let base = format!("ws://{host}:{port}/api/v1/ws");
+    api_key.map_or(base.clone(), |key| {
+        format!("{base}?token={}", percent_encode(key))
+    })
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+/// Open the Hypercolor web UI in the default browser.
+fn open_web_ui(base_url: &str) {
+    if let Err(error) = open::that(base_url) {
+        error!("Failed to open web UI: {error}");
+    }
+}
+
 #[cfg(test)]
 mod subscription_tests {
     use std::time::Duration;
@@ -662,75 +712,5 @@ mod subscription_tests {
             .expect_err("missing acknowledgment must fail admission");
 
         assert!(error.to_string().contains("timed out"));
-    }
-}
-
-#[derive(Debug, Default, serde::Deserialize)]
-struct StoredServersFile {
-    #[serde(default)]
-    servers: Vec<StoredServerConfig>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct StoredServerConfig {
-    instance_id: String,
-    api_key: String,
-}
-
-fn load_server_api_keys() -> HashMap<String, String> {
-    let path = paths::config_dir().join("servers.toml");
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return HashMap::new();
-    };
-
-    match toml::from_str::<StoredServersFile>(&contents) {
-        Ok(file) => file
-            .servers
-            .into_iter()
-            .filter_map(|entry| {
-                let instance_id = entry.instance_id.trim();
-                let api_key = entry.api_key.trim();
-                if instance_id.is_empty() || api_key.is_empty() {
-                    None
-                } else {
-                    Some((instance_id.to_owned(), api_key.to_owned()))
-                }
-            })
-            .collect(),
-        Err(error) => {
-            debug!(path = %path.display(), %error, "Failed to parse tray server config");
-            HashMap::new()
-        }
-    }
-}
-
-fn build_base_url(host: &str, port: u16) -> String {
-    format!("http://{host}:{port}")
-}
-
-fn build_ws_url(host: &str, port: u16, api_key: Option<&str>) -> String {
-    let base = format!("ws://{host}:{port}/api/v1/ws");
-    api_key.map_or(base.clone(), |key| {
-        format!("{base}?token={}", percent_encode(key))
-    })
-}
-
-fn percent_encode(input: &str) -> String {
-    let mut encoded = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
-        if unreserved {
-            encoded.push(char::from(byte));
-        } else {
-            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
-        }
-    }
-    encoded
-}
-
-/// Open the Hypercolor web UI in the default browser.
-fn open_web_ui(base_url: &str) {
-    if let Err(error) = open::that(base_url) {
-        error!("Failed to open web UI: {error}");
     }
 }

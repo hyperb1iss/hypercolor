@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use hypercolor_core::config::paths;
+use hypercolor_core::config::{paths, servers};
 use hypercolor_core::device::discover_servers;
 use hypercolor_types::api::output::{OutputPowerMode, OutputResource};
 use hypercolor_types::api::scene::SceneDocument;
@@ -633,65 +633,6 @@ where
     .map_err(|_| anyhow::anyhow!("event subscription acknowledgment timed out"))?
 }
 
-#[cfg(test)]
-mod subscription_tests {
-    use std::time::Duration;
-
-    use futures_util::stream;
-    use tokio_tungstenite::tungstenite::{Error, Message};
-
-    use super::wait_for_subscription_ack;
-
-    #[tokio::test]
-    async fn subscription_rejection_fails_connection_admission() {
-        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
-            r#"{"type":"error","message":"forbidden"}"#.into(),
-        ))]);
-
-        let error = wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
-            .await
-            .expect_err("subscription rejection must fail admission");
-
-        assert!(error.to_string().contains("forbidden"));
-    }
-
-    #[tokio::test]
-    async fn subscribed_ack_admits_authoritative_rest_reconciliation() {
-        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
-            r#"{"type":"subscribed","topics":[{"topic":"events"}]}"#.into(),
-        ))]);
-
-        wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
-            .await
-            .expect("typed acknowledgment should admit REST reconciliation");
-    }
-
-    #[tokio::test]
-    async fn subscription_timeout_fails_connection_admission() {
-        let mut messages = stream::pending::<Result<Message, Error>>();
-
-        let error = wait_for_subscription_ack(&mut messages, Duration::ZERO)
-            .await
-            .expect_err("missing acknowledgment must fail admission");
-
-        assert!(error.to_string().contains("timed out"));
-    }
-}
-
-#[derive(Debug, Default, serde::Deserialize)]
-struct StoredServersFile {
-    #[serde(default)]
-    servers: Vec<StoredServerConfig>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct StoredServerConfig {
-    instance_id: String,
-    api_key: String,
-    host: Option<IpAddr>,
-    port: Option<u16>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredServerApiKey {
     pub instance_id: String,
@@ -701,27 +642,20 @@ pub struct StoredServerApiKey {
 }
 
 impl StoredServerApiKey {
-    fn from_config(config: StoredServerConfig) -> Option<Self> {
-        let instance_id = config.instance_id.trim();
-        let api_key = config.api_key.trim();
-        let (Some(host), Some(port)) = (config.host, config.port) else {
+    fn from_credential(credential: servers::StoredServerCredential) -> Option<Self> {
+        let Some((host, port)) = credential.endpoint() else {
             warn!(
-                instance_id,
+                instance_id = credential.instance_id(),
                 "Ignoring servers.toml entry without a host/port binding; re-authenticate this daemon"
             );
             return None;
         };
-
-        if instance_id.is_empty() || api_key.is_empty() {
-            None
-        } else {
-            Some(Self {
-                instance_id: instance_id.to_owned(),
-                host,
-                port,
-                api_key: api_key.to_owned(),
-            })
-        }
+        Some(Self {
+            instance_id: credential.instance_id().to_owned(),
+            host,
+            port,
+            api_key: credential.api_key().to_owned(),
+        })
     }
 
     fn matches_server(&self, server: &DiscoveredServer) -> bool {
@@ -733,18 +667,13 @@ impl StoredServerApiKey {
 
 fn load_server_api_keys() -> Vec<StoredServerApiKey> {
     let path = paths::config_dir().join("servers.toml");
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-
-    match toml::from_str::<StoredServersFile>(&contents) {
-        Ok(file) => file
-            .servers
+    match servers::load_server_credentials(&path) {
+        Ok(credentials) => credentials
             .into_iter()
-            .filter_map(StoredServerApiKey::from_config)
+            .filter_map(StoredServerApiKey::from_credential)
             .collect(),
         Err(error) => {
-            debug!(path = %path.display(), %error, "Failed to parse tray server config");
+            debug!(path = %path.display(), %error, "Failed to load stored server credentials");
             Vec::new()
         }
     }
@@ -788,5 +717,50 @@ fn percent_encode(input: &str) -> String {
 fn open_web_ui(base_url: &str) {
     if let Err(error) = open::that(base_url) {
         error!("Failed to open web UI: {error}");
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use std::time::Duration;
+
+    use futures_util::stream;
+    use tokio_tungstenite::tungstenite::{Error, Message};
+
+    use super::wait_for_subscription_ack;
+
+    #[tokio::test]
+    async fn subscription_rejection_fails_connection_admission() {
+        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
+            r#"{"type":"error","message":"forbidden"}"#.into(),
+        ))]);
+
+        let error = wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
+            .await
+            .expect_err("subscription rejection must fail admission");
+
+        assert!(error.to_string().contains("forbidden"));
+    }
+
+    #[tokio::test]
+    async fn subscribed_ack_admits_authoritative_rest_reconciliation() {
+        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
+            r#"{"type":"subscribed","topics":[{"topic":"events"}]}"#.into(),
+        ))]);
+
+        wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
+            .await
+            .expect("typed acknowledgment should admit REST reconciliation");
+    }
+
+    #[tokio::test]
+    async fn subscription_timeout_fails_connection_admission() {
+        let mut messages = stream::pending::<Result<Message, Error>>();
+
+        let error = wait_for_subscription_ack(&mut messages, Duration::ZERO)
+            .await
+            .expect_err("missing acknowledgment must fail admission");
+
+        assert!(error.to_string().contains("timed out"));
     }
 }
