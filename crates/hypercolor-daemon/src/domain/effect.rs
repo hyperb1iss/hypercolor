@@ -1,12 +1,11 @@
 //! Effect domain services (Spec 76 §2.2, §2.3).
 //!
 //! One `apply_effect` serves REST and MCP. Everything transport-shaped
-//! stays in the adapters: REST resolves an id-or-name path segment and
-//! parses a JSON transition object, MCP fuzzy-matches a natural-language
-//! query and reads a `transition_ms` integer. Both arrive here with a
-//! resolved [`EffectId`] and a [`RequestedTransition`], and both get the
-//! same validation, the same scene mutation, and the same events in the
-//! same order.
+//! stays in the adapters. Each adapter validates its wire contract and
+//! resolves the effect through its canonical selector before entering
+//! this module. Both arrive here with a resolved [`EffectId`] and a
+//! [`RequestedTransition`], and both get the same validation, scene
+//! mutation, and ordered events.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -51,7 +50,7 @@ impl RequestedTransition {
         }
     }
 
-    /// A request carrying only a duration, as the MCP tools express it.
+    /// A request carrying only a duration.
     #[must_use]
     pub const fn of_duration(duration_ms: u64) -> Self {
         Self {
@@ -116,13 +115,14 @@ impl AppliedTransition {
 pub struct ApplyEffect {
     /// The effect to load, already resolved.
     ///
-    /// Adapters own identity resolution — a path segment for REST, a
-    /// fuzzy query for MCP — and hand over what they found. The service
+    /// Adapters own identity resolution and hand over what they found.
+    /// REST resolves its path segment while MCP applies the deterministic
+    /// selector policy. The service
     /// does not look it up again: re-resolving would reintroduce a
     /// window where a rescan between the adapter's lookup and the
     /// service's turns a request the adapter already accepted into a
     /// not-found, and it would give the domain a second opinion about
-    /// identity that MCP's fuzzy contract deliberately owns.
+    /// identity that the adapter contract deliberately owns.
     pub effect: EffectMetadata,
     /// Control values, already normalized against the effect's schema.
     pub controls: HashMap<String, ControlValue>,
@@ -295,8 +295,7 @@ pub struct EffectStopped {
 ///
 /// `Ok(None)` means there was nothing running: the primary zone is
 /// absent, idle, or loaded with an effect the registry no longer knows.
-/// Transports render that as they always have — a 404 on REST, a
-/// `stopped: false` payload on MCP.
+/// Callers decide how that domain outcome appears on their surface.
 ///
 /// # Errors
 ///
