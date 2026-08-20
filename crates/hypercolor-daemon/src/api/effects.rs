@@ -5,6 +5,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
@@ -44,7 +45,6 @@ use crate::domain;
 // catalog filter: a second one here would let a listing narrow on values
 // the payload never reports.
 use crate::domain::effect::RequestedTransition;
-use crate::domain::effect::effect_source_kind as source_kind;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::session::set_output_stopped;
 
@@ -64,8 +64,8 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
     EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
-    EffectPresetOrigin, EffectPresetSummary, EffectSummary, InstalledEffectResponse,
-    RescanResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectSourceKind, EffectSummary,
+    InstalledEffectResponse, RescanResponse,
 };
 
 struct ResolvedEffectPreset {
@@ -273,7 +273,7 @@ fn elapsed_ms_u32(state: &AppState) -> u32 {
 pub struct EffectListQuery {
     /// Exact effect category.
     #[serde(default)]
-    pub category: Option<String>,
+    pub category: Option<EffectCategory>,
     /// Declared audio reactivity.
     #[serde(default)]
     pub audio_reactive: Option<bool>,
@@ -283,9 +283,9 @@ pub struct EffectListQuery {
     /// Declared input reactivity.
     #[serde(default)]
     pub input_reactive: Option<bool>,
-    /// Rendering source: `native`, `html`, or `shader`.
+    /// Rendering implementation.
     #[serde(default)]
-    pub source: Option<String>,
+    pub source: Option<EffectSourceKind>,
     /// Case-insensitive substring over name, description, author, tags.
     #[serde(default)]
     pub q: Option<String>,
@@ -324,25 +324,30 @@ impl EffectListIncludes {
 /// `GET /api/v1/effects` — the effect catalog, narrowed server-side.
 pub async fn list_effects(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<EffectListQuery>,
+    query: Result<Query<EffectListQuery>, QueryRejection>,
 ) -> Response {
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => {
+            return DomainError::validation(error.body_text()).into_response();
+        }
+    };
     let includes = match EffectListIncludes::parse(query.include.as_deref()) {
         Ok(includes) => includes,
         Err(error) => return error.into_response(),
     };
-    let catalog_query = match domain::effect::EffectCatalogQuery::parse(
-        query.category.as_deref(),
-        query.source.as_deref(),
-        query.q.as_deref(),
-    ) {
-        Ok(parsed) => domain::effect::EffectCatalogQuery {
-            audio_reactive: query.audio_reactive,
-            screen_reactive: query.screen_reactive,
-            input_reactive: query.input_reactive,
-            ..parsed
-        },
-        Err(error) => return error.into_response(),
-    };
+    let catalog_query =
+        match domain::effect::EffectCatalogQuery::parse(None, None, query.q.as_deref()) {
+            Ok(parsed) => domain::effect::EffectCatalogQuery {
+                category: query.category,
+                audio_reactive: query.audio_reactive,
+                screen_reactive: query.screen_reactive,
+                input_reactive: query.input_reactive,
+                source: query.source.map(|source| source.as_str().to_owned()),
+                ..parsed
+            },
+            Err(error) => return error.into_response(),
+        };
 
     let items: Vec<EffectSummary> = domain::effect::list_catalog(state.as_ref(), &catalog_query)
         .await
@@ -364,8 +369,8 @@ fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> Effect
         name: meta.name.clone(),
         description: meta.description.clone(),
         author: meta.author.clone(),
-        category: format!("{}", meta.category),
-        source: source_kind(&meta.source).to_owned(),
+        category: meta.category,
+        source: EffectSourceKind::from(&meta.source),
         runnable: is_runnable_source(&meta.source),
         tags: meta.tags.clone(),
         version: meta.version.clone(),
@@ -398,8 +403,8 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         name: meta.name,
         description: meta.description,
         author: meta.author,
-        category: format!("{}", meta.category),
-        source: source_kind(&meta.source).to_owned(),
+        category: meta.category,
+        source: EffectSourceKind::from(&meta.source),
         runnable: is_runnable_source(&meta.source),
         tags: meta.tags,
         version: meta.version,
@@ -478,7 +483,7 @@ pub async fn apply_effect(
         requested = %id,
         effect_id = %metadata.id,
         effect = %metadata.name,
-        source = source_kind(&metadata.source),
+        source = EffectSourceKind::from(&metadata.source).as_str(),
         "Applying effect via API"
     );
     if metadata.category == EffectCategory::Display {
@@ -756,7 +761,6 @@ pub async fn install_effect(
     envelope::created(InstalledEffectResponse {
         id: entry.metadata.id.to_string(),
         name: entry.metadata.name,
-        source: "user".to_owned(),
         path: entry.source_path.display().to_string(),
         controls: entry.metadata.controls.len(),
         presets: entry.metadata.presets.len(),

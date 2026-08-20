@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
@@ -105,42 +106,54 @@ fn effect_picker_mode_tracks_surface_and_scope() {
         EffectPickerMode::Faces.empty_detail(),
         "No matching faces or effects"
     );
-    assert!(EffectPickerMode::Faces.includes_category("display"));
-    assert!(EffectPickerMode::Faces.includes_category("source"));
-    assert!(EffectPickerMode::Faces.includes_category("utility"));
-    assert!(EffectPickerMode::Faces.includes_category("ambient"));
-    assert!(EffectPickerMode::Effects.includes_category("source"));
-    assert!(!EffectPickerMode::Effects.includes_category("display"));
-    assert!(EffectPickerMode::Mixed.includes_category("display"));
-    assert!(EffectPickerMode::Mixed.includes_category("ambient"));
-    assert_eq!(EffectPickerMode::Faces.sort_bucket("display"), 0);
-    assert_eq!(EffectPickerMode::Faces.sort_bucket("source"), 1);
-    assert_eq!(EffectPickerMode::Effects.sort_bucket("display"), 1);
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Source));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Utility));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Ambient));
+    assert!(EffectPickerMode::Effects.includes_category(EffectCategory::Source));
+    assert!(!EffectPickerMode::Effects.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Ambient));
+    assert_eq!(
+        EffectPickerMode::Faces.sort_bucket(EffectCategory::Display),
+        0
+    );
+    assert_eq!(
+        EffectPickerMode::Faces.sort_bucket(EffectCategory::Source),
+        1
+    );
+    assert_eq!(
+        EffectPickerMode::Effects.sort_bucket(EffectCategory::Display),
+        1
+    );
 }
 
 #[test]
 fn effect_category_label_renames_display_to_face() {
-    assert_eq!(effect_category_label("display"), "face");
-    assert_eq!(effect_category_label("DiSpLaY"), "face");
-    assert_eq!(effect_category_label("source"), "source");
+    assert_eq!(effect_category_label(EffectCategory::Display), "face");
+    assert_eq!(effect_category_label(EffectCategory::Source), "source");
 }
 
 #[test]
 fn effect_picker_query_matches_display_by_face_label() {
-    assert!(effect_picker_matches_query("LCD Gauge", "display", "face"));
+    assert!(effect_picker_matches_query(
+        "LCD Gauge",
+        EffectCategory::Display,
+        "face"
+    ));
     assert!(effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "cast"
     ));
     assert!(effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "utility"
     ));
     assert!(!effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "face"
     ));
 }

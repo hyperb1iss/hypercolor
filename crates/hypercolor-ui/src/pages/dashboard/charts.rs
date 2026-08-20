@@ -431,10 +431,10 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
     let name = effect.name.clone();
     let cover_url = effect.cover_image_url.clone();
     let (cover_hidden, set_cover_hidden) = signal(false);
-    let category = effect.category.clone();
+    let category = effect.category;
     let audio_reactive = effect.audio_reactive;
 
-    let (_, fallback_rgb) = category_style(&category);
+    let (_, fallback_rgb) = category_style(category.as_str());
     let fallback_rgb = fallback_rgb.to_string();
 
     // Per-card reactive thumbnail lookup.
@@ -487,7 +487,7 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
 
     let stagger = index.min(11) + 1;
     let fallback_for_bg = fallback_rgb.clone();
-    let category_for_meta = category.clone();
+    let category_for_meta = category.as_str();
 
     view! {
         <div
@@ -652,7 +652,7 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
                                     </span>
                                 }.into_any()
                             } else {
-                                let cat = category_for_meta.clone();
+                                let cat = category_for_meta;
                                 view! {
                                     <div class="flex items-center gap-1.5">
                                         <div

@@ -1428,7 +1428,6 @@ Body: file=@my-effect.html
   "data": {
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "name": "Aurora Borealis",
-    "source": "user",
     "path": "/home/user/.local/share/hypercolor/effects/user/aurora.html",
     "controls": 3,
     "presets": 2

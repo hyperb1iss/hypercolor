@@ -201,10 +201,10 @@ fn EffectTab(
         let mut items = items
             .into_iter()
             .filter(|effect| effect.runnable)
-            .filter(|effect| mode.includes_category(&effect.category))
-            .filter(|effect| effect_picker_matches_query(&effect.name, &effect.category, &query))
+            .filter(|effect| mode.includes_category(effect.category))
+            .filter(|effect| effect_picker_matches_query(&effect.name, effect.category, &query))
             .collect::<Vec<_>>();
-        items.sort_by_key(|item| (mode.sort_bucket(&item.category), item.name.to_lowercase()));
+        items.sort_by_key(|item| (mode.sort_bucket(item.category), item.name.to_lowercase()));
         items
     });
 
@@ -226,7 +226,7 @@ fn EffectTab(
                                 {items.into_iter().map(|effect| {
                                     let id = effect.id.clone();
                                     let name = effect.name.clone();
-                                    let category = effect_category_label(&effect.category);
+                                    let category = effect_category_label(effect.category);
                                     let pick = move |_| {
                                         match effect_layer_source(&id) {
                                             Ok(source) => on_pick.run(NewLayerDraft::named(name.clone(), source)),

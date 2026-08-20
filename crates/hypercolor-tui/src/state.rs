@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use hypercolor_types::api::effects::EffectSourceKind;
 pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
-use hypercolor_types::effect::ControlValue as ApiControlValue;
+use hypercolor_types::effect::{ControlValue as ApiControlValue, EffectCategory};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::ZoneRole;
@@ -160,10 +161,8 @@ pub struct EffectSummary {
     pub description: String,
     #[serde(default)]
     pub author: String,
-    #[serde(default)]
-    pub category: String,
-    #[serde(default)]
-    pub source: String,
+    pub category: EffectCategory,
+    pub source: EffectSourceKind,
     #[serde(default)]
     pub audio_reactive: bool,
     #[serde(default)]

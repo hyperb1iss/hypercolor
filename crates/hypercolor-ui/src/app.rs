@@ -343,7 +343,7 @@ impl EffectsContext {
         self.set_active_effect_category.set(
             selected_effect
                 .as_ref()
-                .map(|effect| effect.category.clone())
+                .map(|effect| effect.category.as_str().to_owned())
                 .unwrap_or_default(),
         );
         // Optimistically mirror the stored controls locally so the sidebar
@@ -644,7 +644,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                         .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
                     crate::zones::ZoneEffectState {
                         effect_name: indexed.map(|entry| entry.effect.name.clone()),
-                        effect_category: indexed.map(|entry| entry.effect.category.clone()),
+                        effect_category: indexed
+                            .map(|entry| entry.effect.category.as_str().to_owned()),
                         control_values: effect
                             .map(|effect| effect.controls.clone())
                             .unwrap_or_default(),
@@ -863,7 +864,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 effects_ctx
                     .effect_summary(&effect_error.effect_id)
                     .is_some_and(|effect| {
-                        !effect.category.eq_ignore_ascii_case("display")
+                        effect.category != hypercolor_types::effect::EffectCategory::Display
                             && Some(effect_error.effect_id.clone()) != active_effect_id
                     })
             })

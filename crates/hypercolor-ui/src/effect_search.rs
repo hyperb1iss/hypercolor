@@ -12,7 +12,7 @@ impl IndexedEffect {
             effect.name.to_lowercase(),
             effect.description.to_lowercase(),
             effect.author.to_lowercase(),
-            effect.category.to_lowercase(),
+            effect.category.as_str().to_owned(),
             effect.tags.join(" ").to_lowercase(),
         ]
         .join(" ");

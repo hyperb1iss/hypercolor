@@ -580,7 +580,6 @@ async def test_upload_effect_uses_install_endpoint(client: HypercolorClient) -> 
                 {
                     "id": "user:neon",
                     "name": "Neon",
-                    "source": "user",
                     "path": "/effects/neon.html",
                     "controls": 2,
                     "presets": 1,

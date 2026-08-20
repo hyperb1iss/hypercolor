@@ -339,6 +339,7 @@ from .effect_preset_summary import EffectPresetSummary
 from .effect_preset_summary_controls import EffectPresetSummaryControls
 from .effect_preset_summary_list_response import EffectPresetSummaryListResponse
 from .effect_source import EffectSource
+from .effect_source_kind import EffectSourceKind
 from .effect_summary import EffectSummary
 from .effect_summary_list_response import EffectSummaryListResponse
 from .favorite_summary import FavoriteSummary
@@ -935,6 +936,7 @@ __all__ = (
     "EffectPresetSummaryControls",
     "EffectPresetSummaryListResponse",
     "EffectSource",
+    "EffectSourceKind",
     "EffectSummary",
     "EffectSummaryListResponse",
     "FavoriteSummary",

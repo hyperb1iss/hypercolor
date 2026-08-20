@@ -286,16 +286,18 @@ pub fn PreviewCabinet(
                         let meta = effect_meta.get();
                         name.map(|effect_name| {
                             let description = meta.as_ref().map(|m| m.description.clone()).unwrap_or_default();
-                            let category = meta.as_ref().map(|m| m.category.clone()).unwrap_or_default();
+                            let category = meta.as_ref().map(|m| m.category.as_str().to_owned()).unwrap_or_default();
                             let author = meta.as_ref().map(|m| m.author.clone()).unwrap_or_default();
                             let audio_reactive = meta.as_ref().is_some_and(|m| m.audio_reactive);
-                            let source = meta.as_ref().map(|m| m.source.clone()).unwrap_or_default();
+                            let source = meta.as_ref().map(|m| m.source);
                             let is_calibration = meta.as_ref().is_some_and(|m| {
                                 m.name.eq_ignore_ascii_case("Calibration")
                                     || m.tags.iter().any(|tag| tag.eq_ignore_ascii_case("calibration"))
                             });
-                            let is_html = source == "html";
-                            let show_source = source != "native";
+                            let is_html = source == Some(hypercolor_types::api::effects::EffectSourceKind::Html);
+                            let show_source = source.is_some_and(|source| {
+                                source != hypercolor_types::api::effects::EffectSourceKind::Native
+                            });
 
                             view! {
                                 <div

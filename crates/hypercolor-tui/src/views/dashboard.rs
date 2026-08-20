@@ -274,18 +274,13 @@ impl DashboardView {
         if !effect.author.is_empty() {
             meta.push(Span::styled(&effect.author, Style::default().fg(CORAL)));
         }
-        if !effect.category.is_empty() {
-            if !meta.is_empty() {
-                meta.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM_GRAY)));
-            }
-            meta.push(Span::styled(
-                &effect.category,
-                Style::default().fg(DIM_GRAY),
-            ));
+        if !meta.is_empty() {
+            meta.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM_GRAY)));
         }
-        if meta.is_empty() {
-            return y;
-        }
+        meta.push(Span::styled(
+            effect.category.as_str(),
+            Style::default().fg(DIM_GRAY),
+        ));
         frame.render_widget(Paragraph::new(Line::from(meta)), Rect::new(x, y, w, 1));
         y + 1
     }

@@ -6,17 +6,19 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
+from ...models.effect_category import EffectCategory
+from ...models.effect_source_kind import EffectSourceKind
 from ...models.list_effects_response_200 import ListEffectsResponse200
 from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     *,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
 ) -> dict[str, Any]:
@@ -26,6 +28,8 @@ def _get_kwargs(
     json_category: None | str | Unset
     if isinstance(category, Unset):
         json_category = UNSET
+    elif isinstance(category, EffectCategory):
+        json_category = category.value
     else:
         json_category = category
     params["category"] = json_category
@@ -54,6 +58,8 @@ def _get_kwargs(
     json_source: None | str | Unset
     if isinstance(source, Unset):
         json_source = UNSET
+    elif isinstance(source, EffectSourceKind):
+        json_source = source.value
     else:
         json_source = source
     params["source"] = json_source
@@ -156,22 +162,22 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ListEffectsResponse200]:
     """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 
@@ -203,22 +209,22 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
 ) -> ApiErrorBody | ListEffectsResponse200 | None:
     """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 
@@ -245,22 +251,22 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ListEffectsResponse200]:
     """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 
@@ -290,22 +296,22 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
 ) -> ApiErrorBody | ListEffectsResponse200 | None:
     """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 

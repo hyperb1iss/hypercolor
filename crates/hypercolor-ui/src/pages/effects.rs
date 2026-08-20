@@ -23,7 +23,7 @@ use crate::icons::*;
 use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::effect::{ControlDefinition, ControlValue, EffectCategory};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 
 mod support;
@@ -256,7 +256,7 @@ pub fn EffectsPage() -> impl IntoView {
         let mut seen = std::collections::BTreeSet::new();
         fx.effects_index.with(|effects| {
             for entry in effects {
-                if entry.effect.category.eq_ignore_ascii_case("display") {
+                if entry.effect.category == EffectCategory::Display {
                     continue;
                 }
                 if !entry.effect.author.is_empty() {
@@ -356,7 +356,7 @@ pub fn EffectsPage() -> impl IntoView {
                 .find(|entry| entry.effect.id == effect_error.effect_id)
                 .map(|entry| entry.effect.clone())
         })?;
-        if effect.category.eq_ignore_ascii_case("display") {
+        if effect.category == EffectCategory::Display {
             return None;
         }
 
@@ -395,10 +395,10 @@ pub fn EffectsPage() -> impl IntoView {
                     // LED effects gallery, regardless of
                     // whether the user flipped some URL-state or old
                     // persisted filter to `display`.
-                    if effect.category.eq_ignore_ascii_case("display") {
+                    if effect.category == EffectCategory::Display {
                         return false;
                     }
-                    if cat != "all" && effect.category != cat {
+                    if cat != "all" && effect.category.as_str() != cat {
                         return false;
                     }
                     if !sel_authors.is_empty() && !sel_authors.contains(&effect.author) {
@@ -420,7 +420,7 @@ pub fn EffectsPage() -> impl IntoView {
         fx.effects_index.with(|effects| {
             effects
                 .iter()
-                .filter(|entry| !entry.effect.category.eq_ignore_ascii_case("display"))
+                .filter(|entry| entry.effect.category != EffectCategory::Display)
                 .count()
         })
     });
@@ -437,7 +437,7 @@ pub fn EffectsPage() -> impl IntoView {
             effects
                 .iter()
                 .find(|entry| entry.effect.id == id)
-                .is_some_and(|entry| entry.effect.category == "display")
+                .is_some_and(|entry| entry.effect.category == EffectCategory::Display)
         });
         if is_display_face {
             toasts::toast_info("Display faces are assigned from the Displays page.");

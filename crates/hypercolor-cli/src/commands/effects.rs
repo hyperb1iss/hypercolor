@@ -4,13 +4,13 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::collections::BTreeMap;
 
-use hypercolor_types::api::effects::EffectDetailResponse;
+use hypercolor_types::api::effects::{EffectDetailResponse, EffectSourceKind};
 use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest,
 };
 use hypercolor_types::control::ControlValue as ApiControlValue;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
@@ -52,7 +52,7 @@ pub enum EffectCommand {
 pub struct EffectListArgs {
     /// Filter by rendering source (native, html, shader).
     #[arg(long)]
-    pub source: Option<String>,
+    pub source: Option<EffectSourceKind>,
 
     /// Filter to audio-reactive effects only.
     #[arg(long)]
@@ -64,7 +64,7 @@ pub struct EffectListArgs {
 
     /// Filter by category.
     #[arg(long)]
-    pub category: Option<String>,
+    pub category: Option<EffectCategory>,
 }
 
 /// Arguments for `effects activate`.
@@ -144,7 +144,7 @@ async fn execute_list(
     let mut query_parts = Vec::new();
 
     if let Some(source) = &args.source {
-        query_parts.push(format!("source={}", urlencoded(source)));
+        query_parts.push(format!("source={}", urlencoded(source.as_str())));
     }
     if args.audio {
         query_parts.push("audio_reactive=true".to_string());
@@ -153,7 +153,7 @@ async fn execute_list(
         query_parts.push(format!("q={}", urlencoded(search)));
     }
     if let Some(category) = &args.category {
-        query_parts.push(format!("category={}", urlencoded(category)));
+        query_parts.push(format!("category={}", urlencoded(category.as_str())));
     }
     if !query_parts.is_empty() {
         path = format!("{path}?{}", query_parts.join("&"));

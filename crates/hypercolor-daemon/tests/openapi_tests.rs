@@ -68,6 +68,52 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["paths"]["/api/v1/system"].is_object());
     assert!(body["paths"]["/api/v1/devices"].is_object());
     assert!(body["paths"]["/api/v1/effects"].is_object());
+    assert_eq!(
+        body["components"]["schemas"]["EffectCategory"]["enum"],
+        serde_json::json!([
+            "ambient",
+            "audio",
+            "generative",
+            "particle",
+            "scenic",
+            "interactive",
+            "fun",
+            "source",
+            "utility",
+            "display"
+        ])
+    );
+    assert_eq!(
+        body["components"]["schemas"]["EffectSourceKind"]["enum"],
+        serde_json::json!(["native", "html", "shader"])
+    );
+    assert_eq!(
+        body["components"]["schemas"]["EffectSummary"]["properties"]["category"]["$ref"],
+        "#/components/schemas/EffectCategory"
+    );
+    assert_eq!(
+        body["components"]["schemas"]["EffectSummary"]["properties"]["source"]["$ref"],
+        "#/components/schemas/EffectSourceKind"
+    );
+    assert!(
+        body["components"]["schemas"]["InstalledEffectResponse"]["properties"]["source"].is_null()
+    );
+    let effect_parameters = body["paths"]["/api/v1/effects"]["get"]["parameters"]
+        .as_array()
+        .expect("effect query parameters should be an array");
+    for (name, schema) in [
+        ("category", "EffectCategory"),
+        ("source", "EffectSourceKind"),
+    ] {
+        let parameter = effect_parameters
+            .iter()
+            .find(|parameter| parameter["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name} effect filter"));
+        assert_eq!(
+            parameter["schema"]["oneOf"][1]["$ref"],
+            format!("#/components/schemas/{schema}")
+        );
+    }
     assert!(body["paths"]["/api/v1/output"]["get"].is_object());
     assert!(body["paths"]["/api/v1/output"]["patch"].is_object());
     assert_eq!(

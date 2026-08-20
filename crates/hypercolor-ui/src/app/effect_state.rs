@@ -130,7 +130,7 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
     } = active;
     let category = ctx
         .effect_summary(&id)
-        .map(|effect| effect.category)
+        .map(|effect| effect.category.as_str().to_owned())
         .unwrap_or_default();
 
     ctx.set_active_effect_name.set(Some(name));

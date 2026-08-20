@@ -19,7 +19,6 @@ class InstalledEffectResponse:
         name (str):
         path (str):
         presets (int):
-        source (str):
     """
 
     controls: int
@@ -27,7 +26,6 @@ class InstalledEffectResponse:
     name: str
     path: str
     presets: int
-    source: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -41,8 +39,6 @@ class InstalledEffectResponse:
 
         presets = self.presets
 
-        source = self.source
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -52,7 +48,6 @@ class InstalledEffectResponse:
                 "name": name,
                 "path": path,
                 "presets": presets,
-                "source": source,
             }
         )
 
@@ -71,15 +66,12 @@ class InstalledEffectResponse:
 
         presets = d.pop("presets")
 
-        source = d.pop("source")
-
         installed_effect_response = cls(
             controls=controls,
             id=id,
             name=name,
             path=path,
             presets=presets,
-            source=source,
         )
 
         installed_effect_response.additional_properties = d

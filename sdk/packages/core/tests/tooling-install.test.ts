@@ -101,7 +101,6 @@ describe('tooling install', () => {
                         name: 'Aurora',
                         path: '/tmp/user-effects/aurora.html',
                         presets: 1,
-                        source: 'user',
                     },
                     meta: {
                         api_version: '1.0',

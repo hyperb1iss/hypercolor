@@ -3,10 +3,60 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use strum::{Display, EnumString, VariantNames};
 use utoipa::ToSchema;
 
 use crate::api::envelope::ListResponse;
-use crate::effect::{ControlDefinition, ControlValue, PresetTemplate};
+pub use crate::effect::EffectCategory;
+use crate::effect::{ControlDefinition, ControlValue, EffectSource, PresetTemplate};
+
+/// Rendering implementation used by an effect.
+///
+/// The catalog publishes the implementation kind without leaking the source
+/// file path carried by the engine's internal [`EffectSource`].
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    EnumString,
+    Display,
+    VariantNames,
+    ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum EffectSourceKind {
+    Native,
+    Html,
+    Shader,
+}
+
+impl EffectSourceKind {
+    /// Canonical wire spelling for this source kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Html => "html",
+            Self::Shader => "shader",
+        }
+    }
+}
+
+impl From<&EffectSource> for EffectSourceKind {
+    fn from(source: &EffectSource) -> Self {
+        match source {
+            EffectSource::Native { .. } => Self::Native,
+            EffectSource::Html { .. } => Self::Html,
+            EffectSource::Shader { .. } => Self::Shader,
+        }
+    }
+}
 
 /// Origin of a preset in an effect's unified preset stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -48,8 +98,8 @@ pub struct EffectSummary {
     pub name: String,
     pub description: String,
     pub author: String,
-    pub category: String,
-    pub source: String,
+    pub category: EffectCategory,
+    pub source: EffectSourceKind,
     pub runnable: bool,
     pub tags: Vec<String>,
     pub version: String,
@@ -85,8 +135,8 @@ pub struct EffectDetailResponse {
     pub name: String,
     pub description: String,
     pub author: String,
-    pub category: String,
-    pub source: String,
+    pub category: EffectCategory,
+    pub source: EffectSourceKind,
     pub runnable: bool,
     pub tags: Vec<String>,
     pub version: String,
@@ -104,7 +154,6 @@ pub struct EffectDetailResponse {
 pub struct InstalledEffectResponse {
     pub id: String,
     pub name: String,
-    pub source: String,
     pub path: String,
     pub controls: usize,
     pub presets: usize,

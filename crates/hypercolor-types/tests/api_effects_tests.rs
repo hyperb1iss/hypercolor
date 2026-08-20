@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use hypercolor_types::api::effects::{
-    EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
+    EffectCategory, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
+    EffectSourceKind,
 };
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlValue, EffectSource};
 
 #[test]
 fn effect_preset_stack_round_trips_origin_and_editability() {
@@ -28,4 +29,31 @@ fn effect_preset_stack_round_trips_origin_and_editability() {
     let decoded = serde_json::from_value::<EffectPresetListResponse>(json)
         .expect("preset stack should deserialize");
     assert_eq!(decoded, response);
+}
+
+#[test]
+fn effect_vocabularies_use_their_canonical_wire_spellings() {
+    assert_eq!(
+        serde_json::to_value(EffectCategory::Generative).expect("category should serialize"),
+        "generative"
+    );
+    assert_eq!(
+        serde_json::to_value(EffectSourceKind::Html).expect("source kind should serialize"),
+        "html"
+    );
+    assert_eq!(EffectCategory::Display.as_str(), "display");
+    assert_eq!(EffectSourceKind::Shader.as_str(), "shader");
+}
+
+#[test]
+fn effect_source_kind_projects_internal_paths_out_of_the_wire() {
+    let source = EffectSource::Html {
+        path: "/private/effects/aurora.html".into(),
+    };
+
+    let kind = EffectSourceKind::from(&source);
+    let json = serde_json::to_value(kind).expect("source kind should serialize");
+
+    assert_eq!(json, "html");
+    assert!(!json.to_string().contains("private"));
 }

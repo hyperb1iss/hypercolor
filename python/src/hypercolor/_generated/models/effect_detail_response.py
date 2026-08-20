@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.effect_category import EffectCategory
+from ..models.effect_source_kind import EffectSourceKind
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -23,12 +25,18 @@ class EffectDetailResponse:
     Attributes:
         audio_reactive (bool):
         author (str):
-        category (str):
+        category (EffectCategory): Primary classification categories for the effect taxonomy.
+
+            An effect can belong to multiple categories. Used for discovery
+            and filtering in the effect browser UI.
         description (str):
         id (str):
         name (str):
         runnable (bool):
-        source (str):
+        source (EffectSourceKind): Rendering implementation used by an effect.
+
+            The catalog publishes the implementation kind without leaking the source
+            file path carried by the engine's internal [`EffectSource`].
         tags (list[str]):
         version (str):
         controls (list[ControlDefinition] | Unset):
@@ -38,12 +46,12 @@ class EffectDetailResponse:
 
     audio_reactive: bool
     author: str
-    category: str
+    category: EffectCategory
     description: str
     id: str
     name: str
     runnable: bool
-    source: str
+    source: EffectSourceKind
     tags: list[str]
     version: str
     controls: list[ControlDefinition] | Unset = UNSET
@@ -56,7 +64,7 @@ class EffectDetailResponse:
 
         author = self.author
 
-        category = self.category
+        category = self.category.value
 
         description = self.description
 
@@ -66,7 +74,7 @@ class EffectDetailResponse:
 
         runnable = self.runnable
 
-        source = self.source
+        source = self.source.value
 
         tags = self.tags
 
@@ -127,7 +135,7 @@ class EffectDetailResponse:
 
         author = d.pop("author")
 
-        category = d.pop("category")
+        category = EffectCategory(d.pop("category"))
 
         description = d.pop("description")
 
@@ -137,7 +145,7 @@ class EffectDetailResponse:
 
         runnable = d.pop("runnable")
 
-        source = d.pop("source")
+        source = EffectSourceKind(d.pop("source"))
 
         tags = cast(list[str], d.pop("tags"))
 

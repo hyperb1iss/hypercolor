@@ -95,6 +95,25 @@ pub enum EffectCategory {
     Display,
 }
 
+impl EffectCategory {
+    /// Canonical wire spelling for this category.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ambient => "ambient",
+            Self::Audio => "audio",
+            Self::Generative => "generative",
+            Self::Particle => "particle",
+            Self::Scenic => "scenic",
+            Self::Interactive => "interactive",
+            Self::Fun => "fun",
+            Self::Source => "source",
+            Self::Utility => "utility",
+            Self::Display => "display",
+        }
+    }
+}
+
 // ── EffectSource ──────────────────────────────────────────────────────────────
 
 /// Identifies the rendering path and source location for an effect.

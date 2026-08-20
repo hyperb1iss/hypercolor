@@ -61,7 +61,6 @@ interface EffectSummary {
     name: string
     description: string
     category: string
-    source: string
     runnable: boolean
     tags: string[]
     version: string

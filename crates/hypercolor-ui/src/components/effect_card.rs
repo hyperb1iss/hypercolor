@@ -8,6 +8,7 @@
 //! otherwise its `onerror` hides the element and the lower layers remain
 //! visible.
 
+use hypercolor_types::api::effects::EffectSourceKind;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -18,12 +19,11 @@ use crate::style_utils::category_style;
 use crate::thumbnails::{Thumbnail, ThumbnailStore};
 
 /// Human label for the `source` enum ("native" → "Native", etc.).
-fn source_label(source: &str) -> &'static str {
+fn source_label(source: EffectSourceKind) -> &'static str {
     match source {
-        "native" => "Native",
-        "html" => "HTML",
-        "shader" => "Shader",
-        _ => "Other",
+        EffectSourceKind::Native => "Native",
+        EffectSourceKind::Html => "HTML",
+        EffectSourceKind::Shader => "Shader",
     }
 }
 
@@ -47,17 +47,17 @@ pub fn EffectCard(
 ) -> impl IntoView {
     let name = effect.name.clone();
     let description = effect.description.clone();
-    let category = effect.category.clone();
+    let category = effect.category;
     let runnable = effect.runnable;
     let audio_reactive = effect.audio_reactive;
-    let source = effect.source.clone();
+    let source = effect.source;
     let is_calibration = effect.name.eq_ignore_ascii_case("Calibration")
         || effect
             .tags
             .iter()
             .any(|tag| tag.eq_ignore_ascii_case("calibration"));
 
-    let (_, fallback_rgb) = category_style(&category);
+    let (_, fallback_rgb) = category_style(category.as_str());
     let fallback_rgb = fallback_rgb.to_string();
 
     // Per-card reactive thumbnail — the store is a context, so every card
@@ -94,9 +94,9 @@ pub fn EffectCard(
     let click_id = effect.id.clone();
     let fav_id = effect.id.clone();
     let stagger = (index.min(12) + 1).to_string();
-    let source_label_text = source_label(&source);
-    let show_source_icon = source != "native";
-    let is_html = source == "html";
+    let source_label_text = source_label(source);
+    let show_source_icon = source != EffectSourceKind::Native;
+    let is_html = source == EffectSourceKind::Html;
     let cover_url = effect.cover_image_url.clone();
     let (cover_hidden, set_cover_hidden) = signal(false);
 
@@ -301,7 +301,7 @@ pub fn EffectCard(
                             class="text-[10px] font-mono uppercase tracking-wider capitalize truncate drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
                             style:color=move || format!("rgb({})", meta_tint.get())
                         >
-                            {category.clone()}
+                            {category.as_str()}
                         </span>
                     </div>
 

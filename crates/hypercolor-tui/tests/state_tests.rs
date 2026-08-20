@@ -100,8 +100,12 @@ fn daemon_state_serde_roundtrip() {
 
 #[test]
 fn effect_summary_deserialize_with_defaults() {
-    // Minimal JSON — all #[serde(default)] fields should use defaults
-    let json = r#"{"id": "test", "name": "Test Effect"}"#;
+    let json = r#"{
+        "id": "test",
+        "name": "Test Effect",
+        "category": "ambient",
+        "source": "native"
+    }"#;
     let effect: EffectSummary = serde_json::from_str(json).expect("deserialize");
     assert_eq!(effect.id, "test");
     assert_eq!(effect.name, "Test Effect");

@@ -815,6 +815,8 @@ fn parse_effects_list_with_filters() {
     use clap::Parser as _;
     use hypercolor_cli::Commands;
     use hypercolor_cli::commands::effects::EffectCommand;
+    use hypercolor_types::api::effects::EffectSourceKind;
+    use hypercolor_types::effect::EffectCategory;
 
     let cli = hypercolor_cli::Cli::try_parse_from([
         "hyper",
@@ -837,10 +839,10 @@ fn parse_effects_list_with_filters() {
         panic!("expected the list subcommand");
     };
 
-    assert_eq!(list.source.as_deref(), Some("native"));
+    assert_eq!(list.source, Some(EffectSourceKind::Native));
     assert!(list.audio);
     assert_eq!(list.search.as_deref(), Some("aurora"));
-    assert_eq!(list.category.as_deref(), Some("ambient"));
+    assert_eq!(list.category, Some(EffectCategory::Ambient));
 }
 
 /// The renamed flag is gone, not aliased.

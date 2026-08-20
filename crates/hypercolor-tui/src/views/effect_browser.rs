@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use hypercolor_types::api::effects::EffectSourceKind;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -167,7 +168,7 @@ impl EffectBrowserView {
                 .iter()
                 .filter(|e| {
                     e.name.to_lowercase().contains(&query)
-                        || e.category.to_lowercase().contains(&query)
+                        || e.category.as_str().contains(&query)
                         || e.tags.iter().any(|t| t.to_lowercase().contains(&query))
                 })
                 .cloned()
@@ -414,15 +415,15 @@ impl EffectBrowserView {
     /// Map a visual row offset (within the list area) to an effect index.
     fn effect_index_at_visual_row(&self, target_row: usize) -> Option<usize> {
         let mut visual_row = 0;
-        let mut current_category = String::new();
+        let mut current_category = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
-            if effect.category != current_category {
-                if !current_category.is_empty() {
+            if Some(effect.category) != current_category {
+                if current_category.is_some() {
                     visual_row += 1; // blank separator
                 }
                 visual_row += 1; // category header
-                current_category.clone_from(&effect.category);
+                current_category = Some(effect.category);
             }
 
             if visual_row == target_row {
@@ -916,24 +917,20 @@ impl EffectBrowserView {
 
     fn build_list_items(&self, avail_width: u16) -> (Vec<ListItem<'_>>, Option<usize>) {
         let mut items: Vec<ListItem<'_>> = Vec::new();
-        let mut current_category = String::new();
+        let mut current_category = None;
         let mut selected_item_idx = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
-            if effect.category != current_category {
-                if !current_category.is_empty() {
+            if Some(effect.category) != current_category {
+                if current_category.is_some() {
                     items.push(ListItem::new(Line::from("")));
                 }
-                let cat_display = if effect.category.is_empty() {
-                    "Uncategorized"
-                } else {
-                    &effect.category
-                };
+                let cat_display = effect.category.as_str();
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("\u{2500}\u{2500} {cat_display} \u{2500}\u{2500}"),
                     Style::default().fg(DIM_GRAY).add_modifier(Modifier::BOLD),
                 ))));
-                current_category.clone_from(&effect.category);
+                current_category = Some(effect.category);
             }
 
             if flat_idx == self.selected_index {
@@ -962,10 +959,10 @@ impl EffectBrowserView {
         let pointer = if is_selected { "\u{25B8} " } else { "  " };
         let fav_marker = if is_fav { " \u{2605}" } else { "" };
 
-        let source_badge = match effect.source.as_str() {
-            "native" | "wgpu" => "\u{2726} native",
-            "web" | "servo" => "\u{25C8} web",
-            _ => "",
+        let source_badge = match effect.source {
+            EffectSourceKind::Native => "\u{2726} native",
+            EffectSourceKind::Html => "\u{25C8} web",
+            EffectSourceKind::Shader => "\u{25C6} shader",
         };
 
         let name_style = if is_selected {
@@ -1032,7 +1029,7 @@ impl EffectBrowserView {
                     ""
                 };
                 let author_part = if effect.author.is_empty() {
-                    effect.source.clone()
+                    effect.source.to_string()
                 } else {
                     format!("{} \u{00B7} {}", effect.author, effect.source)
                 };

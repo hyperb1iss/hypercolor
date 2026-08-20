@@ -198,8 +198,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
             .into_iter()
             .filter(|entry| {
                 entry.effect.runnable
-                    && (entry.matches_search(&q)
-                        || entry.effect.category.to_lowercase().contains(&q))
+                    && (entry.matches_search(&q) || entry.effect.category.as_str().contains(&q))
             })
             .map(|entry| PaletteEntry::Effect(Box::new(entry.effect)))
             .take(10)
@@ -368,7 +367,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 let id = effect.id.clone();
                                                 let name = effect.name.clone();
                                                 let desc = effect.description.clone();
-                                                let category = effect.category.clone();
+                                                let category = effect.category.as_str();
 
                                                 view! {
                                                     <button

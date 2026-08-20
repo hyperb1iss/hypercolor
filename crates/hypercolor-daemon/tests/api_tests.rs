@@ -3465,7 +3465,7 @@ async fn install_effect_upload_writes_file_and_registers_effect() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Aurora");
-    assert_eq!(json["data"]["source"], "user");
+    assert!(json["data"].get("source").is_none());
     assert_eq!(json["data"]["controls"], 1);
     assert_eq!(json["data"]["presets"], 1);
 
@@ -5555,6 +5555,49 @@ async fn list_effects_returns_items_sorted_by_name() {
         .map(|item| item["name"].as_str().expect("name should be a string"))
         .collect();
     assert_eq!(names, vec!["Alpha", "beta", "zeta"]);
+}
+
+#[tokio::test]
+async fn list_effects_accepts_typed_category_and_source_filters() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+
+    let response = test_app_with_state(Arc::clone(&state))
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects?category=ambient&source=native")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["items"][0]["category"], "ambient");
+    assert_eq!(json["data"]["items"][0]["source"], "native");
+}
+
+#[tokio::test]
+async fn list_effects_rejects_unknown_closed_vocabulary_values() {
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects?source=filesystem")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("filesystem"))
+    );
 }
 
 #[tokio::test]
