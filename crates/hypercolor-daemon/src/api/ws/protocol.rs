@@ -984,9 +984,7 @@ define_server_messages! {
         key: Option<String>,
         recommendation: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        suggested_fps: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        suggested_interval_ms: Option<u32>,
+        suggested_fps: Option<f64>,
     },
     /// Protocol-level request error.
     Error {
@@ -1084,7 +1082,6 @@ pub(super) struct HelloFps {
     pub(super) target: u32,
     pub(super) capacity: f64,
     pub(super) delivered: f64,
-    pub(super) actual: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1124,7 +1121,6 @@ pub(super) struct MetricsFps {
     pub(super) ceiling: u32,
     pub(super) capacity: f64,
     pub(super) delivered: f64,
-    pub(super) actual: f64,
     pub(super) dropped: u32,
 }
 
@@ -1671,7 +1667,6 @@ pub(crate) fn ws_capabilities() -> Vec<String> {
     capabilities.push("preview_chunking".to_owned());
     let preview_transport = PreviewTransportCapability::default();
     capabilities.push(preview_transport.encode());
-    capabilities.push(preview_transport.legacy_v1().encode());
     capabilities
 }
 

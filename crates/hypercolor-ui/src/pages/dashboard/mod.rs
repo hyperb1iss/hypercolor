@@ -145,7 +145,7 @@ impl MetricsSample {
         let phase = phase_frame_from_timeline(&m.timeline);
 
         Self {
-            engine_fps: stabilize_fps_for_display(m.fps.delivered_or_legacy(), m.fps.target),
+            engine_fps: stabilize_fps_for_display(m.fps.delivered, m.fps.target),
             frame_time_avg: m.frame_time.avg_ms,
             frame_time_p95: m.frame_time.p95_ms,
             jitter_p95: m.pacing.jitter_p95_ms,

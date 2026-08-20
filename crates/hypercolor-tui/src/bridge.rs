@@ -387,7 +387,7 @@ fn merge_metrics_into_daemon_state(
         .and_then(json_f32)
         .unwrap_or(next.fps_target);
     next.fps_actual = fps
-        .get("actual")
+        .get("delivered")
         .and_then(json_f32)
         .unwrap_or(next.fps_actual);
     next.device_count = data

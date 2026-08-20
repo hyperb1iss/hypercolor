@@ -40,24 +40,13 @@ pub const DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES + 64 * 1024;
 pub const DEFAULT_PREVIEW_MAX_CONNECTION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES * 2;
-pub const DEFAULT_PREVIEW_MAX_REASSEMBLY_STREAMS: usize = 256;
-pub const DEFAULT_PREVIEW_MAX_TOMBSTONES: usize = 1024;
 pub const DEFAULT_PREVIEW_MAX_IDLE_MS: u64 = 5_000;
 pub const DEFAULT_PREVIEW_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
-pub const DEFAULT_PREVIEW_MAX_CHUNK_COUNT: u32 = 4096;
-pub const PREVIEW_TRANSPORT_CAPABILITY_PREFIX: &str = "preview_transport_v1:";
-pub const PREVIEW_TRANSPORT_V2_CAPABILITY_PREFIX: &str = "preview_transport_v2:";
+pub const PREVIEW_TRANSPORT_CAPABILITY_PREFIX: &str = "preview_transport_v2:";
 pub const DEFAULT_PREVIEW_MAX_REASSEMBLY_STATE_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_TOMBSTONE_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_SENDER_STATE_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_CURSOR_STATE_BYTES: usize = 8 * 1024 * 1024;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PreviewTransportVersion {
-    V1,
-    #[default]
-    V2,
-}
 
 /// The passive preview surfaces: one canvas per connection, no identity
 /// beyond the channel byte. Display preview left this family when it
@@ -211,7 +200,7 @@ impl DisplayPreviewFrame {
         let mut out = Vec::new();
         out.try_reserve_exact(encoded_len)
             .map_err(|_| PreviewFrameDecodeError::AllocationFailed { bytes: encoded_len })?;
-        out.put_u8(if self.uses_legacy_layout() {
+        out.put_u8(if self.uses_compact_layout() {
             DISPLAY_PREVIEW_FRAME_TAG
         } else {
             WIDE_DISPLAY_PREVIEW_FRAME_TAG
@@ -219,9 +208,9 @@ impl DisplayPreviewFrame {
         out.put_u8(id_len);
         out.put_u32_le(self.frame_number);
         out.put_u32_le(self.timestamp_ms);
-        if self.uses_legacy_layout() {
-            out.put_u16_le(u16::try_from(self.width).expect("legacy width fits"));
-            out.put_u16_le(u16::try_from(self.height).expect("legacy height fits"));
+        if self.uses_compact_layout() {
+            out.put_u16_le(u16::try_from(self.width).expect("compact width fits"));
+            out.put_u16_le(u16::try_from(self.height).expect("compact height fits"));
         } else {
             out.put_u32_le(self.width);
             out.put_u32_le(self.height);
@@ -233,13 +222,13 @@ impl DisplayPreviewFrame {
     }
 
     #[must_use]
-    pub const fn uses_legacy_layout(&self) -> bool {
+    pub const fn uses_compact_layout(&self) -> bool {
         self.width <= u16::MAX as u32 && self.height <= u16::MAX as u32
     }
 
     #[must_use]
     pub const fn prefix_len(&self) -> usize {
-        if self.uses_legacy_layout() {
+        if self.uses_compact_layout() {
             DISPLAY_PREVIEW_FRAME_PREFIX_LEN
         } else {
             WIDE_DISPLAY_PREVIEW_FRAME_PREFIX_LEN
@@ -310,7 +299,7 @@ impl PreviewFrame {
         let mut out = Vec::new();
         out.try_reserve_exact(encoded_len)
             .map_err(|_| PreviewFrameDecodeError::AllocationFailed { bytes: encoded_len })?;
-        if self.uses_legacy_layout() {
+        if self.uses_compact_layout() {
             out.put_u8(self.channel.tag());
         } else {
             out.put_u8(WIDE_PREVIEW_FRAME_TAG);
@@ -318,9 +307,9 @@ impl PreviewFrame {
         }
         out.put_u32_le(self.frame_number);
         out.put_u32_le(self.timestamp_ms);
-        if self.uses_legacy_layout() {
-            out.put_u16_le(u16::try_from(self.width).expect("legacy width fits"));
-            out.put_u16_le(u16::try_from(self.height).expect("legacy height fits"));
+        if self.uses_compact_layout() {
+            out.put_u16_le(u16::try_from(self.width).expect("compact width fits"));
+            out.put_u16_le(u16::try_from(self.height).expect("compact height fits"));
         } else {
             out.put_u32_le(self.width);
             out.put_u32_le(self.height);
@@ -331,13 +320,13 @@ impl PreviewFrame {
     }
 
     #[must_use]
-    pub const fn uses_legacy_layout(&self) -> bool {
+    pub const fn uses_compact_layout(&self) -> bool {
         self.width <= u16::MAX as u32 && self.height <= u16::MAX as u32
     }
 
     #[must_use]
     pub const fn header_len(&self) -> usize {
-        if self.uses_legacy_layout() {
+        if self.uses_compact_layout() {
             PREVIEW_FRAME_HEADER_LEN
         } else {
             WIDE_PREVIEW_FRAME_HEADER_LEN
@@ -413,7 +402,7 @@ impl ZonePreviewFrame {
         let mut out = Vec::new();
         out.try_reserve_exact(encoded_len)
             .map_err(|_| PreviewFrameDecodeError::AllocationFailed { bytes: encoded_len })?;
-        out.put_u8(if self.uses_legacy_layout() {
+        out.put_u8(if self.uses_compact_layout() {
             ZONE_PREVIEW_FRAME_TAG
         } else {
             WIDE_ZONE_PREVIEW_FRAME_TAG
@@ -422,9 +411,9 @@ impl ZonePreviewFrame {
         out.put_u32_le(self.timestamp_ms);
         out.extend_from_slice(&self.scene_id);
         out.extend_from_slice(&self.zone_id);
-        if self.uses_legacy_layout() {
-            out.put_u16_le(u16::try_from(self.width).expect("legacy width fits"));
-            out.put_u16_le(u16::try_from(self.height).expect("legacy height fits"));
+        if self.uses_compact_layout() {
+            out.put_u16_le(u16::try_from(self.width).expect("compact width fits"));
+            out.put_u16_le(u16::try_from(self.height).expect("compact height fits"));
         } else {
             out.put_u32_le(self.width);
             out.put_u32_le(self.height);
@@ -435,13 +424,13 @@ impl ZonePreviewFrame {
     }
 
     #[must_use]
-    pub const fn uses_legacy_layout(&self) -> bool {
+    pub const fn uses_compact_layout(&self) -> bool {
         self.width <= u16::MAX as u32 && self.height <= u16::MAX as u32
     }
 
     #[must_use]
     pub const fn header_len(&self) -> usize {
-        if self.uses_legacy_layout() {
+        if self.uses_compact_layout() {
             ZONE_PREVIEW_FRAME_HEADER_LEN
         } else {
             WIDE_ZONE_PREVIEW_FRAME_HEADER_LEN
@@ -521,7 +510,7 @@ impl InteractivePreviewFrame {
         let mut out = Vec::new();
         out.try_reserve_exact(encoded_len)
             .map_err(|_| PreviewFrameDecodeError::AllocationFailed { bytes: encoded_len })?;
-        out.put_u8(if self.uses_legacy_layout() {
+        out.put_u8(if self.uses_compact_layout() {
             INTERACTIVE_PREVIEW_FRAME_TAG
         } else {
             WIDE_INTERACTIVE_PREVIEW_FRAME_TAG
@@ -529,9 +518,9 @@ impl InteractivePreviewFrame {
         out.put_u8(id_len);
         out.put_u32_le(self.frame_number);
         out.put_u32_le(self.timestamp_ms);
-        if self.uses_legacy_layout() {
-            out.put_u16_le(u16::try_from(self.width).expect("legacy width fits"));
-            out.put_u16_le(u16::try_from(self.height).expect("legacy height fits"));
+        if self.uses_compact_layout() {
+            out.put_u16_le(u16::try_from(self.width).expect("compact width fits"));
+            out.put_u16_le(u16::try_from(self.height).expect("compact height fits"));
         } else {
             out.put_u32_le(self.width);
             out.put_u32_le(self.height);
@@ -543,13 +532,13 @@ impl InteractivePreviewFrame {
     }
 
     #[must_use]
-    pub const fn uses_legacy_layout(&self) -> bool {
+    pub const fn uses_compact_layout(&self) -> bool {
         self.width <= u16::MAX as u32 && self.height <= u16::MAX as u32
     }
 
     #[must_use]
     pub const fn prefix_len(&self) -> usize {
-        if self.uses_legacy_layout() {
+        if self.uses_compact_layout() {
             INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
         } else {
             WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
@@ -658,7 +647,7 @@ impl ScreenZonesFrame {
         let mut out = Vec::new();
         out.try_reserve_exact(encoded_len)
             .map_err(|_| PreviewFrameDecodeError::AllocationFailed { bytes: encoded_len })?;
-        let tag = if self.uses_legacy_layout() {
+        let tag = if self.uses_compact_layout() {
             SCREEN_ZONES_FRAME_TAG
         } else if self.uses_compact_grid_layout() {
             WIDE_SCREEN_ZONES_FRAME_TAG
@@ -668,13 +657,13 @@ impl ScreenZonesFrame {
         out.put_u8(tag);
         out.put_u32_le(self.frame_number);
         out.put_u32_le(self.timestamp_ms);
-        if self.uses_legacy_layout() {
-            out.put_u16_le(u16::try_from(self.source_width).expect("legacy width fits"));
-            out.put_u16_le(u16::try_from(self.source_height).expect("legacy height fits"));
-            out.put_u8(u8::try_from(self.grid_cols).expect("legacy columns fit"));
-            out.put_u8(u8::try_from(self.grid_rows).expect("legacy rows fit"));
+        if self.uses_compact_layout() {
+            out.put_u16_le(u16::try_from(self.source_width).expect("compact width fits"));
+            out.put_u16_le(u16::try_from(self.source_height).expect("compact height fits"));
+            out.put_u8(u8::try_from(self.grid_cols).expect("compact columns fit"));
+            out.put_u8(u8::try_from(self.grid_rows).expect("compact rows fit"));
             for bar in self.letterbox {
-                out.put_u8(u8::try_from(bar).expect("legacy letterbox value fits"));
+                out.put_u8(u8::try_from(bar).expect("compact letterbox value fits"));
             }
         } else if self.uses_compact_grid_layout() {
             out.put_u32_le(self.source_width);
@@ -698,7 +687,7 @@ impl ScreenZonesFrame {
     }
 
     #[must_use]
-    pub const fn uses_legacy_layout(&self) -> bool {
+    pub const fn uses_compact_layout(&self) -> bool {
         self.source_width <= u16::MAX as u32
             && self.source_height <= u16::MAX as u32
             && self.uses_compact_grid_layout()
@@ -716,7 +705,7 @@ impl ScreenZonesFrame {
 
     #[must_use]
     pub const fn header_len(&self) -> usize {
-        if self.uses_legacy_layout() {
+        if self.uses_compact_layout() {
             SCREEN_ZONES_FRAME_HEADER_LEN
         } else if self.uses_compact_grid_layout() {
             WIDE_SCREEN_ZONES_FRAME_HEADER_LEN
@@ -1143,14 +1132,10 @@ pub struct PreviewReassemblyLimits {
     pub max_decoded_publication_bytes: usize,
     pub max_encoded_publication_bytes: usize,
     pub max_connection_bytes: usize,
-    pub max_streams: usize,
-    pub max_tombstones: usize,
     pub max_idle_ms: u64,
     pub max_message_bytes: usize,
-    pub max_chunk_count: u32,
     pub max_reassembly_state_bytes: usize,
     pub max_tombstone_bytes: usize,
-    pub version: PreviewTransportVersion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1158,26 +1143,17 @@ pub struct PreviewTransportCapability {
     pub max_decoded_publication_bytes: usize,
     pub max_encoded_publication_bytes: usize,
     pub max_connection_bytes: usize,
-    pub max_streams: usize,
-    pub max_tombstones: usize,
     pub max_idle_ms: u64,
     pub max_message_bytes: usize,
-    pub max_chunk_count: u32,
     pub max_reassembly_state_bytes: usize,
     pub max_tombstone_bytes: usize,
     pub max_sender_state_bytes: usize,
     pub max_cursor_state_bytes: usize,
-    pub version: PreviewTransportVersion,
 }
 
 impl PreviewTransportCapability {
     #[must_use]
     pub fn negotiated_with(self, peer: Self) -> Self {
-        if self.version == PreviewTransportVersion::V1
-            || peer.version == PreviewTransportVersion::V1
-        {
-            return self.legacy_v1().negotiated_v1(peer.legacy_v1());
-        }
         let mut negotiated = Self {
             max_decoded_publication_bytes: self
                 .max_decoded_publication_bytes
@@ -1186,18 +1162,14 @@ impl PreviewTransportCapability {
                 .max_encoded_publication_bytes
                 .min(peer.max_encoded_publication_bytes),
             max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
-            max_streams: self.max_streams.min(peer.max_streams),
-            max_tombstones: self.max_tombstones.min(peer.max_tombstones),
             max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
             max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
-            max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
             max_reassembly_state_bytes: self
                 .max_reassembly_state_bytes
                 .min(peer.max_reassembly_state_bytes),
             max_tombstone_bytes: self.max_tombstone_bytes.min(peer.max_tombstone_bytes),
             max_sender_state_bytes: self.max_sender_state_bytes.min(peer.max_sender_state_bytes),
             max_cursor_state_bytes: self.max_cursor_state_bytes.min(peer.max_cursor_state_bytes),
-            version: PreviewTransportVersion::V2,
         };
         negotiated.max_encoded_publication_bytes = negotiated
             .max_encoded_publication_bytes
@@ -1205,86 +1177,31 @@ impl PreviewTransportCapability {
         negotiated
     }
 
-    fn negotiated_v1(self, peer: Self) -> Self {
-        let mut negotiated = Self {
-            max_decoded_publication_bytes: self
-                .max_decoded_publication_bytes
-                .min(peer.max_decoded_publication_bytes),
-            max_encoded_publication_bytes: self
-                .max_encoded_publication_bytes
-                .min(peer.max_encoded_publication_bytes),
-            max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
-            max_streams: self.max_streams.min(peer.max_streams),
-            max_tombstones: self.max_tombstones.min(peer.max_tombstones),
-            max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
-            max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
-            max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
-            max_reassembly_state_bytes: self
-                .max_reassembly_state_bytes
-                .min(peer.max_reassembly_state_bytes),
-            max_tombstone_bytes: self.max_tombstone_bytes.min(peer.max_tombstone_bytes),
-            max_sender_state_bytes: self.max_sender_state_bytes.min(peer.max_sender_state_bytes),
-            max_cursor_state_bytes: self.max_cursor_state_bytes.min(peer.max_cursor_state_bytes),
-            version: PreviewTransportVersion::V1,
-        };
-        negotiated.max_encoded_publication_bytes = negotiated
-            .max_encoded_publication_bytes
-            .min(negotiated.max_connection_bytes / 2)
-            .min(
-                negotiated
-                    .max_transmissible_encoded_bytes()
-                    .unwrap_or_default(),
-            );
-        negotiated
-    }
-
     #[must_use]
     pub fn encode(self) -> String {
-        match self.version {
-            PreviewTransportVersion::V1 => format!(
-                "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},streams={},tombstones={},idle_ms={},message={},chunks={}",
-                self.max_decoded_publication_bytes,
-                self.max_encoded_publication_bytes,
-                self.max_connection_bytes,
-                self.max_streams,
-                self.max_tombstones,
-                self.max_idle_ms,
-                self.max_message_bytes,
-                self.max_chunk_count,
-            ),
-            PreviewTransportVersion::V2 => format!(
-                "{PREVIEW_TRANSPORT_V2_CAPABILITY_PREFIX}decoded={},encoded={},connection={},reassembly={},tombstones={},sender={},cursors={},idle_ms={},message={}",
-                self.max_decoded_publication_bytes,
-                self.max_encoded_publication_bytes,
-                self.max_connection_bytes,
-                self.max_reassembly_state_bytes,
-                self.max_tombstone_bytes,
-                self.max_sender_state_bytes,
-                self.max_cursor_state_bytes,
-                self.max_idle_ms,
-                self.max_message_bytes,
-            ),
-        }
+        format!(
+            "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},reassembly={},tombstones={},sender={},cursors={},idle_ms={},message={}",
+            self.max_decoded_publication_bytes,
+            self.max_encoded_publication_bytes,
+            self.max_connection_bytes,
+            self.max_reassembly_state_bytes,
+            self.max_tombstone_bytes,
+            self.max_sender_state_bytes,
+            self.max_cursor_state_bytes,
+            self.max_idle_ms,
+            self.max_message_bytes,
+        )
     }
 
     pub fn decode(value: &str) -> Result<Self, PreviewCapabilityError> {
-        let (version, fields) = value
-            .strip_prefix(PREVIEW_TRANSPORT_V2_CAPABILITY_PREFIX)
-            .map(|fields| (PreviewTransportVersion::V2, fields))
-            .or_else(|| {
-                value
-                    .strip_prefix(PREVIEW_TRANSPORT_CAPABILITY_PREFIX)
-                    .map(|fields| (PreviewTransportVersion::V1, fields))
-            })
+        let fields = value
+            .strip_prefix(PREVIEW_TRANSPORT_CAPABILITY_PREFIX)
             .ok_or(PreviewCapabilityError::UnknownCapability)?;
         let mut decoded = None;
         let mut encoded = None;
         let mut connection = None;
-        let mut streams = None;
-        let mut tombstones = None;
         let mut idle_ms = None;
         let mut message = None;
-        let mut chunks = None;
         let mut reassembly = None;
         let mut tombstone_bytes = None;
         let mut sender = None;
@@ -1297,133 +1214,54 @@ impl PreviewTransportCapability {
                 "decoded" => parse_capability_field(value, &mut decoded)?,
                 "encoded" => parse_capability_field(value, &mut encoded)?,
                 "connection" => parse_capability_field(value, &mut connection)?,
-                "streams" => parse_capability_field(value, &mut streams)?,
-                "tombstones" if version == PreviewTransportVersion::V1 => {
-                    parse_capability_field(value, &mut tombstones)?;
-                }
                 "tombstones" => parse_capability_field(value, &mut tombstone_bytes)?,
                 "idle_ms" => parse_capability_field(value, &mut idle_ms)?,
                 "message" => parse_capability_field(value, &mut message)?,
-                "chunks" => parse_capability_field(value, &mut chunks)?,
                 "reassembly" => parse_capability_field(value, &mut reassembly)?,
                 "sender" => parse_capability_field(value, &mut sender)?,
                 "cursors" => parse_capability_field(value, &mut cursors)?,
                 _ => return Err(PreviewCapabilityError::InvalidField),
             }
         }
-        let defaults = Self::default();
         let capability = Self {
             max_decoded_publication_bytes: decoded.ok_or(PreviewCapabilityError::MissingField)?,
             max_encoded_publication_bytes: encoded.ok_or(PreviewCapabilityError::MissingField)?,
             max_connection_bytes: connection.ok_or(PreviewCapabilityError::MissingField)?,
-            max_streams: streams.unwrap_or(defaults.max_streams),
-            max_tombstones: if version == PreviewTransportVersion::V1 {
-                tombstones.ok_or(PreviewCapabilityError::MissingField)?
-            } else {
-                defaults.max_tombstones
-            },
             max_idle_ms: idle_ms.ok_or(PreviewCapabilityError::MissingField)?,
             max_message_bytes: message.ok_or(PreviewCapabilityError::MissingField)?,
-            max_chunk_count: chunks.unwrap_or(defaults.max_chunk_count),
-            max_reassembly_state_bytes: reassembly.unwrap_or(defaults.max_reassembly_state_bytes),
-            max_tombstone_bytes: if version == PreviewTransportVersion::V2 {
-                tombstone_bytes.ok_or(PreviewCapabilityError::MissingField)?
-            } else {
-                defaults.max_tombstone_bytes
-            },
-            max_sender_state_bytes: sender.unwrap_or(defaults.max_sender_state_bytes),
-            max_cursor_state_bytes: cursors.unwrap_or(defaults.max_cursor_state_bytes),
-            version,
+            max_reassembly_state_bytes: reassembly.ok_or(PreviewCapabilityError::MissingField)?,
+            max_tombstone_bytes: tombstone_bytes.ok_or(PreviewCapabilityError::MissingField)?,
+            max_sender_state_bytes: sender.ok_or(PreviewCapabilityError::MissingField)?,
+            max_cursor_state_bytes: cursors.ok_or(PreviewCapabilityError::MissingField)?,
         };
         capability.validate()?;
         Ok(capability)
     }
 
     pub fn from_capabilities<'a>(capabilities: impl IntoIterator<Item = &'a str>) -> Option<Self> {
-        let mut legacy = None;
-        for encoded in capabilities {
-            let Ok(capability) = Self::decode(encoded) else {
-                continue;
-            };
-            if capability.version == PreviewTransportVersion::V2 {
-                return Some(capability);
-            }
-            legacy = Some(capability);
-        }
-        legacy
-    }
-
-    #[must_use]
-    pub fn legacy_v1(self) -> Self {
-        Self {
-            version: PreviewTransportVersion::V1,
-            ..self
-        }
+        capabilities
+            .into_iter()
+            .find_map(|encoded| Self::decode(encoded).ok())
     }
 
     fn validate(self) -> Result<(), PreviewCapabilityError> {
         if self.max_decoded_publication_bytes == 0
             || self.max_encoded_publication_bytes == 0
-            || match self.version {
-                PreviewTransportVersion::V1 => self
-                    .max_encoded_publication_bytes
-                    .checked_mul(2)
-                    .is_none_or(|bytes| self.max_connection_bytes < bytes),
-                PreviewTransportVersion::V2 => {
-                    self.max_connection_bytes < self.max_encoded_publication_bytes
-                }
-            }
+            || self.max_connection_bytes < self.max_encoded_publication_bytes
             || self.max_idle_ms == 0
             || self.max_message_bytes < PREVIEW_MIN_MESSAGE_BYTES
-        {
-            return Err(PreviewCapabilityError::InvalidLimits);
-        }
-        match self.version {
-            PreviewTransportVersion::V1
-                if self.max_streams == 0
-                    || self.max_tombstones == 0
-                    || self.max_chunk_count == 0 =>
-            {
-                return Err(PreviewCapabilityError::InvalidLimits);
-            }
-            PreviewTransportVersion::V2
-                if self.max_reassembly_state_bytes == 0
-                    || self.max_tombstone_bytes == 0
-                    || self.max_sender_state_bytes == 0
-                    || self.max_cursor_state_bytes == 0 =>
-            {
-                return Err(PreviewCapabilityError::InvalidLimits);
-            }
-            PreviewTransportVersion::V1 | PreviewTransportVersion::V2 => {}
-        }
-        if self.version == PreviewTransportVersion::V1
-            && self.max_encoded_publication_bytes
-                > self
-                    .max_transmissible_encoded_bytes()
-                    .ok_or(PreviewCapabilityError::InvalidLimits)?
+            || self.max_reassembly_state_bytes == 0
+            || self.max_tombstone_bytes == 0
+            || self.max_sender_state_bytes == 0
+            || self.max_cursor_state_bytes == 0
         {
             return Err(PreviewCapabilityError::InvalidLimits);
         }
         Ok(())
     }
 
-    fn max_transmissible_encoded_bytes(self) -> Option<usize> {
-        let envelope_bytes =
-            PREVIEW_CHUNK_FIXED_HEADER_LEN.checked_add(INTERACTIVE_PREVIEW_ID_MAX_BYTES)?;
-        let payload_bytes = self.max_message_bytes.checked_sub(envelope_bytes)?;
-        let chunk_count = usize::try_from(self.max_chunk_count).ok()?;
-        let chunked_bytes = match payload_bytes.checked_mul(chunk_count) {
-            Some(bytes) => bytes,
-            None => usize::MAX,
-        };
-        Some(self.max_message_bytes.max(chunked_bytes))
-    }
-
     #[must_use]
     pub fn effective_max_chunk_count(self, _identity_bytes: usize) -> u32 {
-        if self.version == PreviewTransportVersion::V1 {
-            return self.max_chunk_count;
-        }
         u32::try_from(self.max_encoded_publication_bytes).unwrap_or(u32::MAX)
     }
 }
@@ -1434,16 +1272,12 @@ impl Default for PreviewTransportCapability {
             max_decoded_publication_bytes: DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
             max_encoded_publication_bytes: DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES,
             max_connection_bytes: DEFAULT_PREVIEW_MAX_CONNECTION_BYTES,
-            max_streams: DEFAULT_PREVIEW_MAX_REASSEMBLY_STREAMS,
-            max_tombstones: DEFAULT_PREVIEW_MAX_TOMBSTONES,
             max_idle_ms: DEFAULT_PREVIEW_MAX_IDLE_MS,
             max_message_bytes: DEFAULT_PREVIEW_MAX_MESSAGE_BYTES,
-            max_chunk_count: DEFAULT_PREVIEW_MAX_CHUNK_COUNT,
             max_reassembly_state_bytes: DEFAULT_PREVIEW_MAX_REASSEMBLY_STATE_BYTES,
             max_tombstone_bytes: DEFAULT_PREVIEW_MAX_TOMBSTONE_BYTES,
             max_sender_state_bytes: DEFAULT_PREVIEW_MAX_SENDER_STATE_BYTES,
             max_cursor_state_bytes: DEFAULT_PREVIEW_MAX_CURSOR_STATE_BYTES,
-            version: PreviewTransportVersion::V2,
         }
     }
 }
@@ -1455,30 +1289,22 @@ impl PreviewReassemblyLimits {
             max_decoded_publication_bytes: self.max_decoded_publication_bytes,
             max_encoded_publication_bytes: self.max_encoded_publication_bytes,
             max_connection_bytes: self.max_connection_bytes,
-            max_streams: self.max_streams,
-            max_tombstones: self.max_tombstones,
             max_idle_ms: self.max_idle_ms,
             max_message_bytes: self.max_message_bytes,
-            max_chunk_count: self.max_chunk_count,
             max_reassembly_state_bytes: self.max_reassembly_state_bytes,
             max_tombstone_bytes: self.max_tombstone_bytes,
             max_sender_state_bytes: usize::MAX,
             max_cursor_state_bytes: usize::MAX,
-            version: self.version,
         }
         .negotiated_with(peer);
         Self {
             max_decoded_publication_bytes: negotiated.max_decoded_publication_bytes,
             max_encoded_publication_bytes: negotiated.max_encoded_publication_bytes,
             max_connection_bytes: negotiated.max_connection_bytes,
-            max_streams: negotiated.max_streams,
-            max_tombstones: negotiated.max_tombstones,
             max_idle_ms: negotiated.max_idle_ms,
             max_message_bytes: negotiated.max_message_bytes,
-            max_chunk_count: negotiated.max_chunk_count,
             max_reassembly_state_bytes: negotiated.max_reassembly_state_bytes,
             max_tombstone_bytes: negotiated.max_tombstone_bytes,
-            version: negotiated.version,
         }
     }
 
@@ -1488,16 +1314,12 @@ impl PreviewReassemblyLimits {
             max_decoded_publication_bytes: self.max_decoded_publication_bytes,
             max_encoded_publication_bytes: self.max_encoded_publication_bytes,
             max_connection_bytes: self.max_connection_bytes,
-            max_streams: self.max_streams,
-            max_tombstones: self.max_tombstones,
             max_idle_ms: self.max_idle_ms,
             max_message_bytes: self.max_message_bytes,
-            max_chunk_count: self.max_chunk_count,
             max_reassembly_state_bytes: self.max_reassembly_state_bytes,
             max_tombstone_bytes: self.max_tombstone_bytes,
             max_sender_state_bytes: usize::MAX,
             max_cursor_state_bytes: usize::MAX,
-            version: self.version,
         }
         .effective_max_chunk_count(identity_bytes)
     }
@@ -1510,14 +1332,10 @@ impl Default for PreviewReassemblyLimits {
             max_decoded_publication_bytes: capability.max_decoded_publication_bytes,
             max_encoded_publication_bytes: capability.max_encoded_publication_bytes,
             max_connection_bytes: capability.max_connection_bytes,
-            max_streams: capability.max_streams,
-            max_tombstones: capability.max_tombstones,
             max_idle_ms: capability.max_idle_ms,
             max_message_bytes: capability.max_message_bytes,
-            max_chunk_count: capability.max_chunk_count,
             max_reassembly_state_bytes: capability.max_reassembly_state_bytes,
             max_tombstone_bytes: capability.max_tombstone_bytes,
-            version: capability.version,
         }
     }
 }
@@ -1672,14 +1490,6 @@ impl PreviewChunkReassembler {
             .streams
             .get(stream)
             .is_some_and(|state| state.partial.is_some());
-        if self.limits.version == PreviewTransportVersion::V1
-            && !existing_is_active
-            && self.active_streams >= self.limits.max_streams
-        {
-            return Err(PreviewChunkError::StreamBudgetExceeded {
-                limit: self.limits.max_streams,
-            });
-        }
         let stream_state_bytes = preview_stream_state_bytes(stream)?;
         let existing_is_tombstone = self
             .streams
@@ -1689,9 +1499,7 @@ impl PreviewChunkReassembler {
             .state_bytes
             .checked_add(usize::from(!existing_is_active) * stream_state_bytes)
             .ok_or(PreviewChunkError::LengthOverflow)?;
-        if self.limits.version == PreviewTransportVersion::V2
-            && requested_state_bytes > self.limits.max_reassembly_state_bytes
-        {
+        if requested_state_bytes > self.limits.max_reassembly_state_bytes {
             return Err(PreviewChunkError::ReassemblyStateBudgetExceeded {
                 requested: requested_state_bytes,
                 limit: self.limits.max_reassembly_state_bytes,
@@ -2011,7 +1819,7 @@ impl PreviewChunkReassembler {
             .streams
             .get(stream)
             .is_some_and(|state| state.tombstone_generation == 0);
-        if is_new_tombstone && self.limits.version == PreviewTransportVersion::V2 {
+        if is_new_tombstone {
             self.make_tombstone_room(stream_state_bytes);
             if stream_state_bytes > self.limits.max_tombstone_bytes {
                 if was_active {
@@ -2038,10 +1846,7 @@ impl PreviewChunkReassembler {
     }
 
     fn prune_tombstones(&mut self) {
-        while match self.limits.version {
-            PreviewTransportVersion::V1 => self.tombstones > self.limits.max_tombstones,
-            PreviewTransportVersion::V2 => self.tombstone_bytes > self.limits.max_tombstone_bytes,
-        } {
+        while self.tombstone_bytes > self.limits.max_tombstone_bytes {
             let Some(oldest_generation) = self
                 .streams
                 .values()
@@ -2380,8 +2185,6 @@ pub enum PreviewChunkError {
     DecodedPublicationBudgetExceeded { requested: usize, limit: usize },
     #[error("preview connection needs {requested} bytes; limit is {limit}")]
     ConnectionBudgetExceeded { requested: usize, limit: usize },
-    #[error("preview reassembly stream limit is {limit}")]
-    StreamBudgetExceeded { limit: usize },
     #[error("preview reassembly state needs {requested} bytes; limit is {limit}")]
     ReassemblyStateBudgetExceeded { requested: usize, limit: usize },
     #[error("preview chunk arrived without publication start")]

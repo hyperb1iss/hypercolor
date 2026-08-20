@@ -20,7 +20,6 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::state::{CanvasFrame, SpectrumSnapshot};
 
 const TUI_CANVAS_FPS: u8 = 60;
-const TUI_MAX_PREVIEW_STREAMS: usize = 8;
 const SUBSCRIPTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, serde::Deserialize)]
@@ -63,10 +62,7 @@ pub async fn connect(
     let (mut write, mut read) = ws_stream.split();
 
     // Send subscription message
-    let preview_transport = PreviewTransportCapability {
-        max_streams: TUI_MAX_PREVIEW_STREAMS,
-        ..PreviewTransportCapability::default()
-    };
+    let preview_transport = PreviewTransportCapability::default();
     let subscribe = serde_json::json!({
         "type": "subscribe",
         "preview_transport": preview_transport.encode(),
@@ -74,7 +70,7 @@ pub async fn connect(
             { "topic": "canvas", "config": { "fps": TUI_CANVAS_FPS, "format": "rgb" } },
             { "topic": "spectrum", "config": { "fps": 15, "bins": 64 } },
             { "topic": "events" },
-            { "topic": "metrics", "config": { "interval_ms": 2000 } }
+            { "topic": "metrics", "config": { "fps": 0.5 } }
         ]
     });
     write
@@ -233,10 +229,7 @@ impl WsBinaryDecoder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            preview_chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits {
-                max_streams: TUI_MAX_PREVIEW_STREAMS,
-                ..PreviewReassemblyLimits::default()
-            }),
+            preview_chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits::default()),
             started_at: std::time::Instant::now(),
         }
     }
@@ -253,11 +246,7 @@ impl WsBinaryDecoder {
         else {
             return;
         };
-        let limits = PreviewReassemblyLimits {
-            max_streams: TUI_MAX_PREVIEW_STREAMS,
-            ..PreviewReassemblyLimits::default()
-        }
-        .negotiated_with(capability);
+        let limits = PreviewReassemblyLimits::default().negotiated_with(capability);
         self.preview_chunks = PreviewChunkReassembler::new(limits);
     }
 

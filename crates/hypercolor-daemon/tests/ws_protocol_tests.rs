@@ -469,7 +469,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "topics": [{ "topic": "device_metrics", "config": { "interval_ms": 100 } }]
+            "topics": [{ "topic": "device_metrics", "config": { "fps": 10.0 } }]
         })
         .to_string(),
     )
@@ -481,7 +481,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         .expect("device_metrics subscribed ack");
     let subscribed = subscription_map(&ack);
     assert_eq!(
-        subscribed["device_metrics"]["interval_ms"], 100,
+        subscribed["device_metrics"]["fps"], 10.0,
         "the ack echoes the live device_metrics config"
     );
 

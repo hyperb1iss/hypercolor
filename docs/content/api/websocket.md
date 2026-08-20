@@ -129,7 +129,7 @@ live.
     "running": true,
     "paused": false,
     "brightness": 100,
-    "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8, "actual": 60.0 },
+    "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8 },
     "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
     "layout": null,
     "device_count": 3,
@@ -142,8 +142,7 @@ live.
     "interactive_preview", "input_events",
     "commands", "canvas_format_jpeg", "interactive_previews",
     "wide_preview_frames", "preview_chunking",
-    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
-    "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096"
+    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576"
   ],
   "subscriptions": [{ "topic": "events" }]
 }
@@ -156,23 +155,18 @@ plus feature flags such as `commands`, `canvas_format_jpeg`,
 `subscriptions` uses the same entry shape the acknowledgments do, so a client
 reads its live set the same way everywhere.
 
-The daemon advertises two preview transport capabilities, `preview_transport_v2`
-first and `preview_transport_v1` behind it. Both describe the receiver's memory
-contract for preview publications, and they differ in what the intermediate
-limits count. V1 bounds reassembly by object counts (`streams`, a tombstone
-count, and `chunks`); V2 states the same ceilings in bytes (`reassembly`,
-`tombstones` as a byte budget, `sender`, and `cursors`) and derives the chunk
-ceiling from the encoded budget instead of pinning it. Both versions carry
-`decoded`, `encoded`, `connection`, `idle_ms`, and `message`.
+The daemon advertises one `preview_transport_v2` capability. The capability
+describes receiver memory contracts for decoded and encoded publications,
+connection retention, reassembly state, tombstones, sender state, cursor state,
+idle expiry, and individual WebSocket messages. Chunk admission derives from
+the encoded byte budget instead of a separate object-count ceiling.
 
 A client sends its own capability string in the optional `preview_transport`
 field of its first `subscribe`; the daemon applies the field-by-field minimum
 before activating preview topics and returns the effective capability in
-`subscribed`. Version selection is part of that minimum: the negotiated
-transport is V2 only when both peers advertise V2, and a single V1 peer
-downgrades the whole session. A client that omits the field uses the daemon's
-advertised defaults. Renegotiation after a preview publication is active is
-rejected instead of changing limits underneath in-flight state.
+`subscribed`. A client that omits the field uses the daemon's advertised
+defaults. Renegotiation after a preview publication is active is rejected
+instead of changing limits underneath in-flight state.
 
 The advertised message budget must be at least 184 bytes so every bounded
 stream identity can still carry a one-byte publication fragment. Under V1 the
@@ -256,7 +250,7 @@ on the first subscription so both peers enforce the same physical budgets. Send
   "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
   "topics": [
     { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
-    { "topic": "metrics", "config": { "interval_ms": 1000 } },
+    { "topic": "metrics", "config": { "fps": 1.0 } },
     { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
   ]
 }
@@ -277,7 +271,7 @@ takes no config reports none:
   "topics": [
     { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
     { "topic": "events" },
-    { "topic": "metrics", "config": { "interval_ms": 1000 } },
+    { "topic": "metrics", "config": { "fps": 1.0 } },
     { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
   ]
 }
@@ -310,7 +304,7 @@ snapshot of what remains:
   "type": "unsubscribed",
   "topics": [
     { "topic": "events" },
-    { "topic": "metrics", "config": { "interval_ms": 1000 } }
+    { "topic": "metrics", "config": { "fps": 1.0 } }
   ]
 }
 ```
@@ -511,7 +505,9 @@ store the concept as `groups`, while the public wire uses zone vocabulary.
 ### metrics
 
 Periodic render-performance snapshot on the `metrics` topic, sent at the
-configured `interval_ms` (default 1000 ms). The `data` object is large: it
+configured `fps` cadence (default 1 fps). Fractional values support slower
+cadences, such as `0.5` fps for one publication every two seconds. The `data`
+object is large: it
 includes FPS, frame-time percentiles, per-stage timing, pacing jitter, effect
 and Servo health counters, render-surface pool gauges, preview demand, memory,
 device output, and WebSocket statistics. A representative subset:
@@ -521,7 +517,7 @@ device output, and WebSocket statistics. A representative subset:
   "type": "metrics",
   "timestamp": "2026-06-24T18:03:11.482Z",
   "data": {
-    "fps": { "target": 60, "ceiling": 60, "capacity": 59.8, "delivered": 59.2, "actual": 59.8, "dropped": 0 },
+    "fps": { "target": 60, "ceiling": 60, "capacity": 59.8, "delivered": 59.2, "dropped": 0 },
     "frame_time": { "avg_ms": 4.2, "p95_ms": 5.1, "p99_ms": 6.0, "max_ms": 8.3 },
     "devices": { "connected": 3, "total_leds": 432, "output_errors": 0 }
   }
@@ -538,7 +534,7 @@ hard-asserts on the full key set will break on upgrade.
 ### device_metrics
 
 Periodic per-device output telemetry on the `device_metrics` topic, also
-governed by `interval_ms`.
+governed by `fps`.
 
 ### sensors
 
@@ -584,8 +580,8 @@ The notice names the topic it dropped, and a keyed topic also names the key.
 ```
 
 Clients can patch the subscription to match the bandwidth they intend to consume.
-`frames` and `spectrum` use `reduce_fps` with `suggested_fps`. `metrics` and
-`device_metrics` use `increase_interval_ms` with `suggested_interval_ms`.
+All four topics use `reduce_fps` with `suggested_fps`. Telemetry suggestions may
+be fractional.
 Daemon metrics expose preview queue bytes plus queued, replaced, rejected,
 sent-publication, and sent-chunk counters for diagnosing the actual bottleneck.
 
@@ -686,7 +682,7 @@ The maximum accepted preview surface is currently 512 MiB at four bytes per pixe
 
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
-| `interval_ms` | integer | `1000` | 100..=10000 |
+| `fps` | number | `1.0` | 0.1..=10.0 |
 
 ### screen_zones config
 

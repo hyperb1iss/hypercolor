@@ -2,22 +2,21 @@
 
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
-    DEFAULT_PREVIEW_MAX_CHUNK_COUNT, DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
-    DEFAULT_PREVIEW_MAX_MESSAGE_BYTES, DISPLAY_PREVIEW_FRAME_PREFIX_LEN, DISPLAY_PREVIEW_FRAME_TAG,
-    DISPLAY_PREVIEW_ID_MAX_BYTES, DisplayPreviewFrame, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
-    EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
-    INTERACTIVE_PREVIEW_FRAME_TAG, INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame,
-    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CANCEL_SCHEMA, PREVIEW_CHUNK_FIXED_HEADER_LEN,
-    PREVIEW_CHUNK_FRAME_TAG, PREVIEW_CHUNK_SCHEMA, PREVIEW_FRAME_HEADER_LEN,
-    PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError, PreviewChunkFrame,
-    PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
-    PreviewPixelFormat, PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
-    PreviewTransportCapability, PreviewTransportVersion, SCREEN_ZONES_FRAME_HEADER_LEN,
-    SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame, SpectrumFrame, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
-    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, codec_binary_messages, codec_frame_layouts,
-    split_preview_publication, split_preview_publication_with_capability,
+    DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, DEFAULT_PREVIEW_MAX_MESSAGE_BYTES,
+    DISPLAY_PREVIEW_FRAME_PREFIX_LEN, DISPLAY_PREVIEW_FRAME_TAG, DISPLAY_PREVIEW_ID_MAX_BYTES,
+    DisplayPreviewFrame, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN, EXTENDED_SCREEN_ZONES_FRAME_TAG,
+    INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
+    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_CANCEL_FRAME_TAG,
+    PREVIEW_CANCEL_SCHEMA, PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG,
+    PREVIEW_CHUNK_SCHEMA, PREVIEW_FRAME_HEADER_LEN, PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame,
+    PreviewChunkError, PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame,
+    PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
+    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
+    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame, SpectrumFrame,
+    WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_HEADER_LEN, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
+    ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, codec_binary_messages,
+    codec_frame_layouts, split_preview_publication,
 };
 
 #[derive(Debug, PartialEq)]
@@ -1221,7 +1220,7 @@ fn screen_zones_frame_preserves_wide_source_layout() {
 }
 
 #[test]
-fn screen_zones_frame_keeps_legacy_layout_at_u8_boundaries() {
+fn screen_zones_frame_keeps_compact_layout_at_u8_boundaries() {
     let frame = ScreenZonesFrame {
         frame_number: 79,
         timestamp_ms: 123_458,
@@ -1339,7 +1338,7 @@ fn screen_zones_frame_rejects_wrong_tag() {
 }
 
 #[test]
-fn legacy_preview_layout_is_byte_for_byte_stable() {
+fn compact_preview_layout_is_byte_for_byte_stable() {
     let encoded = PreviewFrame {
         channel: PreviewFrameChannel::Canvas,
         frame_number: 0x0403_0201,
@@ -1469,7 +1468,6 @@ fn reassembler(max_bytes: usize) -> PreviewChunkReassembler {
         max_decoded_publication_bytes: 128 * 1024 * 1024,
         max_encoded_publication_bytes: max_bytes,
         max_connection_bytes: max_bytes.checked_mul(2).expect("fixture budget fits"),
-        max_streams: 2,
         max_message_bytes: max_bytes,
         ..PreviewReassemblyLimits::default()
     })
@@ -1588,7 +1586,7 @@ fn newer_publication_reclaims_superseded_partial() {
 }
 
 #[test]
-fn v2_replacement_reuses_connection_and_state_budgets() {
+fn replacement_reuses_connection_and_state_budgets() {
     let old_metadata = interactive_metadata(1, 1);
     let new_metadata = interactive_metadata(2, 2);
     let old =
@@ -1601,7 +1599,6 @@ fn v2_replacement_reuses_connection_and_state_budgets() {
         max_encoded_publication_bytes: 256,
         max_connection_bytes: 256,
         max_message_bytes: 128,
-        max_streams: 0,
         ..PreviewReassemblyLimits::default()
     });
 
@@ -1615,7 +1612,7 @@ fn v2_replacement_reuses_connection_and_state_budgets() {
 }
 
 #[test]
-fn v2_reassembly_charges_full_interactive_identity_at_exact_boundary() {
+fn reassembly_charges_full_interactive_identity_at_exact_boundary() {
     let mut metadata = interactive_metadata(1, 1);
     metadata.stream = PreviewStreamId::Interactive("x".repeat(INTERACTIVE_PREVIEW_ID_MAX_BYTES));
     let chunks = split_preview_publication(
@@ -1652,12 +1649,11 @@ fn v2_reassembly_charges_full_interactive_identity_at_exact_boundary() {
 }
 
 #[test]
-fn v2_reassembly_uses_bytes_instead_of_legacy_stream_counts() {
+fn reassembly_admits_streams_by_state_bytes() {
     let stream_count = 257_usize;
     let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
         max_encoded_publication_bytes: 256,
         max_connection_bytes: 256 * stream_count,
-        max_streams: 1,
         max_reassembly_state_bytes: 1024 * 1024,
         max_message_bytes: 128,
         ..PreviewReassemblyLimits::default()
@@ -1710,7 +1706,6 @@ fn chunk_reassembly_enforces_publication_and_connection_byte_budgets() {
         max_decoded_publication_bytes: 128 * 1024 * 1024,
         max_encoded_publication_bytes: 512,
         max_connection_bytes: 700,
-        max_streams: 2,
         ..PreviewReassemblyLimits::default()
     });
     assert_eq!(connection_limited.push(&first_chunks[0]), Ok(None));
@@ -1772,7 +1767,6 @@ fn chunk_reassembly_enforces_decoded_budget_separately_from_encoded_budget() {
         max_decoded_publication_bytes: 1023,
         max_encoded_publication_bytes: 1024,
         max_connection_bytes: 2048,
-        max_streams: 2,
         ..PreviewReassemblyLimits::default()
     });
 
@@ -1959,7 +1953,7 @@ fn cancellation_releases_bytes_but_keeps_stream_high_water() {
 }
 
 #[test]
-fn v2_tombstones_evict_by_identity_bytes_and_clear_releases_ledgers() {
+fn tombstones_evict_by_identity_bytes_and_clear_releases_ledgers() {
     let long_stream = PreviewStreamId::Interactive("x".repeat(INTERACTIVE_PREVIEW_ID_MAX_BYTES));
     let mut probe = PreviewChunkReassembler::new(PreviewReassemblyLimits::default());
     probe
@@ -1973,7 +1967,6 @@ fn v2_tombstones_evict_by_identity_bytes_and_clear_releases_ledgers() {
     let short_stream = PreviewStreamId::Interactive("x".to_owned());
     let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
         max_tombstone_bytes: exact_tombstone_bytes,
-        max_tombstones: 1,
         ..PreviewReassemblyLimits::default()
     });
     reassembler
@@ -2010,59 +2003,7 @@ fn cancellation_frame_roundtrips_publication_identity() {
 }
 
 #[test]
-fn bounded_tombstones_do_not_consume_active_stream_capacity() {
-    let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
-        max_encoded_publication_bytes: 512,
-        max_connection_bytes: 512,
-        max_streams: 1,
-        max_tombstones: 2,
-        max_message_bytes: 128,
-        version: hypercolor_leptos_ext::ws::PreviewTransportVersion::V1,
-        ..PreviewReassemblyLimits::default()
-    });
-    let mut newest = None;
-    for publication_id in 1..=3 {
-        let metadata = PreviewPublicationMetadata {
-            stream: PreviewStreamId::Interactive(format!("stream-{publication_id}")),
-            ..interactive_metadata(publication_id, publication_id as u32)
-        };
-        let chunks =
-            split_preview_publication(&interactive_encoded(&metadata, 128), &metadata, 128)
-                .expect("fixture chunks");
-        assert_eq!(reassembler.push_at(&chunks[0], publication_id), Ok(None));
-        reassembler
-            .cancel_publication(&PreviewCancelFrame {
-                stream: metadata.stream.clone(),
-                publication_id,
-            })
-            .expect("cancellation records high-water");
-        newest = Some((metadata, chunks));
-    }
-
-    assert_eq!(reassembler.partial_count(), 0);
-    assert_eq!(reassembler.tombstone_count(), 2);
-    let (newest_metadata, newest_chunks) = newest.expect("latest fixture");
-    assert!(matches!(
-        reassembler.push_at(&newest_chunks[0], 4),
-        Err(PreviewChunkError::StalePublication {
-            publication_id: 3,
-            high_water: 3,
-        })
-    ));
-
-    let reused = PreviewPublicationMetadata {
-        stream: PreviewStreamId::Interactive("stream-1".to_owned()),
-        ..interactive_metadata(4, 4)
-    };
-    let reused_chunks = split_preview_publication(&interactive_encoded(&reused, 128), &reused, 128)
-        .expect("reused stream chunks");
-    assert_eq!(reassembler.push_at(&reused_chunks[0], 5), Ok(None));
-    assert_eq!(reassembler.partial_count(), 1);
-    assert_ne!(newest_metadata.stream, reused.stream);
-}
-
-#[test]
-fn chunk_admission_enforces_message_and_chunk_count_budgets() {
+fn chunk_admission_enforces_message_budget() {
     let metadata = interactive_metadata(1, 1);
     let chunks = split_preview_publication(&interactive_encoded(&metadata, 256), &metadata, 128)
         .expect("fixture chunks");
@@ -2073,16 +2014,6 @@ fn chunk_admission_enforces_message_and_chunk_count_budgets() {
     assert!(matches!(
         message_limited.push(&chunks[0]),
         Err(PreviewChunkError::MessageBudgetExceeded { .. })
-    ));
-
-    let mut chunk_limited = PreviewChunkReassembler::new(PreviewReassemblyLimits {
-        max_chunk_count: 1,
-        version: hypercolor_leptos_ext::ws::PreviewTransportVersion::V1,
-        ..PreviewReassemblyLimits::default()
-    });
-    assert!(matches!(
-        chunk_limited.push(&chunks[0]),
-        Err(PreviewChunkError::ChunkCountBudgetExceeded { .. })
     ));
 }
 
@@ -2137,7 +2068,6 @@ fn idle_expiry_releases_bytes_but_keeps_stream_high_water() {
         max_decoded_publication_bytes: 128 * 1024 * 1024,
         max_encoded_publication_bytes: 1024,
         max_connection_bytes: 2048,
-        max_streams: 2,
         max_idle_ms: 10,
         ..PreviewReassemblyLimits::default()
     });
@@ -2211,164 +2141,14 @@ fn preview_transport_capability_roundtrips_shared_resource_budgets() {
 }
 
 #[test]
-fn preview_transport_capability_prefers_v2_and_falls_back_to_v1() {
-    let v2 = PreviewTransportCapability::default();
-    let v1 = v2.legacy_v1();
-    let v2_encoded = v2.encode();
-    let v1_encoded = v1.encode();
-
-    assert_eq!(
-        PreviewTransportCapability::from_capabilities([v1_encoded.as_str(), v2_encoded.as_str(),]),
-        Some(v2)
-    );
-    assert_eq!(
-        PreviewTransportCapability::from_capabilities([v1_encoded.as_str()]),
-        Some(v1)
-    );
-    assert_eq!(v2.negotiated_with(v1).version, PreviewTransportVersion::V1);
-}
-
-#[test]
 fn preview_transport_capability_fits_every_stream_identity() {
     let capability = PreviewTransportCapability {
         max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES - 1,
-        ..PreviewTransportCapability::default().legacy_v1()
+        ..PreviewTransportCapability::default()
     };
     assert!(
         hypercolor_leptos_ext::ws::PreviewTransportCapability::decode(&capability.encode())
             .is_err()
-    );
-}
-
-#[test]
-fn preview_transport_capability_enforces_encoded_chunk_capacity() {
-    let payload_bytes = 16_usize;
-    let chunk_count = 16_u32;
-    let max_message_bytes =
-        PREVIEW_CHUNK_FIXED_HEADER_LEN + INTERACTIVE_PREVIEW_ID_MAX_BYTES + payload_bytes;
-    let max_encoded_publication_bytes =
-        payload_bytes * usize::try_from(chunk_count).expect("fixture chunk count fits usize");
-    let exact = PreviewTransportCapability {
-        max_encoded_publication_bytes,
-        max_connection_bytes: max_encoded_publication_bytes * 2,
-        max_message_bytes,
-        max_chunk_count: chunk_count,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&exact.encode()),
-        Ok(exact)
-    );
-
-    let impossible = PreviewTransportCapability {
-        max_encoded_publication_bytes: max_encoded_publication_bytes + 1,
-        max_connection_bytes: (max_encoded_publication_bytes + 1) * 2,
-        ..exact
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&impossible.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-}
-
-#[test]
-fn preview_transport_capability_handles_capacity_overflow_without_wrapping() {
-    let capability = PreviewTransportCapability {
-        max_encoded_publication_bytes: usize::MAX / 2,
-        max_connection_bytes: usize::MAX,
-        max_message_bytes: usize::MAX - 1,
-        max_chunk_count: 2,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&capability.encode()),
-        Ok(capability)
-    );
-
-    let impossible = PreviewTransportCapability {
-        max_encoded_publication_bytes: PREVIEW_MIN_MESSAGE_BYTES + 1,
-        max_connection_bytes: (PREVIEW_MIN_MESSAGE_BYTES + 1) * 2,
-        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES,
-        max_chunk_count: 1,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&impossible.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-}
-
-#[test]
-fn preview_transport_capability_requires_replacement_headroom() {
-    let encoded_bytes = 1_024_usize;
-    let exact = PreviewTransportCapability {
-        max_encoded_publication_bytes: encoded_bytes,
-        max_connection_bytes: encoded_bytes * 2,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&exact.encode()),
-        Ok(exact)
-    );
-
-    let insufficient = PreviewTransportCapability {
-        max_connection_bytes: encoded_bytes * 2 - 1,
-        ..exact
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&insufficient.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-
-    let overflow = PreviewTransportCapability {
-        max_encoded_publication_bytes: usize::MAX,
-        max_connection_bytes: usize::MAX,
-        max_message_bytes: usize::MAX,
-        max_chunk_count: u32::MAX,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&overflow.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-}
-
-#[test]
-fn preview_transport_negotiation_clamps_cross_field_chunk_capacity() {
-    let narrow_messages = PreviewTransportCapability {
-        max_encoded_publication_bytes: 1_000,
-        max_connection_bytes: 2_000,
-        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES,
-        max_chunk_count: 1_000,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    let narrow_chunk_count = PreviewTransportCapability {
-        max_encoded_publication_bytes: 1_000,
-        max_connection_bytes: 2_000,
-        max_message_bytes: 1_000,
-        max_chunk_count: 1,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&narrow_messages.encode()),
-        Ok(narrow_messages)
-    );
-    assert_eq!(
-        PreviewTransportCapability::decode(&narrow_chunk_count.encode()),
-        Ok(narrow_chunk_count)
-    );
-
-    let negotiated = narrow_messages.negotiated_with(narrow_chunk_count);
-    assert_eq!(negotiated.max_message_bytes, PREVIEW_MIN_MESSAGE_BYTES);
-    assert_eq!(negotiated.max_chunk_count, 1);
-    assert_eq!(
-        negotiated.max_encoded_publication_bytes,
-        PREVIEW_MIN_MESSAGE_BYTES
-    );
-    assert_eq!(negotiated.max_connection_bytes, 2_000);
-    assert_eq!(
-        PreviewTransportCapability::decode(&negotiated.encode()),
-        Ok(negotiated)
     );
 }
 
@@ -2379,16 +2159,12 @@ fn preview_transport_negotiation_uses_each_peers_physical_minimum() {
         max_decoded_publication_bytes: local.max_decoded_publication_bytes / 2,
         max_encoded_publication_bytes: local.max_encoded_publication_bytes / 2,
         max_connection_bytes: local.max_connection_bytes / 2,
-        max_streams: local.max_streams / 2,
-        max_tombstones: local.max_tombstones / 2,
         max_idle_ms: local.max_idle_ms / 2,
         max_message_bytes: local.max_message_bytes / 2,
-        max_chunk_count: local.max_chunk_count / 2,
         max_reassembly_state_bytes: local.max_reassembly_state_bytes / 2,
         max_tombstone_bytes: local.max_tombstone_bytes / 2,
         max_sender_state_bytes: PreviewTransportCapability::default().max_sender_state_bytes / 2,
         max_cursor_state_bytes: PreviewTransportCapability::default().max_cursor_state_bytes / 2,
-        version: local.version,
     };
 
     assert_eq!(
@@ -2397,14 +2173,10 @@ fn preview_transport_negotiation_uses_each_peers_physical_minimum() {
             max_decoded_publication_bytes: peer.max_decoded_publication_bytes,
             max_encoded_publication_bytes: peer.max_encoded_publication_bytes,
             max_connection_bytes: peer.max_connection_bytes,
-            max_streams: peer.max_streams,
-            max_tombstones: peer.max_tombstones,
             max_idle_ms: peer.max_idle_ms,
             max_message_bytes: peer.max_message_bytes,
-            max_chunk_count: peer.max_chunk_count,
             max_reassembly_state_bytes: peer.max_reassembly_state_bytes,
             max_tombstone_bytes: peer.max_tombstone_bytes,
-            version: peer.version,
         }
     );
 }
@@ -2442,31 +2214,5 @@ fn publication_split_enforces_advertised_message_and_chunk_limits() {
             DEFAULT_PREVIEW_MAX_MESSAGE_BYTES + 1,
         ),
         Err(PreviewChunkError::MessageBudgetExceeded { .. })
-    ));
-
-    let PreviewStreamId::Interactive(preview_id) = &metadata.stream else {
-        unreachable!();
-    };
-    let one_byte_payload_message = PREVIEW_CHUNK_FIXED_HEADER_LEN + preview_id.len() + 1;
-    let encoded = Bytes::from(vec![
-        0;
-        usize::try_from(DEFAULT_PREVIEW_MAX_CHUNK_COUNT)
-            .expect("chunk limit fits usize")
-            + 1
-    ]);
-    assert_eq!(
-        split_preview_publication(&encoded, &metadata, one_byte_payload_message)
-            .expect("v2 derives its chunk ceiling from encoded bytes")
-            .len(),
-        encoded.len()
-    );
-    assert!(matches!(
-        split_preview_publication_with_capability(
-            &encoded,
-            &metadata,
-            one_byte_payload_message,
-            PreviewTransportCapability::default().legacy_v1(),
-        ),
-        Err(PreviewChunkError::ChunkCountBudgetExceeded { .. })
     ));
 }

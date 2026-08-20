@@ -324,8 +324,6 @@ async fn handle_socket(
     let mut ping_sent_at = Instant::now();
     let zone_layout_preview_owner = ZoneLayoutPreviewOwner::new();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    // The advertised default is v2; a v1 client negotiates back down
-    // on subscribe (Spec 78 §7.1).
     let mut preview_capability = PreviewTransportCapability::default();
     let mut preview_cursors = PreviewCursorQueue::with_capability(preview_capability);
     // Main loop: multiplex between incoming client messages and outbound events.
@@ -1803,7 +1801,6 @@ pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
             target: target_fps,
             capacity: (capacity_fps * 10.0).round() / 10.0,
             delivered: (delivered_fps * 10.0).round() / 10.0,
-            actual: (capacity_fps * 10.0).round() / 10.0,
         },
         scene: active_scene,
         layout: None,

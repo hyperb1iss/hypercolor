@@ -252,11 +252,6 @@ pub(super) fn BackpressureBanner(notice: BackpressureNotice) -> impl IntoView {
     let suggestion = notice
         .suggested_fps
         .map(|fps| format!("{fps} fps"))
-        .or_else(|| {
-            notice
-                .suggested_interval_ms
-                .map(|interval_ms| format!("{interval_ms} ms"))
-        })
         .unwrap_or_else(|| "adjust subscription config".to_owned());
     let text = format!(
         "{} dropped on {}. {} → {}",

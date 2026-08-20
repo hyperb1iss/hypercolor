@@ -249,7 +249,7 @@ pub fn codec_frame_layouts() -> Map<String, Value> {
         json!({
             "schema": PREVIEW_CHUNK_SCHEMA,
             "fixed_header_len": PREVIEW_CHUNK_FIXED_HEADER_LEN,
-            "description": "Bounded chunk envelope around one fully encoded legacy or wide preview publication.",
+            "description": "Bounded chunk envelope around one fully encoded compact or wide preview publication.",
             "layout": fields(&[
                 ("u8", "tag"),
                 ("u8", "schema"),

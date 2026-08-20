@@ -185,7 +185,6 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "ceiling": 60,
             "capacity": 60.0,
             "delivered": 58.4,
-            "actual": 60.0,
             "dropped": 1
         },
         "frame_time": { "avg_ms": 8.1, "p95_ms": 12.4, "p99_ms": 15.9, "max_ms": 18.2 },
@@ -279,7 +278,7 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
 
     assert_eq!(metrics.fps.ceiling, 60);
     assert_eq!(metrics.fps.capacity, 60.0);
-    assert_eq!(metrics.fps.delivered_or_legacy(), 58.4);
+    assert_eq!(metrics.fps.delivered, 58.4);
     assert_eq!(metrics.input_latency.sample_count, 600);
     assert_eq!(metrics.input_latency.p99_ms, 0.91);
     assert_eq!(metrics.stages.producer_scene_compose_ms, 3.4);
@@ -320,13 +319,12 @@ fn performance_metrics_preserves_zero_delivered_fps() {
         "fps": {
             "target": 60,
             "capacity": 60.0,
-            "delivered": 0.0,
-            "actual": 60.0
+            "delivered": 0.0
         }
     }))
     .expect("new metrics payload should deserialize");
 
-    assert_eq!(metrics.fps.delivered_or_legacy(), 0.0);
+    assert_eq!(metrics.fps.delivered, 0.0);
 }
 
 #[test]
@@ -350,7 +348,7 @@ fn performance_metrics_decodes_hidden_stage_durations() {
 }
 
 #[test]
-fn performance_metrics_defaults_hidden_stage_durations_for_legacy_daemon() {
+fn performance_metrics_defaults_missing_optional_stage_durations() {
     let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
         "timeline": {
             "input_done_ms": 0.32,
@@ -359,24 +357,11 @@ fn performance_metrics_defaults_hidden_stage_durations_for_legacy_daemon() {
             "sampling_done_ms": 2.9
         }
     }))
-    .expect("legacy timeline payload should deserialize");
+    .expect("partial timeline payload should deserialize");
 
     assert_eq!(metrics.timeline.deferred_sample_ms, 0.0);
     assert_eq!(metrics.timeline.preview_advance_ms, 0.0);
     assert_eq!(metrics.timeline.sampling_done_ms, 2.9);
-}
-
-#[test]
-fn performance_metrics_falls_back_for_legacy_payload_without_delivered_fps() {
-    let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
-        "fps": {
-            "target": 60,
-            "actual": 60.0
-        }
-    }))
-    .expect("legacy metrics payload should deserialize");
-
-    assert_eq!(metrics.fps.delivered_or_legacy(), 60.0);
 }
 
 #[test]

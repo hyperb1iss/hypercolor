@@ -18,7 +18,7 @@ use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::BrowserInputPublicationId;
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, METRICS_INTERVAL_MS_MAX,
+    Cadence, CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, METRICS_FPS_MIN,
     MetricsConfig, ScreenZonesConfig, SpectrumConfig, TopicId,
 };
 use hypercolor_leptos_ext::ws::{
@@ -26,7 +26,7 @@ use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
     PreviewCancelFrame, PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
-    PreviewTransportCapability, PreviewTransportVersion, ScreenZonesFrame as WireScreenZonesFrame,
+    PreviewTransportCapability, ScreenZonesFrame as WireScreenZonesFrame,
     ZonePreviewFrame as WireZonePreviewFrame,
 };
 use hypercolor_types::canvas::{PublishedSurfaceStorageIdentity, SurfaceDescriptor};
@@ -112,14 +112,10 @@ pub(super) enum PreviewOutboundError {
     ConnectionBudgetExceeded { maximum: usize, actual: usize },
     #[error("preview connection retains {retained} bytes; {requested} more must wait")]
     ConnectionBusy { retained: usize, requested: usize },
-    #[error("preview connection stream limit is {maximum}")]
-    StreamBudgetExceeded { maximum: usize },
     #[error("preview sender state needs {actual} bytes; limit is {maximum}")]
     SenderStateBudgetExceeded { maximum: usize, actual: usize },
     #[error("preview cursor state needs {actual} bytes; limit is {maximum}")]
     CursorStateBudgetExceeded { maximum: usize, actual: usize },
-    #[error("preview cancellation queue limit is {maximum}")]
-    CancellationBudgetExceeded { maximum: usize },
     #[error("preview router could not allocate indexed state for {entries} streams")]
     RouterAllocationFailed { entries: usize },
     #[error("preview publication identity space is exhausted")]
@@ -238,20 +234,18 @@ impl PreviewOutboundState {
                 .try_reserve(1)
                 .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
         }
-        if self.capability.version == PreviewTransportVersion::V2 {
-            let additional = usize::from(!self.current.contains_key(stream))
-                .saturating_mul(preview_current_state_bytes(stream))
-                .saturating_add(
-                    usize::from(!self.queued.contains_key(stream))
-                        .saturating_mul(preview_queued_state_bytes(stream)),
-                );
-            let requested = self.sender_state_bytes().saturating_add(additional);
-            if requested > self.capability.max_sender_state_bytes {
-                return Err(PreviewOutboundError::SenderStateBudgetExceeded {
-                    maximum: self.capability.max_sender_state_bytes,
-                    actual: requested,
-                });
-            }
+        let additional = usize::from(!self.current.contains_key(stream))
+            .saturating_mul(preview_current_state_bytes(stream))
+            .saturating_add(
+                usize::from(!self.queued.contains_key(stream))
+                    .saturating_mul(preview_queued_state_bytes(stream)),
+            );
+        let requested = self.sender_state_bytes().saturating_add(additional);
+        if requested > self.capability.max_sender_state_bytes {
+            return Err(PreviewOutboundError::SenderStateBudgetExceeded {
+                maximum: self.capability.max_sender_state_bytes,
+                actual: requested,
+            });
         }
         Ok(())
     }
@@ -262,21 +256,12 @@ impl PreviewOutboundState {
         additional_bytes: usize,
     ) -> Result<(), PreviewOutboundError> {
         let entries = self.pending_cancellations.len().saturating_add(additional);
-        if self.capability.version == PreviewTransportVersion::V1
-            && entries > self.capability.max_tombstones
-        {
-            return Err(PreviewOutboundError::CancellationBudgetExceeded {
-                maximum: self.capability.max_tombstones,
+        let requested = self.sender_state_bytes().saturating_add(additional_bytes);
+        if requested > self.capability.max_sender_state_bytes {
+            return Err(PreviewOutboundError::SenderStateBudgetExceeded {
+                maximum: self.capability.max_sender_state_bytes,
+                actual: requested,
             });
-        }
-        if self.capability.version == PreviewTransportVersion::V2 {
-            let requested = self.sender_state_bytes().saturating_add(additional_bytes);
-            if requested > self.capability.max_sender_state_bytes {
-                return Err(PreviewOutboundError::SenderStateBudgetExceeded {
-                    maximum: self.capability.max_sender_state_bytes,
-                    actual: requested,
-                });
-            }
         }
         self.pending_cancellations
             .try_reserve(additional)
@@ -570,15 +555,6 @@ impl PreviewOutboundSender {
                 actual: encoded.len(),
             });
         }
-        if state.capability.version == PreviewTransportVersion::V1
-            && !state.current.contains_key(&stream)
-            && state.current.len() >= state.capability.max_streams
-        {
-            return Err(PreviewOutboundError::StreamBudgetExceeded {
-                maximum: state.capability.max_streams,
-            });
-        }
-
         let replaced_bytes = state
             .queued
             .get(&stream)
@@ -1013,35 +989,18 @@ pub(super) struct PreviewCursorQueue {
     cursors: HashMap<PreviewStreamId, QueuedPreviewCursor>,
     head: Option<PreviewStreamId>,
     tail: Option<PreviewStreamId>,
-    max_streams: usize,
     max_state_bytes: usize,
     state_bytes: usize,
-    version: PreviewTransportVersion,
 }
 
 impl PreviewCursorQueue {
-    #[cfg(test)]
-    pub(super) fn new(max_streams: usize) -> Self {
-        Self {
-            cursors: HashMap::new(),
-            head: None,
-            tail: None,
-            max_streams,
-            max_state_bytes: usize::MAX,
-            state_bytes: 0,
-            version: PreviewTransportVersion::V1,
-        }
-    }
-
     pub(super) fn with_capability(capability: PreviewTransportCapability) -> Self {
         Self {
             cursors: HashMap::new(),
             head: None,
             tail: None,
-            max_streams: capability.max_streams,
             max_state_bytes: capability.max_cursor_state_bytes,
             state_bytes: 0,
-            version: capability.version,
         }
     }
 
@@ -1050,13 +1009,7 @@ impl PreviewCursorQueue {
         &self,
         capability: PreviewTransportCapability,
     ) -> Result<(), PreviewOutboundError> {
-        if capability.version == PreviewTransportVersion::V1 {
-            if self.cursors.len() > capability.max_streams {
-                return Err(PreviewOutboundError::StreamBudgetExceeded {
-                    maximum: capability.max_streams,
-                });
-            }
-        } else if self.state_bytes > capability.max_cursor_state_bytes {
+        if self.state_bytes > capability.max_cursor_state_bytes {
             return Err(PreviewOutboundError::CursorStateBudgetExceeded {
                 maximum: capability.max_cursor_state_bytes,
                 actual: self.state_bytes,
@@ -1070,9 +1023,7 @@ impl PreviewCursorQueue {
         capability: PreviewTransportCapability,
     ) -> Result<(), PreviewOutboundError> {
         self.check_capability(capability)?;
-        self.max_streams = capability.max_streams;
         self.max_state_bytes = capability.max_cursor_state_bytes;
-        self.version = capability.version;
         Ok(())
     }
 
@@ -1082,14 +1033,6 @@ impl PreviewCursorQueue {
     ) -> Result<Option<PreviewSendCursor>, PreviewOutboundError> {
         let stream = cursor.publication().stream().clone();
         let replacing = self.cursors.contains_key(&stream);
-        if self.version == PreviewTransportVersion::V1
-            && !replacing
-            && self.cursors.len() >= self.max_streams
-        {
-            return Err(PreviewOutboundError::StreamBudgetExceeded {
-                maximum: self.max_streams,
-            });
-        }
         let replaced_bytes = self.cursors.get(&stream).map_or(0, |queued| {
             preview_cursor_state_bytes(queued.cursor.publication().stream())
         });
@@ -1101,7 +1044,7 @@ impl PreviewCursorQueue {
                 maximum: self.max_state_bytes,
                 actual: usize::MAX,
             })?;
-        if self.version == PreviewTransportVersion::V2 && requested > self.max_state_bytes {
+        if requested > self.max_state_bytes {
             return Err(PreviewOutboundError::CursorStateBudgetExceeded {
                 maximum: self.max_state_bytes,
                 actual: requested,
@@ -1202,14 +1145,8 @@ impl PreviewCursorQueue {
     pub(super) fn requeue(&mut self, cursor: PreviewSendCursor) {
         let stream = cursor.publication().stream().clone();
         debug_assert!(!self.cursors.contains_key(&stream));
-        debug_assert!(
-            self.version == PreviewTransportVersion::V2 || self.cursors.len() < self.max_streams
-        );
         let cursor_bytes = preview_cursor_state_bytes(&stream);
-        debug_assert!(
-            self.version == PreviewTransportVersion::V1
-                || self.state_bytes.saturating_add(cursor_bytes) <= self.max_state_bytes
-        );
+        debug_assert!(self.state_bytes.saturating_add(cursor_bytes) <= self.max_state_bytes);
         self.insert_at_tail(stream, cursor);
         self.state_bytes = self.state_bytes.saturating_add(cursor_bytes);
     }
@@ -1375,7 +1312,7 @@ struct BackpressurePending {
 #[derive(Debug, Clone, Copy)]
 enum BackpressureAdvice {
     ReduceFps(u32),
-    IncreaseIntervalMs(u32),
+    ReduceCadence(Cadence),
 }
 
 impl BackpressureReporter {
@@ -2727,25 +2664,22 @@ pub(super) async fn relay_metrics(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
-    let mut active_interval_ms = None::<u32>;
+    let mut active_cadence = None::<Cadence>;
     let backpressure = BackpressureReporter::new(json_tx.clone(), "metrics", None);
 
     loop {
-        if active_interval_ms.is_none() {
-            active_interval_ms = {
+        if active_cadence.is_none() {
+            active_cadence = {
                 let subs = subscriptions.borrow();
                 if subs.contains(TopicId::Metrics) {
-                    Some(
-                        subs.config_of::<MetricsConfig>(TopicId::Metrics, None)
-                            .interval_ms,
-                    )
+                    Some(subs.config_of::<MetricsConfig>(TopicId::Metrics, None).fps)
                 } else {
                     None
                 }
             };
         }
 
-        let Some(interval_ms) = active_interval_ms else {
+        let Some(cadence) = active_cadence else {
             if subscriptions.changed().await.is_err() {
                 break;
             }
@@ -2758,10 +2692,10 @@ pub(super) async fn relay_metrics(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
-                active_interval_ms = None;
+                active_cadence = None;
                 continue;
             }
-            () = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
+            () = tokio::time::sleep(cadence.period()) => {}
         }
 
         let still_subscribed = {
@@ -2775,21 +2709,16 @@ pub(super) async fn relay_metrics(
         let total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
         let delta_bytes = total_bytes.saturating_sub(last_total_bytes);
         last_total_bytes = total_bytes;
-        let interval_secs = f64::from(interval_ms) / 1000.0;
-        let bytes_per_sec = if interval_secs > 0.0 {
-            let delta_u32 = u32::try_from(delta_bytes).unwrap_or(u32::MAX);
-            f64::from(delta_u32) / interval_secs
-        } else {
-            0.0
-        };
+        let delta_u32 = u32::try_from(delta_bytes).unwrap_or(u32::MAX);
+        let bytes_per_sec = f64::from(delta_u32) * cadence.fps();
 
         let message = build_metrics_message(&state, bytes_per_sec).await;
         if let Ok(text) = serde_json::to_string(&message)
             && !try_enqueue_json(&json_tx, text, "metrics")
         {
-            backpressure.record_drop(BackpressureAdvice::IncreaseIntervalMs(
-                interval_ms.saturating_mul(2).min(METRICS_INTERVAL_MS_MAX),
-            ));
+            let suggested_fps = (cadence.fps() / 2.0).max(METRICS_FPS_MIN);
+            let suggested = Cadence::from_fps(suggested_fps).unwrap_or_default();
+            backpressure.record_drop(BackpressureAdvice::ReduceCadence(suggested));
         }
     }
 }
@@ -2800,17 +2729,17 @@ pub(super) async fn relay_device_metrics(
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
-    let mut active_interval_ms = None::<u32>;
+    let mut active_cadence = None::<Cadence>;
     let backpressure = BackpressureReporter::new(json_tx.clone(), "device_metrics", None);
 
     loop {
-        if active_interval_ms.is_none() {
-            active_interval_ms = {
+        if active_cadence.is_none() {
+            active_cadence = {
                 let subs = subscriptions.borrow();
                 if subs.contains(TopicId::DeviceMetrics) {
                     Some(
                         subs.config_of::<MetricsConfig>(TopicId::DeviceMetrics, None)
-                            .interval_ms,
+                            .fps,
                     )
                 } else {
                     None
@@ -2818,7 +2747,7 @@ pub(super) async fn relay_device_metrics(
             };
         }
 
-        let Some(interval_ms) = active_interval_ms else {
+        let Some(cadence) = active_cadence else {
             if subscriptions.changed().await.is_err() {
                 break;
             }
@@ -2831,10 +2760,10 @@ pub(super) async fn relay_device_metrics(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
-                active_interval_ms = None;
+                active_cadence = None;
                 continue;
             }
-            () = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
+            () = tokio::time::sleep(cadence.period()) => {}
         }
 
         let still_subscribed = {
@@ -2849,9 +2778,9 @@ pub(super) async fn relay_device_metrics(
         if let Ok(text) = serde_json::to_string(&message)
             && !try_enqueue_json(&json_tx, text, "device_metrics")
         {
-            backpressure.record_drop(BackpressureAdvice::IncreaseIntervalMs(
-                interval_ms.saturating_mul(2).min(METRICS_INTERVAL_MS_MAX),
-            ));
+            let suggested_fps = (cadence.fps() / 2.0).max(METRICS_FPS_MIN);
+            let suggested = Cadence::from_fps(suggested_fps).unwrap_or_default();
+            backpressure.record_drop(BackpressureAdvice::ReduceCadence(suggested));
         }
     }
 }
@@ -3052,23 +2981,18 @@ async fn enqueue_backpressure_notice(
     advice: BackpressureAdvice,
     dropped_frames: u32,
 ) -> bool {
-    let (recommendation, suggested_fps, suggested_interval_ms) = match advice {
-        BackpressureAdvice::ReduceFps(current_fps) => (
-            "reduce_fps",
-            Some(current_fps.saturating_div(2).max(1)),
-            None,
-        ),
-        BackpressureAdvice::IncreaseIntervalMs(suggested_interval_ms) => {
-            ("increase_interval_ms", None, Some(suggested_interval_ms))
+    let suggested_fps = match advice {
+        BackpressureAdvice::ReduceFps(current_fps) => {
+            f64::from(current_fps.saturating_div(2).max(1))
         }
+        BackpressureAdvice::ReduceCadence(cadence) => cadence.fps(),
     };
     let message = ServerMessage::Backpressure {
         dropped_frames: dropped_frames.max(1),
         topic: topic.to_owned(),
         key: key.map(str::to_owned),
-        recommendation: recommendation.to_owned(),
-        suggested_fps,
-        suggested_interval_ms,
+        recommendation: "reduce_fps".to_owned(),
+        suggested_fps: Some(suggested_fps),
     };
 
     let Ok(text) = serde_json::to_string(&message) else {
@@ -3168,7 +3092,6 @@ pub(super) async fn build_metrics_message(
                 } else {
                     0.0
                 },
-                actual: round_1(capacity_fps),
                 dropped: render_stats.consecutive_misses,
             },
             frame_time: MetricsFrameTime {
@@ -3987,8 +3910,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        BACKPRESSURE_REPORT_INTERVAL, BackpressureAdvice, BackpressureReporter, preview_send_delay,
-        preview_surface_identity,
+        BACKPRESSURE_REPORT_INTERVAL, BackpressureAdvice, BackpressureReporter, Cadence,
+        preview_send_delay, preview_surface_identity,
     };
 
     #[test]
@@ -4048,7 +3971,7 @@ mod tests {
             "an unkeyed topic reports no key"
         );
         assert_eq!(first["dropped_frames"], 1);
-        assert_eq!(first["suggested_fps"], 30);
+        assert_eq!(first["suggested_fps"], 30.0);
 
         reporter.record_drop(BackpressureAdvice::ReduceFps(60));
         reporter.record_drop(BackpressureAdvice::ReduceFps(60));
@@ -4066,7 +3989,7 @@ mod tests {
         assert_eq!(second["type"], "backpressure");
         assert_eq!(second["topic"], "canvas");
         assert_eq!(second["dropped_frames"], 2);
-        assert_eq!(second["suggested_fps"], 30);
+        assert_eq!(second["suggested_fps"], 30.0);
     }
 
     #[tokio::test]
@@ -4077,7 +4000,9 @@ mod tests {
             .expect("queue accepts its first message");
 
         let reporter = BackpressureReporter::new(json_tx, "metrics", None);
-        reporter.record_drop(BackpressureAdvice::IncreaseIntervalMs(2_000));
+        reporter.record_drop(BackpressureAdvice::ReduceCadence(
+            Cadence::from_fps(0.5).expect("fixture cadence is valid"),
+        ));
         tokio::task::yield_now().await;
         assert_eq!(
             json_rx
@@ -4096,9 +4021,8 @@ mod tests {
         assert_eq!(notice["type"], "backpressure");
         assert_eq!(notice["topic"], "metrics");
         assert_eq!(notice["dropped_frames"], 1);
-        assert_eq!(notice["recommendation"], "increase_interval_ms");
-        assert_eq!(notice["suggested_interval_ms"], 2_000);
-        assert!(notice.get("suggested_fps").is_none());
+        assert_eq!(notice["recommendation"], "reduce_fps");
+        assert_eq!(notice["suggested_fps"], 0.5);
     }
 
     #[tokio::test]

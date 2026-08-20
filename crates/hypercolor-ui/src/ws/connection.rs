@@ -344,7 +344,7 @@ impl WsManager {
                     "preview_transport": PreviewTransportCapability::default().encode(),
                     "topics": [
                         { "topic": "events" },
-                        { "topic": "metrics", "config": { "interval_ms": 500 } },
+                        { "topic": "metrics", "config": { "fps": 2.0 } },
                         { "topic": "sensors" }
                     ]
                 });
@@ -731,7 +731,7 @@ impl WsManager {
                     "type": "subscribe",
                     "topics": [{
                         "topic": "device_metrics",
-                        "config": { "interval_ms": 500 }
+                        "config": { "fps": 2.0 }
                     }]
                 });
                 let _ = send_websocket_json(&ws, &msg);

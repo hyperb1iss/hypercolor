@@ -1245,7 +1245,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["stages"]["publish_preview_ms"], 0.08);
     assert_eq!(json["stages"]["publish_events_ms"], 0.01);
     assert_eq!(json["fps"]["ceiling"], 60);
-    assert_eq!(json["fps"]["capacity"], json["fps"]["actual"]);
+    assert!(json["fps"].get("actual").is_none());
     assert_eq!(json["fps"]["delivered"], 0.0);
     assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
     assert_eq!(json["render_surfaces"]["scene_pool_saturation_reallocs"], 0);
@@ -1440,10 +1440,7 @@ async fn relay_metrics_wakes_when_subscription_changes() {
     let relay_handle = tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
 
     let subscriptions = initial_subscriptions
-        .subscribed_unkeyed(
-            &["metrics"],
-            serde_json::json!({"metrics": {"interval_ms": 100}}),
-        )
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": {"fps": 10.0}}))
         .expect("metrics subscribe applies");
     publish_subscriptions(&subscriptions_tx, &subscriptions);
 
@@ -1515,7 +1512,7 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
     let subscriptions = initial_subscriptions
         .subscribed_unkeyed(
             &["device_metrics"],
-            serde_json::json!({"device_metrics": {"interval_ms": 100}}),
+            serde_json::json!({"device_metrics": {"fps": 10.0}}),
         )
         .expect("device metrics subscribe applies");
     publish_subscriptions(&subscriptions_tx, &subscriptions);
@@ -1873,12 +1870,9 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
         max_decoded_publication_bytes: 1024 * 1024,
         max_encoded_publication_bytes: 1024,
         max_connection_bytes: 2048,
-        max_streams: 4,
-        max_tombstones: 8,
         max_idle_ms: 1000,
         max_message_bytes: 256,
-        max_chunk_count: 128,
-        ..PreviewTransportCapability::default().legacy_v1()
+        ..PreviewTransportCapability::default()
     };
     let message: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "subscribe",
@@ -1896,7 +1890,7 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
 
     let (sender, receiver) = preview_outbound_channel();
     let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
+    let mut cursors = PreviewCursorQueue::with_capability(capability);
     let negotiated =
         negotiate_preview_transport(&encoded_capability, &sender, &mut cursors, &mut capability)
             .expect("transport negotiation succeeds before publication");
@@ -1919,7 +1913,7 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
         assert!(message.len() <= peer.max_message_bytes);
         assert_eq!(message[0], PREVIEW_CHUNK_FRAME_TAG);
         let chunk = PreviewChunkFrame::decode_bytes(&message).expect("chunk decodes");
-        assert!(chunk.chunk_count <= peer.max_chunk_count);
+        assert!(chunk.chunk_count <= peer.effective_max_chunk_count(0));
         message_count += 1;
     }
     assert!(message_count > 1);
@@ -1955,7 +1949,7 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
 
     let (byte_sender, byte_receiver) = preview_outbound_channel();
     let mut byte_capability = PreviewTransportCapability::default();
-    let mut byte_cursors = PreviewCursorQueue::new(byte_capability.max_streams);
+    let mut byte_cursors = PreviewCursorQueue::with_capability(byte_capability);
     negotiate_preview_transport(
         &peer.encode(),
         &byte_sender,
@@ -2001,41 +1995,6 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
             None,
         ),
         Err(PreviewOutboundError::ConnectionBusy { .. })
-    ));
-
-    let (stream_sender, _stream_receiver) = preview_outbound_channel();
-    let mut stream_capability = PreviewTransportCapability::default();
-    let mut stream_cursors = PreviewCursorQueue::new(stream_capability.max_streams);
-    let stream_peer = PreviewTransportCapability {
-        max_streams: 2,
-        ..peer
-    };
-    negotiate_preview_transport(
-        &stream_peer.encode(),
-        &stream_sender,
-        &mut stream_cursors,
-        &mut stream_capability,
-    )
-    .expect("stream-accounting transport negotiation");
-    for (channel, frame_number) in [
-        (PreviewFrameChannel::Canvas, 1),
-        (PreviewFrameChannel::ScreenCanvas, 2),
-    ] {
-        stream_sender
-            .publish(
-                PreviewStreamId::Passive(channel),
-                preview_test_frame(channel, frame_number, 400),
-                None,
-            )
-            .expect("stream fits negotiated count and byte budgets");
-    }
-    assert!(matches!(
-        stream_sender.publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
-            preview_test_frame(PreviewFrameChannel::WebViewportCanvas, 3, 32),
-            None,
-        ),
-        Err(PreviewOutboundError::StreamBudgetExceeded { maximum: 2 })
     ));
 }
 
@@ -2873,8 +2832,8 @@ fn parse_subscriptions_refuses_two_entries_for_one_subscription() {
     // itself about which config wins; resolving that silently would hide
     // it from the only party who can fix it.
     let error = parse_subscriptions(&[
-        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"interval_ms": 200})),
-        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"interval_ms": 300})),
+        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"fps": 5.0})),
+        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"fps": 4.0})),
     ])
     .expect_err("a repeated subscription is refused");
     assert_eq!(error.code, "malformed_request");
@@ -3134,8 +3093,8 @@ fn topic_config_apply_patch_supports_every_configurable_topic() {
                 "canvas": {"fps": 60, "format": "jpeg", "width": 320, "height": 0},
                 "screen_canvas": {"fps": 24, "format": "jpeg", "width": 480, "height": 270},
                 "screen_zones": {"fps": 12},
-                "metrics": {"interval_ms": 500},
-                "device_metrics": {"interval_ms": 250}
+                "metrics": {"fps": 2.0},
+                "device_metrics": {"fps": 4.0}
             }),
         )
         .expect("full channel config patch should be accepted");
@@ -3153,8 +3112,8 @@ fn topic_config_apply_patch_supports_every_configurable_topic() {
     assert_eq!(json["screen_canvas"]["format"], "jpeg");
     assert_eq!(json["screen_canvas"]["width"], 480);
     assert_eq!(json["screen_canvas"]["height"], 270);
-    assert_eq!(json["metrics"]["interval_ms"], 500);
-    assert_eq!(json["device_metrics"]["interval_ms"], 250);
+    assert_eq!(json["metrics"]["fps"], 2.0);
+    assert_eq!(json["device_metrics"]["fps"], 4.0);
 }
 
 #[test]
@@ -3229,8 +3188,8 @@ fn topic_config_defaults_are_stable() {
     assert_eq!(json["screen_canvas"]["fps"], 15);
     assert_eq!(json["screen_canvas"]["width"], 0);
     assert_eq!(json["screen_canvas"]["height"], 0);
-    assert_eq!(json["metrics"]["interval_ms"], 1000);
-    assert_eq!(json["device_metrics"]["interval_ms"], 1000);
+    assert_eq!(json["metrics"]["fps"], 1.0);
+    assert_eq!(json["device_metrics"]["fps"], 1.0);
 }
 
 #[test]
@@ -3251,7 +3210,7 @@ fn non_null_config_for_a_configless_topic_is_refused() {
 
 #[test]
 fn a_subscribe_carries_its_config_inside_each_selector() {
-    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":900}},{"topic":"display_preview","key":"device-abc","config":{"fps":9}}]}"#;
+    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":0.5}},{"topic":"display_preview","key":"device-abc","config":{"fps":9}}]}"#;
     let message: ClientMessage = serde_json::from_str(raw).expect("a keyed subscribe parses");
     let ClientMessage::Subscribe { topics, .. } = message else {
         panic!("expected a subscribe");
@@ -3261,8 +3220,8 @@ fn a_subscribe_carries_its_config_inside_each_selector() {
     assert_eq!(topics[0].topic, "metrics");
     assert_eq!(topics[0].key, None);
     assert_eq!(
-        topics[0].config.as_ref().expect("metrics config")["interval_ms"],
-        900
+        topics[0].config.as_ref().expect("metrics config")["fps"],
+        0.5
     );
     assert_eq!(topics[1].topic, "display_preview");
     assert_eq!(topics[1].key.as_deref(), Some("device-abc"));
@@ -3273,7 +3232,7 @@ fn a_subscribe_carries_its_config_inside_each_selector() {
 fn a_subscribe_entry_refuses_fields_it_does_not_define() {
     // The entry owns exactly three fields; anything else is a client
     // mistake the wire must not silently drop.
-    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","cfg":{"interval_ms":900}}]}"#;
+    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","cfg":{"fps":0.5}}]}"#;
     serde_json::from_str::<ClientMessage>(raw)
         .expect_err("an unknown selector field must fail loudly");
 }
@@ -3302,15 +3261,12 @@ fn an_absent_or_null_selector_config_is_no_config_at_all() {
 #[test]
 fn a_null_stanza_leaves_a_configurable_topic_alone() {
     let state = SubscriptionState::default()
-        .subscribed_unkeyed(
-            &["metrics"],
-            serde_json::json!({"metrics": {"interval_ms": 250}}),
-        )
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": {"fps": 4.0}}))
         .expect("metrics subscribe applies")
         .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": null}))
         .expect("a null stanza is not a patch");
 
-    assert_eq!(state.config_by_topic()["metrics"]["interval_ms"], 250);
+    assert_eq!(state.config_by_topic()["metrics"]["fps"], 4.0);
 }
 
 #[test]
@@ -3321,16 +3277,13 @@ fn config_for_an_unrecognized_channel_is_ignored() {
 
     let config = state.config_by_topic();
     assert!(config.get("lasers").is_none());
-    assert_eq!(config["metrics"]["interval_ms"], 1000);
+    assert_eq!(config["metrics"]["fps"], 1.0);
 }
 
 #[test]
 fn unsubscribing_keeps_the_config_a_resubscribe_reinstates() {
     let configured = SubscriptionState::default()
-        .subscribed_unkeyed(
-            &["metrics"],
-            serde_json::json!({"metrics": {"interval_ms": 250}}),
-        )
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": {"fps": 4.0}}))
         .expect("metrics subscribe applies");
     assert!(configured.live_table_agrees_with_membership());
     assert!(!configured.has_dormant_config(TopicId::Metrics, None));
@@ -3347,8 +3300,8 @@ fn unsubscribing_keeps_the_config_a_resubscribe_reinstates() {
         .subscribed_unkeyed(&["metrics"], serde_json::Value::Null)
         .expect("resubscribe applies");
     assert_eq!(
-        restored.config_by_topic()["metrics"]["interval_ms"],
-        250,
+        restored.config_by_topic()["metrics"]["fps"],
+        4.0,
         "a resubscribe reinstates the client's own cadence, not the default"
     );
     assert!(restored.live_table_agrees_with_membership());
@@ -3458,11 +3411,11 @@ fn staging_a_preview_transport_does_not_adopt_it() {
         max_encoded_publication_bytes: 1024,
         max_connection_bytes: 2048,
         max_message_bytes: 256,
-        ..PreviewTransportCapability::default().legacy_v1()
+        ..PreviewTransportCapability::default()
     };
     let (sender, receiver) = preview_outbound_channel();
     let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
+    let mut cursors = PreviewCursorQueue::with_capability(capability);
 
     let staged =
         stage_preview_transport(&peer.encode(), &sender, &cursors).expect("capability stages");
@@ -4646,9 +4599,9 @@ async fn interactive_preview_transport_commits_before_its_relay_resumes() {
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, outbound, frames) = browser_preview_session(handle, routing, executor);
-    let peer = PreviewTransportCapability::default().legacy_v1();
+    let peer = PreviewTransportCapability::default();
     let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
+    let mut cursors = PreviewCursorQueue::with_capability(capability);
     let staged = stage_preview_transport(&peer.encode(), &outbound, &cursors)
         .expect("initial transport should stage");
     let subscriptions = SubscriptionState::default()
@@ -5091,10 +5044,6 @@ fn websocket_manifest_matches_protocol_constants() {
         preview_defaults.max_message_bytes
     );
     assert_eq!(
-        manifest["preview_transport"]["max_chunk_count"],
-        preview_defaults.max_chunk_count
-    );
-    assert_eq!(
         manifest["preview_transport"]["max_reassembly_state_bytes"],
         preview_defaults.max_reassembly_state_bytes
     );
@@ -5109,14 +5058,6 @@ fn websocket_manifest_matches_protocol_constants() {
     assert_eq!(
         manifest["preview_transport"]["max_cursor_state_bytes"],
         preview_defaults.max_cursor_state_bytes
-    );
-    assert_eq!(
-        manifest["preview_transport"]["max_reassembly_streams"],
-        preview_defaults.max_streams
-    );
-    assert_eq!(
-        manifest["preview_transport"]["max_reassembly_tombstones"],
-        preview_defaults.max_tombstones
     );
     assert_eq!(
         manifest["preview_transport"]["partial_idle_ms"],
@@ -5134,10 +5075,6 @@ fn websocket_manifest_matches_protocol_constants() {
     assert_eq!(
         manifest["preview_transport"]["negotiation"]["server_subscribed_field"],
         "preview_transport"
-    );
-    assert_eq!(
-        manifest["preview_transport"]["negotiation"]["legacy_client_policy"],
-        "server defaults"
     );
     for channel in [
         "canvas",

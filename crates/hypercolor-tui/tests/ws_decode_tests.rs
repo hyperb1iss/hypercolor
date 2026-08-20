@@ -328,19 +328,25 @@ fn decode_json_metrics() {
 
 #[test]
 fn decode_json_metrics_with_data_envelope() {
-    let json = r#"{"type":"metrics","data":{"fps":{"target":60,"actual":59.7},"devices":{"connected":2,"total_leds":180}}}"#;
+    let json = r#"{"type":"metrics","data":{"fps":{"target":60,"delivered":59.7},"devices":{"connected":2,"total_leds":180}}}"#;
     let msg = ws::decode_json(json);
     assert!(matches!(msg, Some(WsMessage::Metrics(_))));
 }
 
 #[test]
 fn decode_json_exposes_typed_subscription_acknowledgment() {
-    let json = r#"{"type":"subscribed","topics":[{"topic":"events"}],"preview_transport":"preview_transport_v1"}"#;
-    let Some(WsMessage::Subscribed(acknowledgment)) = ws::decode_json(json) else {
+    let transport = hypercolor_leptos_ext::ws::PreviewTransportCapability::default().encode();
+    let json = serde_json::json!({
+        "type": "subscribed",
+        "topics": [{"topic": "events"}],
+        "preview_transport": transport.clone(),
+    })
+    .to_string();
+    let Some(WsMessage::Subscribed(acknowledgment)) = ws::decode_json(&json) else {
         panic!("expected subscribed acknowledgment");
     };
     assert_eq!(acknowledgment.topics.len(), 1);
-    assert_eq!(acknowledgment.preview_transport, "preview_transport_v1");
+    assert_eq!(acknowledgment.preview_transport, transport);
 }
 
 #[test]

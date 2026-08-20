@@ -372,14 +372,24 @@ def test_interactive_preview_rejects_truncated_raw_payloads(
 
 
 def test_subscribed_ack_is_a_distinct_public_message() -> None:
+    preview_transport = next(
+        capability
+        for capability in ws_protocol.WS_CAPABILITIES
+        if capability.startswith("preview_transport_")
+    )
     message = HypercolorEventStream._decode_json(
-        '{"type":"subscribed","preview_transport":"preview_transport_v1",'
-        '"topics":[{"topic":"events"}]}'
+        msgspec.json.encode(
+            {
+                "type": "subscribed",
+                "preview_transport": preview_transport,
+                "topics": [{"topic": "events"}],
+            }
+        ).decode()
     )
 
     assert isinstance(message, SubscribedMessage)
     assert message.topics == [ActiveSubscription(topic="events")]
-    assert message.preview_transport == "preview_transport_v1"
+    assert message.preview_transport == preview_transport
 
 
 def _expect_dict(value: Any) -> dict[str, Any]:

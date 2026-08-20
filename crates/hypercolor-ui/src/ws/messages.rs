@@ -106,16 +106,8 @@ pub struct MetricsFps {
     pub target: u32,
     pub ceiling: u32,
     pub capacity: f64,
-    pub delivered: Option<f64>,
-    pub actual: f64,
+    pub delivered: f64,
     pub dropped: u32,
-}
-
-impl MetricsFps {
-    #[must_use]
-    pub fn delivered_or_legacy(&self) -> f64 {
-        self.delivered.unwrap_or(self.actual)
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -421,8 +413,7 @@ pub struct BackpressureNotice {
     pub dropped_frames: u32,
     pub topic: String,
     pub recommendation: String,
-    pub suggested_fps: Option<u32>,
-    pub suggested_interval_ms: Option<u32>,
+    pub suggested_fps: Option<f64>,
 }
 
 /// Lightweight device event hint used to decide whether the devices list
@@ -541,8 +532,14 @@ struct BackpressureMessage {
     dropped_frames: u32,
     topic: String,
     recommendation: String,
-    suggested_fps: Option<u32>,
-    suggested_interval_ms: Option<u32>,
+    suggested_fps: Option<f64>,
+}
+
+fn whole_fps(fps: f64) -> Option<u32> {
+    if fps < 1.0 || fps.fract() != 0.0 {
+        return None;
+    }
+    fps.to_string().parse().ok()
 }
 
 // ── Audio Level ─────────────────────────────────────────────────────────────
@@ -959,28 +956,23 @@ pub(super) fn handle_json_message(
                     .and_then(|target| target.as_u64())
                     .and_then(|target| u32::try_from(target).ok())
                     .unwrap_or_default();
-                let actual = state
-                    .get("fps")
-                    .and_then(|fps| fps.get("actual"))
-                    .and_then(|actual| actual.as_f64())
-                    .unwrap_or_default();
                 let capacity = state
                     .get("fps")
                     .and_then(|fps| fps.get("capacity"))
                     .and_then(|capacity| capacity.as_f64())
-                    .unwrap_or(actual);
+                    .unwrap_or_default();
                 let delivered = state
                     .get("fps")
                     .and_then(|fps| fps.get("delivered"))
-                    .and_then(|delivered| delivered.as_f64());
+                    .and_then(|delivered| delivered.as_f64())
+                    .unwrap_or_default();
 
-                if target > 0 || actual > 0.0 {
+                if target > 0 || delivered > 0.0 {
                     set_metrics.update(|metrics| {
                         let mut next = metrics.clone().unwrap_or_default();
                         next.fps.target = target;
                         next.fps.capacity = capacity;
                         next.fps.delivered = delivered;
-                        next.fps.actual = actual;
                         *metrics = Some(next);
                     });
                 }
@@ -1034,11 +1026,11 @@ pub(super) fn handle_json_message(
         }
         "backpressure" => {
             if let Ok(message) = BackpressureMessage::deserialize(msg) {
-                if message.topic == "canvas"
-                    && message.recommendation == "reduce_fps"
-                    && message.suggested_fps.is_some_and(|fps| fps > 0)
+                if let Some(suggested_fps) = message
+                    .suggested_fps
+                    .filter(|_| message.topic == "canvas" && message.recommendation == "reduce_fps")
+                    .and_then(whole_fps)
                 {
-                    let suggested_fps = message.suggested_fps.unwrap_or_default();
                     set_preview_transport_cap
                         .update(|current| *current = (*current).min(suggested_fps));
                     set_last_backpressure_at_ms.set(Some(now_ms()));
@@ -1048,7 +1040,6 @@ pub(super) fn handle_json_message(
                     topic: message.topic,
                     recommendation: message.recommendation,
                     suggested_fps: message.suggested_fps,
-                    suggested_interval_ms: message.suggested_interval_ms,
                 };
                 if backpressure_notice.get_untracked().as_ref() != Some(&notice) {
                     set_backpressure_notice.set(Some(notice));
@@ -1400,18 +1391,18 @@ mod tests {
     use super::extract_input_source_status_event_hint;
 
     #[test]
-    fn input_status_hint_decodes_exact_and_legacy_consumer_counts() {
+    fn input_status_hint_defaults_a_missing_optional_consumer_count() {
         let current = extract_input_source_status_event_hint(&json!({
             "source_id": "macos:session",
             "active_consumer_count": 4
         }))
         .expect("current input status event should decode");
-        let legacy = extract_input_source_status_event_hint(&json!({
+        let partial = extract_input_source_status_event_hint(&json!({
             "source_id": "macos:session"
         }))
-        .expect("additive field should preserve legacy event decoding");
+        .expect("a missing optional count should still decode");
 
         assert_eq!(current.active_consumer_count, 4);
-        assert_eq!(legacy.active_consumer_count, 0);
+        assert_eq!(partial.active_consumer_count, 0);
     }
 }

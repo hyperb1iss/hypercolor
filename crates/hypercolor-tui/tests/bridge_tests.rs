@@ -248,7 +248,7 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
                 "brightness": 42,
                 "fps": {
                     "target": 60,
-                    "actual": 59.8
+                    "delivered": 59.8
                 },
                 "device_count": 3,
                 "total_leds": 120
@@ -298,7 +298,7 @@ async fn control_surface_ws_handler(ws: WebSocketUpgrade) -> Response {
                 "brightness": 42,
                 "fps": {
                     "target": 60,
-                    "actual": 59.8
+                    "delivered": 59.8
                 },
                 "device_count": 1,
                 "total_leds": 225
