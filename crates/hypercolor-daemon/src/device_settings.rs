@@ -13,7 +13,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::persistence::write_atomic;
+use crate::path_migration::{
+    MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
+};
+use crate::persistence::{AtomicFileWriter, serialize_json_pretty, write_atomic};
+
+const STORE_SUBJECT: &str = "device settings";
 
 /// Current schema for `device-settings.json`. Version 3 stores driver control
 /// values in the canonical control algebra. Device rows live under the
@@ -122,6 +127,19 @@ struct SchemaProbe {
     schema_version: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FutureDocumentPolicy {
+    ReadOnly,
+    Reject,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceSettingsDocument {
+    snapshot: PersistedSettingsSnapshot,
+    source_version: u32,
+    refuse_writes: Option<String>,
+}
+
 /// JSON-backed per-device settings store.
 #[derive(Debug, Clone)]
 pub struct DeviceSettingsStore {
@@ -159,53 +177,17 @@ impl DeviceSettingsStore {
             return Ok(Self::new(path.to_path_buf()));
         }
 
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("failed to read device settings at {}", path.display()))?;
-
-        let probe = serde_json::from_str::<SchemaProbe>(&raw)
-            .with_context(|| format!("failed to probe device settings at {}", path.display()))?;
-        if probe.schema_version > DEVICE_SETTINGS_SCHEMA_VERSION {
-            let reason = format!(
-                "device-settings.json is schema v{found}, newer than the supported \
-                 v{supported}; refusing to read or rewrite it",
-                found = probe.schema_version,
-                supported = DEVICE_SETTINGS_SCHEMA_VERSION,
-            );
-            tracing::error!(path = %path.display(), "{reason}");
-            let mut store = Self::new(path.to_path_buf());
-            store.refuse_writes = Some(reason);
-            return Ok(store);
-        }
-
-        let loaded_version = probe.schema_version;
-        let snapshot = if loaded_version < DEVICE_SETTINGS_SCHEMA_VERSION {
-            let legacy =
-                serde_json::from_str::<LegacySettingsSnapshot>(&raw).with_context(|| {
-                    format!("failed to parse device settings at {}", path.display())
-                })?;
-            PersistedSettingsSnapshot {
-                schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
-                global_brightness: legacy.global_brightness,
-                devices: legacy.devices,
-                driver_controls: canonicalize_driver_controls(legacy.driver_controls)?,
-            }
-        } else {
-            serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
-                .with_context(|| format!("failed to parse device settings at {}", path.display()))?
-        };
-
+        let document = read_settings_document(path, FutureDocumentPolicy::ReadOnly)?;
+        let loaded_version = document.source_version;
         let mut store = Self {
             path: path.to_path_buf(),
-            snapshot,
-            refuse_writes: None,
+            snapshot: document.snapshot,
+            refuse_writes: document.refuse_writes,
         };
         store.normalize()?;
 
         if loaded_version < DEVICE_SETTINGS_SCHEMA_VERSION {
-            let backup = migration_backup_path(path);
-            fs::copy(path, &backup).with_context(|| {
-                format!("failed to back up device settings to {}", backup.display())
-            })?;
+            let backup = back_up_content_schema(path)?;
             store.snapshot.schema_version = DEVICE_SETTINGS_SCHEMA_VERSION;
             store
                 .save()
@@ -220,6 +202,54 @@ impl DeviceSettingsStore {
         }
 
         Ok(store)
+    }
+
+    /// Relocate a legacy data-tier store and open the state-tier document.
+    ///
+    /// Content schemas v1 and v2 canonicalize before the path import. A future
+    /// canonical schema remains byte-preserved and read-only, while a future
+    /// legacy schema is refused because this build cannot safely rewrite it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either document cannot be read or canonicalized,
+    /// the state destination cannot be prepared, or legacy retirement fails.
+    pub fn load_migrated(
+        legacy_path: &Path,
+        canonical_path: &Path,
+    ) -> anyhow::Result<(Self, MigrationOutcome)> {
+        let writer = AtomicFileWriter::new(canonical_path).with_context(|| {
+            format!(
+                "failed to prepare device settings store at {}",
+                canonical_path.display()
+            )
+        })?;
+        let entry = PathMigrationEntry::new(
+            STORE_SUBJECT,
+            legacy_path.to_path_buf(),
+            canonical_path.to_path_buf(),
+        );
+        let migrated = migrate(&DeviceSettingsCodec, &entry, &writer)?;
+        let outcome = migrated.outcome;
+        let document = migrated.document.unwrap_or_else(empty_settings_document);
+        let source_version = document.source_version;
+        let mut store = Self {
+            path: canonical_path.to_path_buf(),
+            snapshot: document.snapshot,
+            refuse_writes: document.refuse_writes,
+        };
+        store.normalize()?;
+
+        if matches!(outcome, MigrationOutcome::AlreadyMigrated)
+            && source_version < DEVICE_SETTINGS_SCHEMA_VERSION
+        {
+            back_up_content_schema(canonical_path)?;
+            store
+                .save()
+                .context("failed to persist migrated device settings")?;
+        }
+
+        Ok((store, outcome))
     }
 
     /// Return the configured global brightness scalar.
@@ -338,20 +368,8 @@ impl DeviceSettingsStore {
             })?;
         }
 
-        let payload = serde_json::to_string_pretty(&PersistedSettingsSnapshot {
-            schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
-            global_brightness: self.global_brightness(),
-            devices: self
-                .snapshot
-                .devices
-                .iter()
-                .map(|(key, settings)| (key.clone(), settings.clone().normalized()))
-                .collect(),
-            driver_controls: self.snapshot.driver_controls.clone(),
-        })
-        .context("failed to serialize device settings")?;
-        write_atomic(&self.path, payload.as_bytes())
-            .context("failed to persist device settings")?;
+        let payload = serialize_settings_snapshot(&self.snapshot)?;
+        write_atomic(&self.path, &payload).context("failed to persist device settings")?;
 
         Ok(())
     }
@@ -370,6 +388,112 @@ impl DeviceSettingsStore {
         }
         Ok(())
     }
+}
+
+fn empty_settings_document() -> DeviceSettingsDocument {
+    DeviceSettingsDocument {
+        snapshot: PersistedSettingsSnapshot::default(),
+        source_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+        refuse_writes: None,
+    }
+}
+
+fn read_settings_document(
+    path: &Path,
+    future_policy: FutureDocumentPolicy,
+) -> anyhow::Result<DeviceSettingsDocument> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read device settings at {}", path.display()))?;
+    let probe = serde_json::from_str::<SchemaProbe>(&raw)
+        .with_context(|| format!("failed to probe device settings at {}", path.display()))?;
+    let source_version = probe.schema_version;
+    if source_version > DEVICE_SETTINGS_SCHEMA_VERSION {
+        let reason = format!(
+            "device-settings.json is schema v{source_version}, newer than the supported v{DEVICE_SETTINGS_SCHEMA_VERSION}; refusing to read or rewrite it"
+        );
+        return match future_policy {
+            FutureDocumentPolicy::ReadOnly => {
+                tracing::error!(path = %path.display(), "{reason}");
+                Ok(DeviceSettingsDocument {
+                    snapshot: PersistedSettingsSnapshot::default(),
+                    source_version,
+                    refuse_writes: Some(reason),
+                })
+            }
+            FutureDocumentPolicy::Reject => anyhow::bail!("{reason}"),
+        };
+    }
+
+    let snapshot = if source_version < DEVICE_SETTINGS_SCHEMA_VERSION {
+        let legacy = serde_json::from_str::<LegacySettingsSnapshot>(&raw)
+            .with_context(|| format!("failed to parse device settings at {}", path.display()))?;
+        PersistedSettingsSnapshot {
+            schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+            global_brightness: legacy.global_brightness,
+            devices: legacy.devices,
+            driver_controls: canonicalize_driver_controls(legacy.driver_controls)?,
+        }
+    } else {
+        serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
+            .with_context(|| format!("failed to parse device settings at {}", path.display()))?
+    };
+
+    Ok(DeviceSettingsDocument {
+        snapshot,
+        source_version,
+        refuse_writes: None,
+    })
+}
+
+fn serialize_settings_snapshot(snapshot: &PersistedSettingsSnapshot) -> anyhow::Result<Vec<u8>> {
+    serialize_json_pretty(&PersistedSettingsSnapshot {
+        schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+        global_brightness: snapshot.global_brightness.clamp(0.0, 1.0),
+        devices: snapshot
+            .devices
+            .iter()
+            .map(|(key, settings)| (key.clone(), settings.clone().normalized()))
+            .collect(),
+        driver_controls: snapshot.driver_controls.clone(),
+    })
+    .context("failed to serialize device settings")
+}
+
+struct DeviceSettingsCodec;
+
+impl MigratedStore for DeviceSettingsCodec {
+    type Document = DeviceSettingsDocument;
+    type Error = anyhow::Error;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        let document = read_settings_document(path, FutureDocumentPolicy::ReadOnly)?;
+        Ok(VersionedDocument::new(document.source_version, document))
+    }
+
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        let document = read_settings_document(path, FutureDocumentPolicy::Reject)?;
+        Ok(Some(VersionedDocument::new(
+            document.source_version,
+            document,
+        )))
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        serialize_settings_snapshot(&document.snapshot)
+    }
+}
+
+fn back_up_content_schema(path: &Path) -> anyhow::Result<PathBuf> {
+    let backup = migration_backup_path(path);
+    fs::copy(path, &backup)
+        .with_context(|| format!("failed to back up device settings to {}", backup.display()))?;
+    Ok(backup)
 }
 
 fn canonicalize_driver_controls(
