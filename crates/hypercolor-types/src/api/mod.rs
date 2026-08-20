@@ -26,6 +26,7 @@ pub mod controls;
 pub mod devices;
 pub mod diagnose;
 pub mod displays;
+pub mod drivers;
 pub mod effects;
 pub mod envelope;
 pub mod layouts;

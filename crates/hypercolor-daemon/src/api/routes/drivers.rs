@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use utoipa_axum::router::OpenApiRouter;
 
+use hypercolor_types::api::drivers::{DriverConfigResponse, DriverListResponse};
+
 use crate::api::openapi::OperationDoc;
 use crate::api::{AppState, drivers, openapi};
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
@@ -9,7 +11,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/drivers",
             axum::routing::get(drivers::list_drivers),
-            [OperationDoc::get::<drivers::DriverListResponse>(
+            [OperationDoc::get::<DriverListResponse>(
                 "list_drivers",
                 "drivers",
                 "List driver modules",
@@ -18,7 +20,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/drivers/{id}/config",
             axum::routing::get(drivers::get_driver_config),
-            [OperationDoc::get::<drivers::DriverConfigResponse>(
+            [OperationDoc::get::<DriverConfigResponse>(
                 "get_driver_config",
                 "drivers",
                 "Get driver module config",

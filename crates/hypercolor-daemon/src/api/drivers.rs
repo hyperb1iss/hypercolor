@@ -4,47 +4,13 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
-use utoipa::ToSchema;
-
-use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::api::drivers::{DriverConfigResponse, DriverListResponse, DriverSummary};
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{
-    DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
-};
 
 use crate::api::AppState;
 use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DriverListResponse {
-    pub items: Vec<DriverSummary>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DriverSummary {
-    pub descriptor: DriverModuleDescriptor,
-    pub presentation: DriverPresentation,
-    pub enabled: bool,
-    pub config_key: String,
-    pub protocols: Vec<DriverProtocolDescriptor>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_surface_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_surface_path: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DriverConfigResponse {
-    pub driver_id: String,
-    pub config_key: String,
-    pub configurable: bool,
-    pub current: DriverConfigEntry,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<DriverConfigEntry>,
-}
 
 /// `GET /api/v1/drivers` — List registered driver modules.
 pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
