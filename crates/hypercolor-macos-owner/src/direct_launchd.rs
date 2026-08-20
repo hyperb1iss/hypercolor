@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest as _, Sha256};
+
 use crate::{
     MAX_MACOS_DESIGNATED_REQUIREMENT_HASH_BYTES, MAX_MACOS_EXECUTABLE_PATH_BYTES, MacosDaemonOwner,
     MacosOwnerExecutionError, MacosOwnerRecord, MacosOwnerStore, MacosOwnerStoreError,
@@ -13,6 +15,23 @@ pub const MACOS_DIRECT_LAUNCHD_LABEL: &str = "tech.hyperbliss.hypercolor";
 
 const MAX_LAUNCHCTL_OUTPUT_BYTES: usize = 64 * 1024;
 const SHA256_HEX_BYTES: usize = 64;
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == SHA256_HEX_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn requirement_hash(requirement: &str) -> String {
+    let digest = Sha256::digest(requirement.as_bytes());
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("writing into a String cannot fail");
+    }
+    output
+}
 
 /// Exact loaded state of Hypercolor's direct per-user launchd service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,11 +58,11 @@ pub trait MacosDirectLaunchdInspector {
         identity: &crate::MacosOwnerIdentity,
     ) -> Result<bool, MacosOwnerExecutionError>;
 
-    /// Verify the exact executable bytes against an immutable unit manifest.
-    fn executable_digest_matches(
+    /// Verify a publication against the retained immutable executable.
+    fn publication_identity_matches(
         &mut self,
-        executable_path: &Path,
-        expected_sha256: &str,
+        identity: &crate::MacosOwnerIdentity,
+        executable: &MacosDirectLaunchdExecutableExpectation,
     ) -> Result<bool, MacosOwnerExecutionError>;
 }
 
@@ -67,64 +86,165 @@ impl MacosDirectLaunchdOwnerProof {
     }
 }
 
-/// Immutable identity expected from a candidate or rollback unit publication.
+/// Exact retained executable identity required from a direct publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MacosDirectLaunchdPublicationExpectation {
-    after_epoch: u64,
-    executable_path: PathBuf,
+pub struct MacosDirectLaunchdExecutableExpectation {
+    path: PathBuf,
+    designated_requirement: String,
     designated_requirement_hash: String,
-    executable_sha256: String,
+    sha256: String,
+    mode: u32,
+    size: u64,
+    device: u64,
+    inode: u64,
 }
 
-impl MacosDirectLaunchdPublicationExpectation {
-    /// Validate and construct an exact publication expectation.
+impl MacosDirectLaunchdExecutableExpectation {
+    /// Bind one immutable executable path to its retained identity and signing requirement.
     pub fn new(
-        after_epoch: u64,
-        executable_path: impl Into<PathBuf>,
+        path: impl Into<PathBuf>,
+        designated_requirement: impl Into<String>,
         designated_requirement_hash: impl Into<String>,
-        executable_sha256: impl Into<String>,
+        sha256: impl Into<String>,
+        mode: u32,
+        size: u64,
+        device: u64,
+        inode: u64,
     ) -> Result<Self, MacosOwnerStoreError> {
-        let executable_path = executable_path.into();
-        let executable_text =
-            executable_path
-                .to_str()
-                .ok_or(MacosOwnerStoreError::InvalidOwnerIdentity {
-                    field: "executable_path",
-                    detail: "must be valid UTF-8",
-                })?;
+        let path = path.into();
+        let path_text = path
+            .to_str()
+            .ok_or(MacosOwnerStoreError::InvalidOwnerIdentity {
+                field: "executable_path",
+                detail: "must be valid UTF-8",
+            })?;
         validate_bounded_identity_text(
             "executable_path",
-            executable_text,
+            path_text,
             MAX_MACOS_EXECUTABLE_PATH_BYTES,
         )?;
-        if !executable_path.is_absolute() {
+        if !path.is_absolute() {
             return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
                 field: "executable_path",
                 detail: "must be absolute",
             });
         }
+        let designated_requirement = designated_requirement.into();
+        validate_bounded_identity_text(
+            "designated_requirement",
+            &designated_requirement,
+            8 * 1024,
+        )?;
         let designated_requirement_hash = designated_requirement_hash.into();
         validate_bounded_identity_text(
             "designated_requirement_hash",
             &designated_requirement_hash,
             MAX_MACOS_DESIGNATED_REQUIREMENT_HASH_BYTES,
         )?;
-        let executable_sha256 = executable_sha256.into();
-        if executable_sha256.len() != SHA256_HEX_BYTES
-            || !executable_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        {
+        if requirement_hash(&designated_requirement) != designated_requirement_hash {
+            return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
+                field: "designated_requirement_hash",
+                detail: "must be the SHA-256 of the exact designated requirement",
+            });
+        }
+        let sha256 = sha256.into();
+        if !is_sha256(&sha256) {
             return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
                 field: "executable_sha256",
                 detail: "must be exactly 64 lowercase hexadecimal bytes",
             });
         }
+        if mode > 0o777
+            || mode & 0o222 != 0
+            || mode & 0o400 == 0
+            || mode & 0o100 == 0
+            || size == 0
+            || size == u64::MAX
+            || device == 0
+            || inode == 0
+        {
+            return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
+                field: "executable_metadata",
+                detail: "must identify one nonempty immutable regular file",
+            });
+        }
+        Ok(Self {
+            path,
+            designated_requirement,
+            designated_requirement_hash,
+            sha256,
+            mode,
+            size,
+            device,
+            inode,
+        })
+    }
+
+    /// Absolute immutable-unit executable path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Exact designated requirement bound by the signed release provenance.
+    #[must_use]
+    pub fn designated_requirement(&self) -> &str {
+        &self.designated_requirement
+    }
+
+    /// SHA-256 of the exact designated requirement.
+    #[must_use]
+    pub fn designated_requirement_hash(&self) -> &str {
+        &self.designated_requirement_hash
+    }
+
+    /// SHA-256 of the exact retained executable bytes.
+    #[must_use]
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    /// Exact immutable executable permission bits.
+    #[must_use]
+    pub const fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    /// Exact immutable executable byte length.
+    #[must_use]
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Device identifier of the retained executable inode.
+    #[must_use]
+    pub const fn device(&self) -> u64 {
+        self.device
+    }
+
+    /// Inode identifier of the retained executable.
+    #[must_use]
+    pub const fn inode(&self) -> u64 {
+        self.inode
+    }
+}
+
+/// Immutable identity expected from a candidate or rollback unit publication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacosDirectLaunchdPublicationExpectation {
+    after_epoch: u64,
+    executable: MacosDirectLaunchdExecutableExpectation,
+}
+
+impl MacosDirectLaunchdPublicationExpectation {
+    /// Validate and construct an exact publication expectation.
+    pub fn new(
+        after_epoch: u64,
+        executable: MacosDirectLaunchdExecutableExpectation,
+    ) -> Result<Self, MacosOwnerStoreError> {
         Ok(Self {
             after_epoch,
-            executable_path,
-            designated_requirement_hash,
-            executable_sha256,
+            executable,
         })
     }
 
@@ -137,19 +257,25 @@ impl MacosDirectLaunchdPublicationExpectation {
     /// Exact executable path expected from the immutable unit.
     #[must_use]
     pub fn executable_path(&self) -> &Path {
-        &self.executable_path
+        self.executable.path()
     }
 
     /// Exact designated-requirement hash expected from the immutable unit.
     #[must_use]
     pub fn designated_requirement_hash(&self) -> &str {
-        &self.designated_requirement_hash
+        self.executable.designated_requirement_hash()
     }
 
     /// Exact executable SHA-256 expected by the immutable unit manifest.
     #[must_use]
     pub fn executable_sha256(&self) -> &str {
-        &self.executable_sha256
+        self.executable.sha256()
+    }
+
+    /// Complete retained executable expectation.
+    #[must_use]
+    pub const fn executable(&self) -> &MacosDirectLaunchdExecutableExpectation {
+        &self.executable
     }
 }
 
@@ -266,28 +392,28 @@ pub fn corroborate_newer_direct_launchd_owner(
             "newer macOS owner publication is not direct launchd",
         ));
     }
-    if record.active_identity.executable_path != expectation.executable_path {
+    if record.active_identity.executable_path != expectation.executable.path {
         return Err(MacosOwnerExecutionError::new(
             "newer direct launchd publication has the wrong executable path",
         ));
     }
-    if record.active_identity.designated_requirement_hash != expectation.designated_requirement_hash
+    if record.active_identity.designated_requirement_hash
+        != expectation.executable.designated_requirement_hash
     {
         return Err(MacosOwnerExecutionError::new(
             "newer direct launchd publication has the wrong designated requirement",
         ));
     }
-    let proof = corroborate_direct_launchd_owner(record, inspector)?;
-    if !inspector.executable_digest_matches(
-        expectation.executable_path(),
-        expectation.executable_sha256(),
-    )? {
+    require_direct_launchd_pid(record, inspector)?;
+    if !inspector.publication_identity_matches(&record.active_identity, expectation.executable())? {
         return Err(MacosOwnerExecutionError::new(
-            "direct launchd executable does not match the immutable unit manifest",
+            "direct launchd process does not match the retained immutable executable",
         ));
     }
     require_direct_launchd_pid(record, inspector)?;
-    Ok(Some(proof))
+    Ok(Some(MacosDirectLaunchdOwnerProof {
+        record: record.clone(),
+    }))
 }
 
 /// Wait for a newer exact direct-launchd publication and return its record.
@@ -312,8 +438,13 @@ pub fn wait_for_exact_direct_launchd_publication(
         .parent()
         .ok_or_else(|| MacosOwnerExecutionError::new("owner record has no parent directory"))?
         .to_path_buf();
-    fs::create_dir_all(&directory)
+    let metadata = fs::metadata(&directory)
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
+    if !metadata.is_dir() {
+        return Err(MacosOwnerExecutionError::new(
+            "owner record parent is not a directory",
+        ));
+    }
     let (signal_tx, signal_rx) = mpsc::sync_channel(1);
     let watched_path = owner_path.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
@@ -375,231 +506,6 @@ fn exact_published_record(
 }
 
 #[cfg(target_os = "macos")]
-mod native {
-    use std::fmt::Write as _;
-    use std::process::Command;
-
-    use core_foundation::{base::TCFType, data::CFData};
-    use security_framework::os::macos::code_signing::{
-        Flags as CodeSigningFlags, GuestAttributes, SecCode, SecRequirement,
-    };
-    use sha2::{Digest, Sha256};
-
-    use super::{
-        MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdInspector, MacosDirectLaunchdState,
-        MacosOwnerExecutionError, Path, parse_direct_launchd_service_state,
-    };
-
-    const MAX_CODESIGN_OUTPUT_BYTES: usize = 16 * 1024;
-    const MAX_DESIGNATED_REQUIREMENT_BYTES: usize = 8 * 1024;
-
-    /// Native exact-identity inspector for the current user's direct service.
-    #[derive(Debug, Clone, Copy)]
-    pub struct NativeMacosDirectLaunchdInspector {
-        uid: u32,
-    }
-
-    impl NativeMacosDirectLaunchdInspector {
-        /// Construct an inspector for the effective user's launchd GUI domain.
-        #[must_use]
-        pub fn new() -> Self {
-            Self {
-                uid: nix::unistd::Uid::effective().as_raw(),
-            }
-        }
-
-        fn target(&self) -> String {
-            format!("gui/{}/{MACOS_DIRECT_LAUNCHD_LABEL}", self.uid)
-        }
-    }
-
-    impl Default for NativeMacosDirectLaunchdInspector {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl MacosDirectLaunchdInspector for NativeMacosDirectLaunchdInspector {
-        fn inspect_direct_launchd(
-            &mut self,
-        ) -> Result<MacosDirectLaunchdState, MacosOwnerExecutionError> {
-            let output = Command::new("/bin/launchctl")
-                .args(["print", &self.target()])
-                .output()
-                .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-            parse_direct_launchd_service_state(
-                self.uid,
-                output.status.code(),
-                &output.stdout,
-                &output.stderr,
-            )
-        }
-
-        fn live_identity_matches(
-            &mut self,
-            identity: &crate::MacosOwnerIdentity,
-        ) -> Result<bool, MacosOwnerExecutionError> {
-            let Some(audit_token) = parse_audit_token(identity)? else {
-                return Ok(false);
-            };
-            let Some(code) = code_for_audit_token(&audit_token)? else {
-                return Ok(false);
-            };
-            if !code_path_matches(&code, &identity.executable_path)? {
-                return Ok(false);
-            }
-            let requirement_text = designated_requirement(&identity.executable_path)?;
-            if requirement_hash(&requirement_text) != identity.designated_requirement_hash {
-                return Ok(false);
-            }
-            let requirement = requirement_text
-                .parse::<SecRequirement>()
-                .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-            if code
-                .check_validity(CodeSigningFlags::STRICT_VALIDATE, &requirement)
-                .is_err()
-            {
-                return Ok(false);
-            }
-            code_for_audit_token(&audit_token)?
-                .map(|code| code_path_matches(&code, &identity.executable_path))
-                .transpose()
-                .map(Option::unwrap_or_default)
-        }
-
-        fn executable_digest_matches(
-            &mut self,
-            executable_path: &Path,
-            expected_sha256: &str,
-        ) -> Result<bool, MacosOwnerExecutionError> {
-            executable_digest(executable_path).map(|digest| digest == expected_sha256)
-        }
-    }
-
-    fn parse_audit_token(
-        identity: &crate::MacosOwnerIdentity,
-    ) -> Result<Option<[u8; 32]>, MacosOwnerExecutionError> {
-        let mut token = [0_u8; 32];
-        let mut words = identity.audit_token_identity.split(':');
-        for index in 0..8 {
-            let Some(word) = words.next() else {
-                return Ok(None);
-            };
-            if word.len() != 8 || !word.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Ok(None);
-            }
-            let value = u32::from_str_radix(word, 16)
-                .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-            if index == 5 && value != identity.pid {
-                return Ok(None);
-            }
-            token[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
-        }
-        Ok(words.next().is_none().then_some(token))
-    }
-
-    fn code_for_audit_token(
-        audit_token: &[u8; 32],
-    ) -> Result<Option<SecCode>, MacosOwnerExecutionError> {
-        let token_data = CFData::from_buffer(audit_token);
-        let mut attributes = GuestAttributes::new();
-        attributes.set_audit_token(token_data.as_concrete_TypeRef());
-        match SecCode::copy_guest_with_attribues(None, &attributes, CodeSigningFlags::NONE) {
-            Ok(code) => Ok(Some(code)),
-            Err(error) if error.code() == 100_003 => Ok(None),
-            Err(error) => Err(MacosOwnerExecutionError::new(error.to_string())),
-        }
-    }
-
-    fn code_path_matches(
-        code: &SecCode,
-        expected: &Path,
-    ) -> Result<bool, MacosOwnerExecutionError> {
-        let Some(observed) = code
-            .path(CodeSigningFlags::NONE)
-            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
-            .to_path()
-        else {
-            return Ok(false);
-        };
-        Ok(match (observed.canonicalize(), expected.canonicalize()) {
-            (Ok(observed), Ok(expected)) => observed == expected,
-            _ => false,
-        })
-    }
-
-    fn designated_requirement(path: &Path) -> Result<String, MacosOwnerExecutionError> {
-        let output = Command::new("/usr/bin/codesign")
-            .args(["-d", "-r-"])
-            .arg(path)
-            .output()
-            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-        if output.stdout.len() > MAX_CODESIGN_OUTPUT_BYTES
-            || output.stderr.len() > MAX_CODESIGN_OUTPUT_BYTES
-        {
-            return Err(MacosOwnerExecutionError::new(
-                "codesign designated-requirement output exceeds 16 KiB",
-            ));
-        }
-        if !output.status.success() {
-            return Err(MacosOwnerExecutionError::new(format!(
-                "codesign could not read the live designated requirement: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let stdout = std::str::from_utf8(&output.stdout).map_err(|_| {
-            MacosOwnerExecutionError::new("codesign returned a non-UTF-8 designated requirement")
-        })?;
-        let requirement = stdout.lines().find_map(|line| {
-            line.strip_prefix("designated => ")
-                .or_else(|| line.strip_prefix("# designated => "))
-        });
-        let Some(requirement) = requirement else {
-            return Err(MacosOwnerExecutionError::new(
-                "codesign omitted the live designated requirement",
-            ));
-        };
-        if requirement.is_empty() || requirement.len() > MAX_DESIGNATED_REQUIREMENT_BYTES {
-            return Err(MacosOwnerExecutionError::new(
-                "codesign designated requirement is empty or exceeds 8 KiB",
-            ));
-        }
-        Ok(requirement.to_owned())
-    }
-
-    fn requirement_hash(requirement: &str) -> String {
-        let digest = Sha256::digest(requirement.as_bytes());
-        let mut output = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            write!(&mut output, "{byte:02x}").expect("writing into a String cannot fail");
-        }
-        output
-    }
-
-    fn executable_digest(path: &Path) -> Result<String, MacosOwnerExecutionError> {
-        use std::io::Read as _;
-
-        let mut executable = hypercolor_platform_fs::open_no_follow(path)
-            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 8 * 1024];
-        loop {
-            let read = executable
-                .read(&mut buffer)
-                .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-        let digest = hasher.finalize();
-        let mut output = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            write!(&mut output, "{byte:02x}").expect("writing into a String cannot fail");
-        }
-        Ok(output)
-    }
-}
-
+mod native;
 #[cfg(target_os = "macos")]
 pub use native::NativeMacosDirectLaunchdInspector;

@@ -2,14 +2,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hypercolor_macos_owner::{
-    MacosDaemonOwner, MacosDirectLaunchdInspector, MacosDirectLaunchdPublicationExpectation,
-    MacosDirectLaunchdState, MacosOwnerExecutionError, MacosOwnerIdentity, MacosOwnerRecord,
-    MacosOwnerStore, corroborate_direct_launchd_owner, corroborate_newer_direct_launchd_owner,
-    parse_direct_launchd_service_state, wait_for_exact_direct_launchd_publication,
+    MacosDaemonOwner, MacosDirectLaunchdExecutableExpectation, MacosDirectLaunchdInspector,
+    MacosDirectLaunchdPublicationExpectation, MacosDirectLaunchdState, MacosOwnerExecutionError,
+    MacosOwnerIdentity, MacosOwnerRecord, MacosOwnerStore, corroborate_direct_launchd_owner,
+    corroborate_newer_direct_launchd_owner, parse_direct_launchd_service_state,
+    wait_for_exact_direct_launchd_publication,
 };
+use sha2::{Digest as _, Sha256};
 
 const UID: u32 = 501;
 const CANDIDATE_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CANDIDATE_REQUIREMENT: &str = "candidate-requirement";
 
 #[derive(Debug)]
 struct FakeInspector {
@@ -17,7 +20,7 @@ struct FakeInspector {
     final_state: Option<MacosDirectLaunchdState>,
     state_change_after: usize,
     identity_matches: bool,
-    executable_digest_matches: bool,
+    publication_identity_matches: bool,
     state_inspections: usize,
     identity_inspections: usize,
     digest_inspections: usize,
@@ -30,7 +33,7 @@ impl FakeInspector {
             final_state: None,
             state_change_after: usize::MAX,
             identity_matches: true,
-            executable_digest_matches: true,
+            publication_identity_matches: true,
             state_inspections: 0,
             identity_inspections: 0,
             digest_inspections: 0,
@@ -57,18 +60,19 @@ impl MacosDirectLaunchdInspector for FakeInspector {
         Ok(self.identity_matches)
     }
 
-    fn executable_digest_matches(
+    fn publication_identity_matches(
         &mut self,
-        _executable_path: &std::path::Path,
-        _expected_sha256: &str,
+        _identity: &MacosOwnerIdentity,
+        _executable: &MacosDirectLaunchdExecutableExpectation,
     ) -> Result<bool, MacosOwnerExecutionError> {
         self.digest_inspections += 1;
-        Ok(self.executable_digest_matches)
+        Ok(self.publication_identity_matches)
     }
 }
 
 fn identity(label: &str, path: &str, requirement: &str, pid: u32) -> MacosOwnerIdentity {
-    MacosOwnerIdentity::new(label, path, requirement, pid).expect("fixture identity should build")
+    MacosOwnerIdentity::new(label, path, hex_digest(requirement.as_bytes()), pid)
+        .expect("fixture identity should build")
 }
 
 fn record(
@@ -89,13 +93,30 @@ fn record(
 }
 
 fn expectation(epoch: u64) -> MacosDirectLaunchdPublicationExpectation {
-    MacosDirectLaunchdPublicationExpectation::new(
-        epoch,
+    let executable = MacosDirectLaunchdExecutableExpectation::new(
         "/opt/hypercolor/units/candidate/bin/hypercolor-daemon",
-        "candidate-requirement",
+        CANDIDATE_REQUIREMENT,
+        hex_digest(CANDIDATE_REQUIREMENT.as_bytes()),
         CANDIDATE_SHA256,
+        0o555,
+        1024,
+        1,
+        2,
     )
-    .expect("fixture expectation should build")
+    .expect("fixture executable expectation should build");
+    MacosDirectLaunchdPublicationExpectation::new(epoch, executable)
+        .expect("fixture expectation should build")
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            write!(&mut output, "{byte:02x}").expect("write digest");
+            output
+        })
 }
 
 #[test]
@@ -239,18 +260,18 @@ fn exact_publication_ignores_stale_epoch_and_rejects_newer_identity_drift() {
         81,
     );
     let mut digest_mismatch = FakeInspector::loaded(81);
-    digest_mismatch.executable_digest_matches = false;
+    digest_mismatch.publication_identity_matches = false;
     assert!(
         corroborate_newer_direct_launchd_owner(&exact_record, &expected, &mut digest_mismatch,)
             .is_err()
     );
-    assert_eq!(digest_mismatch.state_inspections, 2);
-    assert_eq!(digest_mismatch.identity_inspections, 1);
+    assert_eq!(digest_mismatch.state_inspections, 1);
+    assert_eq!(digest_mismatch.identity_inspections, 0);
     assert_eq!(digest_mismatch.digest_inspections, 1);
 
     let mut post_digest_launchd_drift = FakeInspector::loaded(81);
     post_digest_launchd_drift.final_state = Some(MacosDirectLaunchdState::Loaded { pid: 82 });
-    post_digest_launchd_drift.state_change_after = 2;
+    post_digest_launchd_drift.state_change_after = 1;
     assert!(
         corroborate_newer_direct_launchd_owner(
             &exact_record,
@@ -259,7 +280,7 @@ fn exact_publication_ignores_stale_epoch_and_rejects_newer_identity_drift() {
         )
         .is_err()
     );
-    assert_eq!(post_digest_launchd_drift.state_inspections, 3);
+    assert_eq!(post_digest_launchd_drift.state_inspections, 2);
     assert_eq!(post_digest_launchd_drift.digest_inspections, 1);
 }
 
@@ -283,10 +304,10 @@ impl MacosDirectLaunchdInspector for RecordDriftInspector {
         Ok(true)
     }
 
-    fn executable_digest_matches(
+    fn publication_identity_matches(
         &mut self,
-        _executable_path: &std::path::Path,
-        _expected_sha256: &str,
+        _identity: &MacosOwnerIdentity,
+        _executable: &MacosDirectLaunchdExecutableExpectation,
     ) -> Result<bool, MacosOwnerExecutionError> {
         self.store
             .publish_owner(
@@ -347,8 +368,8 @@ fn exact_wait_returns_the_newer_corroborated_record() {
     let published = publisher.join().expect("publisher should finish");
     assert_eq!(matched, published);
     assert_eq!(matched.owner_epoch, prior.owner_epoch + 1);
-    assert_eq!(inspector.state_inspections, 3);
-    assert_eq!(inspector.identity_inspections, 1);
+    assert_eq!(inspector.state_inspections, 2);
+    assert_eq!(inspector.identity_inspections, 0);
     assert_eq!(inspector.digest_inspections, 1);
 }
 
@@ -436,29 +457,41 @@ fn exact_wait_rejects_a_record_replaced_during_corroboration() {
 #[test]
 fn expectation_rejects_unbounded_or_nonabsolute_identity_fields() {
     assert!(
-        MacosDirectLaunchdPublicationExpectation::new(
-            0,
+        MacosDirectLaunchdExecutableExpectation::new(
             PathBuf::from("relative"),
             "hash",
+            hex_digest(b"hash"),
             CANDIDATE_SHA256,
+            0o555,
+            1,
+            1,
+            1,
         )
         .is_err()
     );
     assert!(
-        MacosDirectLaunchdPublicationExpectation::new(
-            0,
+        MacosDirectLaunchdExecutableExpectation::new(
             PathBuf::from("/absolute"),
             "",
+            hex_digest(b""),
             CANDIDATE_SHA256,
+            0o555,
+            1,
+            1,
+            1,
         )
         .is_err()
     );
     assert!(
-        MacosDirectLaunchdPublicationExpectation::new(
-            0,
+        MacosDirectLaunchdExecutableExpectation::new(
             PathBuf::from("/absolute"),
             "requirement",
+            hex_digest(b"requirement"),
             "not-a-sha256",
+            0o555,
+            1,
+            1,
+            1,
         )
         .is_err()
     );
