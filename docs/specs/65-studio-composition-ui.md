@@ -11,6 +11,8 @@
 
 **Status:** Ready to build (revised after Codex cross-model review and a
 pre-build foundation audit, 2026-05-17)
+**API status:** Historical scene API snapshot. The canonical live scene tree in
+[Spec 78](78-api-resource-model.md) supersedes its route and status examples.
 **Author:** Nova
 **Date:** 2026-05-17
 **Crates:** `hypercolor-ui`

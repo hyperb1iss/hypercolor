@@ -9,6 +9,8 @@
 > where precise work happens.
 
 **Status:** Implemented — `ViewportDesigner` Leptos component shipped in `hypercolor-ui`
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-04-17
 **Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`

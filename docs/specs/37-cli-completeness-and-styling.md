@@ -7,6 +7,8 @@
 > connection profiles and WebSocket streaming subscriptions.
 
 **Status:** Draft
+**API status:** Historical command and route snapshot. The resource model in
+[Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-04-09
 **Crates:** `hypercolor-cli`, `hypercolor-daemon` (minor)

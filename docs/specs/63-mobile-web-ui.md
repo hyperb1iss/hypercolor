@@ -7,6 +7,8 @@
 
 **Status:** Proposed — implementation-ready after 3 Codex review passes
 (2026-05-16)
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-05-16
 **Crates:** `hypercolor-ui` (the mobile shell is entirely UI-side; no

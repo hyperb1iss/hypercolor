@@ -1,5 +1,10 @@
 # 26 — Multi-Server Network Discovery & Remote Access
 
+> **API status:** Historical design snapshot. The unified `/api/v1/system`
+> resource and the route inventory in
+> [Spec 78](../specs/78-api-resource-model.md) supersede the endpoint examples
+> in this document.
+
 ## Overview
 
 Enable Hypercolor daemons to advertise themselves on the local network via

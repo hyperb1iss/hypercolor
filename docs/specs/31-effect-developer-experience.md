@@ -3,6 +3,8 @@
 > From zero to a running RGB effect in under a minute.
 
 **Status:** Draft
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Scope:** SDK (npm packages), Daemon (install endpoint), CLI (install command), UI (upload)
 **Date:** 2026-04-16
 **Runtime:** Bun (primary); Node.js 24 LTS (minimum for library consumers)

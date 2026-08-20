@@ -1,6 +1,8 @@
 # 47. Device Metrics
 
-**Status:** Implemented
+**Status:** Superseded by [Spec 78](78-api-resource-model.md). Device metrics
+remain available through the `device_metrics` WebSocket topic and canonical
+diagnostics, but no longer have a dedicated REST resource.
 
 ## Summary
 

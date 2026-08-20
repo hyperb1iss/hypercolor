@@ -634,7 +634,7 @@ Acceptance criteria for the v1 milestone:
 
 1. With Hypercolor running and an effect active, observe daemon CPU baseline (window visible).
 2. Hide window via close button.
-3. Within 1 second, `/api/v1/status` reports `preview_runtime.canvas_demand.subscribers = 0`.
+3. Within 1 second, `/api/v1/system` reports `status.preview_runtime.canvas_demand.subscribers = 0`.
 4. CPU drops measurably (target: at least 30% reduction in daemon CPU when the only
    active subscriber was the UI).
 5. Show window — subscribers increment, CPU returns to baseline.
@@ -738,7 +738,7 @@ detects ANSI capability — keep that for stdout, disable ANSI for files.
 Tray menu item: **"Export Diagnostics"** → produces a zip at `~/Desktop/hypercolor-diagnostics-<timestamp>.zip` containing:
 
 - Last 7 days of `logs/app.log*`, `logs/daemon.log*`
-- Output of `/api/v1/status`
+- Authorized status data from `/api/v1/system`
 - Output of `/api/v1/diagnose`
 - Sanitized config (`hypercolor.toml` with API keys redacted)
 - `device-settings.json`, `runtime-state.json`, `layouts.json`, `profiles.json`

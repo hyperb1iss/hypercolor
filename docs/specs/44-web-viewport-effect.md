@@ -6,6 +6,8 @@
 > Servo rendering path and the existing region-picker UI patterns.
 
 **Status:** Implemented — `WebViewportRenderer` fully implemented in `hypercolor-core`
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-04-12
 **Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-ui`, `hypercolor`

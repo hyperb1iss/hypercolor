@@ -9,6 +9,8 @@
 > needed to ship it.
 
 **Status:** Implemented
+**API status:** Historical scene API snapshot. The canonical live scene tree in
+[Spec 78](78-api-resource-model.md) supersedes its route and status examples.
 **Author:** Nova
 **Date:** 2026-05-17
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`

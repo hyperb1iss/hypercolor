@@ -11,6 +11,8 @@
 > encodes the setup workflow (calibration loop, MCP prompt, agent skill).
 
 **Status:** Draft
+**API status:** Historical scene and MCP snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-06-12
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`

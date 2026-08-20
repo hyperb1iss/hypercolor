@@ -402,7 +402,7 @@ state updates. This keeps the menu current without polling:
 
 The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon on Linux):
 
-1. Check if daemon is running (GET `/api/v1/status`)
+1. Check if daemon is running (GET `/api/v1/system`)
 2. If not running, attempt to start it (`hypercolor service start`)
 3. Wait up to 5 seconds for health check
 4. Open `http://localhost:9420` in the default browser:
