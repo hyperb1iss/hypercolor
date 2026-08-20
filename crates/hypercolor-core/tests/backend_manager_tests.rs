@@ -16,7 +16,9 @@ use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
 };
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo};
+use hypercolor_types::device::{
+    DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
@@ -171,7 +173,7 @@ impl DeviceBackend for SlowRecordingBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 10,
                 topology: DeviceTopologyHint::Strip,
@@ -270,7 +272,7 @@ impl DeviceBackend for FailingDisconnectBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -327,7 +329,7 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -537,7 +539,7 @@ impl DeviceBackend for FastFrameSinkBackend {
             model: None,
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("test", "fast_sink", ConnectionType::Usb),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -624,7 +626,7 @@ impl DeviceBackend for DirectControlRecordingBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -734,7 +736,7 @@ impl DeviceBackend for FailOnceRecordingBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -797,15 +799,15 @@ impl MetadataRefreshingBackend {
                 model: Some("Connected".to_owned()),
                 connection_type: ConnectionType::Network,
                 origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-                zones: vec![
-                    ZoneInfo {
+                segments: vec![
+                    SegmentInfo {
                         name: "Pump Ring".to_owned(),
                         led_count: 4,
                         topology: DeviceTopologyHint::Ring { count: 4 },
                         color_format: DeviceColorFormat::Rgb,
                         layout_hint: None,
                     },
-                    ZoneInfo {
+                    SegmentInfo {
                         name: "Case Strip".to_owned(),
                         led_count: 8,
                         topology: DeviceTopologyHint::Strip,
@@ -848,7 +850,7 @@ impl DeviceBackend for MetadataRefreshingBackend {
             model: Some("Initial".to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 1,
                 topology: DeviceTopologyHint::Point,
@@ -960,7 +962,7 @@ impl DeviceBackend for DiscoverRetryBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -1082,7 +1084,7 @@ impl DeviceBackend for CleanupRetryBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -1163,7 +1165,7 @@ impl DeviceBackend for TimeoutConnectBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -1223,7 +1225,7 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
             model: None,
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Usb),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Strip,
@@ -1282,7 +1284,7 @@ impl DeviceBackend for DisplayRecordingBackend {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Display".to_owned(),
                 led_count: 0,
                 topology: DeviceTopologyHint::Display {
@@ -1446,15 +1448,15 @@ fn make_multi_zone_device_info(
         model: Some("defy_wired".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Left Keys".to_owned(),
                 led_count: left_led_count,
                 topology: DeviceTopologyHint::Custom,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Right Keys".to_owned(),
                 led_count: right_led_count,
                 topology: DeviceTopologyHint::Custom,
@@ -2296,9 +2298,9 @@ async fn connected_device_info_returns_backend_metadata() {
     assert_eq!(info.id, device_id);
     assert_eq!(info.name, "Connected Metadata Device");
     assert_eq!(info.firmware_version.as_deref(), Some("2.0.0"));
-    assert_eq!(info.zones.len(), 2);
+    assert_eq!(info.segments.len(), 2);
     assert_eq!(
-        info.zones[0].topology,
+        info.segments[0].topology,
         DeviceTopologyHint::Ring { count: 4 }
     );
     assert_eq!(info.capabilities.led_count, 12);
@@ -2946,15 +2948,15 @@ fn unassigned_output_zones_treats_slot_ids_as_zone_aliases() {
             model: Some("nollie_32".to_owned()),
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-            zones: vec![
-                ZoneInfo {
+            segments: vec![
+                SegmentInfo {
                     name: "Channel 01".to_owned(),
                     led_count: 256,
                     topology: DeviceTopologyHint::Strip,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
-                ZoneInfo {
+                SegmentInfo {
                     name: "Channel 02".to_owned(),
                     led_count: 256,
                     topology: DeviceTopologyHint::Strip,
@@ -3418,15 +3420,15 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
             model: Some("defy_wired".to_owned()),
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-            zones: vec![
-                ZoneInfo {
+            segments: vec![
+                SegmentInfo {
                     name: "Left Keys".to_owned(),
                     led_count: 2,
                     topology: DeviceTopologyHint::Custom,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
-                ZoneInfo {
+                SegmentInfo {
                     name: "Right Keys".to_owned(),
                     led_count: 4,
                     topology: DeviceTopologyHint::Custom,
@@ -3517,15 +3519,15 @@ async fn write_frame_routes_slot_alias_zone_name_to_hardware_segment() {
             model: Some("nollie_32".to_owned()),
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-            zones: vec![
-                ZoneInfo {
+            segments: vec![
+                SegmentInfo {
                     name: "Channel 01".to_owned(),
                     led_count: 2,
                     topology: DeviceTopologyHint::Strip,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
-                ZoneInfo {
+                SegmentInfo {
                     name: "Channel 02".to_owned(),
                     led_count: 3,
                     topology: DeviceTopologyHint::Strip,
@@ -3603,15 +3605,15 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
             model: Some("defy_wired".to_owned()),
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-            zones: vec![
-                ZoneInfo {
+            segments: vec![
+                SegmentInfo {
                     name: "Left Keys".to_owned(),
                     led_count: 2,
                     topology: DeviceTopologyHint::Custom,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
-                ZoneInfo {
+                SegmentInfo {
                     name: "Right Keys".to_owned(),
                     led_count: 4,
                     topology: DeviceTopologyHint::Custom,

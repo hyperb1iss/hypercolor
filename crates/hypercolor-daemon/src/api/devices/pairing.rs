@@ -27,7 +27,7 @@ pub use hypercolor_types::api::devices::{
     DeletePairingResponse, PairDeviceResponse as GenericPairDeviceResponse,
 };
 
-/// `POST /api/v1/devices/:id/pair` — pair a discovered driver-backed device.
+/// `POST /api/v1/devices/{id}/pair` — pair a discovered driver-backed device.
 pub async fn pair_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -44,7 +44,7 @@ pub async fn pair_device(
     }
 }
 
-/// `DELETE /api/v1/devices/:id/pair` — forget stored pairing credentials.
+/// `DELETE /api/v1/devices/{id}/pair` — forget stored pairing credentials.
 pub async fn delete_pairing(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

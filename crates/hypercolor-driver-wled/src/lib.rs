@@ -491,9 +491,9 @@ pub fn wled_device_control_surface(
         40,
     );
 
-    if let Some(rgbw) = device.info.zones.first().map(|zone| {
+    if let Some(rgbw) = device.info.segments.first().map(|segment| {
         matches!(
-            zone.color_format,
+            segment.color_format,
             hypercolor_types::device::DeviceColorFormat::Rgbw
         )
     }) {
@@ -924,9 +924,9 @@ pub fn resolve_wled_probe_targets_from_sources(
 fn tracked_wled_target(tracked: &DriverTrackedDevice) -> Option<WledKnownTarget> {
     let ip = tracked.metadata.get("ip")?.parse::<IpAddr>().ok()?;
     let ip = validate_ip(ip).ok()?;
-    let rgbw = tracked.info.zones.first().map(|zone| {
+    let rgbw = tracked.info.segments.first().map(|segment| {
         matches!(
-            zone.color_format,
+            segment.color_format,
             hypercolor_types::device::DeviceColorFormat::Rgbw
         )
     });

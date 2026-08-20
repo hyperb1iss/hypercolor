@@ -5,7 +5,7 @@
  * Assigns each display-category effect (face) to the Face Dev simulator
  * displays, subscribes the keyed `display_preview` WebSocket topic per device so
  * the display worker encodes simulator frames, then snapshots
- * `/displays/{id}/preview.jpg` into the shared screenshot drafts tree:
+ * `/displays/{id}/frame` into the shared screenshot drafts tree:
  *
  *   effects/screenshots/drafts/<slug>/default/rank-1.png   (round 480x480)
  *   effects/screenshots/drafts/<slug>/strip/rank-1.png     (strip 960x160)
@@ -194,7 +194,7 @@ async function restoreFace(daemon: string, deviceId: string, prior: PriorFace | 
 
 async function snapPreview(daemon: string, deviceId: string): Promise<Uint8Array | null> {
     for (let attempt = 0; attempt < SNAP_ATTEMPTS; attempt += 1) {
-        const response = await fetch(`${daemon}/api/v1/displays/${deviceId}/preview.jpg`)
+        const response = await fetch(`${daemon}/api/v1/displays/${deviceId}/frame`)
         if (response.ok) return new Uint8Array(await response.arrayBuffer())
         await sleep(SNAP_RETRY_MS)
     }

@@ -39,7 +39,6 @@ from ._generated.api.scenes import (
     list_scenes as generated_list_scenes,
 )
 from ._generated.api.system import (
-    get_status as generated_get_status,
     health_check as generated_health_check,
     list_audio_devices as generated_list_audio_devices,
 )
@@ -87,7 +86,7 @@ from .models.library import (
     Preset,
 )
 from .models.scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
-from .models.system import HealthStatus, OutputState, SystemState
+from .models.system import HealthStatus, OutputState, SystemResource, SystemState
 from .models.zone import Zone
 from .websocket import HypercolorEventStream
 
@@ -119,7 +118,16 @@ def _etag_revision(response: httpx.Response) -> int | None:
         return None
 
 
-_DEVICE_FILTERS = {"offset", "limit", "status", "backend", "backend_id", "driver", "q"}
+_DEVICE_FILTERS = {
+    "offset",
+    "limit",
+    "status",
+    "backend",
+    "backend_id",
+    "driver",
+    "q",
+    "include",
+}
 _SCENE_FILTERS: set[str] = set()
 
 
@@ -177,10 +185,10 @@ class HypercolorClient:
     async def get_status(self) -> SystemState:
         """Return the current daemon status snapshot."""
 
-        return await self._generated_model(
-            generated_get_status._get_kwargs(),
-            SystemState,
-        )
+        system = await self._request_model("GET", "/system", SystemResource)
+        if system.status is None:
+            raise HypercolorAuthenticationError("System status requires daemon read access")
+        return system.status
 
     async def get_state(self) -> SystemState:
         """Backward-compatible alias for :meth:`get_status`."""
@@ -253,6 +261,7 @@ class HypercolorClient:
                 backend_id=_generated_param(backend_id),
                 driver=_generated_param(filters.get("driver")),
                 q=_generated_param(filters.get("q")),
+                include=_generated_param(filters.get("include")),
             ),
             Device,
         )

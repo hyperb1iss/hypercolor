@@ -173,10 +173,10 @@ async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
 #[tokio::test]
 async fn get_status_maps_the_system_response_without_an_active_effect_call() {
     let router = Router::new().route(
-        "/api/v1/status",
+        "/api/v1/system",
         get(|| async {
             Json(json!({
-                "data": {
+                "data": { "status": {
                     "running": true,
                     "global_brightness": 42,
                     "device_count": 3,
@@ -194,7 +194,7 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
                         "consecutive_misses": 0,
                         "total_frames": 12_000
                     }
-                }
+                }}
             }))
         }),
     );
@@ -223,10 +223,10 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
 #[tokio::test]
 async fn get_status_reads_fps_from_the_render_loop_block() {
     let router = Router::new().route(
-        "/api/v1/status",
+        "/api/v1/system",
         get(|| async {
             Json(json!({
-                "data": {
+                "data": { "status": {
                     "running": true,
                     "global_brightness": 80,
                     "device_count": 0,
@@ -237,7 +237,7 @@ async fn get_status_reads_fps_from_the_render_loop_block() {
                         "target_fps": 45,
                         "actual_fps": 44.2
                     }
-                }
+                }}
             }))
         }),
     );
@@ -253,16 +253,16 @@ async fn get_status_reads_fps_from_the_render_loop_block() {
 #[tokio::test]
 async fn get_status_survives_a_status_payload_without_a_render_loop() {
     let router = Router::new().route(
-        "/api/v1/status",
+        "/api/v1/system",
         get(|| async {
             Json(json!({
-                "data": {
+                "data": { "status": {
                     "running": false,
                     "global_brightness": 10,
                     "device_count": 0,
                     "active_effect": null,
                     "active_scene": null
-                }
+                }}
             }))
         }),
     );
@@ -277,7 +277,7 @@ async fn get_status_survives_a_status_payload_without_a_render_loop() {
 #[tokio::test]
 async fn rest_client_sends_bearer_token_when_configured() {
     let router = Router::new().route(
-        "/api/v1/status",
+        "/api/v1/system",
         get(|headers: HeaderMap| async move {
             assert_eq!(
                 headers
@@ -286,14 +286,14 @@ async fn rest_client_sends_bearer_token_when_configured() {
                 Some("Bearer hc_tui_test")
             );
             Json(json!({
-                "data": {
+                "data": { "status": {
                     "running": true,
                     "global_brightness": 1,
                     "device_count": 0,
                     "active_effect": null,
                     "active_scene": null,
                     "active_scene_snapshot_locked": false
-                }
+                }}
             }))
         }),
     );
@@ -455,7 +455,7 @@ async fn get_control_surface_encodes_full_surface_id() {
     let captured_uri = Arc::new(Mutex::new(None::<String>));
     let router = Router::new()
         .route(
-            "/api/v1/control-surfaces/{surface_id}",
+            "/api/v1/control-surfaces/{id}",
             get(
                 |Path(surface_id): Path<String>,
                  State(captured_uri): State<Arc<Mutex<Option<String>>>>,
@@ -505,7 +505,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
     let captured_action = Arc::new(Mutex::new(None::<Value>));
     let router = Router::new()
         .route(
-            "/api/v1/control-surfaces/{surface_id}/values",
+            "/api/v1/control-surfaces/{id}/values",
             patch(
                 |Path(surface_id): Path<String>,
                  State((captured_patch, _captured_action)): State<CapturedControlPayloads>,
@@ -527,7 +527,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
             ),
         )
         .route(
-            "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+            "/api/v1/control-surfaces/{id}/actions/{action}",
             post(
                 |Path((surface_id, action_id)): Path<(String, String)>,
                  State((_captured_patch, captured_action)): State<CapturedControlPayloads>,

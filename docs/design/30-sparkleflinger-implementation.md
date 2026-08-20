@@ -549,7 +549,7 @@ plus frame-completion intervals and a reuse history for aggregate counts.
 
 Three surfaces read from the tracker:
 
-**REST `GET /api/v1/status`** — includes a `latest_frame` object with frame
+**REST `GET /api/v1/system`** includes authorized `status.latest_frame` data with frame
 token, total ms, wake late ms, frame age ms, logical layer count, render
 group count, copy stats, and a `render_surfaces` sub-object with slot state
 

@@ -15,9 +15,7 @@ use anyhow::{Result, bail};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
-use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigView,
@@ -69,7 +67,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DriverTransportKind, ZoneInfo,
+    DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
@@ -1488,13 +1486,13 @@ async fn spa_fallback_serves_index_html_for_client_routes() {
 }
 
 #[tokio::test]
-async fn status_returns_200_with_envelope() {
+async fn system_returns_identity_and_status_with_envelope() {
     let app = test_app();
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1505,20 +1503,22 @@ async fn status_returns_200_with_envelope() {
 
     let json = body_json(response).await;
     assert!(
-        json["data"]["running"]
+        json["data"]["status"]["running"]
             .as_bool()
             .expect("running should be bool")
     );
     assert!(
-        json["data"]["global_brightness"].as_u64().is_some(),
+        json["data"]["status"]["global_brightness"]
+            .as_u64()
+            .is_some(),
         "global_brightness should be an integer percentage"
     );
     assert!(
-        json["data"]["active_scene"].is_string(),
+        json["data"]["status"]["active_scene"].is_string(),
         "active_scene should be a string"
     );
     assert!(
-        json["data"]["active_scene_snapshot_locked"].is_boolean(),
+        json["data"]["status"]["active_scene_snapshot_locked"].is_boolean(),
         "active_scene_snapshot_locked should be a bool"
     );
     assert!(json["meta"]["api_version"].is_string());
@@ -1534,27 +1534,27 @@ async fn status_returns_200_with_envelope() {
         "request_id should start with req_"
     );
     assert_eq!(
-        json["data"]["config_path"],
+        json["data"]["status"]["config_path"],
         serde_json::json!(default_config_path())
     );
     assert!(
-        json["data"]["data_dir"]
+        json["data"]["status"]["data_dir"]
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "data_dir should be a non-empty string"
     );
     assert!(
-        json["data"]["cache_dir"]
+        json["data"]["status"]["cache_dir"]
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "cache_dir should be a non-empty string"
     );
     assert!(
-        json["data"]["audio_available"].is_boolean(),
+        json["data"]["status"]["audio_available"].is_boolean(),
         "audio_available should be a bool"
     );
     assert_eq!(
-        json["data"]["capture_available"],
+        json["data"]["status"]["capture_available"],
         serde_json::json!(
             cfg!(target_os = "windows")
                 || (cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some())
@@ -1586,14 +1586,14 @@ async fn status_reports_stale_source_health_without_captured_contents() {
     let response = test_app_with_state(state)
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
     let json = body_json(response).await;
-    let input = &json["data"]["input"];
+    let input = &json["data"]["status"]["input"];
     let stale = input["sources"]
         .as_array()
         .expect("sources should be an array")
@@ -1613,6 +1613,35 @@ async fn status_reports_stale_source_health_without_captured_contents() {
             .expect("input status should serialize")
             .contains(PRIVACY_SENTINEL)
     );
+}
+
+#[tokio::test]
+async fn diagnose_default_set_includes_memory_as_a_finding() {
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/diagnose")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let finding = json["data"]["checks"]
+        .as_array()
+        .expect("diagnose checks should be an array")
+        .iter()
+        .find(|check| check["name"] == "servo_memory")
+        .expect("default diagnostics should include Servo memory");
+    assert_eq!(finding["category"], "memory");
+    assert!(matches!(
+        finding["status"].as_str(),
+        Some("pass" | "warning" | "fail")
+    ));
 }
 
 #[tokio::test]
@@ -1657,7 +1686,7 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
         Duration::from_secs(1),
         app.clone().oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         ),
@@ -1667,26 +1696,26 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .expect("status request should succeed");
     let json = body_json(response).await;
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["admission_enforced"],
+        json["data"]["status"]["screen_capture_capacity"]["admission_enforced"],
         true
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
         2_000_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
         1_500_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_available_bytes"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_available_bytes"],
         1_500_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
+        json["data"]["status"]["screen_capture_capacity"]["steady_total_byte_budget"],
         1_000_000
     );
-    let failed = json["data"]["input"]["sources"]
+    let failed = json["data"]["status"]["input"]["sources"]
         .as_array()
         .expect("sources should be an array")
         .iter()
@@ -1765,7 +1794,7 @@ async fn status_reports_stopped_render_loop_as_not_running() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1774,8 +1803,8 @@ async fn status_reports_stopped_render_loop_as_not_running() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["running"], serde_json::json!(false));
-    assert_eq!(json["data"]["render_loop"]["state"], "stopped");
+    assert_eq!(json["data"]["status"]["running"], serde_json::json!(false));
+    assert_eq!(json["data"]["status"]["render_loop"]["state"], "stopped");
 }
 
 #[tokio::test]
@@ -1792,7 +1821,7 @@ async fn status_prefers_live_config_manager_path() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1803,7 +1832,7 @@ async fn status_prefers_live_config_manager_path() {
 
     let json = body_json(response).await;
     assert_eq!(
-        json["data"]["config_path"],
+        json["data"]["status"]["config_path"],
         serde_json::json!(custom_config_path.display().to_string())
     );
 }
@@ -1847,7 +1876,7 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
     let status_response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1855,7 +1884,7 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         .expect("failed to execute request");
     assert_eq!(status_response.status(), StatusCode::OK);
     let status_json = body_json(status_response).await;
-    assert_eq!(status_json["data"]["global_brightness"], 42);
+    assert_eq!(status_json["data"]["status"]["global_brightness"], 42);
 
     let device_settings_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
         .expect("device settings file should exist");
@@ -3782,7 +3811,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -3815,7 +3844,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
         model: Some("LCD".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "LCD".to_owned(),
             led_count: 320 * 320,
             topology: DeviceTopologyHint::Display {
@@ -3859,7 +3888,7 @@ async fn insert_test_hue_bridge_device(
         model: Some("Bridge".to_owned()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Bridge".to_owned(),
             led_count: 1,
             topology: DeviceTopologyHint::Point,
@@ -3906,7 +3935,7 @@ async fn insert_test_nanoleaf_device(
         model: Some("Shapes".to_owned()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Panel".to_owned(),
             led_count: 12,
             topology: DeviceTopologyHint::Matrix { rows: 3, cols: 4 },
@@ -3946,7 +3975,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
             .with_protocol_id("asus/aura-smbus"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "GPU".to_owned(),
             led_count: 24,
             topology: DeviceTopologyHint::Strip,
@@ -5645,7 +5674,7 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
 }
 
 #[tokio::test]
-async fn list_devices_includes_structured_zone_topology_hints() {
+async fn list_devices_includes_structured_segment_topology_hints() {
     let state = Arc::new(isolated_state());
     let id = DeviceId::new();
     let info = DeviceInfo {
@@ -5656,7 +5685,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Panel".to_owned(),
             led_count: 96,
             topology: DeviceTopologyHint::Matrix { rows: 6, cols: 16 },
@@ -5694,151 +5723,13 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         json["data"]["items"][0]["layout_device_id"],
         "wled:matrix-panel"
     );
-    let zone = &json["data"]["items"][0]["zones"][0];
-    assert_eq!(zone["name"], "Panel");
-    assert_eq!(zone["topology_hint"]["type"], "matrix");
-    assert_eq!(zone["topology_hint"]["rows"], 6);
-    assert_eq!(zone["topology_hint"]["cols"], 16);
-}
-
-#[tokio::test]
-async fn debug_output_queues_returns_empty_snapshot() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/devices/debug/queues")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["queue_count"], 0);
-    assert_eq!(json["data"]["mapped_device_count"], 0);
-    assert_eq!(
-        json["data"]["queues"]
-            .as_array()
-            .expect("queues should be an array")
-            .len(),
-        0
-    );
-}
-
-#[tokio::test]
-async fn list_device_metrics_returns_seeded_snapshot() {
-    let state = Arc::new(isolated_state());
-    let device_id = DeviceId::new();
-    state.device_metrics.store(Arc::new(DeviceMetricsSnapshot {
-        taken_at_ms: 1_234,
-        items: vec![DeviceMetrics {
-            id: device_id,
-            backend_id: "usb".to_owned(),
-            mapped_layout_ids: vec!["layout-device".to_owned()],
-            uses_frame_sink: true,
-            worker_finished: false,
-            worker_recoveries: 3,
-            delivered_fps: 59.5,
-            accepted_fps: 60.5,
-            fps_sent: 59.5,
-            fps_queued: 60.0,
-            fps_actual: 59.5,
-            fps_target: 60,
-            target_interval_ms: Some(17),
-            payload_bps_estimate: 1_024,
-            avg_latency_ms: 12,
-            avg_queue_wait_ms: 4,
-            avg_write_ms: 8,
-            avg_transport_latency_ms: 8,
-            frames_received: 121,
-            accepted: 122,
-            frames_sent: 120,
-            transport_started: 122,
-            transport_completed: 120,
-            transport_failed: 2,
-            completed_payload_bytes: 61_440,
-            frames_suppressed: 0,
-            frames_dropped: 3,
-            coalesced: 3,
-            coalesced_target_cadence: 2,
-            coalesced_backend_overrun: 1,
-            errors_total: 2,
-            write_failure_warnings_total: 1,
-            last_error: Some("socket timeout".to_owned()),
-            last_sent_ago_ms: Some(45),
-            last_sequence: 121,
-            queue_generation: 7,
-            last_transport_started_sequence: 121,
-            last_transport_completed_sequence: 120,
-            last_transport_failed_sequence: 121,
-        }],
-    }));
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/devices/metrics")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["items"][0]["worker_recoveries"], 3);
-    assert_eq!(json["data"]["taken_at_ms"], 1_234);
-    assert_eq!(json["data"]["items"][0]["id"], device_id.to_string());
-    assert_eq!(json["data"]["items"][0]["fps_target"], 60);
-    assert_eq!(json["data"]["items"][0]["delivered_fps"], 59.5);
-    assert_eq!(json["data"]["items"][0]["accepted"], 122);
-    assert_eq!(json["data"]["items"][0]["transport_completed"], 120);
-    assert_eq!(json["data"]["items"][0]["transport_failed"], 2);
-    assert_eq!(json["data"]["items"][0]["coalesced_target_cadence"], 2);
-    assert_eq!(json["data"]["items"][0]["coalesced_backend_overrun"], 1);
-    assert_eq!(json["data"]["items"][0]["queue_generation"], 7);
-    assert_eq!(json["data"]["items"][0]["payload_bps_estimate"], 1_024);
-    assert_eq!(json["data"]["items"][0]["errors_total"], 2);
-    assert_eq!(json["data"]["items"][0]["last_error"], "socket timeout");
-    assert!(
-        (json["data"]["items"][0]["fps_actual"]
-            .as_f64()
-            .expect("fps_actual should be numeric")
-            - 59.5)
-            .abs()
-            < f64::EPSILON
-    );
-}
-
-#[tokio::test]
-async fn debug_device_routing_returns_empty_snapshot() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/devices/debug/routing")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["mapping_count"], 0);
-    assert_eq!(json["data"]["queue_count"], 0);
-    assert_eq!(
-        json["data"]["backend_ids"],
-        serde_json::json!(["simulator"])
-    );
+    let segment = &json["data"]["items"][0]["segments"][0];
+    assert_eq!(segment["id"], "segment_0");
+    assert_eq!(segment["name"], "Panel");
+    assert_eq!(segment["topology_hint"]["type"], "matrix");
+    assert_eq!(segment["topology_hint"]["rows"], 6);
+    assert_eq!(segment["topology_hint"]["cols"], 16);
+    assert!(json["data"]["items"][0].get("zones").is_none());
 }
 
 #[tokio::test]
@@ -7222,17 +7113,19 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
     };
     assert_ne!(first_layer_id, second_layer_id);
 
-    let stop_response = app
+    let deactivate_response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/library/playlists/stop")
+                .uri("/api/v1/library/playlists/deactivate")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
+    let deactivate_json = body_json(deactivate_response).await;
+    assert_eq!(deactivate_json["data"]["deactivated"], true);
 }
 
 #[tokio::test]
@@ -7343,17 +7236,17 @@ async fn library_playlist_activate_replaces_previous_runtime() {
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["playlist"]["id"], second_id);
 
-    let stop_response = app
+    let deactivate_response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/library/playlists/stop")
+                .uri("/api/v1/library/playlists/deactivate")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -10439,7 +10332,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -11864,7 +11757,7 @@ async fn list_devices_includes_connection_summary_when_available() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -11930,7 +11823,7 @@ async fn list_devices_preserves_custom_connection_transport_id() {
             "external-hub",
             DriverTransportKind::Custom("openlinkhub".to_owned()),
         ),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 24,
             topology: DeviceTopologyHint::Strip,
@@ -12057,6 +11950,24 @@ async fn list_devices_rejects_invalid_status_filter() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn list_devices_rejects_unknown_expansions() {
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices?include=attachments,unknown")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(json["error"]["details"]["field"], "include");
 }
 
 #[tokio::test]
@@ -12376,7 +12287,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -12556,407 +12467,6 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
                 .is_none_or(|target| target.device_id != display_id)
         }),
         "deleted device should not survive in persisted named scenes"
-    );
-}
-
-fn test_state_with_temp_logical_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.logical_devices_path = dir.path().join("logical-devices.json");
-    (Arc::new(state), dir)
-}
-
-#[tokio::test]
-async fn logical_devices_crud_persists_user_segments() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    assert_eq!(create_json["data"]["kind"], "segment");
-    assert_eq!(
-        create_json["data"]["physical_device_id"],
-        device_id.to_string()
-    );
-    let logical_id = create_json["data"]["id"]
-        .as_str()
-        .expect("logical id should be string")
-        .to_owned();
-
-    let list_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 2);
-    let default_entry = list_json["data"]["items"]
-        .as_array()
-        .expect("items should be array")
-        .iter()
-        .find(|item| item["kind"] == "default")
-        .expect("default logical entry should exist");
-    assert_eq!(default_entry["enabled"], false);
-
-    let persisted_raw = std::fs::read_to_string(&state.logical_devices_path)
-        .expect("logical device persistence file should exist");
-    assert!(
-        persisted_raw.contains(&logical_id),
-        "persistence file should include the created logical segment"
-    );
-
-    let delete_response = app
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/logical-devices/{logical_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(delete_response.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn logical_devices_reject_overlapping_segments() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let first_create = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(first_create.status(), StatusCode::CREATED);
-
-    let overlapping_create = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Mid","led_start":10,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(
-        overlapping_create.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    let json = body_json(overlapping_create).await;
-    assert_eq!(json["error"]["code"], "validation_error");
-}
-
-#[tokio::test]
-async fn logical_device_endpoints_preserve_smbus_origin_metadata() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    register_noop_backend(&state, "smbus", "SMBus Test").await;
-
-    let device_id = insert_test_asus_smbus_device(&state, "Aura GPU").await;
-    let tracked = state
-        .device_registry
-        .get(&device_id)
-        .await
-        .expect("device should exist");
-
-    let layout_device_id = {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
-        let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
-        let _ = lifecycle.on_discovered(device_id, &tracked.info, Some(&fingerprint));
-        let layout_device_id = lifecycle
-            .layout_device_id_for(device_id)
-            .expect("layout id should exist")
-            .to_owned();
-        let _ = lifecycle
-            .on_connected(device_id)
-            .expect("connect transition should succeed");
-        layout_device_id
-    };
-
-    state
-        .backend_manager
-        .lock()
-        .await
-        .connect_device("smbus", device_id, &layout_device_id)
-        .await
-        .expect("smbus test backend should connect");
-    let _ = state
-        .device_registry
-        .set_state(&device_id, DeviceState::Connected)
-        .await;
-
-    // The active layout must reference the segment that will be created, so that
-    // sync_active_layout_connectivity doesn't disconnect the device when
-    // reconcile_default_enabled disables the default entry.
-    let expected_segment_id = format!("{layout_device_id}:aura-segment");
-    set_layout_targeting_device(&state, &expected_segment_id, 12).await;
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Aura Segment","led_start":0,"led_count":12}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    assert_eq!(create_json["data"]["origin"]["driver_id"], "asus");
-    assert_eq!(create_json["data"]["origin"]["backend_id"], "smbus");
-    assert_eq!(create_json["data"]["origin"]["transport"], "smbus");
-    let segment_id = create_json["data"]["id"]
-        .as_str()
-        .expect("segment id should be a string")
-        .to_owned();
-
-    let list_response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    let items = list_json["data"]["items"]
-        .as_array()
-        .expect("logical items should be an array");
-    assert!(
-        items
-            .iter()
-            .all(|item| item["origin"]["backend_id"] == "smbus"),
-        "every logical device summary should keep the smbus origin"
-    );
-
-    let manager = state.backend_manager.lock().await;
-    let routing = manager.routing_snapshot();
-    assert!(
-        routing.mappings.iter().any(|entry| {
-            entry.backend_id == "smbus"
-                && entry.device_id == device_id.to_string()
-                && entry.layout_device_id == segment_id
-        }),
-        "logical segment routing should stay attached to the smbus backend"
-    );
-}
-
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "this migration test validates default-id replacement, logical-device creation, and backend mapping state in one end-to-end flow"
-)]
-async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    register_noop_backend(&state, "wled", "WLED Test").await;
-
-    let fingerprint = DeviceFingerprint("net:00:11:22:33:44:55".to_owned());
-    let canonical_layout_id = "wled:00:11:22:33:44:55".to_owned();
-
-    let device_id = {
-        let id = DeviceId::new();
-        let info = DeviceInfo {
-            id,
-            name: "Desk Strip".to_owned(),
-            vendor: "test-vendor".to_owned(),
-            family: DeviceFamily::new_static("wled", "WLED"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-            zones: vec![ZoneInfo {
-                name: "Main".to_owned(),
-                led_count: 60,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: Some("0.1.0".to_owned()),
-            capabilities: DeviceCapabilities {
-                led_count: 60,
-                supports_direct: true,
-                supports_brightness: true,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        };
-        state
-            .device_registry
-            .add_with_fingerprint(info, fingerprint.clone())
-            .await
-    };
-    let tracked = state
-        .device_registry
-        .get(&device_id)
-        .await
-        .expect("device should exist");
-
-    {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &tracked.info, Some(&fingerprint));
-        let _ = lifecycle
-            .on_connected(device_id)
-            .expect("connect transition should succeed");
-    }
-    state
-        .backend_manager
-        .lock()
-        .await
-        .connect_device("wled", device_id, &canonical_layout_id)
-        .await
-        .expect("wled test backend should connect");
-    let _ = state
-        .device_registry
-        .set_state(&device_id, DeviceState::Connected)
-        .await;
-
-    // The active layout must reference this device so that
-    // sync_active_layout_connectivity doesn't disconnect it.
-    set_layout_targeting_device(&state, &canonical_layout_id, 60).await;
-
-    let stale_layout_id = "wled:stale-layout-id".to_owned();
-    {
-        let mut store = state.logical_devices.write().await;
-        store.insert(
-            stale_layout_id.clone(),
-            LogicalDevice {
-                id: stale_layout_id.clone(),
-                physical_device_id: device_id,
-                name: "Desk Strip".to_owned(),
-                led_start: 0,
-                led_count: 60,
-                enabled: true,
-                kind: LogicalDeviceKind::Default,
-            },
-        );
-    }
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    let segment_id = create_json["data"]["id"]
-        .as_str()
-        .expect("segment id should be string")
-        .to_owned();
-
-    let delete_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/logical-devices/{segment_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(delete_response.status(), StatusCode::OK);
-
-    let list_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    let items = list_json["data"]["items"]
-        .as_array()
-        .expect("items should be array");
-    let default_entry = items
-        .iter()
-        .find(|item| item["kind"] == "default")
-        .expect("default entry should exist");
-    assert_eq!(default_entry["id"], canonical_layout_id);
-    assert!(
-        items.iter().all(|item| item["id"] != stale_layout_id),
-        "outdated default logical id should be replaced"
-    );
-
-    let manager = state.backend_manager.lock().await;
-    let routing = manager.routing_snapshot();
-    let mapped_layout_ids = routing
-        .mappings
-        .into_iter()
-        .filter(|entry| entry.backend_id == "wled" && entry.device_id == device_id.to_string())
-        .map(|entry| entry.layout_device_id)
-        .collect::<Vec<_>>();
-    assert!(
-        mapped_layout_ids.contains(&canonical_layout_id),
-        "canonical layout id should be mapped"
-    );
-    assert!(
-        !mapped_layout_ids.contains(&stale_layout_id),
-        "stale default layout id should not stay mapped"
-    );
-    assert!(
-        mapped_layout_ids
-            .iter()
-            .all(|id| id != &device_id.to_string()),
-        "raw physical uuid alias should not stay mapped"
     );
 }
 
@@ -13330,172 +12840,6 @@ async fn read_pairing_http_request(stream: &mut TcpStream) -> std::io::Result<St
     }
 
     Ok(String::from_utf8_lossy(&buf[..total]).into_owned())
-}
-
-#[tokio::test]
-async fn device_bindings_surface_orphans_and_rebind_heals_them() {
-    use hypercolor_daemon::device_aliases;
-    use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
-
-    let state = Arc::new(isolated_state());
-    let alias_path = state.data_dir.join(device_aliases::DEVICE_ALIASES_FILE);
-
-    // The dead predecessor is still registered, parked in Reconnecting
-    // after vanishing, carrying the user's customizations.
-    let dead_fingerprint = DeviceFingerprint("net:wled:dead-strip".to_owned());
-    let dead_id = DeviceId::new();
-    let dead_info = DeviceInfo {
-        id: dead_id,
-        name: "Shelf Strip".to_owned(),
-        vendor: "test-vendor".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: Vec::new(),
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let dead_binding =
-        DeviceLifecycleManager::canonical_layout_device_id(&dead_info, Some(&dead_fingerprint));
-    state
-        .device_registry
-        .add_discovered(DiscoveredDevice {
-            fingerprint: dead_fingerprint.clone(),
-            connect_behavior: DiscoveryConnectBehavior::Deferred,
-            info: dead_info,
-            metadata: HashMap::new(),
-            claim: PortableIdentityClaim::mac_address(
-                "2C:F4:32:00:00:10",
-                NetworkAttachment::Peer("192.168.1.50".parse().expect("valid ip")),
-            ),
-        })
-        .await;
-    state
-        .device_registry
-        .update_user_settings(&dead_id, Some("Bliss Shelf".to_owned()), None, None)
-        .await
-        .expect("predecessor exists");
-    state
-        .device_registry
-        .set_state(&dead_id, DeviceState::Reconnecting)
-        .await;
-
-    // A layout references the binding the dead device derives.
-    set_layout_targeting_device(&state, &dead_binding, 60).await;
-
-    // The replacement hardware attaches under its own key.
-    let replacement_id = DeviceId::new();
-    let replacement_info = DeviceInfo {
-        id: replacement_id,
-        name: "Shelf Strip".to_owned(),
-        vendor: "test-vendor".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: Vec::new(),
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    state
-        .device_registry
-        .add_discovered(DiscoveredDevice {
-            fingerprint: DeviceFingerprint("net:wled:new-strip".to_owned()),
-            connect_behavior: DiscoveryConnectBehavior::Deferred,
-            info: replacement_info,
-            metadata: HashMap::new(),
-            claim: PortableIdentityClaim::mac_address(
-                "2C:F4:32:00:00:11",
-                NetworkAttachment::Peer("192.168.1.51".parse().expect("valid ip")),
-            ),
-        })
-        .await;
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/v1/devices/bindings")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(
-        json["data"]["unresolved"][0]["layout_device_id"],
-        dead_binding.as_str(),
-        "a Reconnecting predecessor must not mask the orphaned binding"
-    );
-    assert_eq!(json["data"]["unresolved"][0]["rebindable"], true);
-    let candidates = json["data"]["candidates"]
-        .as_array()
-        .expect("candidates array");
-    assert!(
-        candidates.iter().any(|candidate| {
-            candidate["device_id"] == replacement_id.to_string()
-                && candidate["portable_key"] == "net:2cf432000011"
-        }),
-        "the replacement should be offered as a claimed candidate"
-    );
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/devices/rebind")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"layout_device_id":"{dead_binding}","device_id":"{replacement_id}"}}"#
-                )))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["layout_device_id"], dead_binding.as_str());
-    assert_eq!(json["data"]["portable_key"], "net:2cf432000011");
-
-    // The registry now resolves the replacement onto the inherited
-    // identity, the predecessor is retired with its settings migrated,
-    // and the overlay pins the replacement's key there durably.
-    assert_eq!(
-        state
-            .device_registry
-            .fingerprint_for_id(&replacement_id)
-            .await,
-        Some(DeviceFingerprint("net:wled:dead-strip".to_owned()))
-    );
-    assert!(state.device_registry.get(&dead_id).await.is_none());
-    let inherited = state
-        .device_registry
-        .get(&replacement_id)
-        .await
-        .expect("replacement exists");
-    assert_eq!(inherited.user_settings.name.as_deref(), Some("Bliss Shelf"));
-
-    // Inherited settings must survive a restart: the row is persisted
-    // under the replacement's own canonical key, since the
-    // predecessor's row lived under a key nothing derives anymore.
-    let persisted_name = state
-        .device_settings
-        .read()
-        .await
-        .device_settings_for_key("net:2cf432000011")
-        .and_then(|settings| settings.name);
-    assert_eq!(persisted_name.as_deref(), Some("Bliss Shelf"));
-    let overlay = device_aliases::load(&alias_path).expect("overlay loads");
-    let pinned = overlay
-        .aliases
-        .iter()
-        .find(|(key, _)| key.as_str() == "net:2cf432000011")
-        .map(|(_, record)| record.fingerprint.clone());
-    assert_eq!(pinned.as_deref(), Some("net:wled:dead-strip"));
 }
 
 #[tokio::test]

@@ -9,6 +9,16 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Merge daemon discovery and runtime telemetry into `GET /api/v1/system`.
+  Public identity remains available to anonymous remote clients, while the
+  status block follows read authority and redacts protected selections without
+  control authority.
+- Rename device LED regions to segments across the API and internal device
+  vocabulary. Display images move to `/displays/{id}/frame`, capture selection
+  becomes `PUT /capture/source`, and playlist stop becomes `deactivate`.
+- Fold attachment dry-runs into `PUT /devices/{id}/attachments` with
+  `validate_only`, and embed attachment profiles through
+  `GET /devices?include=attachments`.
 - Fold saved lighting snapshots into scenes. `POST /api/v1/scenes/snapshot`
   captures the live scene, scene activation reports layout and brightness
   outcomes, and `daemon.start_scene` replaces `daemon.start_profile` in config
@@ -18,8 +28,23 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- Remove logical-device, binding, rebind, device metrics/debug, sensor-item,
+  memory-diagnostics, screenshot-mount, attachment catalog-item, category, and
+  vendor REST routes. Diagnostics and attachment writes retain the surviving
+  behavior through canonical resources.
 - Remove the profile REST routes, CLI commands, shared types, WebSocket fields
   and events, MCP `set_profile` tool, and `hypercolor://profiles` resource.
+
+### Breaking Changes
+
+- Replace `GET /api/v1/server` and `GET /api/v1/status` with
+  `GET /api/v1/system`. Read runtime fields under `data.status`; public daemon
+  identity lives under `data.identity`.
+- Replace device response fields and identify paths named `zones` with
+  `segments`. Scene render zones keep their existing vocabulary.
+- Replace display preview, capture picker, and playlist stop calls with
+  `/displays/{id}/frame`, `PUT /capture/source`, and
+  `POST /library/playlists/deactivate` respectively.
 
 ## [0.3.2] - 2026-08-15
 
@@ -28,7 +53,7 @@ Global output power becomes a first-class daemon concept, bundled and saved pres
 ### Added
 
 - ✨ Add the global output resource at `GET /api/v1/output` and `PATCH /api/v1/output`, backed by `OutputPowerMode` (`running`, `paused`) and `OutputPowerStatus` (`running`, `paused`, `stopped`); pausing holds outputs at their off frame while **preserving live scene state** (978096e)
-- ✨ Add a unified per-effect preset stack: `GET /api/v1/effects/{id}/presets` returns bundled and saved presets as `EffectPresetSummary` with `EffectPresetOrigin` and an `editable` flag, and `POST /api/v1/effects/{id}/presets/{preset_id}/apply` applies one to an optional zone (3c52120, ac2a201)
+- ✨ Add a unified per-effect preset stack: `GET /api/v1/effects/{id}/presets` returns bundled and saved presets as `EffectPresetSummary` with `EffectPresetOrigin` and an `editable` flag, and `POST /api/v1/effects/{id}/presets/{preset}/apply` applies one to an optional zone (3c52120, ac2a201)
 - ✨ Add `TrustedLocalApi` and `TrustedLocalWebSocket` in `crates/hypercolor-daemon/src/api/local.rs`, letting in-process callers run daemon requests at `AccessTier::Control` without a network hop or API key; paths are validated against `/api/v1/*` and absolute URLs, authority headers, and traversal are rejected (e057ce3)
 - ✨ Add stable identifiers for bundled presets via `PresetId::stable(name)` so effect-scoped preset selections remain durable across reloads (ea42c20)
 - ✨ Add Python client methods `get_output()`, `set_output(...)`, `get_effect_presets(effect_id)`, and `apply_effect_preset(...)` on async and sync clients, backed by the canonical `OutputState` model (ac2a201, d642543, f471fa1)

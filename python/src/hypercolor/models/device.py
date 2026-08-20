@@ -6,9 +6,11 @@ from typing import Any
 
 import msgspec
 
+from .attachment import DeviceAttachments
 
-class DeviceZone(msgspec.Struct, kw_only=True):
-    """One LED zone of a device (hardware topology, not scene render groups)."""
+
+class DeviceSegment(msgspec.Struct, kw_only=True):
+    """One addressable hardware segment exposed by a device."""
 
     id: str
     name: str
@@ -56,7 +58,7 @@ class Device(msgspec.Struct, kw_only=True):
     status: str
     brightness: int
     total_leds: int
-    zones: list[DeviceZone]
+    segments: list[DeviceSegment]
     legacy_backend: str | None = msgspec.field(default=None, name="backend")
     origin: DeviceOrigin | None = None
     presentation: DevicePresentation | None = None
@@ -66,6 +68,7 @@ class Device(msgspec.Struct, kw_only=True):
     legacy_network_hostname: str | None = msgspec.field(default=None, name="network_hostname")
     legacy_connection_label: str | None = msgspec.field(default=None, name="connection_label")
     auth: dict[str, Any] | None = None
+    attachments: DeviceAttachments | None = None
 
     @property
     def backend(self) -> str:

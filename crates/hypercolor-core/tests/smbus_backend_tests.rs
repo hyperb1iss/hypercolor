@@ -14,7 +14,7 @@ use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusOperation, decode_o
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use tempfile::tempdir;
 
@@ -553,7 +553,7 @@ fn discovered_smbus_device_at(
             connection_type: ConnectionType::SmBus,
             origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
                 .with_protocol_id("asus/aura-smbus"),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Lighting".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,

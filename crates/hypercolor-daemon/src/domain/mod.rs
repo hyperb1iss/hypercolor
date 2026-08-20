@@ -63,9 +63,8 @@ pub enum ResourceKind {
     Layer,
     Effect,
     Device,
-    LogicalDevice,
     Display,
-    DisplayPreview,
+    DisplayFrame,
     SimulatedDisplay,
     Driver,
     Profile,
@@ -78,7 +77,6 @@ pub enum ResourceKind {
     AttachmentSlot,
     Control,
     ControlSurface,
-    Sensor,
     Diagnostic,
     Config,
     ConfigKey,
@@ -95,9 +93,8 @@ impl std::fmt::Display for ResourceKind {
             Self::Layer => "layer",
             Self::Effect => "effect",
             Self::Device => "device",
-            Self::LogicalDevice => "logical device",
             Self::Display => "display",
-            Self::DisplayPreview => "display preview",
+            Self::DisplayFrame => "display frame",
             Self::SimulatedDisplay => "simulated display",
             Self::Driver => "driver",
             Self::Profile => "profile",
@@ -110,7 +107,6 @@ impl std::fmt::Display for ResourceKind {
             Self::AttachmentSlot => "attachment slot",
             Self::Control => "control",
             Self::ControlSurface => "control surface",
-            Self::Sensor => "sensor",
             Self::Diagnostic => "diagnostic",
             Self::Config => "config",
             Self::ConfigKey => "config key",
@@ -792,9 +788,8 @@ mod tests {
                 | ResourceKind::Layer
                 | ResourceKind::Effect
                 | ResourceKind::Device
-                | ResourceKind::LogicalDevice
                 | ResourceKind::Display
-                | ResourceKind::DisplayPreview
+                | ResourceKind::DisplayFrame
                 | ResourceKind::SimulatedDisplay
                 | ResourceKind::Driver
                 | ResourceKind::Profile
@@ -807,7 +802,6 @@ mod tests {
                 | ResourceKind::AttachmentSlot
                 | ResourceKind::Control
                 | ResourceKind::ControlSurface
-                | ResourceKind::Sensor
                 | ResourceKind::Diagnostic
                 | ResourceKind::Config
                 | ResourceKind::ConfigKey
@@ -816,15 +810,14 @@ mod tests {
             }
         }
 
-        const ALL: [ResourceKind; 26] = [
+        const ALL: [ResourceKind; 24] = [
             ResourceKind::Scene,
             ResourceKind::Zone,
             ResourceKind::Layer,
             ResourceKind::Effect,
             ResourceKind::Device,
-            ResourceKind::LogicalDevice,
             ResourceKind::Display,
-            ResourceKind::DisplayPreview,
+            ResourceKind::DisplayFrame,
             ResourceKind::SimulatedDisplay,
             ResourceKind::Driver,
             ResourceKind::Profile,
@@ -837,7 +830,6 @@ mod tests {
             ResourceKind::AttachmentSlot,
             ResourceKind::Control,
             ResourceKind::ControlSurface,
-            ResourceKind::Sensor,
             ResourceKind::Diagnostic,
             ResourceKind::Config,
             ResourceKind::ConfigKey,

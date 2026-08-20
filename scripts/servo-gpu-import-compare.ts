@@ -395,8 +395,17 @@ async function assertPortFree(daemon: string): Promise<void> {
 
 async function isDaemonReady(daemon: string): Promise<boolean> {
     try {
-        const response = await fetch(`${daemon}/api/v1/status`, { signal: AbortSignal.timeout(1_000) })
-        return response.ok
+        const response = await fetch(`${daemon}/api/v1/system`, { signal: AbortSignal.timeout(1_000) })
+        if (!response.ok) {
+            return false
+        }
+        const payload: unknown = await response.json()
+        return (
+            isObject(payload) &&
+            isObject(payload.data) &&
+            isObject(payload.data.status) &&
+            payload.data.status.running === true
+        )
     } catch {
         return false
     }

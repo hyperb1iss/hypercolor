@@ -22,7 +22,8 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
-    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    SegmentInfo,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -37,7 +38,7 @@ fn tracked_nanoleaf_device() -> DriverTrackedDevice {
             model: Some("NL42".to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Panels".to_owned(),
                 led_count: 1,
                 topology: DeviceTopologyHint::Point,

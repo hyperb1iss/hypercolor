@@ -257,35 +257,9 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose \
 
 ---
 
-## Device Debug Endpoints
+## Device identification
 
 **Source:** `crates/hypercolor-daemon/src/api/devices/`
-
-### `GET /api/v1/devices/debug/queues`
-
-Inspect the backend output frame queue state. Shows pending frames, drop
-counts, and last write timing for each device backend.
-
-```bash
-curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
-```
-
-Returns the result of `BackendManager::debug_snapshot()`. The exact shape
-depends on the backend manager implementation, but exposes per-device queue
-depth and throughput information.
-
-### `GET /api/v1/devices/debug/routing`
-
-Inspect how layout zones map to physical device backends. Shows the routing
-table the render pipeline uses to dispatch LED frames.
-
-```bash
-curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
-```
-
-Returns the result of `BackendManager::routing_snapshot()`: which layout
-device IDs route to which physical backends, with segment ranges and zone
-mappings.
 
 ### `POST /api/v1/devices/{id}/identify`
 
@@ -1014,24 +988,18 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose \
   -H "Content-Type: application/json" \
   -d '{"checks": ["devices"]}' | jq .
 
-# 3. Check the output queue state
-curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
-
-# 4. Look for CRC mismatches or protocol errors in logs
+# 3. Look for CRC mismatches or protocol errors in logs
 RUST_LOG=hypercolor_core::device::usb_backend=debug just daemon 2>&1 | grep -i "crc\|error\|mismatch\|timeout"
 ```
 
 ### "Colors look wrong"
 
 ```bash
-# 1. Check routing: are zones mapped to the right backends?
-curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
-
-# 2. Monitor frame data via WebSocket
+# 1. Monitor frame data via WebSocket
 echo '{"type":"subscribe","topics":[{"topic":"frames","config":{"fps":1,"zones":["all"]}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 
-# 3. Trace the render pipeline stages
+# 2. Trace the render pipeline stages
 RUST_LOG=hypercolor_daemon::render_thread=trace just daemon
 ```
 
@@ -1047,8 +1015,8 @@ echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":5
 
 # 3. Check for backpressure warnings in WebSocket stream
 
-# 4. Identify slow backends
-curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
+# 4. Correlate slow backends in daemon trace logs
+RUST_LOG=hypercolor_daemon::display_output=trace just daemon
 ```
 
 ### "New driver development"

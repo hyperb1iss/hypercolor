@@ -19,7 +19,7 @@ use anyhow::{Result, bail};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -233,7 +233,7 @@ impl DeviceBackend for ContentionMockBackend {
                 self.backend_id.clone(),
                 ConnectionType::Network,
             ),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
@@ -349,7 +349,7 @@ fn test_device_info(device_id: DeviceId, backend_id: &str) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("contention", backend_id.to_owned(), ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 4,
             topology: DeviceTopologyHint::Strip,

@@ -29,7 +29,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -188,7 +188,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "main".to_string(),
             led_count,
             topology: DeviceTopologyHint::Strip,
@@ -1428,7 +1428,7 @@ async fn multiple_scanners_aggregate_results() {
             model: None,
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("prism", "usb", ConnectionType::Usb),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "channel-1".to_string(),
                 led_count: 40,
                 topology: DeviceTopologyHint::Strip,

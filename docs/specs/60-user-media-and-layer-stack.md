@@ -10,6 +10,8 @@
 > one composition contract.
 
 **Status:** Layer substrate, file-backed tier-1/2/3/4 media, rolling stream URL producer, media admission caps, and GPU media hardening implemented; legacy purge pending
+**API status:** Historical scene-route snapshot. The canonical resource model in
+[Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-05-15
 **Updated:** 2026-05-17

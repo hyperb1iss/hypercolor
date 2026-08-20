@@ -18,7 +18,7 @@ use hypercolor_core::device::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
-    DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
+    DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings, SegmentInfo,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ fn mock_device_info(name: &str) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Zone 1".to_owned(),
             led_count: 30,
             topology: DeviceTopologyHint::Strip,
@@ -55,7 +55,7 @@ fn asus_dram_device_info(address: u16) -> DeviceInfo {
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
             .with_protocol_id("asus/aura-smbus"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
@@ -837,15 +837,15 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         model: Some("icue_link_system_hub".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "iCUE LINK H-Series AIO".to_owned(),
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "iCUE LINK Cooler Pump LCD".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
@@ -882,7 +882,7 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         model: Some("icue_link_system_hub".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: Vec::new(),
+        segments: Vec::new(),
         firmware_version: Some("2.2.0".to_owned()),
         capabilities: DeviceCapabilities::default(),
     };
@@ -898,7 +898,7 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         .await
         .expect("device should still exist");
     assert_eq!(tracked.info.name, "Corsair Hub (rediscovered)");
-    assert_eq!(tracked.info.zones.len(), 2);
+    assert_eq!(tracked.info.segments.len(), 2);
     assert_eq!(tracked.info.total_led_count(), 44);
     assert_eq!(tracked.info.capabilities.led_count, 44);
     assert_eq!(tracked.info.capabilities.max_fps, 30);
@@ -1076,15 +1076,15 @@ async fn registry_update_info_preserves_id_and_state() {
         model: Some("iCUE LINK".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Pump Ring".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Radiator Fans".to_owned(),
                 led_count: 102,
                 topology: DeviceTopologyHint::Strip,
@@ -1116,7 +1116,7 @@ async fn registry_update_info_preserves_id_and_state() {
     let tracked = registry.get(&id).await.expect("device should exist");
     assert_eq!(tracked.info.id, id);
     assert_eq!(tracked.info.vendor, "Corsair");
-    assert_eq!(tracked.info.zones.len(), 2);
+    assert_eq!(tracked.info.segments.len(), 2);
     assert_eq!(tracked.info.capabilities.led_count, 126);
     assert_eq!(tracked.state, DeviceState::Connected);
 }

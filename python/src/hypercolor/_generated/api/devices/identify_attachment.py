@@ -11,14 +11,14 @@ from ...types import Response
 
 def _get_kwargs(
     id: str,
-    slot_id: str,
+    slot: str,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/api/v1/devices/{id}/attachments/{slot_id}/identify".format(
+        "url": "/api/v1/devices/{id}/attachments/{slot}/identify".format(
             id=quote(str(id), safe=""),
-            slot_id=quote(str(slot_id), safe=""),
+            slot=quote(str(slot), safe=""),
         ),
     }
 
@@ -68,7 +68,7 @@ def _build_response(
 
 def sync_detailed(
     id: str,
-    slot_id: str,
+    slot: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
@@ -76,7 +76,7 @@ def sync_detailed(
 
     Args:
         id (str):
-        slot_id (str):
+        slot (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -88,7 +88,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        slot_id=slot_id,
+        slot=slot,
     )
 
     response = client.get_httpx_client().request(
@@ -100,7 +100,7 @@ def sync_detailed(
 
 async def asyncio_detailed(
     id: str,
-    slot_id: str,
+    slot: str,
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Any]:
@@ -108,7 +108,7 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        slot_id (str):
+        slot (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,7 +120,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
-        slot_id=slot_id,
+        slot=slot,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)

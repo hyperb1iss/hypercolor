@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use hypercolor_types::api::library::{ActivePlaylistResponse, DeactivatePlaylistResponse};
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItem, PlaylistItemId,
@@ -115,4 +116,22 @@ fn playlist_serde_roundtrip() {
     let json = serde_json::to_string(&playlist).expect("serialize playlist");
     let decoded: EffectPlaylist = serde_json::from_str(&json).expect("deserialize playlist");
     assert_eq!(playlist, decoded);
+}
+
+#[test]
+fn deactivate_playlist_response_uses_canonical_vocabulary() {
+    let response = DeactivatePlaylistResponse {
+        playlist: ActivePlaylistResponse {
+            id: PlaylistId::new().to_string(),
+            name: "Late Night".to_owned(),
+            loop_enabled: true,
+            item_count: 2,
+            started_at_ms: 42,
+        },
+        deactivated: true,
+    };
+
+    let json = serde_json::to_value(response).expect("serialize deactivate response");
+    assert_eq!(json["deactivated"], true);
+    assert!(json.get("stopped").is_none());
 }

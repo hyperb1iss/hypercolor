@@ -227,7 +227,7 @@ struct MintedOutputs {
 }
 
 /// Build a fresh `Output` per channel for a device that no scene
-/// has placed: one zone per declared `ZoneSummary`, or a single zone
+/// has placed: one zone per declared `SegmentSummary`, or a single zone
 /// for a device with no channels.
 ///
 /// A device with a seeded footprint (the Push 2's pads, display, and
@@ -246,7 +246,7 @@ fn mint_device_zones(
     if let Some(seed) = layout_geometry::seeded_device_layout(
         layout_id,
         name,
-        &device.zones,
+        &device.segments,
         canvas_width,
         canvas_height,
         0,
@@ -271,7 +271,7 @@ fn mint_device_zones(
         };
     }
 
-    if device.zones.is_empty() {
+    if device.segments.is_empty() {
         return MintedOutputs {
             assignments: vec![OutputAssignment::New(Box::new(
                 layout_utils::create_default_zone(
@@ -290,7 +290,7 @@ fn mint_device_zones(
     }
     MintedOutputs {
         assignments: device
-            .zones
+            .segments
             .iter()
             .enumerate()
             .map(|(order, channel)| {

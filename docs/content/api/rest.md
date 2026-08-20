@@ -129,50 +129,61 @@ Liveness check. Returns `200 OK` when the daemon is running. No authentication,
 no envelope. Use this in your reconnect loop and readiness probes.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/status") %}
-Aggregate system status: the running effect, connected device count, audio
-availability, global brightness, and live render-loop timing.
+{% api_endpoint(method="GET", path="/api/v1/system") %}
+Daemon identity plus authorized runtime status. `identity` is always present so
+discovery probes can verify the daemon. `status` is present for loopback clients
+and requests with a valid read or control key. Anonymous remote requests to a
+keyed daemon receive the public identity without the status block.
 
 **Response:**
 
 ```json
 {
   "data": {
-    "running": true,
-    "version": "0.1.0",
-    "device_count": 3,
-    "effect_count": 59,
-    "active_effect": "borealis",
-    "global_brightness": 85,
-    "audio_available": true,
-    "screen_capture_capacity": {
-      "admission_enforced": true,
-      "physical_transition_byte_capacity": 268435456,
-      "physical_transition_backend_capacity": 4,
-      "physical_reserved_bytes": 33177600,
-      "physical_available_bytes": 235257856,
-      "steady_total_byte_budget": 134217728,
-      "steady_total_backend_capacity": 2,
-      "steady_publication_byte_budget": 134217728,
-      "transition_publication_backend_capacity": 2
+    "identity": {
+      "instance_id": "studio-daemon",
+      "instance_name": "Studio",
+      "version": "0.3.2",
+      "device_count": 3,
+      "auth_required": true
     },
-    "input": {
-      "enabled": true,
-      "host_capture_registered": true,
-      "host_capturing": true,
-      "devices_opened": 3,
-      "devices_denied": 1,
-      "degraded": "access_denied",
-      "backends": ["evdev"],
-      "source_graph_generation": 2,
-      "sources": []
-    },
-    "render_loop": {
-      "state": "running",
-      "target_fps": 60,
-      "capacity_fps": 60.0,
-      "delivered_fps": 59.8,
-      "actual_fps": 60.0
+    "status": {
+      "running": true,
+      "version": "0.3.2",
+      "device_count": 3,
+      "effect_count": 59,
+      "active_effect": "borealis",
+      "global_brightness": 85,
+      "audio_available": true,
+      "screen_capture_capacity": {
+        "admission_enforced": true,
+        "physical_transition_byte_capacity": 268435456,
+        "physical_transition_backend_capacity": 4,
+        "physical_reserved_bytes": 33177600,
+        "physical_available_bytes": 235257856,
+        "steady_total_byte_budget": 134217728,
+        "steady_total_backend_capacity": 2,
+        "steady_publication_byte_budget": 134217728,
+        "transition_publication_backend_capacity": 2
+      },
+      "input": {
+        "enabled": true,
+        "host_capture_registered": true,
+        "host_capturing": true,
+        "devices_opened": 3,
+        "devices_denied": 1,
+        "degraded": "access_denied",
+        "backends": ["evdev"],
+        "source_graph_generation": 2,
+        "sources": []
+      },
+      "render_loop": {
+        "state": "running",
+        "target_fps": 60,
+        "capacity_fps": 60.0,
+        "delivered_fps": 59.8,
+        "actual_fps": 60.0
+      }
     }
   },
   "meta": {
@@ -183,11 +194,11 @@ availability, global brightness, and live render-loop timing.
 }
 ```
 
-`effect_count` reflects whatever the registry holds at request time (native
+`status.effect_count` reflects whatever the registry holds at request time (native
 built-ins plus discovered HTML effects); treat it as live, not a fixed product
 number.
 
-`screen_capture_capacity` reports the byte fences that gate screen-capture
+`status.screen_capture_capacity` reports the byte fences that gate screen-capture
 publication admission. The fences are installed on Linux and Windows, where
 `admission_enforced` is `true` and the capacity fields are populated; on other
 platforms the object collapses to `{ "admission_enforced": false }` with every
@@ -195,7 +206,7 @@ fence field omitted. When an analysis plan is active, additional
 `analysis_*` fields describe its resolution, byte budgets, and compute
 capacity.
 
-`input` is the host keyboard/mouse capture health snapshot. `enabled` is the
+`status.input` is the host keyboard/mouse capture health snapshot. `enabled` is the
 consent gate from config, `host_capturing` reports whether a host backend is
 actively reading input, and `devices_opened` versus `devices_denied` separates
 "input is off" from "input is on but blocked". The denied counter counts
@@ -206,19 +217,9 @@ arrives through `degraded` instead, as one of `no_interactive_session`,
 lifecycle, freshness, and issue detail.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/server") %}
-Stable server identity: instance ID, instance name, and version. This is the
-same identity advertised over discovery.
-{% end %}
-
 {% api_endpoint(method="GET", path="/api/v1/system/sensors") %}
 Latest hardware sensor snapshot: CPU temperature, GPU load, RAM usage, and raw
 component readings. These feed sensor-bound effect controls.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/system/sensors/{label}") %}
-A single named sensor reading. Common labels: `cpu_temp`, `gpu_load`,
-`ram_used`.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/system/audio-devices") %}
@@ -307,7 +308,7 @@ instead of retrying apply, because every apply creates another layer id.
 List bundled and saved presets available for one effect.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/effects/{id}/presets/{preset_id}/apply") %}
+{% api_endpoint(method="POST", path="/api/v1/effects/{id}/presets/{preset}/apply") %}
 Apply one effect-scoped preset through the same stack-replacement contract as
 `POST /effects/{id}/apply`. Preset CRUD remains under `/library/presets`, but
 the library does not expose a second apply route.
@@ -332,16 +333,14 @@ layer id embedded in that document, and clear the show through
 `POST /scene/clear`. Spatial layout selection belongs to `scene.layout_id`;
 effects do not carry layout associations.
 
-Effect screenshots are served statically under
-`/api/v1/effects/screenshots/...` from the bundled screenshot root.
-
 ## Devices
 
 {{ img(path="img/ui/ui-devices.webp", alt="The devices panel in the web UI") }}
 
 {% api_endpoint(method="GET", path="/api/v1/devices") %}
 List discovered and connected devices. Returns `data.items` plus
-`data.pagination`.
+`data.pagination`. Add `?include=attachments` to embed each device's attachment
+profile in the same response.
 
 **Response:**
 
@@ -356,7 +355,7 @@ List discovered and connected devices. Returns `data.items` plus
         "status": "connected",
         "brightness": 100,
         "total_leds": 126,
-        "zones": []
+        "segments": []
       }
     ],
     "pagination": {
@@ -376,12 +375,12 @@ List discovered and connected devices. Returns `data.items` plus
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/devices/{id}") %}
-Full detail for one device: zones, LED layout, firmware version, attachment
+Full detail for one device: segments, LED layout, firmware version, attachment
 configuration.
 {% end %}
 
 {% api_endpoint(method="PUT", path="/api/v1/devices/{id}") %}
-Update device settings (name, brightness, zone assignments).
+Update device settings such as name and brightness.
 {% end %}
 
 {% api_endpoint(method="DELETE", path="/api/v1/devices/{id}") %}
@@ -406,11 +405,11 @@ Forget a device's stored pairing credentials.
 Flash a device's LEDs so you can spot it physically.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/zones/{zone_id}/identify") %}
-Flash one zone on a device to identify it.
+{% api_endpoint(method="POST", path="/api/v1/devices/{id}/segments/{segment}/identify") %}
+Flash one segment on a device to identify it.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/attachments/{slot_id}/identify") %}
+{% api_endpoint(method="POST", path="/api/v1/devices/{id}/attachments/{slot}/identify") %}
 Flash one attachment slot's LEDs to identify it.
 {% end %}
 
@@ -423,110 +422,13 @@ Attachment configuration for a device.
 {% end %}
 
 {% api_endpoint(method="PUT", path="/api/v1/devices/{id}/attachments") %}
-Update a device's attachment configuration.
+Update a device's attachment configuration. Send `"validate_only": true` to
+return the computed profile without persisting it, publishing events, or
+changing the live device.
 {% end %}
 
 {% api_endpoint(method="DELETE", path="/api/v1/devices/{id}/attachments") %}
 Clear a device's attachment configuration.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/attachments/preview") %}
-Preview attachment placement without persisting it.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/devices/{id}/logical-devices") %}
-List logical-device segments carved out of one physical device.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/logical-devices") %}
-Create a logical-device segment on a physical device.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/devices/metrics") %}
-Per-device output telemetry snapshot: frame counts, errors, latency.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/devices/bindings") %}
-New in 0.3.0. Surfaces the two halves of a re-bind decision: layout bindings
-that no attached device currently resolves, and attached devices that no
-layout references.
-
-**Response:**
-
-```json
-{
-  "unresolved": [
-    {
-      "layout_device_id": "wled-desk-strip",
-      "layout_ids": ["desk-ring"],
-      "rebindable": true
-    }
-  ],
-  "candidates": [
-    {
-      "device_id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90",
-      "name": "WLED Desk Strip",
-      "layout_device_id": "wled-desk-strip-2",
-      "status": "connected",
-      "portable_key": "net:aabbccddeeff"
-    }
-  ]
-}
-```
-
-`rebindable` reports whether a recorded identity exists for the binding, which
-is what a durable re-bind needs to inherit. A device that is reconnecting
-(hardware that vanished) is surfaced as an orphaned binding rather than a
-candidate, but its recorded identity remains inheritable. Candidates without a
-`portable_key` can only be re-bound by editing the layout.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/devices/rebind") %}
-New in 0.3.0. Executes a re-bind: re-pins the chosen device's portable key
-onto the orphaned binding's recorded identity, which heals the layouts without
-editing them and holds across restarts.
-
-**Request body:**
-
-```json
-{
-  "layout_device_id": "wled-desk-strip",
-  "device_id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90"
-}
-```
-
-**Response:** the `device_id`, the `layout_device_id` the device now resolves
-to, and the `portable_key` that was re-pinned.
-
-A binding can only be inherited within its driver; a cross-driver re-bind is
-rejected with `422` before anything mutates. When the binding's current device
-is still renderable, the call returns `409 Conflict` and nothing is replaced.
-An unknown device or a binding with no recorded identity returns `404`.
-{% end %}
-
-The router also exposes `/api/v1/devices/debug/queues` and
-`/api/v1/devices/debug/routing` for inspecting output queue and routing state
-while debugging.
-
-## Logical devices
-
-Logical devices are user-defined LED-range segments carved out of a physical
-device so one strip can act as several addressable units.
-
-{% api_endpoint(method="GET", path="/api/v1/logical-devices") %}
-List every logical-device segment across all physical devices.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/logical-devices/{id}") %}
-Get one logical-device segment.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/logical-devices/{id}") %}
-Update a logical-device segment.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/logical-devices/{id}") %}
-Delete a logical-device segment.
 {% end %}
 
 ## Drivers
@@ -553,7 +455,7 @@ authoring contract.
 List connected display devices.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/displays/{id}/preview.jpg") %}
+{% api_endpoint(method="GET", path="/api/v1/displays/{id}/frame") %}
 A JPEG preview frame from a display device. Live frame streaming runs over the
 `display_preview` WebSocket channel.
 {% end %}
@@ -622,26 +524,6 @@ List attachment templates (built-in and user-defined).
 Create a user-defined attachment template.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/attachments/templates/{id}") %}
-Get one attachment template.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/attachments/templates/{id}") %}
-Update a user-defined attachment template.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/attachments/templates/{id}") %}
-Delete a user-defined attachment template.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/attachments/categories") %}
-List attachment categories (keycap-set, case-panel, stand, etc.).
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/attachments/vendors") %}
-List attachment vendors that have templates available.
-{% end %}
-
 ## Control surfaces
 
 Control surfaces expose typed fields and actions for dynamic device or driver
@@ -652,11 +534,11 @@ UI reads these to render device-specific settings panels.
 List every registered control surface across devices and drivers.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/control-surfaces/{surface_id}") %}
+{% api_endpoint(method="GET", path="/api/v1/control-surfaces/{id}") %}
 Get one control surface with its current field values.
 {% end %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/control-surfaces/{surface_id}/values") %}
+{% api_endpoint(method="PATCH", path="/api/v1/control-surfaces/{id}/values") %}
 Apply typed field values to a control surface.
 
 **Request body:**
@@ -671,7 +553,7 @@ Apply typed field values to a control surface.
 ```
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/control-surfaces/{surface_id}/actions/{action_id}") %}
+{% api_endpoint(method="POST", path="/api/v1/control-surfaces/{id}/actions/{action}") %}
 Invoke a typed control-surface action (Discover, Sync, Reset, and so on).
 {% end %}
 
@@ -994,8 +876,8 @@ Delete a playlist.
 Start a playlist. Effects cycle on the playlist's timing.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/playlists/stop") %}
-Stop the running playlist.
+{% api_endpoint(method="POST", path="/api/v1/library/playlists/deactivate") %}
+Deactivate the running playlist.
 {% end %}
 
 ## Output
@@ -1063,7 +945,7 @@ capture. The response reports whether access is currently authorized and names
 the process topology that owns the grant.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/capture/source/pick") %}
+{% api_endpoint(method="PUT", path="/api/v1/capture/source") %}
 Open the platform picker so the user can choose a display, window, or application
 for screen-reactive effects. An accepted display persists by its stable display
 UUID. Window and application choices persist as `session_scoped`, so Hypercolor
@@ -1148,14 +1030,9 @@ derive their live and restart affordances from this table.
 
 {% api_endpoint(method="POST", path="/api/v1/diagnose") %}
 Run system diagnostics: device connectivity, audio capture, effect-engine
-health, and configuration validity. This is the same check the `diagnose` CLI
-command and MCP tool run.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/diagnose/memory") %}
-A memory diagnostics snapshot: daemon RSS (which includes the in-process Servo
-renderer), canvas buffer size, and allocation counters. Useful when chasing slow
-memory growth.
+health, memory, and configuration validity. Memory failures are reported as the
+named `memory` check in the same response. The `diagnose` CLI command and MCP
+tool use this exact check vocabulary.
 {% end %}
 
 ## Assets

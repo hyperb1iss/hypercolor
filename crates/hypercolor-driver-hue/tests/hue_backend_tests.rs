@@ -149,7 +149,7 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
         .await?
         .expect("connected device info");
     assert_eq!(info.total_led_count(), 2);
-    assert_eq!(info.zones.len(), 2);
+    assert_eq!(info.segments.len(), 2);
 
     backend
         .write_colors(&device_id, &[[255, 0, 0], [0, 0, 255]])

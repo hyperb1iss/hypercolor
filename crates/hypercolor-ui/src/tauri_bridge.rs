@@ -955,7 +955,7 @@ mod tests {
     fn health_verified_native_connection_routes_without_protected_credential() {
         VERIFIED_DAEMON_REVISION.with(|revision| revision.set(0));
         crate::api::client::begin_native_daemon_verification();
-        assert!(crate::api::client::daemon_url("/api/v1/status").is_none());
+        assert!(crate::api::client::daemon_url("/api/v1/system").is_none());
 
         let connection: VerifiedDaemonConnection = serde_json::from_value(serde_json::json!({
             "baseUrl": "https://daemon.lan:19420",
@@ -970,8 +970,8 @@ mod tests {
             }
         ));
         assert_eq!(
-            crate::api::client::daemon_url("/api/v1/status"),
-            Some("https://daemon.lan:19420/api/v1/status".to_owned())
+            crate::api::client::daemon_url("/api/v1/system"),
+            Some("https://daemon.lan:19420/api/v1/system".to_owned())
         );
         assert!(crate::api::client::authorization_token().is_none());
         crate::api::client::reset_daemon_transport_for_test();

@@ -96,7 +96,7 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         .await?
         .expect("connected device info");
     assert_eq!(info.total_led_count(), 2);
-    assert_eq!(info.zones.len(), 2);
+    assert_eq!(info.segments.len(), 2);
 
     backend
         .write_colors(&device_id, &[[100, 120, 140], [20, 40, 60]])

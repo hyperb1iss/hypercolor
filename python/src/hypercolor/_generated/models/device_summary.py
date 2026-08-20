@@ -10,10 +10,11 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.device_auth_summary import DeviceAuthSummary
+    from ..models.device_components_response import DeviceComponentsResponse
     from ..models.device_connection_summary import DeviceConnectionSummary
     from ..models.device_origin import DeviceOrigin
     from ..models.driver_presentation import DriverPresentation
-    from ..models.zone_summary import ZoneSummary
+    from ..models.segment_summary import SegmentSummary
 
 
 T = TypeVar("T", bound="DeviceSummary")
@@ -32,10 +33,11 @@ class DeviceSummary:
         presentation (DriverPresentation): API and UI presentation metadata for a driver module.
         status (str):
         total_leds (int):
+        attachments (DeviceComponentsResponse | None | Unset):
         auth (DeviceAuthSummary | None | Unset):
         connection (DeviceConnectionSummary | Unset): Transport details for one device.
         firmware_version (None | str | Unset):
-        zones (list[ZoneSummary] | Unset):
+        segments (list[SegmentSummary] | Unset):
     """
 
     brightness: int
@@ -46,14 +48,16 @@ class DeviceSummary:
     presentation: DriverPresentation
     status: str
     total_leds: int
+    attachments: DeviceComponentsResponse | None | Unset = UNSET
     auth: DeviceAuthSummary | None | Unset = UNSET
     connection: DeviceConnectionSummary | Unset = UNSET
     firmware_version: None | str | Unset = UNSET
-    zones: list[ZoneSummary] | Unset = UNSET
+    segments: list[SegmentSummary] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.device_auth_summary import DeviceAuthSummary
+        from ..models.device_components_response import DeviceComponentsResponse
 
         brightness = self.brightness
 
@@ -70,6 +74,14 @@ class DeviceSummary:
         status = self.status
 
         total_leds = self.total_leds
+
+        attachments: dict[str, Any] | None | Unset
+        if isinstance(self.attachments, Unset):
+            attachments = UNSET
+        elif isinstance(self.attachments, DeviceComponentsResponse):
+            attachments = self.attachments.to_dict()
+        else:
+            attachments = self.attachments
 
         auth: dict[str, Any] | None | Unset
         if isinstance(self.auth, Unset):
@@ -89,12 +101,12 @@ class DeviceSummary:
         else:
             firmware_version = self.firmware_version
 
-        zones: list[dict[str, Any]] | Unset = UNSET
-        if not isinstance(self.zones, Unset):
-            zones = []
-            for zones_item_data in self.zones:
-                zones_item = zones_item_data.to_dict()
-                zones.append(zones_item)
+        segments: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.segments, Unset):
+            segments = []
+            for segments_item_data in self.segments:
+                segments_item = segments_item_data.to_dict()
+                segments.append(segments_item)
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -110,24 +122,27 @@ class DeviceSummary:
                 "total_leds": total_leds,
             }
         )
+        if attachments is not UNSET:
+            field_dict["attachments"] = attachments
         if auth is not UNSET:
             field_dict["auth"] = auth
         if connection is not UNSET:
             field_dict["connection"] = connection
         if firmware_version is not UNSET:
             field_dict["firmware_version"] = firmware_version
-        if zones is not UNSET:
-            field_dict["zones"] = zones
+        if segments is not UNSET:
+            field_dict["segments"] = segments
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.device_auth_summary import DeviceAuthSummary
+        from ..models.device_components_response import DeviceComponentsResponse
         from ..models.device_connection_summary import DeviceConnectionSummary
         from ..models.device_origin import DeviceOrigin
         from ..models.driver_presentation import DriverPresentation
-        from ..models.zone_summary import ZoneSummary
+        from ..models.segment_summary import SegmentSummary
 
         d = dict(src_dict)
         brightness = d.pop("brightness")
@@ -145,6 +160,23 @@ class DeviceSummary:
         status = d.pop("status")
 
         total_leds = d.pop("total_leds")
+
+        def _parse_attachments(data: object) -> DeviceComponentsResponse | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                attachments_type_1 = DeviceComponentsResponse.from_dict(data)
+
+                return attachments_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(DeviceComponentsResponse | None | Unset, data)
+
+        attachments = _parse_attachments(d.pop("attachments", UNSET))
 
         def _parse_auth(data: object) -> DeviceAuthSummary | None | Unset:
             if data is None:
@@ -179,14 +211,14 @@ class DeviceSummary:
 
         firmware_version = _parse_firmware_version(d.pop("firmware_version", UNSET))
 
-        _zones = d.pop("zones", UNSET)
-        zones: list[ZoneSummary] | Unset = UNSET
-        if _zones is not UNSET:
-            zones = []
-            for zones_item_data in _zones:
-                zones_item = ZoneSummary.from_dict(zones_item_data)
+        _segments = d.pop("segments", UNSET)
+        segments: list[SegmentSummary] | Unset = UNSET
+        if _segments is not UNSET:
+            segments = []
+            for segments_item_data in _segments:
+                segments_item = SegmentSummary.from_dict(segments_item_data)
 
-                zones.append(zones_item)
+                segments.append(segments_item)
 
         device_summary = cls(
             brightness=brightness,
@@ -197,10 +229,11 @@ class DeviceSummary:
             presentation=presentation,
             status=status,
             total_leds=total_leds,
+            attachments=attachments,
             auth=auth,
             connection=connection,
             firmware_version=firmware_version,
-            zones=zones,
+            segments=segments,
         )
 
         device_summary.additional_properties = d

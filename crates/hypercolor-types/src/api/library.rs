@@ -169,10 +169,10 @@ pub struct ActivePlaylistStateResponse {
     pub state: String,
 }
 
-/// Response for `POST /api/v1/library/playlists/stop`.
+/// Response for `POST /api/v1/library/playlists/deactivate`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StopPlaylistResponse {
-    /// The playlist as it stood when playback stopped.
+pub struct DeactivatePlaylistResponse {
+    /// The playlist as it stood when playback was deactivated.
     pub playlist: ActivePlaylistResponse,
-    pub stopped: bool,
+    pub deactivated: bool,
 }

@@ -154,7 +154,7 @@ async fn sync_active_layout_for_renderable_devices_workflow(
                 device_id = %device_id,
                 device_name = %tracked.info.name,
                 layout_device_id = %layout_device_id,
-                zone_count = tracked.info.zones.len(),
+                segment_count = tracked.info.segments.len(),
                 total_leds = tracked.info.total_led_count(),
                 "leaving layout-inactive device out of the active layout until it is explicitly mapped"
             );
@@ -304,15 +304,15 @@ pub fn append_auto_layout_zones_for_device(
     layout_device_id: &str,
     device_info: &DeviceInfo,
 ) -> usize {
-    let eligible_zones = device_info
-        .zones
+    let eligible_segments = device_info
+        .segments
         .iter()
-        .filter(|zone| {
-            zone.led_count > 0 && !matches!(zone.topology, DeviceTopologyHint::Display { .. })
+        .filter(|segment| {
+            segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
         })
         .cloned()
         .collect::<Vec<_>>();
-    if eligible_zones.is_empty() {
+    if eligible_segments.is_empty() {
         return 0;
     }
 
@@ -324,16 +324,16 @@ pub fn append_auto_layout_zones_for_device(
         .len();
     let slot_center = auto_layout_slot_center(existing_device_count);
 
-    for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let layout_hint = zone_info.layout_hint.as_ref();
+    for (index, segment_info) in eligible_segments.iter().enumerate() {
+        let layout_hint = segment_info.layout_hint.as_ref();
         let topology = layout_hint
             .and_then(|hint| hint.topology.clone())
-            .unwrap_or_else(|| spatial_topology_for_zone(zone_info));
+            .unwrap_or_else(|| spatial_topology_for_segment(segment_info));
         let (default_position, default_size) = auto_layout_geometry(
             slot_center,
             index,
-            eligible_zones.len(),
-            &zone_info.topology,
+            eligible_segments.len(),
+            &segment_info.topology,
         );
         let position = layout_hint
             .filter(|hint| hint.co_located)
@@ -341,18 +341,18 @@ pub fn append_auto_layout_zones_for_device(
         let size = layout_hint
             .and_then(|hint| hint.size)
             .unwrap_or(default_size);
-        let zone_id = unique_auto_zone_id(layout, layout_device_id, &zone_info.name);
-        let zone_name = if eligible_zones.len() == 1 {
+        let zone_id = unique_auto_zone_id(layout, layout_device_id, &segment_info.name);
+        let zone_name = if eligible_segments.len() == 1 {
             device_info.name.clone()
         } else {
-            format!("{}: {}", device_info.name, zone_info.name)
+            format!("{}: {}", device_info.name, segment_info.name)
         };
 
         layout.zones.push(Output {
             id: zone_id,
             name: zone_name,
             device_id: layout_device_id.to_owned(),
-            zone_name: Some(zone_info.name.clone()),
+            zone_name: Some(segment_info.name.clone()),
             position,
             size,
             rotation: 0.0,
@@ -366,14 +366,14 @@ pub fn append_auto_layout_zones_for_device(
             edge_behavior: Some(EdgeBehavior::Clamp),
             shape: layout_hint
                 .and_then(|hint| hint.shape.clone())
-                .or_else(|| auto_layout_shape(&zone_info.topology)),
+                .or_else(|| auto_layout_shape(&segment_info.topology)),
             shape_preset: None,
             attachment: None,
             brightness: None,
         });
     }
 
-    eligible_zones.len()
+    eligible_segments.len()
 }
 
 #[doc(hidden)]
@@ -384,17 +384,17 @@ pub fn reconcile_auto_layout_zones_for_device(
     device_info: &DeviceInfo,
 ) -> usize {
     let auto_zone_prefix = format!("auto-{}-", sanitize_auto_layout_component(layout_device_id));
-    let eligible_zones = device_info
-        .zones
+    let eligible_segments = device_info
+        .segments
         .iter()
-        .filter(|zone| {
-            zone.led_count > 0 && !matches!(zone.topology, DeviceTopologyHint::Display { .. })
+        .filter(|segment| {
+            segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
         })
         .cloned()
         .collect::<Vec<_>>();
-    let expected_zone_names = eligible_zones
+    let expected_segment_names = eligible_segments
         .iter()
-        .map(|zone| zone.name.as_str())
+        .map(|segment| segment.name.as_str())
         .collect::<HashSet<_>>();
     let before_len = layout.zones.len();
     layout.zones.retain(|zone| {
@@ -403,53 +403,53 @@ pub fn reconcile_auto_layout_zones_for_device(
         }
 
         zone.zone_name.as_deref().is_some_and(|zone_name| {
-            expected_zone_names
+            expected_segment_names
                 .iter()
                 .any(|expected| zone_name_matches_slot_alias(Some(zone_name), Some(expected)))
         })
     });
 
     let mut repaired = before_len.saturating_sub(layout.zones.len());
-    if eligible_zones.is_empty() {
+    if eligible_segments.is_empty() {
         return repaired;
     }
 
-    for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let layout_hint = zone_info.layout_hint.as_ref();
+    for (index, segment_info) in eligible_segments.iter().enumerate() {
+        let layout_hint = segment_info.layout_hint.as_ref();
         let expected_topology = layout_hint
             .and_then(|hint| hint.topology.clone())
-            .unwrap_or_else(|| spatial_topology_for_zone(zone_info));
+            .unwrap_or_else(|| spatial_topology_for_segment(segment_info));
 
         let (_, default_size) = auto_layout_geometry(
             NormalizedPosition::new(0.5, 0.5),
             index,
-            eligible_zones.len(),
-            &zone_info.topology,
+            eligible_segments.len(),
+            &segment_info.topology,
         );
         let expected_size = layout_hint
             .and_then(|hint| hint.size)
             .unwrap_or(default_size);
-        let expected_name = if eligible_zones.len() == 1 {
+        let expected_name = if eligible_segments.len() == 1 {
             device_info.name.clone()
         } else {
-            format!("{}: {}", device_info.name, zone_info.name)
+            format!("{}: {}", device_info.name, segment_info.name)
         };
         let expected_positions = generate_positions(&expected_topology);
         let expected_shape = layout_hint
             .and_then(|hint| hint.shape.clone())
-            .or_else(|| auto_layout_shape(&zone_info.topology));
+            .or_else(|| auto_layout_shape(&segment_info.topology));
 
         for zone in layout.zones.iter_mut().filter(|zone| {
             zone.device_id == layout_device_id
                 && zone.zone_name.as_deref().is_some_and(|zone_name| {
-                    zone_name_matches_slot_alias(Some(zone_name), Some(zone_info.name.as_str()))
+                    zone_name_matches_slot_alias(Some(zone_name), Some(segment_info.name.as_str()))
                 })
                 && zone.id.starts_with(&auto_zone_prefix)
         }) {
             let mut changed = false;
 
-            if zone.zone_name.as_deref() != Some(zone_info.name.as_str()) {
-                zone.zone_name = Some(zone_info.name.clone());
+            if zone.zone_name.as_deref() != Some(segment_info.name.as_str()) {
+                zone.zone_name = Some(segment_info.name.clone());
                 changed = true;
             }
             if zone.name != expected_name {
@@ -553,12 +553,14 @@ fn auto_layout_geometry(
     (position, size)
 }
 
-fn spatial_topology_for_zone(zone_info: &hypercolor_types::device::ZoneInfo) -> LedTopology {
-    match zone_info.topology {
+fn spatial_topology_for_segment(
+    segment_info: &hypercolor_types::device::SegmentInfo,
+) -> LedTopology {
+    match segment_info.topology {
         DeviceTopologyHint::Strip
         | DeviceTopologyHint::Custom
         | DeviceTopologyHint::Display { .. } => LedTopology::Strip {
-            count: zone_info.led_count,
+            count: segment_info.led_count,
             direction: StripDirection::LeftToRight,
         },
         DeviceTopologyHint::Matrix { rows, cols } => LedTopology::Matrix {

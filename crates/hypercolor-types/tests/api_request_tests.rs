@@ -167,6 +167,18 @@ fn component_binding_accepts_absent_and_explicit_null_names() {
 
     assert_eq!(absent, explicit_null);
     assert_eq!(absent.bindings[0].name, None);
+    assert!(!absent.validate_only);
+}
+
+#[test]
+fn attachment_updates_accept_validate_only() {
+    let request: UpdateAttachmentsRequest = serde_json::from_value(json!({
+        "bindings": [],
+        "validate_only": true,
+    }))
+    .expect("validate-only attachment update decodes");
+
+    assert!(request.validate_only);
 }
 
 #[test]

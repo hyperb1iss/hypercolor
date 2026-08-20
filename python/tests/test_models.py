@@ -4,9 +4,39 @@ from __future__ import annotations
 
 import msgspec
 
+from hypercolor._generated.api.devices import update_attachments
+from hypercolor._generated.models import ComponentBinding, UpdateAttachmentsRequest
 from hypercolor.models.device import Device
 from hypercolor.models.driver import Driver
 from hypercolor.models.effect import Effect
+
+
+def test_generated_attachment_update_sends_the_complete_request() -> None:
+    kwargs = update_attachments._get_kwargs(
+        "desk/controller",
+        body=UpdateAttachmentsRequest(
+            bindings=[
+                ComponentBinding(
+                    slot_id="channel-1",
+                    template_id="strip-60",
+                    instances=2,
+                )
+            ],
+            validate_only=True,
+        ),
+    )
+
+    assert kwargs["url"] == "/api/v1/devices/desk%2Fcontroller/attachments"
+    assert kwargs["json"] == {
+        "bindings": [
+            {
+                "slot_id": "channel-1",
+                "template_id": "strip-60",
+                "instances": 2,
+            }
+        ],
+        "validate_only": True,
+    }
 
 
 def test_device_model_decodes() -> None:
@@ -19,7 +49,7 @@ def test_device_model_decodes() -> None:
         "brightness": 92,
         "firmware_version": "1.2.3",
         "total_leds": 104,
-        "zones": [
+        "segments": [
             {
                 "id": "main",
                 "name": "Main",
@@ -35,7 +65,7 @@ def test_device_model_decodes() -> None:
 
     assert device.name == "Keyboard"
     assert device.connection_label == "USB HID"
-    assert device.zones[0].topology == "matrix"
+    assert device.segments[0].topology == "matrix"
     assert device.enabled is True
 
 
@@ -64,7 +94,7 @@ def test_device_model_decodes_current_daemon_shape() -> None:
             "hostname": "wled-studio.local",
         },
         "total_leds": 275,
-        "zones": [
+        "segments": [
             {
                 "id": "zone_0",
                 "name": "Main",

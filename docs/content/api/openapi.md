@@ -82,10 +82,11 @@ A handful of endpoints (system, drivers, devices, effects, and protected
 capture actions) carry full utoipa `#[utoipa::path]` annotations with request
 and response schemas. Most other routes are registered through the static
 `ROUTES` catalog, so the document lists the path-and-method surface even where
-a per-operation body schema is not yet annotated. The parity tests check both
-directions: every cataloged route must appear in the document, and every static
-router operation must have a catalog entry. A new REST route therefore cannot
-silently disappear from OpenAPI.
+a per-operation body schema is not yet annotated. The parity tests lock the live
+router to the Spec 78 inventory of 82 paths and 117 operations. They also require
+every cataloged operation to appear in the document and fence the 17 deferred
+live-scene operations as the only temporary catalog gap. A new REST route
+therefore cannot silently expand the public surface or disappear from OpenAPI.
 
 The schema components are drawn from `hypercolor-types`, the shared contract crate.
 
@@ -142,9 +143,11 @@ curl -s http://localhost:9420/api/v1/openapi.json \
   | jq '[.paths[] | keys[]] | length'
 ```
 
-A non-zero count means the daemon is serving the OpenAPI document and you are
-ready to browse it at [`/api/v1/docs`](http://localhost:9420/api/v1/docs) or wire
-it into a client generator.
+The count is `100` while the 17 live-scene operations remain deferred from the
+catalog. A matching result means the daemon is serving the locked OpenAPI surface
+and you are ready to browse it at
+[`/api/v1/docs`](http://localhost:9420/api/v1/docs) or wire it into a client
+generator.
 
 ## Related
 

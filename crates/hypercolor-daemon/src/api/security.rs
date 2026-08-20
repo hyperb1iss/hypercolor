@@ -139,7 +139,7 @@ impl RequestAuthContext {
     }
 
     #[must_use]
-    const fn preflight() -> Self {
+    pub(crate) const fn preflight() -> Self {
         Self {
             security_enabled: true,
             granted_tier: None,
@@ -193,6 +193,11 @@ impl RequestAuthContext {
     #[must_use]
     pub(crate) const fn can_protected_control(self) -> bool {
         matches!(self.protected_control, ProtectedControl::Granted)
+    }
+
+    #[must_use]
+    pub(crate) const fn can_read_system_status(self) -> bool {
+        !self.security_enabled || self.granted_tier.is_some()
     }
 
     #[must_use]
@@ -701,6 +706,8 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
+    let optional_system_auth = is_optional_system_auth(request.method(), request.uri().path());
+
     if request_is_loopback(&request) {
         if is_mutating_request(request.method())
             && is_cross_site_request(&request)
@@ -712,14 +719,25 @@ pub async fn enforce_security(
             .into_response();
         }
 
-        let auth_context = extract_token(&request)
-            .and_then(|token| state.resolve_loopback_token(&token))
-            .map_or_else(RequestAuthContext::unsecured, std::convert::identity);
+        let auth_context = if let Some(token) = extract_token(&request) {
+            match state.resolve_loopback_token(&token) {
+                Some(context) => context,
+                None if optional_system_auth => {
+                    return DomainError::unauthorized("Invalid API key").into_response();
+                }
+                None => RequestAuthContext::unsecured(),
+            }
+        } else {
+            RequestAuthContext::unsecured()
+        };
         request.extensions_mut().insert(auth_context);
         return next.run(request).await;
     }
 
     if !state.security_enabled() {
+        if optional_system_auth && extract_token(&request).is_some() {
+            return DomainError::unauthorized("Invalid API key").into_response();
+        }
         if request.extensions().get::<RequestAuthContext>().is_none() {
             request
                 .extensions_mut()
@@ -740,31 +758,34 @@ pub async fn enforce_security(
     if method != Method::OPTIONS {
         let required_tier = required_tier_for_method(&method);
         let granted = if let Some(granted_tier) = granted_tier {
-            granted_tier
-        } else {
-            let Some(token) = extract_token(&request) else {
-                return DomainError::unauthorized(
-                    "Missing API key. Use Authorization: Bearer <token>.",
-                )
-                .into_response();
-            };
-
+            Some(granted_tier)
+        } else if let Some(token) = extract_token(&request) {
             let Some(granted_tier) = resolve_token_tier(&token, &state.auth) else {
                 return DomainError::unauthorized("Invalid API key").into_response();
             };
-            granted_tier
-        };
-        granted_tier = Some(granted);
-
-        if !tier_satisfies(granted, required_tier) {
-            return DomainError::forbidden_details(
-                "Read-only API key cannot perform write operations",
-                json!({
-                    "required_tier": "control",
-                    "current_tier": "read"
-                }),
+            Some(granted_tier)
+        } else if optional_system_auth {
+            None
+        } else {
+            return DomainError::unauthorized(
+                "Missing API key. Use Authorization: Bearer <token>.",
             )
             .into_response();
+        };
+
+        if let Some(granted) = granted {
+            granted_tier = Some(granted);
+
+            if !tier_satisfies(granted, required_tier) {
+                return DomainError::forbidden_details(
+                    "Read-only API key cannot perform write operations",
+                    json!({
+                        "required_tier": "control",
+                        "current_tier": "read"
+                    }),
+                )
+                .into_response();
+            }
         }
     }
 
@@ -821,10 +842,14 @@ const OPENAPI_DOCUMENT_PATH: &str = "/api/v1/openapi.json";
 /// this check; the exemption is from presenting a key, not from being
 /// allowed to reach the daemon at all.
 fn is_bearer_exempt(path: &str, static_assets: &StaticAssetSurface) -> bool {
-    matches!(path, "/health" | "/api/v1/server")
+    path == "/health"
         || path == OPENAPI_DOCUMENT_PATH
         || path_within(path, SWAGGER_UI_PREFIX)
         || static_assets.serves(path)
+}
+
+fn is_optional_system_auth(method: &Method, path: &str) -> bool {
+    matches!(*method, Method::GET | Method::HEAD) && path == "/api/v1/system"
 }
 
 /// `true` when `path` is `prefix` itself or sits beneath it.
@@ -1153,7 +1178,19 @@ mod tests {
     fn router_with_security_state(state: SecurityState) -> Router {
         Router::new()
             .route("/health", get(|| async { StatusCode::OK }))
-            .route("/api/v1/status", get(|| async { StatusCode::OK }))
+            .route("/api/v1/devices", get(|| async { StatusCode::OK }))
+            .route(
+                "/api/v1/system",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        axum::Json(serde_json::json!({
+                            "identity": true,
+                            "status": context.can_read_system_status(),
+                            "protected_selection_ids": context.can_protected_control(),
+                        }))
+                    },
+                ),
+            )
             .route(
                 "/api/v1/ws",
                 get(
@@ -1300,7 +1337,7 @@ mod tests {
             ]),
         );
         Router::new()
-            .route("/api/v1/status", get(|| async { StatusCode::OK }))
+            .route("/api/v1/devices", get(|| async { StatusCode::OK }))
             .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
             .route("/api/v1/docs", get(|| async { StatusCode::OK }))
             .route("/api/v1/docs/{*rest}", get(|| async { StatusCode::OK }))
@@ -1356,7 +1393,7 @@ mod tests {
         let app = ui_serving_test_router();
 
         for (method, path) in [
-            ("GET", "/api/v1/status"),
+            ("GET", "/api/v1/devices"),
             ("POST", "/api/v1/scenes"),
             ("POST", "/mcp"),
             // Segment-aware matching: a path that merely starts with the
@@ -1390,7 +1427,7 @@ mod tests {
         // supplies nothing.
         let surface = StaticAssetSurface::mounted([]);
 
-        assert!(!surface.serves("/api/v1/status"));
+        assert!(!surface.serves("/api/v1/devices"));
         assert!(!surface.serves("/health"));
         assert!(surface.serves("/index.html"));
     }
@@ -1444,7 +1481,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -1457,12 +1494,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn anonymous_system_request_gets_public_identity_at_the_read_limit() {
+        let response = secured_test_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/system")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-ratelimit-limit"], "120");
+        let json = response_json(response).await;
+        assert_eq!(json["identity"], true);
+        assert_eq!(json["status"], false);
+        assert_eq!(json["protected_selection_ids"], false);
+    }
+
+    #[tokio::test]
+    async fn system_rejects_invalid_supplied_credentials() {
+        let response = secured_test_router()
+            .oneshot(
+                with_bearer(Request::builder().uri("/api/v1/system"), "invalid")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = response_json(response).await;
+        assert_eq!(json["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn system_read_and_control_keys_receive_their_status_projection() {
+        let app = secured_test_router();
+        let read = app
+            .clone()
+            .oneshot(
+                with_bearer(Request::builder().uri("/api/v1/system"), READ_KEY)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+        let control = app
+            .oneshot(
+                with_bearer(Request::builder().uri("/api/v1/system"), CONTROL_KEY)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(read.status(), StatusCode::OK);
+        assert_eq!(control.status(), StatusCode::OK);
+        let read = response_json(read).await;
+        let control = response_json(control).await;
+        assert_eq!(read["status"], true);
+        assert_eq!(read["protected_selection_ids"], false);
+        assert_eq!(control["status"], true);
+        assert_eq!(control["protected_selection_ids"], true);
+    }
+
+    #[tokio::test]
+    async fn loopback_system_is_full_but_rejects_an_invalid_bearer() {
+        let app = secured_test_router();
+        let local = app
+            .clone()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/system")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+        let invalid = app
+            .oneshot(with_connect_info(
+                with_bearer(Request::builder().uri("/api/v1/system"), "invalid")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(local.status(), StatusCode::OK);
+        assert_eq!(response_json(local).await["status"], true);
+        assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn loopback_clients_do_not_need_api_key() {
         let app = secured_test_router();
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -1606,7 +1741,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .header("x-forwarded-for", "127.0.0.1")
                     .body(Body::empty())
                     .expect("failed to build request"),
@@ -1754,7 +1889,7 @@ mod tests {
         let app = secured_test_router();
         let response = app
             .oneshot(
-                with_bearer(Request::builder().uri("/api/v1/status"), READ_KEY)
+                with_bearer(Request::builder().uri("/api/v1/devices"), READ_KEY)
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -1813,7 +1948,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/status?token={READ_KEY}"))
+                    .uri(format!("/api/v1/devices?token={READ_KEY}"))
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -1905,7 +2040,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42)),
@@ -1923,7 +2058,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 2, 42)),
@@ -1943,7 +2078,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .header("x-forwarded-for", "203.0.113.5")
                     .body(Body::empty())
                     .expect("failed to build request"),
@@ -1977,7 +2112,7 @@ mod tests {
             .clone()
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42)),
@@ -1988,7 +2123,7 @@ mod tests {
         let rejected = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 2, 42)),
@@ -2014,7 +2149,7 @@ mod tests {
             .clone()
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)),
@@ -2025,7 +2160,7 @@ mod tests {
         let rejected = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
@@ -2051,7 +2186,7 @@ mod tests {
         let rejected = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)),
@@ -2218,7 +2353,7 @@ mod tests {
     #[test]
     fn forwarded_headers_are_ignored_for_non_loopback_peers() {
         let request = Request::builder()
-            .uri("/api/v1/status")
+            .uri("/api/v1/devices")
             .header("x-forwarded-for", "203.0.113.50")
             .body(Body::empty())
             .expect("failed to build request");
@@ -2230,7 +2365,7 @@ mod tests {
     #[test]
     fn forwarded_headers_are_honored_for_loopback_proxy_peers() {
         let request = Request::builder()
-            .uri("/api/v1/status")
+            .uri("/api/v1/devices")
             .header("x-forwarded-for", "203.0.113.50")
             .body(Body::empty())
             .expect("failed to build request");

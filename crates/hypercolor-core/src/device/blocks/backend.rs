@@ -11,7 +11,7 @@ use crate::device::traits::{BackendInfo, DeviceBackend};
 use crate::types::device::{
     BLOCKS_OUTPUT_BACKEND_ID, ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
-    ZoneInfo,
+    SegmentInfo,
 };
 
 use super::connection::{self, BlocksConnection};
@@ -297,7 +297,7 @@ fn device_info_from_blocks(dev: &BlocksDeviceResponse) -> DeviceInfo {
         model: Some(block_type.display_name().to_owned()),
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::native("roli", BLOCKS_OUTPUT_BACKEND_ID, ConnectionType::Bridge),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Grid".to_owned(),
             led_count,
             topology: DeviceTopologyHint::Matrix { rows, cols },

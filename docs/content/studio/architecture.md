@@ -191,7 +191,7 @@ The save updates member placements while the daemon preserves member identity an
 
 ## Capability gating
 
-Multi-zone affordances do not probe. They gate on named capabilities the daemon advertises in `GET /api/v1/status`, exposed through `CapabilitiesContext` (`app.rs`). An absent advertisement means the affordance stays hidden, with no fallback.
+Multi-zone affordances do not probe. They gate on named capabilities the daemon advertises in `GET /api/v1/system` under `status.capabilities`, exposed through `CapabilitiesContext` (`app.rs`). An absent advertisement means the affordance stays hidden, with no fallback.
 
 ```rust
 pub fn zone_crud_ready(&self) -> bool {

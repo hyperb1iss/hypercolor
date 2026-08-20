@@ -18,7 +18,7 @@ T = TypeVar("T", bound="InvokeControlActionRequest")
 @_attrs_define
 class InvokeControlActionRequest:
     """Request body for
-    `POST /api/v1/control-surfaces/{surface_id}/actions/{action_id}`.
+    `POST /api/v1/control-surfaces/{id}/actions/{action}`.
 
         Attributes:
             input_ (BTreeMap | Unset):

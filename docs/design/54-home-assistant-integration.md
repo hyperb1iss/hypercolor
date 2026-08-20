@@ -1,5 +1,10 @@
 # 54. RFC: Home Assistant Integration
 
+> **API status:** Historical integration snapshot. The unified
+> `/api/v1/system` resource and the route inventory in
+> [Spec 78](../specs/78-api-resource-model.md) supersede the endpoint examples
+> in this RFC.
+
 **Status:** Draft, revised three times on 2026-05-05 after three codex architecture passes. First pass fixed auth validation, push-only coordinator topology, async-only client policy, hub-and-spoke device registry, well-known live-control Number entities only, full manifest spec, realistic phasing. Second pass tightened HA lifecycle: WebSocket cleanup with try/finally, reauth flow via `_get_reauth_entry` and `async_update_reload_and_abort`, device removal via `async_update_device(remove_config_entry_id=...)` plus `async_remove_config_entry_device`, entity-registry cleanup on per-device opt-out, services registered in `async_setup`, accurate Bronze quality-scale checklist, Number entities omit `state_class`, redaction set preserves correlation IDs. Third pass corrected reauth kwarg (`data_updates`, not `data`), added `docs-high-level-description` to Bronze checklist, replaced invalid `NumberDeviceClass.None` with omission, added `config_entry_id` service targeting for multi-instance setups, and added zeroconf rediscovery host/port updates with `_abort_if_unique_id_configured(updates=...)`.
 **Date:** 2026-05-05.
 **Author:** Bliss (with Nova).

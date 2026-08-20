@@ -60,7 +60,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[ApiErrorBody | ApiResponseDeviceSummary]:
-    """`GET /api/v1/devices/:id` — Get a single device.
+    """`GET /api/v1/devices/{id}` — Get a single device.
 
     Args:
         id (str):
@@ -89,7 +89,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> ApiErrorBody | ApiResponseDeviceSummary | None:
-    """`GET /api/v1/devices/:id` — Get a single device.
+    """`GET /api/v1/devices/{id}` — Get a single device.
 
     Args:
         id (str):
@@ -113,7 +113,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[ApiErrorBody | ApiResponseDeviceSummary]:
-    """`GET /api/v1/devices/:id` — Get a single device.
+    """`GET /api/v1/devices/{id}` — Get a single device.
 
     Args:
         id (str):
@@ -140,7 +140,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> ApiErrorBody | ApiResponseDeviceSummary | None:
-    """`GET /api/v1/devices/:id` — Get a single device.
+    """`GET /api/v1/devices/{id}` — Get a single device.
 
     Args:
         id (str):

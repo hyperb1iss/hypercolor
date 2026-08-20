@@ -1,13 +1,11 @@
 //! Attachment template catalog endpoints.
 
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 use tokio::sync::RwLockWriteGuard;
 
 use hypercolor_core::attachment::{ComponentRegistry, TemplateFilter};
@@ -20,39 +18,13 @@ use hypercolor_types::attachment::{
 use crate::api::AppState;
 use crate::api::devices::Pagination;
 use crate::api::envelope::ApiResponse;
-use crate::domain::{DomainError, ResourceKind};
+use crate::domain::DomainError;
 
 // Wire contracts live in hypercolor-types::api::attachments — shared
 // with the web UI and the TUI.
 pub use hypercolor_types::api::attachments::{
     ListTemplatesQuery, TemplateDetail, TemplateListResponse, TemplateSummary,
 };
-
-// The category and vendor facets and the per-template item routes are not
-// in spec 78's Appendix A, so their shapes stay daemon-local rather than
-// entering the shared contract on the way to deletion.
-#[derive(Debug, Serialize)]
-pub struct CategoryListResponse {
-    pub items: Vec<CategorySummary>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CategorySummary {
-    pub category: ComponentCategory,
-    pub count: usize,
-    pub label: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct VendorListResponse {
-    pub items: Vec<VendorSummary>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct VendorSummary {
-    pub vendor: String,
-    pub count: usize,
-}
 
 /// `GET /api/v1/attachments/templates`
 pub async fn list_templates(
@@ -92,19 +64,6 @@ pub async fn list_templates(
     })
 }
 
-/// `GET /api/v1/attachments/templates/{id}`
-pub async fn get_template(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    let registry = state.attachment_registry.read().await;
-    let Some(template) = registry.get(&id) else {
-        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
-    };
-
-    ApiResponse::ok(template_detail(template))
-}
-
 /// `POST /api/v1/attachments/templates`
 pub async fn create_template(
     State(state): State<Arc<AppState>>,
@@ -126,100 +85,6 @@ pub async fn create_template(
     }
 
     ApiResponse::created(template_detail(&template))
-}
-
-/// `PUT /api/v1/attachments/templates/{id}`
-pub async fn update_template(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-    Json(mut template): Json<ComponentTemplate>,
-) -> Response {
-    if template.id != id {
-        return DomainError::validation("template ID in path must match request body")
-            .into_response();
-    }
-    template.origin = ComponentOrigin::User;
-
-    let mut registry = state.attachment_registry.write().await;
-    let Some(existing) = registry.get(&id) else {
-        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
-    };
-    if existing.origin == ComponentOrigin::BuiltIn {
-        return DomainError::forbidden(format!("Built-in template cannot be updated: {id}"))
-            .into_response();
-    }
-
-    if let Err(error) = register_and_persist_template(&mut registry, &template) {
-        return error.into_response();
-    }
-
-    ApiResponse::ok(template_detail(&template))
-}
-
-/// `DELETE /api/v1/attachments/templates/{id}`
-pub async fn delete_template(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    {
-        let profiles = state.attachment_profiles.read().await;
-        if profiles.uses_template(&id) {
-            return DomainError::conflict(format!(
-                "Attachment template is still bound in a device profile: {id}"
-            ))
-            .into_response();
-        }
-    }
-
-    let mut registry = state.attachment_registry.write().await;
-    let Some(existing) = registry.get(&id) else {
-        return DomainError::not_found(ResourceKind::AttachmentTemplate, &id).into_response();
-    };
-    if existing.origin == ComponentOrigin::BuiltIn {
-        return DomainError::forbidden(format!("Built-in template cannot be deleted: {id}"))
-            .into_response();
-    }
-
-    let removed = match registry.remove(&id) {
-        Ok(template) => template,
-        Err(error) => return DomainError::Internal(anyhow::anyhow!("{error}")).into_response(),
-    };
-    if let Err(error) = delete_user_template_file(&id) {
-        return DomainError::Internal(anyhow::anyhow!("{error}")).into_response();
-    }
-
-    ApiResponse::ok(serde_json::json!({
-        "id": removed.id,
-        "deleted": true,
-    }))
-}
-
-/// `GET /api/v1/attachments/categories`
-pub async fn list_categories(State(state): State<Arc<AppState>>) -> Response {
-    let registry = state.attachment_registry.read().await;
-    let items = registry
-        .category_counts()
-        .into_iter()
-        .map(|(category, count)| CategorySummary {
-            label: category_label(&category),
-            category,
-            count,
-        })
-        .collect::<Vec<_>>();
-
-    ApiResponse::ok(CategoryListResponse { items })
-}
-
-/// `GET /api/v1/attachments/vendors`
-pub async fn list_vendors(State(state): State<Arc<AppState>>) -> Response {
-    let registry = state.attachment_registry.read().await;
-    let items = registry
-        .vendor_counts()
-        .into_iter()
-        .map(|(vendor, count)| VendorSummary { vendor, count })
-        .collect::<Vec<_>>();
-
-    ApiResponse::ok(VendorListResponse { items })
 }
 
 fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, DomainError> {
@@ -316,83 +181,10 @@ fn register_and_persist_template(
     Ok(())
 }
 
-fn category_label(category: &ComponentCategory) -> String {
-    match category {
-        ComponentCategory::Aio => "AIO Coolers".to_owned(),
-        ComponentCategory::Fan => "Fans".to_owned(),
-        ComponentCategory::Strip => "LED Strips".to_owned(),
-        ComponentCategory::Strimer => "Strimers".to_owned(),
-        ComponentCategory::Case => "Cases".to_owned(),
-        ComponentCategory::Heatsink => "Heatsinks".to_owned(),
-        ComponentCategory::Radiator => "Radiators".to_owned(),
-        ComponentCategory::Matrix => "Matrices".to_owned(),
-        ComponentCategory::Ring => "Rings".to_owned(),
-        ComponentCategory::Bulb => "Bulbs".to_owned(),
-        ComponentCategory::Other(raw) => titleize(raw),
-    }
-}
-
-fn titleize(raw: &str) -> String {
-    raw.split(['_', '-'])
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let mut chars = segment.chars();
-            let Some(first) = chars.next() else {
-                return String::new();
-            };
-            format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn user_templates_root() -> PathBuf {
     ConfigManager::data_dir().join("attachments")
 }
 
 fn user_template_path(id: &str) -> PathBuf {
     user_templates_root().join(format!("{id}.toml"))
-}
-
-fn delete_user_template_file(id: &str) -> Result<(), String> {
-    let root = user_templates_root();
-    if !root.exists() {
-        return Ok(());
-    }
-
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let path = entry.path();
-            let file_type = entry.file_type().map_err(|error| error.to_string())?;
-
-            if file_type.is_dir() {
-                stack.push(path);
-                continue;
-            }
-
-            let is_toml = path
-                .extension()
-                .and_then(OsStr::to_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("toml"));
-            if !is_toml {
-                continue;
-            }
-
-            if matches_template_file(&path, id)? {
-                std::fs::remove_file(&path).map_err(|error| error.to_string())?;
-                return Ok(());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn matches_template_file(path: &Path, id: &str) -> Result<bool, String> {
-    let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let manifest: ComponentTemplateManifest =
-        toml::from_str(&raw).map_err(|error| error.to_string())?;
-    Ok(manifest.template.id == id)
 }

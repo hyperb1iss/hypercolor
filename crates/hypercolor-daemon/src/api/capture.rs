@@ -300,12 +300,12 @@ pub(crate) async fn authorize_screen_recording(
     }
 }
 
-/// `POST /api/v1/capture/source/pick` — Re-open the portal source picker.
+/// `PUT /api/v1/capture/source` — Re-open the portal source picker.
 ///
 /// The accepted choice is persisted according to the platform source grammar.
 #[utoipa::path(
-    post,
-    path = "/api/v1/capture/source/pick",
+    put,
+    path = "/api/v1/capture/source",
     responses(
         (
             status = 200,
@@ -320,7 +320,7 @@ pub(crate) async fn authorize_screen_recording(
     ),
     tag = "capture"
 )]
-pub(crate) async fn pick_capture_source(
+pub(crate) async fn set_capture_source(
     State(state): State<Arc<AppState>>,
     Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {

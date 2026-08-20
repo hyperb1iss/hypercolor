@@ -10,8 +10,8 @@ use super::client;
 pub use hypercolor_types::api::devices::{
     ComponentBindingSummary, DeletePairingResponse, DeviceComponentsResponse,
     DeviceComponentsUpdateResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
-    IdentifyAttachmentRequest, IdentifyRequest, PairDeviceResponse, UpdateAttachmentsRequest,
-    UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
+    IdentifyAttachmentRequest, IdentifyRequest, PairDeviceResponse, SegmentSummary,
+    SegmentTopologySummary, UpdateAttachmentsRequest, UpdateDeviceRequest,
 };
 pub use hypercolor_types::attachment::ComponentBinding;
 pub use hypercolor_types::pairing::{
@@ -31,7 +31,8 @@ pub use hypercolor_types::api::attachments::{
 
 /// Fetch all tracked devices.
 pub async fn fetch_devices() -> Result<Vec<DeviceSummary>, String> {
-    let list: DeviceListResponse = client::fetch_json("/api/v1/devices").await?;
+    let list: DeviceListResponse =
+        client::fetch_json("/api/v1/devices?include=attachments").await?;
     Ok(list.items)
 }
 
@@ -65,11 +66,11 @@ pub async fn identify_device(id: &str) -> Result<(), String> {
         .map_err(Into::into)
 }
 
-/// Identify a single zone by flashing only its LEDs.
-pub async fn identify_zone(device_id: &str, zone_id: &str) -> Result<(), String> {
+/// Identify a single hardware segment by flashing only its LEDs.
+pub async fn identify_segment(device_id: &str, segment: &str) -> Result<(), String> {
     let body = identify_request("FF06B5");
     client::post_json_discard(
-        &format!("/api/v1/devices/{device_id}/zones/{zone_id}/identify"),
+        &format!("/api/v1/devices/{device_id}/segments/{segment}/identify"),
         &body,
     )
     .await

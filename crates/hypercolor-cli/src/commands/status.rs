@@ -41,7 +41,8 @@ impl StatusWatchClient for DaemonClient {
     }
 
     async fn status_snapshot(&self) -> Result<serde_json::Value> {
-        self.get("/status").await
+        let system = self.get("/system").await?;
+        status_from_system(system)
     }
 }
 
@@ -105,10 +106,18 @@ pub async fn execute(args: &StatusArgs, client: &DaemonClient, ctx: &OutputConte
         return watch_status(args, client, ctx).await;
     }
 
-    let response = client.get("/status").await?;
+    let response = status_from_system(client.get("/system").await?)?;
     render_status(&response, ctx)?;
 
     Ok(())
+}
+
+fn status_from_system(mut system: serde_json::Value) -> Result<serde_json::Value> {
+    system
+        .get_mut("status")
+        .filter(|status| !status.is_null())
+        .map(serde_json::Value::take)
+        .ok_or_else(|| anyhow::anyhow!("System status requires daemon read access"))
 }
 
 async fn watch_status(args: &StatusArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
@@ -687,7 +696,8 @@ mod tests {
 
     use super::{
         StatusArgs, StatusWatchClient, StatusWatchError, StatusWatchEvents, exit_code_for_error,
-        format_count, format_kib, format_uptime, status_table_lines, watch_status_until,
+        format_count, format_kib, format_uptime, status_from_system, status_table_lines,
+        watch_status_until,
     };
     use crate::output::{OutputContext, OutputFormat, Painter};
     use serde_json::json;
@@ -769,6 +779,28 @@ mod tests {
 
     fn watch_context() -> OutputContext {
         OutputContext::new(OutputFormat::Plain, false, true, true, None)
+    }
+
+    #[test]
+    fn system_projection_extracts_authenticated_status() {
+        let status = status_from_system(json!({
+            "identity": { "instance_id": "server" },
+            "status": { "running": true }
+        }))
+        .expect("authenticated status should be present");
+
+        assert_eq!(status, json!({ "running": true }));
+    }
+
+    #[test]
+    fn system_projection_rejects_missing_or_null_status() {
+        for system in [
+            json!({ "identity": { "instance_id": "server" } }),
+            json!({ "identity": { "instance_id": "server" }, "status": null }),
+        ] {
+            let error = status_from_system(system).expect_err("status should require read access");
+            assert!(error.to_string().contains("requires daemon read access"));
+        }
     }
 
     async fn wait_for_status_requests(client: &FakeWatchClient, expected: usize) {

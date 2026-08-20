@@ -236,7 +236,7 @@ pub struct ApiEnvelope<T> {
     pub data: Option<T>,
 }
 
-/// Response from `GET /api/v1/status`.
+/// Authenticated status carried by `GET /api/v1/system`.
 #[derive(Debug, Deserialize)]
 pub struct StatusResponse {
     pub running: bool,
@@ -247,12 +247,19 @@ pub struct StatusResponse {
     pub device_count: usize,
 }
 
-/// Response from `GET /api/v1/server`.
+/// Public daemon identity carried by `GET /api/v1/system`.
 #[derive(Debug, Deserialize)]
 pub struct ServerResponse {
     pub instance_id: String,
     pub instance_name: String,
     pub version: String,
+}
+
+/// Unified identity and optional authenticated status.
+#[derive(Debug, Deserialize)]
+pub struct SystemResponse {
+    pub identity: ServerResponse,
+    pub status: Option<StatusResponse>,
 }
 
 /// Response from `GET /api/v1/effects`.

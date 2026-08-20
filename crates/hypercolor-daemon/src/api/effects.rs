@@ -406,7 +406,7 @@ fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> Effect
     }
 }
 
-/// `GET /api/v1/effects/:id` — Get a single effect's metadata.
+/// `GET /api/v1/effects/{id}` — Get a single effect's metadata.
 #[utoipa::path(
     get,
     path = "/api/v1/effects/{id}",
@@ -452,7 +452,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     })
 }
 
-/// `GET /api/v1/effects/:id/presets` lists bundled and saved presets.
+/// `GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
 #[utoipa::path(
     get,
     path = "/api/v1/effects/{id}/presets",
@@ -496,7 +496,7 @@ pub async fn list_effect_presets(
     })
 }
 
-/// `POST /api/v1/effects/:id/presets/:preset_id/apply` applies one preset.
+/// `POST /api/v1/effects/{id}/presets/{preset}/apply` applies one preset.
 pub async fn apply_effect_preset(
     State(state): State<Arc<AppState>>,
     Path((id, preset_id)): Path<(String, String)>,
@@ -512,7 +512,7 @@ pub async fn apply_effect_preset(
     apply_effect(State(state), Path(id), headers, Some(Json(request))).await
 }
 
-/// `POST /api/v1/effects/:id/apply` — Start rendering an effect.
+/// `POST /api/v1/effects/{id}/apply` — Start rendering an effect.
 pub async fn apply_effect(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -650,7 +650,7 @@ pub async fn apply_effect(
     response
 }
 
-/// `GET /api/v1/effects/:id/cover` — Get an effect cover image.
+/// `GET /api/v1/effects/{id}/cover` — Get an effect cover image.
 pub async fn get_effect_cover(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

@@ -67,7 +67,10 @@ impl DaemonClient {
 
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
-        let status = self.get_data::<SystemStatusResponse>("/status").await?;
+        let system = self.get_data::<SystemResponse>("/system").await?;
+        let status = system
+            .status
+            .context("System status requires daemon read access")?;
 
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let device_count = status.device_count as u32;
@@ -598,7 +601,12 @@ struct SystemStatusResponse {
     render_loop: RenderLoopStatus,
 }
 
-/// The `render_loop` block of `GET /api/v1/status`.
+#[derive(Debug, Deserialize)]
+struct SystemResponse {
+    status: Option<SystemStatusResponse>,
+}
+
+/// The `render_loop` block of the authenticated system status.
 #[derive(Debug, Default, Deserialize)]
 struct RenderLoopStatus {
     #[serde(default)]

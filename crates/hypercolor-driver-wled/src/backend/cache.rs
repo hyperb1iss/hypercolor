@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 
 // ── WLED Device Info ────────────────────────────────────────────────────
@@ -223,7 +223,7 @@ pub(super) fn build_device_info(
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: u32::from(wled_info.led_count),
             topology: DeviceTopologyHint::Strip,

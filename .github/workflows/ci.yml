@@ -175,8 +175,12 @@ jobs:
               - 'scripts/gen-compat.ts'
             docs:
               - 'docs/**'
+              - '.agents/**/*.md'
+              - 'AGENTS.md'
+              - 'crates/*/README.md'
               - 'data/drivers/vendors/**'
               - 'data/compat/**'
+              - 'scripts/check-retired-api-docs.sh'
               - 'scripts/gen-compat.ts'
             workflow:
               - '.github/workflows/**'
@@ -1241,6 +1245,9 @@ jobs:
       - name: Build site
         working-directory: docs
         run: zola build
+
+      - name: Check retired API guidance
+        run: ./scripts/check-retired-api-docs.sh
 
       - name: Upload Pages artifact
         if: >-

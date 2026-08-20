@@ -153,7 +153,7 @@ mod tests {
     use hypercolor_types::attachment::ComponentBinding;
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-        DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+        DeviceOrigin, DeviceTopologyHint, SegmentInfo,
     };
 
     use super::ComponentProfileStore;
@@ -172,15 +172,15 @@ mod tests {
                 "network-backend",
                 ConnectionType::Network,
             ),
-            zones: vec![
-                ZoneInfo {
+            segments: vec![
+                SegmentInfo {
                     name: "Channel 0".to_owned(),
                     led_count: 1,
                     topology: DeviceTopologyHint::Point,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
-                ZoneInfo {
+                SegmentInfo {
                     name: "Channel 1".to_owned(),
                     led_count: 1,
                     topology: DeviceTopologyHint::Point,
@@ -192,15 +192,15 @@ mod tests {
             capabilities: DeviceCapabilities::default(),
         };
         let renamed = DeviceInfo {
-            zones: vec![
-                ZoneInfo {
+            segments: vec![
+                SegmentInfo {
                     name: "Left Zone".to_owned(),
                     led_count: 1,
                     topology: DeviceTopologyHint::Point,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
-                ZoneInfo {
+                SegmentInfo {
                     name: "Right Zone".to_owned(),
                     led_count: 1,
                     topology: DeviceTopologyHint::Point,

@@ -18,6 +18,6 @@ pub(crate) fn inventory_device_payload(
         "transport": info.origin.transport.as_id(),
         "state": device_state.variant_name(),
         "led_count": info.total_led_count(),
-        "zones": info.zones.len()
+        "segments": info.segments.len()
     })
 }

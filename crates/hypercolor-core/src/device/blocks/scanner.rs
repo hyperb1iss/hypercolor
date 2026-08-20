@@ -12,7 +12,7 @@ use tracing::debug;
 use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use crate::types::device::{
     BLOCKS_OUTPUT_BACKEND_ID, ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 
 use super::connection::{self, BlocksConnection};
@@ -87,7 +87,7 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
         model: Some(block_type.display_name().to_owned()),
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::native("roli", BLOCKS_OUTPUT_BACKEND_ID, ConnectionType::Bridge),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Grid".to_owned(),
             led_count,
             topology: DeviceTopologyHint::Matrix { rows, cols },

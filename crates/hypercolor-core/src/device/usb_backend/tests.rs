@@ -27,10 +27,10 @@ fn temporary_control_test_device(supports_direct: bool, led_count: u32) -> Devic
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", USB_OUTPUT_BACKEND_ID, ConnectionType::Usb),
-        zones: if led_count == 0 {
+        segments: if led_count == 0 {
             Vec::new()
         } else {
-            vec![ZoneInfo {
+            vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count,
                 topology: DeviceTopologyHint::Strip,
@@ -58,7 +58,7 @@ fn usb_backend_supports_temporary_direct_control_for_led_devices() {
     assert!(!backend.supports_temporary_direct_control(&info));
 
     info.capabilities.supports_direct = true;
-    info.zones.clear();
+    info.segments.clear();
     assert!(!backend.supports_temporary_direct_control(&info));
 }
 

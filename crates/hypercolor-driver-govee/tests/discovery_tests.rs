@@ -24,7 +24,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    ZoneInfo,
+    SegmentInfo,
 };
 
 #[test]
@@ -463,7 +463,7 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
             model: Some(sku.to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 1,
                 topology: DeviceTopologyHint::Strip,

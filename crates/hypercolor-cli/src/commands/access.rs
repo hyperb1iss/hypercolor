@@ -29,7 +29,7 @@ impl AccessCommand {
         match self {
             Self::AuthorizeInputMonitoring => "/input/authorize",
             Self::AuthorizeScreenRecording => "/capture/authorize",
-            Self::ChooseScreenSource => "/capture/source/pick",
+            Self::ChooseScreenSource => "/capture/source",
         }
     }
 
@@ -72,9 +72,18 @@ fn grant_owner_label(owner: &str) -> &str {
 /// cannot execute the requested action. Headless picker failures preserve the
 /// daemon's typed `requires_app_ui` response.
 pub async fn execute(args: &AccessArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client
-        .post(args.command.route(), &serde_json::json!({}))
-        .await?;
+    let response = match args.command {
+        AccessCommand::ChooseScreenSource => {
+            client
+                .put(args.command.route(), &serde_json::json!({}))
+                .await?
+        }
+        AccessCommand::AuthorizeInputMonitoring | AccessCommand::AuthorizeScreenRecording => {
+            client
+                .post(args.command.route(), &serde_json::json!({}))
+                .await?
+        }
+    };
     if ctx.format == OutputFormat::Json {
         ctx.print_json(&response)?;
     } else {
@@ -100,10 +109,7 @@ mod tests {
             AccessCommand::AuthorizeScreenRecording.route(),
             "/capture/authorize"
         );
-        assert_eq!(
-            AccessCommand::ChooseScreenSource.route(),
-            "/capture/source/pick"
-        );
+        assert_eq!(AccessCommand::ChooseScreenSource.route(), "/capture/source");
     }
 
     #[test]

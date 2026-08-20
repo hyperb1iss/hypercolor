@@ -3,6 +3,8 @@
 > The HTTP surface of Hypercolor: every endpoint, every schema, every byte on the wire.
 
 **Status:** Implemented (spec partially predates display faces and device metrics)
+**API status:** Historical wire snapshot. The canonical resource model in
+[Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 
 ---
 

@@ -27,8 +27,8 @@ use super::{metadata_for_effect_id, resolve_preset_id, store_error_to_response, 
 // the web UI and the TUI.
 pub use hypercolor_types::api::library::{
     ActivatePlaylistResponse, ActivePlaylistResponse, ActivePlaylistStateResponse,
-    DeletePlaylistResponse, PlaylistItemRequest, PlaylistListResponse, PlaylistTargetRequest,
-    SavePlaylistRequest, StopPlaylistResponse,
+    DeactivatePlaylistResponse, DeletePlaylistResponse, PlaylistItemRequest, PlaylistListResponse,
+    PlaylistTargetRequest, SavePlaylistRequest,
 };
 
 const DEFAULT_PLAYLIST_ITEM_DURATION_MS: u64 = 30_000;
@@ -51,7 +51,7 @@ pub async fn list_playlists(State(state): State<Arc<AppState>>) -> Response {
     })
 }
 
-/// `GET /api/v1/library/playlists/:id` — fetch one playlist.
+/// `GET /api/v1/library/playlists/{id}` — fetch one playlist.
 pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
@@ -102,7 +102,7 @@ pub async fn create_playlist(
     ApiResponse::created(playlist)
 }
 
-/// `PUT /api/v1/library/playlists/:id` — update an existing playlist.
+/// `PUT /api/v1/library/playlists/{id}` — update an existing playlist.
 pub async fn update_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -161,7 +161,7 @@ pub async fn update_playlist(
     ApiResponse::ok(playlist)
 }
 
-/// `DELETE /api/v1/library/playlists/:id` — remove a playlist.
+/// `DELETE /api/v1/library/playlists/{id}` — remove a playlist.
 pub async fn delete_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -205,7 +205,7 @@ pub async fn delete_playlist(
     })
 }
 
-/// `POST /api/v1/library/playlists/:id/activate` — start playlist playback.
+/// `POST /api/v1/library/playlists/{id}/activate` — start playlist playback.
 pub async fn activate_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -286,8 +286,8 @@ pub async fn get_active_playlist(State(state): State<Arc<AppState>>) -> Response
     })
 }
 
-/// `POST /api/v1/library/playlists/stop` — stop playlist playback if active.
-pub async fn stop_playlist(State(state): State<Arc<AppState>>) -> Response {
+/// `POST /api/v1/library/playlists/deactivate` — end playlist playback if active.
+pub async fn deactivate_playlist(State(state): State<Arc<AppState>>) -> Response {
     let active = {
         let mut runtime = state.playlist_runtime.lock().await;
         runtime.active.take()
@@ -299,9 +299,9 @@ pub async fn stop_playlist(State(state): State<Arc<AppState>>) -> Response {
     let payload = active_playlist_payload(&active);
     stop_runtime(Some(active));
 
-    ApiResponse::ok(StopPlaylistResponse {
+    ApiResponse::ok(DeactivatePlaylistResponse {
         playlist: payload,
-        stopped: true,
+        deactivated: true,
     })
 }
 

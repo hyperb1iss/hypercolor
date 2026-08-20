@@ -726,7 +726,7 @@ mod tests {
     use crate::types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
         DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-        ZoneInfo,
+        SegmentInfo,
     };
     use std::time::Duration;
 
@@ -740,7 +740,7 @@ mod tests {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native(driver_id, "output-backend", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 16,
                 topology: DeviceTopologyHint::Strip,

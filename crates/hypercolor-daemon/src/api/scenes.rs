@@ -58,7 +58,7 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
     })
 }
 
-/// `GET /api/v1/scenes/:id` — Get a single scene.
+/// `GET /api/v1/scenes/{id}` — Get a single scene.
 pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let manager = state.scene_manager.read().await;
     let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
@@ -123,7 +123,7 @@ pub async fn snapshot_scene(
     ApiResponse::created(scene_summary(&created.scene))
 }
 
-/// `PUT /api/v1/scenes/:id` — Replace a complete stored scene document.
+/// `PUT /api/v1/scenes/{id}` — Replace a complete stored scene document.
 pub async fn update_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -168,7 +168,7 @@ pub async fn update_scene(
     )
 }
 
-/// `DELETE /api/v1/scenes/:id` — Delete a scene.
+/// `DELETE /api/v1/scenes/{id}` — Delete a scene.
 pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
@@ -194,7 +194,7 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
     ApiResponse::ok(DeleteSceneResponse { id, deleted: true })
 }
 
-/// `POST /api/v1/scenes/:id/activate` — Manually activate a scene.
+/// `POST /api/v1/scenes/{id}/activate` — Manually activate a scene.
 pub async fn activate_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

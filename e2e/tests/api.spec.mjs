@@ -20,11 +20,9 @@ test.describe("REST API", () => {
       const health = await readJson(healthResponse);
       expect(health.status).toBe("healthy");
 
-      const status = await readEnvelope(await api.get("/api/v1/status"));
-      expect(status.running).toBe(true);
-      expect(status.version).toBeTruthy();
-
-      expect((await api.get("/api/v1/server")).ok()).toBeTruthy();
+      const system = await readEnvelope(await api.get("/api/v1/system"));
+      expect(system.status.running).toBe(true);
+      expect(system.identity.version).toBeTruthy();
       expect((await api.post("/api/v1/diagnose")).ok()).toBeTruthy();
       expect((await api.get("/api/v1/system/sensors")).ok()).toBeTruthy();
     } finally {
@@ -71,8 +69,8 @@ test.describe("REST API", () => {
 
       expect((await api.post("/api/v1/scene/clear")).ok()).toBeTruthy();
 
-      const status = await readEnvelope(await api.get("/api/v1/status"));
-      expect(status.active_effect).toBeNull();
+      const system = await readEnvelope(await api.get("/api/v1/system"));
+      expect(system.status.active_effect).toBeNull();
     } finally {
       await api.dispose();
     }
@@ -313,7 +311,7 @@ test.describe("REST API", () => {
       expect(updatedPlaylist.name).toBe(updatedPlaylistName);
 
       expect((await api.post(`/api/v1/library/playlists/${playlistId}/activate`)).ok()).toBeTruthy();
-      expect((await api.post("/api/v1/library/playlists/stop")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/library/playlists/deactivate")).ok()).toBeTruthy();
 
       await readEnvelope(
         await api.patch("/api/v1/output", {
@@ -329,7 +327,7 @@ test.describe("REST API", () => {
       if (presetId) {
         await api.delete(`/api/v1/library/presets/${presetId}`);
       }
-      await api.post("/api/v1/library/playlists/stop");
+      await api.post("/api/v1/library/playlists/deactivate");
       await api.post("/api/v1/scene/clear");
       await api.dispose();
     }
@@ -394,10 +392,6 @@ test.describe("REST API", () => {
       expect((await api.get(`/api/v1/devices/${simulatorId}`)).ok()).toBeTruthy();
 
       expect((await api.get(`/api/v1/devices/${simulatorId}/attachments`)).ok()).toBeTruthy();
-      const categories = await readEnvelope(await api.get("/api/v1/attachments/categories"));
-      expect(categories.items.length).toBeGreaterThan(0);
-      const vendors = await readEnvelope(await api.get("/api/v1/attachments/vendors"));
-      expect(vendors.items.length).toBeGreaterThan(0);
 
       const createdTemplate = await readEnvelope(
         await api.post("/api/v1/attachments/templates", {
@@ -406,19 +400,10 @@ test.describe("REST API", () => {
       );
       expect(createdTemplate.id).toBe(templateId);
 
-      const templateDetail = await readEnvelope(
-        await api.get(`/api/v1/attachments/templates/${templateId}`),
+      const templates = await readEnvelope(
+        await api.get(`/api/v1/attachments/templates?q=${templateId}`),
       );
-      expect(templateDetail.id).toBe(templateId);
-
-      const updatedTemplate = await readEnvelope(
-        await api.put(`/api/v1/attachments/templates/${templateId}`, {
-          data: buildAttachmentTemplate(templateId, "E2E Template Updated", 12),
-        }),
-      );
-      expect(updatedTemplate.name).toBe("E2E Template Updated");
-
-      expect((await api.delete(`/api/v1/attachments/templates/${templateId}`)).ok()).toBeTruthy();
+      expect(templates.items.some((template) => template.id === templateId)).toBe(true);
     } finally {
       if (simulatorId) {
         await api.delete(`/api/v1/simulators/displays/${simulatorId}`);

@@ -33,7 +33,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DriverPresentation,
-    DriverTransportKind, ZoneInfo,
+    DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde_json::json;
@@ -672,7 +672,7 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
         model: Some(device.model.clone()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count,
             topology: topology_for_family(profile.family),

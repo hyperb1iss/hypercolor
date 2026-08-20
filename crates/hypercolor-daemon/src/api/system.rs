@@ -1,4 +1,4 @@
-//! System endpoints — `/api/v1/status`, `/health`.
+//! System endpoints for daemon identity, status, sensors, and health.
 //!
 //! Provides daemon status overview and a lightweight health check
 //! for monitoring and load balancer probes.
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, State};
 use axum::response::{IntoResponse, Response};
 use cpal::traits::{DeviceTrait, HostTrait};
 use hypercolor_core::config::canonical_audio_device_id;
@@ -35,7 +35,6 @@ use utoipa::ToSchema;
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
 use crate::api::security::RequestAuthContext;
-use crate::domain::{DomainError, ResourceKind};
 use crate::macos_owner::{MacosDaemonOwner, MacosHandoverPhase, MacosOwnerSnapshot};
 use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewRuntime};
@@ -806,6 +805,13 @@ pub struct ServerInfo {
     pub auth_required: bool,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SystemResource {
+    pub identity: ServerInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<SystemStatus>,
+}
+
 /// Build the redacted input health snapshot used without protected control.
 #[must_use]
 pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
@@ -1359,34 +1365,15 @@ fn duration_ms(duration: Duration) -> u64 {
 
 // ── Handlers ─────────────────────────────────────────────────────────────
 
-/// `GET /api/v1/status` — Full system status overview.
-#[utoipa::path(
-    get,
-    path = "/api/v1/status",
-    responses(
-        (
-            status = 200,
-            description = "Full daemon status overview",
-            body = crate::api::envelope::ApiResponse<SystemStatus>
-        )
-    ),
-    tag = "system"
-)]
+/// Build a full status response for trusted in-process callers.
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
-    get_status_with_privacy(state, true).await
+    ApiResponse::ok(system_status_with_privacy(state, true).await)
 }
 
-pub(crate) async fn get_status_route(
-    State(state): State<Arc<AppState>>,
-    Extension(auth_context): Extension<RequestAuthContext>,
-) -> Response {
-    get_status_with_privacy(state, auth_context.can_protected_control()).await
-}
-
-async fn get_status_with_privacy(
+async fn system_status_with_privacy(
     state: Arc<AppState>,
     include_private_selection_ids: bool,
-) -> Response {
+) -> SystemStatus {
     let device_count = state.device_registry.len().await;
     let effect_count = state.effect_registry.read().await.len();
     let scene_count = state.scene_manager.read().await.scene_count();
@@ -1644,7 +1631,7 @@ async fn get_status_with_privacy(
         .as_deref()
         .map(macos_daemon_ownership);
 
-    ApiResponse::ok(SystemStatus {
+    SystemStatus {
         running,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         server: state.server_identity.clone(),
@@ -1675,7 +1662,37 @@ async fn get_status_with_privacy(
             .iter()
             .map(|capability| (*capability).to_owned())
             .collect(),
-    })
+    }
+}
+
+/// `GET /api/v1/system` -- Public identity with authorized daemon status.
+#[utoipa::path(
+    get,
+    path = "/api/v1/system",
+    responses(
+        (
+            status = 200,
+            description = "Daemon identity and authorized status",
+            body = crate::api::envelope::ApiResponse<SystemResource>
+        )
+    ),
+    tag = "system"
+)]
+pub(crate) async fn get_system(
+    State(state): State<Arc<AppState>>,
+    Extension(auth_context): Extension<RequestAuthContext>,
+) -> Response {
+    let identity = server_info(&state).await;
+    let status = if auth_context.can_read_system_status() {
+        Some(
+            system_status_with_privacy(Arc::clone(&state), auth_context.can_protected_control())
+                .await,
+        )
+    } else {
+        None
+    };
+
+    ApiResponse::ok(SystemResource { identity, status })
 }
 
 /// `GET /api/v1/system/sensors` — Latest system sensor snapshot.
@@ -1683,38 +1700,13 @@ pub async fn get_sensors(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(latest_sensor_snapshot(&state).await.as_ref().clone())
 }
 
-/// `GET /api/v1/system/sensors/{label}` — Resolve one named sensor.
-pub async fn get_sensor(State(state): State<Arc<AppState>>, Path(label): Path<String>) -> Response {
-    let snapshot = latest_sensor_snapshot(&state).await;
-    if let Some(reading) = snapshot.reading(&label) {
-        return ApiResponse::ok(reading);
-    }
-
-    DomainError::not_found(ResourceKind::Sensor, &label).into_response()
-}
-
-/// `GET /api/v1/server` — Lightweight server identity for discovery probes.
-#[utoipa::path(
-    get,
-    path = "/api/v1/server",
-    responses(
-        (
-            status = 200,
-            description = "Lightweight server identity for discovery probes",
-            body = crate::api::envelope::ApiResponse<ServerInfo>
-        )
-    ),
-    tag = "system"
-)]
-pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
-    let device_count = state.device_registry.len().await;
-
-    ApiResponse::ok(ServerInfo {
+async fn server_info(state: &AppState) -> ServerInfo {
+    ServerInfo {
         identity: state.server_identity.clone(),
         server_session_id: state.server_session_id.clone(),
-        device_count,
+        device_count: state.device_registry.len().await,
         auth_required: state.security_state.security_enabled(),
-    })
+    }
 }
 
 /// `GET /health` — Lightweight health check (no envelope).
@@ -2547,11 +2539,11 @@ fn is_monitorish_device_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_sensor, get_sensors, get_server, get_status, input_source_status,
-        input_status_snapshot, macos_daemon_ownership, macos_selection_state,
-        macos_tahoe_selection_capabilities, us_to_ms_f64,
+        get_sensors, get_status, get_system, input_source_status, input_status_snapshot,
+        macos_daemon_ownership, macos_selection_state, macos_tahoe_selection_capabilities,
+        us_to_ms_f64,
     };
-    use crate::api::AppState;
+    use crate::api::{AppState, security::RequestAuthContext};
     use crate::macos_owner::{
         MacosDaemonOwner, MacosDaemonSessionAttestation, MacosHandoverPhase, MacosOwnerConflict,
         MacosOwnerIdentity, MacosOwnerRecoveryRequired, MacosOwnerSnapshot,
@@ -2563,7 +2555,7 @@ mod tests {
     };
     use crate::preview_runtime::{PreviewPixelFormat, PreviewStreamDemand};
     use axum::body::to_bytes;
-    use axum::extract::{Path, State};
+    use axum::extract::{Extension, State};
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::{
@@ -2636,7 +2628,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_response_exposes_only_the_attested_session_id() {
+    async fn public_system_identity_exposes_only_the_attested_session_id() {
         let tempdir = tempfile::tempdir().expect("server test data dir should be created");
         let session_id = MacosServerSessionId::from_bytes([0x33; 16]);
         let credential = MacosProtectedControlCredential::from_bytes([0x77; 32]);
@@ -2657,13 +2649,20 @@ mod tests {
         let mut state = AppState::new_with_data_dir(tempdir.path().join("data"));
         state.install_macos_daemon_session(&attestation);
 
-        let response = get_server(State(Arc::new(state))).await;
+        let response = get_system(
+            State(Arc::new(state)),
+            Extension(RequestAuthContext::preflight()),
+        )
+        .await;
         let bytes = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("server response should read");
         let value: Value = serde_json::from_slice(&bytes).expect("server response should be JSON");
 
-        assert_eq!(value["data"]["server_session_id"], session_id.as_str());
+        assert_eq!(
+            value["data"]["identity"]["server_session_id"],
+            session_id.as_str()
+        );
         assert!(!String::from_utf8_lossy(&bytes).contains(credential.expose_secret()));
     }
 
@@ -3001,6 +3000,60 @@ mod tests {
         assert!(!public.to_string().contains("com.secret.private"));
         assert!(!public.to_string().contains("w42"));
         assert!(public.to_string().contains("session_scoped"));
+
+        let state = Arc::new(state);
+        let anonymous = get_system(
+            State(Arc::clone(&state)),
+            Extension(RequestAuthContext::preflight()),
+        )
+        .await;
+        let read = get_system(
+            State(Arc::clone(&state)),
+            Extension(RequestAuthContext::read_only()),
+        )
+        .await;
+        let control = get_system(State(state), Extension(RequestAuthContext::control())).await;
+        let anonymous = to_bytes(anonymous.into_body(), usize::MAX)
+            .await
+            .expect("anonymous system response should read");
+        let read = to_bytes(read.into_body(), usize::MAX)
+            .await
+            .expect("read system response should read");
+        let control = to_bytes(control.into_body(), usize::MAX)
+            .await
+            .expect("control system response should read");
+        let anonymous: Value =
+            serde_json::from_slice(&anonymous).expect("anonymous system response should parse");
+        let read: Value = serde_json::from_slice(&read).expect("read system response should parse");
+        let control: Value =
+            serde_json::from_slice(&control).expect("control system response should parse");
+
+        assert!(anonymous["data"]["identity"]["instance_id"].is_string());
+        assert!(anonymous["data"].get("status").is_none());
+        let read_screen = read["data"]["status"]["input"]["sources"]
+            .as_array()
+            .and_then(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source["platform"]["type"] == "macos_screen")
+            })
+            .expect("read status should include the macOS screen source");
+        let control_screen = control["data"]["status"]["input"]["sources"]
+            .as_array()
+            .and_then(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source["platform"]["type"] == "macos_screen")
+            })
+            .expect("control status should include the macOS screen source");
+        assert_eq!(
+            read_screen["platform"]["tahoe_selection"]["source_id"],
+            "session_scoped"
+        );
+        assert_eq!(
+            control_screen["platform"]["tahoe_selection"]["source_id"],
+            "macos:session:multiple-windows:w42:a18:com.secret.private"
+        );
     }
 
     #[test]
@@ -3772,47 +3825,5 @@ mod tests {
         assert_eq!(json["data"]["cpu_load_percent"], 51.0);
         assert_eq!(json["data"]["cpu_temp_celsius"], 72.5);
         assert_eq!(json["data"]["polled_at_ms"], 1234);
-    }
-
-    #[tokio::test]
-    async fn single_sensor_endpoint_resolves_normalized_labels() {
-        let state = Arc::new(AppState::new());
-        let snapshot = Arc::new(SystemSnapshot {
-            cpu_load_percent: 40.0,
-            cpu_loads: vec![40.0],
-            cpu_temp_celsius: Some(68.0),
-            gpu_temp_celsius: None,
-            gpu_load_percent: None,
-            gpu_vram_used_mb: None,
-            ram_used_percent: 30.0,
-            ram_used_mb: 2048.0,
-            ram_total_mb: 8192.0,
-            components: vec![SensorReading::new(
-                "Package id 0",
-                68.0,
-                SensorUnit::Celsius,
-                None,
-                Some(95.0),
-                None,
-            )],
-            polled_at_ms: 77,
-        });
-        let (_tx, rx) = watch::channel(snapshot);
-        state
-            .input_manager
-            .lock()
-            .await
-            .set_sensor_snapshot_receiver(rx);
-
-        let response = get_sensor(State(state), Path("package-id-0".to_owned())).await;
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("single sensor body should read");
-        let json: Value =
-            serde_json::from_slice(&body).expect("single sensor response should serialize");
-
-        assert_eq!(json["data"]["label"], "Package id 0");
-        assert_eq!(json["data"]["value"], 68.0);
-        assert_eq!(json["data"]["unit"], "celsius");
     }
 }

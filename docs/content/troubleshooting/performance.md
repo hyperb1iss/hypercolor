@@ -131,7 +131,7 @@ Fields to watch:
 - `gpu_sample_cpu_fallback`: Servo fell back from GPU import to a CPU readback path. This adds a full-frame pixel readback cost and is significantly slower.
 - `push_p95_ms` / `publish_p95_ms`: 95th-percentile device write and event-bus publish latency. Healthy values sit well under the frame budget for your current tier.
 
-For Servo-specific timings, the daemon status response (`GET /api/v1/status`) carries an effect-health section with fields including `render_frame_max_us`, `render_evaluate_scripts_max_us`, `render_paint_max_us`, and `render_readback_max_us`. A `render_frame_max_us` value near or above the tier budget is a clear Servo bottleneck.
+For Servo-specific timings, the system response (`GET /api/v1/system`) carries `status.effect_health`, with fields including `render_frame_max_us`, `render_evaluate_scripts_max_us`, `render_paint_max_us`, and `render_readback_max_us`. A `render_frame_max_us` value near or above the tier budget is a clear Servo bottleneck.
 
 ### Servo circuit breaker
 

@@ -9,6 +9,8 @@
 > browser process — just more WebViews in the same Servo instance.
 
 **Status:** Draft (v1, aligned with Spec 48 scene/display split)
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-04-12
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`

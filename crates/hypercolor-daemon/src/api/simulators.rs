@@ -260,7 +260,7 @@ pub async fn get_simulated_display_frame(
         ))));
     }
 
-    DomainError::not_found(ResourceKind::DisplayPreview, device_id).into_response()
+    DomainError::not_found(ResourceKind::DisplayFrame, device_id).into_response()
 }
 
 fn jpeg_response(body: Bytes) -> Response {

@@ -392,7 +392,7 @@ impl DaemonState {
         // 6. Scene manager — deactivate current scene.
         //
         // POST-TEARDOWN WRITER (Spec 76 §2.3), and the only one of this
-        // file's three that is not pre-init. Step 2 above already
+        // file's five that is not pre-init. Step 2 above already
         // awaited the render thread's exit, so by here the one thread
         // that reads scene state on a cadence is gone and every durable
         // store has flushed — there is nothing left to race and nothing
@@ -512,9 +512,9 @@ impl DaemonState {
                 match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
                         *self.spatial_engine.write().await = prepared;
-                        // PRE-INIT WRITER (1 of 2) — see
+                        // PRE-INIT WRITER (1 of 4) — see
                         // `apply_runtime_session_snapshot` for the reasoning
-                        // both restore writers share.
+                        // all restore writers share.
                         self.scene_manager
                             .write()
                             .await
@@ -648,11 +648,11 @@ impl DaemonState {
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
 
-        // PRE-INIT WRITER (2 of 2, Spec 76 §2.3). Both restore writers
+        // PRE-INIT WRITER (4 of 4, Spec 76 §2.3). All restore writers
         // run inside `DaemonState::initialize`, before the render thread
         // starts and before the API server binds, so nothing else can be
         // committing and there is no competing writer for the commit
-        // sequencer to order against. The third scene writer in this
+        // sequencer to order against. The fifth scene writer in this
         // file is the shutdown deactivate, which is post-teardown rather
         // than pre-init.
         //

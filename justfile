@@ -29,7 +29,7 @@ alias py := python-verify
 # ─── Core ─────────────────────────────────────────────────
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict api-doc-route-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
 
 # Verify target isolation and Cargo argument normalization
@@ -61,6 +61,10 @@ oss-boundary-check:
 # Strict boundary check for commercial cloud extraction
 oss-boundary-check-strict:
     ./scripts/check-oss-boundary.sh --strict
+
+# Keep current documentation free of retired public API routes
+api-doc-route-check:
+    ./scripts/check-retired-api-docs.sh
 
 # Build the workspace with the daemon's full feature set
 [unix]

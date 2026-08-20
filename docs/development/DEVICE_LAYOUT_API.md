@@ -15,15 +15,14 @@ All responses use the standard Hypercolor envelope (`data` + `meta`, or
 
 ### Endpoint map
 
-| Method   | Path                             | Purpose                                  |
-| -------- | -------------------------------- | ---------------------------------------- |
-| `GET`    | `/devices`                       | List devices (with filters + pagination) |
-| `GET`    | `/devices/{id_or_name}`          | Fetch one device                         |
-| `PUT`    | `/devices/{id_or_name}`          | Update user settings (`name`, `enabled`) |
-| `DELETE` | `/devices/{id_or_name}`          | Remove a tracked device                  |
-| `POST`   | `/devices/discover`              | Start discovery scan                     |
-| `POST`   | `/devices/{id_or_name}/identify` | Trigger identify pattern                 |
-| `GET`    | `/devices/debug/queues`          | Inspect backend output queue diagnostics |
+| Method   | Path                     | Purpose                                  |
+| -------- | ------------------------ | ---------------------------------------- |
+| `GET`    | `/devices`               | List devices (with filters + pagination) |
+| `GET`    | `/devices/{id}`          | Fetch one device                         |
+| `PUT`    | `/devices/{id}`          | Update user settings (`name`, `enabled`) |
+| `DELETE` | `/devices/{id}`          | Remove a tracked device                  |
+| `POST`   | `/devices/discover`      | Start discovery scan                     |
+| `POST`   | `/devices/{id}/identify` | Trigger identify pattern                 |
 
 ### List query params
 
@@ -40,7 +39,7 @@ Supported:
 
 ### Update payload
 
-`PUT /devices/{id_or_name}`
+`PUT /devices/{id}`
 
 ```json
 {
@@ -58,7 +57,7 @@ Notes:
 
 ### Identify payload
 
-`POST /devices/{id_or_name}/identify`
+`POST /devices/{id}/identify`
 
 ```json
 {
@@ -74,7 +73,7 @@ Validation:
 
 ### Name resolution rules
 
-`{id_or_name}` accepts UUID or case-insensitive name.
+`{id}` accepts a UUID or case-insensitive name.
 
 - No match -> `404 not_found`
 - Multiple name matches -> `409 conflict` (ambiguous name)
@@ -84,15 +83,15 @@ Validation:
 
 ### Endpoint map
 
-| Method   | Path                          | Purpose                                         |
-| -------- | ----------------------------- | ----------------------------------------------- |
-| `GET`    | `/layouts`                    | List saved layouts                              |
-| `POST`   | `/layouts`                    | Create layout                                   |
-| `GET`    | `/layouts/active`             | Get currently active layout from spatial engine |
-| `GET`    | `/layouts/{id_or_name}`       | Fetch one layout (full `SpatialLayout`)         |
-| `PUT`    | `/layouts/{id_or_name}`       | Update layout metadata/canvas size              |
-| `POST`   | `/layouts/{id_or_name}/apply` | Apply saved layout to spatial engine            |
-| `DELETE` | `/layouts/{id_or_name}`       | Delete saved layout                             |
+| Method   | Path                  | Purpose                                         |
+| -------- | --------------------- | ----------------------------------------------- |
+| `GET`    | `/layouts`            | List saved layouts                              |
+| `POST`   | `/layouts`            | Create layout                                   |
+| `GET`    | `/layouts/active`     | Get currently active layout from spatial engine |
+| `GET`    | `/layouts/{id}`       | Fetch one layout (full `SpatialLayout`)         |
+| `PUT`    | `/layouts/{id}`       | Update layout metadata/canvas size              |
+| `POST`   | `/layouts/{id}/apply` | Apply saved layout to spatial engine            |
+| `DELETE` | `/layouts/{id}`       | Delete saved layout                             |
 
 ### List query params
 
@@ -127,7 +126,7 @@ Validation:
 
 ### Update payload
 
-`PUT /layouts/{id_or_name}`
+`PUT /layouts/{id}`
 
 ```json
 {
@@ -142,7 +141,7 @@ All fields are optional.
 
 ### Apply behavior
 
-`POST /layouts/{id_or_name}/apply`
+`POST /layouts/{id}/apply`
 
 - Loads saved layout from the store.
 - Calls `spatial_engine.update_layout(...)`.
@@ -150,13 +149,12 @@ All fields are optional.
 
 Layout authoring note:
 
-- Each `SpatialLayout.zones[].device_id` should reference a logical device ID
-  from `/logical-devices` (or `/devices/{id}/logical-devices`), not a raw
-  physical controller identifier.
+- Each `SpatialLayout.zones[].device_id` should use the device's
+  `layout_device_id` from `GET /devices`, not its physical `id`.
 
 ### Delete behavior
 
-`DELETE /layouts/{id_or_name}`
+`DELETE /layouts/{id}`
 
 - Fails with `409 conflict` when trying to delete the active layout.
 - Returns `{ id, deleted: true }` on success.
@@ -168,67 +166,23 @@ Same as devices:
 - UUID or case-insensitive name accepted.
 - Ambiguous name -> `409 conflict`.
 
-## Logical Devices (User-Defined Segments)
+## Layout Target IDs and Hardware Segments
 
-Logical devices are user-authored virtual units mapped onto a physical device
-LED range. Layout zones should target these logical IDs.
+Device list and detail responses expose two different identities:
 
-### Endpoint map
+- `id` addresses the physical device through `/devices/{id}`.
+- `layout_device_id` is the opaque target for
+  `SpatialLayout.zones[].device_id`.
 
-| Method   | Path                                    | Purpose                                           |
-| -------- | --------------------------------------- | ------------------------------------------------- |
-| `GET`    | `/logical-devices`                      | List all logical devices                          |
-| `GET`    | `/logical-devices/{id}`                 | Fetch one logical device                          |
-| `PUT`    | `/logical-devices/{id}`                 | Update logical device fields                      |
-| `DELETE` | `/logical-devices/{id}`                 | Delete a user-defined segment                     |
-| `GET`    | `/devices/{id_or_name}/logical-devices` | List logical devices for one physical device      |
-| `POST`   | `/devices/{id_or_name}/logical-devices` | Create a new logical segment on a physical device |
+The daemon owns the mapping between those identities so rediscovery and
+attachment changes do not strand spatial layouts. There is no public logical
+device CRUD resource.
 
-### Create payload
-
-`POST /devices/{id_or_name}/logical-devices`
-
-```json
-{
-  "name": "Desk Left",
-  "led_start": 0,
-  "led_count": 120,
-  "enabled": true
-}
-```
-
-Validation:
-
-- `name` must not be empty after trim.
-- `led_count` must be greater than `0`.
-- `led_start + led_count` must fit within physical LED count.
-- Enabled segment ranges for a physical device cannot overlap.
-
-Behavior:
-
-- A default full-range logical device exists per physical device.
-- When one or more enabled segment logical devices exist, the default logical
-  device is auto-disabled.
-- Only user-defined segment logical devices are persisted.
-- Logical-device responses include the physical device `origin` object rather
-  than a flat backend field. Use `origin.backend_id` only when routing/debugging,
-  and `origin.driver_id` when grouping by driver ownership.
-
-### Update payload
-
-`PUT /logical-devices/{id}`
-
-```json
-{
-  "name": "Desk Left Updated",
-  "led_start": 10,
-  "led_count": 100,
-  "enabled": true
-}
-```
-
-All fields are optional. Default logical devices cannot change
-`led_start`/`led_count`.
+`DeviceSummary.segments` describes the hardware topology reported by the
+driver. A segment has its own id, name, LED count, and topology hint. Segments
+can be identified through
+`POST /devices/{id}/segments/{segment}/identify`, but they are not independent
+layout target resources.
 
 ## Scene Layout Selection
 

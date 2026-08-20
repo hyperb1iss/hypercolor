@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::state::{
     ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, EffectSummary, SceneInfo,
-    SceneListResponse, SceneSummary, ServerEntry, ServerResponse, StateUpdate, StatusResponse,
+    SceneListResponse, SceneSummary, ServerEntry, StateUpdate, StatusResponse, SystemResponse,
     TrayCommand, WsEventMessage, WsHello,
 };
 
@@ -152,18 +152,11 @@ impl DaemonClient {
 
     /// Fetch initial state from the daemon REST API.
     async fn fetch_initial_state(&self) -> anyhow::Result<AppState> {
-        let server_url = format!("{}/api/v1/server", self.base_url);
-        let server_resp: ApiEnvelope<ServerResponse> = self
-            .auth_request(self.http.get(&server_url))
-            .send()
-            .await?
-            .json()
-            .await?;
-        let server = server_resp
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in server response"))?;
-
-        let status = self.fetch_status().await?;
+        let system = self.fetch_system().await?;
+        let server = system.identity;
+        let status = system
+            .status
+            .ok_or_else(|| anyhow::anyhow!("System status requires daemon read access"))?;
         let power = self.fetch_output().await?;
 
         let effects_url = format!("{}/api/v1/effects", self.base_url);
@@ -249,16 +242,23 @@ impl DaemonClient {
     }
 
     async fn fetch_status(&self) -> anyhow::Result<StatusResponse> {
-        let status_url = format!("{}/api/v1/status", self.base_url);
-        let status_resp: ApiEnvelope<StatusResponse> = self
-            .auth_request(self.http.get(&status_url))
+        self.fetch_system()
+            .await?
+            .status
+            .ok_or_else(|| anyhow::anyhow!("System status requires daemon read access"))
+    }
+
+    async fn fetch_system(&self) -> anyhow::Result<SystemResponse> {
+        let url = format!("{}/api/v1/system", self.base_url);
+        let response: ApiEnvelope<SystemResponse> = self
+            .auth_request(self.http.get(&url))
             .send()
             .await?
             .json()
             .await?;
-        status_resp
+        response
             .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in status response"))
+            .ok_or_else(|| anyhow::anyhow!("Missing data in system response"))
     }
 
     async fn fetch_output(&self) -> anyhow::Result<OutputResource> {

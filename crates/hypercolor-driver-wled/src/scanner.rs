@@ -16,7 +16,7 @@ use hypercolor_driver_api::MdnsBrowser;
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 
@@ -234,7 +234,7 @@ impl WledScanner {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: u32::from(led_count),
                 topology: DeviceTopologyHint::Strip,
@@ -312,7 +312,7 @@ impl WledScanner {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count,
                 topology: DeviceTopologyHint::Strip,

@@ -228,7 +228,7 @@ pub async fn list_layouts(
     })
 }
 
-/// `GET /api/v1/layouts/:id` — Get a single layout with full zone data.
+/// `GET /api/v1/layouts/{id}` — Get a single layout with full zone data.
 pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let layouts = state.layouts.read().await;
     let key = match resolve_layout_key(&layouts, &id) {
@@ -345,7 +345,7 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
     ApiResponse::created(summary)
 }
 
-/// `PUT /api/v1/layouts/:id` — Update an existing layout.
+/// `PUT /api/v1/layouts/{id}` — Update an existing layout.
 pub async fn update_layout(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -477,7 +477,7 @@ async fn update_layout_workflow(
     ApiResponse::ok(summary)
 }
 
-/// `POST /api/v1/layouts/:id/apply` — Apply a saved layout to the spatial engine.
+/// `POST /api/v1/layouts/{id}/apply` — Apply a saved layout to the spatial engine.
 pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     await_layout_mutation(tokio::spawn(apply_layout_workflow(state, id))).await
 }
@@ -595,7 +595,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
     ApiResponse::ok(serde_json::json!({ "previewing": true }))
 }
 
-/// `DELETE /api/v1/layouts/:id` — Delete a layout.
+/// `DELETE /api/v1/layouts/{id}` — Delete a layout.
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     await_layout_mutation(tokio::spawn(delete_layout_workflow(state, id))).await
 }

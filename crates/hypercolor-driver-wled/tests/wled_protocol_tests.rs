@@ -22,7 +22,7 @@ use hypercolor_driver_wled::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::net::UdpSocket;
@@ -1025,7 +1025,7 @@ async fn backend_connects_from_scanner_seed_without_backend_discover() {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 60,
                 topology: DeviceTopologyHint::Strip,

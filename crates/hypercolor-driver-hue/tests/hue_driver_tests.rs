@@ -15,7 +15,8 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
-    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    SegmentInfo,
 };
 
 fn tracked_hue_device() -> DriverTrackedDevice {
@@ -28,7 +29,7 @@ fn tracked_hue_device() -> DriverTrackedDevice {
             model: Some("BSB002".to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Bridge".to_owned(),
                 led_count: 1,
                 topology: DeviceTopologyHint::Point,

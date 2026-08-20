@@ -3,6 +3,8 @@
 > Independent rendering pipelines within a Scene — each with its own effect, layout, and canvas.
 
 **Status:** Draft
+**API status:** Historical scene-route snapshot. The canonical resource model in
+[Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Crate:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
 **Depends on:** Spatial Layout Engine (06), Effect System (07), Scenes & Automation (13)
 **Evolves:** Scene struct (13 §1), ZoneAssignment (13 §2), render thread pipeline

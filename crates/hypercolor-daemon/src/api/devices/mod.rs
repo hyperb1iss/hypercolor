@@ -1,13 +1,10 @@
 //! Device endpoints — `/api/v1/devices/*`.
 //!
 //! Core CRUD, identify flows, and shared helpers live here. Attachment,
-//! pairing, discovery, and logical-device endpoints are split into sibling
-//! submodules.
+//! pairing, and discovery endpoints are split into sibling submodules.
 
 mod attachments;
-mod bindings;
 mod discovery;
-mod logical;
 mod pairing;
 
 use std::collections::HashMap;
@@ -30,26 +27,17 @@ use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
-use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::devices::{IdentifyAttachmentRequest, ListDevicesQuery};
 
 pub use attachments::{
-    ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
-    DeleteAttachmentsResponse, DeviceComponentsResponse, DeviceComponentsUpdateResponse,
-    UpdateAttachmentsRequest, delete_attachments, get_attachments, preview_attachments,
+    ComponentBindingSummary, DeleteAttachmentsResponse, DeviceComponentsResponse,
+    DeviceComponentsUpdateResponse, UpdateAttachmentsRequest, delete_attachments, get_attachments,
     update_attachments,
 };
-pub use bindings::{get_device_bindings, rebind_device};
 pub use discovery::{DiscoverRequest, discover_devices};
-pub use logical::{
-    CreateLogicalDeviceRequest, DeleteLogicalDeviceResponse, ListLogicalDevicesQuery,
-    LogicalDeviceListResponse, LogicalDeviceSummary, UpdateLogicalDeviceRequest,
-    create_logical_device, delete_logical_device, get_logical_device, list_device_logical_devices,
-    list_logical_devices, update_logical_device,
-};
 pub use pairing::{
     DeletePairingResponse, GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing,
     pair_device,
@@ -62,10 +50,9 @@ pub use pairing::{
 // re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
 pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
-    DeleteDeviceResponse, DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse,
-    DeviceSummary, IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest,
-    IdentifyZoneResponse, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
-    UnresolvedBindingSummary, UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
+    DeleteDeviceResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
+    IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest, IdentifySegmentResponse,
+    SegmentSummary, SegmentTopologySummary, UpdateDeviceRequest,
 };
 
 const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
@@ -74,6 +61,30 @@ const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];
 #[derive(Debug)]
 enum ResolveDeviceError {
     AmbiguousName(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DeviceListIncludes {
+    attachments: bool,
+}
+
+impl DeviceListIncludes {
+    fn parse(raw: Option<&str>) -> Result<Self, DomainError> {
+        let mut includes = Self::default();
+        for token in raw.unwrap_or_default().split(',') {
+            match token.trim() {
+                "" => {}
+                "attachments" => includes.attachments = true,
+                other => {
+                    return Err(DomainError::validation_field(
+                        "include",
+                        format!("unknown expansion '{other}'; expected attachments"),
+                    ));
+                }
+            }
+        }
+        Ok(includes)
+    }
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -88,7 +99,8 @@ enum ResolveDeviceError {
         ("status" = Option<String>, Query, description = "Filter by device status"),
         ("backend_id" = Option<String>, Query, description = "Filter by output backend route"),
         ("driver" = Option<String>, Query, description = "Filter by owning driver module"),
-        ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search")
+        ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search"),
+        ("include" = Option<String>, Query, description = "Comma-separated expansions: attachments")
     ),
     responses(
         (
@@ -108,6 +120,10 @@ pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListDevicesQuery>,
 ) -> Response {
+    let includes = match DeviceListIncludes::parse(query.include.as_deref()) {
+        Ok(includes) => includes,
+        Err(error) => return error.into_response(),
+    };
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
         return DomainError::validation("limit must be between 1 and 200").into_response();
@@ -163,14 +179,14 @@ pub async fn list_devices(
             })
         })
         .collect();
-    let mut items: Vec<DeviceSummary> = Vec::with_capacity(filtered_devices.len());
+    let mut items: Vec<(DeviceSummary, DeviceInfo)> = Vec::with_capacity(filtered_devices.len());
     for tracked in filtered_devices {
         let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
         let metadata = state
             .device_registry
             .metadata_for_id(&tracked.info.id)
             .await;
-        items.push(
+        items.push((
             summarize_device_for_response(
                 &state,
                 &tracked.info,
@@ -180,15 +196,30 @@ pub async fn list_devices(
                 metadata.as_ref(),
             )
             .await,
-        );
+            tracked.info.clone(),
+        ));
     }
-    items.sort_by_cached_key(|item| item.name.to_lowercase());
+    items.sort_by_cached_key(|(summary, _)| summary.name.to_lowercase());
 
     let total = items.len();
-    let paged_items: Vec<DeviceSummary> = items.into_iter().skip(offset).take(limit).collect();
+    let mut paged_items: Vec<(DeviceSummary, DeviceInfo)> =
+        items.into_iter().skip(offset).take(limit).collect();
+    if includes.attachments {
+        let profiles = state.attachment_profiles.read().await;
+        let registry = state.attachment_registry.read().await;
+        for (summary, info) in &mut paged_items {
+            let profile = profiles.get_or_default(info);
+            summary.attachments = Some(attachments::summarize_attachment_profile(
+                info, profile, &registry,
+            ));
+        }
+    }
     let has_more = offset.saturating_add(limit) < total;
     ApiResponse::ok(DeviceListResponse {
-        items: paged_items,
+        items: paged_items
+            .into_iter()
+            .map(|(summary, _)| summary)
+            .collect(),
         pagination: Pagination {
             offset,
             limit,
@@ -198,28 +229,7 @@ pub async fn list_devices(
     })
 }
 
-/// `GET /api/v1/devices/metrics` — List current per-device output telemetry.
-pub async fn list_device_metrics(State(state): State<Arc<AppState>>) -> Response {
-    let snapshot = state.device_metrics.load_full();
-    ApiResponse::ok(DeviceMetricsSnapshot {
-        taken_at_ms: snapshot.taken_at_ms,
-        items: snapshot.items.clone(),
-    })
-}
-
-/// `GET /api/v1/devices/debug/queues` — Inspect backend output queue diagnostics.
-pub async fn debug_output_queues(State(state): State<Arc<AppState>>) -> Response {
-    let manager = state.backend_manager.lock().await;
-    ApiResponse::ok(manager.debug_snapshot())
-}
-
-/// `GET /api/v1/devices/debug/routing` — Inspect layout/backend routing diagnostics.
-pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Response {
-    let manager = state.backend_manager.lock().await;
-    ApiResponse::ok(manager.routing_snapshot())
-}
-
-/// `GET /api/v1/devices/:id` — Get a single device.
+/// `GET /api/v1/devices/{id}` — Get a single device.
 #[utoipa::path(
     get,
     path = "/api/v1/devices/{id}",
@@ -267,7 +277,7 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     )
 }
 
-/// `PUT /api/v1/devices/:id` — Update a device's metadata.
+/// `PUT /api/v1/devices/{id}` — Update a device's metadata.
 pub async fn update_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -383,7 +393,7 @@ pub async fn update_device(
     )
 }
 
-/// `DELETE /api/v1/devices/:id` — Remove a device from tracking.
+/// `DELETE /api/v1/devices/{id}` — Remove a device from tracking.
 pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -435,7 +445,7 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     })
 }
 
-/// `POST /api/v1/devices/:id/identify` — Flash identification pattern.
+/// `POST /api/v1/devices/{id}/identify` — Flash identification pattern.
 pub async fn identify_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -550,14 +560,14 @@ pub async fn identify_device(
     })
 }
 
-/// `POST /api/v1/devices/:id/zones/:zone_id/identify` — Flash a single zone.
+/// `POST /api/v1/devices/{id}/segments/{segment}/identify` — Flash one segment.
 #[allow(
     clippy::too_many_lines,
     reason = "the handler intentionally keeps validation, direct-control orchestration, and response shaping together"
 )]
-pub async fn identify_zone(
+pub async fn identify_segment(
     State(state): State<Arc<AppState>>,
-    Path((id, zone_id)): Path<(String, String)>,
+    Path((id, segment)): Path<(String, String)>,
     body: Option<Json<IdentifyRequest>>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
@@ -569,7 +579,7 @@ pub async fn identify_zone(
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
-    let zone_index = match resolve_zone_index(&tracked.info, &zone_id) {
+    let segment_index = match resolve_segment_index(&tracked.info, &segment) {
         Ok(index) => index,
         Err(error) => return error.into_response(),
     };
@@ -604,7 +614,7 @@ pub async fn identify_zone(
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
 
-    let on_frame = build_zone_identify_frame(&tracked.info, zone_index, identify_color);
+    let on_frame = build_segment_identify_frame(&tracked.info, segment_index, identify_color);
 
     let backend_id = resolved_backend_id(&tracked.info);
     sync_identify_usb_protocol_config(state.as_ref(), device_id, &tracked.info).await;
@@ -632,16 +642,16 @@ pub async fn identify_zone(
         return error.into_response();
     }
 
-    let zone_name = tracked.info.zones[zone_index].name.clone();
+    let segment_name = tracked.info.segments[segment_index].name.clone();
     tracing::info!(
         device_id = %device_id,
         device = %tracked.info.name,
-        zone = %zone_name,
-        zone_index,
+        segment = %segment_name,
+        segment_index,
         backend = %backend_id,
         duration_ms,
         color = ?identify_rgb,
-        "Zone identify flash started"
+        "Segment identify flash started"
     );
     tokio::spawn(run_identify_flash(
         Arc::clone(&state),
@@ -654,17 +664,17 @@ pub async fn identify_zone(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifyZoneResponse {
+    ApiResponse::ok(IdentifySegmentResponse {
         device_id: device_id.to_string(),
-        zone_id,
-        zone_name,
+        segment,
+        segment_name,
         identifying: true,
         duration_ms,
         color,
     })
 }
 
-/// `POST /api/v1/devices/:id/attachments/:slot_id/identify` — Flash a single
+/// `POST /api/v1/devices/{id}/attachments/{slot}/identify` — Flash a single
 /// attachment component within a slot.
 #[allow(
     clippy::too_many_lines,
@@ -869,18 +879,19 @@ pub(super) async fn summarize_device_for_response(
         connection: device_connection_summary(info, metadata),
         total_leds: info.total_led_count(),
         auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await,
-        zones: info
-            .zones
+        segments: info
+            .segments
             .iter()
             .enumerate()
-            .map(|(i, z)| ZoneSummary {
-                id: format!("zone_{i}"),
+            .map(|(i, z)| SegmentSummary {
+                id: format!("segment_{i}"),
                 name: z.name.clone(),
                 led_count: z.led_count,
                 topology: format!("{:?}", z.topology).to_lowercase(),
-                topology_hint: Some(summarize_zone_topology(&z.topology)),
+                topology_hint: Some(summarize_segment_topology(&z.topology)),
             })
             .collect(),
+        attachments: None,
     }
 }
 
@@ -1088,25 +1099,25 @@ pub(crate) async fn activate_reenabled_layout_device(
     }
 }
 
-fn summarize_zone_topology(topology: &DeviceTopologyHint) -> ZoneTopologySummary {
+fn summarize_segment_topology(topology: &DeviceTopologyHint) -> SegmentTopologySummary {
     match topology {
-        DeviceTopologyHint::Strip => ZoneTopologySummary::Strip,
-        DeviceTopologyHint::Matrix { rows, cols } => ZoneTopologySummary::Matrix {
+        DeviceTopologyHint::Strip => SegmentTopologySummary::Strip,
+        DeviceTopologyHint::Matrix { rows, cols } => SegmentTopologySummary::Matrix {
             rows: *rows,
             cols: *cols,
         },
-        DeviceTopologyHint::Ring { count } => ZoneTopologySummary::Ring { count: *count },
-        DeviceTopologyHint::Point => ZoneTopologySummary::Point,
+        DeviceTopologyHint::Ring { count } => SegmentTopologySummary::Ring { count: *count },
+        DeviceTopologyHint::Point => SegmentTopologySummary::Point,
         DeviceTopologyHint::Display {
             width,
             height,
             circular,
-        } => ZoneTopologySummary::Display {
+        } => SegmentTopologySummary::Display {
             width: *width,
             height: *height,
             circular: *circular,
         },
-        DeviceTopologyHint::Custom => ZoneTopologySummary::Custom,
+        DeviceTopologyHint::Custom => SegmentTopologySummary::Custom,
     }
 }
 
@@ -1448,43 +1459,44 @@ fn identify_color_channels(color: Rgb) -> [u8; 3] {
 
 // ── Identify helpers ─────────────────────────────────────────────────────
 
-/// Resolve a zone specifier (`"zone_0"`, `"0"`, or zone name) to an index.
-fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, DomainError> {
-    // Try "zone_N" format
-    if let Some(stripped) = zone_id.strip_prefix("zone_")
+/// Resolve a segment specifier (`"segment_0"`, `"0"`, or name) to an index.
+fn resolve_segment_index(info: &DeviceInfo, segment_id: &str) -> Result<usize, DomainError> {
+    if let Some(stripped) = segment_id.strip_prefix("segment_")
         && let Ok(index) = stripped.parse::<usize>()
-        && index < info.zones.len()
+        && index < info.segments.len()
     {
         return Ok(index);
     }
 
-    // Try bare numeric index
-    if let Ok(index) = zone_id.parse::<usize>()
-        && index < info.zones.len()
+    if let Ok(index) = segment_id.parse::<usize>()
+        && index < info.segments.len()
     {
         return Ok(index);
     }
 
-    // Try name match (case-insensitive)
-    let needle = zone_id.to_ascii_lowercase();
-    for (i, zone) in info.zones.iter().enumerate() {
-        if zone.name.to_ascii_lowercase() == needle {
-            return Ok(i);
+    let needle = segment_id.to_ascii_lowercase();
+    for (index, segment) in info.segments.iter().enumerate() {
+        if segment.name.to_ascii_lowercase() == needle {
+            return Ok(index);
         }
     }
 
-    Err(DomainError::not_found(ResourceKind::Zone, zone_id))
+    Err(DomainError::not_found(ResourceKind::Zone, segment_id))
 }
 
-/// Build a full-device LED frame with only one zone lit.
-fn build_zone_identify_frame(info: &DeviceInfo, zone_index: usize, color: [u8; 3]) -> Vec<[u8; 3]> {
+/// Build a full-device LED frame with only one segment lit.
+fn build_segment_identify_frame(
+    info: &DeviceInfo,
+    segment_index: usize,
+    color: [u8; 3],
+) -> Vec<[u8; 3]> {
     let total_leds = usize::try_from(info.total_led_count()).unwrap_or_default();
     let mut frame = vec![[0_u8; 3]; total_leds];
 
     let mut offset = 0_usize;
-    for (i, zone) in info.zones.iter().enumerate() {
-        let count = usize::try_from(zone.led_count).unwrap_or_default();
-        if i == zone_index {
+    for (index, segment) in info.segments.iter().enumerate() {
+        let count = usize::try_from(segment.led_count).unwrap_or_default();
+        if index == segment_index {
             for led in &mut frame[offset..offset + count] {
                 *led = color;
             }

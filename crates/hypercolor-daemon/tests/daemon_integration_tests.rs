@@ -19,7 +19,7 @@ use hypercolor_types::config::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -149,7 +149,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "main".to_string(),
             led_count,
             topology: DeviceTopologyHint::Strip,

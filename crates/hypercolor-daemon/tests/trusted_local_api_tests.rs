@@ -12,7 +12,7 @@ async fn public_trusted_local_http_surface_executes_the_daemon_router() {
     let response = api
         .execute(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("trusted local status request should build"),
         )
@@ -25,7 +25,7 @@ async fn public_trusted_local_http_surface_executes_the_daemon_router() {
         .expect("trusted local status body should be bounded");
     let body: serde_json::Value =
         serde_json::from_slice(&body).expect("trusted local status should return JSON");
-    assert_eq!(body["data"]["running"], true);
+    assert_eq!(body["data"]["status"]["running"], true);
 }
 
 #[tokio::test]

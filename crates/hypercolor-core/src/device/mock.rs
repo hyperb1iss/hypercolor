@@ -14,7 +14,7 @@ use hypercolor_color::Hsv;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::spatial::LedTopology;
@@ -52,7 +52,7 @@ pub struct MockDeviceConfig {
     pub name: String,
     /// Number of LEDs.
     pub led_count: u32,
-    /// LED topology for the device zone.
+    /// LED topology for the device segment.
     pub topology: LedTopology,
     /// Pre-assigned device ID (generated if `None`).
     pub id: Option<DeviceId>,
@@ -512,7 +512,7 @@ fn build_device_info(
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: format!("{name} Zone"),
             led_count,
             topology: device_topology,

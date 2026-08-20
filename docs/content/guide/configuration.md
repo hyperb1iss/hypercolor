@@ -273,7 +273,7 @@ Calibration changes take effect together at a frame boundary.
 
 **`letterbox`** is off by default. Ambient lighting almost always mirrors a desktop rather than a letterboxed film, and dark desktop content trips the bar detector into cropping real picture away. Turn it on when you are mirroring video that genuinely has bars.
 
-**`publication_memory_bytes`** is an optional process-memory byte budget shared by capture analysis and screen publications. Leave it unset and the daemon snapshots available host memory at startup. Capture dimensions are not capped by a fixed axis or pixel count: the analyzer reserves its peak first, publication plans consume the remainder, and checked memory and compute admission decide whether a requested configuration fits. A configuration that does not fit is rejected with a typed capacity error rather than silently clamped. `/api/v1/status` reports the installed fences under `screen_capture_capacity`, whose `admission_enforced` flag tells you whether the budget is active on this host.
+**`publication_memory_bytes`** is an optional process-memory byte budget shared by capture analysis and screen publications. Leave it unset and the daemon snapshots available host memory at startup. Capture dimensions are not capped by a fixed axis or pixel count: the analyzer reserves its peak first, publication plans consume the remainder, and checked memory and compute admission decide whether a requested configuration fits. A configuration that does not fit is rejected with a typed capacity error rather than silently clamped. `/api/v1/system` reports the installed fences under `status.screen_capture_capacity`, whose `admission_enforced` flag tells you whether the budget is active on this host.
 
 Capture config changes apply live: enabling/disabling adds or removes the source from the running pipeline; grid, smoothing, and color settings reconfigure the capture worker in place.
 
@@ -472,7 +472,7 @@ midi_input       = false  # MIDI controller input for effect control
 When the `HYPERCOLOR_API_KEY` environment variable is set on the daemon, all API requests must include it:
 
 ```bash
-curl -H "Authorization: Bearer <your-key>" http://localhost:9420/api/v1/status
+curl -H "Authorization: Bearer <your-key>" http://localhost:9420/api/v1/system
 ```
 
 The CLI reads the same variable, or you can pass it via `--api-key`:

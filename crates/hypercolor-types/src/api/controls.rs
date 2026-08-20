@@ -21,7 +21,7 @@ pub struct ControlSurfaceListQuery {
 }
 
 /// Request body for
-/// `POST /api/v1/control-surfaces/{surface_id}/actions/{action_id}`.
+/// `POST /api/v1/control-surfaces/{id}/actions/{action}`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct InvokeControlActionRequest {
     #[serde(default)]

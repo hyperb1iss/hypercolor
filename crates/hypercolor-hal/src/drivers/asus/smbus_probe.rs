@@ -7,7 +7,8 @@ use std::sync::Once;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_types::device::{
-    ConnectionType, DeviceFamily, DeviceIdentifier, DeviceOrigin, SMBUS_OUTPUT_BACKEND_ID, ZoneInfo,
+    ConnectionType, DeviceFamily, DeviceIdentifier, DeviceOrigin, SMBUS_OUTPUT_BACKEND_ID,
+    SegmentInfo,
 };
 use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
 use thiserror::Error;
@@ -706,10 +707,10 @@ fn build_device_info(
     address: u16,
     device_id: hypercolor_types::device::DeviceId,
 ) -> DeviceInfo {
-    let zones = protocol
+    let segments = protocol
         .zones()
         .into_iter()
-        .map(protocol_zone_to_zone_info)
+        .map(protocol_zone_to_segment_info)
         .collect::<Vec<_>>();
 
     DeviceInfo {
@@ -724,15 +725,15 @@ fn build_device_info(
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", SMBUS_OUTPUT_BACKEND_ID, ConnectionType::SmBus)
             .with_protocol_id(ASUS_AURA_SMBUS_PROTOCOL_ID),
-        zones,
+        segments,
         firmware_version: firmware_name,
         capabilities: protocol.capabilities(),
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn protocol_zone_to_zone_info(zone: ProtocolZone) -> ZoneInfo {
-    ZoneInfo {
+fn protocol_zone_to_segment_info(zone: ProtocolZone) -> SegmentInfo {
+    SegmentInfo {
         name: zone.name,
         led_count: zone.led_count,
         topology: zone.topology,

@@ -73,6 +73,13 @@ class SystemState(msgspec.Struct, kw_only=True):
         return self.render_loop.state == "paused"
 
 
+class SystemResource(msgspec.Struct, kw_only=True):
+    """Public daemon identity and optional authenticated status."""
+
+    identity: ServerIdentity
+    status: SystemState | None = None
+
+
 class HealthStatus(msgspec.Struct, kw_only=True):
     """Flat health check response."""
 

@@ -437,7 +437,7 @@ pub(super) async fn publish_device_connected(
 }
 
 fn build_zone_refs(info: &DeviceInfo) -> Vec<ZoneRef> {
-    info.zones
+    info.segments
         .iter()
         .map(|zone| ZoneRef {
             zone_id: format!("{}:{}", info.id, zone.name),

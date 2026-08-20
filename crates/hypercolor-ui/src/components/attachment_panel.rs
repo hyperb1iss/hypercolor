@@ -118,7 +118,10 @@ pub fn WiringPanel(
                 }>
                     {move || {
                         let all_templates = templates.get().map(|t| t.to_vec()).unwrap_or_default();
-                        let device_zones = device.get().map(|d| d.zones.clone()).unwrap_or_default();
+                        let device_zones = device
+                            .get()
+                            .map(|d| d.segments.clone())
+                            .unwrap_or_default();
                         let zone_names = layout_zone_names.get().unwrap_or_default();
                         let did = device_id.get();
 
@@ -337,7 +340,7 @@ pub fn WiringPanel(
                                                                             let zid = zid.clone();
                                                                             spawn_identify(
                                                                                 "channel",
-                                                                                async move { api::identify_zone(&did, &zid).await },
+                                                                                async move { api::identify_segment(&did, &zid).await },
                                                                             );
                                                                         }
                                                                     }
@@ -451,7 +454,10 @@ pub fn WiringPanel(
                                                                         });
                                                                         offset += count;
                                                                     }
-                                                                    api::update_device_attachments(&did, &api::UpdateAttachmentsRequest { bindings }).await
+                                                                    api::update_device_attachments(&did, &api::UpdateAttachmentsRequest {
+                                                                        bindings,
+                                                                        validate_only: false,
+                                                                    }).await
                                                                 }.await;
                                                                 set_save_in_flight.set(false);
                                                                 match result {

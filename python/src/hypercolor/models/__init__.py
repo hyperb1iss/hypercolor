@@ -1,6 +1,12 @@
 """Public model exports for the Hypercolor client."""
 
-from .attachment import AttachmentTemplate
+from .attachment import (
+    AttachmentBinding,
+    AttachmentSlot,
+    AttachmentSuggestedZone,
+    AttachmentTemplate,
+    DeviceAttachments,
+)
 from .audio import (
     AudioDeviceInfo,
     AudioDevices,
@@ -23,7 +29,7 @@ from .common import (
     TransitionSpec,
 )
 from .control import ControlActionResult, ControlApplyResult, ControlSurface
-from .device import Device, DeviceUpdate, DeviceZone
+from .device import Device, DeviceSegment, DeviceUpdate
 from .display import DisplayFaceAssignment, DisplaySummary
 from .driver import (
     Driver,
@@ -53,7 +59,14 @@ from .scene import (
     SceneLayoutActivationOutcome,
 )
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
-from .system import HealthStatus, OutputState, RenderLoopStatus, ServerIdentity, SystemState
+from .system import (
+    HealthStatus,
+    OutputState,
+    RenderLoopStatus,
+    ServerIdentity,
+    SystemResource,
+    SystemState,
+)
 from .zone import (
     DisplayTarget,
     ReplaceSceneLayerRequest,
@@ -67,6 +80,9 @@ __all__ = [
     "ActivateSceneResult",
     "ApiErrorBody",
     "ApplyEffectResponse",
+    "AttachmentBinding",
+    "AttachmentSlot",
+    "AttachmentSuggestedZone",
     "AttachmentTemplate",
     "AudioDeviceInfo",
     "AudioDevices",
@@ -78,8 +94,9 @@ __all__ = [
     "ControlDefinition",
     "ControlSurface",
     "Device",
+    "DeviceAttachments",
+    "DeviceSegment",
     "DeviceUpdate",
-    "DeviceZone",
     "DiscoverResult",
     "DisplayFaceAssignment",
     "DisplaySummary",
@@ -125,6 +142,7 @@ __all__ = [
     "SideEffectOutcome",
     "SpatialLayout",
     "SpectrumSnapshot",
+    "SystemResource",
     "SystemState",
     "TransitionSpec",
     "TransportKind",

@@ -564,7 +564,7 @@ mod tests {
     use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-        DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, DriverTransportKind, ZoneInfo,
+        DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, DriverTransportKind, SegmentInfo,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -699,7 +699,7 @@ mod tests {
             model: None,
             connection_type: ConnectionType::Network,
             origin,
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 1,
                 topology: DeviceTopologyHint::Point,

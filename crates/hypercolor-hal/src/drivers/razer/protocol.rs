@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, ScrollMode,
-    ZoneLayoutHint,
+    SegmentLayoutHint,
 };
 use tracing::warn;
 
@@ -52,7 +52,7 @@ pub struct RazerProtocol {
     activation_post_delay: Duration,
     supports_brightness: bool,
     supports_scroll_features: bool,
-    layout_hint: Option<ZoneLayoutHint>,
+    layout_hint: Option<SegmentLayoutHint>,
 }
 
 impl RazerProtocol {
@@ -234,7 +234,7 @@ impl RazerProtocol {
 
     /// Override the default generated layout shape for this protocol.
     #[must_use]
-    pub fn with_layout_hint(mut self, layout_hint: ZoneLayoutHint) -> Self {
+    pub fn with_layout_hint(mut self, layout_hint: SegmentLayoutHint) -> Self {
         self.layout_hint = Some(layout_hint);
         self
     }

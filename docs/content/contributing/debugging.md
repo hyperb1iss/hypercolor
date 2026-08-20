@@ -92,27 +92,28 @@ and `last_error`. That split distinguishes healthy latest-wins pacing from a lag
 
 ### Servo memory diagnostics
 
-On non-Windows builds with the `servo` feature enabled, a separate endpoint captures Servo's
-internal memory profiler output:
+On non-Windows builds with the `servo` feature enabled, the `memory` diagnostic check captures
+Servo's internal memory profiler summary:
 
 ```bash
-curl -s -X POST http://localhost:9420/api/v1/diagnose/memory | jq
+curl -s -X POST http://localhost:9420/api/v1/diagnose \
+  -H 'Content-Type: application/json' \
+  -d '{"checks":["memory"]}' | jq '.data.checks[]'
 ```
 
-This returns a `ServoMemoryReportSnapshot` with per-process explicit heap, system heap, non-heap,
-and non-explicit bytes. Useful for tracking down long-session Servo memory growth.
+The check detail reports process and report counts plus explicit and non-explicit bytes. It is
+useful for tracking long-session Servo memory growth without exposing a parallel endpoint.
 
 {% callout(type="warning") %}
-Servo memory diagnostics are disabled on Windows because the embedded memory reporter can abort
-the daemon process. The endpoint returns `404` on that platform. On Linux/macOS builds without
-the `servo` feature the endpoint also returns `404`.
+Servo memory reporting is disabled on Windows because the embedded reporter can abort the daemon
+process. The `memory` check returns a warning there, and on builds without the `servo` feature.
 {% end %}
 
 ## REST and WebSocket inspection
 
 ```bash
 # Full system status (includes audio_available and effect_health)
-curl -s http://localhost:9420/api/v1/status | jq
+curl -s http://localhost:9420/api/v1/system | jq '.data.status'
 
 # Connected devices and their current state
 curl -s http://localhost:9420/api/v1/devices | jq
@@ -189,7 +190,7 @@ the device database yet.
 2. Check the daemon audio state:
 
    ```bash
-   curl -s http://localhost:9420/api/v1/status | jq '.data.audio_available'
+   curl -s http://localhost:9420/api/v1/system | jq '.data.status.audio_available'
    ```
 
 3. Enable audio input tracing to see what the daemon receives:
@@ -270,7 +271,7 @@ Servo telemetry lives under `effect_health` on the status endpoint, not in the d
 snapshot:
 
 ```bash
-curl -s http://localhost:9420/api/v1/status | jq '.data.effect_health'
+curl -s http://localhost:9420/api/v1/system | jq '.data.status.effect_health'
 ```
 
 ### Servo session failures
@@ -279,8 +280,8 @@ The Servo worker manages sessions in an `Idle → Loading → Running` state mac
 creation and page load failures are counted under `effect_health`:
 
 ```bash
-curl -s http://localhost:9420/api/v1/status | jq '
-  .data.effect_health |
+curl -s http://localhost:9420/api/v1/system | jq '
+  .data.status.effect_health |
   {
     session_creates: .servo_session_creates_total,
     session_create_failures: .servo_session_create_failures_total,
@@ -295,7 +296,7 @@ For full Servo telemetry (render queue waits, GPU import stats, per-frame timing
 `servo_*` field under `effect_health`:
 
 ```bash
-curl -s http://localhost:9420/api/v1/status | jq '.data.effect_health | with_entries(select(.key | startswith("servo_")))'
+curl -s http://localhost:9420/api/v1/system | jq '.data.status.effect_health | with_entries(select(.key | startswith("servo_")))'
 ```
 
 ### Servo CSS and layout constraints
@@ -324,7 +325,9 @@ If the daemon process exits or becomes unresponsive while running HTML effects:
 2. Check Servo memory before and after loading the problematic effect:
 
    ```bash
-   curl -s -X POST http://localhost:9420/api/v1/diagnose/memory | jq '.data.totals'
+   curl -s -X POST http://localhost:9420/api/v1/diagnose \
+     -H 'Content-Type: application/json' \
+     -d '{"checks":["memory"]}' | jq '.data.checks[]'
    ```
 
 3. If explicit heap grows unboundedly across effect restarts, the effect may be holding DOM

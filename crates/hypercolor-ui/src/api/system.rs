@@ -7,7 +7,7 @@ use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/// System status from `GET /api/v1/status`.
+/// Authenticated status carried by `GET /api/v1/system`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct SystemStatus {
     pub running: bool,
@@ -40,6 +40,24 @@ pub struct SystemStatus {
     /// and on daemons predating the ownership arbiter.
     #[serde(default)]
     pub macos_daemon_ownership: Option<MacosDaemonOwnershipStatus>,
+}
+
+/// Public daemon identity carried by `GET /api/v1/system`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SystemIdentity {
+    pub instance_id: String,
+    pub instance_name: String,
+    pub version: String,
+    pub server_session_id: Option<String>,
+    pub device_count: usize,
+    pub auth_required: bool,
+}
+
+/// Unified daemon identity and optional authenticated status.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SystemResource {
+    pub identity: SystemIdentity,
+    pub status: Option<SystemStatus>,
 }
 
 /// Host keyboard/mouse capture health from the daemon status payload.
@@ -242,9 +260,12 @@ pub struct GpuCompositorProbeStatus {
 
 /// Fetch system status.
 pub async fn fetch_status() -> Result<SystemStatus, String> {
-    client::fetch_json("/api/v1/status")
+    let system: SystemResource = client::fetch_json("/api/v1/system")
         .await
-        .map_err(Into::into)
+        .map_err(String::from)?;
+    system
+        .status
+        .ok_or_else(|| "System status requires daemon read access".to_owned())
 }
 
 /// Fetch the latest system sensor snapshot.
@@ -261,8 +282,25 @@ mod tests {
     use super::{
         InputSourcePlatformStatus, InputSourceStatus, MacosDaemonOwnerConflictStatus,
         MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus, MacosSelectionStatus,
-        MacosTahoeSelectionStatus, MacosTahoeStatus,
+        MacosTahoeSelectionStatus, MacosTahoeStatus, SystemResource,
     };
+
+    #[test]
+    fn public_system_projection_decodes_without_status() {
+        let system: SystemResource = serde_json::from_value(json!({
+            "identity": {
+                "instance_id": "01912345-6789-7abc-def0-123456789abc",
+                "instance_name": "desk-pc",
+                "version": "0.3.2",
+                "device_count": 2,
+                "auth_required": true
+            }
+        }))
+        .expect("public system projection should decode");
+
+        assert_eq!(system.identity.instance_name, "desk-pc");
+        assert!(system.status.is_none());
+    }
 
     #[test]
     fn macos_daemon_ownership_decodes_tolerantly() {

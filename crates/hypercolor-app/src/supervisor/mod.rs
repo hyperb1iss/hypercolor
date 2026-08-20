@@ -753,15 +753,9 @@ pub fn health_url(base: &Url) -> Url {
 }
 
 #[cfg(target_os = "macos")]
-fn system_status_url(base: &Url) -> Url {
-    base.join("/api/v1/status")
-        .expect("static system-status endpoint path should be valid")
-}
-
-#[cfg(target_os = "macos")]
-fn server_identity_url(base: &Url) -> Url {
-    base.join("/api/v1/server")
-        .expect("static server-identity endpoint path should be valid")
+fn system_url(base: &Url) -> Url {
+    base.join("/api/v1/system")
+        .expect("static system endpoint path should be valid")
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -803,12 +797,19 @@ fn daemon_base_is_loopback(base: &Url) -> bool {
 
 #[cfg(target_os = "macos")]
 #[derive(serde::Deserialize)]
-struct ServerIdentityEnvelope {
-    data: ServerIdentityData,
+struct SystemEnvelope {
+    data: SystemData,
 }
 
 #[cfg(target_os = "macos")]
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
+struct SystemData {
+    identity: ServerIdentityData,
+    status: Option<SystemStatusData>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, serde::Deserialize)]
 struct ServerIdentityData {
     server_session_id: Option<MacosServerSessionId>,
 }
@@ -872,7 +873,7 @@ async fn verify_macos_daemon_connection(
     }
 
     let response = client
-        .get(server_identity_url(base))
+        .get(system_url(base))
         .timeout(HEALTH_PROBE_TIMEOUT)
         .send()
         .await;
@@ -884,11 +885,11 @@ async fn verify_macos_daemon_connection(
         tracing::warn!(status = %response.status(), "macOS daemon verification received a failed server identity response");
         return None;
     }
-    let Ok(envelope) = response.json::<ServerIdentityEnvelope>().await else {
+    let Ok(envelope) = response.json::<SystemEnvelope>().await else {
         tracing::warn!("macOS daemon verification could not decode the server identity");
         return None;
     };
-    let Some(observed_session) = envelope.data.server_session_id else {
+    let Some(observed_session) = envelope.data.identity.server_session_id else {
         tracing::warn!("macOS daemon verification found no server session identifier");
         return None;
     };
@@ -954,12 +955,6 @@ async fn monitor_external_macos_daemon_connection(
         .await;
         state.replace_verified_connection(connection);
     }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, serde::Deserialize)]
-struct SystemStatusEnvelope {
-    data: SystemStatusData,
 }
 
 #[cfg(target_os = "macos")]
@@ -1034,7 +1029,7 @@ async fn probe_authoritative_macos_owner(
         return false;
     }
     let response = client
-        .get(system_status_url(base))
+        .get(system_url(base))
         .timeout(HEALTH_PROBE_TIMEOUT)
         .send()
         .await;
@@ -1045,10 +1040,11 @@ async fn probe_authoritative_macos_owner(
         return false;
     }
     response
-        .json::<SystemStatusEnvelope>()
+        .json::<SystemEnvelope>()
         .await
         .ok()
-        .and_then(|envelope| envelope.data.macos_daemon_ownership)
+        .and_then(|envelope| envelope.data.status)
+        .and_then(|status| status.macos_daemon_ownership)
         .is_some_and(|ownership| {
             authoritative_owner_matches(selected_owner, after_epoch, &ownership)
         })
@@ -1872,7 +1868,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    async fn server_identity_fixture(body: String) -> (url::Url, tokio::task::JoinHandle<()>) {
+    async fn system_fixture(body: String) -> (url::Url, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1890,7 +1886,7 @@ mod tests {
                 .expect("request should read");
             let request = std::str::from_utf8(&request[..read])
                 .expect("request should contain UTF-8 headers");
-            assert!(request.starts_with("GET /api/v1/server HTTP/1.1"));
+            assert!(request.starts_with("GET /api/v1/system HTTP/1.1"));
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -1921,7 +1917,7 @@ mod tests {
             .local_addr()
             .expect("fixture address should resolve");
         let server = tokio::spawn(async move {
-            for (expected_path, body) in [("/health", "{}"), ("/api/v1/status", status_body)] {
+            for (expected_path, body) in [("/health", "{}"), ("/api/v1/system", status_body)] {
                 let (mut stream, _) = listener.accept().await.expect("request should connect");
                 let mut request = [0_u8; 4_096];
                 let read = stream
@@ -1991,10 +1987,13 @@ mod tests {
     async fn verified_connection_requires_matching_endpoint_session_and_live_guard() {
         let (_directory, store, guard, attestation, guard_path) = external_session_fixture();
         let body = serde_json::json!({
-            "data": { "server_session_id": attestation.server_session_id }
+            "data": {
+                "identity": { "server_session_id": attestation.server_session_id },
+                "status": null
+            }
         })
         .to_string();
-        let (base, server) = server_identity_fixture(body).await;
+        let (base, server) = system_fixture(body).await;
         let state = super::SupervisorState::default();
 
         let verified = super::verify_macos_daemon_connection(
@@ -2025,15 +2024,24 @@ mod tests {
         let (_directory, store, _guard, _attestation, guard_path) = external_session_fixture();
         let state = super::SupervisorState::default();
         for body in [
-            serde_json::json!({ "data": { "server_session_id": null } }).to_string(),
             serde_json::json!({
                 "data": {
-                    "server_session_id": hypercolor_macos_owner::MacosServerSessionId::from_bytes([0x77; 16])
+                    "identity": { "server_session_id": null },
+                    "status": null
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "data": {
+                    "identity": {
+                        "server_session_id": hypercolor_macos_owner::MacosServerSessionId::from_bytes([0x77; 16])
+                    },
+                    "status": null
                 }
             })
             .to_string(),
         ] {
-            let (base, server) = server_identity_fixture(body).await;
+            let (base, server) = system_fixture(body).await;
             assert!(
                 super::verify_macos_daemon_connection(
                     &reqwest::Client::new(),
@@ -2235,25 +2243,30 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn authoritative_system_status_requires_exact_owner_and_newer_epoch() {
-        use super::{SystemStatusEnvelope, authoritative_owner_matches, system_status_url};
+        use super::{SystemEnvelope, authoritative_owner_matches, system_url};
 
         let base = url::Url::parse("http://127.0.0.1:9420").expect("URL should parse");
         assert_eq!(
-            system_status_url(&base).as_str(),
-            "http://127.0.0.1:9420/api/v1/status"
+            system_url(&base).as_str(),
+            "http://127.0.0.1:9420/api/v1/system"
         );
 
-        let launchd: SystemStatusEnvelope = serde_json::from_value(serde_json::json!({
+        let launchd: SystemEnvelope = serde_json::from_value(serde_json::json!({
             "data": {
-                "macos_daemon_ownership": {
-                    "active_owner": "launchd_service",
-                    "owner_epoch": 8
+                "identity": {},
+                "status": {
+                    "macos_daemon_ownership": {
+                        "active_owner": "launchd_service",
+                        "owner_epoch": 8
+                    }
                 }
             }
         }))
         .expect("launchd status should decode");
         let launchd = launchd
             .data
+            .status
+            .expect("status should be present")
             .macos_daemon_ownership
             .expect("ownership should be present");
         assert!(authoritative_owner_matches(
@@ -2272,18 +2285,18 @@ mod tests {
             &launchd
         ));
 
-        let missing: SystemStatusEnvelope = serde_json::from_value(serde_json::json!({
-            "data": { "macos_daemon_ownership": null }
+        let missing: SystemEnvelope = serde_json::from_value(serde_json::json!({
+            "data": { "identity": {}, "status": null }
         }))
         .expect("missing ownership status should decode");
-        assert!(missing.data.macos_daemon_ownership.is_none());
+        assert!(missing.data.status.is_none());
     }
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn generic_health_does_not_satisfy_authoritative_owner_probe() {
-        let launchd = r#"{"data":{"macos_daemon_ownership":{"active_owner":"launchd_service","owner_epoch":8}}}"#;
-        let homebrew = r#"{"data":{"macos_daemon_ownership":{"active_owner":"homebrew_service","owner_epoch":9}}}"#;
+        let launchd = r#"{"data":{"identity":{},"status":{"macos_daemon_ownership":{"active_owner":"launchd_service","owner_epoch":8}}}}"#;
+        let homebrew = r#"{"data":{"identity":{},"status":{"macos_daemon_ownership":{"active_owner":"homebrew_service","owner_epoch":9}}}}"#;
 
         assert!(
             authoritative_probe_fixture(launchd, MacosDaemonOwner::DirectLaunchd, Some(7)).await

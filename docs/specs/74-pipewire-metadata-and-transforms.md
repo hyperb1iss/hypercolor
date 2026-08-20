@@ -237,7 +237,7 @@ requires a refactor this wave budgets explicitly:
   retires and re-prepares exact branches and publishes correctly-sized
   frames on all branches within a bounded number of frames; crop
   metadata from a synthetic PipeWire source samples the exact region.
-- Per-reason drop counters visible in `/api/v1/status`.
+- Per-reason drop counters visible in `/api/v1/system` status data.
 - `just verify` green including the new crate; cargo-deny clean.
 
 ## Out of scope

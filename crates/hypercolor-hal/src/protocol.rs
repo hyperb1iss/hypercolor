@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat,
-    DisplayFramePayload, ScrollMode, ZoneLayoutHint,
+    DisplayFramePayload, ScrollMode, SegmentLayoutHint,
 };
 
 /// Pure byte-level protocol encoder/decoder.
@@ -314,7 +314,7 @@ pub struct ProtocolZone {
     pub color_format: DeviceColorFormat,
 
     /// Optional driver-owned spatial presentation hint.
-    pub layout_hint: Option<ZoneLayoutHint>,
+    pub layout_hint: Option<SegmentLayoutHint>,
 }
 
 /// Protocol-level parse/encode errors.

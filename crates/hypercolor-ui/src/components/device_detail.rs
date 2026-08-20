@@ -210,7 +210,7 @@ pub fn DeviceDetail(
                      linear-gradient(180deg, rgba({rgb_for_border}, 0.10) 0%, transparent 58%)"
                 );
 
-                let zone_count = dev.zones.len();
+                let zone_count = dev.segments.len();
                 let connection_endpoint = dev.connection.endpoint.clone();
                 let is_network = dev.connection.transport == "network";
 
@@ -498,7 +498,7 @@ pub fn DeviceDetail(
                     <DeviceDriverControls device_id=device_id />
 
                     // ── Empty topology hint (when no zones) ─────────────────
-                    {dev.zones.is_empty().then(|| {
+                    {dev.segments.is_empty().then(|| {
                         let hint_rgb = rgb.clone();
                         view! {
                             <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">

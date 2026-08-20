@@ -734,16 +734,6 @@ pub enum HypercolorEvent {
         changes: HashMap<String, serde_json::Value>,
     },
 
-    /// A device inherited another identity's layout bindings through a
-    /// user-driven portable re-bind.
-    DeviceRebound {
-        device_id: String,
-        /// The layout binding id the device now resolves to.
-        layout_device_id: String,
-        /// The canonical portable key that was re-pinned.
-        portable_key: String,
-    },
-
     /// A persisted output setting changed.
     ///
     /// The local-change hint for observers that mirror persisted
@@ -1186,7 +1176,6 @@ impl HypercolorEvent {
             | Self::DeviceError { .. }
             | Self::DeviceFirmwareInfo { .. }
             | Self::DeviceStateChanged { .. }
-            | Self::DeviceRebound { .. }
             | Self::DeviceSettingsChanged { .. }
             | Self::DeviceDiscoveryStarted { .. }
             | Self::DeviceDiscoveryCompleted { .. } => EventCategory::Device,

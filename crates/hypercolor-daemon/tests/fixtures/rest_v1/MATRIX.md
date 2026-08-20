@@ -116,7 +116,7 @@ Not everything on the wire is enveloped, and the exceptions are contract:
 | Surface | Shape |
 | --- | --- |
 | `GET /health` | Bare probe object (§4) |
-| Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/preview.jpg`) | Raw bytes |
+| Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/frame`) | Raw bytes |
 | Axum's own rejections (malformed JSON, 405, body-limit 413) | Plain text, no envelope |
 
 Axum's own rejections are the only errors that bypass the envelope, because
@@ -197,7 +197,7 @@ pub struct Pagination { pub offset: usize, pub limit: usize, pub total: usize, p
 
 ### 2.1 Endpoints that really paginate
 
-Four endpoints honor `offset`/`limit` and compute `has_more` from the real
+Three endpoints honor `offset`/`limit` and compute `has_more` from the real
 total. They are frozen too, because a refactor that flattens all pagination into
 one shape would break these in the opposite direction.
 
@@ -205,18 +205,16 @@ one shape would break these in the opposite direction.
 | --- | --- | --- |
 | GET | `/api/v1/devices` | Slices by `offset`/`limit`, `has_more = offset + limit < total` |
 | GET | `/api/v1/layouts` | Same |
-| GET | `/api/v1/logical-devices` | Same |
 | GET | `/api/v1/attachments/templates` | Same |
 
 ### 2.2 A third pagination dialect
 
-Two more endpoints self-describe with `limit == total` rather than the
+One more endpoint self-describes with `limit == total` rather than the
 hardcoded 50, which is a distinct shape from both groups above.
 
 | Method | Path | Block |
 | --- | --- | --- |
 | GET | `/api/v1/effects/{id}/presets` | `offset: 0, limit: total, total, has_more: false` |
-| GET | `/api/v1/devices/{id}/logical-devices` | `offset: 0, limit: items.len(), total: items.len(), has_more: false` |
 
 ---
 
