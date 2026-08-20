@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use std::fs;
+use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -11,12 +11,22 @@ use hypercolor_cli::install::{
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
     MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformState,
     PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
-    UnitRecord,
+    UnitRecord, stage_release_payload,
 };
+use hypercolor_platform_fs::DirectoryEntryKind;
+use serde_json::json;
+use sha2::{Digest as _, Sha256};
 
 const PRIOR_ID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const CANDIDATE_ID: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 const THIRD_ID: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+const RELEASE_BINARIES: [&str; 5] = [
+    "hypercolor-daemon",
+    "hypercolor",
+    "hypercolor-app",
+    "hypercolor-tui",
+    "hypercolor-open",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InjectionKind {
@@ -220,8 +230,15 @@ impl InstallPlatform for FakePlatform {
         prior: &hypercolor_cli::install::InstallationState,
         target: &PlatformState,
     ) -> Result<PreparedPlatformTransaction, InstallPlatformError> {
-        assert_eq!(candidate.id.as_str(), CANDIDATE_ID);
-        assert!(candidate.root.is_dir());
+        assert!(!candidate.id().as_str().is_empty());
+        assert_eq!(
+            candidate
+                .directory()
+                .metadata()
+                .expect("candidate directory metadata")
+                .kind(),
+            DirectoryEntryKind::Directory
+        );
         assert_eq!(prior.platform, self.state);
         Ok(PreparedPlatformTransaction {
             record: Self::transaction_record(),
@@ -284,7 +301,7 @@ impl InstallPlatform for FakePlatform {
     ) -> Result<(), InstallPlatformError> {
         let (action, injection) = self.begin_effect()?;
         assert_eq!(action, InstallAction::PreflightCandidate);
-        assert_eq!(candidate.as_str(), CANDIDATE_ID);
+        assert_eq!(candidate.as_str().len(), 64);
         assert_eq!(prior.platform, self.state);
         Self::assert_record(record);
         Self::finish_effect(action, injection)
@@ -441,7 +458,7 @@ impl Fixture {
         let candidate = prepare_unit(&store, CANDIDATE_ID);
         let lock = store.acquire_lock().expect("initial install lock");
         store
-            .set_active(Some(&prior.id), &lock)
+            .set_active(Some(prior.id()), &lock)
             .expect("initial active unit");
         drop(lock);
 
@@ -461,10 +478,10 @@ impl Fixture {
 
     fn prior_state(&self) -> PlatformState {
         PlatformState {
-            layout_unit: Some(self.prior.id.clone()),
-            launcher_unit: Some(self.prior.id.clone()),
+            layout_unit: Some(self.prior.id().clone()),
+            launcher_unit: Some(self.prior.id().clone()),
             loaded: true,
-            running_unit: Some(self.prior.id.clone()),
+            running_unit: Some(self.prior.id().clone()),
             autostart_enabled: true,
         }
     }
@@ -504,10 +521,106 @@ impl Fixture {
 }
 
 fn prepare_unit(store: &InstallStore, value: &str) -> UnitRecord {
-    let id = UnitId::new(value).expect("valid unit ID");
-    let root = store.root().join("units").join(id.as_str());
-    fs::create_dir_all(&root).expect("prepared unit directory");
-    UnitRecord::new(id, root)
+    let release = tempfile::tempdir().expect("transaction release root");
+    let candidate = write_transaction_release(release.path(), value);
+    let lock = store.acquire_lock().expect("transaction release lock");
+    stage_release_payload(store, &lock, release.path(), &candidate)
+        .expect("stage transaction release")
+}
+
+fn write_transaction_release(root: &Path, seed: &str) -> File {
+    let directories = [
+        "bin",
+        "share",
+        "share/hypercolor",
+        "share/hypercolor/ui",
+        "share/hypercolor/effects",
+        "share/hypercolor/effects/bundled",
+        "share/hypercolor/docs",
+        "share/hypercolor/agents",
+        "share/hypercolor/agents/skills",
+        "share/hypercolor/agents/agents",
+        "share/hypercolor/site",
+    ];
+    let files = [
+        ("bin/hypercolor-daemon", b"daemon".as_slice()),
+        ("bin/hypercolor", seed.as_bytes()),
+        ("bin/hypercolor-app", b"app".as_slice()),
+        ("bin/hypercolor-tui", b"tui".as_slice()),
+        ("bin/hypercolor-open", b"open".as_slice()),
+        ("share/hypercolor/ui/index.html", b"ui".as_slice()),
+        (
+            "share/hypercolor/effects/bundled/effect.html",
+            b"effect".as_slice(),
+        ),
+        (
+            "share/hypercolor/agents/skills/skill.md",
+            b"skill".as_slice(),
+        ),
+        (
+            "share/hypercolor/agents/agents/agent.md",
+            b"agent".as_slice(),
+        ),
+    ];
+    let mut members = Vec::new();
+    for directory in directories {
+        fs::create_dir_all(root.join(directory)).expect("create release directory");
+        fs::set_permissions(root.join(directory), fs::Permissions::from_mode(0o755))
+            .expect("set release directory mode");
+        members.push(json!({"path": directory, "type": "directory", "mode": 0o755}));
+    }
+    for (path, bytes) in files {
+        fs::write(root.join(path), bytes).expect("write release file");
+        let mode = if path.starts_with("bin/") {
+            0o755
+        } else {
+            0o644
+        };
+        fs::set_permissions(root.join(path), fs::Permissions::from_mode(mode))
+            .expect("set release file mode");
+        members.push(json!({
+            "path": path,
+            "type": "file",
+            "mode": mode,
+            "size": bytes.len(),
+            "sha256": transaction_sha256(bytes),
+        }));
+    }
+    members.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    let manifest = serde_json::to_vec_pretty(&json!({
+        "name": "hypercolor",
+        "version": "0.3.2",
+        "platform": "macos-arm64",
+        "rust_target": "aarch64-apple-darwin",
+        "binaries": RELEASE_BINARIES,
+        "assets": {
+            "ui_files": 1,
+            "bundled_effect_files": 1,
+            "docs_files": 0,
+            "skill_files": 1,
+            "agent_files": 1,
+            "site_files": 0,
+        },
+        "members": members,
+    }))
+    .expect("encode release manifest");
+    fs::write(root.join("manifest.json"), manifest).expect("write release manifest");
+    fs::set_permissions(
+        root.join("manifest.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("set release manifest mode");
+    File::open(root.join("bin/hypercolor")).expect("open release candidate")
+}
+
+fn transaction_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("write digest");
+    }
+    output
 }
 
 fn install(fixture: &Fixture, platform: &mut FakePlatform) -> InstallOutcome {
@@ -582,12 +695,12 @@ fn seed_rollback_for_policy(
     target_policy: InstallTargetPolicy,
 ) -> FakePlatform {
     let prior = fixture.prior_state();
-    let target = target_state(&prior, &fixture.candidate.id, target_policy);
+    let target = target_state(&prior, fixture.candidate.id(), target_policy);
     let transitions = FakePlatform::transitions(&prior, &target);
     let candidate_active = FakePlatform::candidate_active(&prior, &target);
     let prior_active_restored = PlatformState {
-        layout_unit: Some(fixture.prior.id.clone()),
-        launcher_unit: Some(fixture.prior.id.clone()),
+        layout_unit: Some(fixture.prior.id().clone()),
+        launcher_unit: Some(fixture.prior.id().clone()),
         ..candidate_active.clone()
     };
     let prior_launcher_restored = PlatformState {
@@ -599,32 +712,33 @@ fn seed_rollback_for_policy(
         ..prior_launcher_restored.clone()
     };
     let (active, state) = match action {
-        InstallAction::UnloadCandidateRuntime => (Some(&fixture.candidate.id), target),
-        InstallAction::UnloadCandidateAutostart => {
-            (Some(&fixture.candidate.id), transitions.candidate_autostart)
-        }
+        InstallAction::UnloadCandidateRuntime => (Some(fixture.candidate.id()), target),
+        InstallAction::UnloadCandidateAutostart => (
+            Some(fixture.candidate.id()),
+            transitions.candidate_autostart,
+        ),
         InstallAction::UnloadCandidateManager => {
-            (Some(&fixture.candidate.id), transitions.candidate_manager)
+            (Some(fixture.candidate.id()), transitions.candidate_manager)
         }
         InstallAction::ProveCandidateGuardReleased | InstallAction::RestorePriorActive => {
-            (Some(&fixture.candidate.id), candidate_active)
+            (Some(fixture.candidate.id()), candidate_active)
         }
-        InstallAction::RestorePriorLauncher => (Some(&fixture.prior.id), prior_active_restored),
-        InstallAction::RestorePriorLayout => (Some(&fixture.prior.id), prior_launcher_restored),
-        InstallAction::ReloadPriorManager => (Some(&fixture.prior.id), prior_layout_restored),
+        InstallAction::RestorePriorLauncher => (Some(fixture.prior.id()), prior_active_restored),
+        InstallAction::RestorePriorLayout => (Some(fixture.prior.id()), prior_launcher_restored),
+        InstallAction::ReloadPriorManager => (Some(fixture.prior.id()), prior_layout_restored),
         InstallAction::RestorePriorAutostart => {
-            (Some(&fixture.prior.id), transitions.prior_manager)
+            (Some(fixture.prior.id()), transitions.prior_manager)
         }
         InstallAction::RestorePriorRuntime => {
-            (Some(&fixture.prior.id), transitions.prior_autostart)
+            (Some(fixture.prior.id()), transitions.prior_autostart)
         }
-        InstallAction::ProvePrior => (Some(&fixture.prior.id), fixture.prior_state()),
+        InstallAction::ProvePrior => (Some(fixture.prior.id()), fixture.prior_state()),
         _ => panic!("{action:?} is not a rollback effect"),
     };
     let mut journal = new_journal(
         InstallTransactionId::new("rollback-replay").expect("transaction ID"),
-        Some(fixture.prior.id.clone()),
-        fixture.candidate.id.clone(),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
         fixture.prior_state(),
         target_policy,
     );
@@ -681,52 +795,52 @@ fn successful_install_preserves_write_ahead_order_and_private_journal() {
     assert_eq!(
         outcome,
         InstallOutcome::Committed {
-            active_unit: fixture.candidate.id.clone()
+            active_unit: fixture.candidate.id().clone()
         }
     );
-    assert_eq!(fixture.active_unit(), Some(fixture.candidate.id.clone()));
+    assert_eq!(fixture.active_unit(), Some(fixture.candidate.id().clone()));
     assert_eq!(
         platform.effects,
         [
             EffectRecord {
                 action: InstallAction::PreflightCandidate,
-                active_target: Some(Path::new("units").join(PRIOR_ID)),
+                active_target: Some(Path::new("units").join(fixture.prior.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::UnloadPrior,
-                active_target: Some(Path::new("units").join(PRIOR_ID)),
+                active_target: Some(Path::new("units").join(fixture.prior.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::ProvePriorGuardReleased,
-                active_target: Some(Path::new("units").join(PRIOR_ID)),
+                active_target: Some(Path::new("units").join(fixture.prior.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::InstallCandidateLayout,
-                active_target: Some(Path::new("units").join(PRIOR_ID)),
+                active_target: Some(Path::new("units").join(fixture.prior.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::InstallCandidateLayout,
-                active_target: Some(Path::new("units").join(PRIOR_ID)),
+                active_target: Some(Path::new("units").join(fixture.prior.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::InstallCandidateLayout,
-                active_target: Some(Path::new("units").join(PRIOR_ID)),
+                active_target: Some(Path::new("units").join(fixture.prior.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::InstallCandidateLauncher,
-                active_target: Some(Path::new("units").join(PRIOR_ID)),
+                active_target: Some(Path::new("units").join(fixture.prior.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::ReloadCandidateManager,
-                active_target: Some(Path::new("units").join(CANDIDATE_ID)),
+                active_target: Some(Path::new("units").join(fixture.candidate.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::RestoreCandidateRuntime,
-                active_target: Some(Path::new("units").join(CANDIDATE_ID)),
+                active_target: Some(Path::new("units").join(fixture.candidate.id().as_str())),
             },
             EffectRecord {
                 action: InstallAction::ProveCandidate,
-                active_target: Some(Path::new("units").join(CANDIDATE_ID)),
+                active_target: Some(Path::new("units").join(fixture.candidate.id().as_str())),
             },
         ]
     );
@@ -960,55 +1074,40 @@ fn persisted_layout_cursor_must_match_the_named_journal_action() {
 
 #[test]
 fn coordinator_applies_explicit_first_install_service_policy() {
-    for (policy, reloads, expected) in [
-        (
-            InstallTargetPolicy::Preserve,
-            0,
-            PlatformState {
-                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
+    for (policy, reloads) in [
+        (InstallTargetPolicy::Preserve, 0),
+        (InstallTargetPolicy::EnableOnFirstInstall, 1),
+        (InstallTargetPolicy::EnabledAndRunning, 1),
+        (InstallTargetPolicy::Disabled, 0),
+    ] {
+        let directory = tempfile::tempdir().expect("first install fixture");
+        let store = InstallStore::new(directory.path().join("install"), 64 * 1024);
+        let candidate = prepare_unit(&store, CANDIDATE_ID);
+        let expected = match policy {
+            InstallTargetPolicy::Preserve => PlatformState {
+                layout_unit: Some(candidate.id().clone()),
                 launcher_unit: None,
                 loaded: false,
                 running_unit: None,
                 autostart_enabled: false,
             },
-        ),
-        (
-            InstallTargetPolicy::EnableOnFirstInstall,
-            1,
-            PlatformState {
-                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
-                launcher_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
-                loaded: true,
-                running_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
-                autostart_enabled: true,
-            },
-        ),
-        (
-            InstallTargetPolicy::EnabledAndRunning,
-            1,
-            PlatformState {
-                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
-                launcher_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
-                loaded: true,
-                running_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
-                autostart_enabled: true,
-            },
-        ),
-        (
-            InstallTargetPolicy::Disabled,
-            0,
-            PlatformState {
-                layout_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate layout unit")),
-                launcher_unit: Some(UnitId::new(CANDIDATE_ID).expect("candidate unit")),
+            InstallTargetPolicy::EnableOnFirstInstall | InstallTargetPolicy::EnabledAndRunning => {
+                PlatformState {
+                    layout_unit: Some(candidate.id().clone()),
+                    launcher_unit: Some(candidate.id().clone()),
+                    loaded: true,
+                    running_unit: Some(candidate.id().clone()),
+                    autostart_enabled: true,
+                }
+            }
+            InstallTargetPolicy::Disabled => PlatformState {
+                layout_unit: Some(candidate.id().clone()),
+                launcher_unit: Some(candidate.id().clone()),
                 loaded: false,
                 running_unit: None,
                 autostart_enabled: false,
             },
-        ),
-    ] {
-        let directory = tempfile::tempdir().expect("first install fixture");
-        let store = InstallStore::new(directory.path().join("install"), 64 * 1024);
-        let candidate = prepare_unit(&store, CANDIDATE_ID);
+        };
         let prior = PlatformState {
             layout_unit: None,
             launcher_unit: None,
@@ -1029,7 +1128,7 @@ fn coordinator_applies_explicit_first_install_service_policy() {
         assert_eq!(
             outcome,
             InstallOutcome::Committed {
-                active_unit: candidate.id.clone()
+                active_unit: candidate.id().clone()
             }
         );
         assert_eq!(platform.state, expected);
@@ -1059,15 +1158,15 @@ fn enable_on_first_install_preserves_an_existing_disabled_launcher() {
     let prior = prepare_unit(&store, PRIOR_ID);
     let candidate = prepare_unit(&store, CANDIDATE_ID);
     let prior_state = PlatformState {
-        layout_unit: Some(prior.id.clone()),
-        launcher_unit: Some(prior.id.clone()),
+        layout_unit: Some(prior.id().clone()),
+        launcher_unit: Some(prior.id().clone()),
         loaded: false,
         running_unit: None,
         autostart_enabled: false,
     };
     let lock = store.acquire_lock().expect("upgrade active lock");
     store
-        .set_active(Some(&prior.id), &lock)
+        .set_active(Some(prior.id()), &lock)
         .expect("upgrade prior active unit");
     drop(lock);
     let mut platform = FakePlatform::new(prior_state, &store);
@@ -1084,14 +1183,14 @@ fn enable_on_first_install_preserves_an_existing_disabled_launcher() {
     assert_eq!(
         outcome,
         InstallOutcome::Committed {
-            active_unit: candidate.id.clone()
+            active_unit: candidate.id().clone()
         }
     );
     assert_eq!(
         platform.state,
         PlatformState {
-            layout_unit: Some(candidate.id.clone()),
-            launcher_unit: Some(candidate.id),
+            layout_unit: Some(candidate.id().clone()),
+            launcher_unit: Some(candidate.id().clone()),
             loaded: false,
             running_unit: None,
             autostart_enabled: false,
@@ -1124,7 +1223,7 @@ fn every_platform_forward_failure_rolls_back_exact_prior_state() {
 
         assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
         assert_eq!(platform.state, prior, "failed at {action:?}");
-        assert_eq!(fixture.active_unit(), Some(fixture.prior.id.clone()));
+        assert_eq!(fixture.active_unit(), Some(fixture.prior.id().clone()));
         assert_eq!(
             fixture.journal().disposition,
             InstallDisposition::RolledBack
@@ -1195,7 +1294,7 @@ fn active_switch_failure_rolls_back_without_touching_other_paths() {
 
     assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
     assert_eq!(platform.state, prior);
-    assert_eq!(fixture.active_unit(), Some(fixture.prior.id.clone()));
+    assert_eq!(fixture.active_unit(), Some(fixture.prior.id().clone()));
     fixture.assert_sentinels();
 }
 
@@ -1348,8 +1447,8 @@ fn crash_after_active_switch_advances_from_observed_after_state() {
     let fixture = Fixture::new();
     let mut journal = new_journal(
         InstallTransactionId::new("switch-crash").expect("transaction ID"),
-        Some(fixture.prior.id.clone()),
-        fixture.candidate.id.clone(),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
         fixture.prior_state(),
         InstallTargetPolicy::Preserve,
     );
@@ -1358,8 +1457,8 @@ fn crash_after_active_switch_advances_from_observed_after_state() {
     journal.layout_operation_index = 3;
     let mut platform = FakePlatform::new(
         PlatformState {
-            layout_unit: Some(fixture.candidate.id.clone()),
-            launcher_unit: Some(fixture.candidate.id.clone()),
+            layout_unit: Some(fixture.candidate.id().clone()),
+            launcher_unit: Some(fixture.candidate.id().clone()),
             loaded: false,
             running_unit: None,
             autostart_enabled: true,
@@ -1375,7 +1474,7 @@ fn crash_after_active_switch_advances_from_observed_after_state() {
         .expect("seed journal");
     fixture
         .store
-        .set_active(Some(&fixture.candidate.id), &lock)
+        .set_active(Some(fixture.candidate.id()), &lock)
         .expect("effect happened before crash");
     drop(lock);
 
@@ -1488,7 +1587,7 @@ fn rollback_effect_failure_replays_from_write_ahead_action() {
 
     assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
     assert_eq!(platform.state, prior);
-    assert_eq!(fixture.active_unit(), Some(fixture.prior.id.clone()));
+    assert_eq!(fixture.active_unit(), Some(fixture.prior.id().clone()));
 }
 
 #[test]
@@ -1526,7 +1625,7 @@ fn every_platform_rollback_failure_replays_from_exact_before_state() {
             .expect("rollback outcome");
         assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
         assert_eq!(platform.state, prior);
-        assert_eq!(fixture.active_unit(), Some(fixture.prior.id.clone()));
+        assert_eq!(fixture.active_unit(), Some(fixture.prior.id().clone()));
     }
 }
 
@@ -1678,7 +1777,7 @@ fn rollback_active_switch_failure_replays_after_directory_is_restored() {
         .expect("recover prior active switch")
         .expect("rollback outcome");
     assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
-    assert_eq!(fixture.active_unit(), Some(fixture.prior.id.clone()));
+    assert_eq!(fixture.active_unit(), Some(fixture.prior.id().clone()));
 }
 
 #[test]
@@ -1729,7 +1828,7 @@ fn crash_after_rollback_active_switch_advances_from_observed_state() {
     let lock = fixture.store.acquire_lock().expect("crash simulation lock");
     fixture
         .store
-        .set_active(Some(&fixture.prior.id), &lock)
+        .set_active(Some(fixture.prior.id()), &lock)
         .expect("restore active effect before crash");
     drop(lock);
 
@@ -1739,7 +1838,7 @@ fn crash_after_rollback_active_switch_advances_from_observed_state() {
         .expect("rollback outcome");
 
     assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
-    assert_eq!(fixture.active_unit(), Some(fixture.prior.id.clone()));
+    assert_eq!(fixture.active_unit(), Some(fixture.prior.id().clone()));
 }
 
 #[test]
@@ -1842,8 +1941,8 @@ fn oversized_embedded_platform_record_is_rejected_after_bounded_read() {
     let fixture = Fixture::new();
     let mut journal = new_journal(
         InstallTransactionId::new("oversized-record").expect("transaction ID"),
-        Some(fixture.prior.id.clone()),
-        fixture.candidate.id.clone(),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
         fixture.prior_state(),
         InstallTargetPolicy::Preserve,
     );
@@ -1876,8 +1975,8 @@ fn exact_platform_metadata_drift_fails_closed() {
     let fixture = Fixture::new();
     let mut journal = new_journal(
         InstallTransactionId::new("exact-drift").expect("transaction ID"),
-        Some(fixture.prior.id.clone()),
-        fixture.candidate.id.clone(),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
         fixture.prior_state(),
         InstallTargetPolicy::Preserve,
     );
@@ -1887,7 +1986,7 @@ fn exact_platform_metadata_drift_fails_closed() {
     let lock = fixture.store.acquire_lock().expect("seed lock");
     fixture
         .store
-        .set_active(Some(&fixture.candidate.id), &lock)
+        .set_active(Some(fixture.candidate.id()), &lock)
         .expect("seed candidate active unit");
     fixture
         .store
@@ -1896,8 +1995,8 @@ fn exact_platform_metadata_drift_fails_closed() {
     drop(lock);
     let mut platform = FakePlatform::new(
         PlatformState {
-            layout_unit: Some(fixture.candidate.id.clone()),
-            launcher_unit: Some(fixture.candidate.id.clone()),
+            layout_unit: Some(fixture.candidate.id().clone()),
+            launcher_unit: Some(fixture.candidate.id().clone()),
             loaded: false,
             running_unit: None,
             autostart_enabled: true,
@@ -1929,8 +2028,8 @@ fn third_state_drift_fails_closed_without_advancing_journal() {
     let third = prepare_unit(&fixture.store, THIRD_ID);
     let mut journal = new_journal(
         InstallTransactionId::new("drift").expect("transaction ID"),
-        Some(fixture.prior.id.clone()),
-        fixture.candidate.id.clone(),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
         fixture.prior_state(),
         InstallTargetPolicy::Preserve,
     );
@@ -1944,13 +2043,13 @@ fn third_state_drift_fails_closed_without_advancing_journal() {
         .expect("seed journal");
     fixture
         .store
-        .set_active(Some(&third.id), &lock)
+        .set_active(Some(third.id()), &lock)
         .expect("seed third active state");
     drop(lock);
     let mut platform = FakePlatform::new(
         PlatformState {
-            layout_unit: Some(fixture.candidate.id.clone()),
-            launcher_unit: Some(fixture.candidate.id.clone()),
+            layout_unit: Some(fixture.candidate.id().clone()),
+            launcher_unit: Some(fixture.candidate.id().clone()),
             loaded: false,
             running_unit: None,
             autostart_enabled: true,

@@ -7,7 +7,7 @@ mod tree;
 
 pub use tree::{
     DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, ExclusiveDirectory,
-    OpenedRegularFile, PrivateStagingDirectory,
+    OpenedRegularFile, PrivateStagingDirectory, ReadOnlyDirectoryAuthority,
 };
 
 const SECRET_FILE_MODE: u32 = 0o600;

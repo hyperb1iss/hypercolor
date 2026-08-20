@@ -7,7 +7,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
-use hypercolor_platform_fs::{DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory};
+use hypercolor_platform_fs::{
+    DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory, ReadOnlyDirectoryAuthority,
+};
 
 fn acquire(directory: &Path) -> DirectoryAuthority {
     let exclusive = ExclusiveDirectory::try_acquire(directory, Path::new("install.lock"))
@@ -53,6 +55,36 @@ fn authority_stays_bound_after_parent_path_replacement() {
 }
 
 #[test]
+fn read_only_conversion_retains_exact_child_after_root_replacement() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let current = parent.path().join("current");
+    let original = parent.path().join("original");
+    fs::create_dir(&current).expect("create governed root");
+    let root = acquire(&current);
+    let unit = root
+        .create_child_directory(Path::new("unit"))
+        .expect("create unit");
+    write_file(&unit, "hypercolor", 0o555, b"verified");
+    let retained = unit.read_only().expect("retain read-only unit authority");
+    drop(unit);
+    drop(root);
+
+    fs::rename(&current, &original).expect("rename governed root");
+    fs::create_dir(&current).expect("create pathname replacement");
+    fs::write(current.join("hypercolor"), b"attacker").expect("write replacement file");
+
+    let mut opened = retained
+        .open_regular_file(Path::new("hypercolor"))
+        .expect("open retained file");
+    let mut contents = Vec::new();
+    opened
+        .file_mut()
+        .read_to_end(&mut contents)
+        .expect("read retained file");
+    assert_eq!(contents, b"verified");
+}
+
+#[test]
 fn root_authority_keeps_exclusive_lock_alive() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let root = acquire(directory.path());
@@ -68,6 +100,51 @@ fn root_authority_keeps_exclusive_lock_alive() {
         ExclusiveDirectory::try_acquire(directory.path(), Path::new("install.lock"))
             .expect("reacquire released lock")
             .is_some()
+    );
+}
+
+#[test]
+fn read_only_authority_stays_bound_without_creating_a_lock_entry() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let source = parent.path().join("source");
+    let displaced = parent.path().join("displaced");
+    fs::create_dir(&source).expect("create source root");
+    fs::create_dir(source.join("bin")).expect("create source bin");
+    fs::write(source.join("bin/hypercolor"), b"verified").expect("write source binary");
+    fs::set_permissions(
+        source.join("bin/hypercolor"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("set source binary mode");
+
+    let root = ReadOnlyDirectoryAuthority::open(&source).expect("open read-only authority");
+    assert!(!source.join("install.lock").exists());
+    fs::rename(&source, &displaced).expect("displace source pathname");
+    fs::create_dir(&source).expect("replace source pathname");
+    fs::write(source.join("attacker"), b"replacement").expect("write replacement entry");
+
+    let bin = root
+        .open_child_directory(Path::new("bin"))
+        .expect("open retained bin");
+    assert_eq!(
+        bin.entries().expect("enumerate retained bin"),
+        ["hypercolor"]
+    );
+    let mut binary = bin
+        .open_regular_file(Path::new("hypercolor"))
+        .expect("open retained binary");
+    let mut contents = Vec::new();
+    binary
+        .file_mut()
+        .read_to_end(&mut contents)
+        .expect("read retained binary");
+    assert_eq!(contents, b"verified");
+    assert_eq!(root.entries().expect("enumerate retained root"), ["bin"]);
+    assert!(
+        !root
+            .entries()
+            .expect("enumerate again")
+            .contains(&OsString::from("attacker"))
     );
 }
 
@@ -447,6 +524,35 @@ fn no_replace_publication_preserves_existing_destination() {
         fs::read(directory.path().join(".hypercolor-stage-candidate/marker"))
             .expect("read staged unit"),
         b"candidate"
+    );
+}
+
+#[test]
+fn no_replace_publish_or_remove_preserves_destination_and_cleans_staging() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let root = acquire(directory.path());
+    let staging = root
+        .create_private_staging_directory(Path::new(".hypercolor-stage-candidate"))
+        .expect("create staged directory");
+    write_file(staging.directory(), "marker", 0o444, b"candidate");
+    let existing = root
+        .create_child_directory(Path::new("unit"))
+        .expect("create existing unit");
+    write_file(&existing, "marker", 0o444, b"existing");
+
+    staging
+        .publish_or_remove(Path::new("unit"))
+        .expect_err("existing destination must not be replaced");
+
+    assert_eq!(
+        fs::read(directory.path().join("unit/marker")).expect("read existing unit"),
+        b"existing"
+    );
+    assert!(
+        !directory
+            .path()
+            .join(".hypercolor-stage-candidate")
+            .exists()
     );
 }
 

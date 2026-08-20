@@ -50,6 +50,16 @@ pub struct DirectoryAuthority {
     pub(super) protected_name: Option<OsString>,
 }
 
+/// Read-only handle-relative authority for one opened Unix directory.
+///
+/// This capability never creates a lock entry and exposes no mutation
+/// operations. Child traversal remains relative to the original no-follow
+/// directory handle even if the pathname used to open it is later replaced.
+#[derive(Debug)]
+pub struct ReadOnlyDirectoryAuthority {
+    pub(super) directory: File,
+}
+
 /// One opened regular file paired with metadata from the same file handle.
 #[derive(Debug)]
 pub struct OpenedRegularFile {
@@ -215,6 +225,70 @@ mod tests {
             }
         }
         placeholder
+    }
+
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+    #[test]
+    fn publish_or_remove_cleans_staging_after_previsibility_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root =
+            super::ExclusiveDirectory::try_acquire(directory.path(), Path::new("install.lock"))
+                .expect("acquire root")
+                .expect("uncontended root")
+                .root_directory()
+                .expect("root authority");
+        let staging = root
+            .create_private_staging_directory(Path::new(".hypercolor-stage-fail-before"))
+            .expect("create staging");
+        staging
+            .publish_or_remove_with(
+                Path::new("unit"),
+                || Err(io::Error::other("injected previsibility failure")),
+                || Ok(()),
+                |directory| directory.sync_all(),
+            )
+            .expect_err("injected publication failure");
+
+        assert!(!directory.path().join("unit").exists());
+        assert!(
+            !directory
+                .path()
+                .join(".hypercolor-stage-fail-before")
+                .exists()
+        );
+        assert!(recovery_entries(directory.path()).is_empty());
+    }
+
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+    #[test]
+    fn publish_or_remove_cleans_rolled_back_staging_after_sync_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root =
+            super::ExclusiveDirectory::try_acquire(directory.path(), Path::new("install.lock"))
+                .expect("acquire root")
+                .expect("uncontended root")
+                .root_directory()
+                .expect("root authority");
+        let staging = root
+            .create_private_staging_directory(Path::new(".hypercolor-stage-fail-sync"))
+            .expect("create staging");
+        staging
+            .publish_or_remove_with(
+                Path::new("unit"),
+                || Ok(()),
+                || Ok(()),
+                |_| Err(io::Error::other("injected parent sync failure")),
+            )
+            .expect_err("injected sync failure");
+
+        assert!(!directory.path().join("unit").exists());
+        assert!(
+            !directory
+                .path()
+                .join(".hypercolor-stage-fail-sync")
+                .exists()
+        );
+        assert!(recovery_entries(directory.path()).is_empty());
     }
 
     #[cfg(any(target_vendor = "apple", target_os = "linux"))]

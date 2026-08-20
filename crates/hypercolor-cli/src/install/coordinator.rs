@@ -137,7 +137,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         };
         let target_platform = request
             .target_policy
-            .target_platform(&prior_platform, &request.candidate.id);
+            .target_platform(&prior_platform, request.candidate.id());
         let prepared_platform = self
             .platform
             .prepare_transaction(&request.candidate, &prior_state, &target_platform)
@@ -159,7 +159,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         let journal = InstallJournalV1::new(
             request.transaction_id,
             prior_active_unit,
-            request.candidate.id,
+            request.candidate.id().clone(),
             prior_platform,
             request.target_policy,
             prepared_platform.transitions,

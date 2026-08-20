@@ -27,8 +27,7 @@ impl PrivateStagingDirectory {
     /// error when traversal, removal, or durability fails.
     pub fn remove(self) -> io::Result<()> {
         let _operation = self.directory.operation_guard()?;
-        let expected = metadata_for_file(&self.directory.directory)?;
-        remove_directory_tree(&self.parent, &self.name, expected)
+        self.remove_exact()
     }
 
     /// Atomically publish this exact staging directory without replacement.
@@ -44,6 +43,28 @@ impl PrivateStagingDirectory {
     /// swap, or failed post-publication identity proof. Returns the
     /// operating-system error when publication or durability fails.
     pub fn publish(self, destination: &Path) -> io::Result<DirectoryAuthority> {
+        self.publish_with(
+            destination,
+            || Ok(()),
+            || Ok(()),
+            |directory| directory.sync_all(),
+        )
+    }
+
+    /// Atomically publish this exact staging directory or remove it on error.
+    ///
+    /// This operation has the same no-replace and post-publication proof
+    /// contract as [`Self::publish`]. When publication fails while the exact
+    /// staged inode is still recoverable through its private name, the tree is
+    /// removed before the error returns. A cleanup failure is combined with
+    /// the publication error and fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input for an unsafe destination, held lock entry,
+    /// source swap, or failed identity proof. Returns the operating-system
+    /// error when publication, recovery, cleanup, or durability fails.
+    pub fn publish_or_remove(self, destination: &Path) -> io::Result<DirectoryAuthority> {
         let destination = entry_name(destination, "published directory name")?;
         if self.protected_name.as_deref() == Some(destination) {
             return Err(io::Error::new(
@@ -52,21 +73,92 @@ impl PrivateStagingDirectory {
             ));
         }
         let _operation = self.directory.operation_guard()?;
+        match self.publish_inner(
+            destination,
+            || Ok(()),
+            || Ok(()),
+            |directory| directory.sync_all(),
+        ) {
+            Ok(published) => Ok(self.published_authority(published)),
+            Err(publication_error) => match self.remove_exact() {
+                Ok(()) => Err(publication_error),
+                Err(cleanup_error) => Err(io::Error::other(format!(
+                    "{publication_error}; exact private staging cleanup failed: {cleanup_error}"
+                ))),
+            },
+        }
+    }
+
+    fn publish_with(
+        self,
+        destination: &Path,
+        before_rename: impl FnOnce() -> io::Result<()>,
+        after_rename: impl FnOnce() -> io::Result<()>,
+        sync: impl FnOnce(&std::fs::File) -> io::Result<()>,
+    ) -> io::Result<DirectoryAuthority> {
+        let destination = entry_name(destination, "published directory name")?;
+        if self.protected_name.as_deref() == Some(destination) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to mutate the held directory lock entry",
+            ));
+        }
+        let _operation = self.directory.operation_guard()?;
+        let published = self.publish_inner(destination, before_rename, after_rename, sync)?;
+        Ok(self.published_authority(published))
+    }
+
+    fn publish_inner(
+        &self,
+        destination: &OsStr,
+        before_rename: impl FnOnce() -> io::Result<()>,
+        after_rename: impl FnOnce() -> io::Result<()>,
+        sync: impl FnOnce(&std::fs::File) -> io::Result<()>,
+    ) -> io::Result<std::fs::File> {
         let expected = metadata_for_file(&self.directory.directory)?;
-        let published = durable_publish_directory_with(
+        durable_publish_directory_with(
             &self.parent,
             &self.name,
             destination,
             expected,
-            || Ok(()),
-            || Ok(()),
-            |directory| directory.sync_all(),
-        )?;
-        Ok(DirectoryAuthority {
+            before_rename,
+            after_rename,
+            sync,
+        )
+    }
+
+    fn published_authority(&self, published: std::fs::File) -> DirectoryAuthority {
+        DirectoryAuthority {
             directory: published,
             shared: Arc::clone(&self.directory.shared),
             protected_name: None,
-        })
+        }
+    }
+
+    fn remove_exact(&self) -> io::Result<()> {
+        let expected = metadata_for_file(&self.directory.directory)?;
+        remove_directory_tree(&self.parent, &self.name, expected)
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_or_remove_with(
+        self,
+        destination: &Path,
+        before_rename: impl FnOnce() -> io::Result<()>,
+        after_rename: impl FnOnce() -> io::Result<()>,
+        sync: impl FnOnce(&std::fs::File) -> io::Result<()>,
+    ) -> io::Result<DirectoryAuthority> {
+        let destination = entry_name(destination, "published directory name")?;
+        let _operation = self.directory.operation_guard()?;
+        match self.publish_inner(destination, before_rename, after_rename, sync) {
+            Ok(published) => Ok(self.published_authority(published)),
+            Err(publication_error) => match self.remove_exact() {
+                Ok(()) => Err(publication_error),
+                Err(cleanup_error) => Err(io::Error::other(format!(
+                    "{publication_error}; exact private staging cleanup failed: {cleanup_error}"
+                ))),
+            },
+        }
     }
 }
 

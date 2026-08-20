@@ -1,4 +1,9 @@
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::Arc;
+
+#[cfg(unix)]
+use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,21 +45,101 @@ impl<'de> Deserialize<'de> for UnitId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One content-addressed release unit and its retained directory authority.
+#[derive(Clone)]
 pub struct UnitRecord {
-    pub id: UnitId,
-    pub root: PathBuf,
+    id: UnitId,
+    root_hint: PathBuf,
+    #[cfg(unix)]
+    directory: Arc<ReadOnlyDirectoryAuthority>,
+    #[cfg(unix)]
+    identity: UnitRootIdentity,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnitRootIdentity {
+    device: u64,
+    inode: u64,
 }
 
 impl UnitRecord {
-    #[must_use]
-    pub fn new(id: UnitId, root: impl Into<PathBuf>) -> Self {
-        Self {
+    /// Bind a unit record to an already-open exact directory.
+    ///
+    /// `root_hint` is retained only for diagnostics. Filesystem access must
+    /// use [`Self::directory`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained handle does not identify a
+    /// directory or its metadata cannot be inspected.
+    #[cfg(unix)]
+    pub(crate) fn new(
+        id: UnitId,
+        root_hint: impl Into<PathBuf>,
+        directory: ReadOnlyDirectoryAuthority,
+    ) -> std::io::Result<Self> {
+        let metadata = directory.metadata()?;
+        if metadata.kind() != DirectoryEntryKind::Directory {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unit authority does not identify a directory",
+            ));
+        }
+        Ok(Self {
             id,
-            root: root.into(),
+            root_hint: root_hint.into(),
+            directory: Arc::new(directory),
+            identity: UnitRootIdentity {
+                device: metadata.device(),
+                inode: metadata.inode(),
+            },
+        })
+    }
+
+    /// Return the digest-derived unit identifier bound to this directory.
+    #[must_use]
+    pub fn id(&self) -> &UnitId {
+        &self.id
+    }
+
+    /// Borrow the exact opened unit directory capability.
+    #[must_use]
+    #[cfg(unix)]
+    pub fn directory(&self) -> &ReadOnlyDirectoryAuthority {
+        &self.directory
+    }
+}
+
+impl std::fmt::Debug for UnitRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("UnitRecord");
+        debug
+            .field("id", &self.id)
+            .field("root_hint", &self.root_hint);
+        #[cfg(unix)]
+        debug.field("identity", &self.identity);
+        debug.finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for UnitRecord {
+    fn eq(&self, other: &Self) -> bool {
+        if self.id != other.id {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            self.identity == other.identity
+        }
+        #[cfg(not(unix))]
+        {
+            self.root_hint == other.root_hint
         }
     }
 }
+
+impl Eq for UnitRecord {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]

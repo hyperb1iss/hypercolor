@@ -22,8 +22,100 @@ use super::traversal::{
 use super::{
     DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, ExclusiveDirectory,
     ExclusiveDirectoryShared, OpenedRegularFile, PRIVATE_DIRECTORY_MODE, PrivateStagingDirectory,
-    SECRET_FILE_MODE, SYMLINK_SEQUENCE,
+    ReadOnlyDirectoryAuthority, SECRET_FILE_MODE, SYMLINK_SEQUENCE,
 };
+
+impl ReadOnlyDirectoryAuthority {
+    /// Open a source root without following its final path component.
+    ///
+    /// The pathname is resolved only by this constructor. Every later
+    /// traversal and inspection stays relative to the retained directory
+    /// handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when `directory` cannot be opened
+    /// as a no-follow directory with ordinary permission bits.
+    pub fn open(directory: &Path) -> io::Result<Self> {
+        let directory = openat(
+            CWD,
+            directory,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(io::Error::from)?;
+        let metadata = metadata_for_file(&directory)?;
+        if metadata.kind != DirectoryEntryKind::Directory || metadata.mode & !0o777 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source root is not a directory with ordinary permission bits",
+            ));
+        }
+        Ok(Self { directory })
+    }
+
+    /// Return metadata obtained with `fstat` from this exact directory handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when handle inspection fails.
+    pub fn metadata(&self) -> io::Result<DirectoryEntryMetadata> {
+        metadata_for_file(&self.directory)
+    }
+
+    /// Open one normal child directory without following a symbolic link.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input when `name` is not one normal component or the
+    /// entry has an unsafe type or mode. Returns the operating-system error
+    /// when opening or inspecting it fails.
+    pub fn open_child_directory(&self, name: &Path) -> io::Result<Self> {
+        let name = entry_name(name, "directory name")?;
+        Ok(Self {
+            directory: open_directory_at(&self.directory, name)?,
+        })
+    }
+
+    /// Enumerate normal child entry names through the retained handle.
+    ///
+    /// Dot entries are omitted and names are returned in raw-byte order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when enumeration fails, or
+    /// invalid-data for a non-normal entry name.
+    pub fn entries(&self) -> io::Result<Vec<OsString>> {
+        directory_entries(&self.directory)
+    }
+
+    /// Inspect one normal child without following a symbolic link.
+    ///
+    /// Missing entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input when `name` is not one normal component and the
+    /// operating-system error when metadata inspection fails.
+    pub fn entry_metadata(&self, name: &Path) -> io::Result<Option<DirectoryEntryMetadata>> {
+        let name = entry_name(name, "entry name")?;
+        entry_metadata_at(&self.directory, name)
+    }
+
+    /// Open one single-link regular child without following symbolic links.
+    ///
+    /// The returned metadata is obtained from the same opened file handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input for a non-normal name, unsafe type, link count,
+    /// or mode. Returns the operating-system error when opening fails.
+    pub fn open_regular_file(&self, name: &Path) -> io::Result<OpenedRegularFile> {
+        let name = entry_name(name, "file name")?;
+        open_regular_file_at(&self.directory, name)
+    }
+}
 
 impl ExclusiveDirectory {
     /// Try to acquire exclusive mutation authority for `directory`.
@@ -302,6 +394,23 @@ impl ExclusiveDirectory {
 }
 
 impl DirectoryAuthority {
+    /// Duplicate this exact opened directory as a read-only authority.
+    ///
+    /// The returned capability remains bound to the same directory inode even
+    /// after the pathname that originally named it is renamed or replaced. It
+    /// exposes no mutation operations and does not retain the install lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when the directory handle cannot be
+    /// duplicated.
+    pub fn read_only(&self) -> io::Result<ReadOnlyDirectoryAuthority> {
+        let _operation = self.operation_guard()?;
+        Ok(ReadOnlyDirectoryAuthority {
+            directory: duplicate_directory(&self.directory)?,
+        })
+    }
+
     /// Return metadata obtained with `fstat` from this exact directory handle.
     ///
     /// # Errors

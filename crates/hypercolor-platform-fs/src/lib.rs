@@ -17,7 +17,7 @@ mod windows;
 #[cfg(unix)]
 pub use unix::{
     DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, ExclusiveDirectory,
-    OpenedRegularFile, PrivateStagingDirectory,
+    OpenedRegularFile, PrivateStagingDirectory, ReadOnlyDirectoryAuthority,
 };
 #[cfg(target_os = "windows")]
 pub use windows::DestinationIdentity;

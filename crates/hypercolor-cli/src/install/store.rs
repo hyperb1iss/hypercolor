@@ -3,7 +3,7 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use hypercolor_platform_fs::ExclusiveDirectory;
+use hypercolor_platform_fs::{DirectoryAuthority, DirectoryEntryKind, ExclusiveDirectory};
 
 use super::model::{InstallJournalV1, UnitId, active_target};
 
@@ -46,6 +46,12 @@ impl InstallStore {
     #[must_use]
     pub fn active_path(&self) -> PathBuf {
         self.root.join("active")
+    }
+
+    /// Return the canonical path of one digest-named immutable unit.
+    #[must_use]
+    pub fn unit_path(&self, unit: &UnitId) -> PathBuf {
+        self.root.join(UNITS_DIRECTORY).join(unit.as_str())
     }
 
     pub fn acquire_lock(&self) -> Result<InstallLock, InstallStoreError> {
@@ -175,6 +181,28 @@ impl InstallStore {
         }
         Ok(&lock.directory)
     }
+
+    pub(crate) fn units_authority(
+        &self,
+        lock: &InstallLock,
+    ) -> Result<DirectoryAuthority, InstallStoreError> {
+        let root = self
+            .authority(lock)?
+            .root_directory()
+            .map_err(InstallStoreError::OpenRootAuthority)?;
+        match root
+            .entry_metadata(Path::new(UNITS_DIRECTORY))
+            .map_err(InstallStoreError::InspectUnits)?
+        {
+            None => root
+                .create_child_directory(Path::new(UNITS_DIRECTORY))
+                .map_err(InstallStoreError::CreateUnits),
+            Some(metadata) if metadata.kind() == DirectoryEntryKind::Directory => root
+                .open_child_directory(Path::new(UNITS_DIRECTORY))
+                .map_err(InstallStoreError::OpenUnits),
+            Some(_) => Err(InstallStoreError::InvalidUnitsDirectory),
+        }
+    }
 }
 
 fn stage_journal(
@@ -216,6 +244,16 @@ pub enum InstallStoreError {
     LockContended,
     #[error("install transaction authority belongs to another prefix")]
     WrongLock,
+    #[error("failed to retain the install root authority: {0}")]
+    OpenRootAuthority(io::Error),
+    #[error("failed to inspect the immutable unit directory: {0}")]
+    InspectUnits(io::Error),
+    #[error("the immutable unit path is not a directory")]
+    InvalidUnitsDirectory,
+    #[error("failed to create the immutable unit directory: {0}")]
+    CreateUnits(io::Error),
+    #[error("failed to open the immutable unit directory: {0}")]
+    OpenUnits(io::Error),
     #[error("failed to inspect active unit: {0}")]
     InspectActive(io::Error),
     #[error("invalid active unit link: {0}")]
