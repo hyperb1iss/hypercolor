@@ -475,7 +475,7 @@ impl InstallPlatform for FakePlatform {
 }
 
 struct Fixture {
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     store: InstallStore,
     prior: UnitRecord,
     candidate: UnitRecord,
@@ -501,7 +501,7 @@ impl Fixture {
         fs::write(&owner_sentinel, b"owner sentinel").expect("owner sentinel");
         fs::write(&config_sentinel, b"config sentinel").expect("config sentinel");
         Self {
-            _directory: directory,
+            directory,
             store,
             prior,
             candidate,
@@ -2247,6 +2247,61 @@ fn install_lock_lends_its_authority_to_public_layout_mutations() {
             .acquire_lock()
             .expect("authority releases install lock"),
     );
+}
+
+#[test]
+fn coordinator_uses_the_same_caller_held_lock_as_public_layout() {
+    let fixture = Fixture::new();
+    let public = fixture.directory.path().join("public");
+    fs::create_dir(&public).expect("public directory");
+    let public = fs::canonicalize(public).expect("canonical public directory");
+    let mut lock = fixture.store.acquire_lock().expect("install lock");
+    let authority = lock
+        .open_public_directory(&public)
+        .expect("public directory authority");
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    let mut coordinator = InstallCoordinator::new(&fixture.store, &mut platform);
+
+    assert_eq!(
+        coordinator
+            .recover_with_lock(&mut lock)
+            .expect("recover with caller lock"),
+        None
+    );
+    let outcome = coordinator
+        .install_with_lock(fixture.request(), &mut lock)
+        .expect("install with caller lock");
+
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    authority
+        .validate_ancestry()
+        .expect("public authority remains exact");
+}
+
+#[test]
+fn coordinator_rejects_a_caller_lock_from_another_store_before_platform_effects() {
+    let fixture = Fixture::new();
+    let foreign_store = InstallStore::new(fixture.directory.path().join("foreign"), 64 * 1024);
+    let mut foreign_lock = foreign_store.acquire_lock().expect("foreign install lock");
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    let mut coordinator = InstallCoordinator::new(&fixture.store, &mut platform);
+
+    let recovery_error = coordinator
+        .recover_with_lock(&mut foreign_lock)
+        .expect_err("foreign recovery lock must fail");
+    assert!(matches!(
+        recovery_error,
+        InstallCoordinatorError::Store(InstallStoreError::WrongLock)
+    ));
+    let install_error = coordinator
+        .install_with_lock(fixture.request(), &mut foreign_lock)
+        .expect_err("foreign install lock must fail");
+
+    assert!(matches!(
+        install_error,
+        InstallCoordinatorError::Store(InstallStoreError::WrongLock)
+    ));
+    assert!(platform.effects.is_empty());
 }
 
 #[test]

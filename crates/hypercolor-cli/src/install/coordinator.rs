@@ -3,7 +3,7 @@ use super::model::{
     InstallRequest, InstallationState, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
     PlatformTransactionRecord, PreparedPlatformTransaction, UnitId, UnitRecord,
 };
-use super::store::{InstallStore, InstallStoreError};
+use super::store::{InstallLock, InstallStore, InstallStoreError};
 
 const MAX_FAILURE_DETAIL_BYTES: usize = 4_096;
 
@@ -124,17 +124,35 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         &mut self,
         request: InstallRequest,
     ) -> Result<InstallOutcome, InstallCoordinatorError> {
-        let lock = self.store.acquire_lock()?;
-        if let Some(journal) = self.store.load_journal(&lock)?
+        let mut lock = self.store.acquire_lock()?;
+        self.install_with_lock(request, &mut lock)
+    }
+
+    /// Install one candidate while using an already-held transaction lock.
+    ///
+    /// Platform adapters may derive public layout capabilities from `lock`
+    /// before entering the coordinator. Every mutation then shares the same
+    /// retained lock and operation gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::install`], plus
+    /// [`InstallStoreError::WrongLock`] when `lock` belongs to another store.
+    pub fn install_with_lock(
+        &mut self,
+        request: InstallRequest,
+        lock: &mut InstallLock,
+    ) -> Result<InstallOutcome, InstallCoordinatorError> {
+        if let Some(journal) = self.store.load_journal(lock)?
             && matches!(
                 journal.disposition,
                 InstallDisposition::Forward | InstallDisposition::Rollback
             )
         {
-            return self.resume(journal, &lock);
+            return self.resume(journal, lock);
         }
 
-        let prior_active_unit = self.store.active_unit(&lock)?;
+        let prior_active_unit = self.store.active_unit(lock)?;
         let prior_platform = self
             .platform
             .inspect()
@@ -175,16 +193,29 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             prepared_platform.layout_operation_count,
             prepared_platform.record,
         )?;
-        self.store.write_journal(&journal, &lock)?;
-        self.drive_forward(journal, &lock)
+        self.store.write_journal(&journal, lock)?;
+        self.drive_forward(journal, lock)
     }
 
     pub fn recover(&mut self) -> Result<Option<InstallOutcome>, InstallCoordinatorError> {
-        let lock = self.store.acquire_lock()?;
-        let Some(journal) = self.store.load_journal(&lock)? else {
+        let mut lock = self.store.acquire_lock()?;
+        self.recover_with_lock(&mut lock)
+    }
+
+    /// Recover a journal while using an already-held transaction lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::recover`], plus
+    /// [`InstallStoreError::WrongLock`] when `lock` belongs to another store.
+    pub fn recover_with_lock(
+        &mut self,
+        lock: &mut InstallLock,
+    ) -> Result<Option<InstallOutcome>, InstallCoordinatorError> {
+        let Some(journal) = self.store.load_journal(lock)? else {
             return Ok(None);
         };
-        self.resume(journal, &lock).map(Some)
+        self.resume(journal, lock).map(Some)
     }
 
     fn resume(
