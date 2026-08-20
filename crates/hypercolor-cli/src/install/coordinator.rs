@@ -1,6 +1,6 @@
 use super::model::{
     InstallAction, InstallDisposition, InstallJournalV1, InstallModelError, InstallOutcome,
-    InstallRequest, InstallationState, PlatformCheckpoint, PlatformState,
+    InstallRequest, InstallationState, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
     PlatformTransactionRecord, PreparedPlatformTransaction, UnitId, UnitRecord,
 };
 use super::store::{InstallStore, InstallStoreError};
@@ -23,7 +23,14 @@ pub trait InstallPlatform {
         expected: &PlatformState,
         layout_operation_index: u16,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<bool, InstallPlatformError>;
+
+    fn capture_candidate_owner_receipt(
+        &mut self,
+        expected: &PlatformState,
+        record: &PlatformTransactionRecord,
+    ) -> Result<PlatformOwnerReceipt, InstallPlatformError>;
 
     fn validate_transaction_plan(
         &mut self,
@@ -76,12 +83,14 @@ pub trait InstallPlatform {
         &mut self,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<(), InstallPlatformError>;
 
     fn wait_for_newer_owner(
         &mut self,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<(), InstallPlatformError>;
 }
 
@@ -255,12 +264,18 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
 
             match self.reconcile_action(&journal, action, lock) {
                 Ok(()) => {
+                    if action == InstallAction::RestoreCandidateRuntime {
+                        self.capture_candidate_owner_receipt(&mut journal, lock)?;
+                    }
                     journal.advance(InstallDisposition::Forward, Some(next_forward(action)?))?;
                     self.store.write_journal(&journal, lock)?;
                 }
                 Err(StepError::Effect(error)) => {
                     let failure = truncate_detail(error.to_string());
                     let next_action = self.rollback_entry_action(&journal, action, lock)?;
+                    if next_action == InstallAction::UnloadCandidateRuntime {
+                        self.capture_candidate_owner_receipt(&mut journal, lock)?;
+                    }
                     journal.failure = Some(failure);
                     journal.advance(InstallDisposition::Rollback, Some(next_action))?;
                     self.store.write_journal(&journal, lock)?;
@@ -269,6 +284,42 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 Err(StepError::Fatal(error)) => return Err(error),
             }
         }
+    }
+
+    fn capture_candidate_owner_receipt(
+        &mut self,
+        journal: &mut InstallJournalV1,
+        lock: &super::store::InstallLock,
+    ) -> Result<(), InstallCoordinatorError> {
+        if journal.target_platform.running_unit.is_none()
+            || journal.candidate_owner_receipt.is_some()
+        {
+            return Ok(());
+        }
+        let actual = self.inspect_state(lock)?;
+        let expected = Checkpoints::new(journal).candidate_runtime;
+        if !self.matches_checkpoint_at(
+            &actual,
+            &expected,
+            PlatformCheckpoint::CandidateRuntime,
+            journal.layout_operation_index,
+            &journal.platform_record,
+            None,
+        )? {
+            return Err(state_drift(
+                InstallAction::RestoreCandidateRuntime,
+                expected.clone(),
+                expected,
+                actual,
+            ));
+        }
+        let receipt = self
+            .platform
+            .capture_candidate_owner_receipt(&journal.target_platform, &journal.platform_record)
+            .map_err(|source| platform_error(InstallAction::RestoreCandidateRuntime, source))?;
+        receipt.validate()?;
+        journal.candidate_owner_receipt = Some(receipt);
+        Ok(())
     }
 
     fn drive_rollback(
@@ -380,6 +431,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 before_checkpoint,
                 current_index,
                 &journal.platform_record,
+                journal.candidate_owner_receipt.as_ref(),
             )
             .map_err(StepError::Fatal)?;
         let after_matches = self
@@ -389,6 +441,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 after_checkpoint,
                 after_index,
                 &journal.platform_record,
+                journal.candidate_owner_receipt.as_ref(),
             )
             .map_err(StepError::Fatal)?;
         if after_matches {
@@ -416,6 +469,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             after_checkpoint,
             after_index,
             &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
             lock,
         )
         .map_err(StepError::Fatal)
@@ -436,6 +490,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             PlatformCheckpoint::CandidateLayout,
             progressed,
             &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
         )? {
             journal.layout_operation_index = progressed;
             return Ok(());
@@ -457,6 +512,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             before_checkpoint,
             current,
             &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
         )? {
             return Err(state_drift(
                 InstallAction::InstallCandidateLayout,
@@ -483,6 +539,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 transition.before_checkpoint,
                 journal.layout_operation_index,
                 &journal.platform_record,
+                journal.candidate_owner_receipt.as_ref(),
             )
             .map_err(StepError::Fatal)?;
         let after_matches = self
@@ -492,6 +549,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 transition.after_checkpoint,
                 journal.layout_operation_index,
                 &journal.platform_record,
+                journal.candidate_owner_receipt.as_ref(),
             )
             .map_err(StepError::Fatal)?;
 
@@ -513,9 +571,11 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 TransitionKind::GuardRelease => self
                     .platform
                     .wait_for_guard_release(&transition.after.platform, &journal.platform_record),
-                TransitionKind::OwnerPublication => self
-                    .platform
-                    .wait_for_newer_owner(&transition.after.platform, &journal.platform_record),
+                TransitionKind::OwnerPublication => self.platform.wait_for_newer_owner(
+                    &transition.after.platform,
+                    &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
+                ),
                 TransitionKind::Mutation => unreachable!("mutation handled below"),
             };
             check.map_err(|source| StepError::Effect(platform_error(action, source)))?;
@@ -527,6 +587,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                     transition.after_checkpoint,
                     journal.layout_operation_index,
                     &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
                     lock,
                 )
                 .map_err(StepError::Fatal);
@@ -553,6 +614,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             transition.after_checkpoint,
             journal.layout_operation_index,
             &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
             lock,
         )
         .map_err(StepError::Fatal)
@@ -568,7 +630,11 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         match action {
             InstallAction::UnloadPrior | InstallAction::UnloadCandidateRuntime => self
                 .platform
-                .restore_runtime(&after.platform, &journal.platform_record)
+                .restore_runtime(
+                    &after.platform,
+                    &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
+                )
                 .map_err(|source| platform_error(action, source)),
             InstallAction::UnloadCandidateAutostart => self
                 .platform
@@ -599,7 +665,11 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 .map_err(|source| platform_error(action, source)),
             InstallAction::RestoreCandidateRuntime | InstallAction::RestorePriorRuntime => self
                 .platform
-                .restore_runtime(&after.platform, &journal.platform_record)
+                .restore_runtime(
+                    &after.platform,
+                    &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
+                )
                 .map_err(|source| platform_error(action, source)),
             InstallAction::RestorePriorActive => self
                 .store
@@ -661,6 +731,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 checkpoint,
                 journal.layout_operation_index,
                 &journal.platform_record,
+                journal.candidate_owner_receipt.as_ref(),
             )? {
                 candidate_unload = Some(action);
                 break;
@@ -674,6 +745,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             PlatformCheckpoint::CandidateLauncher,
             journal.layout_operation_index,
             &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
         )? {
             InstallAction::RestorePriorLauncher
         } else if journal.layout_operation_index > 0
@@ -683,6 +755,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 PlatformCheckpoint::CandidateLayout,
                 journal.layout_operation_index,
                 &journal.platform_record,
+                journal.candidate_owner_receipt.as_ref(),
             )?
         {
             InstallAction::RestorePriorLayout
@@ -692,6 +765,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             PlatformCheckpoint::PriorUnloaded,
             journal.layout_operation_index,
             &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
         )? {
             InstallAction::ReloadPriorManager
         } else if self.matches_checkpoint_at(
@@ -700,6 +774,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             PlatformCheckpoint::PriorOriginal,
             journal.layout_operation_index,
             &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
         )? {
             InstallAction::FinishRollback
         } else {
@@ -721,6 +796,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         after_checkpoint: PlatformCheckpoint,
         layout_operation_index: u16,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
         lock: &super::store::InstallLock,
     ) -> Result<(), InstallCoordinatorError> {
         let actual = self.inspect_state(lock)?;
@@ -730,6 +806,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             after_checkpoint,
             layout_operation_index,
             record,
+            candidate_owner_receipt,
         )? {
             Ok(())
         } else {
@@ -744,6 +821,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         checkpoint: PlatformCheckpoint,
         layout_operation_index: u16,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<bool, InstallCoordinatorError> {
         if actual.active_unit != expected.active_unit || actual.platform != expected.platform {
             return Ok(false);
@@ -754,6 +832,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 &expected.platform,
                 layout_operation_index,
                 record,
+                candidate_owner_receipt,
             )
             .map_err(InstallCoordinatorError::InspectPlatform)
     }

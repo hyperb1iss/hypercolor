@@ -9,9 +9,9 @@ use hypercolor_cli::install::{
     InstallAction, InstallCoordinator, InstallCoordinatorError, InstallDisposition,
     InstallJournalV1, InstallModelError, InstallOutcome, InstallPlatform, InstallPlatformError,
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
-    MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformState,
-    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
-    UnitRecord, stage_release_payload,
+    MAX_PLATFORM_OWNER_RECEIPT_BYTES, MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint,
+    PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, PlatformTransitionStates,
+    PreparedPlatformTransaction, UnitId, UnitRecord, stage_release_payload,
 };
 use hypercolor_platform_fs::DirectoryEntryKind;
 use serde_json::json;
@@ -129,6 +129,11 @@ impl FakePlatform {
 
     fn assert_record(record: &PlatformTransactionRecord) {
         assert_eq!(record, &Self::transaction_record());
+    }
+
+    fn owner_receipt() -> PlatformOwnerReceipt {
+        PlatformOwnerReceipt::linux(1, b"candidate systemd invocation".to_vec())
+            .expect("valid fake owner receipt")
     }
 
     fn journal(&self) -> InstallJournalV1 {
@@ -253,9 +258,14 @@ impl InstallPlatform for FakePlatform {
         expected: &PlatformState,
         layout_operation_index: u16,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<bool, InstallPlatformError> {
         Self::assert_record(record);
         let journal = self.journal();
+        assert_eq!(
+            candidate_owner_receipt,
+            journal.candidate_owner_receipt.as_ref()
+        );
         let incarnation_matches = match checkpoint {
             PlatformCheckpoint::PriorOriginal => !self.prior_restored,
             PlatformCheckpoint::PriorRestored => self.prior_restored,
@@ -276,6 +286,20 @@ impl InstallPlatform for FakePlatform {
             && self.layout_operation_progress == layout_operation_index
             && self.candidate_launcher_installed == candidate_launcher
             && &self.state == expected)
+    }
+
+    fn capture_candidate_owner_receipt(
+        &mut self,
+        expected: &PlatformState,
+        record: &PlatformTransactionRecord,
+    ) -> Result<PlatformOwnerReceipt, InstallPlatformError> {
+        Self::assert_record(record);
+        if &self.state != expected {
+            return Err(InstallPlatformError::new(
+                "candidate owner receipt does not match runtime",
+            ));
+        }
+        Ok(Self::owner_receipt())
     }
 
     fn validate_transaction_plan(
@@ -404,9 +428,14 @@ impl InstallPlatform for FakePlatform {
         &mut self,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<(), InstallPlatformError> {
         let (action, injection) = self.begin_effect()?;
         Self::assert_record(record);
+        assert_eq!(
+            candidate_owner_receipt,
+            self.journal().candidate_owner_receipt.as_ref()
+        );
         assert!(matches!(
             action,
             InstallAction::UnloadPrior
@@ -426,9 +455,14 @@ impl InstallPlatform for FakePlatform {
         &mut self,
         expected: &PlatformState,
         record: &PlatformTransactionRecord,
+        candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<(), InstallPlatformError> {
         let (action, injection) = self.begin_effect()?;
         Self::assert_record(record);
+        assert_eq!(
+            candidate_owner_receipt,
+            self.journal().candidate_owner_receipt.as_ref()
+        );
         assert!(matches!(
             action,
             InstallAction::ProveCandidate | InstallAction::ProvePrior
@@ -746,6 +780,9 @@ fn seed_rollback_for_policy(
     journal.disposition = InstallDisposition::Rollback;
     journal.next_action = Some(action);
     journal.failure = Some("seeded forward failure".to_owned());
+    if action == InstallAction::UnloadCandidateRuntime {
+        journal.candidate_owner_receipt = Some(FakePlatform::owner_receipt());
+    }
     journal.layout_operation_index = if matches!(
         action,
         InstallAction::UnloadCandidateRuntime
@@ -848,6 +885,10 @@ fn successful_install_preserves_write_ahead_order_and_private_journal() {
     assert_eq!(journal.disposition, InstallDisposition::Committed);
     assert_eq!(journal.revision, 14);
     assert_eq!(journal.platform_record, FakePlatform::transaction_record());
+    assert_eq!(
+        journal.candidate_owner_receipt,
+        Some(FakePlatform::owner_receipt())
+    );
     assert_eq!(
         fs::metadata(fixture.store.journal_path())
             .expect("journal metadata")
@@ -1338,6 +1379,9 @@ fn crash_after_platform_effect_is_reconciled_without_repeating_mutation() {
         }));
         assert!(crashed.is_err(), "{action:?} must inject a crash");
         assert_eq!(fixture.journal().next_action, Some(action));
+        if action == InstallAction::RestoreCandidateRuntime {
+            assert_eq!(fixture.journal().candidate_owner_receipt, None);
+        }
 
         let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
             .recover()
@@ -1358,7 +1402,49 @@ fn crash_after_platform_effect_is_reconciled_without_repeating_mutation() {
             },
             "{action:?} must not repeat"
         );
+        if action == InstallAction::RestoreCandidateRuntime {
+            assert_eq!(
+                fixture.journal().candidate_owner_receipt,
+                Some(FakePlatform::owner_receipt())
+            );
+        }
     }
+}
+
+#[test]
+fn runtime_error_after_start_persists_owner_receipt_before_candidate_stop() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = FakePlatform::new(prior.clone(), &fixture.store);
+    platform.inject(
+        InstallAction::RestoreCandidateRuntime,
+        InjectionKind::FailAfter,
+    );
+
+    let outcome = install(&fixture, &mut platform);
+
+    assert!(matches!(outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(platform.state, prior);
+    assert_eq!(
+        fixture.journal().candidate_owner_receipt,
+        Some(FakePlatform::owner_receipt())
+    );
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::RestoreCandidateRuntime)
+            .count(),
+        1
+    );
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .filter(|effect| effect.action == InstallAction::UnloadCandidateRuntime)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -1956,6 +2042,83 @@ fn platform_records_are_tagged_bounded_and_round_trip_unchanged() {
         PlatformTransactionRecord::macos(0, vec![1]),
         Err(InstallModelError::ZeroPlatformRecordSchema)
     ));
+
+    let receipt = PlatformOwnerReceipt::linux(3, b"systemd invocation".to_vec())
+        .expect("Linux owner receipt");
+    let encoded = serde_json::to_vec(&receipt).expect("encode owner receipt");
+    let decoded: PlatformOwnerReceipt =
+        serde_json::from_slice(&encoded).expect("decode owner receipt");
+    assert_eq!(decoded, receipt);
+    assert!(matches!(
+        PlatformOwnerReceipt::macos(1, vec![0; MAX_PLATFORM_OWNER_RECEIPT_BYTES + 1]),
+        Err(InstallModelError::OwnerReceiptTooLarge { .. })
+    ));
+    assert!(matches!(
+        PlatformOwnerReceipt::linux(0, vec![1]),
+        Err(InstallModelError::ZeroOwnerReceiptSchema)
+    ));
+    assert!(matches!(
+        PlatformOwnerReceipt::macos(1, Vec::new()),
+        Err(InstallModelError::EmptyOwnerReceipt)
+    ));
+}
+
+#[test]
+fn journal_rejects_owner_receipts_with_impossible_platform_or_runtime_state() {
+    let fixture = Fixture::new();
+    let mut wrong_platform = new_journal(
+        InstallTransactionId::new("wrong-receipt-platform").expect("transaction ID"),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
+        fixture.prior_state(),
+        InstallTargetPolicy::Preserve,
+    );
+    wrong_platform.candidate_owner_receipt =
+        Some(PlatformOwnerReceipt::macos(1, b"macOS owner".to_vec()).expect("macOS receipt"));
+    assert_eq!(
+        wrong_platform.validate(),
+        Err(InstallModelError::InvalidOwnerReceipt)
+    );
+
+    let mut inactive = new_journal(
+        InstallTransactionId::new("inactive-receipt").expect("transaction ID"),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
+        fixture.prior_state(),
+        InstallTargetPolicy::Disabled,
+    );
+    inactive.candidate_owner_receipt = Some(FakePlatform::owner_receipt());
+    assert_eq!(
+        inactive.validate(),
+        Err(InstallModelError::InvalidOwnerReceipt)
+    );
+
+    let mut early = new_journal(
+        InstallTransactionId::new("early-receipt").expect("transaction ID"),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
+        fixture.prior_state(),
+        InstallTargetPolicy::Preserve,
+    );
+    early.candidate_owner_receipt = Some(FakePlatform::owner_receipt());
+    assert_eq!(
+        early.validate(),
+        Err(InstallModelError::InvalidOwnerReceipt)
+    );
+
+    let mut missing = new_journal(
+        InstallTransactionId::new("missing-required-receipt").expect("transaction ID"),
+        Some(fixture.prior.id().clone()),
+        fixture.candidate.id().clone(),
+        fixture.prior_state(),
+        InstallTargetPolicy::Preserve,
+    );
+    missing.next_action = Some(InstallAction::ProveCandidate);
+    missing.layout_operation_index = missing.layout_operation_count;
+    assert_eq!(
+        missing.validate(),
+        Err(InstallModelError::InvalidOwnerReceipt)
+    );
 }
 
 #[test]

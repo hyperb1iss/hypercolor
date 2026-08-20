@@ -7,9 +7,10 @@ use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
 
 use serde::{Deserialize, Serialize};
 
-pub const INSTALL_JOURNAL_SCHEMA_VERSION: u32 = 2;
+pub const INSTALL_JOURNAL_SCHEMA_VERSION: u32 = 3;
 pub const MAX_INSTALL_JOURNAL_BYTES: usize = 64 * 1024;
 pub const MAX_PLATFORM_TRANSACTION_RECORD_BYTES: usize = 12 * 1024;
+pub const MAX_PLATFORM_OWNER_RECEIPT_BYTES: usize = 1_024;
 pub const MAX_LAYOUT_OPERATIONS: u16 = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -344,6 +345,79 @@ impl PlatformTransactionRecord {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "platform", rename_all = "snake_case")]
+pub enum PlatformOwnerReceipt {
+    Linux {
+        schema_version: u32,
+        payload: Vec<u8>,
+    },
+    Macos {
+        schema_version: u32,
+        payload: Vec<u8>,
+    },
+}
+
+impl PlatformOwnerReceipt {
+    pub fn linux(schema_version: u32, payload: Vec<u8>) -> Result<Self, InstallModelError> {
+        let receipt = Self::Linux {
+            schema_version,
+            payload,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn macos(schema_version: u32, payload: Vec<u8>) -> Result<Self, InstallModelError> {
+        let receipt = Self::Macos {
+            schema_version,
+            payload,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn validate(&self) -> Result<(), InstallModelError> {
+        let (schema_version, payload) = match self {
+            Self::Linux {
+                schema_version,
+                payload,
+            }
+            | Self::Macos {
+                schema_version,
+                payload,
+            } => (*schema_version, payload),
+        };
+        if schema_version == 0 {
+            return Err(InstallModelError::ZeroOwnerReceiptSchema);
+        }
+        if payload.is_empty() {
+            return Err(InstallModelError::EmptyOwnerReceipt);
+        }
+        if payload.len() > MAX_PLATFORM_OWNER_RECEIPT_BYTES {
+            return Err(InstallModelError::OwnerReceiptTooLarge {
+                limit: MAX_PLATFORM_OWNER_RECEIPT_BYTES,
+            });
+        }
+        Ok(())
+    }
+
+    fn matches_record(&self, record: &PlatformTransactionRecord) -> bool {
+        matches!(
+            (self, record),
+            (Self::Linux { .. }, PlatformTransactionRecord::Linux { .. })
+                | (Self::Macos { .. }, PlatformTransactionRecord::Macos { .. })
+        )
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        match self {
+            Self::Linux { payload, .. } | Self::Macos { payload, .. } => payload,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallDisposition {
@@ -407,6 +481,7 @@ pub struct InstallJournalV1 {
     pub layout_operation_count: u16,
     pub layout_operation_index: u16,
     pub platform_record: PlatformTransactionRecord,
+    pub candidate_owner_receipt: Option<PlatformOwnerReceipt>,
     pub failure: Option<String>,
 }
 
@@ -443,6 +518,7 @@ impl InstallJournalV1 {
             layout_operation_count,
             layout_operation_index: 0,
             platform_record,
+            candidate_owner_receipt: None,
             failure: None,
         })
     }
@@ -465,6 +541,26 @@ impl InstallJournalV1 {
             return Err(InstallModelError::InvalidTargetState);
         }
         self.target_platform.validate()?;
+        if let Some(receipt) = &self.candidate_owner_receipt {
+            receipt.validate()?;
+            if !receipt.matches_record(&self.platform_record)
+                || self.target_platform.running_unit.is_none()
+            {
+                return Err(InstallModelError::InvalidOwnerReceipt);
+            }
+            let receipt_allowed = match self.disposition {
+                InstallDisposition::Forward => matches!(
+                    self.next_action,
+                    Some(InstallAction::ProveCandidate | InstallAction::Commit)
+                ),
+                InstallDisposition::Rollback
+                | InstallDisposition::Committed
+                | InstallDisposition::RolledBack => true,
+            };
+            if !receipt_allowed {
+                return Err(InstallModelError::InvalidOwnerReceipt);
+            }
+        }
         self.transition_states
             .validate(&self.prior_platform, &self.target_platform)?;
         if self.layout_operation_count == 0
@@ -542,6 +638,21 @@ impl InstallJournalV1 {
             .is_some_and(|failure| failure.len() > 4_096)
         {
             return Err(InstallModelError::FailureDetailTooLarge);
+        }
+        let receipt_required = self.target_platform.running_unit.is_some()
+            && matches!(
+                (self.disposition, self.next_action),
+                (
+                    InstallDisposition::Forward,
+                    Some(InstallAction::ProveCandidate | InstallAction::Commit)
+                ) | (InstallDisposition::Committed, None)
+                    | (
+                        InstallDisposition::Rollback,
+                        Some(InstallAction::UnloadCandidateRuntime)
+                    )
+            );
+        if receipt_required && self.candidate_owner_receipt.is_none() {
+            return Err(InstallModelError::InvalidOwnerReceipt);
         }
         Ok(())
     }
@@ -687,6 +798,14 @@ pub enum InstallModelError {
     EmptyPlatformRecord,
     #[error("platform transaction record exceeds {limit} bytes")]
     PlatformRecordTooLarge { limit: usize },
+    #[error("platform owner receipt schema must be nonzero")]
+    ZeroOwnerReceiptSchema,
+    #[error("platform owner receipt must not be empty")]
+    EmptyOwnerReceipt,
+    #[error("platform owner receipt exceeds {limit} bytes")]
+    OwnerReceiptTooLarge { limit: usize },
+    #[error("platform owner receipt does not match this transaction")]
+    InvalidOwnerReceipt,
 }
 
 pub(crate) fn active_target(unit: &UnitId) -> PathBuf {
