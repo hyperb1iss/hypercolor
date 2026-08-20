@@ -151,7 +151,7 @@ pub(crate) enum InputAvailability {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum InteractionAvailability {
     Enabled,
