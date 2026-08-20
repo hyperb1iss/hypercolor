@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use crate::unix::tree::{ExclusiveDirectory, PublicDirectoryAuthority};
+use crate::unix::tree::{ExclusiveDirectory, PublicDirectoryAuthority, ReadOnlyDirectoryAuthority};
 
 struct Fixture {
     _temporary: tempfile::TempDir,
@@ -103,6 +103,28 @@ fn directory_enumeration_rejects_name_mutation_between_confirming_scans() {
     );
     assert_eq!(
         fs::read(temporary.path().join("payload/after")).expect("read retained added entry"),
+        b"after"
+    );
+}
+
+#[test]
+fn read_only_enumeration_rejects_name_mutation_between_confirming_scans() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    fs::write(temporary.path().join("before"), b"before").expect("write initial entry");
+    let authority =
+        ReadOnlyDirectoryAuthority::open(temporary.path()).expect("open read-only authority");
+
+    let error = authority
+        .child_names_with(|| fs::write(temporary.path().join("after"), b"after"))
+        .expect_err("name mutation must invalidate enumeration");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        fs::read(temporary.path().join("before")).expect("read retained initial entry"),
+        b"before"
+    );
+    assert_eq!(
+        fs::read(temporary.path().join("after")).expect("read retained added entry"),
         b"after"
     );
 }
