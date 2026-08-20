@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::{fs, path::Path, process::Command};
+use std::{env, fs, os::unix::fs::PermissionsExt as _, path::Path, process::Command};
 
 const CARGO_CONFIG: &str = include_str!("../../../.cargo/config.toml");
 const GET_INSTALLER: &str = include_str!("../../../scripts/get-hypercolor.sh");
@@ -847,10 +847,304 @@ fn release_archives_bind_every_safe_member_before_installation() {
 
 #[cfg(unix)]
 #[test]
+fn release_verifier_install_mode_owns_candidate_lifetime_and_exit_status() {
+    let temp = tempfile::tempdir().expect("temporary install fixture directory");
+    let archive = temp.path().join("hypercolor-0.0.0-linux-amd64.tar.gz");
+    let manifest_copy = temp.path().join("manifest.json");
+    let builder = r#"
+import hashlib
+import io
+import json
+import sys
+import tarfile
+
+archive_path, manifest_path = sys.argv[1:]
+root_name = "hypercolor-0.0.0-linux-amd64"
+candidate = b'''#!/usr/bin/env bash
+set -eu
+root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+test -f "${root}/manifest.json"
+printf '%s\n' "${root}" > "${HYPERCOLOR_TEST_ROOT_WITNESS}"
+printf '%s\n' "$@" > "${HYPERCOLOR_TEST_ARGS_WITNESS}"
+exit "${HYPERCOLOR_TEST_EXIT:-0}"
+'''
+files = {
+    "LICENSE": (0o644, b"license"),
+    "NOTICE": (0o644, b"notice"),
+    "README.md": (0o644, b"readme"),
+    "bin/hypercolor": (0o755, candidate),
+    "bin/hypercolor-daemon": (0o755, b"daemon"),
+    "bin/hypercolor-app": (0o755, b"app"),
+    "bin/hypercolor-tui": (0o755, b"tui"),
+    "bin/hypercolor-open": (0o755, b"open"),
+    "share/applications/hypercolor.desktop": (0o644, b"desktop"),
+    "share/icons/hicolor/48x48/apps/hypercolor.png": (0o644, b"48"),
+    "share/icons/hicolor/128x128/apps/hypercolor.png": (0o644, b"128"),
+    "share/icons/hicolor/256x256/apps/hypercolor.png": (0o644, b"256"),
+    "share/hypercolor/ui/index.html": (0o644, b"ui"),
+    "share/hypercolor/effects/bundled/effect.html": (0o644, b"effect"),
+    "share/hypercolor/agents/skills/skill.md": (0o644, b"skill"),
+    "share/hypercolor/agents/agents/agent.md": (0o644, b"agent"),
+    "lib/systemd/user/hypercolor.service": (0o644, b"service"),
+    "lib/udev/rules.d/99-hypercolor.rules": (0o644, b"udev"),
+    "etc/modules-load.d/i2c-dev.conf": (0o644, b"i2c-dev"),
+}
+directories = set()
+for path in files:
+    fields = path.split("/")[:-1]
+    for index in range(1, len(fields) + 1):
+        directories.add("/".join(fields[:index]))
+members = [
+    {"path": path, "type": "directory", "mode": 0o755}
+    for path in sorted(directories)
+]
+members.extend(
+    {
+        "path": path,
+        "type": "file",
+        "mode": mode,
+        "size": len(contents),
+        "sha256": hashlib.sha256(contents).hexdigest(),
+    }
+    for path, (mode, contents) in sorted(files.items())
+)
+manifest = json.dumps(
+    {
+        "name": "hypercolor",
+        "version": "0.0.0",
+        "platform": "linux-amd64",
+        "rust_target": "x86_64-unknown-linux-gnu",
+        "binaries": [
+            "hypercolor-daemon",
+            "hypercolor",
+            "hypercolor-app",
+            "hypercolor-tui",
+            "hypercolor-open",
+        ],
+        "assets": {
+            "ui_files": 1,
+            "bundled_effect_files": 1,
+            "docs_files": 0,
+            "skill_files": 1,
+            "agent_files": 1,
+            "site_files": 0,
+        },
+        "members": members,
+    },
+    sort_keys=True,
+).encode()
+files["manifest.json"] = (0o644, manifest)
+with open(manifest_path, "wb") as output:
+    output.write(manifest)
+with tarfile.open(archive_path, "w:gz") as output:
+    root = tarfile.TarInfo(f"{root_name}/")
+    root.type = tarfile.DIRTYPE
+    root.mode = 0o755
+    output.addfile(root)
+    for directory in sorted(directories):
+        entry = tarfile.TarInfo(f"{root_name}/{directory}/")
+        entry.type = tarfile.DIRTYPE
+        entry.mode = 0o755
+        output.addfile(entry)
+    for path, (mode, contents) in sorted(files.items()):
+        entry = tarfile.TarInfo(f"{root_name}/{path}")
+        entry.mode = mode
+        entry.size = len(contents)
+        output.addfile(entry, io.BytesIO(contents))
+"#;
+    let built = Command::new("python3")
+        .args(["-c", builder])
+        .arg(&archive)
+        .arg(&manifest_copy)
+        .status()
+        .expect("python should create the install fixture");
+    assert!(built.success(), "failed to build install fixture");
+
+    let hash_file = |path: &Path| {
+        Command::new("sha256sum")
+            .arg(path)
+            .output()
+            .or_else(|_| {
+                Command::new("shasum")
+                    .args(["-a", "256"])
+                    .arg(path)
+                    .output()
+            })
+            .expect("a SHA256 tool should hash the install fixture")
+    };
+    let digest = hash_file(&archive);
+    assert!(digest.status.success(), "failed to hash install fixture");
+    let checksum = temp.path().join("archive.sha256");
+    fs::write(&checksum, &digest.stdout).expect("write checksum fixture");
+    let manifest_digest = hash_file(&manifest_copy);
+    assert!(manifest_digest.status.success(), "failed to hash manifest");
+    let manifest_digest = String::from_utf8(manifest_digest.stdout)
+        .expect("manifest digest is UTF-8")
+        .split_whitespace()
+        .next()
+        .expect("manifest digest field")
+        .to_owned();
+
+    let fake_bin = temp.path().join("fake-bin");
+    fs::create_dir(&fake_bin).expect("create fake binary directory");
+    let uname = fake_bin.join("uname");
+    fs::write(
+        &uname,
+        "#!/usr/bin/env bash\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; *) exit 2;; esac\n",
+    )
+    .expect("write fake uname");
+    fs::set_permissions(&uname, fs::Permissions::from_mode(0o755)).expect("make uname executable");
+    let inherited_path = env::var_os("PATH").unwrap_or_default();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        inherited_path.to_string_lossy()
+    );
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/verify-release-artifact.sh");
+
+    for expected_exit in [0, 23] {
+        let root_witness = temp.path().join(format!("root-{expected_exit}"));
+        let args_witness = temp.path().join(format!("args-{expected_exit}"));
+        let prefix = temp.path().join(format!("prefix-{expected_exit}"));
+        let install_dir = prefix.join("bin");
+        let output = Command::new("bash")
+            .arg(&verifier)
+            .args(["--install-candidate", "--archive"])
+            .arg(&archive)
+            .arg("--checksum")
+            .arg(&checksum)
+            .arg("--install-prefix")
+            .arg(&prefix)
+            .arg("--install-dir")
+            .arg(&install_dir)
+            .arg("--no-service")
+            .env("PATH", &path)
+            .env("HYPERCOLOR_TEST_ROOT_WITNESS", &root_witness)
+            .env("HYPERCOLOR_TEST_ARGS_WITNESS", &args_witness)
+            .env("HYPERCOLOR_TEST_EXIT", expected_exit.to_string())
+            .output()
+            .expect("release verifier should invoke the candidate");
+        assert_eq!(
+            output.status.code(),
+            Some(expected_exit),
+            "unexpected verifier result: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let extracted_root = fs::read_to_string(&root_witness).expect("candidate root witness");
+        assert!(
+            !Path::new(extracted_root.trim()).exists(),
+            "verified root must be cleaned after candidate exit"
+        );
+        assert_eq!(
+            fs::read_to_string(&args_witness)
+                .expect("candidate argument witness")
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "__install-release",
+                "--install-prefix",
+                prefix.to_str().expect("UTF-8 prefix"),
+                "--install-dir",
+                install_dir.to_str().expect("UTF-8 install directory"),
+                "--expected-manifest-sha256",
+                manifest_digest.as_str(),
+                "--no-service",
+            ]
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn release_verifier_install_mode_rejects_ambiguous_valued_options() {
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/verify-release-artifact.sh");
+    for option in [
+        "--archive",
+        "--checksum",
+        "--install-prefix",
+        "--install-dir",
+    ] {
+        let output = Command::new("bash")
+            .arg(&verifier)
+            .arg("--install-candidate")
+            .arg(option)
+            .arg("")
+            .arg(option)
+            .arg("replacement")
+            .output()
+            .expect("release verifier should parse duplicate options");
+        assert_eq!(output.status.code(), Some(2), "{option} duplicate accepted");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("provided exactly once"),
+            "unexpected {option} rejection: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    for option in [
+        "--archive",
+        "--checksum",
+        "--install-prefix",
+        "--install-dir",
+    ] {
+        let output = Command::new("bash")
+            .arg(&verifier)
+            .arg("--install-candidate")
+            .arg(option)
+            .arg("--no-service")
+            .output()
+            .expect("release verifier should reject a missing option value");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{option} swallowed the next option"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("provided exactly once"),
+            "unexpected missing {option} rejection: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = Command::new("bash")
+        .arg(&verifier)
+        .args(["--install-candidate", "--no-service", "--no-service"])
+        .output()
+        .expect("release verifier should reject duplicate no-service");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "duplicate no-service accepted"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("provided at most once"),
+        "unexpected duplicate no-service rejection: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn release_verifier_rejects_unsafe_archive_members_before_extraction() {
     let temp = tempfile::tempdir().expect("temporary archive directory should be created");
     let verifier =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/verify-release-artifact.sh");
+    let fake_bin = temp.path().join("fake-bin");
+    fs::create_dir(&fake_bin).expect("create fake binary directory");
+    let mktemp = fake_bin.join("mktemp");
+    fs::write(
+        &mktemp,
+        "#!/usr/bin/env bash\n[[ \"$#\" -eq 1 && \"$1\" == -d ]] || exit 2\n[[ ! -e \"${HYPERCOLOR_TEST_MKTEMP_PATH}\" ]] || exit 1\nmkdir \"${HYPERCOLOR_TEST_MKTEMP_PATH}\"\nprintf '%s\\n' \"${HYPERCOLOR_TEST_MKTEMP_PATH}\"\n",
+    )
+    .expect("write fake mktemp");
+    fs::set_permissions(&mktemp, fs::Permissions::from_mode(0o755))
+        .expect("make mktemp executable");
+    let inherited_path = env::var_os("PATH").unwrap_or_default();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        inherited_path.to_string_lossy()
+    );
     let builder = r#"
 import io
 import sys
@@ -861,7 +1155,7 @@ root_name = "hypercolor-0.0.0-linux-x86_64"
 with tarfile.open(archive_path, "w:gz") as archive:
     root = tarfile.TarInfo(f"{root_name}/")
     root.type = tarfile.DIRTYPE
-    root.mode = 0o755
+    root.mode = 0 if case == "directory-mode" else 0o755
     archive.addfile(root)
 
     name = f"{root_name}/payload"
@@ -898,6 +1192,7 @@ with tarfile.open(archive_path, "w:gz") as archive:
         ("special", "archive contains unsupported member type"),
         ("duplicate", "archive contains duplicate member"),
         ("setuid", "archive contains unsupported mode"),
+        ("directory-mode", "archive contains unsafe directory mode"),
     ] {
         let archive = temp.path().join(format!("{case}.tar.gz"));
         let status = Command::new("python3")
@@ -922,10 +1217,13 @@ with tarfile.open(archive_path, "w:gz") as archive:
         let checksum = format!("{}.sha256", archive.display());
         fs::write(&checksum, digest.stdout).expect("checksum fixture should be written");
 
+        let verifier_tmp = temp.path().join(format!("verifier-{case}"));
         let output = Command::new("bash")
             .arg(&verifier)
             .arg(&archive)
             .arg(&checksum)
+            .env("PATH", &path)
+            .env("HYPERCOLOR_TEST_MKTEMP_PATH", &verifier_tmp)
             .output()
             .expect("release verifier should inspect the hostile archive fixture");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -934,6 +1232,7 @@ with tarfile.open(archive_path, "w:gz") as archive:
             stderr.contains(expected_error),
             "unexpected {case} rejection: {stderr}"
         );
+        assert!(!verifier_tmp.exists(), "{case} left verifier temp residue");
     }
 
     assert!(!temp.path().join("escape").exists());

@@ -26,8 +26,80 @@ if [[ "${1:-}" == "--macos-app" ]]; then
   exit 0
 fi
 
-tarball="${1:-}"
-checksum_file="${2:-${tarball}.sha256}"
+install_candidate=false
+install_prefix=""
+install_dir=""
+no_service=false
+archive_seen=false
+checksum_seen=false
+install_prefix_seen=false
+install_dir_seen=false
+
+if [[ "${1:-}" == "--install-candidate" ]]; then
+  install_candidate=true
+  shift
+  tarball=""
+  checksum_file=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --archive)
+        [[ "$#" -ge 2 && "$2" != --* && "${archive_seen}" == false ]] || {
+          echo "--archive must be provided exactly once with a value" >&2
+          exit 2
+        }
+        archive_seen=true
+        tarball="$2"
+        shift 2
+        ;;
+      --checksum)
+        [[ "$#" -ge 2 && "$2" != --* && "${checksum_seen}" == false ]] || {
+          echo "--checksum must be provided exactly once with a value" >&2
+          exit 2
+        }
+        checksum_seen=true
+        checksum_file="$2"
+        shift 2
+        ;;
+      --install-prefix)
+        [[ "$#" -ge 2 && "$2" != --* && "${install_prefix_seen}" == false ]] || {
+          echo "--install-prefix must be provided exactly once with a value" >&2
+          exit 2
+        }
+        install_prefix_seen=true
+        install_prefix="$2"
+        shift 2
+        ;;
+      --install-dir)
+        [[ "$#" -ge 2 && "$2" != --* && "${install_dir_seen}" == false ]] || {
+          echo "--install-dir must be provided exactly once with a value" >&2
+          exit 2
+        }
+        install_dir_seen=true
+        install_dir="$2"
+        shift 2
+        ;;
+      --no-service)
+        [[ "${no_service}" == false ]] || {
+          echo "--no-service must be provided at most once" >&2
+          exit 2
+        }
+        no_service=true
+        shift
+        ;;
+      *)
+        echo "unknown install-candidate option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+  if [[ -z "${tarball}" || -z "${checksum_file}" || -z "${install_prefix}" || -z "${install_dir}" ]]; then
+    echo "usage: scripts/verify-release-artifact.sh --install-candidate --archive <tarball> --checksum <checksum> --install-prefix <prefix> --install-dir <bin-dir> [--no-service]" >&2
+    exit 2
+  fi
+else
+  tarball="${1:-}"
+  checksum_file="${2:-${tarball}.sha256}"
+fi
 
 if [[ -z "${tarball}" ]]; then
   echo "usage: scripts/verify-release-artifact.sh <tarball> [checksum]" >&2
@@ -56,7 +128,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-root_name="$(TARBALL="${tarball}" CHECKSUM="${checksum_file}" \
+extraction_identity="$(TARBALL="${tarball}" CHECKSUM="${checksum_file}" \
 EXTRACT_DIR="${tmpdir}" python3 - <<'PY'
 import hashlib
 import os
@@ -132,9 +204,32 @@ with (
             raise SystemExit(f"archive contains unsupported member type: {normalized}")
         if member.mode < 0 or member.mode & ~0o777:
             raise SystemExit(f"archive contains unsupported mode: {normalized}")
+        if member.isdir() and member.mode & 0o700 != 0o700:
+            raise SystemExit(f"archive contains unsafe directory mode: {normalized}")
     root_members = [member for member in members if member.name.rstrip("/") == root]
     if len(root_members) != 1 or not root_members[0].isdir():
         raise SystemExit(f"archive root must be one directory: {root}")
+
+    manifest_name = f"{root}/manifest.json"
+    manifest_members = [
+        member
+        for member in members
+        if member.name.rstrip("/") == manifest_name
+    ]
+    if len(manifest_members) != 1 or not manifest_members[0].isfile():
+        raise SystemExit("archive manifest must be one regular file")
+    if manifest_members[0].size > 2 * 1024 * 1024:
+        raise SystemExit("release manifest exceeds 2097152 bytes")
+    manifest_source = archive.extractfile(manifest_members[0])
+    if manifest_source is None:
+        raise SystemExit("archive manifest cannot be read")
+    manifest_digest = hashlib.sha256()
+    manifest_size = 0
+    for chunk in iter(lambda: manifest_source.read(1024 * 1024), b""):
+        manifest_size += len(chunk)
+        if manifest_size > 2 * 1024 * 1024:
+            raise SystemExit("release manifest exceeds 2097152 bytes")
+        manifest_digest.update(chunk)
 
     for member in members:
         path = destination / member.name.rstrip("/")
@@ -150,8 +245,15 @@ with (
         path.chmod(member.mode)
     archive.close()
 print(root)
+print(manifest_digest.hexdigest())
 PY
 )"
+root_name="${extraction_identity%%$'\n'*}"
+manifest_sha256="${extraction_identity#*$'\n'}"
+if [[ "${root_name}" == "${manifest_sha256}" || ! "${manifest_sha256}" =~ ^[a-f0-9]{64}$ ]]; then
+  echo "archive extraction did not return a valid manifest digest" >&2
+  exit 1
+fi
 root_dir="${tmpdir}/${root_name}"
 manifest="${root_dir}/manifest.json"
 [[ -d "${root_dir}" ]] || {
@@ -368,10 +470,26 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) host_platform="linux-amd64" ;;
   Linux-aarch64) host_platform="linux-arm64" ;;
   Darwin-arm64) host_platform="macos-arm64" ;;
+  Darwin-x86_64) host_platform="macos-amd64" ;;
   *) host_platform="" ;;
 esac
 
-if [[ "${host_platform}" == "${platform}" ]]; then
+if [[ "${install_candidate}" == true ]]; then
+  [[ "${host_platform}" == "${platform}" ]] || {
+    echo "release platform ${platform} does not match host ${host_platform:-unknown}" >&2
+    exit 1
+  }
+  candidate_args=(
+    __install-release
+    --install-prefix "${install_prefix}"
+    --install-dir "${install_dir}"
+    --expected-manifest-sha256 "${manifest_sha256}"
+  )
+  if [[ "${no_service}" == true ]]; then
+    candidate_args+=(--no-service)
+  fi
+  "${root_dir}/bin/hypercolor" "${candidate_args[@]}"
+elif [[ "${host_platform}" == "${platform}" ]]; then
   "${root_dir}/bin/hypercolor" --version >/dev/null
 fi
 
