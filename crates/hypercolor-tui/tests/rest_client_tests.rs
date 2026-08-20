@@ -11,10 +11,9 @@ use hypercolor_tui::client::rest::DaemonClient;
 use hypercolor_tui::state::{
     primary_zone, scene_is_multi_zone, zone_effect_controls, zone_effect_id, zone_effect_layer,
 };
-use hypercolor_types::controls::{
-    ApplyControlChangesRequest, ControlActionStatus, ControlChange,
-    ControlValue as SurfaceControlValue,
-};
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
+use hypercolor_types::controls::ControlActionStatus;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, PresetTemplate,
 };
@@ -530,17 +529,12 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
         .with_state((Arc::clone(&captured_patch), Arc::clone(&captured_action)));
 
     let client = client_for(spawn_server(router).await);
-    let request = ApplyControlChangesRequest {
-        surface_id: "driver:wled:device:Desk Strip".to_string(),
-        expected_revision: Some(3),
-        changes: vec![ControlChange {
-            field_id: "enabled".to_string(),
-            value: SurfaceControlValue::Bool(true),
-        }],
-        dry_run: false,
+    let request = PatchControlsRequest {
+        values: BTreeMap::from([("enabled".to_string(), CanonicalControlValue::Bool(true))]),
+        clear_bindings: Vec::new(),
     };
     let response = client
-        .apply_control_changes(&request)
+        .apply_control_changes("driver:wled:device:Desk Strip", &request)
         .await
         .expect("apply controls");
     let result = client
@@ -557,13 +551,9 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
     assert_eq!(
         captured_patch.lock().await.as_ref(),
         Some(&json!({
-            "surface_id": "driver:wled:device:Desk Strip",
-            "expected_revision": 3,
-            "changes": [{
-                "field_id": "enabled",
-                "value": { "kind": "bool", "value": true }
-            }],
-            "dry_run": false
+            "values": {
+                "enabled": { "kind": "bool", "value": true }
+            }
         }))
     );
     assert_eq!(

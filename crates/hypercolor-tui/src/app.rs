@@ -1,6 +1,6 @@
 //! App — the central coordinator and main event loop.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,8 @@ use anyhow::Result;
 use crossterm::ExecutableCommand;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
-use hypercolor_types::controls::{ApplyControlChangesRequest, ControlChange};
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -1064,7 +1065,6 @@ impl App {
             Action::ApplyDeviceControlChange {
                 device_id,
                 surface_id,
-                expected_revision,
                 field_id,
                 value,
             } => {
@@ -1072,17 +1072,24 @@ impl App {
                     let client = self.client.clone();
                     let device_id = device_id.clone();
                     let surface_id = surface_id.clone();
-                    let request = ApplyControlChangesRequest {
-                        surface_id: surface_id.clone(),
-                        expected_revision: Some(*expected_revision),
-                        changes: vec![ControlChange {
-                            field_id: field_id.clone(),
-                            value: value.clone(),
-                        }],
-                        dry_run: false,
-                    };
+                    let field_id = field_id.clone();
+                    let value = value.clone();
                     async move {
-                        match client.apply_control_changes(&request).await {
+                        let value = match CanonicalControlValue::try_from(value) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                return Ok(Action::DeviceControlChangeFailed {
+                                    device_id,
+                                    surface_id,
+                                    error: error.to_string(),
+                                });
+                            }
+                        };
+                        let request = PatchControlsRequest {
+                            values: BTreeMap::from([(field_id, value)]),
+                            clear_bindings: Vec::new(),
+                        };
+                        match client.apply_control_changes(&surface_id, &request).await {
                             Ok(response) => Ok(Action::DeviceControlChangeApplied {
                                 device_id,
                                 response: Arc::new(response),

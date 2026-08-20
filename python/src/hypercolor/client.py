@@ -63,7 +63,6 @@ from ._generated.api.system import (
     list_audio_devices as generated_list_audio_devices,
 )
 from ._generated.models.activate_scene_response import ActivateSceneResponse
-from ._generated.models.apply_control_changes_request import ApplyControlChangesRequest
 from ._generated.models.apply_effect_request import ApplyEffectRequest
 from ._generated.models.apply_effect_response import ApplyEffectResponse
 from ._generated.models.assign_members_request import AssignMembersRequest
@@ -581,17 +580,9 @@ class HypercolorClient:
         self,
         surface_id: str,
         values: Mapping[str, Any],
-        *,
-        dry_run: bool = False,
-        expected_revision: int | None = None,
     ) -> ControlApplyResult:
         """Apply one or more control values to a control surface."""
-        body = _control_changes_request(
-            surface_id,
-            values,
-            dry_run=dry_run,
-            expected_revision=expected_revision,
-        )
+        body = _patch_controls_request(values)
         return await self._generated_model(
             generated_apply_control_surface_values._get_kwargs(
                 surface_id,
@@ -1365,25 +1356,13 @@ def _drop_unset_json_body(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     return request
 
 
-def _control_changes_request(
-    surface_id: str,
-    values: Mapping[str, Any],
-    *,
-    dry_run: bool,
-    expected_revision: int | None,
-) -> ApplyControlChangesRequest:
-    body: dict[str, Any] = {
-        "surface_id": surface_id,
-        "changes": [
-            {"field_id": str(field_id), "value": _control_api_value(value)}
-            for field_id, value in values.items()
-        ],
+def _patch_controls_request(values: Mapping[str, Any]) -> PatchControlsRequest:
+    body = {
+        "values": {
+            str(field_id): _canonical_control_value(value) for field_id, value in values.items()
+        }
     }
-    if dry_run:
-        body["dry_run"] = True
-    if expected_revision is not None:
-        body["expected_revision"] = expected_revision
-    return ApplyControlChangesRequest.from_dict(body)
+    return PatchControlsRequest.from_dict(body)
 
 
 def _control_api_value(value: Any) -> dict[str, Any]:

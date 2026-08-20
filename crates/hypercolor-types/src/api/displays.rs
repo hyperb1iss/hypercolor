@@ -104,20 +104,6 @@ pub struct DeleteDisplayFaceResponse {
     pub deleted: bool,
 }
 
-/// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
-///
-/// The payload carries only the overrides the caller wants to change;
-/// existing control values on the zone are preserved unless their
-/// key appears in this map. `controls` is typed as raw JSON (rather than
-/// `HashMap<String, ControlValue>`) so callers can send natural shapes
-/// like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-/// mirrors the effects controls patch endpoint.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateDisplayFaceControlsRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub controls: Option<serde_json::Value>,
-}
-
 /// Request body for `PATCH /api/v1/displays/{id}/face/composition`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateDisplayFaceCompositionRequest {

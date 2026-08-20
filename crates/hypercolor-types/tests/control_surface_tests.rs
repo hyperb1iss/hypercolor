@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 
 use hypercolor_types::controls::{
-    ActionConfirmation, ActionConfirmationLevel, AppliedControlChange, ApplyControlChangesRequest,
-    ApplyControlChangesResponse, ApplyImpact, CONTROL_SURFACE_SCHEMA_VERSION, ControlAccess,
-    ControlActionDescriptor, ControlActionStatus, ControlAvailability, ControlAvailabilityExpr,
-    ControlAvailabilityState, ControlChange, ControlEnumOption, ControlFieldDescriptor,
-    ControlGroupDescriptor, ControlGroupKind, ControlObjectField, ControlOwner, ControlPersistence,
-    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope, ControlValue,
-    ControlValueType, ControlValueValidationError, ControlVisibility, RejectedControlChange,
+    ActionConfirmation, ActionConfirmationLevel, AppliedControlChange, ApplyControlChangesResponse,
+    ApplyImpact, CONTROL_SURFACE_SCHEMA_VERSION, ControlAccess, ControlActionDescriptor,
+    ControlActionStatus, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
+    ControlEnumOption, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind,
+    ControlObjectField, ControlOwner, ControlPersistence, ControlSurfaceDocument,
+    ControlSurfaceEvent, ControlSurfaceScope, ControlValue, ControlValueType,
+    ControlValueValidationError, ControlVisibility, RejectedControlChange,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -335,35 +335,7 @@ fn control_surface_document_roundtrips() {
 }
 
 #[test]
-fn apply_request_response_and_events_roundtrip() {
-    let request = ApplyControlChangesRequest {
-        surface_id: "device:abc".to_owned(),
-        expected_revision: Some(3),
-        changes: vec![ControlChange {
-            field_id: "max_fps".to_owned(),
-            value: ControlValue::Integer(60),
-        }],
-        dry_run: false,
-    };
-    let request_json = serde_json::to_string(&request).expect("serialize request");
-    let request_roundtrip: ApplyControlChangesRequest =
-        serde_json::from_str(&request_json).expect("deserialize request");
-    assert_eq!(request_roundtrip, request);
-
-    let request_without_dry_run: ApplyControlChangesRequest =
-        serde_json::from_value(serde_json::json!({
-            "surface_id": "device:abc",
-            "expected_revision": 3,
-            "changes": [
-                {
-                    "field_id": "max_fps",
-                    "value": { "kind": "integer", "value": 60 }
-                }
-            ]
-        }))
-        .expect("deserialize request with default dry_run");
-    assert!(!request_without_dry_run.dry_run);
-
+fn apply_response_and_events_roundtrip() {
     let response = ApplyControlChangesResponse {
         surface_id: "device:abc".to_owned(),
         previous_revision: 3,

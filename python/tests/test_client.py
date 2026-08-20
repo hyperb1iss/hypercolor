@@ -865,17 +865,14 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
     result = await client.set_control_values(
         "device:keyboard",
         {"brightness": 88, "enabled": True},
-        expected_revision=4,
     )
 
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
-        "surface_id": "device:keyboard",
-        "changes": [
-            {"field_id": "brightness", "value": {"kind": "integer", "value": 88}},
-            {"field_id": "enabled", "value": {"kind": "bool", "value": True}},
-        ],
-        "expected_revision": 4,
+        "values": {
+            "brightness": {"kind": "int", "value": 88},
+            "enabled": {"kind": "bool", "value": True},
+        }
     }
     assert result.revision == 5
     assert result.values["brightness"] == {"kind": "integer", "value": 88}

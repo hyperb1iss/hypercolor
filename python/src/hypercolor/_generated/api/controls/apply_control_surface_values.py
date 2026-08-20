@@ -7,17 +7,17 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...models.apply_control_changes_request import ApplyControlChangesRequest
 from ...models.apply_control_surface_values_response_200 import (
     ApplyControlSurfaceValuesResponse200,
 )
+from ...models.patch_controls_request import PatchControlsRequest
 from ...types import Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: ApplyControlChangesRequest,
+    body: PatchControlsRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -110,13 +110,23 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyControlChangesRequest,
+    body: PatchControlsRequest,
 ) -> Response[ApiErrorBody | ApplyControlSurfaceValuesResponse200]:
     """Apply control surface values
 
     Args:
         id (str):
-        body (ApplyControlChangesRequest): Request to apply one or more control changes.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
+
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -142,13 +152,23 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyControlChangesRequest,
+    body: PatchControlsRequest,
 ) -> ApiErrorBody | ApplyControlSurfaceValuesResponse200 | None:
     """Apply control surface values
 
     Args:
         id (str):
-        body (ApplyControlChangesRequest): Request to apply one or more control changes.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
+
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -169,13 +189,23 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyControlChangesRequest,
+    body: PatchControlsRequest,
 ) -> Response[ApiErrorBody | ApplyControlSurfaceValuesResponse200]:
     """Apply control surface values
 
     Args:
         id (str):
-        body (ApplyControlChangesRequest): Request to apply one or more control changes.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
+
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -199,13 +229,23 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyControlChangesRequest,
+    body: PatchControlsRequest,
 ) -> ApiErrorBody | ApplyControlSurfaceValuesResponse200 | None:
     """Apply control surface values
 
     Args:
         id (str):
-        body (ApplyControlChangesRequest): Request to apply one or more control changes.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
+
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

@@ -117,13 +117,7 @@ fn build_cmd() -> clap::Command {
                         .about("Apply a device control value")
                         .arg(Arg::new("device").required(true))
                         .arg(Arg::new("field").required(true))
-                        .arg(Arg::new("value").required(true))
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
-                        ),
+                        .arg(Arg::new("value").required(true)),
                 )
                 .subcommand(
                     Command::new("action")
@@ -171,12 +165,6 @@ fn build_cmd() -> clap::Command {
                                 .short('v')
                                 .required(true)
                                 .action(ArgAction::Append),
-                        )
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
                         ),
                 )
                 .subcommand(
@@ -208,13 +196,7 @@ fn build_cmd() -> clap::Command {
                         .about("Apply a driver control value")
                         .arg(Arg::new("driver").required(true))
                         .arg(Arg::new("field").required(true))
-                        .arg(Arg::new("value").required(true))
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
-                        ),
+                        .arg(Arg::new("value").required(true)),
                 )
                 .subcommand(
                     Command::new("action")
@@ -646,8 +628,6 @@ fn parse_devices_set_control() {
             "00000000-0000-0000-0000-000000000001",
             "color_order",
             "enum:grb",
-            "--expected-revision",
-            "2",
         ])
         .expect("devices set-control should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -717,9 +697,6 @@ fn parse_controls_set_typed_values() {
             "host=ip:10.0.0.42",
             "--value",
             "timeout=duration:1500",
-            "--expected-revision",
-            "4",
-            "--dry-run",
         ])
         .expect("controls set should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -729,12 +706,6 @@ fn parse_controls_set_typed_values() {
         .expect("should have values")
         .collect();
     assert_eq!(values, vec!["host=ip:10.0.0.42", "timeout=duration:1500"]);
-    assert_eq!(
-        set.get_one::<String>("expected-revision")
-            .map(String::as_str),
-        Some("4")
-    );
-    assert!(set.get_flag("dry-run"));
 }
 
 #[test]
@@ -776,9 +747,6 @@ fn parse_drivers_set_control() {
             "wled",
             "default_protocol",
             "enum:ddp",
-            "--expected-revision",
-            "3",
-            "--dry-run",
         ])
         .expect("drivers set-control should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -795,12 +763,6 @@ fn parse_drivers_set_control() {
         set.get_one::<String>("value").map(String::as_str),
         Some("enum:ddp")
     );
-    assert_eq!(
-        set.get_one::<String>("expected-revision")
-            .map(String::as_str),
-        Some("3")
-    );
-    assert!(set.get_flag("dry-run"));
 }
 
 #[test]

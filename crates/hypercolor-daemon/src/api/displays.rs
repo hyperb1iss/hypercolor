@@ -28,8 +28,8 @@ use crate::domain::{DomainError, ResourceKind};
 pub use hypercolor_types::api::displays::{
     DeleteDisplayFaceResponse, DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery,
     DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
-    UpdateDisplayFaceControlsRequest,
 };
+use hypercolor_types::api::scene::PatchControlsRequest;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DisplaySurfaceInfo {
@@ -519,33 +519,42 @@ pub async fn delete_display_face(
 ///
 /// Returns the full `DisplayFaceResponse` so callers can reconcile their
 /// optimistic local state with the authoritative values the daemon
-/// persisted (defaults are resolved server-side, colors are normalized,
-/// etc.). Individual raw JSON values are converted via the shared
-/// `json_to_control_value` helper — unsupported shapes are reported in
-/// the `rejected` array instead of silently dropped.
+/// persisted (defaults are resolved server-side and colors are normalized).
 pub async fn patch_display_face_controls(
     State(state): State<Arc<AppState>>,
     Path(device): Path<String>,
-    Json(body): Json<UpdateDisplayFaceControlsRequest>,
+    Json(body): Json<PatchControlsRequest>,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
 
-    let controls_object = body
-        .controls
-        .as_ref()
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-
-    if controls_object.is_empty() {
+    if !body.clear_bindings.is_empty() {
         return DomainError::validation_field(
-            "controls",
-            "controls payload must include at least one key",
+            "clear_bindings",
+            "display faces do not support input bindings",
         )
         .into_response();
+    }
+    if body.values.is_empty() {
+        return DomainError::validation_field(
+            "values",
+            "values payload must include at least one key",
+        )
+        .into_response();
+    }
+
+    let mut requested_controls = std::collections::HashMap::with_capacity(body.values.len());
+    for (name, value) in body.values {
+        let value = match value.to_effect_wire() {
+            Ok(value) => value,
+            Err(error) => {
+                return DomainError::validation_field(format!("values.{name}"), error.to_string())
+                    .into_response();
+            }
+        };
+        requested_controls.insert(name, value);
     }
 
     let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
@@ -555,13 +564,13 @@ pub async fn patch_display_face_controls(
             Err(error) => return error.into_response(),
         };
         let (normalized_controls, rejected) =
-            crate::api::effects::normalize_control_payload(&effect, &controls_object);
+            crate::api::effects::normalize_control_values(&effect, &requested_controls);
         if !rejected.is_empty() {
-            warn!(
-                face = %effect.name,
-                rejected_controls = ?rejected,
-                "Rejected one or more default face control updates"
-            );
+            return DomainError::validation_details(
+                "Invalid display face control values",
+                serde_json::json!({ "rejected": rejected }),
+            )
+            .into_response();
         }
         {
             let mut store = state.display_preferences.write().await;
@@ -605,7 +614,14 @@ pub async fn patch_display_face_controls(
         Err(error) => return error.into_response(),
     };
     let (normalized_controls, rejected) =
-        crate::api::effects::normalize_control_payload(&effect, &controls_object);
+        crate::api::effects::normalize_control_values(&effect, &requested_controls);
+    if !rejected.is_empty() {
+        return DomainError::validation_details(
+            "Invalid display face control values",
+            serde_json::json!({ "rejected": rejected }),
+        )
+        .into_response();
+    }
 
     let written = match crate::domain::display::patch_display_face_controls(
         state.as_ref(),
@@ -624,14 +640,6 @@ pub async fn patch_display_face_controls(
         }
         Err(error) => return error.into_response(),
     };
-
-    if !rejected.is_empty() {
-        warn!(
-            face = %effect.name,
-            rejected_controls = ?rejected,
-            "Rejected one or more display face control updates"
-        );
-    }
 
     envelope::ok(DisplayFaceResponse {
         default_assigned: {

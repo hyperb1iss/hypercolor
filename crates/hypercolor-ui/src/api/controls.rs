@@ -1,13 +1,16 @@
 //! Dynamic driver and device control-surface endpoints.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
 pub use crate::control_surface_api::ControlSurfaceListQuery;
 use crate::control_surface_api::{
     control_surface_action_url, control_surface_list_url, control_surface_values_url, path_segment,
 };
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::{
-    ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
-    ControlSurfaceDocument, ControlSurfaceId, ControlSurfaceRevision, ControlValueMap,
+    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
 use serde::Deserialize;
 
@@ -79,28 +82,18 @@ pub async fn fetch_device_control_surface(
     .map_err(Into::into)
 }
 
-/// Apply typed control changes to a surface.
-pub async fn apply_control_changes(
-    request: &ApplyControlChangesRequest,
-) -> Result<ApplyControlChangesResponse, String> {
-    let url = control_surface_values_url(&request.surface_id);
-    client::patch_json(&url, request).await.map_err(Into::into)
-}
-
-/// Apply typed field changes with an inline request body.
+/// Patch typed field values on a surface.
 pub async fn patch_control_values(
-    surface_id: ControlSurfaceId,
-    expected_revision: Option<ControlSurfaceRevision>,
-    changes: Vec<hypercolor_types::controls::ControlChange>,
-    dry_run: bool,
+    surface_id: &str,
+    values: BTreeMap<String, CanonicalControlValue>,
 ) -> Result<ApplyControlChangesResponse, String> {
-    apply_control_changes(&ApplyControlChangesRequest {
-        surface_id,
-        expected_revision,
-        changes,
-        dry_run,
-    })
-    .await
+    let request = PatchControlsRequest {
+        values,
+        clear_bindings: Vec::new(),
+    };
+    client::patch_json(&control_surface_values_url(surface_id), &request)
+        .await
+        .map_err(Into::into)
 }
 
 /// Invoke one typed control-surface action.

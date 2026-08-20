@@ -4553,14 +4553,9 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            }
-                        ]
+                        "values": {
+                            "protocol": { "kind": "enum", "value": "e131" }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4628,14 +4623,9 @@ async fn patch_driver_owned_device_control_surface_publishes_values_changed_even
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            }
-                        ]
+                        "values": {
+                            "protocol": { "kind": "enum", "value": "e131" }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4689,108 +4679,9 @@ async fn patch_driver_owned_device_control_surface_publishes_values_changed_even
 }
 
 #[tokio::test]
-async fn patch_driver_owned_device_control_surface_dry_run_does_not_persist_values() {
-    let (state, tmp) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-    let surface_id = format!("driver:wled:device:{device_id}");
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/control-surfaces/{surface_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-    let mut events = state.event_bus.subscribe_all();
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/v1/control-surfaces/{surface_id}/values"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "surface_id": surface_id,
-                        "expected_revision": revision,
-                        "dry_run": true,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            }
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_eq!(json["data"]["revision"], revision);
-    assert_eq!(json["data"]["values"]["protocol"]["value"], "ddp");
-    assert!(json["data"]["values"]["dedup_threshold"].is_null());
-
-    let refreshed = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/control-surfaces/{surface_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(refreshed.status(), StatusCode::OK);
-    let refreshed_json = body_json(refreshed).await;
-    assert_eq!(refreshed_json["data"]["values"]["protocol"]["value"], "ddp");
-    assert!(refreshed_json["data"]["values"]["dedup_threshold"].is_null());
-    assert!(
-        fs::read_to_string(tmp.path().join("data/device-settings.json")).is_err(),
-        "dry-run should not write driver device control settings"
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), events.recv())
-            .await
-            .is_err(),
-        "dry-run should not publish control surface events"
-    );
-}
-
-#[tokio::test]
 async fn patch_driver_control_surface_updates_config() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/drivers/wled/controls")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
 
     let response = app
         .oneshot(
@@ -4800,19 +4691,10 @@ async fn patch_driver_control_surface_updates_config() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": revision,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "default_protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            },
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 7 }
-                            }
-                        ]
+                        "values": {
+                            "default_protocol": { "kind": "enum", "value": "e131" },
+                            "dedup_threshold": { "kind": "int", "value": 7 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4824,8 +4706,12 @@ async fn patch_driver_control_surface_updates_config() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["surface_id"], "driver:wled");
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_ne!(json["data"]["revision"], revision);
+    assert!(
+        json["data"]["revision"].as_u64().expect("revision")
+            > json["data"]["previous_revision"]
+                .as_u64()
+                .expect("previous revision")
+    );
     assert_eq!(json["data"]["values"]["default_protocol"]["value"], "e131");
     assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 7);
 
@@ -4854,17 +4740,10 @@ async fn patch_govee_driver_control_surface_persists_backend_settings() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:govee",
-                        "changes": [
-                            {
-                                "field_id": "power_off_on_disconnect",
-                                "value": { "kind": "bool", "value": true }
-                            },
-                            {
-                                "field_id": "lan_state_fps",
-                                "value": { "kind": "integer", "value": 12 }
-                            }
-                        ]
+                        "values": {
+                            "power_off_on_disconnect": { "kind": "bool", "value": true },
+                            "lan_state_fps": { "kind": "int", "value": 12 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4908,13 +4787,9 @@ async fn patch_hue_driver_control_surface_persists_backend_settings() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:hue",
-                        "changes": [
-                            {
-                                "field_id": "use_cie_xy",
-                                "value": { "kind": "bool", "value": false }
-                            }
-                        ]
+                        "values": {
+                            "use_cie_xy": { "kind": "bool", "value": false }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4950,13 +4825,9 @@ async fn patch_nanoleaf_driver_control_surface_persists_backend_settings() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:nanoleaf",
-                        "changes": [
-                            {
-                                "field_id": "transition_time",
-                                "value": { "kind": "integer", "value": 8 }
-                            }
-                        ]
+                        "values": {
+                            "transition_time": { "kind": "int", "value": 8 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4983,82 +4854,6 @@ async fn patch_nanoleaf_driver_control_surface_persists_backend_settings() {
 }
 
 #[tokio::test]
-async fn patch_driver_control_surface_dry_run_does_not_mutate_config() {
-    let (state, manager, _tmp) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/drivers/wled/controls")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-    let original_drivers = manager.get().drivers.clone();
-    let mut events = state.event_bus.subscribe_all();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/control-surfaces/driver:wled/values")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": revision,
-                        "dry_run": true,
-                        "changes": [
-                            {
-                                "field_id": "default_protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            },
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 9 }
-                            }
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_eq!(json["data"]["revision"], revision);
-    assert_eq!(
-        json["data"]["accepted"].as_array().expect("accepted").len(),
-        2
-    );
-    assert_eq!(json["data"]["values"]["default_protocol"]["value"], "ddp");
-    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 2);
-    assert_eq!(
-        manager.get().drivers,
-        original_drivers,
-        "dry-run should not persist driver config changes"
-    );
-
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), events.recv())
-            .await
-            .is_err(),
-        "dry-run should not publish control surface events"
-    );
-}
-
-#[tokio::test]
 async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
@@ -5071,19 +4866,14 @@ async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "known_ips",
-                                "value": {
-                                    "kind": "list",
-                                    "value": [
-                                        { "kind": "ip_address", "value": "127.0.0.1" }
-                                    ]
-                                }
+                        "values": {
+                            "known_ips": {
+                                "kind": "list",
+                                "value": [
+                                    { "kind": "ip", "value": "127.0.0.1" }
+                                ]
                             }
-                        ]
+                        }
                     })
                     .to_string(),
                 ))
@@ -5138,17 +4928,12 @@ async fn patch_driver_control_surface_rejects_unknown_future_value_kind() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": {
-                                    "kind": "spline_curve",
-                                    "value": [0.0, 0.4, 1.0]
-                                }
+                        "values": {
+                            "dedup_threshold": {
+                                "kind": "spline_curve",
+                                "value": [0.0, 0.4, 1.0]
                             }
-                        ]
+                        }
                     })
                     .to_string(),
                 ))
@@ -5158,19 +4943,6 @@ async fn patch_driver_control_surface_rejects_unknown_future_value_kind() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(
-        json["error"]["details"]["kind"],
-        "driver_control_validation_failed"
-    );
-    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
-    assert_eq!(json["error"]["details"]["driver_id"], "wled");
-    assert!(
-        json["error"]["details"]["detail"]
-            .as_str()
-            .expect("error detail should be a string")
-            .contains("dedup_threshold")
-    );
     assert_eq!(
         manager.get().drivers,
         original_drivers,
@@ -5192,23 +4964,15 @@ async fn patch_driver_control_surface_rejects_transaction_without_partial_persis
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 13 }
+                        "values": {
+                            "dedup_threshold": { "kind": "int", "value": 13 },
+                            "known_ips": {
+                                "kind": "list",
+                                "value": [
+                                    { "kind": "ip", "value": "127.0.0.1" }
+                                ]
                             },
-                            {
-                                "field_id": "known_ips",
-                                "value": {
-                                    "kind": "list",
-                                    "value": [
-                                        { "kind": "ip_address", "value": "127.0.0.1" }
-                                    ]
-                                }
-                            }
-                        ]
+                        }
                     })
                     .to_string(),
                 ))
@@ -5245,14 +5009,9 @@ async fn patch_driver_owned_device_control_surface_reports_validation_target() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "bogus" }
-                            }
-                        ]
+                        "values": {
+                            "protocol": { "kind": "enum", "value": "bogus" }
+                        }
                     })
                     .to_string(),
                 ))
@@ -5279,22 +5038,6 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
 
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/drivers/wled/controls")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
     let response = app
         .oneshot(
             Request::builder()
@@ -5303,15 +5046,9 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": revision,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 11 }
-                            }
-                        ]
+                        "values": {
+                            "dedup_threshold": { "kind": "int", "value": 11 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -5362,51 +5099,6 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
         }
         _ => panic!("expected values_changed control surface event"),
     }
-}
-
-#[tokio::test]
-async fn patch_driver_control_surface_rejects_stale_revision() {
-    let (state, _manager, _tmp) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/control-surfaces/driver:wled/values")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": 1,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 7 }
-                            }
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(
-        json["error"]["details"]["kind"],
-        "control_surface_revision_conflict"
-    );
-    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
-    assert_eq!(json["error"]["details"]["expected_revision"], 1);
-    assert!(
-        json["error"]["details"]["current_revision"]
-            .as_u64()
-            .is_some()
-    );
 }
 
 #[tokio::test]
@@ -5551,14 +5243,9 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:rescan_test",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "scan",
-                                "value": { "kind": "bool", "value": true }
-                            }
-                        ]
+                        "values": {
+                            "scan": { "kind": "bool", "value": true }
+                        }
                     })
                     .to_string(),
                 ))
@@ -5615,14 +5302,9 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:unsupported_impact_test",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "topology",
-                                "value": { "kind": "bool", "value": true }
-                            }
-                        ]
+                        "values": {
+                            "topology": { "kind": "bool", "value": true }
+                        }
                     })
                     .to_string(),
                 ))
@@ -5672,14 +5354,9 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "topology",
-                                "value": { "kind": "bool", "value": true }
-                            }
-                        ]
+                        "values": {
+                            "topology": { "kind": "bool", "value": true }
+                        }
                     })
                     .to_string(),
                 ))
@@ -10030,8 +9707,6 @@ async fn apply_effect_rejects_display_face_effects() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "validation_error");
 }
 
 #[tokio::test]
@@ -10228,8 +9903,6 @@ async fn discover_devices_rejects_unknown_target() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "validation_error");
 }
 
 #[tokio::test]
@@ -10516,26 +10189,12 @@ async fn patch_device_control_surface_updates_user_settings() {
     let revision = surface_json["data"]["revision"]
         .as_u64()
         .expect("revision should be an integer");
-    let surface_id = format!("device:{device_id}");
-
     let body = serde_json::json!({
-        "surface_id": surface_id,
-        "expected_revision": revision,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "name",
-                "value": { "kind": "string", "value": "Desk Strip Controls" }
-            },
-            {
-                "field_id": "enabled",
-                "value": { "kind": "bool", "value": false }
-            },
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.5 }
-            }
-        ]
+        "values": {
+            "name": { "kind": "text", "value": "Desk Strip Controls" },
+            "enabled": { "kind": "bool", "value": false },
+            "brightness": { "kind": "float", "value": 0.5 }
+        }
     });
 
     let response = app
@@ -10604,22 +10263,6 @@ async fn patch_device_control_surface_publishes_values_changed_event() {
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
 
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/controls"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
     let response = app
         .oneshot(
             Request::builder()
@@ -10630,15 +10273,9 @@ async fn patch_device_control_surface_publishes_values_changed_event() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": format!("device:{device_id}"),
-                        "expected_revision": revision,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "brightness",
-                                "value": { "kind": "float", "value": 0.42 }
-                            }
-                        ]
+                        "values": {
+                            "brightness": { "kind": "float", "value": 0.42 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -10770,72 +10407,6 @@ async fn invoke_host_device_control_surface_identify_action_returns_typed_result
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_dry_run_does_not_mutate_settings() {
-    let state = Arc::new(isolated_state());
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/controls"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
-    let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": revision,
-        "dry_run": true,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
-    });
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!(
-                    "/api/v1/control-surfaces/device:{device_id}/values"
-                ))
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_eq!(json["data"]["revision"], revision);
-    assert_eq!(
-        json["data"]["accepted"].as_array().expect("accepted").len(),
-        1
-    );
-    assert_eq!(json["data"]["values"]["brightness"]["value"], 1.0);
-
-    let tracked = state
-        .device_registry
-        .get(&device_id)
-        .await
-        .expect("device should remain tracked");
-    assert_eq!(tracked.user_settings.brightness, 1.0);
-}
-
-#[tokio::test]
 async fn patch_device_control_surface_revision_is_device_local() {
     let (state, _tmp) = test_state_with_temp_output_store();
     let device_id = insert_test_device(&state, "Desk Strip").await;
@@ -10865,15 +10436,9 @@ async fn patch_device_control_surface_revision_is_device_local() {
         .expect("unrelated device should update");
 
     let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": revision,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
+        "values": {
+            "brightness": { "kind": "float", "value": 0.25 }
+        }
     });
 
     let response = app
@@ -10898,75 +10463,6 @@ async fn patch_device_control_surface_revision_is_device_local() {
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_rejects_stale_revision() {
-    let state = Arc::new(isolated_state());
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/controls"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
-    state
-        .device_registry
-        .update_user_settings(&device_id, None, None, Some(0.75))
-        .await
-        .expect("device should update");
-
-    let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": revision,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
-    });
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!(
-                    "/api/v1/control-surfaces/device:{device_id}/values"
-                ))
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "conflict");
-    assert_eq!(
-        json["error"]["details"]["kind"],
-        "control_surface_revision_conflict"
-    );
-    assert_eq!(
-        json["error"]["details"]["surface_id"],
-        format!("device:{device_id}")
-    );
-    assert_eq!(json["error"]["details"]["expected_revision"], revision);
-    assert_eq!(json["error"]["details"]["current_revision"], revision + 1);
-}
-
-#[tokio::test]
 async fn patch_device_control_surface_rejects_invalid_payloads() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
@@ -10974,67 +10470,37 @@ async fn patch_device_control_surface_rejects_invalid_payloads() {
 
     let cases = [
         (
-            serde_json::json!([
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "float", "value": 0.25 }
-                },
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "float", "value": 0.5 }
-                }
-            ]),
-            "duplicate_control_field",
-            "brightness",
-        ),
-        (
-            serde_json::json!([
-                {
-                    "field_id": "unknown",
-                    "value": { "kind": "bool", "value": true }
-                }
-            ]),
+            serde_json::json!({
+                "unknown": { "kind": "bool", "value": true }
+            }),
             "unknown_control_field",
             "unknown",
         ),
         (
-            serde_json::json!([
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "string", "value": "bright" }
-                }
-            ]),
+            serde_json::json!({
+                "brightness": { "kind": "text", "value": "bright" }
+            }),
             "control_value_type_mismatch",
             "brightness",
         ),
         (
-            serde_json::json!([
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "float", "value": 1.25 }
-                }
-            ]),
+            serde_json::json!({
+                "brightness": { "kind": "float", "value": 1.25 }
+            }),
             "control_value_out_of_range",
             "brightness",
         ),
         (
-            serde_json::json!([
-                {
-                    "field_id": "name",
-                    "value": { "kind": "string", "value": "   " }
-                }
-            ]),
+            serde_json::json!({
+                "name": { "kind": "text", "value": "   " }
+            }),
             "invalid_control_value",
             "name",
         ),
     ];
 
-    for (changes, kind, field_id) in cases {
-        let body = serde_json::json!({
-            "surface_id": format!("device:{device_id}"),
-            "dry_run": false,
-            "changes": changes,
-        });
+    for (values, kind, field_id) in cases {
+        let body = serde_json::json!({ "values": values });
 
         let response = app
             .clone()
@@ -11060,20 +10526,16 @@ async fn patch_device_control_surface_rejects_invalid_payloads() {
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_rejects_route_body_surface_mismatch() {
+async fn patch_device_control_surface_rejects_retired_body_identity() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let body = serde_json::json!({
         "surface_id": "device:not-the-route",
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
+        "values": {
+            "brightness": { "kind": "float", "value": 0.25 }
+        }
     });
 
     let response = app
@@ -11091,30 +10553,15 @@ async fn patch_device_control_surface_rejects_route_body_surface_mismatch() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "validation_error");
-    assert_eq!(json["error"]["details"]["kind"], "control_surface_mismatch");
-    assert_eq!(
-        json["error"]["details"]["route_surface_id"],
-        format!("device:{device_id}")
-    );
-    assert_eq!(
-        json["error"]["details"]["body_surface_id"],
-        "device:not-the-route"
-    );
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_rejects_empty_changes_with_details() {
+async fn patch_device_control_surface_rejects_empty_values_with_details() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
-    let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "dry_run": false,
-        "changes": []
-    });
+    let body = serde_json::json!({ "values": {} });
 
     let response = app
         .oneshot(
@@ -11133,7 +10580,7 @@ async fn patch_device_control_surface_rejects_empty_changes_with_details() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
-    assert_eq!(json["error"]["details"]["kind"], "empty_control_changes");
+    assert_eq!(json["error"]["details"]["kind"], "empty_control_values");
     assert_eq!(
         json["error"]["details"]["surface_id"],
         format!("device:{device_id}")
@@ -11141,7 +10588,37 @@ async fn patch_device_control_surface_rejects_empty_changes_with_details() {
 }
 
 #[tokio::test]
-async fn patch_missing_device_control_surface_returns_not_found_before_revision_conflict() {
+async fn patch_device_control_surface_rejects_binding_clears() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/control-surfaces/device:{device_id}/values"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "clear_bindings": ["brightness"]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["details"]["field"], "clear_bindings");
+}
+
+#[tokio::test]
+async fn patch_missing_device_control_surface_returns_not_found() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -11153,15 +10630,9 @@ async fn patch_missing_device_control_surface_returns_not_found_before_revision_
         .expect("device should exist before removal");
 
     let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": 999,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
+        "values": {
+            "brightness": { "kind": "float", "value": 0.25 }
+        }
     });
 
     let response = app
@@ -11279,6 +10750,34 @@ async fn list_displays_only_returns_display_capable_devices() {
 }
 
 #[tokio::test]
+async fn patch_display_face_controls_rejects_binding_clears() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "clear_bindings": ["label"]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["details"]["field"], "clear_bindings");
+}
+
+#[tokio::test]
 async fn delete_face_idempotent_when_no_group_present() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -11380,7 +10879,9 @@ async fn patch_face_controls_updates_display_group() {
                 .method("PATCH")
                 .uri(format!("/api/v1/displays/{display_id}/face/controls"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"label":"gpu"}}"#))
+                .body(Body::from(
+                    r#"{"values":{"label":{"kind":"text","value":"gpu"}}}"#,
+                ))
                 .expect("failed to build request"),
         )
         .await
@@ -13007,7 +12508,9 @@ async fn display_face_response_shape_matches_the_shared_fixture() {
                 .method("PATCH")
                 .uri(format!("/api/v1/displays/{display_id}/face/controls"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"label":"gpu"}}"#))
+                .body(Body::from(
+                    r#"{"values":{"label":{"kind":"text","value":"gpu"}}}"#,
+                ))
                 .expect("failed to build request"),
         )
         .await

@@ -16,7 +16,6 @@ from .api_error_body import ApiErrorBody
 from .api_error_detail import ApiErrorDetail
 from .applied_control_change import AppliedControlChange
 from .applied_control_change_value import AppliedControlChangeValue
-from .apply_control_changes_request import ApplyControlChangesRequest
 from .apply_control_changes_response import ApplyControlChangesResponse
 from .apply_control_changes_response_values import ApplyControlChangesResponseValues
 from .apply_control_surface_values_response_200 import (
@@ -181,8 +180,6 @@ from .control_action_status import ControlActionStatus
 from .control_apply_error import ControlApplyError
 from .control_availability_state import ControlAvailabilityState
 from .control_binding import ControlBinding
-from .control_change import ControlChange
-from .control_change_value import ControlChangeValue
 from .control_definition import ControlDefinition
 from .control_field_descriptor import ControlFieldDescriptor
 from .control_field_descriptor_availability import ControlFieldDescriptorAvailability
@@ -614,7 +611,6 @@ from .update_attachments_response_200 import UpdateAttachmentsResponse200
 from .update_device_request import UpdateDeviceRequest
 from .update_device_response_200 import UpdateDeviceResponse200
 from .update_display_face_composition_request import UpdateDisplayFaceCompositionRequest
-from .update_display_face_controls_request import UpdateDisplayFaceControlsRequest
 from .update_layout_request import UpdateLayoutRequest
 from .update_layout_response_200 import UpdateLayoutResponse200
 from .update_playlist_response_200 import UpdatePlaylistResponse200
@@ -658,7 +654,6 @@ __all__ = (
     "ApiErrorDetail",
     "AppliedControlChange",
     "AppliedControlChangeValue",
-    "ApplyControlChangesRequest",
     "ApplyControlChangesResponse",
     "ApplyControlChangesResponseValues",
     "ApplyControlSurfaceValuesResponse200",
@@ -785,8 +780,6 @@ __all__ = (
     "ControlApplyError",
     "ControlAvailabilityState",
     "ControlBinding",
-    "ControlChange",
-    "ControlChangeValue",
     "ControlDefinition",
     "ControlFieldDescriptor",
     "ControlFieldDescriptorAvailability",
@@ -1202,7 +1195,6 @@ __all__ = (
     "UpdateDeviceRequest",
     "UpdateDeviceResponse200",
     "UpdateDisplayFaceCompositionRequest",
-    "UpdateDisplayFaceControlsRequest",
     "UpdateLayoutRequest",
     "UpdateLayoutResponse200",
     "UpdatePlaylistResponse200",

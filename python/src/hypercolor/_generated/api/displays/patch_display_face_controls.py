@@ -7,11 +7,9 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
+from ...models.patch_controls_request import PatchControlsRequest
 from ...models.patch_display_face_controls_response_200 import (
     PatchDisplayFaceControlsResponse200,
-)
-from ...models.update_display_face_controls_request import (
-    UpdateDisplayFaceControlsRequest,
 )
 from ...types import Response
 
@@ -19,7 +17,7 @@ from ...types import Response
 def _get_kwargs(
     id: str,
     *,
-    body: UpdateDisplayFaceControlsRequest,
+    body: PatchControlsRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -112,21 +110,23 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDisplayFaceControlsRequest,
+    body: PatchControlsRequest,
 ) -> Response[ApiErrorBody | PatchDisplayFaceControlsResponse200]:
     """Patch display face controls
 
     Args:
         id (str):
-        body (UpdateDisplayFaceControlsRequest): Request body for `PATCH
-            /api/v1/displays/{id}/face/controls`.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
 
-            The payload carries only the overrides the caller wants to change;
-            existing control values on the zone are preserved unless their
-            key appears in this map. `controls` is typed as raw JSON (rather than
-            `HashMap<String, ControlValue>`) so callers can send natural shapes
-            like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-            mirrors the effects controls patch endpoint.
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -152,21 +152,23 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDisplayFaceControlsRequest,
+    body: PatchControlsRequest,
 ) -> ApiErrorBody | PatchDisplayFaceControlsResponse200 | None:
     """Patch display face controls
 
     Args:
         id (str):
-        body (UpdateDisplayFaceControlsRequest): Request body for `PATCH
-            /api/v1/displays/{id}/face/controls`.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
 
-            The payload carries only the overrides the caller wants to change;
-            existing control values on the zone are preserved unless their
-            key appears in this map. `controls` is typed as raw JSON (rather than
-            `HashMap<String, ControlValue>`) so callers can send natural shapes
-            like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-            mirrors the effects controls patch endpoint.
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -187,21 +189,23 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDisplayFaceControlsRequest,
+    body: PatchControlsRequest,
 ) -> Response[ApiErrorBody | PatchDisplayFaceControlsResponse200]:
     """Patch display face controls
 
     Args:
         id (str):
-        body (UpdateDisplayFaceControlsRequest): Request body for `PATCH
-            /api/v1/displays/{id}/face/controls`.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
 
-            The payload carries only the overrides the caller wants to change;
-            existing control values on the zone are preserved unless their
-            key appears in this map. `controls` is typed as raw JSON (rather than
-            `HashMap<String, ControlValue>`) so callers can send natural shapes
-            like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-            mirrors the effects controls patch endpoint.
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -225,21 +229,23 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDisplayFaceControlsRequest,
+    body: PatchControlsRequest,
 ) -> ApiErrorBody | PatchDisplayFaceControlsResponse200 | None:
     """Patch display face controls
 
     Args:
         id (str):
-        body (UpdateDisplayFaceControlsRequest): Request body for `PATCH
-            /api/v1/displays/{id}/face/controls`.
+        body (PatchControlsRequest): The one control-patch shape, used verbatim at every scope:
+            layer
+            controls, display face controls, control-surface values
+            (Spec 78 §5.7).
 
-            The payload carries only the overrides the caller wants to change;
-            existing control values on the zone are preserved unless their
-            key appears in this map. `controls` is typed as raw JSON (rather than
-            `HashMap<String, ControlValue>`) so callers can send natural shapes
-            like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-            mirrors the effects controls patch endpoint.
+            `clear_bindings` is meaningful only where bindings exist (layers);
+            other scopes reject a non-empty list with a validation error. A
+            patch naming a control key with an active input binding is rejected
+            409 `control_bound` unless the same request clears that binding —
+            removal and the accompanying values land in one atomic commit
+            (Spec 78 §1.6).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

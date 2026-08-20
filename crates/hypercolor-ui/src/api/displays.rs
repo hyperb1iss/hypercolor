@@ -4,14 +4,16 @@
 //! preview JPEG URL.
 
 use hypercolor_types::scene::DisplayFaceBlendMode;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::client;
 
 pub use hypercolor_types::api::displays::{
     DisplayFaceResponse, DisplayFaceScope, DisplaySummary, SetDisplayFaceRequest,
-    UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+    UpdateDisplayFaceCompositionRequest,
 };
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 
 /// `GET /api/v1/displays` — list display-capable devices.
 pub async fn fetch_displays() -> Result<Vec<DisplaySummary>, String> {
@@ -63,13 +65,14 @@ pub async fn delete_display_face(display_id: &str, scope: DisplayFaceScope) -> R
 /// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides.
 pub async fn update_display_face_controls(
     display_id: &str,
-    controls: &serde_json::Value,
+    values: BTreeMap<String, CanonicalControlValue>,
 ) -> Result<DisplayFaceResponse, String> {
     let url = format!("/api/v1/displays/{display_id}/face/controls");
-    let body = UpdateDisplayFaceControlsRequest {
-        controls: Some(controls.clone()),
+    let body = PatchControlsRequest {
+        values,
+        clear_bindings: Vec::new(),
     };
-    client::patch_json::<UpdateDisplayFaceControlsRequest, DisplayFaceResponse>(&url, &body)
+    client::patch_json::<PatchControlsRequest, DisplayFaceResponse>(&url, &body)
         .await
         .map_err(Into::into)
 }

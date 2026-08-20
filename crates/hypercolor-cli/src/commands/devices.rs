@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 use hypercolor_types::api::controls::InvokeControlActionRequest;
 use hypercolor_types::api::devices::{DiscoverRequest, IdentifyRequest};
-use hypercolor_types::controls::ApplyControlChangesRequest;
+use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::pairing::PairDeviceRequest;
 use serde_json::Value;
 
@@ -129,14 +129,6 @@ pub struct DeviceSetControlArgs {
 
     /// Typed value. Examples: `enum:grb`, `bool:true`, `duration:1500`.
     pub value: String,
-
-    /// Expected surface revision for optimistic concurrency.
-    #[arg(long)]
-    pub expected_revision: Option<u64>,
-
-    /// Validate the transaction without applying it.
-    #[arg(long)]
-    pub dry_run: bool,
 }
 
 /// Arguments for `devices action`.
@@ -396,12 +388,9 @@ async fn execute_set_control(
 ) -> Result<()> {
     let surface_id = device_control_surface_id_for_field(client, &args.device, &args.field).await?;
     let assignment = format!("{}={}", args.field, args.value);
-    let changes = controls::assignments_to_changes(&[assignment])?;
-    let body = ApplyControlChangesRequest {
-        expected_revision: args.expected_revision,
-        changes,
-        dry_run: args.dry_run,
-        surface_id: surface_id.clone(),
+    let body = PatchControlsRequest {
+        values: controls::assignments_to_values(&[assignment])?,
+        clear_bindings: Vec::new(),
     };
 
     let response = client

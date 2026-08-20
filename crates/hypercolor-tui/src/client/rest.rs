@@ -18,8 +18,7 @@ use hypercolor_types::api::scene::{
 use hypercolor_types::api::scenes::SceneListResponse as ApiSceneListResponse;
 use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::{
-    ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
-    ControlSurfaceDocument, ControlValueMap,
+    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
 use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
@@ -144,12 +143,10 @@ impl DaemonClient {
     /// Apply typed changes to a dynamic control surface.
     pub async fn apply_control_changes(
         &self,
-        request: &ApplyControlChangesRequest,
+        surface_id: &str,
+        request: &PatchControlsRequest,
     ) -> Result<ApplyControlChangesResponse> {
-        let path = format!(
-            "/control-surfaces/{}/values",
-            path_segment(&request.surface_id)
-        );
+        let path = format!("/control-surfaces/{}/values", path_segment(surface_id));
         self.patch_data(&path, request).await
     }
 

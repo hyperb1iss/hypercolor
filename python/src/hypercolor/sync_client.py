@@ -271,18 +271,8 @@ class SyncHypercolorClient:
         self,
         surface_id: str,
         values: Mapping[str, Any],
-        *,
-        dry_run: bool = False,
-        expected_revision: int | None = None,
     ) -> ControlApplyResult:
-        return self._run(
-            self._client.set_control_values(
-                surface_id,
-                values,
-                dry_run=dry_run,
-                expected_revision=expected_revision,
-            )
-        )
+        return self._run(self._client.set_control_values(surface_id, values))
 
     def invoke_control_action(
         self,

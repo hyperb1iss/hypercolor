@@ -118,6 +118,8 @@ async fn openapi_json_is_served_with_expected_paths() {
         "PauseEffectResponse",
         "ResumeEffectResponse",
         "AssignDevicesRequest",
+        "ApplyControlChangesRequest",
+        "UpdateDisplayFaceControlsRequest",
     ] {
         assert!(
             body["components"]["schemas"][retired].is_null(),
@@ -132,7 +134,7 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["components"]["schemas"]["SpatialLayout"].is_object());
     assert!(body["paths"]["/api/v1/control-surfaces"].is_object());
     assert!(body["components"]["schemas"]["ControlSurfaceDocument"].is_object());
-    assert!(body["components"]["schemas"]["ApplyControlChangesRequest"].is_object());
+    assert!(body["components"]["schemas"]["PatchControlsRequest"].is_object());
     assert!(body["components"]["schemas"]["ControlFieldDescriptor"].is_object());
     let input_status = &body["components"]["schemas"]["InputStatus"];
     assert!(input_status.is_object());
@@ -423,6 +425,18 @@ fn runtime_document_records_real_statuses_bodies_and_media_types() {
         ("/api/v1/scene", "patch", "ScenePatchRequest", true),
         (
             "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+            "patch",
+            "PatchControlsRequest",
+            true,
+        ),
+        (
+            "/api/v1/control-surfaces/{id}/values",
+            "patch",
+            "PatchControlsRequest",
+            true,
+        ),
+        (
+            "/api/v1/displays/{id}/face/controls",
             "patch",
             "PatchControlsRequest",
             true,

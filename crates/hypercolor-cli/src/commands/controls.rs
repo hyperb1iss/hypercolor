@@ -6,9 +6,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use hypercolor_color::{Rgb, Rgba};
 use hypercolor_types::api::controls::InvokeControlActionRequest;
-use hypercolor_types::controls::{
-    ApplyControlChangesRequest, ControlChange, ControlValue, ControlValueMap,
-};
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
+use hypercolor_types::controls::{ControlValue, ControlValueMap};
 use serde_json::Value;
 
 use crate::client::DaemonClient;
@@ -74,14 +74,6 @@ pub struct ControlSetArgs {
     /// Field assignment, repeatable. Examples: `power=bool:true`, `ip=ip:10.0.0.2`.
     #[arg(long = "value", short = 'v', required = true)]
     pub values: Vec<String>,
-
-    /// Expected surface revision for optimistic concurrency.
-    #[arg(long)]
-    pub expected_revision: Option<u64>,
-
-    /// Validate the transaction without applying it.
-    #[arg(long)]
-    pub dry_run: bool,
 }
 
 /// Arguments for `controls action`.
@@ -178,11 +170,9 @@ async fn execute_set(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = ApplyControlChangesRequest {
-        surface_id: args.surface.clone(),
-        expected_revision: args.expected_revision,
-        changes: assignments_to_changes(&args.values)?,
-        dry_run: args.dry_run,
+    let body = PatchControlsRequest {
+        values: assignments_to_values(&args.values)?,
+        clear_bindings: Vec::new(),
     };
 
     let path = format!("/control-surfaces/{}/values", urlencoded(&args.surface));
@@ -381,14 +371,18 @@ fn action_rows(surface: &Value, ctx: &OutputContext) -> Vec<Vec<String>> {
         .collect()
 }
 
-pub(crate) fn assignments_to_changes(assignments: &[String]) -> Result<Vec<ControlChange>> {
-    assignments
-        .iter()
-        .map(|assignment| {
-            let (field_id, value) = parse_assignment(assignment)?;
-            Ok(ControlChange { field_id, value })
-        })
-        .collect()
+pub(crate) fn assignments_to_values(
+    assignments: &[String],
+) -> Result<BTreeMap<String, CanonicalControlValue>> {
+    let mut values = BTreeMap::new();
+    for assignment in assignments {
+        let (field_id, value) = parse_assignment(assignment)?;
+        let value = CanonicalControlValue::try_from(value)?;
+        if values.insert(field_id.clone(), value).is_some() {
+            bail!("duplicate control value assignment: {field_id}");
+        }
+    }
+    Ok(values)
 }
 
 pub(crate) fn assignments_to_map(assignments: &[String]) -> Result<ControlValueMap> {

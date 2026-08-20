@@ -59,7 +59,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "displays",
                     "Patch display face controls",
                 )
-                .body::<hypercolor_types::api::displays::UpdateDisplayFaceControlsRequest>(),
+                .body::<hypercolor_types::api::scene::PatchControlsRequest>(),
             ],
         ))
         .routes(openapi::documented_route(

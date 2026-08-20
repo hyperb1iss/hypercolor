@@ -117,9 +117,8 @@ async def main() -> None:
             surface.surface_id,
             {
                 "enabled": True,
-                "brightness": 88,
+                "brightness": 0.88,
             },
-            expected_revision=surface.revision,
         )
 
         await client.invoke_control_action(

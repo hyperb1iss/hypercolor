@@ -297,9 +297,6 @@ async fn drivers_set_control_targets_driver_surface() -> Result<()> {
             "wled",
             "default_protocol",
             "enum:ddp",
-            "--expected-revision",
-            "3",
-            "--dry-run",
         ],
     )
     .await;
@@ -319,16 +316,12 @@ async fn drivers_set_control_targets_driver_surface() -> Result<()> {
             .clone()
             .context("server did not capture control patch request body")?,
         serde_json::json!({
-            "surface_id": "driver:wled",
-            "changes": [{
-                "field_id": "default_protocol",
-                "value": {
+            "values": {
+                "default_protocol": {
                     "kind": "enum",
                     "value": "ddp"
                 }
-            }],
-            "dry_run": true,
-            "expected_revision": 3
+            }
         })
     );
 
@@ -470,8 +463,6 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
             test_device_id(),
             "color_order",
             "enum:grb",
-            "--expected-revision",
-            "2",
         ],
     )
     .await;
@@ -493,16 +484,12 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
             .clone()
             .context("server did not capture device control patch request body")?,
         serde_json::json!({
-            "surface_id": "driver:wled:device:00000000-0000-0000-0000-000000000001",
-            "changes": [{
-                "field_id": "color_order",
-                "value": {
+            "values": {
+                "color_order": {
                     "kind": "enum",
                     "value": "grb"
                 }
-            }],
-            "dry_run": false,
-            "expected_revision": 2
+            }
         })
     );
 

@@ -107,7 +107,6 @@ pub enum Action {
     ApplyDeviceControlChange {
         device_id: String,
         surface_id: String,
-        expected_revision: u64,
         field_id: String,
         value: DynamicControlValue,
     },

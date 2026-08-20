@@ -302,8 +302,7 @@ def test_sync_client_delegates_control_values() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.raw_path == b"/api/v1/control-surfaces/device%3Akeyboard/values"
         assert json.loads(request.content) == {
-            "surface_id": "device:keyboard",
-            "changes": [{"field_id": "enabled", "value": {"kind": "bool", "value": True}}],
+            "values": {"enabled": {"kind": "bool", "value": True}},
         }
         return httpx.Response(
             200,

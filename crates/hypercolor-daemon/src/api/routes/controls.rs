@@ -57,7 +57,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "controls",
                     "Apply control surface values",
                 )
-                .body::<hypercolor_types::controls::ApplyControlChangesRequest>(),
+                .body::<hypercolor_types::api::scene::PatchControlsRequest>(),
             ],
         ))
         .routes(openapi::documented_route(
