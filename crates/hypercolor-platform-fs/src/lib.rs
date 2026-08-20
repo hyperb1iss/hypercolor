@@ -15,7 +15,10 @@ mod unix;
 mod windows;
 
 #[cfg(unix)]
-pub use unix::ExclusiveDirectory;
+pub use unix::{
+    DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, ExclusiveDirectory,
+    OpenedRegularFile, PrivateStagingDirectory,
+};
 #[cfg(target_os = "windows")]
 pub use windows::DestinationIdentity;
 

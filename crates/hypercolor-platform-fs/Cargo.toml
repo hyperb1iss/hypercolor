@@ -17,7 +17,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
