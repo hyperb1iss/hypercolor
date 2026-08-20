@@ -58,7 +58,9 @@
 //! one-time-forward per §0, so a shape that no longer canonicalizes is
 //! hand-migrated or refused, not dual-read.
 
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -70,6 +72,143 @@ use crate::controls as driver;
 use crate::effect::{self, GradientStop};
 use crate::spatial::NormalizedRect;
 use crate::viewport::ViewportRect;
+
+/// Stable identifier for a renderer control.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ControlId(String);
+
+impl ControlId {
+    /// Create an identifier from its authored name.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Borrow the authored identifier.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for ControlId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for ControlId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<String> for ControlId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for ControlId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Revision of an authoritative control set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SetRevision(u64);
+
+impl SetRevision {
+    /// Create a revision from the owning scene's monotonic counter.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Return the monotonic counter value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for SetRevision {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// A validated, ordered control snapshot owned by one effect slot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlSet {
+    set_revision: SetRevision,
+    values: BTreeMap<ControlId, ControlValue>,
+}
+
+impl ControlSet {
+    /// Create an empty control set at the supplied revision.
+    #[must_use]
+    pub const fn new(set_revision: SetRevision) -> Self {
+        Self {
+            set_revision,
+            values: BTreeMap::new(),
+        }
+    }
+
+    /// Build a set while validating every value at the admission boundary.
+    pub fn try_from_entries(
+        set_revision: SetRevision,
+        entries: impl IntoIterator<Item = (ControlId, ControlValue)>,
+    ) -> Result<Self, ControlSetError> {
+        let mut controls = Self::new(set_revision);
+        for (control_id, value) in entries {
+            controls.insert(control_id, value)?;
+        }
+        Ok(controls)
+    }
+
+    /// Return the authoritative revision.
+    #[must_use]
+    pub const fn set_revision(&self) -> SetRevision {
+        self.set_revision
+    }
+
+    /// Return a value by authored identifier.
+    #[must_use]
+    pub fn get(&self, control_id: &str) -> Option<&ControlValue> {
+        self.values.get(control_id)
+    }
+
+    /// Iterate in stable identifier order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&ControlId, &ControlValue)> {
+        self.values.iter()
+    }
+
+    /// Insert a value after validating the canonical invariants.
+    pub fn insert(
+        &mut self,
+        control_id: ControlId,
+        value: ControlValue,
+    ) -> Result<Option<ControlValue>, ControlSetError> {
+        value.validate().map_err(|source| ControlSetError {
+            control_id: control_id.clone(),
+            source,
+        })?;
+        Ok(self.values.insert(control_id, value))
+    }
+}
+
+/// A value rejected while constructing an authoritative control set.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("control '{control_id}': {source}")]
+pub struct ControlSetError {
+    /// Identifier whose value failed validation.
+    pub control_id: ControlId,
+    /// Canonical invariant violation.
+    #[source]
+    pub source: ControlValueInvalid,
+}
 
 /// An opaque reference into the credential store. The secret itself
 /// never transits — this is the name of a stored secret, distinct from

@@ -10,8 +10,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use hypercolor_types::control::{
-    ControlValue, ControlValueInvalid, DriverProjectionError, EffectProjectionError, IpText,
-    MacText, SecretRef,
+    ControlId, ControlSet, ControlValue, ControlValueInvalid, DriverProjectionError,
+    EffectProjectionError, IpText, MacText, SecretRef, SetRevision,
 };
 use hypercolor_types::controls as driver;
 use hypercolor_types::device::DeviceId;
@@ -334,6 +334,39 @@ fn width_narrowing_is_range_checked() {
         ControlValue::Int(42).to_effect_wire(),
         Ok(effect::ControlValue::Integer(42))
     );
+}
+
+#[test]
+fn control_set_validates_values_and_orders_identifiers() {
+    let set = ControlSet::try_from_entries(
+        SetRevision::new(7),
+        [
+            (ControlId::new("speed"), ControlValue::Float(0.5)),
+            (ControlId::new("color"), ControlValue::Text("violet".into())),
+        ],
+    )
+    .expect("finite values form a control set");
+
+    assert_eq!(set.set_revision().get(), 7);
+    assert_eq!(
+        set.iter()
+            .map(|(control_id, _)| control_id.as_str())
+            .collect::<Vec<_>>(),
+        ["color", "speed"]
+    );
+    assert_eq!(set.get("speed"), Some(&ControlValue::Float(0.5)));
+}
+
+#[test]
+fn control_set_rejects_invalid_values_at_admission() {
+    let error = ControlSet::try_from_entries(
+        SetRevision::new(3),
+        [(ControlId::new("speed"), ControlValue::Float(f64::NAN))],
+    )
+    .expect_err("non-finite control must be refused");
+
+    assert_eq!(error.control_id.as_str(), "speed");
+    assert_eq!(error.source, ControlValueInvalid::NonFiniteFloat);
 }
 
 // ── identity conventions ───────────────────────────────────────────────────
