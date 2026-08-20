@@ -1129,8 +1129,7 @@ fn persisted_transition_plan_rejects_corrupt_intermediate_states() {
     corruptions.push(corrupted);
 
     let mut corrupted = journal.clone();
-    corrupted.transition_states.candidate_manager.running_unit =
-        Some(UnitId::new(PRIOR_ID).expect("wrong manager unit"));
+    corrupted.transition_states.candidate_manager.running_unit = Some(candidate.clone());
     corruptions.push(corrupted);
 
     let mut corrupted = journal.clone();
@@ -1272,35 +1271,6 @@ fn persisted_transition_plan_allows_platform_specific_loaded_quiescence() {
         InstallTargetPolicy::Preserve,
     );
     journal.transition_states.prior_unloaded.loaded = true;
-
-    assert_eq!(journal.validate(), Ok(()));
-}
-
-#[test]
-fn persisted_transition_plan_allows_atomic_manager_activation() {
-    let candidate = UnitId::new(CANDIDATE_ID).expect("candidate unit ID");
-    let prior_unit = UnitId::new(PRIOR_ID).expect("prior unit ID");
-    let prior = PlatformState {
-        layout_unit: Some(prior_unit.clone()),
-        launcher_unit: Some(prior_unit.clone()),
-        loaded: true,
-        running_unit: Some(prior_unit),
-        autostart_enabled: false,
-    };
-    let mut journal = new_journal(
-        InstallTransactionId::new("atomic-manager-activation").expect("transaction ID"),
-        prior.layout_unit.clone(),
-        candidate,
-        prior.clone(),
-        InstallTargetPolicy::Preserve,
-    );
-    journal.transition_states.candidate_manager = PlatformState {
-        autostart_enabled: prior.autostart_enabled,
-        ..journal.target_platform.clone()
-    };
-    journal.transition_states.candidate_autostart = journal.target_platform.clone();
-    journal.transition_states.prior_manager = prior.clone();
-    journal.transition_states.prior_autostart = prior;
 
     assert_eq!(journal.validate(), Ok(()));
 }

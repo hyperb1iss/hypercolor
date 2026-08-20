@@ -252,8 +252,6 @@ impl PlatformTransitionStates {
             || self.candidate_manager.launcher_unit != target.launcher_unit
             || self.candidate_manager.autostart_enabled != prior.autostart_enabled
             || self.candidate_manager.running_unit.is_some()
-                && (self.candidate_manager.loaded != target.loaded
-                    || self.candidate_manager.running_unit != target.running_unit)
             || self.candidate_autostart.layout_unit != target.layout_unit
             || self.candidate_autostart.launcher_unit != target.launcher_unit
             || self.candidate_autostart.loaded != self.candidate_manager.loaded
@@ -263,8 +261,6 @@ impl PlatformTransitionStates {
             || self.prior_manager.launcher_unit != prior.launcher_unit
             || self.prior_manager.autostart_enabled != prior.autostart_enabled
             || self.prior_manager.running_unit.is_some()
-                && (self.prior_manager.loaded != prior.loaded
-                    || self.prior_manager.running_unit != prior.running_unit)
             || self.prior_autostart.layout_unit != prior.layout_unit
             || self.prior_autostart.launcher_unit != prior.launcher_unit
             || self.prior_autostart.loaded != self.prior_manager.loaded
