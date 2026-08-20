@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 mod authority;
+mod entry;
 mod publication;
 mod replacement;
 mod staging;

@@ -14,12 +14,14 @@ use std::io;
 use std::path::Path;
 use std::sync::{Arc, MutexGuard};
 
+use super::entry::protected_name_for_directory;
 use super::traversal::{
     duplicate_directory, entry_metadata_at, entry_name, metadata_for_file, open_directory_at,
     require_same_entry, unsafe_entry,
 };
 use super::{
-    DirectoryAnchor, DirectoryEntryMetadata, EntryReplacement, ExactEntry, PublicDirectoryAuthority,
+    DirectoryAnchor, DirectoryAuthority, DirectoryEntryMetadata, EntryReplacement, ExactEntry,
+    PublicDirectoryAuthority,
 };
 use exact::observe_entry_at;
 use operation::{remove_entry_with, replace_entry_with};
@@ -28,6 +30,32 @@ pub use enumeration::{MAX_PUBLIC_DIRECTORY_CHILD_COUNT, MAX_PUBLIC_DIRECTORY_CHI
 pub use exact::MAX_EXACT_ENTRY_BYTES;
 
 impl PublicDirectoryAuthority {
+    /// Downgrade this ancestry-anchored capability to a handle-relative one.
+    ///
+    /// The conversion consumes this public authority, validates its absolute
+    /// ancestry one final time, and retains the exact opened directory inode.
+    /// The returned authority deliberately stops proving that the directory
+    /// remains reachable through its original public pathname. It retains the
+    /// same global install lock and in-process operation gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when final ancestry validation or retained-handle
+    /// duplication fails.
+    pub fn into_directory_authority(self) -> io::Result<DirectoryAuthority> {
+        let operation = self.operation_guard()?;
+        self.validate_ancestry_inner()?;
+        let directory = duplicate_directory(&self.directory)?;
+        let protected_name = protected_name_for_directory(&directory, &self.shared)?;
+        let shared = Arc::clone(&self.shared);
+        drop(operation);
+        Ok(DirectoryAuthority {
+            directory,
+            shared,
+            protected_name,
+        })
+    }
+
     /// Prove that every retained path component still names its opened inode.
     ///
     /// # Errors

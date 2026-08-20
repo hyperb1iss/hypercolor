@@ -1,29 +1,24 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
 use std::io::{self, Read};
-use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rustix::fs::{
-    AtFlags, CWD, FileType, Mode, OFlags, mkdirat, openat, readlinkat, renameat, statat, symlinkat,
-    unlinkat,
-};
-use rustix::io::Errno;
+use rustix::fs::{AtFlags, CWD, Mode, OFlags, mkdirat, openat, unlinkat};
 
+use super::entry::{protected_name_for_directory, require_mutable_entry};
 use super::staging::validate_staging_name;
 use super::traversal::{
     copy_exact, directory_entries, duplicate_directory, entry_metadata_at, entry_name,
     metadata_for_file, open_absolute_directory_components, open_directory_at, open_regular_file_at,
-    rustix_mode, set_exact_mode, validate_mode, validate_symlink_target, write_secret_contents,
+    rustix_mode, set_exact_mode, validate_mode,
 };
 use super::{
     DirectoryAnchor, DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata,
     ExclusiveDirectory, ExclusiveDirectoryShared, OpenedRegularFile, PRIVATE_DIRECTORY_MODE,
     PrivateStagingDirectory, PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
-    SECRET_FILE_MODE, SYMLINK_SEQUENCE,
+    SECRET_FILE_MODE,
 };
 
 impl ReadOnlyDirectoryAuthority {
@@ -209,218 +204,11 @@ impl ExclusiveDirectory {
         })
     }
 
-    /// Open one regular file without following a symbolic link.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-input error when `name` is not one normal path
-    /// component. Returns the operating-system error when the entry cannot be
-    /// opened as a regular no-follow file.
-    pub fn open_file(&self, name: &Path) -> io::Result<File> {
-        let name = entry_name(name, "file name")?;
-        let _operation = self.operation_guard()?;
-        let file = openat(
-            &self.shared.directory,
-            name,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map(File::from)
-        .map_err(io::Error::from)?;
-        if !file.metadata()?.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "entry is not a regular file",
-            ));
-        }
-        Ok(file)
-    }
-
-    /// Read one symbolic-link target through the opened directory authority.
-    ///
-    /// Missing entries return `Ok(None)`. Existing non-symbolic-link entries
-    /// are rejected.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-input error when `name` is not one normal path
-    /// component or names a non-symbolic-link entry. Returns the
-    /// operating-system error when inspection or reading fails.
-    pub fn read_symlink(&self, name: &Path) -> io::Result<Option<PathBuf>> {
-        let name = entry_name(name, "symbolic-link name")?;
-        let _operation = self.operation_guard()?;
-        let Some(file_type) = self.entry_type(name)? else {
-            return Ok(None);
-        };
-        if !file_type.is_symlink() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "entry is not a symbolic link",
-            ));
-        }
-        let target =
-            readlinkat(&self.shared.directory, name, Vec::new()).map_err(io::Error::from)?;
-        Ok(Some(PathBuf::from(std::ffi::OsString::from_vec(
-            target.into_bytes(),
-        ))))
-    }
-
-    /// Create and sync one private file without replacing an existing entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-input error when `name` is not one normal path
-    /// component. Returns the operating-system error when creation, writing,
-    /// syncing, or cleanup fails.
-    pub fn write_secret(&self, name: &Path, contents: &[u8]) -> io::Result<()> {
-        let name = self.mutable_entry_name(name, "file name")?;
-        let _operation = self.operation_guard()?;
-        let mut file = openat(
-            &self.shared.directory,
-            name,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .map(File::from)
-        .map_err(io::Error::from)?;
-        if let Err(error) = write_secret_contents(&mut file, contents) {
-            drop(file);
-            let _ = unlinkat(&self.shared.directory, name, AtFlags::empty());
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    /// Atomically replace one file entry with another and sync the directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-input error when either name is not one normal path
-    /// component. Returns the operating-system error when replacement or the
-    /// durability barrier fails.
-    pub fn durable_replace_file(&self, source: &Path, destination: &Path) -> io::Result<()> {
-        let source = self.mutable_entry_name(source, "source name")?;
-        let destination = self.mutable_entry_name(destination, "destination name")?;
-        let _operation = self.operation_guard()?;
-        renameat(
-            &self.shared.directory,
-            source,
-            &self.shared.directory,
-            destination,
-        )
-        .map_err(io::Error::from)?;
-        self.shared.directory.sync_all()
-    }
-
-    /// Atomically replace one symbolic link and sync the directory.
-    ///
-    /// `target` must be a nonempty relative path containing only normal
-    /// components. `destination` must be absent or an existing symbolic link.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-input error for an unsafe target, invalid destination
-    /// name, or non-symbolic-link destination. Returns the operating-system
-    /// error when staging, replacement, cleanup, or syncing fails.
-    pub fn durable_replace_symlink(&self, target: &Path, destination: &Path) -> io::Result<()> {
-        validate_symlink_target(target)?;
-        let destination = self.mutable_entry_name(destination, "symbolic-link destination")?;
-        let _operation = self.operation_guard()?;
-        if let Some(file_type) = self.entry_type(destination)?
-            && !file_type.is_symlink()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to replace a non-symbolic-link destination",
-            ));
-        }
-
-        let mut staged = None;
-        for _ in 0..128 {
-            let sequence = SYMLINK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let candidate = format!(
-                ".{}.link.{}.{}",
-                destination.to_string_lossy(),
-                std::process::id(),
-                sequence
-            );
-            match symlinkat(target, &self.shared.directory, candidate.as_str()) {
-                Ok(()) => {
-                    staged = Some(candidate);
-                    break;
-                }
-                Err(Errno::EXIST) => {}
-                Err(error) => return Err(io::Error::from(error)),
-            }
-        }
-        let staged = staged.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "could not allocate a unique staged symbolic link",
-            )
-        })?;
-        if let Err(error) = renameat(
-            &self.shared.directory,
-            staged.as_str(),
-            &self.shared.directory,
-            destination,
-        ) {
-            let _ = unlinkat(&self.shared.directory, staged.as_str(), AtFlags::empty());
-            return Err(io::Error::from(error));
-        }
-        self.shared.directory.sync_all()
-    }
-
-    /// Remove one file or symbolic link and sync the directory.
-    ///
-    /// Missing entries return `Ok(false)`. Directories are rejected.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-input error when `name` is not one normal path
-    /// component or names a directory. Returns the operating-system error when
-    /// inspection, removal, or syncing fails.
-    pub fn durable_remove_file(&self, name: &Path) -> io::Result<bool> {
-        let name = self.mutable_entry_name(name, "file name")?;
-        let _operation = self.operation_guard()?;
-        let Some(file_type) = self.entry_type(name)? else {
-            return Ok(false);
-        };
-        if file_type.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to remove a directory through the file removal boundary",
-            ));
-        }
-        unlinkat(&self.shared.directory, name, AtFlags::empty()).map_err(io::Error::from)?;
-        self.shared.directory.sync_all()?;
-        Ok(true)
-    }
-
-    fn mutable_entry_name<'a>(&self, path: &'a Path, description: &str) -> io::Result<&'a OsStr> {
-        let name = entry_name(path, description)?;
-        if name == self.shared.lock_name {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to mutate the held directory lock entry",
-            ));
-        }
-        Ok(name)
-    }
-
     pub(super) fn operation_guard(&self) -> io::Result<MutexGuard<'_, ()>> {
         self.shared
             .operation
             .lock()
             .map_err(|_| io::Error::other("exclusive directory operation gate is poisoned"))
-    }
-
-    fn entry_type(&self, name: &OsStr) -> io::Result<Option<FileType>> {
-        match statat(&self.shared.directory, name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(metadata) => Ok(Some(FileType::from_raw_mode(metadata.st_mode))),
-            Err(Errno::NOENT) => Ok(None),
-            Err(error) => Err(io::Error::from(error)),
-        }
     }
 }
 
@@ -464,10 +252,12 @@ impl DirectoryAuthority {
     pub fn open_child_directory(&self, name: &Path) -> io::Result<Self> {
         let name = entry_name(name, "directory name")?;
         let _operation = self.operation_guard()?;
+        let directory = open_directory_at(&self.directory, name)?;
+        let protected_name = protected_name_for_directory(&directory, &self.shared)?;
         Ok(Self {
-            directory: open_directory_at(&self.directory, name)?,
+            directory,
             shared: Arc::clone(&self.shared),
-            protected_name: None,
+            protected_name,
         })
     }
 
@@ -483,8 +273,14 @@ impl DirectoryAuthority {
     /// or names the held lock. Returns the operating-system error when secure
     /// creation, opening, permission setting, or durability fails.
     pub fn create_child_directory(&self, name: &Path) -> io::Result<Self> {
-        let name = self.mutable_entry_name(name, "directory name")?;
+        let name = entry_name(name, "directory name")?;
         let _operation = self.operation_guard()?;
+        require_mutable_entry(
+            &self.directory,
+            &self.shared,
+            self.protected_name.as_deref(),
+            name,
+        )?;
         mkdirat(&self.directory, name, rustix_mode(PRIVATE_DIRECTORY_MODE)?)
             .map_err(io::Error::from)?;
 
@@ -597,8 +393,14 @@ impl DirectoryAuthority {
         source: &mut impl Read,
     ) -> io::Result<DirectoryEntryMetadata> {
         validate_mode(mode)?;
-        let name = self.mutable_entry_name(name, "file name")?;
+        let name = entry_name(name, "file name")?;
         let _operation = self.operation_guard()?;
+        require_mutable_entry(
+            &self.directory,
+            &self.shared,
+            self.protected_name.as_deref(),
+            name,
+        )?;
         let mut file = openat(
             &self.directory,
             name,
@@ -656,17 +458,6 @@ impl DirectoryAuthority {
     pub fn sync(&self) -> io::Result<()> {
         let _operation = self.operation_guard()?;
         self.directory.sync_all()
-    }
-
-    fn mutable_entry_name<'a>(&self, path: &'a Path, description: &str) -> io::Result<&'a OsStr> {
-        let name = entry_name(path, description)?;
-        if self.protected_name.as_deref() == Some(name) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to mutate the held directory lock entry",
-            ));
-        }
-        Ok(name)
     }
 
     pub(super) fn operation_guard(&self) -> io::Result<MutexGuard<'_, ()>> {
