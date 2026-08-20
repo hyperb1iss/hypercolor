@@ -77,6 +77,7 @@ pub enum ResourceKind {
     Control,
     ControlSurface,
     Diagnostic,
+    Sensor,
     Config,
     ConfigKey,
     Session,
@@ -107,6 +108,7 @@ impl std::fmt::Display for ResourceKind {
             Self::Control => "control",
             Self::ControlSurface => "control surface",
             Self::Diagnostic => "diagnostic",
+            Self::Sensor => "sensor",
             Self::Config => "config",
             Self::ConfigKey => "config key",
             Self::Session => "session",
@@ -802,6 +804,7 @@ mod tests {
                 | ResourceKind::Control
                 | ResourceKind::ControlSurface
                 | ResourceKind::Diagnostic
+                | ResourceKind::Sensor
                 | ResourceKind::Config
                 | ResourceKind::ConfigKey
                 | ResourceKind::Session
@@ -830,6 +833,7 @@ mod tests {
             ResourceKind::Control,
             ResourceKind::ControlSurface,
             ResourceKind::Diagnostic,
+            ResourceKind::Sensor,
             ResourceKind::Config,
             ResourceKind::ConfigKey,
             ResourceKind::Session,

@@ -891,10 +891,6 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(system_status(state).await)
 }
 
-pub(crate) async fn get_status_route(State(state): State<Arc<AppState>>) -> Response {
-    ApiResponse::ok(system_status(state).await)
-}
-
 async fn system_status(state: Arc<AppState>) -> SystemStatus {
     let device_count = state.device_registry.len().await;
     let effect_count = state.effect_registry.read().await.len();
