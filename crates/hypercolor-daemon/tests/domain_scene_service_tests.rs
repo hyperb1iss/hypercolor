@@ -1450,7 +1450,7 @@ fn no_scene_writer_lives_outside_the_commit_path() {
         ("domain/scene.rs", 1),                 // commit_scene's install
         ("render_thread/scene_snapshot.rs", 1), // per-frame transition tick
         ("scene_transactions.rs", 1),           // frame-boundary layout publish
-        ("startup/lifecycle.rs", 5), // restore x2, configured x2, shutdown deactivate
+        ("startup/lifecycle.rs", 5),            // restore x2, configured x2, shutdown deactivate
     ];
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
