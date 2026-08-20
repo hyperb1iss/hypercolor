@@ -215,7 +215,7 @@ fn reference_zones(
 }
 
 pub(crate) async fn run_macos_screen_parity(
-    state: &Arc<AppState>,
+    state: &AppState,
 ) -> Result<MacosScreenParityReport, MacosScreenParityDiagnosticError> {
     let deadline = Instant::now() + DIAGNOSTIC_TIMEOUT;
     let diagnostics = state

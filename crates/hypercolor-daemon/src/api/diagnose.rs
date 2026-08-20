@@ -443,7 +443,7 @@ async fn collect_diagnostics(
             "memory" => checks.push(servo_memory_check().await),
             "macos_screen_parity" => {
                 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-                match super::macos_screen_parity::run_macos_screen_parity(&state).await {
+                match super::macos_screen_parity::run_macos_screen_parity(state).await {
                     Ok(report) => {
                         let detail = report.detail();
                         match serde_json::to_value(report) {
