@@ -87,6 +87,7 @@ impl GpuSparkleFlinger {
             capture_lifetime.clone(),
         );
         let resolved = if requires_work {
+            self.flush_pending_output_submission()?;
             let reduction_started = Instant::now();
             let reduced = reduction::reduce_imported_frame(
                 self,

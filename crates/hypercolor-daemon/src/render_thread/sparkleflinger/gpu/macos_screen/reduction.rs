@@ -105,7 +105,6 @@ pub(super) fn reduce_imported_frame(
     content_generation: u64,
     submission_lease: &MacosScreenTextureLease,
 ) -> Result<ReducedNativeFrame> {
-    gpu.flush_pending_output_submission()?;
     let mut submitted = false;
     let physical = prepared
         .physical
