@@ -111,6 +111,22 @@ pub enum ExactEntry {
     },
 }
 
+/// Exact supported state of one public child-directory entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExactDirectoryEntry {
+    /// No entry exists under the governed name.
+    Absent,
+    /// One empty directory with exact ordinary mode and identity.
+    Empty {
+        /// Exact ordinary permission bits.
+        mode: u32,
+        /// Filesystem device identity used for conditional removal.
+        device: u64,
+        /// Filesystem inode identity used for conditional removal.
+        inode: u64,
+    },
+}
+
 /// Content to publish as one exact public directory entry.
 #[derive(Debug, Clone, Copy)]
 pub enum EntryReplacement<'a> {

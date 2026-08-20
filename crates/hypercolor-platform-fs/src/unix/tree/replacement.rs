@@ -1,4 +1,5 @@
 mod child;
+mod directory;
 mod exact;
 mod operation;
 mod read;
@@ -263,5 +264,7 @@ impl PreparedExtendedAncestry {
     }
 }
 
+#[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
+mod directory_tests;
 #[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
 mod tests;

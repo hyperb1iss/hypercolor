@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 mod tree;
 
 pub use tree::{
-    DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, EntryReplacement, ExactEntry,
-    ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES, OpenedRegularFile, PrivateStagingDirectory,
-    PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
+    DirectoryAuthority, DirectoryEntryKind, DirectoryEntryMetadata, EntryReplacement,
+    ExactDirectoryEntry, ExactEntry, ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES, OpenedRegularFile,
+    PrivateStagingDirectory, PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
 };
 
 const SECRET_FILE_MODE: u32 = 0o600;

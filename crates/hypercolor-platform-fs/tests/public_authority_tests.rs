@@ -7,7 +7,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
 use hypercolor_platform_fs::{
-    EntryReplacement, ExactEntry, ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES,
+    EntryReplacement, ExactDirectoryEntry, ExactEntry, ExclusiveDirectory, MAX_EXACT_ENTRY_BYTES,
 };
 
 struct Fixture {
@@ -412,4 +412,92 @@ fn exact_removal_and_single_child_creation_retain_global_lock() {
             & 0o7777,
         0o755
     );
+}
+
+#[test]
+fn exact_empty_child_create_observe_remove_retains_global_lock() {
+    let fixture = Fixture::new();
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+    let child = authority
+        .durable_create_child_directory(Path::new("completions"), 0o755)
+        .expect("create exact empty child");
+    let expected = authority
+        .observe_empty_child_directory(Path::new("completions"))
+        .expect("observe exact empty child");
+    assert!(matches!(
+        expected,
+        ExactDirectoryEntry::Empty { mode: 0o755, .. }
+    ));
+
+    authority
+        .durable_remove_empty_child_directory(Path::new("completions"), &expected)
+        .expect("remove exact empty child");
+    drop(lock);
+
+    assert_eq!(
+        authority
+            .observe_empty_child_directory(Path::new("completions"))
+            .expect("observe removed child"),
+        ExactDirectoryEntry::Absent
+    );
+    assert_eq!(
+        fs::read_dir(&fixture.public)
+            .expect("enumerate public tombstones")
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .expect("read public tombstone entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".hypercolor-public-directory-recovery-")
+            })
+            .count(),
+        1
+    );
+    assert!(
+        ExclusiveDirectory::try_acquire(&fixture.lock_root, Path::new("install.lock"))
+            .expect("probe retained global lock")
+            .is_none()
+    );
+    drop(child);
+}
+
+#[test]
+fn exact_empty_child_observation_rejects_unsafe_or_nonempty_entries() {
+    let fixture = Fixture::new();
+    let lock = fixture.lock();
+    let authority = lock
+        .open_public_directory(&fixture.public)
+        .expect("open public authority");
+    fs::create_dir(fixture.public.join("nonempty")).expect("create nonempty directory");
+    fs::write(fixture.public.join("nonempty/entry"), b"content").expect("populate directory");
+    fs::create_dir(fixture.public.join("unsafe-mode")).expect("create unsafe directory");
+    fs::set_permissions(
+        fixture.public.join("unsafe-mode"),
+        fs::Permissions::from_mode(0o1755),
+    )
+    .expect("set sticky mode");
+    fs::write(fixture.public.join("regular"), b"regular").expect("create regular entry");
+    symlink("nonempty", fixture.public.join("symlink")).expect("create directory symlink");
+
+    assert_eq!(
+        authority
+            .observe_empty_child_directory(Path::new("absent"))
+            .expect("observe absent child"),
+        ExactDirectoryEntry::Absent
+    );
+    for name in ["nonempty", "unsafe-mode", "regular", "symlink"] {
+        authority
+            .observe_empty_child_directory(Path::new(name))
+            .expect_err("unsupported empty-directory state must be rejected");
+    }
+    authority
+        .observe_empty_child_directory(Path::new("nested/name"))
+        .expect_err("nested directory names must be rejected");
+    authority
+        .durable_remove_empty_child_directory(Path::new("absent"), &ExactDirectoryEntry::Absent)
+        .expect_err("absent exact state cannot authorize removal");
 }
