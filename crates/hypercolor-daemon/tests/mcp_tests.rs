@@ -595,6 +595,8 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
 #[tokio::test]
 async fn mcp_http_tools_list_and_call_return_structured_results() {
     let state = Arc::new(fresh_app_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Aurora Glow").await;
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -615,7 +617,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 17);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -662,6 +664,34 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let error_result = error_payload.get("result").expect("tool error result");
     assert_eq!(error_result["isError"], true);
     assert_eq!(error_result["structuredContent"]["code"], -32602);
+
+    let selector_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": {
+                "name": "set_effect",
+                "arguments": { "query": "auro" }
+            }
+        }),
+        None,
+    )
+    .await;
+    let (_session_id, selector_payload, _content_type, _body) =
+        parse_jsonrpc_response(selector_response).await;
+    let selector_error = &selector_payload["result"]["structuredContent"];
+    assert_eq!(selector_error["code"], -32602);
+    assert_eq!(selector_error["details"]["kind"], "ambiguous");
+    assert_eq!(selector_error["details"]["parameter"], "query");
+    assert_eq!(selector_error["details"]["query"], "auro");
+    assert_eq!(selector_error["details"]["candidates"][0]["name"], "Aurora");
+    assert_eq!(
+        selector_error["details"]["candidates"][1]["name"],
+        "Aurora Glow"
+    );
 }
 
 #[tokio::test]
@@ -1053,14 +1083,8 @@ async fn stateful_set_effect_rejects_display_faces() {
     assert!(format!("{error}").contains("display face"));
 }
 
-/// `set_effect` takes no transition argument at all.
-///
-/// The parameter's only accepted value was its no-op, which fails the
-/// same rule that deletes an ignored parameter (Spec 78 §6.1). The
-/// shared transition vocabulary arrives with the 78.1 contract; until
-/// then the tool advertises a closed shape with no transition in it.
 #[test]
-fn set_effect_advertises_no_transition_argument() {
+fn set_effect_advertises_only_the_closed_cut_transition() {
     let tools = build_tool_definitions();
     let set_effect = tools
         .iter()
@@ -1072,7 +1096,17 @@ fn set_effect_advertises_no_transition_argument() {
         .expect("set_effect should declare properties");
     let mut declared = properties.keys().cloned().collect::<Vec<_>>();
     declared.sort();
-    assert_eq!(declared, vec!["controls".to_owned(), "query".to_owned()]);
+    assert_eq!(
+        declared,
+        vec![
+            "controls".to_owned(),
+            "query".to_owned(),
+            "transition".to_owned()
+        ]
+    );
+    let transition = &set_effect.input_schema["properties"]["transition"];
+    assert_eq!(transition["additionalProperties"], json!(false));
+    assert_eq!(transition["properties"]["type"]["enum"], json!(["cut"]));
     assert_eq!(
         set_effect.input_schema["additionalProperties"],
         json!(false),
@@ -1105,12 +1139,17 @@ async fn deleted_parameters_are_refused_rather_than_dropped() {
             "devices",
         ),
         (
+            "set_color",
+            json!({ "color": "#ff6ac1", "transition_ms": 300 }),
+            "transition_ms",
+        ),
+        (
             "set_brightness",
             json!({ "brightness": 42, "device_id": "strip-1" }),
             "device_id",
         ),
         (
-            "stop_effect",
+            "clear_zone",
             json!({ "transition_ms": 300 }),
             "transition_ms",
         ),
@@ -1168,33 +1207,99 @@ async fn stateful_set_effect_echoes_the_transition_it_actually_applied() {
             .await
             .expect("an apply with no transition should succeed");
 
-    assert_eq!(result["applied"], true);
-    assert_eq!(
-        result["transition_ms"], 0,
-        "the echoed duration is the one the daemon applied, not a default it ignored"
-    );
+    assert_eq!(result["transition"]["type"], "cut");
+    assert!(result["zone"]["layers"].is_array());
+    assert_eq!(result["output"]["applied"], true);
 }
 
 #[tokio::test]
-async fn stateful_set_color_refuses_a_transition_it_cannot_apply() {
+async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
-    insert_test_effect(&state, "Solid Color").await;
+    insert_test_effect(&state, "Aurora").await;
 
-    let error = execute_tool_with_state(
-        "set_color",
+    let applied =
+        execute_tool_with_state("set_effect", &json!({ "query": "aurora" }), state.as_ref())
+            .await
+            .expect("set_effect should succeed");
+    let zone_name = applied["zone"]["name"]
+        .as_str()
+        .expect("the canonical zone carries its name")
+        .to_owned();
+    let layer_id = applied["zone"]["layers"][0]["id"]
+        .as_str()
+        .expect("the canonical zone carries the real layer id")
+        .to_owned();
+
+    let unnamed_error = execute_tool_with_state(
+        "adjust_controls",
         &json!({
-            "color": "#ff6ac1",
-            "transition_ms": 400
+            "zone": zone_name,
+            "layer": "aurora",
+            "values": { "speed": { "float": 8.5 } }
         }),
         state.as_ref(),
     )
     .await
-    .expect_err("effect transitions are not implemented");
-    assert!(
-        format!("{error}").contains("not implemented yet"),
-        "unexpected error: {error}"
+    .expect_err("an unnamed layer must not resolve through its effect name");
+    assert_eq!(
+        unnamed_error.details().expect("selector details")["kind"],
+        "no_match"
     );
+
+    let adjusted = execute_tool_with_state(
+        "adjust_controls",
+        &json!({
+            "zone": zone_name,
+            "layer": layer_id,
+            "values": { "speed": { "float": 8.5 } }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("the canonical control patch should succeed");
+    assert!(adjusted["revision"].is_number());
+    assert_eq!(
+        adjusted["zone"]["layers"][0]["source"]["controls"]["speed"]["float"],
+        json!(8.5)
+    );
+
+    let cleared =
+        execute_tool_with_state("clear_zone", &json!({ "zone": zone_name }), state.as_ref())
+            .await
+            .expect("a selected non-display zone should clear");
+    assert_eq!(cleared["zones"][0]["layers"], json!([]));
+}
+
+#[tokio::test]
+async fn stateful_set_effect_rejects_unknown_transition_fields_and_types() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let applied = execute_tool_with_state(
+        "set_effect",
+        &json!({ "query": "aurora", "transition": { "type": "cut" } }),
+        state.as_ref(),
+    )
+    .await
+    .expect("the explicit cut transition should succeed");
+    assert_eq!(applied["transition"]["type"], "cut");
+
+    for transition in [
+        json!({ "type": "fade" }),
+        json!({ "type": "cut", "duration_ms": 400 }),
+        json!("cut"),
+    ] {
+        let error = execute_tool_with_state(
+            "set_effect",
+            &json!({ "query": "aurora", "transition": transition }),
+            state.as_ref(),
+        )
+        .await
+        .expect_err("only the closed cut transition is accepted");
+        assert!(format!("{error}").contains("transition"));
+    }
 }
 
 #[tokio::test]
@@ -1245,7 +1350,7 @@ async fn stateful_set_effect_conflicts_when_snapshot_scene_is_active() {
 }
 
 #[tokio::test]
-async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
+async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let effect = insert_test_effect(&state, "Aurora").await;
@@ -1263,13 +1368,12 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     )
     .await
     .expect("set_effect should succeed");
-    assert_eq!(apply_result["applied"], true);
-    assert_eq!(apply_result["matched_effect"]["id"], effect.id.to_string());
+    assert_eq!(apply_result["transition"]["type"], "cut");
+    assert_eq!(apply_result["output"]["applied"], true);
     assert_eq!(
-        apply_result["applied_controls"]["speed"]["float"],
-        json!(7.5)
+        apply_result["zone"]["layers"][0]["source"]["effect_id"],
+        effect.id.to_string()
     );
-    assert_eq!(apply_result["rejected_controls"], json!([]));
 
     let (scene_id, active_group) = {
         let manager = state.scene_manager.read().await;
@@ -1349,11 +1453,11 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     assert!(saw_group_event, "expected MCP render-group event");
 
     let mut stop_events = state.event_bus.subscribe_all();
-    let stop_result = execute_tool_with_state("stop_effect", &json!({}), state.as_ref())
+    let clear_result = execute_tool_with_state("clear_zone", &json!({}), state.as_ref())
         .await
-        .expect("stop_effect should succeed");
-    assert_eq!(stop_result["stopped"], true);
-    assert_eq!(stop_result["effect"]["id"], effect.id.to_string());
+        .expect("clear_zone should succeed");
+    assert_eq!(clear_result["id"], scene_id.to_string());
+    assert!(clear_result["revision"].is_number());
 
     let stopped_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -1447,8 +1551,12 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
     )
     .await
     .expect("set_color should succeed");
-    assert_eq!(result["applied"], true);
-    assert_eq!(result["resolved_color"]["hex"], "#ff6ac1");
+    assert_eq!(result["transition"]["type"], "cut");
+    assert_eq!(result["output"]["applied"], true);
+    assert_eq!(
+        result["zone"]["layers"][0]["source"]["effect_id"],
+        solid_effect.id.to_string()
+    );
 
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -1504,7 +1612,7 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 17);
     assert!(
         tools
             .iter()
@@ -1512,6 +1620,9 @@ fn tool_definitions_have_valid_schemas() {
     );
     assert!(tools.iter().all(|tool| tool.output_schema.is_object()));
     assert!(tools.iter().any(|tool| tool.name == "set_display_face"));
+    assert!(tools.iter().any(|tool| tool.name == "clear_zone"));
+    assert!(tools.iter().any(|tool| tool.name == "adjust_controls"));
+    assert!(tools.iter().all(|tool| tool.name != "stop_effect"));
     let diagnose = tools
         .iter()
         .find(|tool| tool.name == "diagnose")
@@ -1606,7 +1717,7 @@ fn deleted_phantom_parameters_stay_deleted() {
         ("set_brightness", "transition_ms"),
         ("diagnose", "device_id"),
         ("diagnose", "checks"),
-        ("stop_effect", "transition_ms"),
+        ("clear_zone", "transition_ms"),
         ("create_scene", "transition_ms"),
         ("create_scene", "profile_id"),
         ("create_scene", "trigger"),
@@ -1670,23 +1781,38 @@ fn tool_annotations_report_what_each_tool_actually_does() {
             .iter()
             .find(|tool| tool.name == name)
             .unwrap_or_else(|| panic!("{name} should be registered"));
-        (tool.read_only, tool.destructive)
+        (tool.read_only, tool.destructive, tool.idempotent)
     };
 
     // Tools that discard state the caller cannot recover.
     for name in [
-        "stop_effect",
+        "clear_zone",
         "set_effect",
         "set_color",
         "activate_scene",
         "set_display_face",
     ] {
-        assert_eq!(annotation(name), (false, true), "{name}");
+        let expected_idempotent = !matches!(name, "set_effect" | "set_color" | "set_display_face");
+        assert_eq!(
+            annotation(name),
+            (false, true, expected_idempotent),
+            "{name}"
+        );
     }
 
     // Reversible value writes and pure creations.
-    for name in ["set_brightness", "set_output_power", "create_scene"] {
-        assert_eq!(annotation(name), (false, false), "{name}");
+    for name in [
+        "set_brightness",
+        "set_output_power",
+        "adjust_controls",
+        "create_scene",
+    ] {
+        let expected_idempotent = name != "create_scene";
+        assert_eq!(
+            annotation(name),
+            (false, false, expected_idempotent),
+            "{name}"
+        );
     }
 
     // Read-only tools never claim to destroy anything.

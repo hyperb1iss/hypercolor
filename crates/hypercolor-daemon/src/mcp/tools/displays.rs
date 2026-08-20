@@ -2,15 +2,15 @@
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, default_output_schema};
+use super::{ToolDefinition, ToolError, default_output_schema, resolve_effect_selector};
 use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
-use crate::api::effects::resolve_effect_metadata;
 use crate::api::{AppState, publish_render_group_changed};
 use crate::domain::MutationContext;
 use crate::domain::display::{
     ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
     set_display_face,
 };
+use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::event::ZoneChangeKind;
@@ -26,11 +26,11 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
             "properties": {
                 "device": {
                     "type": "string",
-                    "description": "Display device ID or exact display name."
+                    "description": "Display device ID, exact name, or unique name substring."
                 },
                 "effect_id": {
                     "type": "string",
-                    "description": "Display-face effect UUID, exact name, or source stem. Omit when clearing."
+                    "description": "Display-face effect ID, exact name, or unique name substring. Omit when clearing."
                 },
                 "clear": {
                     "type": "boolean",
@@ -53,7 +53,7 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
         output_schema: default_output_schema(),
         read_only: false,
         destructive: true,
-        idempotent: true,
+        idempotent: false,
     }
 }
 
@@ -114,13 +114,7 @@ pub(super) async fn handle_set_display_face_with_state(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
     let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, effect_lookup) else {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect not found: {effect_lookup}"),
-            });
-        };
+        let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
         if effect.category != EffectCategory::Display {
             return Err(ToolError::InvalidParam {
                 param: "effect_id".into(),
@@ -246,13 +240,7 @@ async fn handle_default_scope(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
     let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, effect_lookup) else {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect not found: {effect_lookup}"),
-            });
-        };
+        let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
         if effect.category != EffectCategory::Display {
             return Err(ToolError::InvalidParam {
                 param: "effect_id".into(),
@@ -387,57 +375,21 @@ async fn resolve_display_device(
     state: &AppState,
     raw: &str,
 ) -> Result<(DeviceId, DeviceInfo, DisplaySurfaceInfo), ToolError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(ToolError::InvalidParam {
-            param: "device".into(),
-            reason: "must not be empty".into(),
-        });
-    }
-
-    if let Ok(device_id) = trimmed.parse::<DeviceId>() {
-        let Some(device) = state.device_registry.get(&device_id).await else {
-            return Err(ToolError::InvalidParam {
-                param: "device".into(),
-                reason: format!("display not found: {trimmed}"),
-            });
-        };
-        let Some(surface) = display_surface_info(&device.info) else {
-            return Err(ToolError::InvalidParam {
-                param: "device".into(),
-                reason: format!(
-                    "device does not support display faces: {}",
-                    device.info.name
-                ),
-            });
-        };
-        return Ok((device_id, device.info, surface));
-    }
-
-    let matches = state
+    let candidates = state
         .device_registry
         .list()
         .await
         .into_iter()
-        .filter(|tracked| tracked.info.name.eq_ignore_ascii_case(trimmed))
-        .collect::<Vec<_>>();
-    if matches.is_empty() {
-        return Err(ToolError::InvalidParam {
-            param: "device".into(),
-            reason: format!("display not found: {trimmed}"),
-        });
-    }
-    if matches.len() > 1 {
-        return Err(ToolError::InvalidParam {
-            param: "device".into(),
-            reason: format!("display name is ambiguous: {trimmed}"),
-        });
-    }
-
-    let device = matches
-        .into_iter()
-        .next()
-        .expect("match count already checked");
+        .map(|tracked| {
+            SelectorCandidate::named(
+                tracked.info.id.to_string(),
+                tracked.info.name.clone(),
+                tracked,
+            )
+        })
+        .collect();
+    let device = crate::mcp::selector::resolve(raw, candidates)
+        .map_err(|error| ToolError::selector("device", error))?;
     let Some(surface) = display_surface_info(&device.info) else {
         return Err(ToolError::InvalidParam {
             param: "device".into(),
