@@ -1,41 +1,36 @@
 //! The canonical control-value algebra (Spec 76 §4.5).
 //!
-//! One value algebra unifies the two control systems that grew up
-//! independently: the effect algebra (`crate::effect::ControlValue`,
-//! f32/i32, externally tagged) and the driver-surface algebra
-//! (`crate::controls::ControlValue`, f64/i64, `kind`/`value` tagged).
-//! The canonical type is the **typed union of both** — variant identity
-//! is preserved, so every value from either system round-trips through
-//! canonical losslessly.
+//! One value algebra unifies effect controls and driver control surfaces.
+//! The canonical type is the **typed union of both** and preserves variant
+//! identity without transport-specific projections.
 //!
 //! The canonical JSON wire is internally tagged as
 //! `{ "kind": "...", "value": ... }`. Every REST control mutation
-//! speaks this encoding. Effect and driver values remain projections at
-//! their internal engine boundaries, never competing public wires.
+//! speaks this encoding.
 //!
 //! # Per-variant contract
 //!
-//! | Variant | Effect wire | Driver wire | Widget | Invariant |
-//! |---|---|---|---|---|
-//! | `Null` | rejected | `null` | — | — |
-//! | `Bool` | `boolean` | `bool` | Toggle | — |
-//! | `Int` | `integer` (i32, range-checked) | `integer` (i64) | Slider/Stepper | — |
-//! | `Float` | `float` (f32, overflow-checked) | `float` (f64) | Slider | finite (never NaN/±inf) |
-//! | `Text` | `text` | `string` | TextInput/Asset | — |
-//! | `SecretRef` | rejected | `secret_ref` | SecretInput | opaque store reference; the secret never transits |
-//! | `Ip` | rejected | `ip_address` | IpInput | parses as `IpAddr`; original text preserved |
-//! | `Mac` | rejected | `mac_address` | MacInput | six hex octets in any established encoding (colon/hyphen/bare/dotted); original text preserved |
-//! | `Duration` | rejected | `duration_ms` (u64 ms, overflow-checked) | Duration | — |
-//! | `ColorRgb` | rejected | `color_rgb` | ColorPicker | encoded sRGB bytes |
-//! | `ColorRgba` | rejected | `color_rgba` | ColorPicker | encoded sRGB bytes |
-//! | `ColorLinear` | `color` | rejected | ColorPicker | linear-light; components finite |
-//! | `Gradient` | `gradient` | rejected | GradientEditor | stop positions and colors finite |
-//! | `Rect` | `rect` | rejected | Rect | components finite |
-//! | `Enum` | `enum` | `enum` | Dropdown | — |
-//! | `Flags` | rejected | `flags` | CheckboxSet | ordered (a `Vec`, not a set) |
-//! | `List` | rejected | `list` | — | elements validate recursively |
-//! | `Map` | rejected | `object` | — | values validate recursively |
-//! | `Unknown` | rejected | `<unrecognized>` | — | unit-level round-trip; payload already dropped by the legacy deserializer |
+//! | Variant | Widget | Invariant |
+//! |---|---|---|
+//! | `Null` | — | — |
+//! | `Bool` | Toggle | — |
+//! | `Int` | Slider/Stepper | — |
+//! | `Float` | Slider | finite (never NaN/±inf) |
+//! | `Text` | TextInput/Asset | — |
+//! | `SecretRef` | SecretInput | opaque store reference; the secret never transits |
+//! | `Ip` | IpInput | parses as `IpAddr`; original text preserved |
+//! | `Mac` | MacInput | six hex octets in established encodings; original text preserved |
+//! | `Duration` | Duration | whole milliseconds |
+//! | `ColorRgb` | ColorPicker | encoded sRGB bytes |
+//! | `ColorRgba` | ColorPicker | encoded sRGB bytes |
+//! | `ColorLinear` | ColorPicker | linear-light; components finite |
+//! | `Gradient` | GradientEditor | stop positions and colors finite |
+//! | `Rect` | Rect | components finite |
+//! | `Enum` | Dropdown | — |
+//! | `Flags` | CheckboxSet | ordered (a `Vec`, not a set) |
+//! | `List` | — | elements validate recursively |
+//! | `Map` | — | values validate recursively |
+//! | `Unknown` | — | unit-level forward-compatibility marker |
 //!
 //! **Finite-only floats are an invariant, not a loss**: serde_json
 //! serializes NaN/Infinity as `null`, so a non-finite float silently
@@ -68,10 +63,8 @@ use hypercolor_color::{LinearRgba, Rgb, Rgba};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::{PartialSchema, ToSchema};
 
-use crate::controls as driver;
-use crate::effect::{self, GradientStop};
+use crate::effect::GradientStop;
 use crate::spatial::NormalizedRect;
-use crate::viewport::ViewportRect;
 
 /// Stable identifier for a renderer control.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -457,6 +450,7 @@ enum ControlValueRef<'a> {
 }
 
 #[derive(Deserialize, ToSchema)]
+#[allow(dead_code)]
 #[schema(no_recursion)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 enum ControlValueWire {
@@ -534,11 +528,11 @@ impl Serialize for ControlValue {
             Self::Duration(value) => {
                 if value.subsec_nanos() % 1_000_000 != 0 {
                     return Err(serde::ser::Error::custom(
-                        DriverProjectionError::SubMillisecondDuration,
+                        ControlValueInvalid::SubMillisecondDuration,
                     ));
                 }
                 let millis = u64::try_from(value.as_millis()).map_err(|_| {
-                    serde::ser::Error::custom(DriverProjectionError::DurationOverflow)
+                    serde::ser::Error::custom(ControlValueInvalid::DurationOverflow)
                 })?;
                 ControlValueRef::Duration(millis)
             }
@@ -562,30 +556,55 @@ impl<'de> Deserialize<'de> for ControlValue {
     where
         D: Deserializer<'de>,
     {
-        let value = match ControlValueWire::deserialize(deserializer)? {
-            ControlValueWire::Null => Self::Null,
-            ControlValueWire::Bool(value) => Self::Bool(value),
-            ControlValueWire::Int(value) => Self::Int(value),
-            ControlValueWire::Float(value) => Self::Float(value),
-            ControlValueWire::Text(value) => Self::Text(value),
-            ControlValueWire::SecretRef(value) => Self::SecretRef(SecretRef::new(value)),
-            ControlValueWire::Ip(value) => {
-                Self::Ip(IpText::new(value).map_err(serde::de::Error::custom)?)
+        #[derive(Deserialize)]
+        struct RawControlValue {
+            kind: String,
+            #[serde(default)]
+            value: Option<serde_json::Value>,
+        }
+
+        fn parse_value<T, E>(kind: &str, value: Option<serde_json::Value>) -> Result<T, E>
+        where
+            T: serde::de::DeserializeOwned,
+            E: serde::de::Error,
+        {
+            let value = value.ok_or_else(|| E::custom(format!("missing value for {kind}")))?;
+            serde_json::from_value(value)
+                .map_err(|error| E::custom(format!("invalid {kind} value: {error}")))
+        }
+
+        let raw = RawControlValue::deserialize(deserializer)?;
+        let value = match raw.kind.as_str() {
+            "null" => Self::Null,
+            "bool" => Self::Bool(parse_value("bool", raw.value)?),
+            "int" => Self::Int(parse_value("int", raw.value)?),
+            "float" => Self::Float(parse_value("float", raw.value)?),
+            "text" => Self::Text(parse_value("text", raw.value)?),
+            "secret_ref" => Self::SecretRef(SecretRef::new(parse_value::<String, D::Error>(
+                "secret_ref",
+                raw.value,
+            )?)),
+            "ip" => Self::Ip(
+                IpText::new(parse_value::<String, D::Error>("ip", raw.value)?)
+                    .map_err(serde::de::Error::custom)?,
+            ),
+            "mac" => Self::Mac(
+                MacText::new(parse_value::<String, D::Error>("mac", raw.value)?)
+                    .map_err(serde::de::Error::custom)?,
+            ),
+            "duration" => {
+                Self::Duration(Duration::from_millis(parse_value("duration", raw.value)?))
             }
-            ControlValueWire::Mac(value) => {
-                Self::Mac(MacText::new(value).map_err(serde::de::Error::custom)?)
-            }
-            ControlValueWire::Duration(value) => Self::Duration(Duration::from_millis(value)),
-            ControlValueWire::ColorRgb(value) => Self::ColorRgb(value),
-            ControlValueWire::ColorRgba(value) => Self::ColorRgba(value),
-            ControlValueWire::ColorLinear(value) => Self::ColorLinear(value),
-            ControlValueWire::Gradient(value) => Self::Gradient(value),
-            ControlValueWire::Rect(value) => Self::Rect(value),
-            ControlValueWire::Enum(value) => Self::Enum(value),
-            ControlValueWire::Flags(value) => Self::Flags(value),
-            ControlValueWire::List(value) => Self::List(value),
-            ControlValueWire::Map(value) => Self::Map(value),
-            ControlValueWire::Unknown => Self::Unknown,
+            "color_rgb" => Self::ColorRgb(parse_value("color_rgb", raw.value)?),
+            "color_rgba" => Self::ColorRgba(parse_value("color_rgba", raw.value)?),
+            "color_linear" => Self::ColorLinear(parse_value("color_linear", raw.value)?),
+            "gradient" => Self::Gradient(parse_value("gradient", raw.value)?),
+            "rect" => Self::Rect(parse_value("rect", raw.value)?),
+            "enum" => Self::Enum(parse_value("enum", raw.value)?),
+            "flags" => Self::Flags(parse_value("flags", raw.value)?),
+            "list" => Self::List(parse_value("list", raw.value)?),
+            "map" => Self::Map(parse_value("map", raw.value)?),
+            _ => Self::Unknown,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -605,6 +624,12 @@ pub enum ControlValueInvalid {
     /// MAC text does not parse in any established encoding.
     #[error("text does not parse as a MAC address")]
     InvalidMac,
+    /// A duration cannot fit the canonical whole-millisecond wire.
+    #[error("duration exceeds the control wire's u64 millisecond range")]
+    DurationOverflow,
+    /// A duration carries precision the canonical wire cannot represent.
+    #[error("duration carries sub-millisecond precision the control wire cannot represent")]
+    SubMillisecondDuration,
     /// A nested value failed; `path` locates it (`[3]`, `.host`).
     #[error("{path}: {source}")]
     Nested {
@@ -616,56 +641,6 @@ pub enum ControlValueInvalid {
 }
 
 impl ControlValueInvalid {
-    fn nested(path: impl Into<String>, source: Self) -> Self {
-        Self::Nested {
-            path: path.into(),
-            source: Box::new(source),
-        }
-    }
-}
-
-/// Why a canonical value cannot project onto the effect wire.
-///
-/// Narrowing `f64` → `f32` rounds to the nearest representable value
-/// by contract — the effect wire IS f32, so rounding is definitional.
-/// Only overflow past f32's range is an error.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub enum EffectProjectionError {
-    /// The variant has no effect-wire representation.
-    #[error("{0} values have no effect-wire representation")]
-    DriverOnly(&'static str),
-    /// The integer exceeds the effect wire's i32 range.
-    #[error("integer {0} exceeds the effect wire's i32 range")]
-    IntOutOfRange(i64),
-    /// The float exceeds the effect wire's f32 range.
-    #[error("float {0} overflows the effect wire's f32 range")]
-    FloatOverflow(f64),
-}
-
-/// Why a canonical value cannot project onto the driver wire.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub enum DriverProjectionError {
-    /// The variant has no driver-wire representation.
-    #[error("{0} values have no driver-wire representation")]
-    EffectOnly(&'static str),
-    /// The duration exceeds the driver wire's u64 millisecond range.
-    #[error("duration exceeds the driver wire's u64 millisecond range")]
-    DurationOverflow,
-    /// The duration carries sub-millisecond precision the driver wire
-    /// (whole milliseconds) would silently truncate.
-    #[error("duration carries sub-millisecond precision the driver wire cannot represent")]
-    SubMillisecondDuration,
-    /// A nested value failed; `path` locates it (`[3]`, `.host`).
-    #[error("{path}: {source}")]
-    Nested {
-        /// Where in the list/map the failure sits.
-        path: String,
-        /// The underlying failure.
-        source: Box<DriverProjectionError>,
-    },
-}
-
-impl DriverProjectionError {
     fn nested(path: impl Into<String>, source: Self) -> Self {
         Self::Nested {
             path: path.into(),
@@ -717,7 +692,7 @@ impl ControlValue {
         }
     }
 
-    /// Return an effect-compatible scalar when this value is numeric.
+    /// Return an effect-renderer-compatible scalar when this value is numeric.
     ///
     /// Values outside the effect renderer's `f32`/`i32` range are refused
     /// instead of narrowing to infinity or silently losing integer width.
@@ -771,6 +746,14 @@ impl ControlValue {
                 }
                 Ok(())
             }
+            Self::Duration(value) => {
+                if value.subsec_nanos() % 1_000_000 != 0 {
+                    return Err(ControlValueInvalid::SubMillisecondDuration);
+                }
+                u64::try_from(value.as_millis())
+                    .map(|_| ())
+                    .map_err(|_| ControlValueInvalid::DurationOverflow)
+            }
             Self::List(items) => {
                 for (index, item) in items.iter().enumerate() {
                     item.validate()
@@ -788,199 +771,5 @@ impl ControlValue {
             }
             _ => Ok(()),
         }
-    }
-
-    /// Project onto the driver wire (`kind`/`value` tagged, f64/i64).
-    ///
-    /// Every driver-algebra variant projects to its existing `kind` tag
-    /// byte-identically; effect-only variants error. Color conversions
-    /// between the color variants never happen implicitly — variant
-    /// identity is what round-trips.
-    pub fn to_driver_wire(&self) -> Result<driver::ControlValue, DriverProjectionError> {
-        match self {
-            Self::Null => Ok(driver::ControlValue::Null),
-            Self::Bool(value) => Ok(driver::ControlValue::Bool(*value)),
-            Self::Int(value) => Ok(driver::ControlValue::Integer(*value)),
-            Self::Float(value) => Ok(driver::ControlValue::Float(*value)),
-            Self::Text(value) => Ok(driver::ControlValue::String(value.clone())),
-            Self::SecretRef(reference) => Ok(driver::ControlValue::SecretRef(
-                reference.as_str().to_owned(),
-            )),
-            Self::Ip(ip) => Ok(driver::ControlValue::IpAddress(ip.as_str().to_owned())),
-            Self::Mac(mac) => Ok(driver::ControlValue::MacAddress(mac.as_str().to_owned())),
-            Self::Duration(duration) => {
-                if duration.subsec_nanos() % 1_000_000 != 0 {
-                    return Err(DriverProjectionError::SubMillisecondDuration);
-                }
-                let millis = u64::try_from(duration.as_millis())
-                    .map_err(|_| DriverProjectionError::DurationOverflow)?;
-                Ok(driver::ControlValue::DurationMs(millis))
-            }
-            Self::ColorRgb(color) => {
-                Ok(driver::ControlValue::ColorRgb([color.r, color.g, color.b]))
-            }
-            Self::ColorRgba(color) => Ok(driver::ControlValue::ColorRgba([
-                color.r, color.g, color.b, color.a,
-            ])),
-            Self::Enum(value) => Ok(driver::ControlValue::Enum(value.clone())),
-            Self::Flags(values) => Ok(driver::ControlValue::Flags(values.clone())),
-            Self::List(items) => Ok(driver::ControlValue::List(
-                items
-                    .iter()
-                    .enumerate()
-                    .map(|(index, item)| {
-                        item.to_driver_wire()
-                            .map_err(|e| DriverProjectionError::nested(format!("[{index}]"), e))
-                    })
-                    .collect::<Result<_, _>>()?,
-            )),
-            Self::Map(entries) => Ok(driver::ControlValue::Object(
-                entries
-                    .iter()
-                    .map(|(key, value)| {
-                        value
-                            .to_driver_wire()
-                            .map(|projected| (key.clone(), projected))
-                            .map_err(|e| DriverProjectionError::nested(format!(".{key}"), e))
-                    })
-                    .collect::<Result<_, DriverProjectionError>>()?,
-            )),
-            Self::Unknown => Ok(driver::ControlValue::Unknown),
-            Self::ColorLinear(_) | Self::Gradient(_) | Self::Rect(_) => {
-                Err(DriverProjectionError::EffectOnly(self.kind_name()))
-            }
-        }
-    }
-
-    /// Project onto the effect wire (externally tagged, f32/i32).
-    ///
-    /// Fails on width overflow and on every driver-only variant.
-    pub fn to_effect_wire(&self) -> Result<effect::ControlValue, EffectProjectionError> {
-        match self {
-            Self::Bool(value) => Ok(effect::ControlValue::Boolean(*value)),
-            Self::Int(value) => i32::try_from(*value)
-                .map(effect::ControlValue::Integer)
-                .map_err(|_| EffectProjectionError::IntOutOfRange(*value)),
-            Self::Float(value) => {
-                #[allow(clippy::cast_possible_truncation)]
-                let narrowed = *value as f32;
-                if narrowed.is_finite() {
-                    Ok(effect::ControlValue::Float(narrowed))
-                } else {
-                    Err(EffectProjectionError::FloatOverflow(*value))
-                }
-            }
-            Self::Text(value) => Ok(effect::ControlValue::Text(value.clone())),
-            Self::Enum(value) => Ok(effect::ControlValue::Enum(value.clone())),
-            Self::ColorLinear(color) => Ok(effect::ControlValue::Color([
-                color.r, color.g, color.b, color.a,
-            ])),
-            Self::Gradient(stops) => Ok(effect::ControlValue::Gradient(stops.clone())),
-            Self::Rect(rect) => Ok(effect::ControlValue::Rect(ViewportRect {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            })),
-            Self::Null
-            | Self::SecretRef(_)
-            | Self::Ip(_)
-            | Self::Mac(_)
-            | Self::Duration(_)
-            | Self::ColorRgb(_)
-            | Self::ColorRgba(_)
-            | Self::Flags(_)
-            | Self::List(_)
-            | Self::Map(_)
-            | Self::Unknown => Err(EffectProjectionError::DriverOnly(self.kind_name())),
-        }
-    }
-}
-
-impl TryFrom<driver::ControlValue> for ControlValue {
-    type Error = ControlValueInvalid;
-
-    /// Canonicalize a driver-wire value, validating the canonical
-    /// invariants (finite floats, well-formed ip/mac text).
-    fn try_from(value: driver::ControlValue) -> Result<Self, Self::Error> {
-        Ok(match value {
-            driver::ControlValue::Null => Self::Null,
-            driver::ControlValue::Bool(value) => Self::Bool(value),
-            driver::ControlValue::Integer(value) => Self::Int(value),
-            driver::ControlValue::Float(value) => {
-                if !value.is_finite() {
-                    return Err(ControlValueInvalid::NonFiniteFloat);
-                }
-                Self::Float(value)
-            }
-            driver::ControlValue::String(value) => Self::Text(value),
-            driver::ControlValue::SecretRef(reference) => {
-                Self::SecretRef(SecretRef::new(reference))
-            }
-            driver::ControlValue::ColorRgb([r, g, b]) => Self::ColorRgb(Rgb { r, g, b }),
-            driver::ControlValue::ColorRgba([r, g, b, a]) => Self::ColorRgba(Rgba { r, g, b, a }),
-            driver::ControlValue::IpAddress(text) => Self::Ip(IpText::new(text)?),
-            driver::ControlValue::MacAddress(text) => Self::Mac(MacText::new(text)?),
-            driver::ControlValue::DurationMs(millis) => {
-                Self::Duration(Duration::from_millis(millis))
-            }
-            driver::ControlValue::Enum(value) => Self::Enum(value),
-            driver::ControlValue::Flags(values) => Self::Flags(values),
-            driver::ControlValue::List(items) => Self::List(
-                items
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, item)| {
-                        Self::try_from(item)
-                            .map_err(|e| ControlValueInvalid::nested(format!("[{index}]"), e))
-                    })
-                    .collect::<Result<_, _>>()?,
-            ),
-            driver::ControlValue::Object(entries) => Self::Map(
-                entries
-                    .into_iter()
-                    .map(|(key, value)| {
-                        Self::try_from(value)
-                            .map(|canonical| (key.clone(), canonical))
-                            .map_err(|e| ControlValueInvalid::nested(format!(".{key}"), e))
-                    })
-                    .collect::<Result<_, ControlValueInvalid>>()?,
-            ),
-            driver::ControlValue::Unknown => Self::Unknown,
-        })
-    }
-}
-
-impl TryFrom<effect::ControlValue> for ControlValue {
-    type Error = ControlValueInvalid;
-
-    /// Canonicalize an effect-wire value, validating finiteness.
-    fn try_from(value: effect::ControlValue) -> Result<Self, Self::Error> {
-        Ok(match value {
-            effect::ControlValue::Float(value) => Self::Float(f64::from(finite(value)?)),
-            effect::ControlValue::Integer(value) => Self::Int(i64::from(value)),
-            effect::ControlValue::Boolean(value) => Self::Bool(value),
-            effect::ControlValue::Color([r, g, b, a]) => Self::ColorLinear(LinearRgba::new(
-                finite(r)?,
-                finite(g)?,
-                finite(b)?,
-                finite(a)?,
-            )),
-            effect::ControlValue::Gradient(stops) => {
-                for (index, stop) in stops.iter().enumerate() {
-                    finite_stop(stop)
-                        .map_err(|e| ControlValueInvalid::nested(format!("[{index}]"), e))?;
-                }
-                Self::Gradient(stops)
-            }
-            effect::ControlValue::Enum(value) => Self::Enum(value),
-            effect::ControlValue::Text(value) => Self::Text(value),
-            effect::ControlValue::Rect(rect) => Self::Rect(NormalizedRect {
-                x: finite(rect.x)?,
-                y: finite(rect.y)?,
-                width: finite(rect.width)?,
-                height: finite(rect.height)?,
-            }),
-        })
     }
 }

@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 use hypercolor_color::LinearRgba;
 
-use crate::viewport::ViewportRect;
+use crate::control::ControlValue;
+use crate::spatial::NormalizedRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
 
@@ -252,108 +253,6 @@ pub enum ControlKind {
     Other(String),
 }
 
-// ── ControlValue ──────────────────────────────────────────────────────────────
-
-/// Runtime value of a control parameter.
-///
-/// The variant must be compatible with the corresponding [`ControlType`]:
-///
-/// | `ControlType`    | Valid `ControlValue`       |
-/// |------------------|----------------------------|
-/// | `Slider`         | `Float(f32)`               |
-/// | `Toggle`         | `Boolean(bool)`            |
-/// | `ColorPicker`    | `Color([f32; 4])`          |
-/// | `GradientEditor` | `Gradient(Vec<GradientStop>)` |
-/// | `Dropdown`       | `Enum(String)`             |
-/// | `TextInput`      | `Text(String)`             |
-/// | `Asset`          | `Text(String)`             |
-/// | `Rect`           | `Rect(ViewportRect)`       |
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[schema(as = EffectControlValue)]
-#[serde(rename_all = "snake_case")]
-pub enum ControlValue {
-    /// Floating-point numeric value. Used by `Slider` controls.
-    Float(f32),
-    /// Signed integer value.
-    Integer(i32),
-    /// Boolean on/off value. Used by `Toggle` controls.
-    Boolean(bool),
-    /// Linear RGBA color. Used by `ColorPicker` controls.
-    Color([f32; 4]),
-    /// Multi-stop gradient. Used by `GradientEditor` controls.
-    Gradient(Vec<GradientStop>),
-    /// Named enum variant. Used by `Dropdown` controls.
-    Enum(String),
-    /// Free-form text. Used by `TextInput` controls.
-    Text(String),
-    /// Normalized rectangular viewport.
-    Rect(ViewportRect),
-}
-
-impl ControlValue {
-    /// Returns the value as an `f32`, if numeric.
-    ///
-    /// `Float` returns the inner value directly.
-    /// `Integer` converts via widening cast.
-    /// `Boolean` returns `1.0` for `true`, `0.0` for `false`.
-    /// All other variants return `None`.
-    #[must_use]
-    pub fn as_f32(&self) -> Option<f32> {
-        match self {
-            Self::Float(v) => Some(*v),
-            #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
-            Self::Integer(v) => Some(*v as f32),
-            Self::Boolean(v) => Some(if *v { 1.0 } else { 0.0 }),
-            _ => None,
-        }
-    }
-
-    /// Returns a JavaScript-compatible literal for injection into
-    /// Servo's `window[name]` globals.
-    #[must_use]
-    pub fn to_js_literal(&self) -> String {
-        match self {
-            Self::Float(v) => v.to_string(),
-            Self::Integer(v) => v.to_string(),
-            Self::Boolean(v) => if *v { "true" } else { "false" }.to_string(),
-            Self::Color([r, g, b, _a]) => {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    clippy::as_conversions
-                )]
-                let (ri, gi, bi) = (
-                    (r * 255.0).round() as u8,
-                    (g * 255.0).round() as u8,
-                    (b * 255.0).round() as u8,
-                );
-                format!("\"#{ri:02x}{gi:02x}{bi:02x}\"")
-            }
-            Self::Gradient(stops) => {
-                let entries: Vec<String> = stops
-                    .iter()
-                    .map(|s| {
-                        format!(
-                            "{{pos:{},color:[{},{},{},{}]}}",
-                            s.position, s.color[0], s.color[1], s.color[2], s.color[3]
-                        )
-                    })
-                    .collect();
-                format!("[{}]", entries.join(","))
-            }
-            Self::Enum(v) | Self::Text(v) => {
-                format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
-            }
-            Self::Rect(rect) => {
-                format!(
-                    "{{x:{},y:{},width:{},height:{}}}",
-                    rect.x, rect.y, rect.width, rect.height
-                )
-            }
-        }
-    }
-}
-
 /// Validation errors for a control update payload.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ControlValidationError {
@@ -376,21 +275,38 @@ pub enum ControlValidationError {
 }
 
 fn control_value_kind(value: &ControlValue) -> &'static str {
-    match value {
-        ControlValue::Float(_) => "float",
-        ControlValue::Integer(_) => "integer",
-        ControlValue::Boolean(_) => "boolean",
-        ControlValue::Color(_) => "color",
-        ControlValue::Gradient(_) => "gradient",
-        ControlValue::Enum(_) => "enum",
-        ControlValue::Text(_) => "text",
-        ControlValue::Rect(_) => "rect",
-    }
+    value.kind_name()
 }
 
-fn parse_hex_color(text: &str) -> Option<[f32; 4]> {
-    let color = LinearRgba::from_hex_srgb(text.trim()).ok()?;
-    Some([color.r, color.g, color.b, color.a])
+fn parse_hex_color(text: &str) -> Option<LinearRgba> {
+    LinearRgba::from_hex_srgb(text.trim()).ok()
+}
+
+fn clamp_normalized_rect(rect: NormalizedRect) -> NormalizedRect {
+    let width = if rect.width.is_finite() {
+        rect.width.clamp(crate::viewport::MIN_VIEWPORT_EDGE, 1.0)
+    } else {
+        1.0
+    };
+    let height = if rect.height.is_finite() {
+        rect.height.clamp(crate::viewport::MIN_VIEWPORT_EDGE, 1.0)
+    } else {
+        1.0
+    };
+    NormalizedRect {
+        x: if rect.x.is_finite() {
+            rect.x.clamp(0.0, (1.0 - width).max(0.0))
+        } else {
+            0.0
+        },
+        y: if rect.y.is_finite() {
+            rect.y.clamp(0.0, (1.0 - height).max(0.0))
+        } else {
+            0.0
+        },
+        width,
+        height,
+    }
 }
 
 // ── ControlBinding ────────────────────────────────────────────────────────────
@@ -513,7 +429,7 @@ impl ControlDefinition {
         let control = self.control_id().to_owned();
         match self.kind {
             ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
-                let Some(mut normalized) = value.as_f32() else {
+                let Some(mut normalized) = value.as_effect_f32() else {
                     return Err(ControlValidationError::ExpectedNumeric {
                         control,
                         got: control_value_kind(value),
@@ -528,10 +444,10 @@ impl ControlDefinition {
                 if let Some(step) = self.step.filter(|step| *step > 0.0) {
                     normalized = (normalized / step).round() * step;
                 }
-                Ok(ControlValue::Float(normalized))
+                Ok(ControlValue::Float(f64::from(normalized)))
             }
             ControlKind::Boolean => match value {
-                ControlValue::Boolean(flag) => Ok(ControlValue::Boolean(*flag)),
+                ControlValue::Bool(flag) => Ok(ControlValue::Bool(*flag)),
                 _ => Err(ControlValidationError::ExpectedBoolean {
                     control,
                     got: control_value_kind(value),
@@ -564,19 +480,19 @@ impl ControlDefinition {
                 }
             }
             ControlKind::Rect => match value {
-                ControlValue::Rect(rect) => Ok(ControlValue::Rect(rect.clamp())),
+                ControlValue::Rect(rect) => Ok(ControlValue::Rect(clamp_normalized_rect(*rect))),
                 _ => Err(ControlValidationError::ExpectedRect {
                     control,
                     got: control_value_kind(value),
                 }),
             },
             ControlKind::Color => match value {
-                ControlValue::Color(color) => Ok(ControlValue::Color(*color)),
+                ControlValue::ColorLinear(color) => Ok(ControlValue::ColorLinear(*color)),
                 ControlValue::Text(text) | ControlValue::Enum(text) => {
                     if matches!(self.control_type, ControlType::ColorPicker)
                         && let Some(color) = parse_hex_color(text)
                     {
-                        return Ok(ControlValue::Color(color));
+                        return Ok(ControlValue::ColorLinear(color));
                     }
                     Ok(ControlValue::Text(text.clone()))
                 }

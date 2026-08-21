@@ -5,12 +5,12 @@
 //! concrete driver.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::IpAddr;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use utoipa::ToSchema;
 
+use crate::control::ControlValue;
 use crate::device::DeviceId;
 
 /// Stable identifier for a control surface.
@@ -229,7 +229,7 @@ impl ControlValueType {
             | (Self::Secret, ControlValue::SecretRef(_))
             | (Self::ColorRgb, ControlValue::ColorRgb(_))
             | (Self::ColorRgba, ControlValue::ColorRgba(_)) => Ok(()),
-            (Self::Integer { min, max, step }, ControlValue::Integer(value)) => {
+            (Self::Integer { min, max, step }, ControlValue::Int(value)) => {
                 validate_i64(*value, *min, *max, *step)
             }
             (Self::Float { min, max, step }, ControlValue::Float(value)) => {
@@ -239,12 +239,15 @@ impl ControlValueType {
                 Self::String {
                     min_len, max_len, ..
                 },
-                ControlValue::String(value),
+                ControlValue::Text(value),
             ) => validate_string(value, *min_len, *max_len),
-            (Self::IpAddress, ControlValue::IpAddress(value)) => validate_ip_address(value),
-            (Self::MacAddress, ControlValue::MacAddress(value)) => validate_mac_address(value),
-            (Self::DurationMs { min, max, step }, ControlValue::DurationMs(value)) => {
-                validate_u64(*value, *min, *max, *step)
+            (Self::IpAddress, ControlValue::Ip(_)) | (Self::MacAddress, ControlValue::Mac(_)) => {
+                Ok(())
+            }
+            (Self::DurationMs { min, max, step }, ControlValue::Duration(value)) => {
+                let millis = u64::try_from(value.as_millis())
+                    .map_err(|_| ControlValueValidationError::AboveMaximum)?;
+                validate_u64(millis, *min, *max, *step)
             }
             (Self::Enum { options }, ControlValue::Enum(value)) => validate_enum(options, value),
             (Self::Flags { options }, ControlValue::Flags(values)) => {
@@ -258,114 +261,12 @@ impl ControlValueType {
                 },
                 ControlValue::List(values),
             ) => validate_list(item_type, values, *min_items, *max_items),
-            (Self::Object { fields }, ControlValue::Object(values)) => {
-                validate_object(fields, values)
-            }
+            (Self::Object { fields }, ControlValue::Map(values)) => validate_object(fields, values),
             (Self::Unknown, _) => Err(ControlValueValidationError::UnsupportedValueType),
             _ => Err(ControlValueValidationError::TypeMismatch {
                 expected: self.clone(),
                 actual: value.kind(),
             }),
-        }
-    }
-}
-
-/// Typed value payload matching a [`ControlValueType`].
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
-#[schema(no_recursion)]
-#[schema(as = DriverControlValue)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
-pub enum ControlValue {
-    /// Empty value.
-    Null,
-
-    /// Boolean value.
-    Bool(bool),
-
-    /// Signed integer value.
-    Integer(i64),
-
-    /// Floating point value.
-    Float(f64),
-
-    /// UTF-8 string value.
-    String(String),
-
-    /// Reference to a secret in the credential store.
-    SecretRef(String),
-
-    /// RGB color.
-    ColorRgb([u8; 3]),
-
-    /// RGBA color.
-    ColorRgba([u8; 4]),
-
-    /// IP address text.
-    IpAddress(String),
-
-    /// MAC address text.
-    MacAddress(String),
-
-    /// Duration in milliseconds.
-    DurationMs(u64),
-
-    /// Single enum option value.
-    Enum(String),
-
-    /// Multiple flag option values.
-    Flags(Vec<String>),
-
-    /// Homogeneous list.
-    List(Vec<ControlValue>),
-
-    /// Structured object.
-    Object(BTreeMap<String, ControlValue>),
-
-    /// Unknown value from a newer daemon or driver schema.
-    #[serde(other)]
-    Unknown,
-}
-
-impl<'de> Deserialize<'de> for ControlValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawControlValue {
-            kind: String,
-            #[serde(default)]
-            value: Option<serde_json::Value>,
-        }
-
-        fn parse_value<T, E>(kind: &str, value: Option<serde_json::Value>) -> Result<T, E>
-        where
-            T: serde::de::DeserializeOwned,
-            E: serde::de::Error,
-        {
-            let value = value.ok_or_else(|| E::custom(format!("missing value for {kind}")))?;
-            serde_json::from_value(value)
-                .map_err(|error| E::custom(format!("invalid {kind} value: {error}")))
-        }
-
-        let raw = RawControlValue::deserialize(deserializer)?;
-        match raw.kind.as_str() {
-            "null" => Ok(Self::Null),
-            "bool" => parse_value("bool", raw.value).map(Self::Bool),
-            "integer" => parse_value("integer", raw.value).map(Self::Integer),
-            "float" => parse_value("float", raw.value).map(Self::Float),
-            "string" => parse_value("string", raw.value).map(Self::String),
-            "secret_ref" => parse_value("secret_ref", raw.value).map(Self::SecretRef),
-            "color_rgb" => parse_value("color_rgb", raw.value).map(Self::ColorRgb),
-            "color_rgba" => parse_value("color_rgba", raw.value).map(Self::ColorRgba),
-            "ip_address" => parse_value("ip_address", raw.value).map(Self::IpAddress),
-            "mac_address" => parse_value("mac_address", raw.value).map(Self::MacAddress),
-            "duration_ms" => parse_value("duration_ms", raw.value).map(Self::DurationMs),
-            "enum" => parse_value("enum", raw.value).map(Self::Enum),
-            "flags" => parse_value("flags", raw.value).map(Self::Flags),
-            "list" => parse_value("list", raw.value).map(Self::List),
-            "object" => parse_value("object", raw.value).map(Self::Object),
-            _ => Ok(Self::Unknown),
         }
     }
 }
@@ -377,19 +278,22 @@ impl ControlValue {
         match self {
             Self::Null => ControlValueKind::Null,
             Self::Bool(_) => ControlValueKind::Bool,
-            Self::Integer(_) => ControlValueKind::Integer,
+            Self::Int(_) => ControlValueKind::Integer,
             Self::Float(_) => ControlValueKind::Float,
-            Self::String(_) => ControlValueKind::String,
+            Self::Text(_) => ControlValueKind::String,
             Self::SecretRef(_) => ControlValueKind::SecretRef,
             Self::ColorRgb(_) => ControlValueKind::ColorRgb,
             Self::ColorRgba(_) => ControlValueKind::ColorRgba,
-            Self::IpAddress(_) => ControlValueKind::IpAddress,
-            Self::MacAddress(_) => ControlValueKind::MacAddress,
-            Self::DurationMs(_) => ControlValueKind::DurationMs,
+            Self::Ip(_) => ControlValueKind::IpAddress,
+            Self::Mac(_) => ControlValueKind::MacAddress,
+            Self::Duration(_) => ControlValueKind::DurationMs,
             Self::Enum(_) => ControlValueKind::Enum,
             Self::Flags(_) => ControlValueKind::Flags,
             Self::List(_) => ControlValueKind::List,
-            Self::Object(_) => ControlValueKind::Object,
+            Self::Map(_) => ControlValueKind::Object,
+            Self::ColorLinear(_) => ControlValueKind::ColorLinear,
+            Self::Gradient(_) => ControlValueKind::Gradient,
+            Self::Rect(_) => ControlValueKind::Rect,
             Self::Unknown => ControlValueKind::Unknown,
         }
     }
@@ -415,6 +319,8 @@ pub enum ControlValueKind {
     ColorRgb,
     /// RGBA color.
     ColorRgba,
+    /// Linear-light RGBA color.
+    ColorLinear,
     /// IP address.
     IpAddress,
     /// MAC address.
@@ -429,6 +335,10 @@ pub enum ControlValueKind {
     List,
     /// Object value.
     Object,
+    /// Effect gradient value.
+    Gradient,
+    /// Effect rectangle value.
+    Rect,
     /// Unknown future value.
     Unknown,
 }
@@ -1035,14 +945,6 @@ pub enum ControlValueValidationError {
     #[error("string is too long")]
     StringTooLong,
 
-    /// IP address is invalid.
-    #[error("invalid IP address")]
-    InvalidIpAddress,
-
-    /// MAC address is invalid.
-    #[error("invalid MAC address")]
-    InvalidMacAddress,
-
     /// Enum or flag option is unknown.
     #[error("unknown option: {0}")]
     UnknownOption(String),
@@ -1155,26 +1057,6 @@ fn validate_string(
         return Err(ControlValueValidationError::StringTooLong);
     }
     Ok(())
-}
-
-fn validate_ip_address(value: &str) -> Result<(), ControlValueValidationError> {
-    value
-        .parse::<IpAddr>()
-        .map(|_| ())
-        .map_err(|_| ControlValueValidationError::InvalidIpAddress)
-}
-
-fn validate_mac_address(value: &str) -> Result<(), ControlValueValidationError> {
-    let mut parts = value.split(':');
-    if (0..6).all(|_| parts.next().is_some_and(is_hex_octet)) && parts.next().is_none() {
-        Ok(())
-    } else {
-        Err(ControlValueValidationError::InvalidMacAddress)
-    }
-}
-
-fn is_hex_octet(value: &str) -> bool {
-    value.len() == 2 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn validate_enum(

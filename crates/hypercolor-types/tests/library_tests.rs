@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use hypercolor_types::api::library::{ActivePlaylistResponse, DeactivatePlaylistResponse};
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItem, PlaylistItemId,
     PlaylistItemTarget, PresetId,
@@ -68,7 +69,7 @@ fn favorite_effect_serde_roundtrip() {
 fn effect_preset_serde_roundtrip() {
     let mut controls = HashMap::new();
     controls.insert("speed".to_owned(), ControlValue::Float(0.75));
-    controls.insert("enabled".to_owned(), ControlValue::Boolean(true));
+    controls.insert("enabled".to_owned(), ControlValue::Bool(true));
 
     let preset = EffectPreset {
         id: PresetId::new(),

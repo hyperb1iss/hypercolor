@@ -1,7 +1,8 @@
 #![allow(clippy::float_cmp)]
 
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget,

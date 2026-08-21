@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlBinding, EffectId};
 use hypercolor_types::layer::{
     AudioBand, BindingMap, BindingSource, LayerAdjust, LayerBinding, LayerBlendMode,
     LayerParameter, LayerSource, LayerTransform, LoopMode, MediaPlayback, SceneLayer, SceneLayerId,

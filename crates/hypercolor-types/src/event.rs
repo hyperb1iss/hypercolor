@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::asset::AssetId;
+use crate::control::ControlValue;
 use crate::controls::ControlSurfaceEvent;
 use crate::device::DeviceOrigin;
 use crate::layer::SceneLayerId;
@@ -389,19 +390,6 @@ pub enum ContextType {
     Presence,
     /// Custom context from webhook or external integration.
     Custom,
-}
-
-/// Lightweight control value for event payloads (3 variants).
-///
-/// Used within [`HypercolorEvent::EffectControlChanged`] to carry
-/// old/new values across the event bus without pulling in the full
-/// 7-variant [`effect::ControlValue`](crate::effect::ControlValue).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum EventControlValue {
-    Number(f32),
-    Boolean(bool),
-    String(String),
 }
 
 /// Process topology that owns the active macOS daemon.
@@ -796,8 +784,8 @@ pub enum HypercolorEvent {
     EffectControlChanged {
         effect_id: String,
         control_id: String,
-        old_value: EventControlValue,
-        new_value: EventControlValue,
+        old_value: ControlValue,
+        new_value: ControlValue,
         /// Zone whose stack holds the patched layer.
         zone_id: ZoneId,
         /// The patched layer.

@@ -5,9 +5,11 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use hypercolor_color::LinearRgba;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource, EffectState, GradientStop,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId,
+    EffectMetadata, EffectSource, EffectState, GradientStop,
 };
 use uuid::Uuid;
 
@@ -400,21 +402,23 @@ fn control_type_serde_round_trip() {
 #[test]
 fn control_value_float() {
     let val = ControlValue::Float(3.5);
-    assert!((val.as_f32().expect("should be numeric") - 3.5).abs() < f32::EPSILON);
+    assert!((val.as_effect_f32().expect("should be numeric") - 3.5).abs() < f32::EPSILON);
 }
 
 #[test]
 fn control_value_integer() {
-    let val = ControlValue::Integer(42);
-    assert!((val.as_f32().expect("should be numeric") - 42.0).abs() < f32::EPSILON);
+    let val = ControlValue::Int(42);
+    assert!((val.as_effect_f32().expect("should be numeric") - 42.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn control_value_boolean_as_f32() {
-    assert!((ControlValue::Boolean(true).as_f32().expect("numeric") - 1.0).abs() < f32::EPSILON);
     assert!(
-        ControlValue::Boolean(false)
-            .as_f32()
+        (ControlValue::Bool(true).as_effect_f32().expect("numeric") - 1.0).abs() < f32::EPSILON
+    );
+    assert!(
+        ControlValue::Bool(false)
+            .as_effect_f32()
             .expect("numeric")
             .abs()
             < f32::EPSILON
@@ -423,8 +427,8 @@ fn control_value_boolean_as_f32() {
 
 #[test]
 fn control_value_color_not_numeric() {
-    let val = ControlValue::Color([1.0, 0.0, 0.5, 1.0]);
-    assert!(val.as_f32().is_none());
+    let val = ControlValue::ColorLinear(LinearRgba::new(1.0, 0.0, 0.5, 1.0));
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
@@ -433,102 +437,28 @@ fn control_value_gradient_not_numeric() {
         position: 0.0,
         color: [0.0, 0.0, 0.0, 1.0],
     }]);
-    assert!(val.as_f32().is_none());
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_enum_not_numeric() {
     let val = ControlValue::Enum("option_a".into());
-    assert!(val.as_f32().is_none());
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_text_not_numeric() {
     let val = ControlValue::Text("hello".into());
-    assert!(val.as_f32().is_none());
-}
-
-#[test]
-fn control_value_js_literal_float() {
-    let val = ControlValue::Float(5.0);
-    assert_eq!(val.to_js_literal(), "5");
-}
-
-#[test]
-fn control_value_js_literal_integer() {
-    let val = ControlValue::Integer(42);
-    assert_eq!(val.to_js_literal(), "42");
-}
-
-#[test]
-fn control_value_js_literal_boolean() {
-    assert_eq!(ControlValue::Boolean(true).to_js_literal(), "true");
-    assert_eq!(ControlValue::Boolean(false).to_js_literal(), "false");
-}
-
-#[test]
-fn control_value_js_literal_color() {
-    let val = ControlValue::Color([1.0, 0.5, 0.0, 1.0]);
-    assert_eq!(val.to_js_literal(), "\"#ff8000\"");
-}
-
-#[test]
-fn control_value_js_literal_color_hex_roundtrip() {
-    // #001e01 → Color([0.0, 30/255, 1/255, 1.0]) → "#001e01"
-    let val = ControlValue::Color([0.0_f32, 30.0 / 255.0, 1.0 / 255.0, 1.0]);
-    assert_eq!(val.to_js_literal(), "\"#001e01\"");
-}
-
-#[test]
-fn control_value_js_literal_color_black_white() {
-    assert_eq!(
-        ControlValue::Color([0.0, 0.0, 0.0, 1.0]).to_js_literal(),
-        "\"#000000\""
-    );
-    assert_eq!(
-        ControlValue::Color([1.0, 1.0, 1.0, 1.0]).to_js_literal(),
-        "\"#ffffff\""
-    );
-}
-
-#[test]
-fn control_value_js_literal_enum_escapes_quotes() {
-    let val = ControlValue::Enum("say \"hello\"".into());
-    assert_eq!(val.to_js_literal(), r#""say \"hello\"""#);
-}
-
-#[test]
-fn control_value_js_literal_text_escapes_backslash() {
-    let val = ControlValue::Text(r"path\to\file".into());
-    assert_eq!(val.to_js_literal(), r#""path\\to\\file""#);
-}
-
-#[test]
-fn control_value_js_literal_gradient() {
-    let val = ControlValue::Gradient(vec![
-        GradientStop {
-            position: 0.0,
-            color: [1.0, 0.0, 0.0, 1.0],
-        },
-        GradientStop {
-            position: 1.0,
-            color: [0.0, 0.0, 1.0, 1.0],
-        },
-    ]);
-    let js = val.to_js_literal();
-    assert!(js.starts_with('['));
-    assert!(js.ends_with(']'));
-    assert!(js.contains("pos:0"));
-    assert!(js.contains("pos:1"));
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_serde_round_trip() {
     let values = vec![
         ControlValue::Float(2.5),
-        ControlValue::Integer(-10),
-        ControlValue::Boolean(true),
-        ControlValue::Color([0.1, 0.2, 0.3, 0.4]),
+        ControlValue::Int(-10),
+        ControlValue::Bool(true),
+        ControlValue::ColorLinear(LinearRgba::new(0.1, 0.2, 0.3, 0.4)),
         ControlValue::Gradient(vec![
             GradientStop {
                 position: 0.0,
@@ -596,7 +526,7 @@ fn sample_color_picker_control() -> ControlDefinition {
         name: "Zone 1".into(),
         kind: ControlKind::Color,
         control_type: ControlType::ColorPicker,
-        default_value: ControlValue::Color([1.0, 1.0, 1.0, 1.0]),
+        default_value: ControlValue::ColorLinear(LinearRgba::new(1.0, 1.0, 1.0, 1.0)),
         min: None,
         max: None,
         step: None,
@@ -695,11 +625,11 @@ fn color_picker_validation_normalizes_hex_text_to_color() {
         .expect("hex text should validate");
 
     match validated {
-        ControlValue::Color([r, g, b, a]) => {
-            assert!(r > 0.2, "red should be converted from hex");
-            assert!(g > 0.9, "green should be converted from hex");
-            assert!(b > 0.8, "blue should be converted from hex");
-            assert!((a - 1.0).abs() < f32::EPSILON);
+        ControlValue::ColorLinear(color) => {
+            assert!(color.r > 0.2, "red should be converted from hex");
+            assert!(color.g > 0.9, "green should be converted from hex");
+            assert!(color.b > 0.8, "blue should be converted from hex");
+            assert!((color.a - 1.0).abs() < f32::EPSILON);
         }
         other => panic!("expected normalized color, got {other:?}"),
     }

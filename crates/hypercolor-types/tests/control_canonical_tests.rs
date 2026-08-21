@@ -1,66 +1,50 @@
 //! Round-trip and rejection coverage for the canonical control-value
 //! algebra (Spec 76 §4.5) and the identity conventions (§4.2).
-//!
-//! The load-bearing property: every driver-wire and effect-wire value
-//! round-trips through canonical BYTE-IDENTICALLY on its own wire —
-//! serialize the original, serialize the reprojection, compare JSON.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::Duration;
 
 use hypercolor_types::control::{
-    ControlDeltaBatch, ControlId, ControlSet, ControlValue, ControlValueInvalid,
-    DriverProjectionError, EffectProjectionError, IpText, MacText, SecretRef, SetRevision,
+    ControlDeltaBatch, ControlId, ControlSet, ControlValue, ControlValueInvalid, IpText, MacText,
+    SecretRef, SetRevision,
 };
-use hypercolor_types::controls as driver;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{self, GradientStop};
+use hypercolor_types::effect::GradientStop;
 use hypercolor_types::identity::{BackendId, IdParseError, LayoutId, OutputRef};
-use hypercolor_types::viewport::ViewportRect;
+use hypercolor_types::spatial::NormalizedRect;
 
-fn driver_samples() -> Vec<driver::ControlValue> {
+fn canonical_samples() -> Vec<ControlValue> {
     vec![
-        driver::ControlValue::Null,
-        driver::ControlValue::Bool(true),
-        driver::ControlValue::Integer(-42),
-        driver::ControlValue::Integer(i64::MAX),
-        driver::ControlValue::Float(0.25),
-        driver::ControlValue::String("hello".into()),
-        driver::ControlValue::SecretRef("cred_abc123".into()),
-        driver::ControlValue::ColorRgb([255, 136, 0]),
-        driver::ControlValue::ColorRgba([1, 2, 3, 128]),
-        driver::ControlValue::IpAddress("192.168.4.20".into()),
-        driver::ControlValue::IpAddress("::FFFF:1.2.3.4".into()),
-        driver::ControlValue::MacAddress("AA:bb:CC:dd:EE:ff".into()),
-        driver::ControlValue::MacAddress("aa-bb-cc-dd-ee-ff".into()),
-        driver::ControlValue::MacAddress("001122334455".into()),
-        driver::ControlValue::MacAddress("aabb.ccdd.eeff".into()),
-        driver::ControlValue::DurationMs(1500),
-        driver::ControlValue::Enum("rainbow".into()),
-        driver::ControlValue::Flags(vec!["b".into(), "a".into(), "b".into()]),
-        driver::ControlValue::List(vec![
-            driver::ControlValue::Integer(1),
-            driver::ControlValue::String("two".into()),
-        ]),
-        driver::ControlValue::Object(BTreeMap::from([
-            ("port".to_owned(), driver::ControlValue::Integer(9420)),
+        ControlValue::Null,
+        ControlValue::Bool(true),
+        ControlValue::Int(-42),
+        ControlValue::Int(i64::MAX),
+        ControlValue::Float(0.25),
+        ControlValue::Text("hello".into()),
+        ControlValue::SecretRef(SecretRef::new("cred_abc123")),
+        ControlValue::ColorRgb(hypercolor_color::Rgb::new(255, 136, 0)),
+        ControlValue::ColorRgba(hypercolor_color::Rgba::new(1, 2, 3, 128)),
+        ControlValue::Ip(IpText::new("192.168.4.20").expect("valid ip")),
+        ControlValue::Ip(IpText::new("::FFFF:1.2.3.4").expect("valid ip")),
+        ControlValue::Mac(MacText::new("AA:bb:CC:dd:EE:ff").expect("valid mac")),
+        ControlValue::Mac(MacText::new("aa-bb-cc-dd-ee-ff").expect("valid mac")),
+        ControlValue::Mac(MacText::new("001122334455").expect("valid mac")),
+        ControlValue::Mac(MacText::new("aabb.ccdd.eeff").expect("valid mac")),
+        ControlValue::Duration(Duration::from_millis(1500)),
+        ControlValue::Enum("rainbow".into()),
+        ControlValue::Flags(vec!["b".into(), "a".into(), "b".into()]),
+        ControlValue::List(vec![ControlValue::Int(1), ControlValue::Text("two".into())]),
+        ControlValue::Map(BTreeMap::from([
+            ("port".to_owned(), ControlValue::Int(9420)),
             (
                 "host".to_owned(),
-                driver::ControlValue::IpAddress("10.0.0.1".into()),
+                ControlValue::Ip(IpText::new("10.0.0.1").expect("valid ip")),
             ),
         ])),
-        driver::ControlValue::Unknown,
-    ]
-}
-
-fn effect_samples() -> Vec<effect::ControlValue> {
-    vec![
-        effect::ControlValue::Float(0.75),
-        effect::ControlValue::Integer(-7),
-        effect::ControlValue::Boolean(false),
-        effect::ControlValue::Color([0.1, 0.2, 0.3, 1.0]),
-        effect::ControlValue::Gradient(vec![
+        ControlValue::Unknown,
+        ControlValue::ColorLinear(hypercolor_color::LinearRgba::new(0.1, 0.2, 0.3, 1.0)),
+        ControlValue::Gradient(vec![
             GradientStop {
                 position: 0.0,
                 color: [1.0, 0.0, 0.0, 1.0],
@@ -70,25 +54,18 @@ fn effect_samples() -> Vec<effect::ControlValue> {
                 color: [0.0, 0.0, 1.0, 0.5],
             },
         ]),
-        effect::ControlValue::Enum("wave".into()),
-        effect::ControlValue::Text("hello".into()),
-        effect::ControlValue::Rect(ViewportRect::new(0.1, 0.2, 0.5, 0.4)),
+        ControlValue::Rect(NormalizedRect {
+            x: 0.1,
+            y: 0.2,
+            width: 0.5,
+            height: 0.4,
+        }),
     ]
 }
 
 #[test]
-fn canonical_wire_roundtrips_every_projected_variant() {
-    let canonical = driver_samples()
-        .into_iter()
-        .map(|value| ControlValue::try_from(value).expect("driver value canonicalizes"))
-        .chain(
-            effect_samples()
-                .into_iter()
-                .map(|value| ControlValue::try_from(value).expect("effect value canonicalizes")),
-        )
-        .collect::<Vec<_>>();
-
-    for original in canonical {
+fn canonical_wire_roundtrips_every_variant() {
+    for original in canonical_samples() {
         let wire = serde_json::to_value(&original).expect("canonical value serializes");
         assert_eq!(
             wire["kind"],
@@ -132,40 +109,6 @@ fn canonical_wire_enforces_validation_on_both_directions() {
 }
 
 #[test]
-fn every_driver_value_roundtrips_byte_identically() {
-    for original in driver_samples() {
-        let original_json = serde_json::to_value(&original).expect("driver value serializes");
-        let canonical =
-            ControlValue::try_from(original.clone()).expect("driver value canonicalizes");
-        let back = canonical
-            .to_driver_wire()
-            .expect("canonical projects back to the driver wire");
-        let back_json = serde_json::to_value(&back).expect("projection serializes");
-        assert_eq!(
-            original_json, back_json,
-            "driver wire drifted through canonical for {original:?}"
-        );
-    }
-}
-
-#[test]
-fn every_effect_value_roundtrips_byte_identically() {
-    for original in effect_samples() {
-        let original_json = serde_json::to_value(&original).expect("effect value serializes");
-        let canonical =
-            ControlValue::try_from(original.clone()).expect("effect value canonicalizes");
-        let back = canonical
-            .to_effect_wire()
-            .expect("canonical projects back to the effect wire");
-        let back_json = serde_json::to_value(&back).expect("projection serializes");
-        assert_eq!(
-            original_json, back_json,
-            "effect wire drifted through canonical for {original:?}"
-        );
-    }
-}
-
-#[test]
 fn ip_and_mac_round_trips_preserve_original_spelling() {
     let ip = IpText::new("::FFFF:1.2.3.4").expect("valid ip");
     assert_eq!(ip.as_str(), "::FFFF:1.2.3.4");
@@ -194,7 +137,7 @@ fn ip_and_mac_round_trips_preserve_original_spelling() {
 #[test]
 fn invalid_ip_and_mac_are_rejected_at_canonicalization() {
     assert_eq!(
-        ControlValue::try_from(driver::ControlValue::IpAddress("not-an-ip".into())),
+        IpText::new("not-an-ip"),
         Err(ControlValueInvalid::InvalidIp)
     );
     for bad_mac in [
@@ -208,7 +151,7 @@ fn invalid_ip_and_mac_are_rejected_at_canonicalization() {
         "aaaaaaaaaéa",
     ] {
         assert_eq!(
-            ControlValue::try_from(driver::ControlValue::MacAddress(bad_mac.into())),
+            MacText::new(bad_mac),
             Err(ControlValueInvalid::InvalidMac),
             "{bad_mac:?} must be rejected"
         );
@@ -217,18 +160,6 @@ fn invalid_ip_and_mac_are_rejected_at_canonicalization() {
 
 #[test]
 fn non_finite_floats_are_rejected_everywhere() {
-    assert_eq!(
-        ControlValue::try_from(driver::ControlValue::Float(f64::NAN)),
-        Err(ControlValueInvalid::NonFiniteFloat)
-    );
-    assert_eq!(
-        ControlValue::try_from(effect::ControlValue::Float(f32::INFINITY)),
-        Err(ControlValueInvalid::NonFiniteFloat)
-    );
-    assert_eq!(
-        ControlValue::try_from(effect::ControlValue::Color([0.0, f32::NAN, 0.0, 1.0])),
-        Err(ControlValueInvalid::NonFiniteFloat)
-    );
     assert_eq!(
         ControlValue::Float(f64::NAN).validate(),
         Err(ControlValueInvalid::NonFiniteFloat)
@@ -252,87 +183,14 @@ fn non_finite_floats_are_rejected_everywhere() {
 
 #[test]
 fn sub_millisecond_durations_never_truncate_silently() {
-    use hypercolor_types::control::DriverProjectionError as DriverError;
     assert_eq!(
-        ControlValue::Duration(Duration::from_micros(1500)).to_driver_wire(),
-        Err(DriverError::SubMillisecondDuration)
+        ControlValue::Duration(Duration::from_micros(1500)).validate(),
+        Err(ControlValueInvalid::SubMillisecondDuration)
     );
-    // Whole milliseconds project cleanly.
-    assert_eq!(
-        ControlValue::Duration(Duration::from_millis(1500)).to_driver_wire(),
-        Ok(driver::ControlValue::DurationMs(1500))
-    );
-}
-
-#[test]
-fn effect_projection_rejects_driver_only_variants() {
-    let driver_only = [
-        ControlValue::Null,
-        ControlValue::SecretRef(SecretRef::new("cred_x")),
-        ControlValue::Ip(IpText::new("127.0.0.1").expect("valid")),
-        ControlValue::Mac(MacText::new("00:11:22:33:44:55").expect("valid")),
-        ControlValue::Duration(Duration::from_millis(5)),
-        ControlValue::ColorRgb(hypercolor_color::Rgb::new(1, 2, 3)),
-        ControlValue::ColorRgba(hypercolor_color::Rgba::new(1, 2, 3, 4)),
-        ControlValue::Flags(vec!["a".into()]),
-        ControlValue::List(vec![]),
-        ControlValue::Map(BTreeMap::new()),
-        ControlValue::Unknown,
-    ];
-    for value in driver_only {
-        assert!(
-            matches!(
-                value.to_effect_wire(),
-                Err(EffectProjectionError::DriverOnly(_))
-            ),
-            "{} must not reach the effect wire",
-            value.kind_name()
-        );
-    }
-}
-
-#[test]
-fn driver_projection_rejects_effect_only_variants() {
-    let effect_only = [
-        ControlValue::ColorLinear(hypercolor_color::LinearRgba::new(0.1, 0.2, 0.3, 1.0)),
-        ControlValue::Gradient(vec![]),
-        ControlValue::Rect(hypercolor_types::spatial::NormalizedRect {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        }),
-    ];
-    for value in effect_only {
-        assert!(
-            matches!(
-                value.to_driver_wire(),
-                Err(DriverProjectionError::EffectOnly(_))
-            ),
-            "{} must not reach the driver wire",
-            value.kind_name()
-        );
-    }
-}
-
-#[test]
-fn width_narrowing_is_range_checked() {
-    assert!(matches!(
-        ControlValue::Int(i64::from(i32::MAX) + 1).to_effect_wire(),
-        Err(EffectProjectionError::IntOutOfRange(_))
-    ));
-    assert!(matches!(
-        ControlValue::Float(f64::MAX).to_effect_wire(),
-        Err(EffectProjectionError::FloatOverflow(_))
-    ));
-    assert!(matches!(
-        ControlValue::Duration(Duration::from_secs(u64::MAX)).to_driver_wire(),
-        Err(DriverProjectionError::DurationOverflow)
-    ));
-    // In-range values narrow cleanly.
-    assert_eq!(
-        ControlValue::Int(42).to_effect_wire(),
-        Ok(effect::ControlValue::Integer(42))
+    assert!(
+        ControlValue::Duration(Duration::from_millis(1500))
+            .validate()
+            .is_ok()
     );
 }
 

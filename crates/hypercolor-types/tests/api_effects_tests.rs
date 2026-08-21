@@ -4,7 +4,8 @@ use hypercolor_types::api::effects::{
     EffectCategory, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
     EffectSourceKind,
 };
-use hypercolor_types::effect::{ControlValue, EffectSource};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectSource;
 
 #[test]
 fn effect_preset_stack_round_trips_origin_and_editability() {
