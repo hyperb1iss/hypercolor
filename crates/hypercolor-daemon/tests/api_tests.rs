@@ -19,7 +19,7 @@ use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverHost, DriverModule, DriverRuntimeCacheProvider,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverRuntimeCacheProvider,
     ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
@@ -65,9 +65,9 @@ use hypercolor_types::controls::{
     ControlValue as SurfaceControlValue, ControlValueMap,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DriverTransportKind, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
+    DeviceTopologyHint, DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
@@ -469,15 +469,19 @@ impl DeviceBackend for NoopBackend {
         Ok(())
     }
 
-    async fn connect(&self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
-    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        _colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 }
@@ -631,7 +635,7 @@ impl DiscoveryCapability for RescanTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
         Ok(Vec::new())
     }
@@ -746,7 +750,7 @@ impl DiscoveryCapability for BlockingReconnectTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
         let _permit = Arc::clone(&self.release)
             .acquire_owned()
@@ -870,15 +874,19 @@ impl DeviceBackend for StaticOutputRecordingBackend {
         Ok(())
     }
 
-    async fn connect(&self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         self.writes
             .lock()
             .expect("static output writes lock")
@@ -904,15 +912,19 @@ impl DeviceBackend for IdentifyRecordingBackend {
         Ok(())
     }
 
-    async fn connect(&self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
-    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         self.writes
             .lock()
             .expect("identify output writes lock")
@@ -952,27 +964,33 @@ impl DeviceBackend for DisconnectRecordingBackend {
         true
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::protocol(id, "unexpected device id"));
         }
         self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::protocol(id, "unexpected device id"));
         }
         if !self.connected.load(Ordering::Acquire) {
-            bail!("disconnect called while backend was not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        _colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 }

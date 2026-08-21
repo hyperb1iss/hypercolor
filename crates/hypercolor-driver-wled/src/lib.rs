@@ -151,7 +151,7 @@ const fn default_dedup_threshold() -> u8 {
     2
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct WledDriverModule;
 
 impl WledDriverModule {
@@ -200,12 +200,7 @@ impl DeviceBackendFactory for WledDriverModule {
         _host: &dyn DriverHost,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        let config =
-            config
-                .parse_settings::<WledConfig>()
-                .map_err(|error| DriverError::Configuration {
-                    message: error.to_string(),
-                })?;
+        let config = config.parse_settings::<WledConfig>()?;
         Ok(Arc::new(build_wled_backend(&config)))
     }
 }
@@ -230,11 +225,11 @@ impl DiscoveryCapability for WledDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
-        let cached_probe_ips = load_cached_probe_ips(host)?;
-        let cached_targets = load_cached_probe_targets(host)?;
+        let cached_probe_ips = load_cached_probe_ips(host).map_err(DriverError::discovery)?;
+        let cached_targets = load_cached_probe_targets(host).map_err(DriverError::discovery)?;
         let known_targets = resolve_wled_probe_targets_from_sources(
             &config,
             &tracked_devices,
@@ -243,7 +238,7 @@ impl DiscoveryCapability for WledDriverModule {
         );
         let mut scanner =
             WledScanner::with_known_targets(known_targets, request.mdns_enabled, request.timeout);
-        scanner.scan().await
+        scanner.scan().await.map_err(DriverError::discovery)
     }
 }
 
@@ -263,14 +258,16 @@ impl DriverConfigProvider for WledDriverModule {
         ]))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<WledConfig>()?;
         for ip in config.known_ips {
-            validate_ip(ip).with_context(|| format!("invalid WLED known IP: {ip}"))?;
+            validate_ip(ip).map_err(|error| DriverError::Configuration {
+                message: format!("invalid WLED known IP {ip}: {error}"),
+            })?;
         }
         Ok(())
     }

@@ -1,6 +1,7 @@
-use anyhow::{Context, Result};
 use hypercolor_types::config::DriverConfigEntry;
 use serde::de::DeserializeOwned;
+
+use crate::DriverError;
 
 /// Read-only resolved config for one driver.
 #[derive(Debug, Clone, Copy)]
@@ -21,7 +22,7 @@ impl DriverConfigView<'_> {
     /// # Errors
     ///
     /// Returns an error when the settings payload does not match `T`.
-    pub fn parse_settings<T>(&self) -> Result<T>
+    pub fn parse_settings<T>(&self) -> Result<T, DriverError>
     where
         T: DeserializeOwned,
     {
@@ -32,8 +33,9 @@ impl DriverConfigView<'_> {
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
         );
-        serde_json::from_value(settings)
-            .with_context(|| format!("invalid config for driver '{}'", self.driver_id))
+        serde_json::from_value(settings).map_err(|error| DriverError::Configuration {
+            message: format!("invalid config for driver '{}': {error}", self.driver_id),
+        })
     }
 }
 
@@ -47,5 +49,5 @@ pub trait DriverConfigProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the driver cannot accept the config payload.
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()>;
+    fn validate_config(&self, config: &DriverConfigEntry) -> Result<(), DriverError>;
 }

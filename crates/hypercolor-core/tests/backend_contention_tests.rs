@@ -14,14 +14,21 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink};
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceError, DeviceId};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use tokio::sync::Notify;
+
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::protocol("test backend", format!($($arg)*)))
+    };
+}
 
 // ── ContentionMockBackend ───────────────────────────────────────────────────
 //

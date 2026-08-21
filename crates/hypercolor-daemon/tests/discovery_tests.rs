@@ -1,6 +1,5 @@
 //! Integration tests for daemon discovery scan scoping.
 
-use anyhow::{Result, bail};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -31,7 +30,7 @@ use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_driver_api::{
     CredentialStore, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
-    DriverHost, DriverModule,
+    DriverError, DriverHost, DriverModule,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -115,7 +114,7 @@ impl DiscoveryCapability for BlockingConfigDiscoveryDriver {
         _host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>> {
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
         let generation = config
             .entry
             .settings
@@ -169,25 +168,29 @@ impl DeviceBackend for CountingBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         self.connect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         self.disconnect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let _ = (id, colors);
         Ok(())
     }
@@ -207,25 +210,29 @@ impl DeviceBackend for FailingDisconnectBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         self.connect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         self.disconnect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        bail!("simulated disconnect failure")
+        Err(DeviceError::connection(id, "simulated disconnect failure"))
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let _ = (id, colors);
         Ok(())
     }
@@ -256,26 +263,30 @@ impl DeviceBackend for CachePrimingBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         if !self.cached.load(Ordering::Acquire) {
-            bail!("backend descriptor cache was not primed before connect");
+            return Err(DeviceError::NotAdopted { device_id: *id });
         }
         self.connect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let _ = (id, colors);
         Ok(())
     }

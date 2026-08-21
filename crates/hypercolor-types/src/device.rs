@@ -1066,9 +1066,42 @@ pub enum DeviceError {
         /// Requested next state name.
         to: String,
     },
+
+    /// The backend does not implement the requested operation.
+    #[error("backend {backend} does not support {operation}")]
+    Unsupported {
+        /// Stable backend identifier.
+        backend: String,
+        /// Human-readable operation name.
+        operation: &'static str,
+    },
 }
 
 impl DeviceError {
+    /// Build a typed connection failure from a concrete transport error.
+    pub fn connection(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::ConnectionFailed {
+            device: device.to_string(),
+            reason: error.to_string(),
+        }
+    }
+
+    /// Build a typed write failure from a concrete transport error.
+    pub fn write(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::WriteError {
+            device: device.to_string(),
+            detail: error.to_string(),
+        }
+    }
+
+    /// Build a typed protocol failure from a concrete protocol error.
+    pub fn protocol(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::ProtocolError {
+            device: device.to_string(),
+            detail: error.to_string(),
+        }
+    }
+
     /// Classify the recovery action for this failure.
     #[must_use]
     pub const fn recoverability(&self) -> ErrorRecoverability {
@@ -1081,7 +1114,8 @@ impl DeviceError {
             Self::NotAdopted { .. }
             | Self::NotFound { .. }
             | Self::InvalidHandle { .. }
-            | Self::InvalidTransition { .. } => ErrorRecoverability::Permanent,
+            | Self::InvalidTransition { .. }
+            | Self::Unsupported { .. } => ErrorRecoverability::Permanent,
         }
     }
 }

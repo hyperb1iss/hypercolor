@@ -16,8 +16,8 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
-    DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceError, DeviceId, DriverModuleDescriptor, DriverModuleKind,
+    DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
 };
 use hypercolor_types::identity::BackendId;
 use std::collections::BTreeSet;
@@ -129,17 +129,21 @@ impl DeviceBackend for TestBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let _ = id;
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let _ = id;
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         let _ = (id, colors);
         Ok(())
     }
@@ -154,7 +158,7 @@ impl DiscoveryCapability for DiscoveryOnlyCapability {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let _ = (host, request, config);
         Ok(Vec::new())
     }
@@ -178,7 +182,7 @@ impl PairingCapability for PairingOnlyCapability {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome> {
+    ) -> std::result::Result<PairDeviceOutcome, DriverError> {
         let _ = (host, device, request);
         unreachable!("pair is not exercised in registry tests")
     }
@@ -187,7 +191,7 @@ impl PairingCapability for PairingOnlyCapability {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome> {
+    ) -> std::result::Result<ClearPairingOutcome, DriverError> {
         let _ = (host, device);
         unreachable!("clear_credentials is not exercised in registry tests")
     }

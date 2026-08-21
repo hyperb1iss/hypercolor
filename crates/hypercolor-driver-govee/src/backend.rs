@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     BackendInfo, CredentialStore, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
@@ -317,14 +317,17 @@ struct GoveeFrameSink {
 
 #[async_trait]
 impl DeviceFrameSink for GoveeFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> std::result::Result<(), DeviceError> {
         self.write_colors_shared_outcome(colors).await.map(|_| ())
     }
 
     async fn write_colors_shared_outcome(
         &self,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
         GoveeBackend::write_device_colors(
             &self.device_id,
             &self.device,
@@ -337,6 +340,7 @@ impl DeviceFrameSink for GoveeFrameSink {
             None,
         )
         .await
+        .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -358,7 +362,8 @@ impl DeviceFrameSink for GoveeFrameSink {
             self.cloud_base_url.as_deref(),
             Some((id, observer.as_ref())),
         )
-        .await;
+        .await
+        .map_err(|error| DeviceError::write(self.device_id, error));
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
@@ -431,7 +436,10 @@ impl DeviceBackend for GoveeBackend {
         Ok(())
     }
 
-    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+    async fn connected_device_info(
+        &self,
+        id: &DeviceId,
+    ) -> std::result::Result<Option<DeviceInfo>, DeviceError> {
         let device = self
             .devices
             .read()
@@ -448,7 +456,7 @@ impl DeviceBackend for GoveeBackend {
         true
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let device = self
             .devices
             .read()
@@ -456,16 +464,20 @@ impl DeviceBackend for GoveeBackend {
             .get(id)
             .cloned();
         let Some(device) = device else {
-            bail!("Govee device {id} is not known");
+            return Err(DeviceError::NotAdopted { device_id: *id });
         };
 
         if device
             .try_lock()
             .is_ok_and(|device| device.address.is_some())
         {
-            self.send_command(id, LanCommand::Turn { on: true }).await?;
+            self.send_command(id, LanCommand::Turn { on: true })
+                .await
+                .map_err(|error| DeviceError::connection(id, error))?;
         } else {
-            self.send_cloud_command(id, V1Command::Turn(true)).await?;
+            self.send_cloud_command(id, V1Command::Turn(true))
+                .await
+                .map_err(|error| DeviceError::connection(id, error))?;
             return Ok(());
         }
         let should_enable_razer = device.try_lock().is_ok_and(|device| {
@@ -482,14 +494,15 @@ impl DeviceBackend for GoveeBackend {
                     pt: encode_razer_mode_base64(true),
                 },
             )
-            .await?;
+            .await
+            .map_err(|error| DeviceError::connection(id, error))?;
             device.lock().await.razer_enabled = true;
         }
 
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let device = self
             .devices
             .read()
@@ -510,14 +523,18 @@ impl DeviceBackend for GoveeBackend {
                     pt: encode_razer_mode_base64(false),
                 },
             )
-            .await?;
+            .await
+            .map_err(|error| DeviceError::write(id, error))?;
         }
         if self.config.power_off_on_disconnect {
             if has_lan_address {
                 self.send_command(id, LanCommand::Turn { on: false })
-                    .await?;
+                    .await
+                    .map_err(|error| DeviceError::write(id, error))?;
             } else {
-                self.send_cloud_command(id, V1Command::Turn(false)).await?;
+                self.send_cloud_command(id, V1Command::Turn(false))
+                    .await
+                    .map_err(|error| DeviceError::write(id, error))?;
             }
         }
         let mut device = device.lock().await;
@@ -526,7 +543,11 @@ impl DeviceBackend for GoveeBackend {
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         let device = self
             .devices
             .read()
@@ -534,7 +555,9 @@ impl DeviceBackend for GoveeBackend {
             .get(id)
             .cloned();
         let Some(device) = device else {
-            bail!("Govee device {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
         Self::write_device_colors(
             id,
@@ -548,6 +571,7 @@ impl DeviceBackend for GoveeBackend {
             None,
         )
         .await
+        .map_err(|error| DeviceError::write(id, error))
         .map(|_| ())
     }
 
@@ -555,7 +579,7 @@ impl DeviceBackend for GoveeBackend {
         &self,
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
         let device = self
             .devices
             .read()
@@ -563,7 +587,9 @@ impl DeviceBackend for GoveeBackend {
             .get(id)
             .cloned();
         let Some(device) = device else {
-            bail!("Govee device {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
         Self::write_device_colors(
             id,
@@ -577,6 +603,7 @@ impl DeviceBackend for GoveeBackend {
             None,
         )
         .await
+        .map_err(|error| DeviceError::write(id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -611,7 +638,8 @@ impl DeviceBackend for GoveeBackend {
             self.cloud_base_url.as_deref(),
             Some((delivery_id, observer.as_ref())),
         )
-        .await;
+        .await
+        .map_err(|error| DeviceError::write(device_id, error));
         DeviceDeliveryAck::from_write_result(
             delivery_id,
             payload_bytes,
@@ -620,21 +648,28 @@ impl DeviceBackend for GoveeBackend {
         )
     }
 
-    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(
+        &self,
+        id: &DeviceId,
+        brightness: u8,
+    ) -> std::result::Result<(), DeviceError> {
         let device = self
             .devices
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned();
-        if device.as_ref().is_none_or(|device| {
-            device
-                .try_lock()
-                .map_or(true, |device| device.address.is_none())
-        }) {
+        let Some(device) = device else {
+            return Err(DeviceError::NotAdopted { device_id: *id });
+        };
+        if device
+            .try_lock()
+            .map_or(true, |device| device.address.is_none())
+        {
             return self
                 .send_cloud_command(id, V1Command::Brightness(brightness))
-                .await;
+                .await
+                .map_err(|error| DeviceError::write(id, error));
         }
 
         self.send_command(
@@ -644,6 +679,7 @@ impl DeviceBackend for GoveeBackend {
             },
         )
         .await
+        .map_err(|error| DeviceError::write(id, error))
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {

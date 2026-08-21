@@ -29,10 +29,7 @@ impl BackendManager {
     /// Clone a backend I/O handle without holding the manager across awaits.
     #[must_use]
     pub fn backend_io(&self, backend_id: &str) -> Option<BackendIo> {
-        self.backends
-            .get(backend_id)
-            .cloned()
-            .map(|backend| BackendIo::new(backend_id.to_owned(), backend))
+        self.backends.get(backend_id).cloned().map(BackendIo::new)
     }
 
     /// List registered backend IDs.

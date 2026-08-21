@@ -18,6 +18,14 @@ fn driver_error_recoverability_is_typed() {
         .recoverability(),
         ErrorRecoverability::Permanent
     );
+    assert_eq!(
+        DriverError::discovery("mDNS socket closed").recoverability(),
+        ErrorRecoverability::Retry
+    );
+    assert_eq!(
+        DriverError::pairing("bridge button not pressed").recoverability(),
+        ErrorRecoverability::Retry
+    );
 }
 
 #[test]

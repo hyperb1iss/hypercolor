@@ -266,11 +266,7 @@ impl DeviceBackendFactory for NanoleafDriverModule {
         _host: &dyn DriverHost,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        let config = config.parse_settings::<NanoleafConfig>().map_err(|error| {
-            DriverError::Configuration {
-                message: error.to_string(),
-            }
-        })?;
+        let config = config.parse_settings::<NanoleafConfig>()?;
         Ok(Arc::new(NanoleafBackend::new(
             config,
             Arc::clone(&self.credential_store),
@@ -298,7 +294,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<NanoleafConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_devices = resolve_nanoleaf_probe_devices_from_sources(&config, &tracked_devices);
@@ -308,7 +304,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
             request.timeout,
             request.mdns_enabled,
         );
-        scanner.scan().await
+        scanner.scan().await.map_err(DriverError::discovery)
     }
 }
 
@@ -320,14 +316,16 @@ impl DriverConfigProvider for NanoleafDriverModule {
         ]))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<NanoleafConfig>()?;
         for ip in config.device_ips {
-            validate_ip(ip).with_context(|| format!("invalid Nanoleaf device IP: {ip}"))?;
+            validate_ip(ip).map_err(|error| DriverError::Configuration {
+                message: format!("invalid Nanoleaf device IP {ip}: {error}"),
+            })?;
         }
         Ok(())
     }
@@ -682,10 +680,10 @@ impl PairingCapability for NanoleafDriverModule {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome> {
+    ) -> std::result::Result<PairDeviceOutcome, DriverError> {
         if nanoleaf_credentials_present(host.credentials(), device.metadata)
             .await
-            .unwrap_or_default()
+            .map_err(DriverError::pairing)?
         {
             let activated = activate_if_requested(
                 host,
@@ -718,7 +716,10 @@ impl PairingCapability for NanoleafDriverModule {
         let api_port = network_port_from_metadata(device.metadata, "api_port")
             .unwrap_or(DEFAULT_NANOLEAF_API_PORT);
 
-        match pair_nanoleaf_device_at_ip(&self.credential_store, device_ip, api_port).await? {
+        match pair_nanoleaf_device_at_ip(&self.credential_store, device_ip, api_port)
+            .await
+            .map_err(DriverError::pairing)?
+        {
             Some(_) => {
                 let activated = activate_if_requested(
                     host,
@@ -753,8 +754,10 @@ impl PairingCapability for NanoleafDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome> {
-        clear_nanoleaf_credentials(host.credentials(), device.metadata).await?;
+    ) -> std::result::Result<ClearPairingOutcome, DriverError> {
+        clear_nanoleaf_credentials(host.credentials(), device.metadata)
+            .await
+            .map_err(DriverError::pairing)?;
         let disconnected = disconnect_after_unpair(host, device.device_id, DESCRIPTOR.id).await;
 
         Ok(ClearPairingOutcome {

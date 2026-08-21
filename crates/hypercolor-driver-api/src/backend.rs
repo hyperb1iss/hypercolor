@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::discovery::DiscoveredDevice;
-use anyhow::{Result, bail};
 use hypercolor_types::device::{
     DeviceError, DeviceId, DeviceInfo, DisplayFrameFormat, OwnedDisplayFramePayload,
 };
@@ -178,7 +177,7 @@ impl DeviceDeliveryAck {
         id: DeviceDeliveryId,
         payload_bytes: usize,
         transport_latency: Duration,
-        result: Result<DeviceWriteOutcome>,
+        result: Result<DeviceWriteOutcome, DeviceError>,
     ) -> Self {
         match result {
             Ok(DeviceWriteOutcome::Sent) => Self {
@@ -362,7 +361,7 @@ pub trait DeviceFrameSink: Send + Sync {
     ///
     /// Returns an error if the device output lane is no longer available or
     /// the driver has observed an asynchronous transport failure.
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()>;
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError>;
 
     /// Push shared LED color data and report whether the lane actually sent it.
     ///
@@ -373,7 +372,7 @@ pub trait DeviceFrameSink: Send + Sync {
     async fn write_colors_shared_outcome(
         &self,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
         self.write_colors_shared(colors)
             .await
             .map(|()| DeviceWriteOutcome::Sent)
@@ -425,7 +424,7 @@ pub trait DeviceDisplaySink: Send + Sync {
     async fn write_display_payload_owned(
         &self,
         payload: Arc<OwnedDisplayFramePayload>,
-    ) -> Result<()>;
+    ) -> Result<(), DeviceError>;
 }
 
 /// Core device communication trait.
@@ -448,7 +447,10 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// Returns an error if the device is connected but metadata retrieval
     /// fails. The default implementation reports no refreshed metadata.
-    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+    async fn connected_device_info(
+        &self,
+        id: &DeviceId,
+    ) -> Result<Option<DeviceInfo>, DeviceError> {
         let _ = id;
         Ok(None)
     }
@@ -459,28 +461,32 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// Returns an error if the device is not found, permissions are denied,
     /// or the transport-level connection fails.
-    async fn connect(&self, id: &DeviceId) -> Result<()>;
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError>;
 
     /// Cleanly disconnect from a device.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect operation fails.
-    async fn disconnect(&self, id: &DeviceId) -> Result<()>;
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError>;
 
     /// Push LED color data to a connected device.
     ///
     /// # Errors
     ///
     /// Returns an error if the device is disconnected or the write fails.
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()>;
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError>;
 
     /// Push shared LED color data to a connected device.
     ///
     /// # Errors
     ///
     /// Returns an error if the device is disconnected or the write fails.
-    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<(), DeviceError> {
         self.write_colors(id, colors.as_slice()).await
     }
 
@@ -493,7 +499,7 @@ pub trait DeviceBackend: Send + Sync {
         &self,
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
         self.write_colors_shared(id, colors)
             .await
             .map(|()| DeviceWriteOutcome::Sent)
@@ -561,12 +567,16 @@ pub trait DeviceBackend: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if display output is unsupported or the write fails.
-    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(
+        &self,
+        id: &DeviceId,
+        jpeg_data: &[u8],
+    ) -> Result<(), DeviceError> {
         let _ = (id, jpeg_data);
-        bail!(
-            "backend '{}' does not support device display output",
-            self.info().id
-        );
+        Err(DeviceError::Unsupported {
+            backend: self.info().id,
+            operation: "device display output",
+        })
     }
 
     /// Push an owned JPEG-compressed display frame to a connected device.
@@ -578,7 +588,7 @@ pub trait DeviceBackend: Send + Sync {
         &self,
         id: &DeviceId,
         jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<()> {
+    ) -> Result<(), DeviceError> {
         self.write_display_frame(id, jpeg_data.as_slice()).await
     }
 
@@ -591,16 +601,16 @@ pub trait DeviceBackend: Send + Sync {
         &self,
         id: &DeviceId,
         payload: Arc<OwnedDisplayFramePayload>,
-    ) -> Result<()> {
+    ) -> Result<(), DeviceError> {
         match payload.format {
             DisplayFrameFormat::Jpeg => {
                 self.write_display_frame_owned(id, Arc::clone(&payload.data))
                     .await
             }
-            DisplayFrameFormat::Rgb => bail!(
-                "backend '{}' does not support RGB display output",
-                self.info().id
-            ),
+            DisplayFrameFormat::Rgb => Err(DeviceError::Unsupported {
+                backend: self.info().id,
+                operation: "RGB display output",
+            }),
         }
     }
 
@@ -610,12 +620,12 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// Returns an error if device-level brightness is unsupported or the write
     /// fails.
-    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
         let _ = (id, brightness);
-        bail!(
-            "backend '{}' does not support device brightness control",
-            self.info().id
-        );
+        Err(DeviceError::Unsupported {
+            backend: self.info().id,
+            operation: "device brightness control",
+        })
     }
 
     /// Preferred output frame rate for a connected device.

@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -158,9 +158,13 @@ struct HueFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for HueFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> std::result::Result<(), DeviceError> {
         HueBackend::write_bridge_colors(&self.device_id, &self.bridge, colors.as_slice(), None)
             .await
+            .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -178,6 +182,7 @@ impl DeviceFrameSink for HueFrameSink {
             Some((id, observer.as_ref())),
         )
         .await
+        .map_err(|error| DeviceError::write(self.device_id, error))
         .map(|()| DeviceWriteOutcome::Sent);
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
@@ -239,7 +244,10 @@ impl DeviceBackend for HueBackend {
         Ok(())
     }
 
-    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+    async fn connected_device_info(
+        &self,
+        id: &DeviceId,
+    ) -> std::result::Result<Option<DeviceInfo>, DeviceError> {
         let bridge = self
             .bridges
             .read()
@@ -260,7 +268,7 @@ impl DeviceBackend for HueBackend {
         DeviceLifecyclePolicy::default().with_connect_timeout(HUE_CONNECT_TIMEOUT)
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         if self
             .bridges
             .read()
@@ -277,7 +285,7 @@ impl DeviceBackend for HueBackend {
             .get(id)
             .cloned();
         let Some(discovered) = discovered else {
-            bail!("Hue bridge {id} is not known; run discovery first");
+            return Err(DeviceError::NotAdopted { device_id: *id });
         };
 
         let (api_key, client_key) =
@@ -288,7 +296,8 @@ impl DeviceBackend for HueBackend {
                         "Hue bridge {} at {} requires pairing credentials",
                         discovered.info.name, discovered.ip
                     )
-                })?;
+                })
+                .map_err(|error| DeviceError::connection(id, error))?;
 
         let client = HueBridgeClient::authenticated_with_port(
             discovered.ip,
@@ -304,11 +313,13 @@ impl DeviceBackend for HueBackend {
         let lights = client
             .lights()
             .await
-            .context("failed to fetch Hue bridge lights")?;
+            .context("failed to fetch Hue bridge lights")
+            .map_err(|error| DeviceError::connection(id, error))?;
         let configs = client
             .entertainment_configs()
             .await
-            .context("failed to fetch Hue entertainment configurations")?;
+            .context("failed to fetch Hue entertainment configurations")
+            .map_err(|error| DeviceError::connection(id, error))?;
         let entertainment_config = choose_entertainment_config(
             self.config.entertainment_config.as_deref(),
             configs.as_slice(),
@@ -319,7 +330,8 @@ impl DeviceBackend for HueBackend {
                 "Hue bridge {} does not expose a compatible entertainment configuration",
                 discovered.info.name
             )
-        })?;
+        })
+        .map_err(|error| DeviceError::connection(id, error))?;
 
         client
             .start_streaming(&entertainment_config.id)
@@ -329,7 +341,8 @@ impl DeviceBackend for HueBackend {
                     "failed to activate Hue entertainment config {} on {}",
                     entertainment_config.name, discovered.info.name
                 )
-            })?;
+            })
+            .map_err(|error| DeviceError::connection(id, error))?;
 
         let stream = match HueStreamSession::connect(
             discovered.ip,
@@ -343,12 +356,11 @@ impl DeviceBackend for HueBackend {
             Ok(stream) => stream,
             Err(error) => {
                 let _ = client.stop_streaming(&entertainment_config.id).await;
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to establish Hue entertainment stream for {}",
-                        discovered.info.name
-                    )
-                });
+                let error = error.context(format!(
+                    "failed to establish Hue entertainment stream for {}",
+                    discovered.info.name
+                ));
+                return Err(DeviceError::connection(id, error));
             }
         };
 
@@ -408,14 +420,16 @@ impl DeviceBackend for HueBackend {
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let bridge = self
             .bridges
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
         let Some(bridge) = bridge else {
-            bail!("Hue bridge {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
         let bridge = bridge.lock().await;
 
@@ -433,30 +447,44 @@ impl DeviceBackend for HueBackend {
             "Disconnected from Hue bridge"
         );
 
-        close_result?;
-        stop_result?;
+        close_result.map_err(|error| DeviceError::write(id, error))?;
+        stop_result.map_err(|error| DeviceError::write(id, error))?;
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         let bridge = self
             .bridges
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
-            .with_context(|| format!("Hue bridge {id} is not connected"))?;
-        Self::write_bridge_colors(id, &bridge, colors, None).await
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })?;
+        Self::write_bridge_colors(id, &bridge, colors, None)
+            .await
+            .map_err(|error| DeviceError::write(id, error))
     }
 
-    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(
+        &self,
+        id: &DeviceId,
+        brightness: u8,
+    ) -> std::result::Result<(), DeviceError> {
         let bridge = self
             .bridges
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
-            .with_context(|| format!("Hue bridge {id} is not connected"))?;
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })?;
         bridge.lock().await.brightness = brightness;
         Ok(())
     }

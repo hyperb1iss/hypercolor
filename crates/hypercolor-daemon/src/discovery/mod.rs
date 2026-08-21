@@ -560,15 +560,19 @@ mod tests {
             Ok(())
         }
 
-        async fn connect(&self, _id: &DeviceId) -> anyhow::Result<()> {
+        async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
             Ok(())
         }
 
-        async fn disconnect(&self, _id: &DeviceId) -> anyhow::Result<()> {
+        async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
             Ok(())
         }
 
-        async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> anyhow::Result<()> {
+        async fn write_colors(
+            &self,
+            _id: &DeviceId,
+            _colors: &[[u8; 3]],
+        ) -> Result<(), DeviceError> {
             Ok(())
         }
     }
@@ -580,7 +584,7 @@ mod tests {
             host: &dyn hypercolor_driver_api::DriverHost,
             request: &DiscoveryRequest,
             config: DriverConfigView<'_>,
-        ) -> anyhow::Result<Vec<DiscoveredDevice>> {
+        ) -> Result<Vec<DiscoveredDevice>, DriverError> {
             let _ = (host, request, config);
             Ok(Vec::new())
         }

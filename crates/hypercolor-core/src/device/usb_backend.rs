@@ -396,7 +396,7 @@ struct UsbFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for UsbFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
         self.publish(Arc::new(UsbFramePayload::untracked(colors)))
     }
 
@@ -445,7 +445,7 @@ impl DeviceFrameSink for UsbFrameSink {
 }
 
 impl UsbFrameSink {
-    fn publish(&self, payload: Arc<UsbFramePayload>) -> Result<()> {
+    fn publish(&self, payload: Arc<UsbFramePayload>) -> Result<(), DeviceError> {
         let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
         self.ensure_ready()?;
         if let Some(previous) = self.frame_tx.send_replace(Some(payload)) {
@@ -454,21 +454,22 @@ impl UsbFrameSink {
         Ok(())
     }
 
-    fn ensure_ready(&self) -> Result<()> {
+    fn ensure_ready(&self) -> Result<(), DeviceError> {
         if !self.active.load(Ordering::Acquire) {
-            bail!(
-                "USB device actor is not running for device {}",
-                self.device_id
-            );
+            return Err(DeviceError::Disconnected {
+                device: self.device_id.to_string(),
+            });
         }
 
         if let Some(error) = self
             .last_async_error
             .lock()
-            .map_err(|_| anyhow!("USB device async error state lock poisoned"))?
+            .map_err(|_| {
+                DeviceError::protocol(self.device_id, "USB async error state lock poisoned")
+            })?
             .clone()
         {
-            bail!("{error}");
+            return Err(DeviceError::write(self.device_id, error));
         }
         Ok(())
     }
@@ -493,21 +494,22 @@ impl DeviceDisplaySink for UsbDisplaySink {
     async fn write_display_payload_owned(
         &self,
         payload: Arc<OwnedDisplayFramePayload>,
-    ) -> Result<()> {
+    ) -> Result<(), DeviceError> {
         if !self.active.load(Ordering::Acquire) {
-            bail!(
-                "USB device actor is not running for device {}",
-                self.device_id
-            );
+            return Err(DeviceError::Disconnected {
+                device: self.device_id.to_string(),
+            });
         }
 
         if let Some(error) = self
             .last_async_error
             .lock()
-            .map_err(|_| anyhow!("USB device async error state lock poisoned"))?
+            .map_err(|_| {
+                DeviceError::protocol(self.device_id, "USB async error state lock poisoned")
+            })?
             .clone()
         {
-            bail!("{error}");
+            return Err(DeviceError::write(self.device_id, error));
         }
 
         self.display_tx
@@ -953,7 +955,7 @@ impl DeviceBackend for UsbBackend {
         clippy::too_many_lines,
         reason = "USB connect owns discovery handoff, init, diagnostics, and actor startup"
     )]
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let connected = self
             .connected
             .read()
@@ -962,9 +964,13 @@ impl DeviceBackend for UsbBackend {
             .cloned();
         if let Some(connected) = connected {
             let mut device = connected.device.lock().await;
-            device.ensure_actor_ready(*id).await.with_context(|| {
-                format!("USB device {id} is already connected but its actor is unhealthy")
-            })?;
+            device
+                .ensure_actor_ready(*id)
+                .await
+                .with_context(|| {
+                    format!("USB device {id} is already connected but its actor is unhealthy")
+                })
+                .map_err(|error| DeviceError::connection(id, error))?;
             debug!(device_id = %id, "USB device already connected; skipping duplicate connect");
             return Ok(());
         }
@@ -977,14 +983,18 @@ impl DeviceBackend for UsbBackend {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
-            pending_guard.get(id).cloned().with_context(|| {
-                format!(
-                    "device {id} has no adopted USB descriptor (pending_cache_size={}, sample_ids=[{}])",
-                    pending_guard.len(),
-                    pending_ids
-                )
+            pending_guard.get(id).cloned().ok_or_else(|| {
+                debug!(
+                    device_id = %id,
+                    pending_cache_size = pending_guard.len(),
+                    sample_ids = %pending_ids,
+                    "USB connect refused a device without an adopted descriptor"
+                );
+                DeviceError::NotAdopted { device_id: *id }
             })?
         };
+
+        let result: Result<()> = async {
         debug!(
             device_id = %id,
             vendor_id = format_args!("{:04X}", pending.vendor_id),
@@ -1168,10 +1178,13 @@ impl DeviceBackend for UsbBackend {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(*id, Arc::new(connected));
 
-        Ok(())
+            Ok(())
+        }
+        .await;
+        result.map_err(|error| DeviceError::connection(id, error))
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let connected = self
             .connected
             .write()
@@ -1191,15 +1204,19 @@ impl DeviceBackend for UsbBackend {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
-        disconnect_result
+        disconnect_result.map_err(|error| DeviceError::connection(id, error))
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         self.write_colors_shared(id, Arc::new(colors.to_vec()))
             .await
     }
 
-    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<(), DeviceError> {
         let connected = self
             .connected
             .read()
@@ -1207,11 +1224,16 @@ impl DeviceBackend for UsbBackend {
             .get(id)
             .cloned();
         let Some(connected) = connected else {
-            bail!("device {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
         let mut device = connected.device.lock().await;
 
-        device.ensure_actor_ready(*id).await?;
+        device
+            .ensure_actor_ready(*id)
+            .await
+            .map_err(|error| DeviceError::write(id, error))?;
 
         let frame_stats = summarize_frame(colors.as_slice());
         if !device.frame_diagnostics_emitted {
@@ -1255,7 +1277,11 @@ impl DeviceBackend for UsbBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(
+        &self,
+        id: &DeviceId,
+        jpeg_data: &[u8],
+    ) -> Result<(), DeviceError> {
         self.write_display_frame_owned(id, Arc::new(jpeg_data.to_vec()))
             .await
     }
@@ -1264,7 +1290,7 @@ impl DeviceBackend for UsbBackend {
         &self,
         id: &DeviceId,
         jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<()> {
+    ) -> Result<(), DeviceError> {
         let payload = Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, jpeg_data));
         self.write_display_payload_owned(id, payload).await
     }
@@ -1273,7 +1299,7 @@ impl DeviceBackend for UsbBackend {
         &self,
         id: &DeviceId,
         payload: Arc<OwnedDisplayFramePayload>,
-    ) -> Result<()> {
+    ) -> Result<(), DeviceError> {
         let connected = self
             .connected
             .read()
@@ -1281,15 +1307,23 @@ impl DeviceBackend for UsbBackend {
             .get(id)
             .cloned();
         let Some(connected) = connected else {
-            bail!("device {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
         let mut device = connected.device.lock().await;
 
         if !device.info_template.capabilities.has_display {
-            bail!("USB protocol does not support display output for device {id}");
+            return Err(DeviceError::Unsupported {
+                backend: USB_OUTPUT_BACKEND_ID.to_owned(),
+                operation: "device display output",
+            });
         }
 
-        device.ensure_actor_ready(*id).await?;
+        device
+            .ensure_actor_ready(*id)
+            .await
+            .map_err(|error| DeviceError::write(id, error))?;
         trace!(
             device_id = %id,
             protocol = device.protocol.name(),
@@ -1303,7 +1337,7 @@ impl DeviceBackend for UsbBackend {
         Ok(())
     }
 
-    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
         let connected = self
             .connected
             .read()
@@ -1311,14 +1345,22 @@ impl DeviceBackend for UsbBackend {
             .get(id)
             .cloned();
         let Some(connected) = connected else {
-            bail!("device {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
 
         let mut device = connected.device.lock().await;
-        device.set_brightness(*id, brightness).await
+        device
+            .set_brightness(*id, brightness)
+            .await
+            .map_err(|error| DeviceError::write(id, error))
     }
 
-    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+    async fn connected_device_info(
+        &self,
+        id: &DeviceId,
+    ) -> Result<Option<DeviceInfo>, DeviceError> {
         let connected = self
             .connected
             .read()

@@ -1,7 +1,6 @@
-use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::{DriverHost, TrackedDeviceCtx};
+use crate::{DriverError, DriverHost, TrackedDeviceCtx};
 
 // Pairing data vocabulary lives in hypercolor-types (shared with the
 // daemon API contracts and every client); re-exported here so drivers
@@ -31,7 +30,7 @@ pub trait PairingCapability: Send + Sync {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome>;
+    ) -> Result<PairDeviceOutcome, DriverError>;
 
     /// Clear stored credentials for a tracked device.
     ///
@@ -42,5 +41,5 @@ pub trait PairingCapability: Send + Sync {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome>;
+    ) -> Result<ClearPairingOutcome, DriverError>;
 }

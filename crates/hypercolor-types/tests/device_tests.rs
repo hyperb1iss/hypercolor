@@ -643,6 +643,15 @@ fn device_error_display_messages() {
         err.to_string(),
         "invalid device transition for Fixture Strip: Known -> Active"
     );
+
+    let err = DeviceError::Unsupported {
+        backend: "fixture-network".into(),
+        operation: "display output",
+    };
+    assert_eq!(
+        err.to_string(),
+        "backend fixture-network does not support display output"
+    );
 }
 
 #[test]
@@ -714,6 +723,23 @@ fn device_error_recoverability_is_typed() {
             device: String::new(),
             from: String::new(),
             to: String::new()
+        }
+        .recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    assert_eq!(
+        DeviceError::NotAdopted {
+            device_id: DeviceId::new()
+        }
+        .recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    assert_eq!(
+        DeviceError::Unsupported {
+            backend: "fixture-network".into(),
+            operation: "display output"
         }
         .recoverability(),
         ErrorRecoverability::Permanent

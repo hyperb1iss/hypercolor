@@ -4,6 +4,7 @@
 //! effect renderer work correctly together — from discovery through frame
 //! rendering and LED color output — without any real hardware.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 #[path = "support/frame_state.rs"]
@@ -32,7 +33,7 @@ static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::e
 
 fn add_discovery_source(orchestrator: &mut DiscoveryOrchestrator, source: MockDiscoverySource) {
     let name = source.name().to_owned();
-    orchestrator.add_source(name, async move { source.scan().await });
+    orchestrator.add_source(name, async move { source.scan() });
 }
 
 fn initialized_renderer(
@@ -304,7 +305,7 @@ async fn device_lifecycle_discover_connect_write_disconnect() {
             fingerprint: DeviceFingerprint::from_persisted("bridge:mock:test-strip"),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
-            metadata: Default::default(),
+            metadata: HashMap::default(),
             claim: None,
         })
         .expect("adoption should succeed");

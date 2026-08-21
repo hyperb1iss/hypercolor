@@ -14,8 +14,8 @@ use hypercolor_driver_api::{
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
-    DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceError, DeviceId, DriverModuleDescriptor, DriverModuleKind,
+    DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
 };
 use hypercolor_types::identity::BackendId;
 
@@ -353,17 +353,17 @@ impl DeviceBackend for TestBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let _ = id;
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let _ = id;
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let _ = (id, colors);
         Ok(())
     }

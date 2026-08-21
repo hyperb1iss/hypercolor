@@ -111,15 +111,16 @@ impl DiscoveryOrchestrator {
     }
 
     /// Register one driver-owned discovery future.
-    pub fn add_source<F>(&mut self, name: impl Into<String>, future: F)
+    pub fn add_source<F, E>(&mut self, name: impl Into<String>, future: F)
     where
-        F: Future<Output = Result<Vec<DiscoveredDevice>>> + Send + 'static,
+        F: Future<Output = Result<Vec<DiscoveredDevice>, E>> + Send + 'static,
+        E: Into<anyhow::Error> + Send + 'static,
     {
         let name = name.into();
         info!(source = %name, "registered discovery source");
         self.sources.push(DiscoverySource {
             name,
-            future: Box::pin(future),
+            future: Box::pin(async move { future.await.map_err(Into::into) }),
         });
     }
 

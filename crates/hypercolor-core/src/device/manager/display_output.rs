@@ -138,7 +138,7 @@ impl DisplayOutputLane {
         } else {
             self.0.failed.fetch_add(1, Ordering::Relaxed);
         }
-        result
+        result.context("display backend delivery failed")
     }
 }
 

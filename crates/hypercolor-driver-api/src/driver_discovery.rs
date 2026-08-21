@@ -1,9 +1,8 @@
 use std::time::Duration;
 
-use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::{DiscoveredDevice, DriverConfigView, DriverHost};
+use crate::{DiscoveredDevice, DriverConfigView, DriverError, DriverHost};
 
 /// Discovery request normalized by the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,5 +24,5 @@ pub trait DiscoveryCapability: Send + Sync {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>>;
+    ) -> Result<Vec<DiscoveredDevice>, DriverError>;
 }

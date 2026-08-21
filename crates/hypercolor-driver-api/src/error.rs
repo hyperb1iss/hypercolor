@@ -33,14 +33,42 @@ pub enum DriverError {
         #[source]
         source: anyhow::Error,
     },
+    /// Driver discovery failed before a device entered inventory.
+    #[error("driver discovery failed: {message}")]
+    Discovery {
+        /// Discovery failure detail.
+        message: String,
+    },
+    /// Driver pairing or credential removal failed.
+    #[error("driver pairing failed: {message}")]
+    Pairing {
+        /// Pairing failure detail.
+        message: String,
+    },
 }
 
 impl DriverError {
+    /// Build a typed discovery failure from a concrete provider error.
+    pub fn discovery(error: impl std::fmt::Display) -> Self {
+        Self::Discovery {
+            message: error.to_string(),
+        }
+    }
+
+    /// Build a typed pairing failure from a concrete provider error.
+    pub fn pairing(error: impl std::fmt::Display) -> Self {
+        Self::Pairing {
+            message: error.to_string(),
+        }
+    }
+
     /// Classify the recovery action for this failure.
     #[must_use]
     pub const fn recoverability(&self) -> ErrorRecoverability {
         match self {
-            Self::Timeout { .. } => ErrorRecoverability::Retry,
+            Self::Timeout { .. } | Self::Discovery { .. } | Self::Pairing { .. } => {
+                ErrorRecoverability::Retry
+            }
             Self::Configuration { .. }
             | Self::Contract { .. }
             | Self::BackendConstruction { .. } => ErrorRecoverability::Permanent,

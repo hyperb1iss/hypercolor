@@ -4,7 +4,7 @@ use hypercolor_core::device::{
     SegmentRange,
 };
 use hypercolor_types::device::{
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
+    DeviceError, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, HypercolorEvent, ZoneRef};
 use tracing::info;
@@ -152,7 +152,7 @@ pub(super) async fn connect_backend_device_with_timeout(
     device_id: DeviceId,
     layout_device_id: &str,
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> Result<(), DeviceError> {
     connect_backend_device_inner(
         runtime,
         backend_id,
@@ -169,8 +169,15 @@ async fn connect_backend_device_inner(
     device_id: DeviceId,
     layout_device_id: &str,
     timeout: Option<Duration>,
-) -> anyhow::Result<()> {
-    let io = backend_io(runtime, backend_id).await?;
+) -> Result<(), DeviceError> {
+    let io = {
+        let manager = runtime.backend_manager.lock().await;
+        manager
+            .backend_io(backend_id)
+            .ok_or_else(|| DeviceError::NotFound {
+                device: format!("backend {backend_id}"),
+            })?
+    };
     adopt_discovered_device(runtime, device_id, &io).await?;
     sync_host_attachment_profile_config(runtime, device_id, &io).await;
     let output_cadence = match timeout {
@@ -194,7 +201,7 @@ async fn adopt_discovered_device(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
     backend: &BackendIo,
-) -> anyhow::Result<()> {
+) -> Result<(), DeviceError> {
     let Some(tracked) = runtime.device_registry.get(&device_id).await else {
         return Ok(());
     };
@@ -229,13 +236,15 @@ pub(super) async fn disconnect_backend_device(
     runtime.usb_protocol_configs.remove_device(device_id).await;
 
     let io = backend_io(runtime, backend_id).await?;
-    tokio::time::timeout(DEVICE_DISCONNECT_TIMEOUT, io.disconnect(device_id))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "timed out disconnecting device {device_id} using backend '{backend_id}'"
-            )
-        })?
+    Ok(
+        tokio::time::timeout(DEVICE_DISCONNECT_TIMEOUT, io.disconnect(device_id))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "timed out disconnecting device {device_id} using backend '{backend_id}'"
+                )
+            })??,
+    )
 }
 
 pub(super) async fn ensure_default_logical_for_device(

@@ -21,7 +21,7 @@ impl BackendManager {
         let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-        io.write_colors(device_id, colors).await
+        Ok(io.write_colors(device_id, colors).await?)
     }
 
     /// Adjust hardware brightness for a specific physical device.
@@ -40,6 +40,6 @@ impl BackendManager {
         let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-        io.set_brightness(device_id, brightness).await
+        Ok(io.set_brightness(device_id, brightness).await?)
     }
 }

@@ -139,14 +139,14 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
 }
 
 #[tokio::test]
-async fn backend_reconnects_after_openrgb_socket_closes() {
+async fn backend_surfaces_socket_close_without_private_reconnect() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("fake OpenRGB server should bind");
     let endpoint = listener
         .local_addr()
         .expect("fake OpenRGB server should expose local addr");
-    let server = tokio::spawn(run_reconnect_server(listener));
+    let server = tokio::spawn(run_no_private_reconnect_server(listener));
     let config = OpenRgbConfig {
         endpoints: vec![endpoint],
         ownership: OpenRgbOwnership {
@@ -173,16 +173,25 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
         .await
         .expect("backend should connect selected controller");
     tokio::time::sleep(Duration::from_millis(20)).await;
-    backend
-        .write_colors(&device_id, &[[90, 80, 70], [60, 50, 40]])
-        .await
-        .expect("backend should reconnect and stream colors");
+    let sink = backend
+        .frame_sink(&device_id)
+        .expect("connected controller should expose a frame sink");
+    let ack = sink
+        .deliver_colors_shared(
+            DeviceDeliveryId {
+                queue_generation: 3,
+                sequence: 1,
+            },
+            Arc::new(vec![[90, 80, 70], [60, 50, 40]]),
+        )
+        .await;
 
-    let update = server.await.expect("server task should join");
-    assert_eq!(update.header.device_index, 0);
-    assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
-    assert_eq!(&update.payload[6..10], &[90, 80, 70, 0]);
-    assert_eq!(&update.payload[10..14], &[60, 50, 40, 0]);
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    assert!(
+        server
+            .await
+            .expect("server task should confirm no reconnect")
+    );
 }
 
 #[tokio::test]
@@ -1317,19 +1326,18 @@ async fn handle_setup_readback_connection(
     false
 }
 
-async fn run_reconnect_server(listener: TcpListener) -> Packet {
-    let mut connection_index = 0_u32;
-    loop {
+async fn run_no_private_reconnect_server(listener: TcpListener) -> bool {
+    for connection_index in 0..2 {
         let (stream, _) = listener
             .accept()
             .await
             .expect("fake OpenRGB server should accept client");
         let close_after_mode_setup = connection_index == 1;
-        connection_index += 1;
-        if let Some(update) = handle_reconnect_connection(stream, close_after_mode_setup).await {
-            return update;
-        }
+        let _ = handle_output_connection(stream, close_after_mode_setup).await;
     }
+    tokio::time::timeout(Duration::from_millis(250), listener.accept())
+        .await
+        .is_err()
 }
 
 async fn run_latest_value_server(listener: TcpListener) -> Packet {
@@ -1338,7 +1346,7 @@ async fn run_latest_value_server(listener: TcpListener) -> Packet {
             .accept()
             .await
             .expect("fake OpenRGB server should accept client");
-        if let Some(update) = handle_reconnect_connection(stream, false).await {
+        if let Some(update) = handle_output_connection(stream, false).await {
             return update;
         }
     }
@@ -1471,7 +1479,7 @@ async fn handle_drain_connection(mut stream: TcpStream) {
     }
 }
 
-async fn handle_reconnect_connection(
+async fn handle_output_connection(
     mut stream: TcpStream,
     close_after_mode_setup: bool,
 ) -> Option<Packet> {

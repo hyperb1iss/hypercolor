@@ -35,7 +35,7 @@ use hypercolor_driver_api::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent, ZoneColors,
@@ -231,17 +231,21 @@ impl DeviceBackend for SlowDisconnectFailBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> anyhow::Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.info.id {
-            anyhow::bail!("unknown slow-disconnect test device {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> anyhow::Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.info.id {
-            anyhow::bail!("unknown slow-disconnect test device {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         self.disconnect_started.notify_waiters();
         tokio::time::sleep(self.disconnect_delay).await;
@@ -249,11 +253,13 @@ impl DeviceBackend for SlowDisconnectFailBackend {
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> anyhow::Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if !self.connected.load(Ordering::Acquire) {
-            anyhow::bail!("slow-disconnect test device {id} is disconnected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
-        anyhow::bail!("forced async write failure for slow-disconnect test device {id}");
+        Err(DeviceError::write(id, "forced async write failure"))
     }
 }
 

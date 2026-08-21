@@ -21,8 +21,9 @@ use hypercolor_driver_wled::{
     build_ddp_frame, universes_needed,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    SegmentInfo,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::net::UdpSocket;
@@ -1033,11 +1034,11 @@ async fn backend_connect_without_adoption_fails() {
     let backend = WledBackend::new();
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
-    let result = backend.connect(&unknown_id).await;
-    assert!(
-        result.is_err(),
-        "connecting without prior adoption should fail"
-    );
+    let error = backend
+        .connect(&unknown_id)
+        .await
+        .expect_err("connecting without prior adoption should fail");
+    assert!(matches!(error, DeviceError::NotAdopted { .. }));
 }
 
 #[tokio::test]
@@ -1099,8 +1100,11 @@ async fn backend_disconnect_unknown_fails() {
     let backend = WledBackend::new();
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
-    let result = backend.disconnect(&unknown_id).await;
-    assert!(result.is_err(), "disconnecting unknown device should fail");
+    let error = backend
+        .disconnect(&unknown_id)
+        .await
+        .expect_err("disconnecting unknown device should fail");
+    assert!(matches!(error, DeviceError::Disconnected { .. }));
 }
 
 #[tokio::test]
@@ -1195,11 +1199,11 @@ async fn backend_write_to_disconnected_fails() {
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
     let colors = vec![[0xFF, 0x00, 0x00]; 30];
-    let result = backend.write_colors(&unknown_id, &colors).await;
-    assert!(
-        result.is_err(),
-        "writing to disconnected device should fail"
-    );
+    let error = backend
+        .write_colors(&unknown_id, &colors)
+        .await
+        .expect_err("writing to disconnected device should fail");
+    assert!(matches!(error, DeviceError::Disconnected { .. }));
 }
 
 #[tokio::test]

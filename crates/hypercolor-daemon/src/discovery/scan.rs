@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_core::device::{DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction};
-use hypercolor_driver_api::{DiscoveryRequest, DriverConfigView};
+use hypercolor_driver_api::{DiscoveryRequest, DriverConfigView, DriverError};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
@@ -302,7 +302,7 @@ pub async fn execute_discovery_scan(
         let registered_driver_ids = Arc::clone(&registered_driver_ids);
         orchestrator.add_source(display_name, async move {
             let Some(capability) = driver.discovery() else {
-                return Ok(Vec::new());
+                return Ok::<_, DriverError>(Vec::new());
             };
             let mut devices = capability
                 .discover(

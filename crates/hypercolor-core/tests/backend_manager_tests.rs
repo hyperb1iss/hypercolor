@@ -6,7 +6,6 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
@@ -14,7 +13,8 @@ use hypercolor_core::device::{
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures,
 };
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, OwnedDisplayFramePayload, SegmentInfo,
@@ -26,6 +26,14 @@ use hypercolor_types::spatial::{
 };
 use tokio::sync::{Mutex, Notify};
 use tracing_subscriber::fmt::writer::MakeWriter;
+
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::protocol("test backend", format!($($arg)*)))
+    };
+}
 
 fn format_error_chain(error: &anyhow::Error) -> String {
     error
@@ -279,7 +287,9 @@ impl DeviceBackend for FailingDisconnectBackend {
             bail!("unexpected device id {id}");
         }
         if !self.connected.load(Ordering::Acquire) {
-            bail!("write while disconnected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         Ok(())
     }
@@ -590,7 +600,9 @@ impl DeviceBackend for DirectControlRecordingBackend {
             bail!("unexpected device id {id}");
         }
         if !self.connected.load(Ordering::Acquire) {
-            bail!("write while disconnected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
 
         self.writes.lock().await.push(colors.to_vec());
@@ -602,7 +614,9 @@ impl DeviceBackend for DirectControlRecordingBackend {
             bail!("unexpected device id {id}");
         }
         if !self.connected.load(Ordering::Acquire) {
-            bail!("brightness change while disconnected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
 
         self.brightness_writes.lock().await.push(brightness);
@@ -669,7 +683,7 @@ impl DeviceBackend for FailOnceRecordingBackend {
 
         let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
         if attempt == 0 {
-            bail!("transient write failure");
+            return Err(DeviceError::write(id, "transient write failure"));
         }
 
         self.writes.lock().await.push(colors.to_vec());
@@ -970,8 +984,9 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         }
 
         self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        Err(anyhow::anyhow!("transport timeout after 1000ms"))
-            .context("failed to run init sequence for Ableton Push 2")
+        Err(DeviceError::Timeout {
+            after: Duration::from_secs(1),
+        })
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<()> {
@@ -1602,10 +1617,10 @@ async fn disconnect_device_surfaces_backend_errors() {
         .disconnect_device("mock", device_id, "mock:error")
         .await
         .expect_err("disconnect of non-connected device should fail");
-    assert!(
-        error.to_string().contains("failed to disconnect device"),
-        "unexpected error: {error}"
-    );
+    assert!(matches!(
+        error.downcast_ref::<DeviceError>(),
+        Some(DeviceError::Disconnected { device }) if device == &device_id.to_string()
+    ));
 }
 
 #[tokio::test]
@@ -1748,10 +1763,7 @@ async fn backend_io_connect_timeout_does_not_retry_or_disconnect() {
         .await
         .expect_err("connect should time out");
 
-    assert!(
-        error.to_string().contains("device connect timed out"),
-        "unexpected error: {error}"
-    );
+    assert!(matches!(error, DeviceError::Timeout { .. }));
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(
         disconnect_attempts.load(Ordering::Relaxed),
@@ -1780,12 +1792,11 @@ async fn backend_io_transport_timeout_is_not_retried_or_disconnected() {
         .connect(device_id)
         .await
         .expect_err("connect should surface transport timeout");
-    let error_chain = format_error_chain(&error);
-
-    assert!(
-        error_chain.contains("transport timeout after 1000ms"),
-        "unexpected error chain: {error_chain}"
+    assert_eq!(
+        error.recoverability(),
+        hypercolor_types::device::ErrorRecoverability::Retry
     );
+    assert!(matches!(error, DeviceError::Timeout { .. }));
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(
         disconnect_attempts.load(Ordering::Relaxed),
@@ -1869,7 +1880,9 @@ async fn backend_io_disconnect_stops_future_direct_writes() {
         .write_colors(device_id, &[[1, 2, 3]; 4])
         .await
         .expect_err("writes should fail after disconnect");
-    assert!(error.to_string().contains("failed to write"));
+    assert!(
+        matches!(error, DeviceError::Disconnected { device } if device == device_id.to_string())
+    );
 }
 
 #[tokio::test]
@@ -3967,9 +3980,10 @@ async fn device_output_statistics_tracks_async_write_errors() {
     assert_eq!(stats[0].last_transport_started_sequence, 1);
     assert_eq!(stats[0].last_transport_completed_sequence, 0);
     assert_eq!(stats[0].last_transport_failed_sequence, 1);
+    let expected_error = format!("write error on {device_id}: transient write failure");
     assert_eq!(
         stats[0].last_error.as_deref(),
-        Some("transient write failure")
+        Some(expected_error.as_str())
     );
 }
 

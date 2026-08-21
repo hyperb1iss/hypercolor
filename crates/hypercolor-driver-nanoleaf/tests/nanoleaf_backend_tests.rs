@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DeviceBackend;
-use hypercolor_driver_api::DiscoveryConnectBehavior;
+use hypercolor_driver_api::{DeviceError, DiscoveryConnectBehavior};
 use hypercolor_driver_nanoleaf::{
     NanoleafBackend, NanoleafConfig, NanoleafDiscoveredDevice, build_device_info,
 };
@@ -152,10 +152,7 @@ async fn backend_connect_without_discovery_fails() {
         .connect(&hypercolor_types::device::DeviceId::new())
         .await
         .expect_err("connect without discovery should fail");
-    assert!(
-        error.to_string().contains("not known"),
-        "unexpected error: {error}"
-    );
+    assert!(matches!(error, DeviceError::NotAdopted { .. }));
 }
 
 fn json_response(body: &str) -> Vec<u8> {

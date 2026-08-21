@@ -201,36 +201,40 @@ impl DeviceBackend for MockDeviceBackend {
         }
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.calls.push(MockCall::Connect(*id));
 
         if self.fail_connect {
-            bail!("mock connect failure for device {id}");
+            return Err(DeviceError::connection(id, "mock connect failure"));
         }
         if state.connected.contains(id) {
-            bail!("device {id} is already connected");
+            return Err(DeviceError::connection(id, "device is already connected"));
         }
         // Verify the device is actually known
         if !self.devices.iter().any(|d| d.id == *id) {
-            bail!("device {id} not found in mock backend");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         state.connected.insert(*id);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.calls.push(MockCall::Disconnect(*id));
 
         if !state.connected.remove(id) {
-            bail!("device {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         state.last_colors.remove(id);
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.calls.push(MockCall::WriteColors {
             device_id: *id,
@@ -238,10 +242,12 @@ impl DeviceBackend for MockDeviceBackend {
         });
 
         if self.fail_write {
-            bail!("mock write failure for device {id}");
+            return Err(DeviceError::write(id, "mock write failure"));
         }
         if !state.connected.contains(id) {
-            bail!("cannot write to disconnected device {id}");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
 
         state.write_count += 1;
@@ -313,7 +319,7 @@ impl MockDiscoverySource {
     }
 
     /// Produce this source's configured discovery results.
-    pub async fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
+    pub fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
         if self.should_fail {
             bail!("mock discovery source '{}' failed", self.source_name);
         }

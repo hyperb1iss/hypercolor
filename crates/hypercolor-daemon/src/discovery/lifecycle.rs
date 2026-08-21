@@ -2,9 +2,12 @@ use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
 use hypercolor_core::device::{
-    AsyncWriteFailure, DeviceLifecycleManager, DiscoveryConnectBehavior, LifecycleAction,
+    AsyncWriteFailure, DeviceLifecycleManager, DeviceLifecyclePolicy, DiscoveryConnectBehavior,
+    LifecycleAction,
 };
-use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceState};
+use hypercolor_types::device::{
+    ConnectionType, DeviceError, DeviceId, DeviceState, ErrorRecoverability,
+};
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
@@ -397,7 +400,6 @@ pub(crate) async fn execute_lifecycle_actions(
                             backend_id = %backend_id,
                             layout_device_id = %layout_device_id,
                             error = %error,
-                            error_chain = %format_error_chain(&error),
                             will_retry,
                             "lifecycle connect action failed"
                         );
@@ -653,7 +655,6 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
                 backend_id = %backend_id,
                 layout_device_id = %layout_device_id,
                 error = %error,
-                error_chain = %format_error_chain(&error),
                 will_retry,
                 "reconnect attempt failed"
             );
@@ -728,7 +729,7 @@ async fn connect_backend_device_with_timeout(
     backend_id: &str,
     device_id: DeviceId,
     layout_device_id: &str,
-) -> anyhow::Result<()> {
+) -> Result<(), DeviceError> {
     let timeout = lifecycle_policy_for_device(runtime, backend_id, device_id)
         .await
         .connect_timeout();
@@ -746,19 +747,19 @@ async fn should_retry_connect_failure(
     runtime: &DiscoveryRuntime,
     backend_id: &str,
     device_id: DeviceId,
-    error: &anyhow::Error,
+    error: &DeviceError,
 ) -> bool {
     let policy = lifecycle_policy_for_device(runtime, backend_id, device_id).await;
-
-    policy.retry_on_connect_timeout() || !error_chain_contains_timeout(error)
+    connect_failure_is_retryable(policy, error)
 }
 
-fn error_chain_contains_timeout(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let message = cause.to_string();
-        message.contains("transport timeout after")
-            || message.contains("device connect timed out after")
-    })
+fn connect_failure_is_retryable(policy: DeviceLifecyclePolicy, error: &DeviceError) -> bool {
+    match error.recoverability() {
+        ErrorRecoverability::Permanent => false,
+        ErrorRecoverability::Retry | ErrorRecoverability::Reconnect => {
+            !matches!(error, DeviceError::Timeout { .. }) || policy.retry_on_connect_timeout()
+        }
+    }
 }
 
 fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {
@@ -768,5 +769,38 @@ fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {
         .expect("reconnect task map lock poisoned");
     if let Some(handle) = tasks.remove(&device_id) {
         handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_retry_policy_branches_on_typed_recoverability() {
+        let no_timeout_retry = DeviceLifecyclePolicy::default().without_connect_timeout_retry();
+
+        assert!(!connect_failure_is_retryable(
+            no_timeout_retry,
+            &DeviceError::Timeout {
+                after: Duration::from_secs(1),
+            }
+        ));
+        assert!(connect_failure_is_retryable(
+            DeviceLifecyclePolicy::default(),
+            &DeviceError::Timeout {
+                after: Duration::from_secs(1),
+            }
+        ));
+        assert!(connect_failure_is_retryable(
+            no_timeout_retry,
+            &DeviceError::connection("fixture", "connection refused")
+        ));
+        assert!(!connect_failure_is_retryable(
+            DeviceLifecyclePolicy::default(),
+            &DeviceError::NotAdopted {
+                device_id: DeviceId::new(),
+            }
+        ));
     }
 }

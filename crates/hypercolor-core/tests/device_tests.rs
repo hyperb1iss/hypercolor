@@ -134,37 +134,41 @@ impl DeviceBackend for MockBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if self.fail_connect.load(Ordering::Relaxed) {
-            bail!("mock connect failure for device {id}");
+            return Err(DeviceError::connection(id, "mock connect failure"));
         }
 
         let mut connected = self.connected.lock().await;
         if connected.contains(id) {
-            bail!("device {id} is already connected");
+            return Err(DeviceError::connection(id, "device is already connected"));
         }
         connected.push(*id);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let mut connected = self.connected.lock().await;
         if let Some(pos) = connected.iter().position(|d| d == id) {
             connected.remove(pos);
             Ok(())
         } else {
-            bail!("device {id} is not connected");
+            Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            })
         }
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if self.fail_write.load(Ordering::Relaxed) {
-            bail!("mock write failure for device {id}");
+            return Err(DeviceError::write(id, "mock write failure"));
         }
 
         let connected = self.connected.lock().await;
         if !connected.contains(id) {
-            bail!("cannot write to disconnected device {id}");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         drop(connected);
 
@@ -207,7 +211,7 @@ impl MockScanner {
         &self.name
     }
 
-    async fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
+    fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
         if self.should_fail {
             bail!("mock scanner '{name}' failed", name = self.name);
         }
@@ -245,7 +249,7 @@ impl DelayedScanner {
 
 fn add_mock_source(orchestrator: &mut DiscoveryOrchestrator, source: MockScanner) {
     let name = source.name().to_owned();
-    orchestrator.add_source(name, async move { source.scan().await });
+    orchestrator.add_source(name, async move { source.scan() });
 }
 
 fn add_delayed_source(orchestrator: &mut DiscoveryOrchestrator, source: DelayedScanner) {

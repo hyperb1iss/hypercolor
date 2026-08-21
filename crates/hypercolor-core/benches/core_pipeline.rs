@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use anyhow::Result;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use hypercolor_core::bus::CanvasFrame;
@@ -18,6 +17,9 @@ use hypercolor_core::input::InputSource;
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
+use hypercolor_types::device::DeviceError;
+
+type Result<T> = std::result::Result<T, DeviceError>;
 use hypercolor_core::input::audio::fft::FftPipeline;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};

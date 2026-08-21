@@ -20,9 +20,9 @@ use hypercolor_core::input::{
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
+    DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -464,36 +464,46 @@ impl DeviceBackend for RecordingBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         let remaining = self.fail_connect_attempts.load(Ordering::Relaxed);
         if remaining > 0 {
             self.fail_connect_attempts.fetch_sub(1, Ordering::Relaxed);
-            bail!("simulated connect failure");
+            return Err(DeviceError::connection(id, "simulated connect failure"));
         }
         self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         if !self.connected.load(Ordering::Acquire) {
-            bail!("disconnect called while not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         if !self.connected.load(Ordering::Acquire) {
-            bail!("write while disconnected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         self.writes.lock().await.push(colors.to_vec());
         Ok(())

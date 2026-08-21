@@ -95,8 +95,11 @@ impl DiscoveryCapability for UsbTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Vec<DiscoveredDevice>> {
-        UsbScanner::new().scan().await
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        UsbScanner::new()
+            .scan()
+            .await
+            .map_err(DriverError::discovery)
     }
 }
 
@@ -142,8 +145,11 @@ impl DiscoveryCapability for SmBusTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Vec<DiscoveredDevice>> {
-        SmBusScanner::new().scan().await
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        SmBusScanner::new()
+            .scan()
+            .await
+            .map_err(DriverError::discovery)
     }
 }
 
@@ -206,7 +212,10 @@ impl DiscoveryCapability for BlocksTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Vec<DiscoveredDevice>> {
-        BlocksScanner::new(self.socket_path.clone()).scan().await
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        BlocksScanner::new(self.socket_path.clone())
+            .scan()
+            .await
+            .map_err(DriverError::discovery)
     }
 }

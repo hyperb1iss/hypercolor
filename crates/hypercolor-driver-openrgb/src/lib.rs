@@ -75,8 +75,6 @@ const DEFAULT_TIMEOUT_MS: u64 = 750;
 const DEFAULT_TARGET_FPS: u32 = 30;
 const MAX_TIMEOUT_MS: u64 = 10_000;
 const MAX_CONTROLLERS_PER_ENDPOINT: u32 = 1024;
-const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(250);
-const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
 const OUTPUT_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_STARTED: u8 = 1;
@@ -266,11 +264,7 @@ impl DeviceBackendFactory for OpenRgbDriverModule {
         _host: &dyn DriverHost,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        let config = config.parse_settings::<OpenRgbConfig>().map_err(|error| {
-            DriverError::Configuration {
-                message: error.to_string(),
-            }
-        })?;
+        let config = config.parse_settings::<OpenRgbConfig>()?;
         Ok(Arc::new(OpenRgbBackend::new(config)?))
     }
 }
@@ -293,13 +287,15 @@ impl DriverConfigProvider for OpenRgbDriverModule {
         DriverConfigEntry::disabled(openrgb_config_settings(&OpenRgbConfig::default()))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<OpenRgbConfig>()?;
-        validate_openrgb_config(&config)
+        validate_openrgb_config(&config).map_err(|error| DriverError::Configuration {
+            message: error.to_string(),
+        })
     }
 }
 
@@ -310,10 +306,14 @@ impl DiscoveryCapability for OpenRgbDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<OpenRgbConfig>()?;
-        validate_openrgb_config(&config)?;
-        let routes = discover_routes(&config).await?;
+        validate_openrgb_config(&config).map_err(|error| DriverError::Configuration {
+            message: error.to_string(),
+        })?;
+        let routes = discover_routes(&config)
+            .await
+            .map_err(DriverError::discovery)?;
         Ok(routes.into_iter().map(DiscoveredDevice::from).collect())
     }
 }
@@ -410,28 +410,36 @@ impl DeviceBackend for OpenRgbBackend {
         Ok(())
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let route = self
             .discovered
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
-            .with_context(|| format!("OpenRGB controller {id} is not discovered"))?;
+            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
         if let Some(reason) = &route.disabled_reason {
-            bail!("OpenRGB controller {id} is output-disabled: {reason}");
+            return Err(DeviceError::connection(
+                id,
+                format!("OpenRGB controller is output-disabled: {reason}"),
+            ));
         }
 
-        let mut client = connect_openrgb_client(&self.config, route.endpoint).await?;
+        let mut client = connect_openrgb_client(&self.config, route.endpoint)
+            .await
+            .map_err(|error| DeviceError::connection(id, error))?;
         let route = find_current_route(
             &mut client,
             route.endpoint,
             &route.fingerprint,
             &self.config,
         )
-        .await?;
-        ensure_route_output_enabled(&route)?;
-        configure_controller_output(&mut client, &route, &self.config).await?;
+        .await
+        .map_err(|error| DeviceError::connection(id, error))?;
+        ensure_route_output_enabled(&route).map_err(|error| DeviceError::connection(id, error))?;
+        configure_controller_output(&mut client, &route, &self.config)
+            .await
+            .map_err(|error| DeviceError::connection(id, error))?;
 
         let controller = Arc::new(Mutex::new(ConnectedController {
             previous_mode: route.previous_mode.clone(),
@@ -439,17 +447,15 @@ impl DeviceBackend for OpenRgbBackend {
             client,
             config: self.config.clone(),
             accepting_frames: true,
-            consecutive_failures: 0,
-            reconnect_backoff: ReconnectBackoff::default(),
         }));
         self.connected
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(ConnectedOutput::spawn(controller)));
+            .insert(*id, Arc::new(ConnectedOutput::spawn(*id, controller)));
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let output = self
             .connected
             .write()
@@ -470,7 +476,11 @@ impl DeviceBackend for OpenRgbBackend {
         Ok(())
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         let output = self
             .connected
             .read()
@@ -478,7 +488,9 @@ impl DeviceBackend for OpenRgbBackend {
             .get(id)
             .cloned();
         let Some(output) = output else {
-            bail!("OpenRGB controller {id} is not connected");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
         output.enqueue_colors(Arc::new(colors.to_vec()))
     }
@@ -514,6 +526,7 @@ impl DeviceBackend for OpenRgbBackend {
 }
 
 struct ConnectedOutput {
+    device_id: DeviceId,
     controller: Arc<Mutex<ConnectedController>>,
     frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     io_task: StdMutex<Option<JoinHandle<()>>>,
@@ -523,7 +536,7 @@ struct ConnectedOutput {
 }
 
 impl ConnectedOutput {
-    fn spawn(controller: Arc<Mutex<ConnectedController>>) -> Self {
+    fn spawn(device_id: DeviceId, controller: Arc<Mutex<ConnectedController>>) -> Self {
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
         let active = Arc::new(AtomicBool::new(true));
         let lifecycle_gate = Arc::new(StdMutex::new(()));
@@ -536,6 +549,7 @@ impl ConnectedOutput {
         ));
 
         Self {
+            device_id,
             controller,
             frame_tx,
             io_task: StdMutex::new(Some(io_task)),
@@ -547,6 +561,7 @@ impl ConnectedOutput {
 
     fn frame_sink(&self) -> Arc<OpenRgbFrameSink> {
         Arc::new(OpenRgbFrameSink {
+            device_id: self.device_id,
             frame_tx: self.frame_tx.clone(),
             active: Arc::clone(&self.active),
             lifecycle_gate: Arc::clone(&self.lifecycle_gate),
@@ -554,7 +569,7 @@ impl ConnectedOutput {
         })
     }
 
-    fn enqueue_colors(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    fn enqueue_colors(&self, colors: Arc<Vec<[u8; 3]>>) -> std::result::Result<(), DeviceError> {
         enqueue_openrgb_payload(
             &self.frame_tx,
             &self.active,
@@ -562,6 +577,7 @@ impl ConnectedOutput {
             &self.last_async_error,
             Arc::new(OpenRgbFramePayload::untracked(colors)),
         )
+        .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn stop(&self) -> Arc<Mutex<ConnectedController>> {
@@ -718,6 +734,7 @@ impl OpenRgbFramePayload {
 }
 
 struct OpenRgbFrameSink {
+    device_id: DeviceId,
     frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
     lifecycle_gate: Arc<StdMutex<()>>,
@@ -726,7 +743,10 @@ struct OpenRgbFrameSink {
 
 #[async_trait]
 impl DeviceFrameSink for OpenRgbFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> std::result::Result<(), DeviceError> {
         enqueue_openrgb_payload(
             &self.frame_tx,
             &self.active,
@@ -734,6 +754,7 @@ impl DeviceFrameSink for OpenRgbFrameSink {
             &self.last_async_error,
             Arc::new(OpenRgbFramePayload::untracked(colors)),
         )
+        .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn deliver_colors_shared(
@@ -898,49 +919,21 @@ async fn write_controller_colors(
         .iter()
         .map(|[red, green, blue]| RgbColor::new(*red, *green, *blue))
         .collect::<Vec<_>>();
-    match write_prepared_controller_colors(&mut controller, &colors).await {
-        Ok(()) => {
-            controller.consecutive_failures = 0;
-            Ok(())
-        }
-        Err(error) => {
-            controller.consecutive_failures = controller.consecutive_failures.saturating_add(1);
-            let write_error = Error::new(error).context("OpenRGB update_leds failed");
-            reconnect_connected_controller(&mut controller)
-                .await
-                .map_err(|reconnect_error| {
-                    write_error.context(format!("OpenRGB reconnect failed: {reconnect_error}"))
-                })?;
-            write_prepared_controller_colors(&mut controller, &colors)
-                .await
-                .map_err(|retry_error| {
-                    controller.consecutive_failures =
-                        controller.consecutive_failures.saturating_add(1);
-                    Error::new(retry_error).context("OpenRGB update_leds failed after reconnect")
-                })?;
-            controller.consecutive_failures = 0;
-            Ok(())
-        }
-    }
+    write_prepared_controller_colors(&mut controller, &colors)
+        .await
+        .map_err(|error| Error::new(error).context("OpenRGB update_leds failed"))
 }
 
 async fn prepare_controller_for_write(controller: &mut ConnectedController) -> Result<()> {
-    let packets = match controller.client.drain_pending_packets() {
-        Ok(packets) => packets,
-        Err(error) => {
-            controller.consecutive_failures = controller.consecutive_failures.saturating_add(1);
-            reconnect_connected_controller(controller)
-                .await
-                .with_context(|| format!("OpenRGB notification drain failed: {error}"))?;
-            return Ok(());
-        }
-    };
+    let packets = controller
+        .client
+        .drain_pending_packets()
+        .map_err(|error| Error::new(error).context("OpenRGB notification drain failed"))?;
     if packets
         .iter()
         .any(|packet| packet.header.packet_id == PacketId::DeviceListUpdated)
         && let Err(error) = refresh_connected_route(controller).await
     {
-        controller.consecutive_failures = controller.consecutive_failures.saturating_add(1);
         return Err(error);
     }
     Ok(())
@@ -956,52 +949,6 @@ async fn write_prepared_controller_colors(
         .await
 }
 
-async fn reconnect_connected_controller(controller: &mut ConnectedController) -> Result<()> {
-    let now = Instant::now();
-    if !controller.reconnect_backoff.can_attempt(now) {
-        bail!(
-            "OpenRGB reconnect backoff is active for {} ms",
-            controller.reconnect_backoff.remaining(now).as_millis()
-        );
-    }
-
-    let mut client =
-        match connect_openrgb_client(&controller.config, controller.route.endpoint).await {
-            Ok(client) => client,
-            Err(error) => {
-                controller.reconnect_backoff.record_failure(now);
-                return Err(error);
-            }
-        };
-    let route_result = find_current_route(
-        &mut client,
-        controller.route.endpoint,
-        &controller.route.fingerprint,
-        &controller.config,
-    )
-    .await
-    .and_then(|route| {
-        ensure_route_output_enabled(&route)?;
-        Ok(route)
-    });
-    let route = match route_result {
-        Ok(route) => route,
-        Err(error) => {
-            controller.reconnect_backoff.record_failure(now);
-            return Err(error);
-        }
-    };
-    if let Err(error) = configure_controller_output(&mut client, &route, &controller.config).await {
-        controller.reconnect_backoff.record_failure(now);
-        return Err(error);
-    }
-    controller.client = client;
-    controller.route = route;
-    controller.consecutive_failures = 0;
-    controller.reconnect_backoff.reset();
-    Ok(())
-}
-
 async fn refresh_connected_route(controller: &mut ConnectedController) -> Result<()> {
     let route = find_current_route(
         &mut controller.client,
@@ -1013,7 +960,6 @@ async fn refresh_connected_route(controller: &mut ConnectedController) -> Result
     ensure_route_output_enabled(&route)?;
     configure_controller_output(&mut controller.client, &route, &controller.config).await?;
     controller.route = route;
-    controller.consecutive_failures = 0;
     Ok(())
 }
 
@@ -1023,50 +969,6 @@ struct ConnectedController {
     client: OpenRgbClient,
     config: OpenRgbConfig,
     accepting_frames: bool,
-    consecutive_failures: u32,
-    reconnect_backoff: ReconnectBackoff,
-}
-
-#[derive(Debug, Clone)]
-struct ReconnectBackoff {
-    next_attempt_at: Option<Instant>,
-    next_delay: Duration,
-}
-
-impl Default for ReconnectBackoff {
-    fn default() -> Self {
-        Self {
-            next_attempt_at: None,
-            next_delay: INITIAL_RECONNECT_BACKOFF,
-        }
-    }
-}
-
-impl ReconnectBackoff {
-    fn can_attempt(&self, now: Instant) -> bool {
-        self.next_attempt_at.is_none_or(|deadline| now >= deadline)
-    }
-
-    fn remaining(&self, now: Instant) -> Duration {
-        self.next_attempt_at
-            .and_then(|deadline| deadline.checked_duration_since(now))
-            .unwrap_or_default()
-    }
-
-    fn record_failure(&mut self, now: Instant) {
-        self.next_attempt_at = Some(now + self.next_delay);
-        self.next_delay = self
-            .next_delay
-            .checked_mul(2)
-            .map_or(MAX_RECONNECT_BACKOFF, |delay| {
-                delay.min(MAX_RECONNECT_BACKOFF)
-            });
-    }
-
-    fn reset(&mut self) {
-        self.next_attempt_at = None;
-        self.next_delay = INITIAL_RECONNECT_BACKOFF;
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1864,6 +1766,7 @@ mod tests {
         let active = Arc::new(AtomicBool::new(true));
         let lifecycle_gate = Arc::new(StdMutex::new(()));
         let sink = OpenRgbFrameSink {
+            device_id: DeviceId::new(),
             frame_tx: frame_tx.clone(),
             active: Arc::clone(&active),
             lifecycle_gate: Arc::clone(&lifecycle_gate),
@@ -2227,27 +2130,6 @@ mod tests {
             previous_mode_snapshot(&controller, Some(&writable_mode)).expect("mode should restore");
         assert_eq!(snapshot.0, 1);
         assert_eq!(snapshot.1.name, "Static");
-    }
-
-    #[test]
-    fn reconnect_backoff_blocks_until_deadline_and_caps_delay() {
-        let now = Instant::now();
-        let mut backoff = ReconnectBackoff::default();
-
-        assert!(backoff.can_attempt(now));
-        backoff.record_failure(now);
-        assert!(!backoff.can_attempt(now));
-        assert_eq!(backoff.remaining(now), INITIAL_RECONNECT_BACKOFF);
-        assert!(backoff.can_attempt(now + INITIAL_RECONNECT_BACKOFF));
-
-        for _ in 0..8 {
-            backoff.record_failure(now);
-        }
-        assert_eq!(backoff.next_delay, MAX_RECONNECT_BACKOFF);
-
-        backoff.reset();
-        assert!(backoff.can_attempt(now));
-        assert_eq!(backoff.next_delay, INITIAL_RECONNECT_BACKOFF);
     }
 
     fn sample_controller() -> ControllerData {

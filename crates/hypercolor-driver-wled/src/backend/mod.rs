@@ -22,7 +22,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info, warn};
@@ -263,6 +263,12 @@ impl WledBackend {
     }
 }
 
+impl Default for WledBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct WledFrameSink {
     device_id: DeviceId,
     device: Arc<Mutex<WledDevice>>,
@@ -271,14 +277,17 @@ struct WledFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for WledFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> std::result::Result<(), DeviceError> {
         self.write_colors_shared_outcome(colors).await.map(|_| ())
     }
 
     async fn write_colors_shared_outcome(
         &self,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
         WledBackend::write_device_colors(
             &self.device_id,
             &self.device,
@@ -287,6 +296,7 @@ impl DeviceFrameSink for WledFrameSink {
             None,
         )
         .await
+        .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -304,7 +314,8 @@ impl DeviceFrameSink for WledFrameSink {
             self.realtime_http_enabled,
             Some((id, observer.as_ref())),
         )
-        .await;
+        .await
+        .map_err(|error| DeviceError::write(self.device_id, error));
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
@@ -376,44 +387,31 @@ impl DeviceBackend for WledBackend {
         true
     }
 
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let ip = {
             let device_ips = self
                 .device_ips
                 .read()
                 .unwrap_or_else(PoisonError::into_inner);
-            let known_ids = device_ips
-                .keys()
-                .take(4)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            device_ips.get(id).copied().with_context(|| {
-                format!(
-                    "WLED device IP not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
-                    device_ips.len(), known_ids
-                )
-            })?
+            device_ips
+                .get(id)
+                .copied()
+                .ok_or(DeviceError::NotAdopted { device_id: *id })?
         };
         let wled_info = {
             let device_infos = self
                 .device_infos
                 .read()
                 .unwrap_or_else(PoisonError::into_inner);
-            let known_ids = device_infos
-                .keys()
-                .take(4)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            device_infos.get(id).cloned().with_context(|| {
-                format!(
-                    "WLED device info not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
-                    device_infos.len(), known_ids
-                )
-            })?
+            device_infos
+                .get(id)
+                .cloned()
+                .ok_or(DeviceError::NotAdopted { device_id: *id })?
         };
-        let socket = self.ensure_shared_socket().await?;
+        let socket = self
+            .ensure_shared_socket()
+            .await
+            .map_err(|error| DeviceError::connection(id, error))?;
 
         let port = match self.default_protocol {
             WledProtocol::Ddp => DDP_PORT,
@@ -470,7 +468,7 @@ impl DeviceBackend for WledBackend {
         Ok(())
     }
 
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let device = self
             .devices
             .write()
@@ -501,24 +499,37 @@ impl DeviceBackend for WledBackend {
             info!(device_id = %id, "Disconnected from WLED device");
             Ok(())
         } else {
-            bail!("WLED device {id} is not connected")
+            Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            })
         }
     }
 
-    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         let device = self
             .devices
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
-            .with_context(|| format!("WLED device {id} is not connected"))?;
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })?;
         Self::write_device_colors(id, &device, colors, self.realtime_http_enabled, None)
             .await
+            .map_err(|error| DeviceError::write(id, error))
             .map(|_| ())
     }
 
-    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> std::result::Result<(), DeviceError> {
         self.write_colors_shared_outcome(id, colors)
             .await
             .map(|_| ())
@@ -528,14 +539,16 @@ impl DeviceBackend for WledBackend {
         &self,
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
         let device = self
             .devices
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
-            .with_context(|| format!("WLED device {id} is not connected"))?;
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })?;
         Self::write_device_colors(
             id,
             &device,
@@ -544,6 +557,7 @@ impl DeviceBackend for WledBackend {
             None,
         )
         .await
+        .map_err(|error| DeviceError::write(id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -574,7 +588,8 @@ impl DeviceBackend for WledBackend {
             self.realtime_http_enabled,
             Some((delivery_id, observer.as_ref())),
         )
-        .await;
+        .await
+        .map_err(|error| DeviceError::write(device_id, error));
         DeviceDeliveryAck::from_write_result(
             delivery_id,
             payload_bytes,

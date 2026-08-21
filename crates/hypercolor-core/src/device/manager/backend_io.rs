@@ -4,8 +4,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use hypercolor_driver_api::DiscoveredDevice;
+use hypercolor_driver_api::{DeviceError, DiscoveredDevice};
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload};
 
 use crate::device::traits::{DeviceFrameSink, DeviceLifecyclePolicy, OutputCadence};
@@ -19,16 +18,12 @@ use super::BackendHandle;
 /// outer manager mutex.
 #[derive(Clone)]
 pub struct BackendIo {
-    backend_id: String,
     backend: BackendHandle,
 }
 
 impl BackendIo {
-    pub(super) const fn new(backend_id: String, backend: BackendHandle) -> Self {
-        Self {
-            backend_id,
-            backend,
-        }
+    pub(super) const fn new(backend: BackendHandle) -> Self {
+        Self { backend }
     }
 
     /// Connect a device once using its already-adopted backend inventory.
@@ -38,7 +33,7 @@ impl BackendIo {
     /// # Errors
     ///
     /// Returns an error if the backend connect call fails.
-    pub async fn connect(&self, device_id: DeviceId) -> Result<OutputCadence> {
+    pub async fn connect(&self, device_id: DeviceId) -> Result<OutputCadence, DeviceError> {
         self.connect_inner(device_id, None).await
     }
 
@@ -54,7 +49,7 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         timeout: Duration,
-    ) -> Result<OutputCadence> {
+    ) -> Result<OutputCadence, DeviceError> {
         self.connect_inner(device_id, Some(timeout)).await
     }
 
@@ -62,15 +57,8 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         timeout: Option<Duration>,
-    ) -> Result<OutputCadence> {
-        run_backend_operation(
-            timeout,
-            &self.backend_id,
-            device_id,
-            "connect",
-            self.backend.connect(&device_id),
-        )
-        .await?;
+    ) -> Result<OutputCadence, DeviceError> {
+        run_backend_operation(timeout, self.backend.connect(&device_id)).await?;
 
         Ok(self.backend.output_cadence(&device_id).unwrap_or_default())
     }
@@ -81,10 +69,8 @@ impl BackendIo {
     ///
     /// Returns an error when the backend cannot reconstruct its connection
     /// descriptor from the canonical discovery payload.
-    pub fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<()> {
-        self.backend
-            .adopt_device(discovered)
-            .with_context(|| format!("backend '{}' refused device adoption", self.backend_id))
+    pub fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        self.backend.adopt_device(discovered)
     }
 
     /// Return backend lifecycle policy for a discovered device.
@@ -97,16 +83,11 @@ impl BackendIo {
     /// # Errors
     ///
     /// Returns an error if metadata retrieval fails.
-    pub async fn connected_device_info(&self, device_id: DeviceId) -> Result<Option<DeviceInfo>> {
-        self.backend
-            .connected_device_info(&device_id)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to fetch connected device metadata for {device_id} using backend '{}'",
-                    self.backend_id
-                )
-            })
+    pub async fn connected_device_info(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<Option<DeviceInfo>, DeviceError> {
+        self.backend.connected_device_info(&device_id).await
     }
 
     /// Clone the hot-path frame sink for a connected device, if the backend exposes one.
@@ -133,13 +114,8 @@ impl BackendIo {
     /// # Errors
     ///
     /// Returns an error if the backend disconnect call fails.
-    pub async fn disconnect(&self, device_id: DeviceId) -> Result<()> {
-        self.backend.disconnect(&device_id).await.with_context(|| {
-            format!(
-                "failed to disconnect device {device_id} using backend '{}'",
-                self.backend_id
-            )
-        })
+    pub async fn disconnect(&self, device_id: DeviceId) -> Result<(), DeviceError> {
+        self.backend.disconnect(&device_id).await
     }
 
     /// Write immediate LED colors directly to the backend.
@@ -147,17 +123,12 @@ impl BackendIo {
     /// # Errors
     ///
     /// Returns an error if the backend write fails.
-    pub async fn write_colors(&self, device_id: DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        self.backend
-            .write_colors(&device_id, colors)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to write {} colors to device {device_id} using backend '{}'",
-                    colors.len(),
-                    self.backend_id
-                )
-            })
+    pub async fn write_colors(
+        &self,
+        device_id: DeviceId,
+        colors: &[[u8; 3]],
+    ) -> Result<(), DeviceError> {
+        self.backend.write_colors(&device_id, colors).await
     }
 
     /// Set hardware brightness directly on the backend.
@@ -165,16 +136,12 @@ impl BackendIo {
     /// # Errors
     ///
     /// Returns an error if the backend brightness write fails.
-    pub async fn set_brightness(&self, device_id: DeviceId, brightness: u8) -> Result<()> {
-        self.backend
-            .set_brightness(&device_id, brightness)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to set brightness {brightness} on device {device_id} using backend '{}'",
-                    self.backend_id
-                )
-            })
+    pub async fn set_brightness(
+        &self,
+        device_id: DeviceId,
+        brightness: u8,
+    ) -> Result<(), DeviceError> {
+        self.backend.set_brightness(&device_id, brightness).await
     }
 
     /// Write immediate display bytes directly to the backend.
@@ -182,17 +149,14 @@ impl BackendIo {
     /// # Errors
     ///
     /// Returns an error if the display write fails.
-    pub async fn write_display_frame(&self, device_id: DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    pub async fn write_display_frame(
+        &self,
+        device_id: DeviceId,
+        jpeg_data: &[u8],
+    ) -> Result<(), DeviceError> {
         self.backend
             .write_display_frame(&device_id, jpeg_data)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to write {} display bytes to device {device_id} using backend '{}'",
-                    jpeg_data.len(),
-                    self.backend_id
-                )
-            })
     }
 
     /// Write an owned display payload directly to the backend.
@@ -204,17 +168,10 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<()> {
-        let byte_len = jpeg_data.len();
+    ) -> Result<(), DeviceError> {
         self.backend
             .write_display_frame_owned(&device_id, jpeg_data)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to write {} display bytes to device {device_id} using backend '{}'",
-                    byte_len, self.backend_id
-                )
-            })
     }
 
     /// Write an owned display payload directly to the backend.
@@ -226,40 +183,23 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         payload: Arc<OwnedDisplayFramePayload>,
-    ) -> Result<()> {
-        let byte_len = payload.data.len();
-        let format = payload.format;
+    ) -> Result<(), DeviceError> {
         self.backend
             .write_display_payload_owned(&device_id, payload)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to write {byte_len} {format} display bytes to device {device_id} using backend '{}'",
-                    self.backend_id
-                )
-            })
     }
 }
 
-async fn run_backend_operation<T, F>(
-    timeout: Option<Duration>,
-    backend_id: &str,
-    device_id: DeviceId,
-    operation: &'static str,
-    future: F,
-) -> Result<T>
+async fn run_backend_operation<T, F>(timeout: Option<Duration>, future: F) -> Result<T, DeviceError>
 where
-    F: Future<Output = Result<T>>,
+    F: Future<Output = Result<T, DeviceError>>,
 {
     let Some(timeout) = timeout else {
         return future.await;
     };
 
     let Ok(result) = tokio::time::timeout(timeout, future).await else {
-        let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-        bail!(
-            "device {operation} timed out after {timeout_ms}ms using backend '{backend_id}' for device {device_id}"
-        );
+        return Err(DeviceError::Timeout { after: timeout });
     };
 
     result

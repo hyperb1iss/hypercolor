@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DeviceBackend;
@@ -133,12 +133,7 @@ impl DeviceBackendFactory for HueDriverModule {
         _host: &dyn DriverHost,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        let config =
-            config
-                .parse_settings::<HueConfig>()
-                .map_err(|error| DriverError::Configuration {
-                    message: error.to_string(),
-                })?;
+        let config = config.parse_settings::<HueConfig>()?;
         Ok(Arc::new(HueBackend::new(
             config,
             Arc::clone(&self.credential_store),
@@ -166,7 +161,7 @@ impl DiscoveryCapability for HueDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<HueConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_bridges = resolve_hue_probe_bridges_from_sources(&config, &tracked_devices);
@@ -177,7 +172,7 @@ impl DiscoveryCapability for HueDriverModule {
             request.mdns_enabled,
             config.entertainment_config.clone(),
         );
-        scanner.scan().await
+        scanner.scan().await.map_err(DriverError::discovery)
     }
 }
 
@@ -189,14 +184,16 @@ impl DriverConfigProvider for HueDriverModule {
         ]))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<HueConfig>()?;
         for ip in config.bridge_ips {
-            validate_ip(ip).with_context(|| format!("invalid Hue bridge IP: {ip}"))?;
+            validate_ip(ip).map_err(|error| DriverError::Configuration {
+                message: format!("invalid Hue bridge IP {ip}: {error}"),
+            })?;
         }
         Ok(())
     }
@@ -528,10 +525,10 @@ impl PairingCapability for HueDriverModule {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome> {
+    ) -> std::result::Result<PairDeviceOutcome, DriverError> {
         if hue_credentials_present(host.credentials(), device.metadata)
             .await
-            .unwrap_or_default()
+            .map_err(DriverError::pairing)?
         {
             let activated = activate_if_requested(
                 host,
@@ -564,7 +561,10 @@ impl PairingCapability for HueDriverModule {
         let bridge_port =
             network_port_from_metadata(device.metadata, "api_port").unwrap_or(DEFAULT_HUE_API_PORT);
 
-        match pair_hue_bridge_at_ip(&self.credential_store, bridge_ip, bridge_port).await? {
+        match pair_hue_bridge_at_ip(&self.credential_store, bridge_ip, bridge_port)
+            .await
+            .map_err(DriverError::pairing)?
+        {
             Some(_) => {
                 let activated = activate_if_requested(
                     host,
@@ -598,8 +598,10 @@ impl PairingCapability for HueDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome> {
-        clear_hue_credentials(host.credentials(), device.metadata).await?;
+    ) -> std::result::Result<ClearPairingOutcome, DriverError> {
+        clear_hue_credentials(host.credentials(), device.metadata)
+            .await
+            .map_err(DriverError::pairing)?;
         let disconnected = disconnect_after_unpair(host, device.device_id, DESCRIPTOR.id).await;
 
         Ok(ClearPairingOutcome {

@@ -149,14 +149,14 @@ impl TestScanner {
         &self.name
     }
 
-    async fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
-        Ok(self.devices.clone())
+    fn scan(&self) -> Vec<DiscoveredDevice> {
+        self.devices.clone()
     }
 }
 
 fn add_test_source(orchestrator: &mut DiscoveryOrchestrator, source: TestScanner) {
     let name = source.name().to_owned();
-    orchestrator.add_source(name, async move { source.scan().await });
+    orchestrator.add_source(name, async move { Ok::<_, anyhow::Error>(source.scan()) });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

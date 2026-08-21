@@ -128,7 +128,10 @@ impl GoveeDriverModule {
         }
     }
 
-    fn resolved_config(&self, config: DriverConfigView<'_>) -> Result<GoveeConfig> {
+    fn resolved_config(
+        &self,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<GoveeConfig, DriverError> {
         if config.entry.settings.is_empty() {
             return Ok(self.config.clone());
         }
@@ -179,11 +182,7 @@ impl DeviceBackendFactory for GoveeDriverModule {
         _host: &dyn DriverHost,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        let resolved_config =
-            self.resolved_config(config)
-                .map_err(|error| DriverError::Configuration {
-                    message: error.to_string(),
-                })?;
+        let resolved_config = self.resolved_config(config)?;
         let mut backend = GoveeBackend::new(resolved_config);
         if let Some(credential_store) = &self.credential_store {
             backend = backend.with_credential_store(Arc::clone(credential_store));
@@ -213,13 +212,15 @@ impl DriverConfigProvider for GoveeDriverModule {
         DriverConfigEntry::enabled(govee_config_settings(&self.config))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<GoveeConfig>()?;
-        validate_govee_config(&config)
+        validate_govee_config(&config).map_err(|error| DriverError::Configuration {
+            message: error.to_string(),
+        })
     }
 }
 
@@ -277,17 +278,21 @@ impl DiscoveryCapability for GoveeDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = self.resolved_config(config)?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
-        let cached_devices = load_cached_probe_devices(host)?;
+        let cached_devices = load_cached_probe_devices(host).map_err(DriverError::discovery)?;
         let known_devices =
             resolve_govee_probe_devices(&config, &tracked_devices, cached_devices.as_slice());
         let mut scanner = GoveeLanScanner::new(known_devices, request.timeout);
-        let mut devices = scanner.scan().await?;
+        let mut devices = scanner.scan().await.map_err(DriverError::discovery)?;
 
-        if let Some(api_key) = account_api_key(host).await? {
-            match self.cloud_client(api_key)?.list_v1_devices().await {
+        if let Some(api_key) = account_api_key(host)
+            .await
+            .map_err(DriverError::discovery)?
+        {
+            let client = self.cloud_client(api_key).map_err(DriverError::discovery)?;
+            match client.list_v1_devices().await {
                 Ok(cloud_devices) => merge_cloud_inventory(&mut devices, cloud_devices),
                 Err(error) => {
                     warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
@@ -395,11 +400,12 @@ impl PairingCapability for GoveeDriverModule {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome> {
+    ) -> std::result::Result<PairDeviceOutcome, DriverError> {
         if host
             .credentials()
             .get_json(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
-            .await?
+            .await
+            .map_err(DriverError::pairing)?
             .is_some()
         {
             let activated =
@@ -427,16 +433,19 @@ impl PairingCapability for GoveeDriverModule {
             });
         };
 
-        self.cloud_client(api_key.clone())?
+        self.cloud_client(api_key.clone())
+            .map_err(DriverError::pairing)?
             .list_v1_devices()
-            .await?;
+            .await
+            .map_err(DriverError::pairing)?;
         host.credentials()
             .set_json(
                 DESCRIPTOR.id,
                 GOVEE_ACCOUNT_CREDENTIAL_KEY,
                 json!({ "api_key": api_key }),
             )
-            .await?;
+            .await
+            .map_err(DriverError::pairing)?;
 
         let activated =
             activate_if_requested(host, request.activate_after_pair, device.device_id, "govee")
@@ -459,10 +468,11 @@ impl PairingCapability for GoveeDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome> {
+    ) -> std::result::Result<ClearPairingOutcome, DriverError> {
         host.credentials()
             .remove(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
-            .await?;
+            .await
+            .map_err(DriverError::pairing)?;
         let disconnected = disconnect_after_unpair(host, device.device_id, "govee").await;
 
         Ok(ClearPairingOutcome {

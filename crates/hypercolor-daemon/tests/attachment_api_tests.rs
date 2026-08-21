@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
-use anyhow::Result;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -14,8 +13,9 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    SegmentInfo,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -23,6 +23,8 @@ use hypercolor_types::spatial::{
 };
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+type Result<T> = std::result::Result<T, DeviceError>;
 
 struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,

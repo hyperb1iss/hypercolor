@@ -5,7 +5,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
 use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock, watch};
 
@@ -15,9 +14,9 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceDisplaySink};
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    OwnedDisplayFramePayload, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
+    DeviceTopologyHint, OwnedDisplayFramePayload, SegmentInfo,
 };
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
@@ -33,6 +32,14 @@ use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_daemon::simulators::SIMULATED_DISPLAY_BACKEND_ID;
 
 const DISPLAY_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::write("test display", format!($($arg)*)))
+    };
+}
 
 fn display_output_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

@@ -8,7 +8,6 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
 use axum::extract::State;
 use axum::{Router, body::to_bytes, routing::get};
 use hypercolor_core::config::{BootConfig, ConfigManager};
@@ -37,9 +36,9 @@ use hypercolor_types::config::{
     NetworkAccessMode, RenderAccelerationMode,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
-    SegmentLayoutHint,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    SegmentInfo, SegmentLayoutHint,
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
@@ -53,6 +52,14 @@ use hypercolor_types::spatial::{
 use serde_json::Value;
 use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
+
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::protocol("test backend", format!($($arg)*)))
+    };
+}
 
 /// Minimal TOML content that `ConfigManager` can parse.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
