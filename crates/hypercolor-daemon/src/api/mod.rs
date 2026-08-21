@@ -89,6 +89,7 @@ use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{DeviceContext, RuntimeSessionService, SceneContext};
 use crate::domain::effect::EffectContext;
+use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneService;
 use crate::domain::scene_tree::SceneTreeContext;
@@ -135,6 +136,9 @@ pub struct AppState {
 
     /// Device lifecycle and discovery-layout reconciliation authority.
     pub devices: DeviceContext,
+
+    /// Spatial layout catalog, activation, and durability authority.
+    pub layout: LayoutContext,
 
     /// Global output power, brightness, and quiescence authority.
     pub output: OutputContext,
@@ -396,15 +400,25 @@ impl AppState {
         Self::new_with_runtime_overrides(data_dir, None, None)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "test-facing app state construction wires all shared subsystems in one place"
-    )]
     #[doc(hidden)]
     pub fn new_with_runtime_overrides(
         data_dir: PathBuf,
         config_manager: Option<Arc<ConfigManager>>,
         driver_registry: Option<Arc<DriverModuleRegistry>>,
+    ) -> Self {
+        Self::new_with_composition_overrides(data_dir, config_manager, driver_registry, None)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test-facing app state construction wires all shared subsystems in one place"
+    )]
+    #[doc(hidden)]
+    pub fn new_with_composition_overrides(
+        data_dir: PathBuf,
+        config_manager: Option<Arc<ConfigManager>>,
+        driver_registry: Option<Arc<DriverModuleRegistry>>,
+        runtime_state_path: Option<PathBuf>,
     ) -> Self {
         use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
@@ -546,7 +560,8 @@ impl AppState {
         let layout_auto_exclusions_path = data_dir.join("layout-auto-exclusions.json");
         let logical_devices = Arc::new(RwLock::new(HashMap::new()));
         let logical_devices_path = data_dir.join("logical-devices.json");
-        let runtime_state_path = data_dir.join("runtime-state.json");
+        let runtime_state_path =
+            runtime_state_path.unwrap_or_else(|| data_dir.join("runtime-state.json"));
         let device_aliases_path = data_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
         let driver_inventory = Arc::new(
             DriverInventoryStore::open(data_dir.join(DRIVER_INVENTORY_FILENAME))
@@ -624,6 +639,15 @@ impl AppState {
             Arc::clone(&render_loop),
             devices.clone(),
         );
+        let layout = LayoutContext::new(
+            Arc::clone(&layouts),
+            spatial_engine.clone(),
+            scene_manager.clone(),
+            scene_transactions.clone(),
+            runtime_state_path.clone(),
+            runtime_session.clone(),
+            devices.clone(),
+        );
         let output_power_transition = Arc::new(Mutex::new(()));
         let start_time = Instant::now();
         let output = OutputContext::new(
@@ -657,6 +681,7 @@ impl AppState {
             scene,
             runtime_session,
             devices,
+            layout,
             output,
             effects,
             scene_tree,
@@ -774,6 +799,15 @@ impl AppState {
             Arc::clone(&daemon.render_loop),
             devices.clone(),
         );
+        let layout = LayoutContext::new(
+            Arc::clone(&daemon.layouts),
+            daemon.spatial_engine.clone(),
+            daemon.scene_manager.clone(),
+            daemon.scene_transactions.clone(),
+            daemon.runtime_state_path.clone(),
+            runtime_session.clone(),
+            devices.clone(),
+        );
         let output = OutputContext::new(
             daemon.power_state.clone(),
             Arc::clone(&daemon.output_power_transition),
@@ -805,6 +839,7 @@ impl AppState {
             scene,
             runtime_session,
             devices,
+            layout,
             output,
             effects,
             scene_tree,

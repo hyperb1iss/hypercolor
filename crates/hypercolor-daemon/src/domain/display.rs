@@ -15,15 +15,72 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, Zone, ZoneId};
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
+
+/// Native display surface geometry resolved from one tracked device.
+#[derive(Debug, Clone, Copy)]
+pub struct DisplaySurfaceInfo {
+    pub width: u32,
+    pub height: u32,
+    pub circular: bool,
+}
+
+/// Resolve native display geometry from segment topology or capabilities.
+#[must_use]
+pub fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
+    for segment in &info.segments {
+        if let DeviceTopologyHint::Display {
+            width,
+            height,
+            circular,
+        } = &segment.topology
+        {
+            return Some(DisplaySurfaceInfo {
+                width: *width,
+                height: *height,
+                circular: *circular,
+            });
+        }
+    }
+
+    info.capabilities
+        .display_resolution
+        .filter(|_| info.capabilities.has_display)
+        .map(|(width, height)| DisplaySurfaceInfo {
+            width,
+            height,
+            circular: false,
+        })
+}
+
+/// Build a native-resolution canvas for one display face.
+#[must_use]
+pub fn display_face_layout(
+    device_id: DeviceId,
+    device_name: &str,
+    surface: DisplaySurfaceInfo,
+) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("display-face:{device_id}"),
+        name: format!("{device_name} Display Face"),
+        description: Some(format!("Native-resolution face canvas for {device_name}")),
+        canvas_width: surface.width,
+        canvas_height: surface.height,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
 
 // ── Commands ─────────────────────────────────────────────────────────────
 

@@ -182,6 +182,16 @@ fn isolated_state_with_tempdir() -> (AppState, tempfile::TempDir) {
     (state, tempdir)
 }
 
+fn isolated_state_with_driver_registry(
+    driver_registry: Arc<DriverModuleRegistry>,
+) -> (AppState, tempfile::TempDir) {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = tempdir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+    let state = AppState::new_with_runtime_overrides(data_dir, None, Some(driver_registry));
+    (state, tempdir)
+}
+
 struct ObservableInputSource {
     status: SourceStatusReporter,
     session: Arc<StdMutex<Option<SourceSessionWriter>>>,
@@ -7905,7 +7915,6 @@ async fn layout_apply_updates_active_layout() {
 
 #[tokio::test]
 async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
-    let (mut state, _tmp) = isolated_state_with_tempdir();
     let revision = Arc::new(AtomicUsize::new(1));
     let mut registry = DriverModuleRegistry::new();
     registry
@@ -7913,7 +7922,7 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
             revision: Arc::clone(&revision),
         })
         .expect("runtime cache test driver should register");
-    state.driver_registry = Arc::new(registry);
+    let (state, _tmp) = isolated_state_with_driver_registry(Arc::new(registry));
     let state = Arc::new(state);
     let candidate = SpatialLayout {
         id: "converged-layout".to_owned(),
@@ -7966,8 +7975,6 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
 
 #[tokio::test]
 async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
-    let (mut state, _tmp) = isolated_state_with_tempdir();
-    let initial_layout_id = state.spatial_engine.snapshot().layout().id.clone();
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
     let mut registry = DriverModuleRegistry::new();
@@ -7977,7 +7984,8 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
             release: Arc::clone(&release),
         })
         .expect("blocking runtime cache test driver should register");
-    state.driver_registry = Arc::new(registry);
+    let (state, _tmp) = isolated_state_with_driver_registry(Arc::new(registry));
+    let initial_layout_id = state.spatial_engine.snapshot().layout().id.clone();
     let state = Arc::new(state);
     let candidate = SpatialLayout {
         id: "superseded-layout".to_owned(),
@@ -8120,8 +8128,11 @@ async fn layout_preview_maps_renderer_rejections_to_explicit_statuses() {
 
 #[tokio::test]
 async fn layout_apply_maps_persistence_failure_to_internal_error() {
-    let mut state = isolated_state();
-    state.runtime_state_path = PathBuf::new();
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = tempdir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+    let state =
+        AppState::new_with_composition_overrides(data_dir, None, None, Some(PathBuf::new()));
     let state = Arc::new(state);
     let candidate = SpatialLayout {
         id: "persistence-failure".to_owned(),

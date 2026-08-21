@@ -371,6 +371,30 @@ impl DeviceContext {
         Vec::new()
     }
 
+    /// Resolve native display canvases for every renderable device.
+    pub async fn connected_display_surface_layouts(
+        &self,
+    ) -> Vec<(hypercolor_types::device::DeviceId, String, SpatialLayout)> {
+        self.device_registry
+            .list()
+            .await
+            .into_iter()
+            .filter(|tracked| tracked.state.is_renderable())
+            .filter_map(|tracked| {
+                let surface = crate::domain::display::display_surface_info(&tracked.info)?;
+                Some((
+                    tracked.info.id,
+                    tracked.info.name.clone(),
+                    crate::domain::display::display_face_layout(
+                        tracked.info.id,
+                        tracked.info.name.as_str(),
+                        surface,
+                    ),
+                ))
+            })
+            .collect()
+    }
+
     /// Re-evaluate device eligibility after scene targeting changes.
     pub async fn sync_connectivity(&self) {
         let runtime = self.driver_host.discovery_runtime();

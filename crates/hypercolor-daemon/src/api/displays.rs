@@ -14,7 +14,7 @@ use hypercolor_types::effect::{EffectCategory, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::SpatialLayout;
 use tracing::warn;
 
 use crate::api::AppState;
@@ -23,6 +23,9 @@ use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope;
 use crate::api::publish_render_group_changed;
 use crate::display_frames::DisplayFrameSnapshot;
+pub(crate) use crate::domain::display::{
+    DisplaySurfaceInfo, display_face_layout, display_surface_info,
+};
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::displays::{
@@ -30,13 +33,6 @@ pub use hypercolor_types::api::displays::{
     DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DisplaySurfaceInfo {
-    pub width: u32,
-    pub height: u32,
-    pub circular: bool,
-}
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
 
@@ -974,78 +970,13 @@ fn display_zone_has_face_assignment(group: &Zone) -> bool {
     group.effect_ids().next().is_some()
 }
 
-pub(crate) fn display_face_layout(
-    device_id: DeviceId,
-    device_name: &str,
-    surface: DisplaySurfaceInfo,
-) -> SpatialLayout {
-    SpatialLayout {
-        id: format!("display-face:{device_id}"),
-        name: format!("{device_name} Display Face"),
-        description: Some(format!("Native-resolution face canvas for {device_name}")),
-        canvas_width: surface.width,
-        canvas_height: surface.height,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    }
-}
-
-pub(crate) async fn connected_display_surface_layouts(
-    state: &AppState,
-) -> Vec<(DeviceId, String, SpatialLayout)> {
-    state
-        .device_registry
-        .list()
-        .await
-        .into_iter()
-        .filter(|tracked| tracked.state.is_renderable())
-        .filter_map(|tracked| {
-            let surface = display_surface_info(&tracked.info)?;
-            Some((
-                tracked.info.id,
-                tracked.info.name.clone(),
-                display_face_layout(tracked.info.id, tracked.info.name.as_str(), surface),
-            ))
-        })
-        .collect()
-}
-
 pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
-    let displays = connected_display_surface_layouts(state).await;
+    let displays = state.devices.connected_display_surface_layouts().await;
     if let Err(error) =
         crate::domain::display::hydrate_existing_display_surfaces(&state.scene, displays).await
     {
         warn!(%error, "Failed to hydrate connected display surfaces");
     }
-}
-
-pub(crate) fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
-    for segment in &info.segments {
-        if let DeviceTopologyHint::Display {
-            width,
-            height,
-            circular,
-        } = &segment.topology
-        {
-            return Some(DisplaySurfaceInfo {
-                width: *width,
-                height: *height,
-                circular: *circular,
-            });
-        }
-    }
-
-    info.capabilities
-        .display_resolution
-        .filter(|_| info.capabilities.has_display)
-        .map(|(width, height)| DisplaySurfaceInfo {
-            width,
-            height,
-            circular: false,
-        })
 }
 
 /// Build the API-facing descriptor for a display device — the same shared

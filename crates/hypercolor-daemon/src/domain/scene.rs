@@ -1633,7 +1633,7 @@ pub async fn activate_scene(
     let _ = meta;
 
     let media_admission = state.scene.media_admission_context().await;
-    let display_surfaces = crate::api::displays::connected_display_surface_layouts(state).await;
+    let display_surfaces = state.devices.connected_display_surface_layouts().await;
     let _activation_guard = state
         .scene_transactions
         .acquire_scene_activation_guard()
@@ -1713,7 +1713,7 @@ async fn apply_activation_layout(
         };
     };
 
-    match crate::api::layouts::apply_persisted_layout_update(state, guard, layout).await {
+    match state.layout.apply_persisted_update(guard, layout).await {
         Ok(()) => SceneLayoutActivationOutcome {
             layout_id: Some(layout_id),
             applied: true,

@@ -36,6 +36,7 @@ pub mod context;
 pub mod display;
 pub mod effect;
 pub mod layer;
+pub mod layout;
 pub mod output;
 pub mod scene;
 pub mod scene_tree;
