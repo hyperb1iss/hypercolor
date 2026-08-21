@@ -244,8 +244,8 @@ use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 
 #[cfg(target_os = "windows")]
 use hypercolor_windows_pawnio::{
-    PawnIoError, SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction,
-    WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
+    PawnIoError, PawnIoErrorKind, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
+    SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
 };
 
 /// Linux `SMBus` transport backed by `/dev/i2c-*`.
@@ -668,36 +668,28 @@ fn u8_address(address: u16) -> Result<u8, TransportError> {
 
 #[cfg(target_os = "windows")]
 fn map_windows_smbus_io_error(path: &str, address: u8, error: PawnIoError) -> TransportError {
+    let kind = error.kind();
     let detail = error.to_string();
-    let lowered = detail.to_ascii_lowercase();
-
-    if lowered.contains("access denied") || lowered.contains("administrator") {
-        return TransportError::PermissionDenied { detail };
-    }
-
-    if lowered.contains("not found") || lowered.contains("not installed") {
-        return TransportError::NotFound { detail };
-    }
-
-    TransportError::IoError {
-        detail: format!("{detail} (path={path}, address=0x{address:02X})"),
+    match kind {
+        PawnIoErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
+        PawnIoErrorKind::NotFound => TransportError::NotFound { detail },
+        PawnIoErrorKind::Unavailable => TransportError::Disconnected { detail },
+        PawnIoErrorKind::InvalidInput | PawnIoErrorKind::Io => TransportError::IoError {
+            detail: format!("{detail} (path={path}, address=0x{address:02X})"),
+        },
     }
 }
 
 #[cfg(target_os = "windows")]
 fn map_windows_pawnio_error(error: PawnIoError) -> TransportError {
+    let kind = error.kind();
     let detail = error.to_string();
-    let lowered = detail.to_ascii_lowercase();
-
-    if lowered.contains("access denied") || lowered.contains("administrator") {
-        return TransportError::PermissionDenied { detail };
+    match kind {
+        PawnIoErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
+        PawnIoErrorKind::NotFound => TransportError::NotFound { detail },
+        PawnIoErrorKind::Unavailable => TransportError::Disconnected { detail },
+        PawnIoErrorKind::InvalidInput | PawnIoErrorKind::Io => TransportError::IoError { detail },
     }
-
-    if lowered.contains("not found") || lowered.contains("not installed") {
-        return TransportError::NotFound { detail };
-    }
-
-    TransportError::IoError { detail }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -765,15 +757,66 @@ impl Transport for SmBusTransport {
 #[cfg(target_os = "linux")]
 fn map_linux_i2c_error(path: &str, address: u16, error: &LinuxI2CError) -> TransportError {
     let detail = format!("{error} (path={path}, address=0x{address:02X})");
-    let lowered = detail.to_ascii_lowercase();
+    let kind = match error {
+        LinuxI2CError::Errno(errno) => std::io::Error::from_raw_os_error(*errno).kind(),
+        LinuxI2CError::Io(error) => error.kind(),
+    };
 
-    if lowered.contains("permission") || lowered.contains("denied") {
-        return TransportError::PermissionDenied { detail };
+    match kind {
+        std::io::ErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
+        std::io::ErrorKind::NotFound => TransportError::NotFound { detail },
+        _ => TransportError::IoError { detail },
     }
+}
 
-    if lowered.contains("no such file") || lowered.contains("not found") {
-        return TransportError::NotFound { detail };
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linux_i2c_classification_uses_error_kind_not_message() {
+        let misleading = LinuxI2CError::Io(std::io::Error::other(
+            "permission denied and device not found",
+        ));
+        assert!(matches!(
+            map_linux_i2c_error("/dev/i2c-test", 0x40, &misleading),
+            TransportError::IoError { .. }
+        ));
+
+        let permission = LinuxI2CError::Errno(nix::libc::EACCES);
+        assert!(matches!(
+            map_linux_i2c_error("/dev/i2c-test", 0x40, &permission),
+            TransportError::PermissionDenied { .. }
+        ));
     }
+}
 
-    TransportError::IoError { detail }
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn pawnio_mapping_uses_structured_kind_not_detail() {
+        let misleading = PawnIoError::BrokerCall {
+            operation: "test",
+            kind: PawnIoErrorKind::Io,
+            hresult: None,
+            detail: "access denied and module not found".to_owned(),
+        };
+        assert!(matches!(
+            map_windows_pawnio_error(misleading),
+            TransportError::IoError { .. }
+        ));
+
+        let permission = PawnIoError::BrokerCall {
+            operation: "test",
+            kind: PawnIoErrorKind::PermissionDenied,
+            hresult: Some(0x8007_0005),
+            detail: "harmless display text".to_owned(),
+        };
+        assert!(matches!(
+            map_windows_pawnio_error(permission),
+            TransportError::PermissionDenied { .. }
+        ));
+    }
 }

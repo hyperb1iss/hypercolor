@@ -736,11 +736,19 @@ fn report_mode_payload_includes_report_id(report_mode: HidRawReportMode) -> bool
 
 fn map_hidapi_error(error: &hidapi::HidError) -> TransportError {
     let detail = error.to_string();
-    if detail.to_ascii_lowercase().contains("permission") {
-        return TransportError::PermissionDenied { detail };
-    }
+    let hidapi::HidError::IoError { error } = error else {
+        return TransportError::IoError { detail };
+    };
 
-    TransportError::IoError { detail }
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
+        std::io::ErrorKind::NotFound => TransportError::NotFound { detail },
+        std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::UnexpectedEof
+        | std::io::ErrorKind::NotConnected => TransportError::Disconnected { detail },
+        _ => TransportError::IoError { detail },
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -801,5 +809,32 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         "<empty>".to_owned()
     } else {
         rendered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidapi_classification_uses_io_kind_not_message() {
+        let misleading = hidapi::HidError::HidApiError {
+            message: "permission denied and device not found".to_owned(),
+        };
+        assert!(matches!(
+            map_hidapi_error(&misleading),
+            TransportError::IoError { .. }
+        ));
+
+        let permission = hidapi::HidError::IoError {
+            error: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "harmless display text",
+            ),
+        };
+        assert!(matches!(
+            map_hidapi_error(&permission),
+            TransportError::PermissionDenied { .. }
+        ));
     }
 }

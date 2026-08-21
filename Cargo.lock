@@ -5354,6 +5354,7 @@ dependencies = [
  "i2cdev",
  "image",
  "midir",
+ "nix 0.29.0",
  "nusb",
  "serde_json",
  "tempfile",
