@@ -20,7 +20,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
-    OpenRgbClientConfig, PacketId, RgbColor,
+    OpenRgbClientConfig, OpenRgbError, PacketId, RgbColor,
 };
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{
@@ -532,7 +532,7 @@ struct ConnectedOutput {
     io_task: StdMutex<Option<JoinHandle<()>>>,
     active: Arc<AtomicBool>,
     lifecycle_gate: Arc<StdMutex<()>>,
-    last_async_error: Arc<StdMutex<Option<String>>>,
+    last_async_error: Arc<StdMutex<Option<DeviceError>>>,
 }
 
 impl ConnectedOutput {
@@ -540,7 +540,7 @@ impl ConnectedOutput {
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
         let active = Arc::new(AtomicBool::new(true));
         let lifecycle_gate = Arc::new(StdMutex::new(()));
-        let last_async_error = Arc::new(StdMutex::new(None::<String>));
+        let last_async_error = Arc::new(StdMutex::new(None::<DeviceError>));
         let io_task = tokio::spawn(run_openrgb_output_worker(
             device_id,
             Arc::clone(&controller),
@@ -579,7 +579,6 @@ impl ConnectedOutput {
             &self.last_async_error,
             Arc::new(OpenRgbFramePayload::untracked(colors)),
         )
-        .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn stop(&self) -> Arc<Mutex<ConnectedController>> {
@@ -744,7 +743,7 @@ struct OpenRgbFrameSink {
     frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
     lifecycle_gate: Arc<StdMutex<()>>,
-    last_async_error: Arc<StdMutex<Option<String>>>,
+    last_async_error: Arc<StdMutex<Option<DeviceError>>>,
 }
 
 #[async_trait]
@@ -761,7 +760,6 @@ impl DeviceFrameSink for OpenRgbFrameSink {
             &self.last_async_error,
             Arc::new(OpenRgbFramePayload::untracked(colors)),
         )
-        .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn deliver_colors_shared(
@@ -778,7 +776,7 @@ impl DeviceFrameSink for OpenRgbFrameSink {
             &self.last_async_error,
             Arc::new(payload),
         ) {
-            return DeviceDeliveryAck::rejected(id, DeviceError::write(self.device_id, error));
+            return DeviceDeliveryAck::rejected(id, error);
         }
 
         delivery_rx.await.unwrap_or_else(|_| {
@@ -807,7 +805,7 @@ impl DeviceFrameSink for OpenRgbFrameSink {
             &self.last_async_error,
             Arc::new(payload),
         ) {
-            return DeviceDeliveryAck::rejected(id, DeviceError::write(self.device_id, error));
+            return DeviceDeliveryAck::rejected(id, error);
         }
 
         delivery_rx.await.unwrap_or_else(|_| {
@@ -826,19 +824,21 @@ fn enqueue_openrgb_payload(
     frame_tx: &watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: &AtomicBool,
     lifecycle_gate: &StdMutex<()>,
-    last_async_error: &StdMutex<Option<String>>,
+    last_async_error: &StdMutex<Option<DeviceError>>,
     payload: Arc<OpenRgbFramePayload>,
-) -> Result<()> {
+) -> std::result::Result<(), DeviceError> {
     let _gate = lock_lifecycle_gate(lifecycle_gate);
     if !active.load(Ordering::Acquire) {
-        bail!("OpenRGB controller is disconnected");
+        return Err(DeviceError::Disconnected {
+            device: device_id.to_string(),
+        });
     }
     if let Some(error) = last_async_error
         .lock()
-        .map_err(|_| anyhow::anyhow!("OpenRGB async error state lock poisoned"))?
+        .map_err(|_| DeviceError::write(device_id, "OpenRGB async error state lock poisoned"))?
         .take()
     {
-        bail!("{error}");
+        return Err(error);
     }
     if let Some(previous) = frame_tx.send_replace(Some(payload)) {
         previous.reject_pending(DeviceError::write(
@@ -861,7 +861,7 @@ async fn run_openrgb_output_worker(
     controller: Arc<Mutex<ConnectedController>>,
     mut frame_rx: watch::Receiver<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
-    last_async_error: Arc<StdMutex<Option<String>>>,
+    last_async_error: Arc<StdMutex<Option<DeviceError>>>,
 ) {
     loop {
         if frame_rx.changed().await.is_err() {
@@ -904,7 +904,7 @@ async fn run_openrgb_output_worker(
                 }
             }
             Err(error) => {
-                let error = DeviceError::write(device_id, error);
+                let error = map_openrgb_device_error(device_id, &error);
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(DeviceDeliveryAck::failed(
                         id,
@@ -916,10 +916,23 @@ async fn run_openrgb_output_worker(
                         *last_error = None;
                     }
                 } else if let Ok(mut last_error) = last_async_error.lock() {
-                    *last_error = Some(error.to_string());
+                    *last_error = Some(error);
                 }
             }
         }
+    }
+}
+
+fn map_openrgb_device_error(device_id: DeviceId, error: &Error) -> DeviceError {
+    match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<OpenRgbError>())
+    {
+        Some(OpenRgbError::Timeout { after, .. }) => DeviceError::Timeout { after: *after },
+        Some(OpenRgbError::ConnectionClosed) => DeviceError::Disconnected {
+            device: device_id.to_string(),
+        },
+        _ => DeviceError::write(device_id, error),
     }
 }
 
@@ -1820,6 +1833,52 @@ mod tests {
         );
         assert!(!ack.transport_started);
         assert!(frame_tx.borrow().is_none());
+    }
+
+    #[test]
+    fn sdk_timeout_maps_to_typed_device_timeout() {
+        let device_id = DeviceId::new();
+        let after = Duration::from_millis(325);
+        let error = Error::new(OpenRgbError::Timeout {
+            operation: "write",
+            after,
+        })
+        .context("OpenRGB update_leds failed");
+
+        assert_eq!(
+            map_openrgb_device_error(device_id, &error),
+            DeviceError::Timeout { after }
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_async_timeout_reaches_delivery_ack_typed() {
+        let (frame_tx, _frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
+        let device_id = DeviceId::new();
+        let after = Duration::from_millis(325);
+        let sink = OpenRgbFrameSink {
+            device_id,
+            frame_tx,
+            active: Arc::new(AtomicBool::new(true)),
+            lifecycle_gate: Arc::new(StdMutex::new(())),
+            last_async_error: Arc::new(StdMutex::new(Some(DeviceError::Timeout { after }))),
+        };
+        let delivery_id = DeviceDeliveryId {
+            queue_generation: 8,
+            sequence: 13,
+        };
+
+        let ack = sink
+            .deliver_colors_shared(delivery_id, Arc::new(vec![[1, 2, 3]]))
+            .await;
+
+        assert_eq!(ack.id, delivery_id);
+        assert_eq!(
+            ack.status,
+            hypercolor_driver_api::DeviceDeliveryStatus::Failed
+        );
+        assert!(!ack.transport_started);
+        assert_eq!(ack.error, Some(DeviceError::Timeout { after }));
     }
 
     #[test]

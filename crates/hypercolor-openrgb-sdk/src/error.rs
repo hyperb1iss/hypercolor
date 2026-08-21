@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 use crate::packet::PacketId;
@@ -56,8 +58,11 @@ pub enum OpenRgbError {
     },
 
     /// A timed operation exceeded its configured deadline.
-    #[error("OpenRGB {operation} timed out")]
-    Timeout { operation: &'static str },
+    #[error("OpenRGB {operation} timed out after {after:?}")]
+    Timeout {
+        operation: &'static str,
+        after: Duration,
+    },
 
     /// The TCP peer closed the stream while a packet was expected.
     #[error("OpenRGB connection closed")]
