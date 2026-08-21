@@ -13,13 +13,7 @@ impl BackendManager {
             .output
             .queues()
             .filter_map(|((backend_id, device_id), queue)| {
-                let error = queue.last_error()?;
-
-                Some(AsyncWriteFailure {
-                    backend_id: backend_id.clone(),
-                    device_id: *device_id,
-                    error,
-                })
+                queue.async_write_failure(backend_id.clone(), *device_id)
             })
             .collect::<Vec<_>>();
 

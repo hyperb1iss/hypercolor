@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 #[cfg(feature = "wgpu")]
@@ -201,6 +201,71 @@ struct SlowDisconnectFailBackend {
     disconnect_started: Arc<Notify>,
     disconnect_delay: Duration,
     connected: AtomicBool,
+}
+
+struct FencedRecoveryBackend {
+    device_id: DeviceId,
+    attempts: AtomicUsize,
+    allow_success: Notify,
+    disconnects: AtomicUsize,
+}
+
+impl FencedRecoveryBackend {
+    fn new(info: DeviceInfo) -> Self {
+        Self {
+            device_id: info.id,
+            attempts: AtomicUsize::new(0),
+            allow_success: Notify::new(),
+            disconnects: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for FencedRecoveryBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "fenced".to_owned(),
+            name: "Fenced Recovery Backend".to_owned(),
+            description: "Controls failure and success ordering for lifecycle tests".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        if *id != self.device_id {
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
+        }
+        self.disconnects.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        if *id != self.device_id {
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
+        }
+        let attempt = self.attempts.fetch_add(1, Ordering::AcqRel);
+        if attempt == 0 {
+            return Err(DeviceError::write(id, "failure before newer success"));
+        }
+
+        self.allow_success.notified().await;
+        Ok(())
+    }
 }
 
 impl SlowDisconnectFailBackend {
@@ -2907,6 +2972,189 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     for handle in reconnect_tasks {
         handle.abort();
     }
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this acceptance test wires queue delivery identity through the contended lifecycle handoff"
+)]
+async fn newer_success_fences_deferred_async_failure_recovery() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Fenced Recovery Strip".into(),
+        led_count: 8,
+        topology: LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+    let info = MockDeviceBackend::new()
+        .with_device(&mock_config)
+        .device_infos()
+        .first()
+        .cloned()
+        .expect("mock backend should expose one device");
+    let layout_device_id = DeviceLifecycleManager::layout_device_id(&info);
+    let backend = Arc::new(FencedRecoveryBackend::new(info.clone()));
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(backend.clone());
+    backend_manager.map_device(&layout_device_id, "fenced", device_id);
+
+    let device_registry = DeviceRegistry::new();
+    assert_eq!(device_registry.add(info.clone()).await, device_id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::with_reconnect_policy(
+        ReconnectPolicy {
+            initial_delay: Duration::from_secs(5),
+            ..ReconnectPolicy::default()
+        },
+    )));
+    {
+        let mut lifecycle = lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("connected state should be valid");
+        lifecycle
+            .on_frame_success(device_id)
+            .expect("frame success should move device to active");
+    }
+
+    let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
+    let mut state = make_render_state(
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
+        SpatialEngine::new(layout),
+        backend_manager,
+    );
+    let backend_manager = Arc::clone(&state.backend_manager);
+    let event_bus = Arc::clone(&state.event_bus);
+    let discovery_runtime = DiscoveryRuntime {
+        device_registry: device_registry.clone(),
+        backend_manager: Arc::clone(&backend_manager),
+        lifecycle_manager: Arc::clone(&lifecycle_manager),
+        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
+        event_bus: Arc::clone(&event_bus),
+        spatial_engine: Arc::clone(&state.spatial_engine),
+        scene_manager: SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus)),
+        layouts: Arc::new(RwLock::new(HashMap::new())),
+        layouts_path: PathBuf::from("layouts.json"),
+        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
+        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
+        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
+        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
+            "attachment-profiles.json",
+        )))),
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+            "device-settings.json",
+        )))),
+        scene_transactions: SceneTransactionQueue::default(),
+        runtime_state_path: PathBuf::from("runtime-state.json"),
+        device_aliases_path: PathBuf::from("device-aliases.json"),
+        usb_protocol_configs: UsbProtocolConfigStore::new(),
+        credential_store: Arc::new(
+            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
+                "hypercolor-test-credentials-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .expect("test credential store"),
+        ),
+        in_progress: Arc::new(AtomicBool::new(false)),
+        pending_scans: Arc::default(),
+        task_spawner: tokio::runtime::Handle::current(),
+    };
+    state.discovery_runtime = Some(discovery_runtime.clone());
+
+    let lifecycle_guard = lifecycle_manager.lock().await;
+    let mut event_rx = event_bus.subscribe_all();
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.start();
+    }
+    let mut render_thread = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if backend_manager
+                .lock()
+                .await
+                .device_output_statistics()
+                .first()
+                .is_some_and(|stats| stats.transport_failed == 1)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("delivery N should fail while lifecycle ownership is contended");
+
+    loop {
+        match event_rx.try_recv() {
+            Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                panic!("render event channel closed")
+            }
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) if matches!(event.event, HypercolorEvent::FrameRendered { .. }) => break,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("render event channel closed")
+                }
+            }
+        }
+    })
+    .await
+    .expect("a later frame should defer failure N behind the lifecycle lock");
+
+    backend.allow_success.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if backend_manager
+                .lock()
+                .await
+                .device_output_statistics()
+                .first()
+                .is_some_and(|stats| {
+                    stats.last_transport_completed_sequence > stats.last_transport_failed_sequence
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("delivery N+1 should succeed before lifecycle ownership is released");
+
+    drop(lifecycle_guard);
+    let lifecycle = lifecycle_manager.lock().await;
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Active));
+    drop(lifecycle);
+
+    assert_eq!(backend.disconnects.load(Ordering::Relaxed), 0);
+    assert_eq!(backend_manager.lock().await.mapped_device_count(), 1);
+    assert!(
+        discovery_runtime
+            .reconnect_tasks
+            .lock()
+            .expect("reconnect task map lock poisoned")
+            .is_empty()
+    );
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.stop();
+    }
+    render_thread.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]

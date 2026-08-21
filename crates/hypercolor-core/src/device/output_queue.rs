@@ -1,7 +1,7 @@
 //! Latest-frame output queues for device writes.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -407,15 +407,87 @@ impl DeviceOutputStatistics {
     }
 }
 
-/// One async device write failure observed by an output queue.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One queue-qualified async device write failure.
+#[derive(Clone)]
 pub struct AsyncWriteFailure {
     /// Backend ID that owns the queue.
     pub backend_id: String,
     /// Physical device ID targeted by the queue.
     pub device_id: DeviceId,
+    /// Queue generation and delivery sequence that failed.
+    pub delivery_id: DeviceDeliveryId,
     /// Most recent typed async write error.
     pub error: DeviceError,
+    fence: std::sync::Weak<AsyncWriteFailureFence>,
+}
+
+impl AsyncWriteFailure {
+    /// Whether this exact failure is still the queue's current terminal state.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        self.fence
+            .upgrade()
+            .is_some_and(|fence| fence.is_current(self.delivery_id))
+    }
+
+    /// Atomically acknowledge this failure if it is still current.
+    ///
+    /// The acknowledgement is the recovery linearization point. A newer
+    /// success or queue generation makes the ticket stale.
+    #[must_use]
+    pub fn try_acknowledge(&self) -> bool {
+        self.fence
+            .upgrade()
+            .is_some_and(|fence| fence.try_acknowledge(self.delivery_id))
+    }
+}
+
+impl std::fmt::Debug for AsyncWriteFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AsyncWriteFailure")
+            .field("backend_id", &self.backend_id)
+            .field("device_id", &self.device_id)
+            .field("delivery_id", &self.delivery_id)
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for AsyncWriteFailure {
+    fn eq(&self, other: &Self) -> bool {
+        self.backend_id == other.backend_id
+            && self.device_id == other.device_id
+            && self.delivery_id == other.delivery_id
+            && self.error == other.error
+    }
+}
+
+impl Eq for AsyncWriteFailure {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetainedWriteFailure {
+    id: DeviceDeliveryId,
+    error: DeviceError,
+    acknowledged: bool,
+}
+
+#[derive(Debug)]
+struct AsyncWriteFailureFence {
+    active: AtomicBool,
+    metrics: Arc<OutputQueueMetrics>,
+}
+
+impl AsyncWriteFailureFence {
+    fn is_current(&self, id: DeviceDeliveryId) -> bool {
+        self.active.load(Ordering::Acquire) && self.metrics.is_failure_current(id)
+    }
+
+    fn try_acknowledge(&self, id: DeviceDeliveryId) -> bool {
+        self.active.load(Ordering::Acquire)
+            && self.metrics.try_acknowledge_failure(id)
+            && self.active.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Debug)]
@@ -445,7 +517,7 @@ struct OutputQueueMetrics {
     last_handled_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
     last_error_sequence: AtomicU64,
-    last_error: StdMutex<Option<DeviceError>>,
+    retained_failure: StdMutex<Option<RetainedWriteFailure>>,
 }
 
 impl OutputQueueMetrics {
@@ -476,11 +548,15 @@ impl OutputQueueMetrics {
             last_handled_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
             last_error_sequence: AtomicU64::new(0),
-            last_error: StdMutex::new(None),
+            retained_failure: StdMutex::new(None),
         }
     }
 
     fn activate_generation(&self, generation: u64) {
+        let mut retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.active_generation.store(generation, Ordering::Release);
         self.last_sequence.store(0, Ordering::Relaxed);
         self.last_transport_started_sequence
@@ -488,9 +564,7 @@ impl OutputQueueMetrics {
         self.last_handled_sequence.store(0, Ordering::Relaxed);
         self.last_success_sequence.store(0, Ordering::Relaxed);
         self.last_error_sequence.store(0, Ordering::Relaxed);
-        if let Ok(mut last_error) = self.last_error.lock() {
-            *last_error = None;
-        }
+        *retained_failure = None;
     }
 
     fn is_current(&self, id: DeviceDeliveryId) -> bool {
@@ -542,6 +616,10 @@ impl OutputQueueMetrics {
         sent_at: Instant,
         completed_payload_bytes: u64,
     ) {
+        let mut retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.is_current(id) {
             return;
         }
@@ -561,10 +639,19 @@ impl OutputQueueMetrics {
         self.last_success_sequence
             .store(id.sequence, Ordering::Relaxed);
         self.last_handled_sequence
-            .store(id.sequence, Ordering::Relaxed);
+            .store(id.sequence, Ordering::Release);
+        if retained_failure.as_ref().is_some_and(|failure| {
+            failure.id.queue_generation == id.queue_generation && failure.id.sequence <= id.sequence
+        }) {
+            *retained_failure = None;
+        }
     }
 
     fn record_write_suppressed(&self, id: DeviceDeliveryId, sent_at: Instant) {
+        let mut retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.is_current(id) {
             return;
         }
@@ -574,7 +661,12 @@ impl OutputQueueMetrics {
             Ordering::Relaxed,
         );
         self.last_handled_sequence
-            .store(id.sequence, Ordering::Relaxed);
+            .store(id.sequence, Ordering::Release);
+        if retained_failure.as_ref().is_some_and(|failure| {
+            failure.id.queue_generation == id.queue_generation && failure.id.sequence <= id.sequence
+        }) {
+            *retained_failure = None;
+        }
     }
 
     fn record_accepted_duplicate(&self, id: DeviceDeliveryId) {
@@ -584,6 +676,10 @@ impl OutputQueueMetrics {
     }
 
     fn record_write_error(&self, id: DeviceDeliveryId, sent_at: Instant, error: DeviceError) {
+        let mut retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.is_current(id) {
             return;
         }
@@ -594,9 +690,13 @@ impl OutputQueueMetrics {
         self.errors_total.fetch_add(1, Ordering::Relaxed);
         self.transport_failed.fetch_add(1, Ordering::Relaxed);
         self.last_error_sequence
-            .store(id.sequence, Ordering::Relaxed);
-        if let Ok(mut last_error) = self.last_error.lock() {
-            *last_error = Some(error);
+            .store(id.sequence, Ordering::Release);
+        if id.sequence > self.last_handled_sequence.load(Ordering::Acquire) {
+            *retained_failure = Some(RetainedWriteFailure {
+                id,
+                error,
+                acknowledged: false,
+            });
         }
     }
 
@@ -697,11 +797,9 @@ impl OutputQueueMetrics {
                 .as_millis();
             u64::try_from(ms).unwrap_or(u64::MAX)
         });
-        let last_error = (self.last_error_sequence.load(Ordering::Relaxed)
-            > self.last_handled_sequence.load(Ordering::Relaxed))
-        .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
-        .flatten()
-        .map(|error| error.to_string());
+        let last_error = self
+            .retained_failure()
+            .map(|failure| failure.error.to_string());
 
         DeviceOutputStatistics {
             backend_id: backend_id.to_owned(),
@@ -745,11 +843,57 @@ impl OutputQueueMetrics {
         }
     }
 
-    fn last_error(&self) -> Option<DeviceError> {
-        (self.last_error_sequence.load(Ordering::Relaxed)
-            > self.last_handled_sequence.load(Ordering::Relaxed))
-        .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
-        .flatten()
+    fn retained_failure(&self) -> Option<RetainedWriteFailure> {
+        let retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        retained_failure
+            .as_ref()
+            .filter(|failure| {
+                self.is_current(failure.id)
+                    && self.last_error_sequence.load(Ordering::Acquire) == failure.id.sequence
+            })
+            .cloned()
+    }
+
+    fn pending_failure(&self) -> Option<RetainedWriteFailure> {
+        self.retained_failure()
+            .filter(|failure| !failure.acknowledged && self.failure_matches(failure.id))
+    }
+
+    fn is_failure_current(&self, id: DeviceDeliveryId) -> bool {
+        let retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        retained_failure.as_ref().is_some_and(|failure| {
+            failure.id == id && !failure.acknowledged && self.failure_matches(id)
+        })
+    }
+
+    fn try_acknowledge_failure(&self, id: DeviceDeliveryId) -> bool {
+        let mut retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(failure) = retained_failure.as_mut() else {
+            return false;
+        };
+        if failure.id != id || failure.acknowledged || !self.failure_matches(id) {
+            return false;
+        }
+
+        self.last_handled_sequence
+            .fetch_max(id.sequence, Ordering::AcqRel);
+        failure.acknowledged = true;
+        true
+    }
+
+    fn failure_matches(&self, id: DeviceDeliveryId) -> bool {
+        self.is_current(id)
+            && self.last_error_sequence.load(Ordering::Acquire) == id.sequence
+            && self.last_handled_sequence.load(Ordering::Acquire) < id.sequence
     }
 }
 
@@ -924,6 +1068,7 @@ pub(super) struct OutputQueue {
     delivery_sequence: Arc<StdMutex<DeliverySequence>>,
     worker_phase: Arc<AtomicU8>,
     active_sequence: Arc<AtomicU64>,
+    failure_fence: Arc<AsyncWriteFailureFence>,
 }
 
 impl OutputQueue {
@@ -976,6 +1121,10 @@ impl OutputQueue {
         let active_sequence = Arc::new(AtomicU64::new(0));
         let active_sequence_for_task = Arc::clone(&active_sequence);
         let uses_frame_sink = lane.uses_frame_sink();
+        let failure_fence = Arc::new(AsyncWriteFailureFence {
+            active: AtomicBool::new(true),
+            metrics: Arc::clone(&metrics),
+        });
         let io_task = tokio::spawn(async move {
             let send_interval = cadence.min_interval();
             let max_frame_silence = cadence.max_frame_silence();
@@ -1139,6 +1288,7 @@ impl OutputQueue {
             delivery_sequence,
             worker_phase,
             active_sequence,
+            failure_fence,
         }
     }
 
@@ -1349,13 +1499,25 @@ impl OutputQueue {
         )
     }
 
-    pub(super) fn last_error(&self) -> Option<DeviceError> {
-        self.metrics.last_error()
+    pub(super) fn async_write_failure(
+        &self,
+        backend_id: String,
+        device_id: DeviceId,
+    ) -> Option<AsyncWriteFailure> {
+        let failure = self.metrics.pending_failure()?;
+        Some(AsyncWriteFailure {
+            backend_id,
+            device_id,
+            delivery_id: failure.id,
+            error: failure.error,
+            fence: Arc::downgrade(&self.failure_fence),
+        })
     }
 }
 
 impl Drop for OutputQueue {
     fn drop(&mut self) {
+        self.failure_fence.active.store(false, Ordering::Release);
         self.io_task.abort();
     }
 }

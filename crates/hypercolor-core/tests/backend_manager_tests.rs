@@ -2861,8 +2861,81 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].backend_id, "mock");
     assert_eq!(failures[0].device_id, device_id);
+    assert_eq!(
+        failures[0].delivery_id.queue_generation,
+        queue.queue_generation
+    );
+    assert_eq!(
+        failures[0].delivery_id.sequence,
+        queue.last_transport_failed_sequence
+    );
+    assert!(failures[0].is_current());
     assert!(matches!(failures[0].error, DeviceError::WriteError { .. }));
     assert!(failures[0].error.to_string().contains("mock write failure"));
+
+    let failure = failures[0].clone();
+    assert!(failure.try_acknowledge());
+    assert!(!failure.is_current());
+    assert!(manager.async_write_failures().is_empty());
+    assert!(
+        manager.device_output_statistics()[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("mock write failure"))
+    );
+}
+
+#[tokio::test]
+async fn newer_success_invalidates_exact_async_failure_ticket() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let backend =
+        FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager.map_device("fail_once:fenced", "fail_once", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "fail_once:fenced", 4)]);
+    let first = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 45, 180]; 4],
+    }];
+    manager.write_frame(&first, &layout);
+
+    let failure = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(failure) = manager.async_write_failures().into_iter().next() {
+                break failure;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("first delivery should expose its exact failure ticket");
+    assert!(failure.is_current());
+
+    let second = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+    manager.write_frame(&second, &layout);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if manager.device_output_statistics()[0].transport_completed == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("second delivery should complete");
+
+    assert!(!failure.is_current());
+    assert!(!failure.try_acknowledge());
+    assert!(manager.async_write_failures().is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

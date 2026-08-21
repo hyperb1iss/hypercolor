@@ -2,8 +2,8 @@ use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
 use hypercolor_core::device::{
-    AsyncWriteFailure, DeviceLifecycleManager, DeviceLifecyclePolicy, DiscoveryConnectBehavior,
-    LifecycleAction,
+    AsyncWriteFailure, DeviceDeliveryId, DeviceLifecycleManager, DeviceLifecyclePolicy,
+    DiscoveryConnectBehavior, LifecycleAction,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceError, DeviceId, DeviceState, ErrorRecoverability,
@@ -508,6 +508,7 @@ pub(crate) fn handle_async_write_failures(
     }
 
     let actions = if let Ok(mut lifecycle) = runtime.lifecycle_manager.try_lock() {
+        let failures = claim_current_async_write_failures(failures);
         async_write_failure_actions(&mut lifecycle, failures)
     } else {
         spawn_async_write_failure_worker(runtime.clone(), failures);
@@ -517,9 +518,45 @@ pub(crate) fn handle_async_write_failures(
     spawn_async_write_failure_actions(runtime.clone(), actions);
 }
 
+#[derive(Debug)]
+struct LifecycleWriteFailure {
+    backend_id: String,
+    device_id: DeviceId,
+    delivery_id: DeviceDeliveryId,
+    error: DeviceError,
+}
+
+fn claim_current_async_write_failures(
+    failures: Vec<AsyncWriteFailure>,
+) -> Vec<LifecycleWriteFailure> {
+    let mut handled = HashSet::new();
+    failures
+        .into_iter()
+        .filter_map(|failure| {
+            if !handled.insert(failure.device_id) {
+                return None;
+            }
+
+            let recovery = failure.error.recoverability();
+            let is_current = if recovery == ErrorRecoverability::Retry {
+                failure.is_current()
+            } else {
+                failure.try_acknowledge()
+            };
+
+            is_current.then_some(LifecycleWriteFailure {
+                backend_id: failure.backend_id,
+                device_id: failure.device_id,
+                delivery_id: failure.delivery_id,
+                error: failure.error,
+            })
+        })
+        .collect()
+}
+
 fn async_write_failure_actions(
     lifecycle: &mut DeviceLifecycleManager,
-    failures: Vec<AsyncWriteFailure>,
+    failures: Vec<LifecycleWriteFailure>,
 ) -> Vec<(DeviceId, Vec<LifecycleAction>)> {
     let mut handled = HashSet::new();
     let mut planned = Vec::new();
@@ -541,6 +578,8 @@ fn async_write_failure_actions(
             debug!(
                 backend_id = %failure.backend_id,
                 device_id = %failure.device_id,
+                queue_generation = failure.delivery_id.queue_generation,
+                sequence = failure.delivery_id.sequence,
                 error = %failure.error,
                 "retryable async device write failed; keeping output lane active"
             );
@@ -550,6 +589,8 @@ fn async_write_failure_actions(
         warn!(
             backend_id = %failure.backend_id,
             device_id = %failure.device_id,
+            queue_generation = failure.delivery_id.queue_generation,
+            sequence = failure.delivery_id.sequence,
             error = %failure.error,
             recoverability = ?recovery,
             "async device write failed; applying typed lifecycle recovery"
@@ -583,6 +624,7 @@ fn spawn_async_write_failure_worker(runtime: DiscoveryRuntime, failures: Vec<Asy
     std::mem::drop(task_spawner.spawn(async move {
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            let failures = claim_current_async_write_failures(failures);
             async_write_failure_actions(&mut lifecycle, failures)
         };
 
@@ -816,10 +858,14 @@ mod tests {
         (lifecycle, device_id)
     }
 
-    fn async_failure(device_id: DeviceId, error: DeviceError) -> AsyncWriteFailure {
-        AsyncWriteFailure {
+    fn async_failure(device_id: DeviceId, error: DeviceError) -> LifecycleWriteFailure {
+        LifecycleWriteFailure {
             backend_id: "fixture".to_owned(),
             device_id,
+            delivery_id: DeviceDeliveryId {
+                queue_generation: 1,
+                sequence: 1,
+            },
             error,
         }
     }
