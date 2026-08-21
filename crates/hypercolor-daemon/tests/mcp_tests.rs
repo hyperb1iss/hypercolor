@@ -23,13 +23,14 @@ use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_t
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource,
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
@@ -1038,7 +1039,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     );
     assert_eq!(assign_result["device"]["width"], 320);
     assert_eq!(
-        assign_result["zone"]["layers"][0]["source"]["controls"]["title"]["text"],
+        assign_result["zone"]["layers"][0]["source"]["controls"]["title"]["value"],
         "CPU"
     );
 
@@ -1466,7 +1467,7 @@ async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers
     .expect("the canonical control patch should succeed");
     assert!(adjusted["revision"].is_number());
     assert_eq!(
-        adjusted["zone"]["layers"][0]["source"]["controls"]["speed"]["float"],
+        adjusted["zone"]["layers"][0]["source"]["controls"]["speed"]["value"],
         json!(8.5)
     );
 
@@ -1777,8 +1778,11 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
     match effect_controls(&snapshot.default_scene_groups[0])
         .and_then(|controls| controls.get("color"))
     {
-        Some(ControlValue::Color([r, g, b, a])) => {
-            assert_eq!((*r, *g, *b, *a), (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0));
+        Some(ControlValue::ColorLinear(color)) => {
+            assert_eq!(
+                (color.r, color.g, color.b, color.a),
+                (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0)
+            );
         }
         other => panic!("expected RGBA control value, got {other:?}"),
     }

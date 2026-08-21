@@ -54,7 +54,10 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
     set_effect_group(
         &mut group,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
     );
     let display_group_target_fps = HashMap::new();
     let mut zones = Vec::new();
@@ -121,7 +124,10 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
     set_effect_group(
         &mut group,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
     );
     let display_group_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();
@@ -179,7 +185,10 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
     set_effect_group(
         &mut group,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
     );
     let display_group_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();
@@ -230,7 +239,10 @@ fn empty_display_group_does_not_reuse_previous_face_surface() {
     set_effect_group(
         &mut group,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
     );
     let display_group_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();
@@ -278,7 +290,10 @@ fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
     set_effect_group(
         &mut group,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
     );
     let display_group_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();

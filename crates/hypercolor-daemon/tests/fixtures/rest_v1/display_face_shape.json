@@ -35,7 +35,8 @@
           "effect_id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
           "controls": {
             "label": {
-              "text": "gpu"
+              "kind": "text",
+              "value": "gpu"
             }
           }
         },

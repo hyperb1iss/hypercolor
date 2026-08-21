@@ -3,10 +3,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Context;
+use hypercolor_color::{Rgb, Rgba};
 use hypercolor_core::device::DeviceRegistry;
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
+use hypercolor_types::control::{ControlValue, SecretRef};
 use hypercolor_types::controls::ControlValueMap;
 use hypercolor_types::device::DeviceId;
 use serde::{Deserialize, Serialize};
@@ -82,7 +84,7 @@ struct PersistedSettingsSnapshot {
     #[serde(default = "default_brightness")]
     global_brightness: f32,
     devices: HashMap<String, StoredDeviceSettings>,
-    driver_controls: HashMap<String, BTreeMap<String, CanonicalControlValue>>,
+    driver_controls: HashMap<String, ControlValueMap>,
 }
 
 impl Default for PersistedSettingsSnapshot {
@@ -105,7 +107,7 @@ struct LegacySettingsSnapshot {
     #[serde(default = "default_brightness")]
     global_brightness: f32,
     devices: HashMap<String, StoredDeviceSettings>,
-    driver_controls: HashMap<String, ControlValueMap>,
+    driver_controls: HashMap<String, BTreeMap<String, serde_json::Value>>,
 }
 
 impl Default for LegacySettingsSnapshot {
@@ -305,10 +307,12 @@ impl DeviceSettingsStore {
     }
 
     pub fn driver_control_values_for_key(&self, key: &str) -> anyhow::Result<ControlValueMap> {
-        self.snapshot.driver_controls.get(key).map_or_else(
-            || Ok(ControlValueMap::new()),
-            |values| project_driver_controls(key, values),
-        )
+        Ok(self
+            .snapshot
+            .driver_controls
+            .get(key)
+            .cloned()
+            .unwrap_or_default())
     }
 
     pub fn set_driver_control_values(
@@ -319,9 +323,8 @@ impl DeviceSettingsStore {
         if values.is_empty() {
             self.snapshot.driver_controls.remove(key);
         } else {
-            self.snapshot
-                .driver_controls
-                .insert(key.to_owned(), canonicalize_control_map(key, values)?);
+            validate_control_map(key, &values)?;
+            self.snapshot.driver_controls.insert(key.to_owned(), values);
         }
         Ok(())
     }
@@ -384,7 +387,7 @@ impl DeviceSettingsStore {
             .driver_controls
             .retain(|_, values| !values.is_empty());
         for (device_key, values) in &self.snapshot.driver_controls {
-            project_driver_controls(device_key, values)?;
+            validate_control_map(device_key, values)?;
         }
         Ok(())
     }
@@ -431,7 +434,7 @@ fn read_settings_document(
             schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
             global_brightness: legacy.global_brightness,
             devices: legacy.devices,
-            driver_controls: canonicalize_driver_controls(legacy.driver_controls)?,
+            driver_controls: migrate_v2_driver_controls(legacy.driver_controls)?,
         }
     } else {
         serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
@@ -496,50 +499,97 @@ fn back_up_content_schema(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(backup)
 }
 
-fn canonicalize_driver_controls(
-    controls: HashMap<String, ControlValueMap>,
-) -> anyhow::Result<HashMap<String, BTreeMap<String, CanonicalControlValue>>> {
+fn migrate_v2_driver_controls(
+    controls: HashMap<String, BTreeMap<String, serde_json::Value>>,
+) -> anyhow::Result<HashMap<String, ControlValueMap>> {
     controls
         .into_iter()
         .map(|(device_key, values)| {
-            canonicalize_control_map(&device_key, values).map(|values| (device_key, values))
+            values
+                .into_iter()
+                .map(|(control_id, value)| {
+                    migrate_v2_control_value(value)
+                        .with_context(|| {
+                            format!(
+                                "device settings control '{control_id}' for '{device_key}' is invalid"
+                            )
+                        })
+                        .map(|value| (control_id, value))
+                })
+                .collect::<anyhow::Result<ControlValueMap>>()
+                .map(|values| (device_key, values))
         })
         .collect()
 }
 
-fn canonicalize_control_map(
-    device_key: &str,
-    values: ControlValueMap,
-) -> anyhow::Result<BTreeMap<String, CanonicalControlValue>> {
-    values
-        .into_iter()
-        .map(|(control_id, value)| {
-            CanonicalControlValue::try_from(value)
-                .with_context(|| {
-                    format!("device settings control '{control_id}' for '{device_key}' is invalid")
-                })
-                .map(|value| (control_id, value))
-        })
-        .collect()
+fn migrate_v2_control_value(value: serde_json::Value) -> anyhow::Result<ControlValue> {
+    let mut object = value
+        .as_object()
+        .cloned()
+        .context("legacy control value must be an object")?;
+    let kind = object
+        .remove("kind")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .context("legacy control value must carry a kind")?;
+    let payload = object.remove("value");
+
+    fn parse<T: serde::de::DeserializeOwned>(
+        kind: &str,
+        payload: Option<serde_json::Value>,
+    ) -> anyhow::Result<T> {
+        serde_json::from_value(payload.with_context(|| format!("missing {kind} value"))?)
+            .with_context(|| format!("invalid {kind} value"))
+    }
+
+    let value = match kind.as_str() {
+        "null" => ControlValue::Null,
+        "bool" => ControlValue::Bool(parse("bool", payload)?),
+        "integer" => ControlValue::Int(parse("integer", payload)?),
+        "float" => ControlValue::Float(parse("float", payload)?),
+        "string" => ControlValue::Text(parse("string", payload)?),
+        "secret_ref" => {
+            ControlValue::SecretRef(SecretRef::new(parse::<String>("secret_ref", payload)?))
+        }
+        "color_rgb" => {
+            let [r, g, b] = parse("color_rgb", payload)?;
+            ControlValue::ColorRgb(Rgb::new(r, g, b))
+        }
+        "color_rgba" => {
+            let [r, g, b, a] = parse("color_rgba", payload)?;
+            ControlValue::ColorRgba(Rgba::new(r, g, b, a))
+        }
+        "ip_address" => ControlValue::ip(parse::<String>("ip_address", payload)?)?,
+        "mac_address" => ControlValue::mac(parse::<String>("mac_address", payload)?)?,
+        "duration_ms" => {
+            ControlValue::Duration(Duration::from_millis(parse("duration_ms", payload)?))
+        }
+        "enum" => ControlValue::Enum(parse("enum", payload)?),
+        "flags" => ControlValue::Flags(parse("flags", payload)?),
+        "list" => ControlValue::List(
+            parse::<Vec<serde_json::Value>>("list", payload)?
+                .into_iter()
+                .map(migrate_v2_control_value)
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ),
+        "object" => ControlValue::Map(
+            parse::<BTreeMap<String, serde_json::Value>>("object", payload)?
+                .into_iter()
+                .map(|(key, value)| migrate_v2_control_value(value).map(|value| (key, value)))
+                .collect::<anyhow::Result<BTreeMap<_, _>>>()?,
+        ),
+        _ => ControlValue::Unknown,
+    };
+    value.validate()?;
+    Ok(value)
 }
 
-fn project_driver_controls(
-    device_key: &str,
-    values: &BTreeMap<String, CanonicalControlValue>,
-) -> anyhow::Result<ControlValueMap> {
-    values
-        .iter()
-        .map(|(control_id, value)| {
-            value
-                .to_driver_wire()
-                .with_context(|| {
-                    format!(
-                        "device settings control '{control_id}' for '{device_key}' is not a driver value"
-                    )
-                })
-                .map(|value| (control_id.clone(), value))
-        })
-        .collect()
+fn validate_control_map(device_key: &str, values: &ControlValueMap) -> anyhow::Result<()> {
+    for (control_id, value) in values {
+        value.validate().with_context(|| {
+            format!("device settings control '{control_id}' for '{device_key}' is invalid")
+        })?;
+    }
+    Ok(())
 }
 
 /// The backup name for a schema migration, suffixed when it already

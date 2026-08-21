@@ -7,7 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
 use hypercolor_types::library::{EffectPreset, PresetId};
 

@@ -58,11 +58,12 @@ use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::api::scenes::{ReplaceSceneLayerRequest, ReplaceSceneRequest};
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
+use hypercolor_types::control::ControlValue as SurfaceControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlActionDescriptor, ControlActionResult,
     ControlActionStatus, ControlAvailabilityExpr, ControlChange, ControlOwner,
-    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope,
-    ControlValue as SurfaceControlValue, ControlValueMap,
+    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
@@ -70,8 +71,8 @@ use hypercolor_types::device::{
     DeviceTopologyHint, DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState, PresetTemplate,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState, PresetTemplate,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{
@@ -4282,7 +4283,7 @@ async fn get_driver_controls_returns_module_control_surface() {
     assert_eq!(data["values"]["default_protocol"]["value"], "ddp");
     assert_eq!(data["values"]["realtime_http_enabled"]["kind"], "bool");
     assert_eq!(data["values"]["realtime_http_enabled"]["value"], true);
-    assert_eq!(data["values"]["dedup_threshold"]["kind"], "integer");
+    assert_eq!(data["values"]["dedup_threshold"]["kind"], "int");
     assert_eq!(data["values"]["dedup_threshold"]["value"], 2);
 
     let fields = data["fields"]
@@ -4370,10 +4371,7 @@ async fn get_driver_controls_returns_govee_hue_and_nanoleaf_surfaces() {
     let nanoleaf = body_json(nanoleaf_response).await;
     assert_eq!(nanoleaf["data"]["surface_id"], "driver:nanoleaf");
     assert_eq!(nanoleaf["data"]["values"]["device_ips"]["kind"], "list");
-    assert_eq!(
-        nanoleaf["data"]["values"]["transition_time"]["kind"],
-        "integer"
-    );
+    assert_eq!(nanoleaf["data"]["values"]["transition_time"]["kind"], "int");
     let nanoleaf_fields = nanoleaf["data"]["fields"]
         .as_array()
         .expect("Nanoleaf fields should be an array");
@@ -4502,12 +4500,9 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
             ControlValueMap::from([
                 (
                     "protocol".to_owned(),
-                    SurfaceControlValue::String("e131".to_owned()),
+                    SurfaceControlValue::Text("e131".to_owned()),
                 ),
-                (
-                    "dedup_threshold".to_owned(),
-                    SurfaceControlValue::Integer(8),
-                ),
+                ("dedup_threshold".to_owned(), SurfaceControlValue::Int(8)),
             ]),
         )
         .expect("driver controls should canonicalize");
@@ -5092,7 +5087,7 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
             assert_eq!(revision, updated_revision);
             assert_eq!(
                 values.get("dedup_threshold"),
-                Some(&SurfaceControlValue::Integer(11))
+                Some(&SurfaceControlValue::Int(11))
             );
         }
         _ => panic!("expected values_changed control surface event"),
@@ -6534,7 +6529,7 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
         .expect("preset controls should be baked into the group");
     assert!(matches!(
         speed,
-        hypercolor_types::effect::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
+        hypercolor_types::control::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
     ));
 }
 
@@ -6671,7 +6666,8 @@ async fn library_presets_create_and_get() {
     assert_eq!(create_response.status(), StatusCode::CREATED);
     let create_json = body_json(create_response).await;
     assert_eq!(create_json["data"]["name"], "Warm Sweep");
-    assert_eq!(create_json["data"]["controls"]["speed"]["float"], 7.5);
+    assert_eq!(create_json["data"]["controls"]["speed"]["kind"], "float");
+    assert_eq!(create_json["data"]["controls"]["speed"]["value"], 7.5);
     assert_eq!(create_json["data"]["tags"][0], "cozy");
     let preset_id = create_json["data"]["id"]
         .as_str()
@@ -6690,7 +6686,8 @@ async fn library_presets_create_and_get() {
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_json = body_json(get_response).await;
     assert_eq!(get_json["data"]["id"], preset_id);
-    assert_eq!(get_json["data"]["controls"]["speed"]["float"], 7.5);
+    assert_eq!(get_json["data"]["controls"]["speed"]["kind"], "float");
+    assert_eq!(get_json["data"]["controls"]["speed"]["value"], 7.5);
 }
 
 #[tokio::test]
@@ -10172,7 +10169,7 @@ async fn get_device_controls_returns_host_control_surface() {
     assert_eq!(data["surface_id"], format!("device:{device_id}"));
     assert_eq!(data["schema_version"], 1);
     assert_eq!(data["scope"]["device"]["driver_id"], "wled");
-    assert_eq!(data["values"]["name"]["kind"], "string");
+    assert_eq!(data["values"]["name"]["kind"], "text");
     assert_eq!(data["values"]["name"]["value"], "Desk Strip");
     assert_eq!(data["values"]["enabled"]["kind"], "bool");
     assert_eq!(data["values"]["enabled"]["value"], true);
@@ -10207,7 +10204,7 @@ async fn get_device_controls_returns_host_control_surface() {
     );
     assert_eq!(
         identify["input_fields"][0]["default_value"]["kind"],
-        "duration_ms"
+        "duration"
     );
     assert_eq!(identify["input_fields"][0]["default_value"]["value"], 3000);
     assert_eq!(identify["input_fields"][1]["id"], "color");
@@ -10401,8 +10398,11 @@ async fn invoke_host_device_control_surface_identify_action_returns_typed_result
                 .body(Body::from(
                     serde_json::json!({
                         "input": {
-                            "duration_ms": { "kind": "duration_ms", "value": 1 },
-                            "color": { "kind": "color_rgb", "value": [128, 64, 255] }
+                            "duration_ms": { "kind": "duration", "value": 1 },
+                            "color": {
+                                "kind": "color_rgb",
+                                "value": { "r": 128, "g": 64, "b": 255 }
+                            }
                         }
                     })
                     .to_string(),
@@ -10938,7 +10938,7 @@ async fn patch_face_controls_updates_display_group() {
     assert_eq!(patch_response.status(), StatusCode::OK);
     let patch_json = body_json(patch_response).await;
     assert_eq!(
-        patch_json["data"]["zone"]["controls"]["label"]["text"],
+        patch_json["data"]["zone"]["layers"][0]["source"]["controls"]["label"]["value"],
         "gpu"
     );
 

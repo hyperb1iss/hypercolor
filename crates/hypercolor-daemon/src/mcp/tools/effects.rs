@@ -16,7 +16,8 @@ use crate::domain::effect::{
     ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog,
 };
 use hypercolor_types::api::scene::{ApplyEffectResponse, TransitionType};
-use hypercolor_types::effect::{ControlValue, EffectCategory};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectCategory;
 use strum::VariantNames;
 
 use crate::mcp::results::{EffectCatalogItem, EffectCatalogResult, EffectControlItem};
@@ -299,7 +300,7 @@ pub(super) async fn handle_set_color_with_state(
     };
     let mut controls = HashMap::from([(
         "color".to_owned(),
-        ControlValue::Color([
+        ControlValue::linear_color([
             f32::from(resolved.r) / 255.0,
             f32::from(resolved.g) / 255.0,
             f32::from(resolved.b) / 255.0,
@@ -307,7 +308,10 @@ pub(super) async fn handle_set_color_with_state(
         ]),
     )]);
     if let Some(brightness) = brightness {
-        controls.insert("brightness".to_owned(), ControlValue::Float(brightness));
+        controls.insert(
+            "brightness".to_owned(),
+            ControlValue::Float(f64::from(brightness)),
+        );
     }
 
     // The service enforces this too, but its DomainError::Internal for a

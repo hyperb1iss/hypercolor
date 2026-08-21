@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};

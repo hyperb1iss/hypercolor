@@ -22,7 +22,7 @@ use hypercolor_types::api::scene::{
     AssignMembersRequest, MemberPlacement, SceneDocument, ZoneLayoutResource, ZoneMember,
     ZoneMemberId, ZoneResource,
 };
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
@@ -239,7 +239,7 @@ pub struct PatchLayerControls {
     /// Which layer to patch.
     pub layer_id: SceneLayerId,
     /// The values to write.
-    pub values: HashMap<String, hypercolor_types::effect::ControlValue>,
+    pub values: HashMap<String, ControlValue>,
     /// Bindings to remove in the same commit.
     pub clear_bindings: Vec<String>,
     /// The revision an adapter resolved names against, when it did so.

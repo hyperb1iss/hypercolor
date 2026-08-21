@@ -770,7 +770,7 @@ fn web_viewport_controls(
 ) -> HashMap<String, ControlValue> {
     HashMap::from([
         ("url".to_owned(), ControlValue::Text(url.to_owned())),
-        ("viewport".to_owned(), ControlValue::Rect(viewport)),
+        ("viewport".to_owned(), ControlValue::rect(viewport)),
         (
             "fit_mode".to_owned(),
             ControlValue::Enum(fit_mode_control_value(FitMode::Cover).to_owned()),
@@ -1768,13 +1768,13 @@ mod tests {
         );
         assert_eq!(
             source.controls.get("url"),
-            Some(&hypercolor_types::effect::ControlValue::Text(
+            Some(&hypercolor_types::control::ControlValue::Text(
                 "localhost:9430".into()
             ))
         );
         assert_eq!(
             source.controls.get("refresh_interval"),
-            Some(&hypercolor_types::effect::ControlValue::Float(300.0))
+            Some(&hypercolor_types::control::ControlValue::Float(300.0))
         );
     }
 }

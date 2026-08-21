@@ -545,17 +545,7 @@ pub async fn patch_display_face_controls(
         .into_response();
     }
 
-    let mut requested_controls = std::collections::HashMap::with_capacity(body.values.len());
-    for (name, value) in body.values {
-        let value = match value.to_effect_wire() {
-            Ok(value) => value,
-            Err(error) => {
-                return DomainError::validation_field(format!("values.{name}"), error.to_string())
-                    .into_response();
-            }
-        };
-        requested_controls.insert(name, value);
-    }
+    let requested_controls = body.values;
 
     let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
     if !scene_assigned && default_assigned {

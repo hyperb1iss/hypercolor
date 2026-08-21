@@ -26,10 +26,9 @@ use hypercolor_types::api::scene::{
     TransitionType,
 };
 use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{EffectRef, FrameData, HypercolorEvent, ZoneColors};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::Zone;
@@ -540,21 +539,7 @@ pub async fn apply_effect(
     {
         normalize_control_values(&metadata, &preset.controls)
     } else {
-        let mut owned = HashMap::with_capacity(requested_controls.len());
-        for (name, value) in requested_controls {
-            let projected = match value.to_effect_wire() {
-                Ok(value) => value,
-                Err(error) => {
-                    return DomainError::validation_field(
-                        format!("controls.{name}"),
-                        error.to_string(),
-                    )
-                    .into_response();
-                }
-            };
-            owned.insert(name, projected);
-        }
-        normalize_control_values(&metadata, &owned)
+        normalize_control_values(&metadata, &requested_controls)
     };
     if !dropped_controls.is_empty() {
         return DomainError::validation_details(
@@ -925,9 +910,9 @@ pub(crate) fn normalize_control_payload(
     (normalized, rejected)
 }
 
-pub(crate) fn normalize_control_values(
+pub(crate) fn normalize_control_values<'a>(
     metadata: &EffectMetadata,
-    control_values: &HashMap<String, ControlValue>,
+    control_values: impl IntoIterator<Item = (&'a String, &'a ControlValue)>,
 ) -> (HashMap<String, ControlValue>, Vec<String>) {
     let mut normalized = HashMap::new();
     let mut rejected = Vec::new();

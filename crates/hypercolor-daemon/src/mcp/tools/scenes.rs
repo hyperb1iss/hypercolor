@@ -346,18 +346,7 @@ pub(super) async fn handle_adjust_controls_with_state(
         let layer = crate::mcp::selector::resolve(layer_query, layer_candidates)
             .map_err(|error| ToolError::selector("layer", error))?;
 
-        let mut values = std::collections::HashMap::with_capacity(patch.values.len());
-        for (name, value) in &patch.values {
-            values.insert(
-                name.clone(),
-                value
-                    .to_effect_wire()
-                    .map_err(|error| ToolError::InvalidParam {
-                        param: format!("values.{name}"),
-                        reason: error.to_string(),
-                    })?,
-            );
-        }
+        let values = patch.values.clone().into_iter().collect();
 
         match crate::domain::scene_tree::patch_layer_controls(
             state,

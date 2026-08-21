@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use hypercolor_core::scene::make_scene;
 use hypercolor_daemon::profile_import::{ProfileImportOutcome, import_profiles};
 use hypercolor_daemon::scene_store::SceneStore;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneMutationMode, ZoneRole};
@@ -98,7 +99,7 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
     let display_device = DeviceId::from_uuid(Uuid::from_u128(3));
     let preset = PresetId(Uuid::from_u128(4));
     let primary_controls = HashMap::from([("speed".to_owned(), ControlValue::Float(0.25))]);
-    let display_controls = HashMap::from([("invert".to_owned(), ControlValue::Boolean(true))]);
+    let display_controls = HashMap::from([("invert".to_owned(), ControlValue::Bool(true))]);
     let source = serde_json::to_vec_pretty(&json!({
         "legacy-key": {
             "id": "profile-a",

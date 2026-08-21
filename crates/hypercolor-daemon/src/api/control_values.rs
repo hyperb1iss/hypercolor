@@ -1,21 +1,19 @@
-//! JSON -> [`ControlValue`](hypercolor_types::effect::ControlValue) helpers.
+//! JSON to canonical control-value helpers.
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::viewport::ViewportRect;
 
 /// Convert arbitrary JSON into the strongly typed control value model.
 #[must_use]
 pub fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> {
     if let Some(v) = value.as_i64() {
-        let int = i32::try_from(v).ok()?;
-        return Some(ControlValue::Integer(int));
+        return Some(ControlValue::Int(v));
     }
     if let Some(v) = value.as_f64() {
-        let float = parse_f32(v)?;
-        return Some(ControlValue::Float(float));
+        return v.is_finite().then_some(ControlValue::Float(v));
     }
     if let Some(v) = value.as_bool() {
-        return Some(ControlValue::Boolean(v));
+        return Some(ControlValue::Bool(v));
     }
     if let Some(v) = value.as_str() {
         return Some(ControlValue::Text(v.to_owned()));
@@ -28,14 +26,14 @@ pub fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> 
             let parsed = component.as_f64()?;
             color[idx] = parse_f32(parsed)?;
         }
-        return Some(ControlValue::Color(color));
+        return Some(ControlValue::linear_color(color));
     }
     if let Some(object) = value.as_object() {
         let x = parse_json_f32(object.get("x")?)?;
         let y = parse_json_f32(object.get("y")?)?;
         let width = parse_json_f32(object.get("width")?)?;
         let height = parse_json_f32(object.get("height")?)?;
-        return Some(ControlValue::Rect(
+        return Some(ControlValue::rect(
             ViewportRect::new(x, y, width, height).clamp(),
         ));
     }

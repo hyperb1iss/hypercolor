@@ -35,12 +35,12 @@ use hypercolor_types::api::scenes::{
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlBinding, ControlValue, EffectMetadata};
+use hypercolor_types::effect::{ControlBinding, EffectMetadata};
 use hypercolor_types::event::{
-    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, HypercolorEvent,
-    LayerStackChangeKind, SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind,
-    Severity, ZoneChangeKind,
+    ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent, LayerStackChangeKind,
+    SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind, Severity, ZoneChangeKind,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
@@ -991,16 +991,10 @@ impl SceneMutation {
                 if old_value == &new_value {
                     continue;
                 }
-                let (Some(old_value), Some(new_value)) = (
-                    event_control_value(old_value),
-                    event_control_value(&new_value),
-                ) else {
-                    continue;
-                };
                 self.events.push(HypercolorEvent::EffectControlChanged {
                     effect_id: effect_id.to_string(),
                     control_id,
-                    old_value,
+                    old_value: old_value.clone(),
                     new_value,
                     zone_id,
                     layer_id,
@@ -2212,18 +2206,5 @@ pub fn zone_changed_event(scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) 
         zone_id: zone.id,
         role: zone.role,
         kind,
-    }
-}
-
-fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
-    match value {
-        ControlValue::Float(_) | ControlValue::Integer(_) => {
-            value.as_f32().map(EventControlValue::Number)
-        }
-        ControlValue::Boolean(value) => Some(EventControlValue::Boolean(*value)),
-        ControlValue::Enum(value) | ControlValue::Text(value) => {
-            Some(EventControlValue::String(value.clone()))
-        }
-        ControlValue::Color(_) | ControlValue::Rect(_) | ControlValue::Gradient(_) => None,
     }
 }

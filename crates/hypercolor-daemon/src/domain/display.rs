@@ -15,8 +15,9 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;

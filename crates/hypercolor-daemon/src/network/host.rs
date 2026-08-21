@@ -21,7 +21,8 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::controls::{ControlSurfaceEvent, ControlValueMap};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use hypercolor_types::spatial::SpatialLayout;
@@ -468,26 +469,26 @@ fn control_value_to_config_json(value: ControlValue) -> Value {
     match value {
         ControlValue::Null | ControlValue::Unknown => Value::Null,
         ControlValue::Bool(value) => Value::Bool(value),
-        ControlValue::Integer(value) => Value::Number(Number::from(value)),
+        ControlValue::Int(value) => Value::Number(Number::from(value)),
         ControlValue::Float(value) => Number::from_f64(value).map_or(Value::Null, Value::Number),
-        ControlValue::String(value)
-        | ControlValue::SecretRef(value)
-        | ControlValue::IpAddress(value)
-        | ControlValue::MacAddress(value)
-        | ControlValue::Enum(value) => Value::String(value),
+        ControlValue::Text(value) | ControlValue::Enum(value) => Value::String(value),
+        ControlValue::SecretRef(value) => Value::String(value.as_str().to_owned()),
+        ControlValue::Ip(value) => Value::String(value.as_str().to_owned()),
+        ControlValue::Mac(value) => Value::String(value.as_str().to_owned()),
         ControlValue::ColorRgb(value) => Value::Array(
-            value
+            [value.r, value.g, value.b]
                 .into_iter()
                 .map(|channel| Value::Number(Number::from(channel)))
                 .collect(),
         ),
         ControlValue::ColorRgba(value) => Value::Array(
-            value
+            [value.r, value.g, value.b, value.a]
                 .into_iter()
                 .map(|channel| Value::Number(Number::from(channel)))
                 .collect(),
         ),
-        ControlValue::DurationMs(value) => Value::Number(Number::from(value)),
+        ControlValue::Duration(value) => u64::try_from(value.as_millis())
+            .map_or(Value::Null, |value| Value::Number(Number::from(value))),
         ControlValue::Flags(values) => {
             Value::Array(values.into_iter().map(Value::String).collect())
         }
@@ -497,12 +498,15 @@ fn control_value_to_config_json(value: ControlValue) -> Value {
                 .map(control_value_to_config_json)
                 .collect(),
         ),
-        ControlValue::Object(values) => Value::Object(
+        ControlValue::Map(values) => Value::Object(
             values
                 .into_iter()
                 .map(|(key, value)| (key, control_value_to_config_json(value)))
                 .collect(),
         ),
+        ControlValue::ColorLinear(_) | ControlValue::Gradient(_) | ControlValue::Rect(_) => {
+            Value::Null
+        }
     }
 }
 
@@ -512,16 +516,16 @@ fn config_json_to_control_value(value: &Value) -> ControlValue {
         Value::Bool(value) => ControlValue::Bool(*value),
         Value::Number(value) => value.as_i64().map_or_else(
             || ControlValue::Float(value.as_f64().unwrap_or_default()),
-            ControlValue::Integer,
+            ControlValue::Int,
         ),
-        Value::String(value) => ControlValue::String(value.clone()),
+        Value::String(value) => ControlValue::Text(value.clone()),
         Value::Array(values) => ControlValue::List(
             values
                 .iter()
                 .map(config_json_to_control_value)
                 .collect::<Vec<_>>(),
         ),
-        Value::Object(values) => ControlValue::Object(
+        Value::Object(values) => ControlValue::Map(
             values
                 .iter()
                 .map(|(key, value)| (key.clone(), config_json_to_control_value(value)))

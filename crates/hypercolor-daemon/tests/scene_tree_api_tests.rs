@@ -19,13 +19,13 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::api::output::OutputPowerMode;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource, EffectState, PresetTemplate,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId,
+    EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, EventControlValue, HypercolorEvent, LayerStackChangeKind,
-    SceneSettingsChangeKind,
+    ChangeTrigger, EffectStopReason, HypercolorEvent, LayerStackChangeKind, SceneSettingsChangeKind,
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::spatial::{
@@ -662,10 +662,9 @@ async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() 
         body["data"]["zone"]["layers"][0]["source"]["preset_id"],
         preset_id.to_string()
     );
-    assert_eq!(
-        body["data"]["zone"]["layers"][0]["source"]["controls"]["speed"],
-        json!({ "float": 0.7 })
-    );
+    let speed = &body["data"]["zone"]["layers"][0]["source"]["controls"]["speed"];
+    assert_eq!(speed["kind"], "float");
+    assert!((speed["value"].as_f64().expect("speed should be numeric") - 0.7).abs() < 1.0e-6);
 
     let rejected = send(
         &app,
@@ -726,8 +725,8 @@ async fn a_control_patch_event_names_its_zone_and_real_layer() {
 
     assert_eq!(control_event.0, effect_id.to_string());
     assert_eq!(control_event.1, "speed");
-    assert_eq!(control_event.2, EventControlValue::Number(0.25));
-    assert_eq!(control_event.3, EventControlValue::Number(0.75));
+    assert_eq!(control_event.2, ControlValue::Float(0.25));
+    assert_eq!(control_event.3, ControlValue::Float(0.75));
     assert_eq!(control_event.4, zone_id);
     assert_eq!(control_event.5, layer_id);
     assert_eq!(control_event.6, ChangeTrigger::Api);
@@ -808,7 +807,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
     let zone = body_json(recovered).await;
     assert_eq!(
         zone["data"]["layers"][0]["source"]["controls"]["speed"],
-        json!({ "float": 0.5 })
+        json!({ "kind": "float", "value": 0.5 })
     );
     assert!(
         zone["data"]["layers"][0]["source"]

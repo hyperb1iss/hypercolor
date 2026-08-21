@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use hypercolor_core::scene::LayerMutationError;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 

@@ -9,13 +9,13 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView, DriverHost, TrackedDeviceCtx};
 use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
     ControlActionDescriptor, ControlActionResult, ControlAvailability, ControlAvailabilityExpr,
     ControlAvailabilityState, ControlChange, ControlFieldDescriptor, ControlGroupDescriptor,
     ControlGroupKind, ControlObjectField, ControlOwner, ControlPersistence, ControlSurfaceDocument,
-    ControlSurfaceEvent, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
-    ControlVisibility,
+    ControlSurfaceEvent, ControlSurfaceScope, ControlValueMap, ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
 use hypercolor_types::event::HypercolorEvent;
@@ -276,20 +276,11 @@ pub async fn apply_control_surface_values(
         return empty_control_values(&surface_id);
     }
 
-    let mut changes = Vec::with_capacity(body.values.len());
-    for (field_id, value) in body.values {
-        let value = match value.to_driver_wire() {
-            Ok(value) => value,
-            Err(error) => {
-                return DomainError::validation_field(
-                    format!("values.{field_id}"),
-                    error.to_string(),
-                )
-                .into_response();
-            }
-        };
-        changes.push(ControlChange { field_id, value });
-    }
+    let changes = body
+        .values
+        .into_iter()
+        .map(|(field_id, value)| ControlChange { field_id, value })
+        .collect();
 
     if let Some((driver_id, device_id)) = parse_driver_device_surface_id(&surface_id) {
         return apply_driver_device_control_surface_values(
@@ -644,11 +635,11 @@ fn host_identify_request(input: ControlValueMap) -> Result<devices::IdentifyRequ
 
     for (field_id, value) in input {
         match (field_id.as_str(), value) {
-            ("duration_ms", ControlValue::DurationMs(value)) => {
-                duration_ms = Some(value);
+            ("duration_ms", ControlValue::Duration(value)) => {
+                duration_ms = u64::try_from(value.as_millis()).ok();
             }
-            ("color", ControlValue::ColorRgb([red, green, blue])) => {
-                color = Some(format!("{red:02x}{green:02x}{blue:02x}"));
+            ("color", ControlValue::ColorRgb(value)) => {
+                color = Some(format!("{:02x}{:02x}{:02x}", value.r, value.g, value.b));
             }
             ("duration_ms", _) => {
                 return Err(DomainError::validation(
@@ -932,7 +923,7 @@ pub(crate) fn device_control_surface(
                     step: Some(100),
                 },
                 required: false,
-                default_value: Some(ControlValue::DurationMs(3000)),
+                default_value: Some(ControlValue::Duration(std::time::Duration::from_secs(3))),
             },
             ControlObjectField {
                 id: "color".to_owned(),
@@ -952,7 +943,7 @@ pub(crate) fn device_control_surface(
     document.values = ControlValueMap::from([
         (
             DEVICE_FIELD_NAME.to_owned(),
-            ControlValue::String(
+            ControlValue::Text(
                 user_settings
                     .name
                     .clone()
@@ -1211,7 +1202,7 @@ fn normalize_device_control_changes(
 
     for change in changes {
         match (change.field_id.as_str(), &change.value) {
-            (DEVICE_FIELD_NAME, ControlValue::String(value)) => {
+            (DEVICE_FIELD_NAME, ControlValue::Text(value)) => {
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
                     return Err(invalid_control_value(
@@ -1223,7 +1214,7 @@ fn normalize_device_control_changes(
                 name = Some(value.clone());
                 accepted.push(ControlChange {
                     field_id: change.field_id.clone(),
-                    value: ControlValue::String(value),
+                    value: ControlValue::Text(value),
                 });
                 push_unique_impact(&mut impacts, ApplyImpact::Live);
             }

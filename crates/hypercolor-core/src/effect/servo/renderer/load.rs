@@ -140,11 +140,12 @@ impl ServoRenderer {
             .controls
             .iter()
             .map(|control| {
-                ControlValue::try_from(control.default_value.clone())
-                    .map(|value| (control.control_id().to_owned(), value))
+                (
+                    control.control_id().to_owned(),
+                    control.default_value.clone(),
+                )
             })
-            .collect::<Result<HashMap<_, _>, _>>()
-            .context("HTML effect metadata contains an invalid control default")?;
+            .collect::<HashMap<_, _>>();
         if !self.controls.is_empty() {
             debug!(
                 effect = %metadata.name,

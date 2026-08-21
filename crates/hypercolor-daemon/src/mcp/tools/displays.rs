@@ -12,8 +12,9 @@ use crate::domain::display::{
 };
 use crate::mcp::results::{DisplayDeviceResult, DisplayFaceResult};
 use crate::mcp::selector::SelectorCandidate;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-use hypercolor_types::effect::{ControlValue, EffectCategory};
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
 
@@ -340,12 +341,11 @@ fn parse_controls_map(
 
 fn control_value_from_json(value: &Value) -> Option<ControlValue> {
     if let Some(flag) = value.as_bool() {
-        return Some(ControlValue::Boolean(flag));
+        return Some(ControlValue::Bool(flag));
     }
 
     if let Some(integer_value) = value.as_i64() {
-        let coerced = i32::try_from(integer_value).ok()?;
-        return Some(ControlValue::Integer(coerced));
+        return Some(ControlValue::Int(integer_value));
     }
 
     if let Some(float_value) = value.as_f64() {
@@ -354,9 +354,7 @@ fn control_value_from_json(value: &Value) -> Option<ControlValue> {
         } else {
             return None;
         };
-        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let coerced = finite as f32;
-        return Some(ControlValue::Float(coerced));
+        return Some(ControlValue::Float(finite));
     }
 
     if let Some(text) = value.as_str() {
@@ -373,7 +371,7 @@ fn control_value_from_json(value: &Value) -> Option<ControlValue> {
             let number = number as f32;
             rgba[idx] = number;
         }
-        return Some(ControlValue::Color(rgba));
+        return Some(ControlValue::linear_color(rgba));
     }
 
     None

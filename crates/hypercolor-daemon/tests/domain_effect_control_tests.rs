@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState,
 };
 use hypercolor_types::scene::ZoneId;
 use uuid::Uuid;
@@ -33,7 +34,7 @@ fn slider(id: &str, default: f32) -> ControlDefinition {
         name: id.to_owned(),
         kind: ControlKind::default(),
         control_type: ControlType::Slider,
-        default_value: ControlValue::Float(default),
+        default_value: ControlValue::Float(f64::from(default)),
         min: Some(0.0),
         max: Some(1.0),
         step: None,

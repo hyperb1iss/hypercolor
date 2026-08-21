@@ -1778,7 +1778,7 @@ async fn default_scene_contents_restore_on_restart() {
     let zone_id = ZoneId::new();
     let controls = std::collections::HashMap::from([(
         "speed".to_owned(),
-        hypercolor_types::effect::ControlValue::Float(4.5),
+        hypercolor_types::control::ControlValue::Float(4.5),
     )]);
 
     runtime_state::save(
@@ -1843,7 +1843,7 @@ async fn default_scene_contents_restore_on_restart() {
             ..
         }) if *candidate == effect_id
             && controls.get("speed")
-                == Some(&hypercolor_types::effect::ControlValue::Float(4.5))
+                == Some(&hypercolor_types::control::ControlValue::Float(4.5))
     ));
     assert_eq!(default_scene.zones[0].brightness, 0.75);
     drop(scenes);

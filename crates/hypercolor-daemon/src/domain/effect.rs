@@ -13,9 +13,8 @@ use std::str::FromStr;
 use strum::VariantNames;
 
 use hypercolor_types::api::scene::SideEffectOutcome;
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{EffectRef, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
