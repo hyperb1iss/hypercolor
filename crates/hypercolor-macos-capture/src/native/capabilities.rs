@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    AnyClass, CStr, MacosCaptureCapabilities, MacosCaptureError, MacosHostArchitecture,
+    MacosRuntimeCapability, MacosTahoeRuntimeProbes, c_char, c_void, ptr, sel,
+};
 
 pub(super) fn native_capture_capabilities() -> Result<MacosCaptureCapabilities, MacosCaptureError> {
     let screenshot_configuration = AnyClass::get(c"SCScreenshotConfiguration");

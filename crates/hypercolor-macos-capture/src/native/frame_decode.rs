@@ -1,4 +1,31 @@
-use super::*;
+use super::{
+    AnyObject, CFArray, CFDictionary, CFGetTypeID, CFNumber, CFRetained, CFString, CFType, CGRect,
+    CGRectMakeWithDictionaryRepresentation, CMSampleBuffer, CVBuffer, CVPixelBuffer,
+    CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetDataSize,
+    CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetIOSurface,
+    CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
+    CVPixelBufferGetWidthOfPlane, DecodedSample, MacosAttachment, MacosCaptureColorimetry,
+    MacosCaptureError, MacosCapturePixelFormat, MacosCaptureSurface, MacosChromaLocation,
+    MacosColorPrimaries, MacosColorRange, MacosDeliveredFrameMetadata, MacosFrameDecoder,
+    MacosFrameEvent, MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosRawCapturePlane,
+    MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
+    MacosStreamDeliveryRejection, MacosStreamDeliveryState, MacosStreamDeliveryValidator,
+    MacosTransferFunction, MacosYuvMatrix, NSString, NSValue, PoolBackingLifetime,
+    RetainedNativeSample, SCStreamFrameInfoBoundingRect, SCStreamFrameInfoContentRect,
+    SCStreamFrameInfoContentScale, SCStreamFrameInfoDirtyRects, SCStreamFrameInfoDisplayTime,
+    SCStreamFrameInfoScaleFactor, SCStreamFrameInfoScreenRect, SCStreamFrameInfoStatus, c_void,
+    kCVImageBufferChromaLocation_Center, kCVImageBufferChromaLocation_Left,
+    kCVImageBufferChromaLocation_TopLeft, kCVImageBufferChromaLocationTopFieldKey,
+    kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferColorPrimaries_ITU_R_2020,
+    kCVImageBufferColorPrimaries_P3_D65, kCVImageBufferColorPrimariesKey,
+    kCVImageBufferContentLightLevelInfoKey, kCVImageBufferTransferFunction_ITU_R_709_2,
+    kCVImageBufferTransferFunction_ITU_R_2020, kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+    kCVImageBufferTransferFunction_Linear, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+    kCVImageBufferTransferFunction_sRGB, kCVImageBufferTransferFunctionKey,
+    kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+    kCVImageBufferYCbCrMatrix_ITU_R_2020, kCVImageBufferYCbCrMatrixKey, kIOSurfaceContentHeadroom,
+    ptr,
+};
 
 pub(super) fn decode_sample(
     decoder: &mut MacosFrameDecoder,

@@ -1507,7 +1507,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_start_gate_blocks_deactivation_until_native_start_is_invoked() {
+    fn deactivation_returns_before_queued_native_start_finishes() {
         let streams = stream_slot_fixture(41, 9);
         let (stage, _) =
             reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
@@ -1550,27 +1550,23 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("deactivation should reach the lifecycle gate");
         assert_eq!(
-            deactivate_done_rx.recv_timeout(Duration::from_millis(100)),
-            Err(mpsc::RecvTimeoutError::Timeout)
+            deactivate_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("deactivation does not wait for native start"),
+            (true, false)
         );
-        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(42));
+        assert_eq!(super::lock(&streams.state).candidate_epoch, None);
 
         release_tx
             .send(())
             .expect("native start invocation should resume");
         assert!(starter.join().expect("starter thread should join"));
-        assert_eq!(
-            deactivate_done_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("deactivation should finish after invocation"),
-            (true, true)
-        );
         deactivate.join().expect("deactivation thread should join");
         assert_eq!(super::lock(&streams.state).candidate_epoch, None);
     }
 
     #[test]
-    fn candidate_start_gate_blocks_repick_until_native_start_is_invoked() {
+    fn repick_returns_before_the_superseded_native_start_finishes() {
         let streams = stream_slot_fixture(41, 9);
         let (stage, _) =
             reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
@@ -1621,21 +1617,17 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("repick should reach the lifecycle gate");
         assert_eq!(
-            repick_done_rx.recv_timeout(Duration::from_millis(100)),
-            Err(mpsc::RecvTimeoutError::Timeout)
+            repick_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("repick does not wait for native start"),
+            (43, false)
         );
-        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(42));
+        assert_eq!(super::lock(&streams.state).staging_epoch, Some(43));
 
         release_tx
             .send(())
             .expect("native start invocation should resume");
         assert!(starter.join().expect("starter thread should join"));
-        assert_eq!(
-            repick_done_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("repick should finish after invocation"),
-            (43, true)
-        );
         repick.join().expect("repick thread should join");
         assert_eq!(super::lock(&streams.state).staging_epoch, Some(43));
     }
@@ -2288,7 +2280,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_first_complete_frame_rearms_and_times_out_the_candidate() {
+    fn missing_first_complete_frame_uses_the_original_deadline_and_times_out() {
         let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
             .expect("fixture request is valid");
         let streams = stream_slot_fixture(7, 3);
@@ -2319,7 +2311,7 @@ mod tests {
     }
 
     #[test]
-    fn observed_start_callback_retires_start_deadline_before_lifecycle_queue_delivery() {
+    fn observed_start_callback_preserves_the_absolute_deadline_before_queue_delivery() {
         let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
             .expect("fixture request is valid");
         let streams = stream_slot_fixture(7, 3);
@@ -2350,11 +2342,16 @@ mod tests {
             .deadlines()
             .expire_through(stale_start_deadline);
 
-        assert_eq!(transaction.try_recv(), Err(mpsc::TryRecvError::Empty));
         release_tx.send(()).expect("lifecycle queue should resume");
         streams.drain_lifecycle_callbacks();
-        assert!(streams.activate_candidate_fixture(12));
-        assert_eq!(transaction.wait(), Ok(()));
+        assert_eq!(
+            transaction.wait(),
+            Err(MacosNativeTransactionError::TimedOut {
+                phase: MacosNativeTransactionPhase::FirstCompleteFrame,
+                generation: 12,
+            })
+        );
+        assert!(!streams.activate_candidate_fixture(12));
     }
 
     #[test]
@@ -2666,6 +2663,8 @@ mod tests {
             assert_eq!(state.candidate_epoch, None);
             assert_eq!(state.staging_epoch, None);
             drop(state);
+            assert_eq!(streams.native_lifecycle.deadlines().pending(), 0);
+            assert_eq!(streams.native_lifecycle.pending_retirements(), 0);
 
             assert!(!streams.set_capture_active(false));
             assert!(streams.set_capture_active(true));

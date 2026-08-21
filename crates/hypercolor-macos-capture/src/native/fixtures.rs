@@ -1,7 +1,16 @@
+use super::{
+    CandidateStage, Instant, MACOS_NATIVE_STREAM_TRANSACTION_TIMEOUT, MacosCaptureColorimetry,
+    MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat, MacosColorPrimaries,
+    MacosColorRange, MacosConfiguredStream, MacosDeliveredFrameMetadata, MacosProtectedSourceState,
+    MacosRuntimeCapability, MacosScreenshotReferenceCapability, MacosScreenshotReferenceImage,
+    MacosStreamPreset, MacosStreamRequest, MacosStreamRequestTransaction, MacosTahoeCapabilities,
+    MacosTahoeRuntimeProbes, MacosTransferFunction, MacosValidatedStreamDelivery,
+    NativeSelectionFilter, NativeStream, PendingStreamRequest, ScreenshotCaptureBackend,
+    ScreenshotFilterHandle, ScreenshotIdentityFence, ScreenshotImageCompletion,
+    ScreenshotTransactionSnapshot, SessionShared, StreamSlot, stream_request_transaction,
+};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-
-use super::*;
 
 struct FixtureScreenshotCall {
     filter_id: u64,
@@ -166,7 +175,10 @@ pub(super) fn pending_request(
     epoch: u64,
     request: MacosStreamRequest,
 ) -> (PendingStreamRequest, MacosStreamRequestTransaction) {
-    let (transaction, completion) = stream_request_transaction(epoch);
+    let (transaction, completion) = stream_request_transaction(
+        epoch,
+        Instant::now() + MACOS_NATIVE_STREAM_TRANSACTION_TIMEOUT,
+    );
     (
         PendingStreamRequest {
             epoch,

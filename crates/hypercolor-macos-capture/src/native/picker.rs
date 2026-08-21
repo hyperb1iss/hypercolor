@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    AnyThread, Arc, CFRetained, CFUUID, CGDirectDisplayID, CGMainDisplayID, CaptureActivation,
+    ClaimedSourceResolution, DefinedClass, FilterAcceptance, MacosCaptureContentStyle,
+    MacosCaptureError, MacosCaptureSelection, MacosCaptureSelector, MacosProtectedSourceState,
+    MacosStreamRequest, MacosStreamRequestTransaction, MainThreadMarker, MainThreadOnly, NSArray,
+    NSError, NSObject, NSObjectProtocol, NonNull, PoolReservationFactory, ProtocolObject, RcBlock,
+    Retained, SCContentFilter, SCContentSharingPicker, SCContentSharingPickerObserver,
+    SCShareableContent, SCStream, SCWindow, SessionShared, SourceResolution, StreamSlot,
+    define_class, is_hypercolor_ui_bundle_identifier, msg_send, native_error, ptr,
+};
 
 #[derive(Clone)]
 pub(super) enum NativeFilter {
