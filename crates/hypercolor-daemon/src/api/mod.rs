@@ -1042,13 +1042,15 @@ fn documented_root_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::with_openapi(openapi::base_document()).routes(openapi::documented_route(
         "/health",
         axum::routing::get(system::health_check),
-        [OperationDoc::get::<system::HealthResponse>(
-            "health_check",
-            "system",
-            "Run daemon health check",
-        )
-        .also_status("503")
-        .raw()],
+        [
+            OperationDoc::get::<hypercolor_types::api::system::HealthResponse>(
+                "health_check",
+                "system",
+                "Run daemon health check",
+            )
+            .also_status("503")
+            .raw(),
+        ],
     ))
 }
 
