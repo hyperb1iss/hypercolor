@@ -1065,7 +1065,6 @@ pub(crate) fn openapi_document() -> utoipa::openapi::OpenApi {
 ///
 /// When `ui_dir` is provided, static files are served at `/` with SPA
 /// fallback (all non-API, non-asset paths return `index.html`).
-#[expect(clippy::too_many_lines)]
 pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let security_state = state.security_state.clone();
     let (mcp_config, web_config): (McpConfig, WebConfig) =
