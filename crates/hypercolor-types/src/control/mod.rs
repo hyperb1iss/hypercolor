@@ -185,6 +185,18 @@ impl ControlSet {
         self.values.iter()
     }
 
+    /// Return the number of controls in the authoritative snapshot.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Return whether the authoritative snapshot contains no controls.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     /// Insert a value after validating the canonical invariants.
     pub fn insert(
         &mut self,
@@ -196,6 +208,39 @@ impl ControlSet {
             source,
         })?;
         Ok(self.values.insert(control_id, value))
+    }
+}
+
+/// Ordered resolved control changes delivered atomically to one renderer.
+#[derive(Debug, Clone, Copy)]
+pub struct ControlDeltaBatch<'a> {
+    /// Revision of the authoritative authored control set.
+    pub set_revision: SetRevision,
+    /// Sequence for resolved changes within the same authored revision.
+    pub resolution_seq: u64,
+    /// Stable, ordered control changes in this delivery.
+    pub changes: &'a [(ControlId, ControlValue)],
+}
+
+impl<'a> ControlDeltaBatch<'a> {
+    /// Create an atomic renderer delivery batch.
+    #[must_use]
+    pub const fn new(
+        set_revision: SetRevision,
+        resolution_seq: u64,
+        changes: &'a [(ControlId, ControlValue)],
+    ) -> Self {
+        Self {
+            set_revision,
+            resolution_seq,
+            changes,
+        }
+    }
+
+    /// Return whether the batch carries no changed values.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.changes.is_empty()
     }
 }
 

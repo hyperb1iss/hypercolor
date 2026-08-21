@@ -10,8 +10,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use hypercolor_types::control::{
-    ControlId, ControlSet, ControlValue, ControlValueInvalid, DriverProjectionError,
-    EffectProjectionError, IpText, MacText, SecretRef, SetRevision,
+    ControlDeltaBatch, ControlId, ControlSet, ControlValue, ControlValueInvalid,
+    DriverProjectionError, EffectProjectionError, IpText, MacText, SecretRef, SetRevision,
 };
 use hypercolor_types::controls as driver;
 use hypercolor_types::device::DeviceId;
@@ -355,6 +355,8 @@ fn control_set_validates_values_and_orders_identifiers() {
         ["color", "speed"]
     );
     assert_eq!(set.get("speed"), Some(&ControlValue::Float(0.5)));
+    assert_eq!(set.len(), 2);
+    assert!(!set.is_empty());
 }
 
 #[test]
@@ -367,6 +369,18 @@ fn control_set_rejects_invalid_values_at_admission() {
 
     assert_eq!(error.control_id.as_str(), "speed");
     assert_eq!(error.source, ControlValueInvalid::NonFiniteFloat);
+}
+
+#[test]
+fn control_delta_batch_carries_revision_and_resolution_order() {
+    let changes = [(ControlId::new("speed"), ControlValue::Float(0.75))];
+    let batch = ControlDeltaBatch::new(SetRevision::new(9), 4, &changes);
+
+    assert_eq!(batch.set_revision.get(), 9);
+    assert_eq!(batch.resolution_seq, 4);
+    assert_eq!(batch.changes, changes);
+    assert!(!batch.is_empty());
+    assert!(ControlDeltaBatch::new(SetRevision::new(9), 5, &[]).is_empty());
 }
 
 // ── identity conventions ───────────────────────────────────────────────────
