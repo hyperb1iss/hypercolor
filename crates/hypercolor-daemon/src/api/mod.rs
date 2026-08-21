@@ -91,6 +91,7 @@ use crate::domain::context::{DeviceContext, RuntimeSessionService, SceneContext}
 use crate::domain::effect::EffectContext;
 use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneService;
+use crate::domain::scene_tree::SceneTreeContext;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
@@ -140,6 +141,9 @@ pub struct AppState {
 
     /// Effect catalog, validation, and activation authority.
     pub effects: EffectContext,
+
+    /// Live scene-tree read and mutation authority.
+    pub scene_tree: SceneTreeContext,
 
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
@@ -602,6 +606,8 @@ impl AppState {
             Arc::clone(&driver_registry),
         );
         let devices = DeviceContext::new(
+            device_registry.clone(),
+            Arc::clone(&lifecycle_manager),
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
             config_manager.clone(),
@@ -640,6 +646,12 @@ impl AppState {
             spatial_engine.clone(),
             output.clone(),
         );
+        let scene_tree = SceneTreeContext::new(
+            scene.clone(),
+            effects.clone(),
+            devices.clone(),
+            output.clone(),
+        );
 
         Self {
             scene,
@@ -647,6 +659,7 @@ impl AppState {
             devices,
             output,
             effects,
+            scene_tree,
             device_registry,
             effect_registry,
             scene_manager,
@@ -743,6 +756,8 @@ impl AppState {
             Arc::clone(&driver_registry),
         );
         let devices = DeviceContext::new(
+            daemon.device_registry.clone(),
+            Arc::clone(&daemon.lifecycle_manager),
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
             Some(Arc::clone(&daemon.config_manager)),
@@ -779,6 +794,12 @@ impl AppState {
             daemon.spatial_engine.clone(),
             output.clone(),
         );
+        let scene_tree = SceneTreeContext::new(
+            scene.clone(),
+            effects.clone(),
+            devices.clone(),
+            output.clone(),
+        );
 
         Self {
             scene,
@@ -786,6 +807,7 @@ impl AppState {
             devices,
             output,
             effects,
+            scene_tree,
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),

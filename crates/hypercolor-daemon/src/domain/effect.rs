@@ -59,6 +59,12 @@ impl EffectContext {
     pub fn full_scope_layout(&self) -> SpatialLayout {
         self.spatial.layout().as_ref().clone()
     }
+
+    /// Resolve one effect schema for scene-tree control validation.
+    pub async fn metadata(&self, effect_id: EffectId) -> Option<EffectMetadata> {
+        let registry = self.registry.read().await;
+        registry.get(&effect_id).map(|entry| entry.metadata.clone())
+    }
 }
 
 /// A transition the caller asked for.

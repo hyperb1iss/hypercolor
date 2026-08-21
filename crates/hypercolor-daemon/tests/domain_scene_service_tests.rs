@@ -156,12 +156,11 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
         .await;
 
     clear_scene(
-        &state,
+        &state.scene_tree,
         ClearScene {
             zone: Some(zone_id),
             expected_revision: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("zone clear should commit");
@@ -178,7 +177,7 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
 #[tokio::test]
 async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
     let (state, _tempdir) = isolated_state();
-    let stale = read_document(&state)
+    let stale = read_document(&state.scene_tree)
         .await
         .expect("default scene should be readable");
     let next_scene = named_scene("next");
@@ -196,7 +195,7 @@ async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
     .expect("next scene should activate");
 
     let error = patch_layer_controls(
-        &state,
+        &state.scene_tree,
         PatchLayerControls {
             zone_id: stale.zones[0].id,
             layer_id: SceneLayerId::new(),

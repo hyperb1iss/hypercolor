@@ -95,7 +95,7 @@ pub async fn update_attachments(
         suggested_zones: suggested_zones.clone(),
     };
     let layout_device_id = if body.validate_only {
-        super::resolved_layout_device_id(state.as_ref(), &tracked.info).await
+        state.devices.resolved_layout_device_id(&tracked.info).await
     } else {
         let device_key = tracked.info.id.to_string();
         {

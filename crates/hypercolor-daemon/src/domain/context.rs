@@ -5,13 +5,15 @@ use std::sync::Arc;
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
+use hypercolor_types::device::{DeviceInfo, DriverModuleKind, DriverTransportKind};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId};
-use tokio::sync::{RwLock, watch};
+use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
@@ -160,6 +162,12 @@ impl SceneContext {
         self.scenes.snapshot().await
     }
 
+    /// Current scene commit generation for optimistic concurrency.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.scenes.revision()
+    }
+
     /// Start an owned candidate mutation.
     pub async fn begin_mutation(&self) -> SceneMutation {
         self.scenes.begin_mutation().await
@@ -285,6 +293,8 @@ impl SceneContext {
 /// Device lifecycle and discovery-layout reconciliation authority.
 #[derive(Clone)]
 pub struct DeviceContext {
+    device_registry: DeviceRegistry,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
     driver_host: Arc<DaemonDriverHost>,
     driver_registry: Arc<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
@@ -294,6 +304,8 @@ pub struct DeviceContext {
 
 impl DeviceContext {
     pub(crate) fn new(
+        device_registry: DeviceRegistry,
+        lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
         driver_host: Arc<DaemonDriverHost>,
         driver_registry: Arc<DriverModuleRegistry>,
         config_manager: Option<Arc<ConfigManager>>,
@@ -301,12 +313,62 @@ impl DeviceContext {
         layout_auto_exclusions_path: PathBuf,
     ) -> Self {
         Self {
+            device_registry,
+            lifecycle_manager,
             driver_host,
             driver_registry,
             config_manager,
             layout_auto_exclusions,
             layout_auto_exclusions_path,
         }
+    }
+
+    /// Resolve the stable layout identity for a tracked device.
+    pub async fn resolved_layout_device_id(&self, device_info: &DeviceInfo) -> String {
+        if let Some(layout_device_id) = {
+            let lifecycle = self.lifecycle_manager.lock().await;
+            lifecycle
+                .layout_device_id_for(device_info.id)
+                .map(ToOwned::to_owned)
+        } {
+            return layout_device_id;
+        }
+
+        let fingerprint = self
+            .device_registry
+            .fingerprint_for_id(&device_info.id)
+            .await;
+        DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint.as_ref())
+    }
+
+    /// Mint the canonical auto-layout outputs for one connected device.
+    pub async fn layout_outputs_for(&self, requested_layout_id: &str) -> Vec<Output> {
+        let tracked = self.device_registry.list().await;
+        for device in &tracked {
+            let layout_device_id = self.resolved_layout_device_id(&device.info).await;
+            if layout_device_id != requested_layout_id {
+                continue;
+            }
+            let mut scratch = SpatialLayout {
+                id: format!("mint-{layout_device_id}"),
+                name: device.info.name.clone(),
+                description: None,
+                canvas_width: 1,
+                canvas_height: 1,
+                zones: Vec::new(),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            };
+            let _minted = discovery::auto_layout::append_auto_layout_zones_for_device(
+                &mut scratch,
+                &layout_device_id,
+                &device.info,
+            );
+            return scratch.zones;
+        }
+        Vec::new()
     }
 
     /// Re-evaluate device eligibility after scene targeting changes.

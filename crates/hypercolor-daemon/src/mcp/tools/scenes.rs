@@ -233,12 +233,11 @@ pub(super) async fn handle_clear_zone_with_state(
 ) -> Result<Value, ToolError> {
     let Some(zone) = params.get("zone") else {
         let written = crate::domain::scene_tree::clear_scene(
-            state,
+            &state.scene_tree,
             ClearScene {
                 zone: None,
                 expected_revision: None,
             },
-            MutationContext::mcp(),
         )
         .await?;
         return serialize_result(written.document);
@@ -251,7 +250,7 @@ pub(super) async fn handle_clear_zone_with_state(
     };
 
     loop {
-        let document = crate::domain::scene_tree::read_document(state).await?;
+        let document = crate::domain::scene_tree::read_document(&state.scene_tree).await?;
         let revision = document.revision;
         let candidates = document
             .zones
@@ -268,12 +267,11 @@ pub(super) async fn handle_clear_zone_with_state(
         }
 
         match crate::domain::scene_tree::clear_scene(
-            state,
+            &state.scene_tree,
             ClearScene {
                 zone: Some(zone.id),
                 expected_revision: Some(revision),
             },
-            MutationContext::mcp(),
         )
         .await
         {
@@ -312,7 +310,7 @@ pub(super) async fn handle_adjust_controls_with_state(
     })?;
 
     loop {
-        let document = crate::domain::scene_tree::read_document(state).await?;
+        let document = crate::domain::scene_tree::read_document(&state.scene_tree).await?;
         let revision = document.revision;
         let zone_candidates = document
             .zones
@@ -354,7 +352,7 @@ pub(super) async fn handle_adjust_controls_with_state(
         }
 
         match crate::domain::scene_tree::patch_layer_controls(
-            state,
+            &state.scene_tree,
             PatchLayerControls {
                 zone_id: zone.id,
                 layer_id: layer.id,

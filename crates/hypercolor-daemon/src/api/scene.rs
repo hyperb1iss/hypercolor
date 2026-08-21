@@ -43,7 +43,7 @@ use axum::Json;
 
 /// `GET /api/v1/scene` — the full live document.
 pub async fn get_scene(State(state): State<Arc<AppState>>) -> Response {
-    match scene_tree::read_document(state.as_ref()).await {
+    match scene_tree::read_document(&state.scene_tree).await {
         Ok(document) => {
             let revision = document.revision;
             with_revision(envelope::ok(document), revision)
@@ -64,13 +64,12 @@ pub async fn patch_scene(
     };
     tree_response(
         scene_tree::patch_scene(
-            state.as_ref(),
+            &state.scene_tree,
             PatchScene {
                 name: body.name,
                 unassigned_behavior: body.unassigned_behavior,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -99,12 +98,11 @@ pub async fn clear_scene(
     let zone = body.and_then(|Json(body)| body.zone);
     tree_response(
         scene_tree::clear_scene(
-            state.as_ref(),
+            &state.scene_tree,
             ClearScene {
                 zone,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -175,7 +173,7 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    match scene_tree::read_zone(state.as_ref(), zone_id).await {
+    match scene_tree::read_zone(&state.scene_tree, zone_id).await {
         Ok((resource, revision)) => with_revision(envelope::ok(resource), revision),
         Err(error) => error.into_response(),
     }
@@ -255,14 +253,7 @@ pub async fn put_zone_layout(
     };
 
     written_response(
-        scene_tree::set_zone_layout(
-            state.as_ref(),
-            zone_id,
-            body.placements,
-            expected,
-            MutationContext::api(),
-        )
-        .await,
+        scene_tree::set_zone_layout(&state.scene_tree, zone_id, body.placements, expected).await,
     )
 }
 
@@ -284,13 +275,12 @@ pub async fn assign_members(
 
     written_response(
         scene_tree::assign_members(
-            state.as_ref(),
+            &state.scene_tree,
             AssignMembers {
                 zone_id,
                 request: body,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -312,14 +302,8 @@ pub async fn unassign_member(
     };
 
     written_response(
-        scene_tree::unassign_member(
-            state.as_ref(),
-            zone_id,
-            &ZoneMemberId(member),
-            expected,
-            MutationContext::api(),
-        )
-        .await,
+        scene_tree::unassign_member(&state.scene_tree, zone_id, &ZoneMemberId(member), expected)
+            .await,
     )
 }
 
@@ -331,7 +315,7 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    match scene_tree::read_zone(state.as_ref(), zone_id).await {
+    match scene_tree::read_zone(&state.scene_tree, zone_id).await {
         Ok((resource, revision)) => {
             let total = resource.layers.len() as u64;
             with_revision(
@@ -428,14 +412,13 @@ pub async fn replace_layer(
     };
     written_response(
         scene_tree::replace_layer(
-            state.as_ref(),
+            &state.scene_tree,
             ReplaceLayer {
                 zone_id,
                 layer_id,
                 layer: replacement,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -491,7 +474,7 @@ pub async fn patch_layer_controls(
     }
     written_response(
         scene_tree::patch_layer_controls(
-            state.as_ref(),
+            &state.scene_tree,
             PatchLayerControls {
                 zone_id,
                 layer_id,

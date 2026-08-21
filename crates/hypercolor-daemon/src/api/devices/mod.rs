@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
 use hypercolor_color::Rgb;
-use hypercolor_core::device::{BackendIo, DeviceLifecycleManager, DirectControlGuard};
+use hypercolor_core::device::{BackendIo, DirectControlGuard};
 use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
 use hypercolor_types::device::{
@@ -814,7 +814,7 @@ pub(super) async fn ensure_default_logical_entry(
     state: &AppState,
     device_info: &DeviceInfo,
 ) -> String {
-    let fallback_layout_id = resolved_layout_device_id(state, device_info).await;
+    let fallback_layout_id = state.devices.resolved_layout_device_id(device_info).await;
 
     let mut store = state.logical_devices.write().await;
     let default = crate::logical_devices::ensure_default_logical_device(
@@ -953,26 +953,6 @@ fn brightness_percent(brightness: f32) -> u8 {
 fn scale_rgb(color: [u8; 3], brightness: f32) -> [u8; 3] {
     let scaled = Rgb::new(color[0], color[1], color[2]).scale(brightness);
     [scaled.r, scaled.g, scaled.b]
-}
-
-pub(crate) async fn resolved_layout_device_id(
-    state: &AppState,
-    device_info: &DeviceInfo,
-) -> String {
-    if let Some(layout_device_id) = {
-        let lifecycle = state.lifecycle_manager.lock().await;
-        lifecycle
-            .layout_device_id_for(device_info.id)
-            .map(ToOwned::to_owned)
-    } {
-        return layout_device_id;
-    }
-
-    let fingerprint = state
-        .device_registry
-        .fingerprint_for_id(&device_info.id)
-        .await;
-    DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint.as_ref())
 }
 
 pub(super) async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {
