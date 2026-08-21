@@ -28,7 +28,8 @@ on it directly.
 | `canvas` | `Canvas`, `PublishedSurface` — the 640×480 (configurable) RGBA pixel buffer |
 | `audio` | `AudioData`, `AudioPipelineConfig` — per-frame spectrum/beat snapshot |
 | `effect` | `EffectMetadata`, `ControlValue`, `EffectId` |
-| `scene` | `Scene`, `Zone`, `ZoneId`, `ZoneRole`, `DisplayFaceTarget`, `DisplayFaceBlendMode` |
+| `layer` | `SceneLayer`, `SceneLayerId`, `LayerSource`, `BlendMode` |
+| `scene` | `Scene`, `Zone`, `ZoneId`, `ZoneRole`, `DisplayFaceTarget` |
 | `event` | `HypercolorEvent`, `FrameData`, `ZoneColors`, `SpectrumData` — event bus payloads |
 | `sensor` | `SystemSnapshot` — CPU/GPU/memory telemetry |
 | `config` | `DaemonConfig` — top-level TOML configuration |

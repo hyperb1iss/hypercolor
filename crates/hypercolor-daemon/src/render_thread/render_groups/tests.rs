@@ -289,7 +289,7 @@ fn make_color_fill_group(group: &mut Zone) {
         source: hypercolor_types::layer::LayerSource::ColorFill {
             rgba: [1.0, 0.0, 0.0, 1.0],
         },
-        blend: hypercolor_types::layer::LayerBlendMode::Replace,
+        blend: hypercolor_types::layer::BlendMode::Replace,
         opacity: 1.0,
         transform: hypercolor_types::layer::LayerTransform::default(),
         adjust: hypercolor_types::layer::LayerAdjust::default(),
@@ -316,7 +316,7 @@ fn sample_display_group(width: u32, height: u32) -> Zone {
     let mut group = sample_group(width, height);
     group.display_target = Some(hypercolor_types::scene::DisplayFaceTarget {
         device_id: hypercolor_types::device::DeviceId::new(),
-        blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+        blend_mode: hypercolor_types::layer::BlendMode::Replace,
         opacity: 1.0,
     });
     group.role = ZoneRole::Display;

@@ -21,8 +21,7 @@ use std::collections::HashMap;
 use crate::control::ControlValue;
 use crate::identity::LayoutId;
 use crate::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerBinding, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use crate::library::PresetId;
 use crate::scene::{
@@ -289,7 +288,7 @@ pub struct CreateLayerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blend: Option<LayerBlendMode>,
+    pub blend: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

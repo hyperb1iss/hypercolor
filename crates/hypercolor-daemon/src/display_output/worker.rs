@@ -133,7 +133,7 @@ enum CapturedDisplayFrameSource {
     Face {
         scene_source: Option<CapturedDisplaySource>,
         face_source: CapturedDisplaySource,
-        blend_mode: hypercolor_types::scene::DisplayFaceBlendMode,
+        blend_mode: hypercolor_types::layer::BlendMode,
         opacity_bits: u32,
     },
 }

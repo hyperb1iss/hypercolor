@@ -640,7 +640,7 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
             DisplayPreference {
                 effect_id: retained_effect,
                 controls: HashMap::new(),
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+                blend_mode: hypercolor_types::layer::BlendMode::Alpha,
                 opacity: 1.0,
             },
         )
@@ -653,7 +653,7 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
             DisplayPreference {
                 effect_id: EffectId::new(uuid::Uuid::now_v7()),
                 controls: HashMap::new(),
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                blend_mode: hypercolor_types::layer::BlendMode::Replace,
                 opacity: 1.0,
             },
         )

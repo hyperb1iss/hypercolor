@@ -1,8 +1,8 @@
 use std::sync::LazyLock;
 
+use hypercolor_color::PixelBlendMode;
 use hypercolor_color::lut::{linear_to_srgb_u8, srgb_u8_to_linear};
 
-use crate::types::canvas::BlendMode;
 use crate::types::layer::LayerAdjust;
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
@@ -20,17 +20,17 @@ pub enum RgbaBlendMode {
     Difference,
 }
 
-impl From<BlendMode> for RgbaBlendMode {
-    fn from(value: BlendMode) -> Self {
+impl From<PixelBlendMode> for RgbaBlendMode {
+    fn from(value: PixelBlendMode) -> Self {
         match value {
-            BlendMode::Normal => Self::Normal,
-            BlendMode::Add => Self::Add,
-            BlendMode::Screen => Self::Screen,
-            BlendMode::Multiply => Self::Multiply,
-            BlendMode::Overlay => Self::Overlay,
-            BlendMode::SoftLight => Self::SoftLight,
-            BlendMode::ColorDodge => Self::ColorDodge,
-            BlendMode::Difference => Self::Difference,
+            PixelBlendMode::Normal => Self::Normal,
+            PixelBlendMode::Add => Self::Add,
+            PixelBlendMode::Screen => Self::Screen,
+            PixelBlendMode::Multiply => Self::Multiply,
+            PixelBlendMode::Overlay => Self::Overlay,
+            PixelBlendMode::SoftLight => Self::SoftLight,
+            PixelBlendMode::ColorDodge => Self::ColorDodge,
+            PixelBlendMode::Difference => Self::Difference,
         }
     }
 }

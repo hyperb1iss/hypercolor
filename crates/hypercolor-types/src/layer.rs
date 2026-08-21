@@ -10,12 +10,11 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::asset::AssetId;
-use crate::canvas::BlendMode;
 use crate::effect::{ControlBinding, ControlValue, EffectId};
 use crate::library::PresetId;
-use crate::scene::DisplayFaceBlendMode;
 use crate::spatial::NormalizedPosition;
 use crate::viewport::{FitMode, ViewportRect};
+use hypercolor_color::PixelBlendMode;
 
 /// Stable identifier for a layer within a zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
@@ -82,7 +81,7 @@ pub struct SceneLayer {
 
     /// How this layer composes with the layer beneath it.
     #[serde(default)]
-    pub blend: LayerBlendMode,
+    pub blend: BlendMode,
 
     /// Layer opacity.
     #[serde(default = "default_layer_opacity")]
@@ -124,7 +123,7 @@ impl SceneLayer {
                 control_bindings,
                 preset_id,
             },
-            blend: LayerBlendMode::Replace,
+            blend: BlendMode::Replace,
             opacity: default_layer_opacity(),
             transform: LayerTransform::default(),
             adjust: LayerAdjust::default(),
@@ -222,10 +221,10 @@ impl LayerSource {
     }
 }
 
-/// Layer blend mode used by authored stacks.
+/// Blend mode used by authored layers and display faces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum LayerBlendMode {
+pub enum BlendMode {
     Replace,
     #[default]
     Alpha,
@@ -240,38 +239,26 @@ pub enum LayerBlendMode {
     LumaReveal,
 }
 
-impl LayerBlendMode {
-    /// Return the equivalent canvas blend mode when one exists.
+impl BlendMode {
+    /// Return whether this mode composites over the scene beneath it.
     #[must_use]
-    pub const fn standard_canvas_blend_mode(self) -> Option<BlendMode> {
+    pub const fn blends_with_base(self) -> bool {
+        !matches!(self, Self::Replace)
+    }
+
+    /// Return the equivalent pixel-kernel mode when one exists.
+    #[must_use]
+    pub const fn pixel_mode(self) -> Option<PixelBlendMode> {
         match self {
             Self::Replace | Self::Tint | Self::LumaReveal => None,
-            Self::Alpha => Some(BlendMode::Normal),
-            Self::Add => Some(BlendMode::Add),
-            Self::Screen => Some(BlendMode::Screen),
-            Self::Multiply => Some(BlendMode::Multiply),
-            Self::Overlay => Some(BlendMode::Overlay),
-            Self::SoftLight => Some(BlendMode::SoftLight),
-            Self::ColorDodge => Some(BlendMode::ColorDodge),
-            Self::Difference => Some(BlendMode::Difference),
-        }
-    }
-}
-
-impl From<DisplayFaceBlendMode> for LayerBlendMode {
-    fn from(value: DisplayFaceBlendMode) -> Self {
-        match value {
-            DisplayFaceBlendMode::Replace => Self::Replace,
-            DisplayFaceBlendMode::Alpha => Self::Alpha,
-            DisplayFaceBlendMode::Tint => Self::Tint,
-            DisplayFaceBlendMode::LumaReveal => Self::LumaReveal,
-            DisplayFaceBlendMode::Add => Self::Add,
-            DisplayFaceBlendMode::Screen => Self::Screen,
-            DisplayFaceBlendMode::Multiply => Self::Multiply,
-            DisplayFaceBlendMode::Overlay => Self::Overlay,
-            DisplayFaceBlendMode::SoftLight => Self::SoftLight,
-            DisplayFaceBlendMode::ColorDodge => Self::ColorDodge,
-            DisplayFaceBlendMode::Difference => Self::Difference,
+            Self::Alpha => Some(PixelBlendMode::Normal),
+            Self::Add => Some(PixelBlendMode::Add),
+            Self::Screen => Some(PixelBlendMode::Screen),
+            Self::Multiply => Some(PixelBlendMode::Multiply),
+            Self::Overlay => Some(PixelBlendMode::Overlay),
+            Self::SoftLight => Some(PixelBlendMode::SoftLight),
+            Self::ColorDodge => Some(PixelBlendMode::ColorDodge),
+            Self::Difference => Some(PixelBlendMode::Difference),
         }
     }
 }

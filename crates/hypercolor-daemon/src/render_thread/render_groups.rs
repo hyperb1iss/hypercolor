@@ -25,7 +25,7 @@ use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::event::ZoneColors;
 #[cfg(test)]
-use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
+use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerSource, LayerTransform};
 use hypercolor_types::scene::ZoneId;
 #[cfg(test)]
 use hypercolor_types::scene::{DisplayFaceTarget, Zone};

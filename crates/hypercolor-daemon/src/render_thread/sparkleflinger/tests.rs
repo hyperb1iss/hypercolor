@@ -1,10 +1,11 @@
+use hypercolor_color::PixelBlendMode;
 use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
     screen_blend,
 };
-use hypercolor_core::types::canvas::{BlendMode, Canvas, LinearRgba, PublishedSurface, Rgba};
+use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 use hypercolor_types::spatial::NormalizedPosition;
 use hypercolor_types::viewport::FitMode;
 
@@ -87,15 +88,10 @@ fn compose_transformed_source(source: Canvas, width: u32, height: u32, fit: FitM
         .expect("transformed layer should materialize a canvas")
 }
 
-fn expected_blend(dst: Rgba, src: Rgba, mode: BlendMode, opacity: f32) -> Rgba {
+fn expected_blend(dst: Rgba, src: Rgba, mode: PixelBlendMode, opacity: f32) -> Rgba {
     let dst = dst.to_linear();
     let src = src.to_linear();
-    let blended = mode.blend(
-        [dst.r, dst.g, dst.b, dst.a],
-        [src.r, src.g, src.b, src.a],
-        opacity,
-    );
-    LinearRgba::new(blended[0], blended[1], blended[2], blended[3]).to_encoded()
+    src.blend_over(dst, mode, opacity).to_encoded()
 }
 
 fn patterned_surface(seed: u8) -> PublishedSurface {
@@ -123,29 +119,29 @@ fn patterned_surface(seed: u8) -> PublishedSurface {
 fn legacy_face_overlay_rgba(
     scene: &PublishedSurface,
     face: &PublishedSurface,
-    blend_mode: DisplayFaceBlendMode,
+    blend_mode: BlendMode,
     opacity: f32,
 ) -> Vec<u8> {
     // Independent copy of the previous display encoder math, kept as a regression fence.
     let mut target_rgba = scene.rgba_bytes().to_vec();
     match blend_mode {
-        DisplayFaceBlendMode::Replace => {
+        BlendMode::Replace => {
             legacy_replace_face_rgba_in_place(&mut target_rgba, face.rgba_bytes(), opacity);
         }
-        DisplayFaceBlendMode::Tint => {
+        BlendMode::Tint => {
             legacy_blend_face_material_tint_rgba(&mut target_rgba, face.rgba_bytes(), opacity);
         }
-        DisplayFaceBlendMode::LumaReveal => {
+        BlendMode::LumaReveal => {
             legacy_blend_face_luma_reveal_rgba(&mut target_rgba, face.rgba_bytes(), opacity);
         }
         _ => {
-            let Some(canvas_blend_mode) = blend_mode.standard_canvas_blend_mode() else {
+            let Some(pixel_mode) = blend_mode.pixel_mode() else {
                 return target_rgba;
             };
             blend_rgba_pixels_in_place(
                 &mut target_rgba,
                 face.rgba_bytes(),
-                RgbaBlendMode::from(canvas_blend_mode),
+                RgbaBlendMode::from(pixel_mode),
                 opacity,
             );
         }
@@ -292,17 +288,17 @@ fn sparkleflinger_face_overlay_matches_legacy_math_for_every_mode() {
     let mut sparkleflinger = SparkleFlinger::cpu();
 
     for blend_mode in [
-        DisplayFaceBlendMode::Replace,
-        DisplayFaceBlendMode::Alpha,
-        DisplayFaceBlendMode::Tint,
-        DisplayFaceBlendMode::LumaReveal,
-        DisplayFaceBlendMode::Add,
-        DisplayFaceBlendMode::Screen,
-        DisplayFaceBlendMode::Multiply,
-        DisplayFaceBlendMode::Overlay,
-        DisplayFaceBlendMode::SoftLight,
-        DisplayFaceBlendMode::ColorDodge,
-        DisplayFaceBlendMode::Difference,
+        BlendMode::Replace,
+        BlendMode::Alpha,
+        BlendMode::Tint,
+        BlendMode::LumaReveal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Multiply,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::ColorDodge,
+        BlendMode::Difference,
     ] {
         let expected = legacy_face_overlay_rgba(&scene, &face, blend_mode, 0.6);
         let mut composed = scene.rgba_bytes().to_vec();
@@ -329,11 +325,8 @@ fn sparkleflinger_composes_face_modes_as_general_layers() {
     let mut sparkleflinger = SparkleFlinger::cpu();
 
     for (composition_mode, face_mode) in [
-        (CompositionMode::Tint, DisplayFaceBlendMode::Tint),
-        (
-            CompositionMode::LumaReveal,
-            DisplayFaceBlendMode::LumaReveal,
-        ),
+        (CompositionMode::Tint, BlendMode::Tint),
+        (CompositionMode::LumaReveal, BlendMode::LumaReveal),
     ] {
         let mut expected = legacy_face_overlay_rgba(&scene, &face, face_mode, 0.6);
         for (expected_pixel, scene_pixel) in expected
@@ -373,11 +366,10 @@ fn sparkleflinger_face_overlay_uses_black_when_scene_dims_do_not_match_face() {
     face_canvas.fill(Rgba::new(0, 0, 255, 255));
     let face = PublishedSurface::from_owned_canvas(face_canvas, 8, 12);
     let black = PublishedSurface::from_owned_canvas(Canvas::new(1, 1), 0, 0);
-    let expected = legacy_face_overlay_rgba(&black, &face, DisplayFaceBlendMode::Tint, 0.75);
+    let expected = legacy_face_overlay_rgba(&black, &face, BlendMode::Tint, 0.75);
     let mut sparkleflinger = SparkleFlinger::cpu();
 
-    let surface =
-        sparkleflinger.compose_face_overlay(&scene, &face, DisplayFaceBlendMode::Tint, 0.75);
+    let surface = sparkleflinger.compose_face_overlay(&scene, &face, BlendMode::Tint, 0.75);
 
     assert_eq!(surface.rgba_bytes(), expected.as_slice());
 }
@@ -657,7 +649,7 @@ fn sparkleflinger_alpha_layers_respect_order() {
             .as_ref()
             .expect("CPU alpha compose should materialize a canvas")
             .get_pixel(0, 0),
-        expected_blend(base, overlay, BlendMode::Normal, opacity)
+        expected_blend(base, overlay, PixelBlendMode::Normal, opacity)
     );
     assert_ne!(
         composed
@@ -705,7 +697,7 @@ fn sparkleflinger_add_layers_use_additive_blend() {
             .as_ref()
             .expect("CPU add compose should materialize a canvas")
             .get_pixel(0, 0),
-        expected_blend(base, glow, BlendMode::Add, 1.0)
+        expected_blend(base, glow, PixelBlendMode::Add, 1.0)
     );
 }
 
@@ -729,7 +721,7 @@ fn sparkleflinger_screen_layers_use_screen_blend() {
             .as_ref()
             .expect("CPU screen compose should materialize a canvas")
             .get_pixel(0, 0),
-        expected_blend(base, overlay, BlendMode::Screen, 1.0)
+        expected_blend(base, overlay, PixelBlendMode::Screen, 1.0)
     );
 }
 
@@ -787,7 +779,7 @@ fn sparkleflinger_extended_blend_modes_use_linear_blend_math() {
             .as_ref()
             .expect("CPU multiply compose should materialize a canvas")
             .get_pixel(0, 0),
-        expected_blend(base, overlay, BlendMode::Multiply, 1.0)
+        expected_blend(base, overlay, PixelBlendMode::Multiply, 1.0)
     );
 }
 

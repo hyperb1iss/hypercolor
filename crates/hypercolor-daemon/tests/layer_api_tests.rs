@@ -10,8 +10,7 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
@@ -146,7 +145,7 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
             asset_id,
             playback: MediaPlayback::default(),
         },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),

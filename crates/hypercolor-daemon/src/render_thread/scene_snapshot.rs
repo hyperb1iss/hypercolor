@@ -656,7 +656,7 @@ mod tests {
         EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
     };
     use hypercolor_types::layer::{
-        LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+        BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
     };
     use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -1166,7 +1166,7 @@ mod tests {
             source: LayerSource::ScreenRegion {
                 viewport: ViewportRect::full(),
             },
-            blend: LayerBlendMode::Replace,
+            blend: BlendMode::Replace,
             opacity: 1.0,
             transform: LayerTransform::default(),
             adjust: LayerAdjust::default(),

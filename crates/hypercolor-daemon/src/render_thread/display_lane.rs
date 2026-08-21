@@ -416,7 +416,8 @@ mod tests {
     #[cfg(feature = "wgpu")]
     use hypercolor_types::config::RenderAccelerationMode;
     use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
-    use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
+    use hypercolor_types::layer::BlendMode;
+    use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
     #[cfg(feature = "wgpu")]
@@ -453,7 +454,7 @@ mod tests {
             frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
             display_target: DisplayFaceTarget {
                 device_id,
-                blend_mode: DisplayFaceBlendMode::Replace,
+                blend_mode: BlendMode::Replace,
                 opacity: 1.0,
             },
             empty_direct_shell: false,
@@ -462,7 +463,7 @@ mod tests {
             frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
             display_target: DisplayFaceTarget {
                 device_id,
-                blend_mode: DisplayFaceBlendMode::Alpha,
+                blend_mode: BlendMode::Alpha,
                 opacity: 0.88,
             },
             empty_direct_shell: false,
@@ -483,7 +484,7 @@ mod tests {
         let device_id = DeviceId::new();
         let target = DisplayFaceTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: BlendMode::Replace,
             opacity: 1.0,
         };
         let route = display_route(device_id, 1.0);

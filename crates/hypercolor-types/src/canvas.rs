@@ -1,9 +1,8 @@
-//! Canvas buffer, surface pooling, authored blend modes, and the canvas
-//! spelling of the color kernel's pixel types.
+//! Canvas buffers, surface pooling, and the canvas spelling of the color
+//! kernel's pixel types.
 //!
-//! The pixel surface (`Canvas`), the surface pool, and the authored
-//! `BlendMode` live here. Color values and color math live in
-//! `hypercolor-color` and are re-exported below, so
+//! The pixel surface (`Canvas`) and surface pool live here. Color values and
+//! color math live in `hypercolor-color` and are re-exported below, so
 //! `hypercolor_types::canvas::{Rgb, Rgba, LinearRgba, Oklab, Oklch}`
 //! resolve to the kernel's types.
 
@@ -12,7 +11,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use hypercolor_color::PixelBlendMode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -1543,83 +1541,5 @@ impl SurfaceLease<'_> {
     /// Return the leased slot to the pool without publishing.
     pub fn release(self) {
         self.slot.state = SurfaceState::Free;
-    }
-}
-
-// ── BlendMode ──────────────────────────────────────────────────────────────
-
-/// Blend modes for layer compositing.
-///
-/// All blend operations work on premultiplied-alpha RGBA pixels in `[0.0, 1.0]`.
-/// At 320x200 (64,000 pixels), blending is trivially fast on CPU.
-/// The wgpu path runs compositing as a compute shader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BlendMode {
-    /// Standard source-over alpha compositing.
-    #[default]
-    Normal,
-
-    /// Additive blending: `dst + src`. Great for glow and flash effects.
-    /// Result is clamped to 1.0.
-    Add,
-
-    /// Screen: `1 - (1-dst)(1-src)`. Brightens without blowing out.
-    Screen,
-
-    /// Multiply: `dst * src`. Darkens, useful for tinting.
-    Multiply,
-
-    /// Overlay: Screen if `dst > 0.5`, Multiply otherwise.
-    /// Increases contrast.
-    Overlay,
-
-    /// Soft Light: Subtle tinting, less harsh than Overlay.
-    SoftLight,
-
-    /// Color Dodge: `dst / (1 - src)`. Creates intense highlights.
-    ColorDodge,
-
-    /// Difference: `|dst - src|`. Psychedelic color inversion.
-    Difference,
-}
-
-impl BlendMode {
-    /// The pixel-kernel mode this authored mode composites with.
-    ///
-    /// The two variant sets are identical today, so the mapping is
-    /// total. Authored modes with no pixel-kernel equivalent (`Replace`,
-    /// `Tint`, `LumaReveal`) live on the compositor's own enum and never
-    /// reach this table.
-    #[must_use]
-    pub const fn pixel_mode(self) -> PixelBlendMode {
-        match self {
-            Self::Normal => PixelBlendMode::Normal,
-            Self::Add => PixelBlendMode::Add,
-            Self::Screen => PixelBlendMode::Screen,
-            Self::Multiply => PixelBlendMode::Multiply,
-            Self::Overlay => PixelBlendMode::Overlay,
-            Self::SoftLight => PixelBlendMode::SoftLight,
-            Self::ColorDodge => PixelBlendMode::ColorDodge,
-            Self::Difference => PixelBlendMode::Difference,
-        }
-    }
-
-    /// Blend a source pixel onto a destination pixel.
-    ///
-    /// Both `dst` and `src` are RGBA arrays in `[0.0, 1.0]` range.
-    /// `opacity` modulates the source alpha (0.0 = invisible, 1.0 = full).
-    #[must_use]
-    pub fn blend(self, dst: [f32; 4], src: [f32; 4], opacity: f32) -> [f32; 4] {
-        // `blend_over`'s receiver is the SOURCE and its argument is the
-        // destination — the opposite parameter order to this function's
-        // signature. Swapping these silently recolors every composited
-        // frame, so the orientation is pinned by a test.
-        let blended = LinearRgba::new(src[0], src[1], src[2], src[3]).blend_over(
-            LinearRgba::new(dst[0], dst[1], dst[2], dst[3]),
-            self.pixel_mode(),
-            opacity,
-        );
-        [blended.r, blended.g, blended.b, blended.a]
     }
 }

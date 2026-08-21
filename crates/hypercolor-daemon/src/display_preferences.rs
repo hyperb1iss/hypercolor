@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 use serde::{Deserialize, Serialize};
 
 use crate::path_migration::{
@@ -33,7 +33,7 @@ pub struct DisplayPreference {
     #[serde(default)]
     pub controls: HashMap<String, ControlValue>,
     #[serde(default)]
-    pub blend_mode: DisplayFaceBlendMode,
+    pub blend_mode: BlendMode,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
 }

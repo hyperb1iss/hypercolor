@@ -27,7 +27,8 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::is_display_zone;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use self::render::display_viewport_signature;
@@ -123,7 +124,7 @@ pub(super) struct DisplayWorkerConfigSignature {
     geometry: DisplayGeometry,
     frame_format: DisplayFrameFormat,
     canvas_source: DisplayCanvasSourceSignature,
-    face_blend_mode: DisplayFaceBlendMode,
+    face_blend_mode: BlendMode,
     face_opacity_bits: u32,
     viewport: DisplayViewportSignature,
 }
@@ -220,7 +221,7 @@ pub(super) enum DisplayWorkerFrameSource {
     Face {
         scene_frame: Option<Arc<CanvasFrame>>,
         face_frame: Arc<CanvasFrame>,
-        blend_mode: DisplayFaceBlendMode,
+        blend_mode: BlendMode,
         opacity: f32,
     },
 }
@@ -257,7 +258,7 @@ enum StableDisplayFrameSourceIdentity {
     Face {
         scene_frame: Option<DisplaySourceIdentity>,
         face_frame: DisplaySourceIdentity,
-        blend_mode: DisplayFaceBlendMode,
+        blend_mode: BlendMode,
         opacity_bits: u32,
     },
 }
@@ -276,14 +277,14 @@ impl DisplayTarget {
         }
     }
 
-    fn face_blend_mode(&self) -> DisplayFaceBlendMode {
+    fn face_blend_mode(&self) -> BlendMode {
         self.display_target
             .as_ref()
-            .map_or(DisplayFaceBlendMode::Replace, |target| target.blend_mode)
+            .map_or(BlendMode::Replace, |target| target.blend_mode)
     }
 
     fn blends_with_effect(&self) -> bool {
-        self.face_blend_mode().blends_with_effect()
+        self.face_blend_mode().blends_with_base()
     }
 
     fn face_opacity(&self) -> f32 {
@@ -1102,7 +1103,7 @@ mod tests {
         )))
     }
 
-    fn display_target(blend_mode: DisplayFaceBlendMode) -> DisplayTarget {
+    fn display_target(blend_mode: BlendMode) -> DisplayTarget {
         let device_id = DeviceId::new();
         DisplayTarget {
             worker_key: ("test".into(), device_id),
@@ -1142,7 +1143,7 @@ mod tests {
     fn display_group_target(device_id: DeviceId, finalized: bool) -> DisplayGroupTarget {
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: BlendMode::Replace,
             opacity: 1.0,
             finalized,
         }
@@ -1206,7 +1207,7 @@ mod tests {
 
     #[test]
     fn direct_display_face_uses_unified_face_frame_source_without_scene() {
-        let target = display_target(DisplayFaceBlendMode::Replace);
+        let target = display_target(BlendMode::Replace);
         let face_frame = group_canvas_frame(1);
 
         let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
@@ -1237,15 +1238,15 @@ mod tests {
             stable_display_source_identity(published_face.as_ref()),
             stable_display_group_source_identity(face_frame.as_ref())
         );
-        assert_eq!(blend_mode, DisplayFaceBlendMode::Replace);
-        assert_eq!(identity_blend_mode, DisplayFaceBlendMode::Replace);
+        assert_eq!(blend_mode, BlendMode::Replace);
+        assert_eq!(identity_blend_mode, BlendMode::Replace);
         assert_eq!(opacity, 1.0);
         assert_eq!(opacity_bits, 1.0_f32.to_bits());
     }
 
     #[test]
     fn blended_display_face_uses_same_face_frame_source_with_scene() {
-        let target = display_target(DisplayFaceBlendMode::Alpha);
+        let target = display_target(BlendMode::Alpha);
         let scene_frame = canvas_frame(1);
         let scene_identity =
             stable_display_source_identity(scene_frame.as_ref()).expect("scene should be stable");
@@ -1283,15 +1284,15 @@ mod tests {
             stable_display_group_source_identity(face_frame.as_ref())
         );
         assert_eq!(identity_scene, Some(scene_identity));
-        assert_eq!(blend_mode, DisplayFaceBlendMode::Alpha);
-        assert_eq!(identity_blend_mode, DisplayFaceBlendMode::Alpha);
+        assert_eq!(blend_mode, BlendMode::Alpha);
+        assert_eq!(identity_blend_mode, BlendMode::Alpha);
         assert_eq!(opacity, 0.5);
         assert_eq!(opacity_bits, 0.5_f32.to_bits());
     }
 
     #[test]
     fn blended_display_face_composes_against_black_without_scene_frame() {
-        let target = display_target(DisplayFaceBlendMode::Alpha);
+        let target = display_target(BlendMode::Alpha);
         let face_frame = group_canvas_frame(1);
 
         let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
@@ -1322,15 +1323,15 @@ mod tests {
             stable_display_source_identity(published_face.as_ref()),
             stable_display_group_source_identity(face_frame.as_ref())
         );
-        assert_eq!(blend_mode, DisplayFaceBlendMode::Alpha);
-        assert_eq!(identity_blend_mode, DisplayFaceBlendMode::Alpha);
+        assert_eq!(blend_mode, BlendMode::Alpha);
+        assert_eq!(identity_blend_mode, BlendMode::Alpha);
         assert_eq!(opacity, 0.5);
         assert_eq!(opacity_bits, 0.5_f32.to_bits());
     }
 
     #[test]
     fn finalized_display_face_uses_direct_frame_without_scene() {
-        let mut target = display_target(DisplayFaceBlendMode::Alpha);
+        let mut target = display_target(BlendMode::Alpha);
         target.finalized_face = true;
         let face_frame = group_canvas_frame(1);
 
@@ -1357,7 +1358,7 @@ mod tests {
 
     #[test]
     fn finalized_display_face_does_not_change_worker_config_signature() {
-        let mut target = display_target(DisplayFaceBlendMode::Alpha);
+        let mut target = display_target(BlendMode::Alpha);
         let unfinalized = target.worker_config_signature();
 
         target.finalized_face = true;

@@ -20,7 +20,8 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
     DeviceTopologyHint, OwnedDisplayFramePayload, SegmentInfo,
 };
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -2493,7 +2494,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
         group_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 0.5,
             finalized: false,
         },
@@ -2564,7 +2565,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
         group_id,
         DisplayFaceTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 0.5,
         },
     );
@@ -2653,7 +2654,7 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
         group_id,
         DisplayFaceTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 0.5,
         },
     );
@@ -2761,7 +2762,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
         group_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: BlendMode::Replace,
             opacity: 1.0,
             finalized: false,
         },
@@ -2834,7 +2835,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     // Replace is an explicit composition choice now — the seed target
     // blends — so this isolation contract publishes it deliberately.
     let mut replace_target = DisplayFaceTarget::new(device_id);
-    replace_target.blend_mode = DisplayFaceBlendMode::Replace;
+    replace_target.blend_mode = BlendMode::Replace;
     publish_display_face_route(event_bus.as_ref(), group_id, replace_target);
 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
@@ -2918,7 +2919,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
         group_id,
         DisplayFaceTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 0.5,
         },
     );
@@ -3024,7 +3025,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
         group_id,
         DisplayFaceTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Screen,
+            blend_mode: BlendMode::Screen,
             opacity: 1.0,
         },
     );
@@ -3113,7 +3114,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
         group_id,
         DisplayFaceTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Tint,
+            blend_mode: BlendMode::Tint,
             opacity: 1.0,
         },
     );
@@ -3202,7 +3203,7 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
         group_id,
         DisplayFaceTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::LumaReveal,
+            blend_mode: BlendMode::LumaReveal,
             opacity: 1.0,
         },
     );

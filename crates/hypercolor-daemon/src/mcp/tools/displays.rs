@@ -15,7 +15,8 @@ use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::event::ZoneChangeKind;
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::DisplayFaceTarget;
 
 pub(super) fn build_set_display_face() -> ToolDefinition {
     ToolDefinition {
@@ -145,7 +146,7 @@ pub(super) async fn handle_set_display_face_with_state(
             controls,
             layout: display_face_layout(device_id, info.name.as_str(), surface),
             target: DisplayFaceTarget {
-                blend_mode: DisplayFaceBlendMode::Alpha,
+                blend_mode: BlendMode::Alpha,
                 device_id,
                 opacity: 1.0,
             },
@@ -272,7 +273,7 @@ async fn handle_default_scope(
                 crate::display_preferences::DisplayPreference {
                     // Blend over the live effect by default; Replace is opt-in
                     // via the composition controls for face-only looks.
-                    blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+                    blend_mode: hypercolor_types::layer::BlendMode::Alpha,
                     controls,
                     effect_id: effect.id,
                     opacity: 1.0,

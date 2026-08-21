@@ -17,11 +17,10 @@ use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, ZoneId,
-    ZoneRole,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
@@ -120,7 +119,7 @@ fn assign_command(device_id: DeviceId, effect: &EffectMetadata) -> SetDisplayFac
         controls: HashMap::new(),
         layout: face_layout(device_id),
         target: DisplayFaceTarget {
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             device_id,
             opacity: 1.0,
         },
@@ -213,7 +212,7 @@ async fn set_display_face_applies_the_requested_composition() {
 
     let mut command = assign_command(device_id, &effect);
     command.target = DisplayFaceTarget {
-        blend_mode: DisplayFaceBlendMode::Alpha,
+        blend_mode: BlendMode::Alpha,
         device_id,
         opacity: 0.4,
     };
@@ -225,7 +224,7 @@ async fn set_display_face_applies_the_requested_composition() {
         .zone
         .display_target
         .expect("a display zone carries a target");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert_eq!(target.blend_mode, BlendMode::Alpha);
     assert!((target.opacity - 0.4).abs() < f32::EPSILON);
 }
 
@@ -301,7 +300,7 @@ async fn patching_composition_and_controls_reports_a_missing_zone() {
             &state.domains.scene,
             PatchDisplayComposition {
                 zone_id: ZoneId::new(),
-                blend_mode: Some(DisplayFaceBlendMode::Replace),
+                blend_mode: Some(BlendMode::Replace),
                 opacity: None,
             },
         )

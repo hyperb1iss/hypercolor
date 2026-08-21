@@ -42,11 +42,11 @@ use hypercolor_types::event::{
     LayerStackChangeKind, SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind,
     Severity, ZoneChangeKind,
 };
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
 };
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
@@ -1212,7 +1212,7 @@ impl SceneMutation {
     pub fn patch_display_target(
         &mut self,
         zone_id: ZoneId,
-        blend_mode: Option<DisplayFaceBlendMode>,
+        blend_mode: Option<BlendMode>,
         opacity: Option<f32>,
     ) -> Option<Zone> {
         let scene_id = self.candidate.active_scene_id().copied()?;

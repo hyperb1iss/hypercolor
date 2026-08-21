@@ -25,8 +25,7 @@ use hypercolor_types::effect::{
 use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, Severity, ZoneChangeKind};
 use hypercolor_types::identity::LayoutId;
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
@@ -348,7 +347,7 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
             asset_id,
             playback: MediaPlayback::default(),
         },
-        blend: LayerBlendMode::default(),
+        blend: BlendMode::default(),
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),

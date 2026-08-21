@@ -12,7 +12,7 @@ use turbojpeg::{
 use hypercolor_color::Rgb;
 use hypercolor_core::bus::{CanvasFrame, DisplayYuv420Frame};
 use hypercolor_types::device::DisplayFrameFormat;
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 
 use crate::render_thread::sparkleflinger::SparkleFlinger;
 
@@ -156,7 +156,7 @@ pub(super) fn encode_face_scene_blend(
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
     brightness: f32,
-    face_blend_mode: DisplayFaceBlendMode,
+    face_blend_mode: BlendMode,
     face_opacity: f32,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
@@ -739,7 +739,7 @@ mod tests {
             &default_viewport(),
             &test_geometry(),
             1.0,
-            DisplayFaceBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
             DisplayFrameFormat::Rgb,
             false,
@@ -766,7 +766,7 @@ mod tests {
             &default_viewport(),
             &test_geometry(),
             1.0,
-            DisplayFaceBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
             DisplayFrameFormat::Jpeg,
             false,

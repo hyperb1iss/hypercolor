@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 
-from ..models.layer_blend_mode import LayerBlendMode
+from ..models.blend_mode import BlendMode
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class CreateLayerRequest:
             source (LayerSource): Source that feeds one authored layer.
             adjust (LayerAdjust | None | Unset):
             bindings (list[LayerBinding] | None | Unset):
-            blend (LayerBlendMode | None | Unset):
+            blend (BlendMode | None | Unset):
             enabled (bool | None | Unset):
             name (None | str | Unset):
             opacity (float | None | Unset):
@@ -39,7 +39,7 @@ class CreateLayerRequest:
     source: LayerSource
     adjust: LayerAdjust | None | Unset = UNSET
     bindings: list[LayerBinding] | None | Unset = UNSET
-    blend: LayerBlendMode | None | Unset = UNSET
+    blend: BlendMode | None | Unset = UNSET
     enabled: bool | None | Unset = UNSET
     name: None | str | Unset = UNSET
     opacity: float | None | Unset = UNSET
@@ -74,7 +74,7 @@ class CreateLayerRequest:
         blend: None | str | Unset
         if isinstance(self.blend, Unset):
             blend = UNSET
-        elif isinstance(self.blend, LayerBlendMode):
+        elif isinstance(self.blend, BlendMode):
             blend = self.blend.value
         else:
             blend = self.blend
@@ -180,7 +180,7 @@ class CreateLayerRequest:
 
         bindings = _parse_bindings(d.pop("bindings", UNSET))
 
-        def _parse_blend(data: object) -> LayerBlendMode | None | Unset:
+        def _parse_blend(data: object) -> BlendMode | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -188,12 +188,12 @@ class CreateLayerRequest:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                blend_type_1 = LayerBlendMode(data)
+                blend_type_1 = BlendMode(data)
 
                 return blend_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(LayerBlendMode | None | Unset, data)
+            return cast(BlendMode | None | Unset, data)
 
         blend = _parse_blend(d.pop("blend", UNSET))
 

@@ -7,7 +7,7 @@ from uuid import UUID
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.layer_blend_mode import LayerBlendMode
+from ..models.blend_mode import BlendMode
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class SceneLayer:
         source (LayerSource): Source that feeds one authored layer.
         adjust (LayerAdjust | Unset): Per-layer color adjustment settings.
         bindings (list[LayerBinding] | Unset): Live scalar bindings for layer parameters.
-        blend (LayerBlendMode | Unset): Layer blend mode used by authored stacks.
+        blend (BlendMode | Unset): Blend mode used by authored layers and display faces.
         enabled (bool | Unset): Whether this layer is currently active.
         name (None | str | Unset): Display name. Defaults to the source's intrinsic name in the UI.
         opacity (float | Unset): Layer opacity.
@@ -40,7 +40,7 @@ class SceneLayer:
     source: LayerSource
     adjust: LayerAdjust | Unset = UNSET
     bindings: list[LayerBinding] | Unset = UNSET
-    blend: LayerBlendMode | Unset = UNSET
+    blend: BlendMode | Unset = UNSET
     enabled: bool | Unset = UNSET
     name: None | str | Unset = UNSET
     opacity: float | Unset = UNSET
@@ -135,11 +135,11 @@ class SceneLayer:
                 bindings.append(bindings_item)
 
         _blend = d.pop("blend", UNSET)
-        blend: LayerBlendMode | Unset
+        blend: BlendMode | Unset
         if isinstance(_blend, Unset):
             blend = UNSET
         else:
-            blend = LayerBlendMode(_blend)
+            blend = BlendMode(_blend)
 
         enabled = d.pop("enabled", UNSET)
 

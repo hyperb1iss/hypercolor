@@ -30,7 +30,8 @@ use crate::input::{SourceFreshness, SourceKind, SourceState, SourceStatus};
 use crate::types::canvas::{Canvas, PublishedSurface};
 use crate::types::device::{DeviceId, DisplayFrameFormat};
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
-use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, ZoneId};
+use crate::types::layer::BlendMode;
+use crate::types::scene::{DisplayFaceTarget, SceneId, ZoneId};
 use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -466,7 +467,7 @@ impl DisplayGroupFrame {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayGroupTarget {
     pub device_id: DeviceId,
-    pub blend_mode: DisplayFaceBlendMode,
+    pub blend_mode: BlendMode,
     pub opacity: f32,
     pub finalized: bool,
 }

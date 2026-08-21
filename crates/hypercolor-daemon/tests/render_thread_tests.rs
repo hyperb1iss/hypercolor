@@ -1979,7 +1979,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     // blended composition; the published metadata must mirror it.
     assert_eq!(
         published_target.blend_mode,
-        hypercolor_types::scene::DisplayFaceBlendMode::Alpha
+        hypercolor_types::layer::BlendMode::Alpha
     );
     assert_eq!(published_target.opacity, 1.0);
 
@@ -2018,7 +2018,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         .display_target
         .as_mut()
         .expect("display group should carry a display target")
-        .blend_mode = hypercolor_types::scene::DisplayFaceBlendMode::Difference;
+        .blend_mode = hypercolor_types::layer::BlendMode::Difference;
 
     let mut scene = make_scene("GPU Display Face Scene");
     scene.zones = vec![

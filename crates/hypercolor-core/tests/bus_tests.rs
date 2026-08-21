@@ -14,7 +14,8 @@ use hypercolor_core::types::event::{
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
-use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::ZoneId;
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};
 
@@ -468,7 +469,7 @@ fn retain_group_canvases_prunes_stale_streams() {
         keep_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 0.5,
             finalized: false,
         },
@@ -477,7 +478,7 @@ fn retain_group_canvases_prunes_stale_streams() {
         stale_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: BlendMode::Replace,
             opacity: 1.0,
             finalized: false,
         },
@@ -508,7 +509,7 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
         keep_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 0.5,
             finalized: false,
         },
@@ -517,7 +518,7 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
         stale_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: BlendMode::Replace,
             opacity: 1.0,
             finalized: false,
         },
@@ -547,7 +548,7 @@ fn display_group_targets_roundtrip_and_revision() {
         group_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Screen,
+            blend_mode: BlendMode::Screen,
             opacity: 0.6,
             finalized: false,
         },
@@ -560,7 +561,7 @@ fn display_group_targets_roundtrip_and_revision() {
         targets.get(&group_id),
         Some(&DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Screen,
+            blend_mode: BlendMode::Screen,
             opacity: 0.6,
             finalized: false,
         })
@@ -578,7 +579,7 @@ fn retain_display_group_targets_prunes_stale_routes() {
         keep_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 0.5,
             finalized: false,
         },
@@ -587,7 +588,7 @@ fn retain_display_group_targets_prunes_stale_routes() {
         stale_id,
         DisplayGroupTarget {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: BlendMode::Replace,
             opacity: 1.0,
             finalized: false,
         },

@@ -1001,7 +1001,7 @@ mod tests {
         EffectId, EffectMetadata, EffectSource,
     };
     #[cfg(feature = "servo")]
-    use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerTransform};
+    use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerTransform};
     use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
     use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{
@@ -1775,7 +1775,7 @@ mod tests {
                 viewport: hypercolor_types::viewport::ViewportRect::new(0.1, 0.2, 0.3, 0.4),
                 render: hypercolor_types::layer::WebViewportRender::Snapshot,
             },
-            blend: LayerBlendMode::Replace,
+            blend: BlendMode::Replace,
             opacity: 1.0,
             transform: LayerTransform::default(),
             adjust: LayerAdjust::default(),

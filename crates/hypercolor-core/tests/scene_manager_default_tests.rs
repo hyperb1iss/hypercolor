@@ -7,13 +7,10 @@ use hypercolor_types::effect::{
     ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{
-    DisplayFaceBlendMode, DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -87,7 +84,7 @@ fn media_layer() -> SceneLayer {
             asset_id: hypercolor_types::asset::AssetId::new(),
             playback: MediaPlayback::default(),
         },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
@@ -350,7 +347,7 @@ fn ensure_display_group_surface_repairs_replace_seed_on_faceless_group() {
     let mut scene = make_scene("Desk");
     let scene_id = scene.id;
     let mut stale_target = DisplayFaceTarget::new(device_id);
-    stale_target.blend_mode = DisplayFaceBlendMode::Replace;
+    stale_target.blend_mode = BlendMode::Replace;
     scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Pump LCD".to_owned(),
@@ -382,7 +379,7 @@ fn ensure_display_group_surface_repairs_replace_seed_on_faceless_group() {
     let target = group
         .display_target
         .expect("display target should remain bound");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert_eq!(target.blend_mode, BlendMode::Alpha);
 }
 
 #[test]
@@ -392,7 +389,7 @@ fn ensure_display_group_surface_preserves_deliberate_replace_with_face() {
     let mut scene = make_scene("Desk");
     let scene_id = scene.id;
     let mut replace_target = DisplayFaceTarget::new(device_id);
-    replace_target.blend_mode = DisplayFaceBlendMode::Replace;
+    replace_target.blend_mode = BlendMode::Replace;
     scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Pump LCD".to_owned(),
@@ -423,7 +420,7 @@ fn ensure_display_group_surface_preserves_deliberate_replace_with_face() {
     let target = group
         .display_target
         .expect("display target should remain bound");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert_eq!(target.blend_mode, BlendMode::Replace);
 }
 
 #[test]
@@ -614,25 +611,25 @@ fn patch_display_group_target_preserves_opacity_for_effect_blends_and_normalizes
         .id;
 
     let screen_group = manager
-        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Screen), Some(0.42))
+        .patch_display_group_target(group_id, Some(BlendMode::Screen), Some(0.42))
         .expect("screen patch should update the display target");
     let screen_target = screen_group
         .display_target
         .clone()
         .expect("display target should remain present");
     assert_eq!(screen_target.device_id, device_id);
-    assert_eq!(screen_target.blend_mode, DisplayFaceBlendMode::Screen);
+    assert_eq!(screen_target.blend_mode, BlendMode::Screen);
     assert!((screen_target.opacity - 0.42).abs() < f32::EPSILON);
 
     let replace_group = manager
-        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Replace), Some(0.08))
+        .patch_display_group_target(group_id, Some(BlendMode::Replace), Some(0.08))
         .expect("replace patch should update the display target");
     let replace_target = replace_group
         .display_target
         .clone()
         .expect("display target should remain present");
     assert_eq!(replace_target.device_id, device_id);
-    assert_eq!(replace_target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert_eq!(replace_target.blend_mode, BlendMode::Replace);
     assert!((replace_target.opacity - 1.0).abs() < f32::EPSILON);
 }
 
