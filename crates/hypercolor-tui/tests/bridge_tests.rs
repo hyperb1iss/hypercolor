@@ -9,15 +9,25 @@ use axum::routing::get;
 use axum::{Json, Router};
 use hypercolor_tui::action::Action;
 use hypercolor_tui::bridge::spawn_data_bridge;
+use hypercolor_types::api::system::{RenderLoopStatus, ServerInfo, SystemResource, SystemStatus};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 struct TestState {
-    status_calls: Arc<AtomicUsize>,
-    scene_calls: Arc<AtomicUsize>,
-    control_surface_calls: Arc<AtomicUsize>,
+    status: Arc<AtomicUsize>,
+    scene: Arc<AtomicUsize>,
+    control_surface: Arc<AtomicUsize>,
+}
+
+fn canonical_json(mut envelope: serde_json::Value) -> Json<serde_json::Value> {
+    envelope["meta"] = serde_json::json!({
+        "api_version": "v1",
+        "request_id": "req_bridge",
+        "timestamp": "2026-08-20T00:00:00Z"
+    });
+    Json(envelope)
 }
 
 async fn assert_canonical_subscription(socket: &mut WebSocket) {
@@ -38,9 +48,9 @@ async fn active_scene_event_refreshes_the_canonical_document() {
     let status_calls = Arc::new(AtomicUsize::new(0));
     let scene_calls = Arc::new(AtomicUsize::new(0));
     let state = TestState {
-        status_calls: Arc::clone(&status_calls),
-        scene_calls: Arc::clone(&scene_calls),
-        control_surface_calls: Arc::new(AtomicUsize::new(0)),
+        status: Arc::clone(&status_calls),
+        scene: Arc::clone(&scene_calls),
+        control_surface: Arc::new(AtomicUsize::new(0)),
     };
 
     let router = Router::new()
@@ -105,9 +115,9 @@ async fn active_scene_event_refreshes_the_canonical_document() {
 async fn control_surface_event_refreshes_device_surface() {
     let control_surface_calls = Arc::new(AtomicUsize::new(0));
     let state = TestState {
-        status_calls: Arc::new(AtomicUsize::new(0)),
-        scene_calls: Arc::new(AtomicUsize::new(0)),
-        control_surface_calls: Arc::clone(&control_surface_calls),
+        status: Arc::new(AtomicUsize::new(0)),
+        scene: Arc::new(AtomicUsize::new(0)),
+        control_surface: Arc::clone(&control_surface_calls),
     };
 
     let router = Router::new()
@@ -169,28 +179,34 @@ async fn control_surface_event_refreshes_device_surface() {
 }
 
 async fn status_handler(State(state): State<TestState>) -> Json<serde_json::Value> {
-    state.status_calls.fetch_add(1, Ordering::SeqCst);
+    state.status.fetch_add(1, Ordering::SeqCst);
 
-    Json(serde_json::json!({
-        "data": {
-          "status": {
-            "running": true,
-            "global_brightness": 42,
-            "device_count": 3,
-            "active_effect": serde_json::Value::Null
-          }
+    canonical_json(serde_json::json!({
+        "data": SystemResource {
+          identity: ServerInfo::default(),
+          status: Some(SystemStatus {
+            running: true,
+            global_brightness: 42,
+            device_count: 3,
+            render_loop: RenderLoopStatus {
+                target_fps: 60,
+                actual_fps: 59.8,
+                ..RenderLoopStatus::default()
+            },
+            ..SystemStatus::default()
+          })
         }
     }))
 }
 
 async fn scene_handler(State(state): State<TestState>) -> Json<serde_json::Value> {
-    let call = state.scene_calls.fetch_add(1, Ordering::SeqCst);
+    let call = state.scene.fetch_add(1, Ordering::SeqCst);
     let (name, mutation_mode) = if call <= 1 {
         ("Default", "live")
     } else {
         ("Movie Night", "snapshot")
     };
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "id": "0198c5b6-1111-7000-8000-000000000001",
             "name": name,
@@ -204,7 +220,7 @@ async fn scene_handler(State(state): State<TestState>) -> Json<serde_json::Value
 }
 
 async fn effects_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "items": [],
             "total": 0,
@@ -218,7 +234,7 @@ async fn effects_handler() -> Json<serde_json::Value> {
 }
 
 async fn devices_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "items": [],
             "total": 0,
@@ -232,7 +248,7 @@ async fn devices_handler() -> Json<serde_json::Value> {
 }
 
 async fn favorites_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "items": [],
             "total": 0
@@ -245,9 +261,9 @@ async fn control_surface_handler(
     State(state): State<TestState>,
 ) -> Json<serde_json::Value> {
     assert_eq!(surface_id, test_surface_id());
-    state.control_surface_calls.fetch_add(1, Ordering::SeqCst);
+    state.control_surface.fetch_add(1, Ordering::SeqCst);
 
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "surface_id": test_surface_id(),
             "scope": {
