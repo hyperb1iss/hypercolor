@@ -2787,6 +2787,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         )))),
         scene_transactions: SceneTransactionQueue::default(),
         runtime_state_path: PathBuf::from("runtime-state.json"),
+        device_aliases_path: PathBuf::from("device-aliases.json"),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         credential_store: Arc::new(
             CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
@@ -2987,6 +2988,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
         )))),
         scene_transactions: SceneTransactionQueue::default(),
         runtime_state_path: PathBuf::from("runtime-state.json"),
+        device_aliases_path: PathBuf::from("device-aliases.json"),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         credential_store: Arc::new(
             CredentialStore::open_blocking(&std::env::temp_dir().join(format!(

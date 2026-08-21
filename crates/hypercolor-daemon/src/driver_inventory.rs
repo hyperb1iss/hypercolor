@@ -22,7 +22,7 @@ use crate::persistence::{AtomicFileWriter, PersistenceError, serialize_json_pret
 const INVENTORY_SCHEMA_VERSION: u32 = 1;
 const STORE_SUBJECT: &str = "driver inventory";
 
-/// Durable driver inventory filename inside the daemon data directory.
+/// Durable driver inventory filename inside the daemon state directory.
 pub const DRIVER_INVENTORY_FILENAME: &str = "driver-inventory.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

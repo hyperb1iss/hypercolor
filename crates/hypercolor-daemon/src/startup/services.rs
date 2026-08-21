@@ -127,6 +127,8 @@ impl DaemonState {
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
     ) -> Result<Self> {
         let config: &HypercolorConfig = &boot;
+        let data_dir = ConfigManager::data_dir();
+        let state_dir = ConfigManager::state_dir();
         info!("Initializing daemon subsystems");
         #[cfg(not(target_os = "macos"))]
         let _ = macos_owner_snapshot;
@@ -335,9 +337,17 @@ impl DaemonState {
         ));
         info!("Spatial engine created (empty default layout)");
 
-        let driver_inventory = Arc::new(
-            DriverInventoryStore::open(ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME))
-                .context("failed to open driver inventory store")?,
+        let driver_inventory_path = state_dir.join(DRIVER_INVENTORY_FILENAME);
+        let (driver_inventory, driver_inventory_migration) = DriverInventoryStore::open_migrated(
+            data_dir.join(DRIVER_INVENTORY_FILENAME),
+            driver_inventory_path.clone(),
+        )
+        .context("failed to open driver inventory store")?;
+        let driver_inventory = Arc::new(driver_inventory);
+        info!(
+            path = %driver_inventory_path.display(),
+            migration = ?driver_inventory_migration,
+            "Driver inventory store ready"
         );
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
@@ -457,12 +467,20 @@ impl DaemonState {
         info!("Attachment profile store ready");
 
         // ── Display Preferences Store ─────────────────────────────
-        let display_preferences_path = ConfigManager::data_dir().join("display-preferences.json");
+        let display_preferences_path = state_dir.join("display-preferences.json");
         let display_preferences_inner =
-            match crate::display_preferences::DisplayPreferencesStore::load(
+            match crate::display_preferences::DisplayPreferencesStore::load_migrated(
+                &data_dir.join("display-preferences.json"),
                 &display_preferences_path,
             ) {
-                Ok(store) => store,
+                Ok((store, migration)) => {
+                    info!(
+                        path = %display_preferences_path.display(),
+                        ?migration,
+                        "Display preferences store ready"
+                    );
+                    store
+                }
                 Err(error) => {
                     warn!(
                         path = %display_preferences_path.display(),
@@ -479,16 +497,27 @@ impl DaemonState {
         info!("Display preferences store ready");
 
         // ── Output Settings Store ───────────────────────────────────
-        let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
-        let device_settings_inner = DeviceSettingsStore::load(&device_settings_path)
-            .unwrap_or_else(|error| {
-                warn!(
-                    path = %device_settings_path.display(),
-                    %error,
-                    "Failed to load device settings; starting with defaults"
-                );
-                DeviceSettingsStore::new(device_settings_path)
-            });
+        let device_settings_path = state_dir.join("device-settings.json");
+        let device_settings_inner = DeviceSettingsStore::load_migrated(
+            &data_dir.join("device-settings.json"),
+            &device_settings_path,
+        )
+        .map(|(store, migration)| {
+            info!(
+                path = %device_settings_path.display(),
+                ?migration,
+                "Device settings store ready"
+            );
+            store
+        })
+        .unwrap_or_else(|error| {
+            warn!(
+                path = %device_settings_path.display(),
+                %error,
+                "Failed to load device settings; starting with defaults"
+            );
+            DeviceSettingsStore::new(device_settings_path)
+        });
         let initial_global_brightness = device_settings_inner.global_brightness();
         let device_settings = Arc::new(RwLock::new(device_settings_inner));
         set_global_brightness(&power_state, initial_global_brightness);
@@ -539,12 +568,51 @@ impl DaemonState {
         );
 
         // ── Runtime Session Store ───────────────────────────────────
-        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
-        info!(
-            path = %runtime_state_path.display(),
-            "Runtime session store ready"
-        );
+        let runtime_state_path = state_dir.join("runtime-state.json");
+        let startup_runtime_snapshot = match crate::runtime_state::load_migrated(
+            &data_dir.join("runtime-state.json"),
+            &runtime_state_path,
+        ) {
+            Ok((snapshot, migration)) => {
+                info!(
+                    path = %runtime_state_path.display(),
+                    ?migration,
+                    "Runtime session store ready"
+                );
+                snapshot
+            }
+            Err(error) => {
+                warn!(
+                    path = %runtime_state_path.display(),
+                    %error,
+                    "Failed to load runtime session snapshot"
+                );
+                None
+            }
+        };
 
+        let device_aliases_path = state_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
+        let startup_device_aliases = match crate::device_aliases::load_migrated(
+            &data_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE),
+            &device_aliases_path,
+        ) {
+            Ok((aliases, migration)) => {
+                info!(
+                    path = %device_aliases_path.display(),
+                    ?migration,
+                    "Device alias store ready"
+                );
+                aliases
+            }
+            Err(error) => {
+                warn!(
+                    path = %device_aliases_path.display(),
+                    %error,
+                    "Failed to load device aliases; starting with an empty overlay"
+                );
+                crate::device_aliases::DeviceAliasFile::default()
+            }
+        };
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(
@@ -570,6 +638,7 @@ impl DaemonState {
             Arc::clone(&attachment_profiles),
             Arc::clone(&device_settings),
             runtime_state_path.clone(),
+            device_aliases_path.clone(),
             driver_inventory,
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),
@@ -661,6 +730,9 @@ impl DaemonState {
             layout_auto_exclusions,
             layout_auto_exclusions_path,
             runtime_state_path,
+            device_aliases_path,
+            startup_device_aliases: Some(startup_device_aliases),
+            startup_runtime_snapshot,
             discovery_in_progress,
             power_state,
             output_power_transition: Arc::new(Mutex::new(())),

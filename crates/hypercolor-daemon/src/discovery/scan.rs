@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction};
 use hypercolor_driver_api::{DiscoveryRequest, DriverConfigView};
 use hypercolor_network::DriverModuleRegistry;
@@ -492,12 +491,14 @@ pub async fn execute_discovery_scan(
         manager.enable_unmapped_layout_warnings();
     }
 
-    let alias_path = ConfigManager::data_dir().join(crate::device_aliases::DEVICE_ALIASES_FILE);
-    if let Err(error) =
-        crate::device_aliases::sync_from_registry(&alias_path, &runtime.device_registry).await
+    if let Err(error) = crate::device_aliases::sync_from_registry(
+        &runtime.device_aliases_path,
+        &runtime.device_registry,
+    )
+    .await
     {
         warn!(
-            path = %alias_path.display(),
+            path = %runtime.device_aliases_path.display(),
             %error,
             "Failed to persist the device alias overlay after discovery"
         );

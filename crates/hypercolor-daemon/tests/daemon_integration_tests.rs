@@ -64,6 +64,7 @@ struct TestDataDirGuard {
     _dir: tempfile::TempDir,
     #[allow(dead_code)]
     data_dir: PathBuf,
+    _state_dir: PathBuf,
 }
 
 impl TestDataDirGuard {
@@ -71,11 +72,14 @@ impl TestDataDirGuard {
         let lock = DATA_DIR_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let data_dir = dir.path().join("data");
+        let state_dir = dir.path().join("state");
         ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        ConfigManager::set_state_dir_override(Some(state_dir.clone()));
         Self {
             _lock: lock,
             _dir: dir,
             data_dir,
+            _state_dir: state_dir,
         }
     }
 }
@@ -83,6 +87,7 @@ impl TestDataDirGuard {
 impl Drop for TestDataDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_state_dir_override(None);
     }
 }
 

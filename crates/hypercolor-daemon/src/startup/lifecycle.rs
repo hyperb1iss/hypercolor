@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
-use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
 use hypercolor_core::spatial::SpatialEngine;
@@ -84,11 +83,17 @@ impl DaemonState {
         // Seed portable identity pins before the first scan, so a claimed
         // device's first attach of the session resolves to the identity
         // its layouts reference.
-        crate::device_aliases::seed_registry(
-            &ConfigManager::data_dir().join(crate::device_aliases::DEVICE_ALIASES_FILE),
-            &self.device_registry,
-        )
-        .await;
+        if let Some(aliases) = self.startup_device_aliases.take() {
+            crate::device_aliases::seed_registry_document(
+                &self.device_aliases_path,
+                aliases,
+                &self.device_registry,
+            )
+            .await;
+        } else {
+            crate::device_aliases::seed_registry(&self.device_aliases_path, &self.device_registry)
+                .await;
+        }
 
         // Restore persisted scene state before the render loop begins producing frames.
         self.restore_runtime_session(&config).await;
@@ -468,19 +473,21 @@ impl DaemonState {
         store.save_reserved(pending)
     }
 
-    async fn restore_runtime_session(&self, config: &HypercolorConfig) {
+    async fn restore_runtime_session(&mut self, config: &HypercolorConfig) {
         let scene_mode = config.daemon.start_scene.trim();
-        let snapshot = match runtime_state::load(&self.runtime_state_path) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                warn!(
-                    path = %self.runtime_state_path.display(),
-                    %error,
-                    "Failed to load runtime session snapshot"
-                );
-                None
+        let snapshot = self.startup_runtime_snapshot.take().or_else(|| {
+            match runtime_state::load(&self.runtime_state_path) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    warn!(
+                        path = %self.runtime_state_path.display(),
+                        %error,
+                        "Failed to load runtime session snapshot"
+                    );
+                    None
+                }
             }
-        };
+        });
 
         if let Some(snapshot) = snapshot.as_ref()
             && snapshot.manual_paused
@@ -943,6 +950,7 @@ impl DaemonState {
             attachment_profiles: Arc::clone(&self.attachment_profiles),
             device_settings: Arc::clone(&self.device_settings),
             runtime_state_path: self.runtime_state_path.clone(),
+            device_aliases_path: self.device_aliases_path.clone(),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.discovery_in_progress),

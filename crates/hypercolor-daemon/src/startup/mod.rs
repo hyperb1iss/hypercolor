@@ -233,6 +233,12 @@ pub struct DaemonState {
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,
 
+    /// Persistent portable identity overlay in the machine-local state tier.
+    pub device_aliases_path: PathBuf,
+
+    pub(super) startup_device_aliases: Option<crate::device_aliases::DeviceAliasFile>,
+    pub(super) startup_runtime_snapshot: Option<crate::runtime_state::RuntimeSessionSnapshot>,
+
     /// Global discovery scan lock shared across startup and API-triggered scans.
     pub discovery_in_progress: Arc<AtomicBool>,
 

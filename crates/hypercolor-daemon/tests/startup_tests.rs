@@ -171,6 +171,7 @@ struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
     _dir: tempfile::TempDir,
     data_dir: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl TestDataDirGuard {
@@ -178,11 +179,14 @@ impl TestDataDirGuard {
         let lock = DATA_DIR_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let data_dir = dir.path().join("data");
+        let state_dir = dir.path().join("state");
         ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        ConfigManager::set_state_dir_override(Some(state_dir.clone()));
         Self {
             _lock: lock,
             _dir: dir,
             data_dir,
+            state_dir,
         }
     }
 
@@ -191,7 +195,15 @@ impl TestDataDirGuard {
     }
 
     fn runtime_state_path(&self) -> PathBuf {
-        self.data_dir.join("runtime-state.json")
+        self.state_dir.join("runtime-state.json")
+    }
+
+    fn legacy_state_path(&self, file_name: &str) -> PathBuf {
+        self.data_dir.join(file_name)
+    }
+
+    fn state_path(&self, file_name: &str) -> PathBuf {
+        self.state_dir.join(file_name)
     }
 
     fn scenes_path(&self) -> PathBuf {
@@ -202,6 +214,7 @@ impl TestDataDirGuard {
 impl Drop for TestDataDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_state_dir_override(None);
     }
 }
 
@@ -226,6 +239,73 @@ impl TestConfigDirGuard {
 impl Drop for TestConfigDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_config_dir_override(None);
+    }
+}
+
+#[tokio::test]
+async fn daemon_initialization_relocates_machine_state_out_of_data() {
+    let guard = TestDataDirGuard::new().await;
+    std::fs::create_dir_all(&guard.data_dir).expect("legacy data directory should be created");
+
+    let legacy_documents = [
+        (
+            "driver-inventory.json",
+            serde_json::json!({"schema_version": 1, "drivers": {}}),
+        ),
+        ("display-preferences.json", serde_json::json!({})),
+        (
+            "device-settings.json",
+            serde_json::json!({
+                "schema_version": 3,
+                "global_brightness": 0.42,
+                "devices": {},
+                "driver_controls": {},
+            }),
+        ),
+        (
+            "runtime-state.json",
+            serde_json::to_value(runtime_state::RuntimeSessionSnapshot::default())
+                .expect("runtime snapshot should serialize"),
+        ),
+        (
+            "device-aliases.json",
+            serde_json::json!({
+                "schema_version": 1,
+                "aliases": {},
+                "quarantined_keys": [],
+                "collisions": [],
+            }),
+        ),
+    ];
+    for (file_name, document) in &legacy_documents {
+        std::fs::write(
+            guard.legacy_state_path(file_name),
+            serde_json::to_vec_pretty(document).expect("legacy document should serialize"),
+        )
+        .expect("legacy document should be written");
+    }
+
+    let config = default_config();
+    let temp = temp_config_file();
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("state migration should succeed");
+
+    assert_eq!(state.runtime_state_path, guard.runtime_state_path());
+    assert_eq!(
+        state.device_aliases_path,
+        guard.state_path("device-aliases.json")
+    );
+    assert_eq!(
+        state.driver_host.driver_inventory().path(),
+        guard.state_path("driver-inventory.json")
+    );
+    assert_eq!(state.device_settings.read().await.global_brightness(), 0.42);
+    for (file_name, _) in &legacy_documents {
+        assert!(guard.state_path(file_name).exists());
+        assert!(!guard.legacy_state_path(file_name).exists());
     }
 }
 

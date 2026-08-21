@@ -108,6 +108,9 @@ pub struct DiscoveryRuntime {
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,
 
+    /// Persistent portable identity overlay in the machine-local state tier.
+    pub device_aliases_path: PathBuf,
+
     /// Shared per-device USB protocol configuration store.
     pub usb_protocol_configs: UsbProtocolConfigStore,
 

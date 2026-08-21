@@ -547,6 +547,7 @@ impl AppState {
         let logical_devices = Arc::new(RwLock::new(HashMap::new()));
         let logical_devices_path = data_dir.join("logical-devices.json");
         let runtime_state_path = data_dir.join("runtime-state.json");
+        let device_aliases_path = data_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
         let driver_inventory = Arc::new(
             DriverInventoryStore::open(data_dir.join(DRIVER_INVENTORY_FILENAME))
                 .expect("default app state should open driver inventory"),
@@ -575,6 +576,7 @@ impl AppState {
             Arc::clone(&attachment_profiles),
             Arc::clone(&device_settings),
             runtime_state_path.clone(),
+            device_aliases_path,
             driver_inventory,
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),

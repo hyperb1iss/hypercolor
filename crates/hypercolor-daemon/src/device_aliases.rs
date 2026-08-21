@@ -188,6 +188,11 @@ pub async fn seed_registry(path: &Path, registry: &DeviceRegistry) {
         }
     };
 
+    seed_registry_document(path, file, registry).await;
+}
+
+/// Seed the registry from an already-authoritative overlay document.
+pub async fn seed_registry_document(path: &Path, file: DeviceAliasFile, registry: &DeviceRegistry) {
     let pins: HashMap<PortableDeviceKey, DeviceFingerprint> = file
         .aliases
         .iter()
