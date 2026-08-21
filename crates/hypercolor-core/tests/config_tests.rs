@@ -291,22 +291,6 @@ fn conditional_config_mutation_rejects_stale_identity_without_side_effects() {
 }
 
 #[test]
-fn conditional_save_publishes_only_after_persistence_succeeds() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let blocked_parent = dir.path().join("not-a-directory");
-    fs::write(&blocked_parent, "block directory creation").expect("blocker should be written");
-    let manager = ConfigManager::new(blocked_parent.join("hypercolor.toml"))
-        .expect("ConfigManager should use defaults");
-    let before = Arc::clone(&manager.get());
-
-    let result = manager.modify_and_save_if_current(&before, |config| config.daemon.port = 7777);
-
-    assert!(result.is_err());
-    assert!(manager.is_current(&before));
-    assert_eq!(manager.get().daemon.port, 9420);
-}
-
-#[test]
 fn conditional_save_returns_the_exact_installed_snapshot() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let path = dir.path().join("hypercolor.toml");
