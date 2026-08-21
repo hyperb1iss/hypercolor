@@ -414,7 +414,7 @@ async fn same_backend_frame_sinks_do_not_block_each_other() {
         },
     ];
 
-    let stats = manager.write_frame(&frame, &layout).await;
+    let stats = manager.write_frame(&frame, &layout);
     assert_eq!(stats.devices_written, 2);
     assert!(stats.errors.is_empty());
 
@@ -496,7 +496,7 @@ async fn remapping_same_backend_device_preserves_frame_sink_isolation() {
         },
     ];
 
-    let stats = manager.write_frame(&frame, &layout).await;
+    let stats = manager.write_frame(&frame, &layout);
     assert_eq!(stats.devices_written, 2);
     assert!(stats.errors.is_empty());
 

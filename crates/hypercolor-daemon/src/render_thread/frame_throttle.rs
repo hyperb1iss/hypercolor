@@ -144,7 +144,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
+        let write_stats = manager.write_frame(zone_colors, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };

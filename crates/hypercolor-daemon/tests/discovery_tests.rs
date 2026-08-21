@@ -1245,7 +1245,7 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
             colors: vec![[12, 34, 56]; usize::try_from(info.total_led_count()).unwrap_or_default()],
         }];
         let mut manager = runtime.backend_manager.lock().await;
-        let stats = manager.write_frame(&zone_colors, &layout).await;
+        let stats = manager.write_frame(&zone_colors, &layout);
         assert_eq!(stats.devices_written, 1);
         assert_eq!(manager.mapped_device_count(), 1);
         assert_eq!(manager.debug_snapshot().queue_count, 1);

@@ -190,7 +190,7 @@ pub(crate) async fn publish_static_output_snapshot(state: &AppState, color: [u8;
         let mut backend_manager = state.backend_manager.lock().await;
         let unassigned_outputs = backend_manager.unassigned_output_zones(layout.as_ref());
         if unassigned_outputs.is_empty() {
-            backend_manager.write_frame(&zones, layout.as_ref()).await
+            backend_manager.write_frame(&zones, layout.as_ref())
         } else {
             zones.extend(unassigned_outputs.iter().map(|output| ZoneColors {
                 zone_id: output.id.clone(),
@@ -201,7 +201,7 @@ pub(crate) async fn publish_static_output_snapshot(state: &AppState, color: [u8;
             }));
             let mut static_layout = layout.as_ref().clone();
             static_layout.zones.extend(unassigned_outputs);
-            backend_manager.write_frame(&zones, &static_layout).await
+            backend_manager.write_frame(&zones, &static_layout)
         }
     };
     if !write_stats.errors.is_empty() {

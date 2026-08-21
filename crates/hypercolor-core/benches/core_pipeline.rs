@@ -37,7 +37,6 @@ use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
-use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 const CANVAS_WIDTH: u32 = 320;
@@ -731,8 +730,6 @@ fn bench_backend_routing(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_backend_routing");
     group.throughput(Throughput::Elements(120));
 
-    let runtime = Runtime::new().expect("benchmark runtime should initialize");
-
     let cached_device_id = DeviceId::new();
     let mut cached_manager = BackendManager::new();
     cached_manager.register_backend(Arc::new(NullBenchBackend));
@@ -747,13 +744,12 @@ fn bench_backend_routing(c: &mut Criterion) {
         zone_id: "zone_0".to_owned(),
         colors: vec![[255, 0, 0]; 120],
     }];
-    let _ = runtime.block_on(cached_manager.write_frame(&zone_colors, &cached_layout));
+    let _ = cached_manager.write_frame(&zone_colors, &cached_layout);
 
     group.bench_function("write_frame_cached_layout", |b| {
         b.iter(|| {
-            let stats = runtime.block_on(
-                cached_manager.write_frame(black_box(&zone_colors), black_box(&cached_layout)),
-            );
+            let stats =
+                cached_manager.write_frame(black_box(&zone_colors), black_box(&cached_layout));
             black_box(stats.devices_written);
             black_box(cached_manager.routing_plan_rebuild_count());
         });
@@ -781,8 +777,7 @@ fn bench_backend_routing(c: &mut Criterion) {
                 &base_layout
             };
             use_remapped_layout = !use_remapped_layout;
-            let stats = runtime
-                .block_on(churn_manager.write_frame(black_box(&zone_colors), black_box(layout)));
+            let stats = churn_manager.write_frame(black_box(&zone_colors), black_box(layout));
             black_box(stats.devices_written);
             black_box(churn_manager.routing_plan_rebuild_count());
         });

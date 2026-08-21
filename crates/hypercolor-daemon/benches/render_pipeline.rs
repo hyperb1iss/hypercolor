@@ -462,12 +462,12 @@ fn bench_render_pipeline(c: &mut Criterion) {
 
             let active_canvas = lease.canvas_mut().clone();
             active_spatial.sample_into(black_box(&active_canvas), &mut active_recycled_frame.zones);
-            let _ = runtime.block_on(active_manager.write_frame_with_brightness(
+            let _ = active_manager.write_frame_with_brightness(
                 black_box(&active_recycled_frame.zones),
                 black_box(active_layout.as_ref()),
                 1.0,
                 None,
-            ));
+            );
 
             let timestamp_ms = active_frame_number.saturating_mul(FRAME_INTERVAL_MS);
             let frame = FrameData::new(
@@ -488,12 +488,12 @@ fn bench_render_pipeline(c: &mut Criterion) {
         b.iter(|| {
             let canvas = Canvas::from_published_surface(black_box(&source_surface));
             screen_spatial.sample_into(black_box(&canvas), &mut screen_recycled_frame.zones);
-            let _ = runtime.block_on(screen_manager.write_frame_with_brightness(
+            let _ = screen_manager.write_frame_with_brightness(
                 black_box(&screen_recycled_frame.zones),
                 black_box(screen_layout.as_ref()),
                 1.0,
                 None,
-            ));
+            );
 
             let timestamp_ms = screen_frame_number.saturating_mul(FRAME_INTERVAL_MS);
             let frame = FrameData::new(

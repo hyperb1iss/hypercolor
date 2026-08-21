@@ -1427,7 +1427,7 @@ async fn connect_device_connects_backend_and_maps_layout_device() {
         zone_id: "zone_0".into(),
         colors: vec![[12, 34, 56]; 6],
     }];
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -1451,7 +1451,7 @@ async fn write_frame_hands_shared_led_payload_to_backend_queue() {
         colors: vec![[12, 34, 56]; 4],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert_eq!(stats.devices_written, 1);
@@ -1509,7 +1509,7 @@ async fn disconnect_device_disconnects_and_unmaps_layout_device() {
         zone_id: "zone_0".into(),
         colors: vec![[200, 200, 200]; 5],
     }];
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
 }
@@ -1534,7 +1534,7 @@ async fn disconnect_device_cleans_routing_even_when_backend_disconnect_fails() {
         zone_id: "zone_0".into(),
         colors: vec![[80, 40, 20]; 4],
     }];
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(manager.debug_snapshot().queue_count, 1);
@@ -1552,7 +1552,7 @@ async fn disconnect_device_cleans_routing_even_when_backend_disconnect_fails() {
     assert_eq!(manager.mapped_device_count(), 0);
     assert_eq!(manager.debug_snapshot().queue_count, 0);
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
 }
@@ -1582,7 +1582,7 @@ async fn connect_device_caches_backend_target_fps_for_output_queue() {
         zone_id: "zone_0".into(),
         colors: vec![[1, 2, 3]; 4],
     }];
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     assert_eq!(manager.cached_target_fps("slow", device_id), Some(37));
@@ -2078,7 +2078,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
     drop(nested_direct_control);
     assert!(manager.is_direct_control_active("recording", device_id));
 
-    let suppressed_stats = manager.write_frame(&zone_colors, &layout).await;
+    let suppressed_stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(suppressed_stats.devices_written, 0);
     assert_eq!(suppressed_stats.total_leds, 0);
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -2096,7 +2096,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
     drop(direct_control);
     assert!(!manager.is_direct_control_active("recording", device_id));
 
-    let resumed_stats = manager.write_frame(&zone_colors, &layout).await;
+    let resumed_stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(resumed_stats.devices_written, 1);
     assert_eq!(resumed_stats.total_leds, 4);
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -2173,7 +2173,7 @@ async fn write_frame_routes_to_correct_backend() {
         colors: vec![[255, 0, 0]; 10],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 10);
     assert!(stats.errors.is_empty());
@@ -2202,7 +2202,7 @@ async fn write_frame_scales_device_output_brightness() {
         colors: vec![[200, 100, 50]; 4],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -2275,7 +2275,7 @@ async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
         colors: vec![[128, 128, 128], [255, 0, 255], [32, 64, 96]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -2318,7 +2318,7 @@ async fn write_frame_lifts_dark_chromatic_colors_without_blowing_out_neutrals() 
         colors: vec![[0, 0, 128], [128, 128, 128], [255, 255, 255]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -2351,7 +2351,7 @@ async fn write_frame_empty_layout_produces_no_writes() {
     let mut manager = BackendManager::new();
     let layout = make_layout(Vec::new());
 
-    let stats = manager.write_frame(&[], &layout).await;
+    let stats = manager.write_frame(&[], &layout);
     assert_eq!(stats.devices_written, 0);
     assert_eq!(stats.total_leds, 0);
     assert!(stats.errors.is_empty());
@@ -2383,11 +2383,11 @@ async fn write_frame_reuses_compiled_routing_plan_for_stable_layout() {
         colors: vec![[255, 0, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
     assert_eq!(manager.ordered_routing_zone_count(&layout), 1);
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
 }
 
@@ -2422,7 +2422,7 @@ async fn ordered_routing_excludes_display_helper_zones() {
         colors: vec![[255, 0, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
     assert_eq!(manager.ordered_routing_zone_count(&layout), 1);
@@ -2454,14 +2454,14 @@ async fn write_frame_rebuilds_routing_plan_when_layout_changes() {
         colors: vec![[255, 0, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
 
     let mut remapped_zone = make_zone("zone_0", "mock:cached-strip", 5);
     remapped_zone.led_mapping = Some(vec![4, 3, 2, 1, 0]);
     let remapped_layout = make_layout(vec![remapped_zone]);
 
-    manager.write_frame(&zone_colors, &remapped_layout).await;
+    manager.write_frame(&zone_colors, &remapped_layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 2);
 }
 
@@ -2489,7 +2489,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
         colors: vec![[200, 100, 50]; 4],
     }];
 
-    manager.write_frame(&zone_colors, &dim_layout).await;
+    manager.write_frame(&zone_colors, &dim_layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
@@ -2497,7 +2497,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
     brighter_zone.brightness = Some(0.5);
     let brighter_layout = make_layout(vec![brighter_zone]);
 
-    manager.write_frame(&zone_colors, &brighter_layout).await;
+    manager.write_frame(&zone_colors, &brighter_layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 2);
 
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -2567,7 +2567,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
         &make_multi_zone_device_info(device_id, 2, 4)
     ));
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
 
     assert!(manager.set_device_zone_segments(
@@ -2575,7 +2575,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
         &make_multi_zone_device_info(device_id, 1, 5)
     ));
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 2);
 }
 
@@ -2729,7 +2729,7 @@ async fn write_frame_unmapped_zones_are_silently_skipped() {
         colors: vec![[0, 255, 0]; 5],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     // No mapping for "wled:unknown_device" — silently skipped.
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
@@ -2747,12 +2747,12 @@ async fn write_frame_unmapped_zones_stay_quiet_until_warnings_enabled() {
         colors: vec![[0, 255, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 0);
 
     manager.enable_unmapped_layout_warnings();
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 1);
 }
@@ -2770,15 +2770,15 @@ async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
         colors: vec![[0, 255, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 1);
 
     manager.map_device(layout_device_id, "mock", DeviceId::new());
     assert!(manager.unmap_device(layout_device_id));
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 2);
 }
@@ -2797,7 +2797,7 @@ async fn write_frame_missing_backend_reports_error() {
         colors: vec![[0, 0, 255]; 3],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 0);
     assert_eq!(stats.errors.len(), 1);
     assert!(stats.errors[0].contains("ghost"));
@@ -2831,7 +2831,7 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
         colors: vec![[128, 128, 128]; 5],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert!(
         stats.errors.is_empty(),
@@ -2893,7 +2893,7 @@ async fn write_frame_dedupes_repeated_async_write_failure_warnings() {
     }];
 
     for _ in 0..3 {
-        manager.write_frame(&zone_colors, &layout).await;
+        manager.write_frame(&zone_colors, &layout);
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
@@ -2951,7 +2951,7 @@ async fn write_frame_groups_multiple_zones_per_device() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 8); // 4 + 4 grouped into one write.
     assert!(stats.errors.is_empty());
@@ -3000,7 +3000,7 @@ async fn write_frame_places_colors_into_configured_segments() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -3049,7 +3049,7 @@ async fn write_frame_fills_segment_from_single_sampled_color() {
         colors: vec![[24, 48, 96]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -3093,7 +3093,7 @@ async fn write_frame_resamples_segment_when_sample_count_differs() {
         colors: vec![[255, 0, 0], [0, 0, 255]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -3190,7 +3190,7 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -3280,7 +3280,7 @@ async fn write_frame_routes_slot_alias_zone_name_to_hardware_segment() {
         colors: vec![[12, 34, 56]; 3],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 5);
     assert!(stats.errors.is_empty());
@@ -3367,7 +3367,7 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
         colors: vec![[255, 0, 0]; 2],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -3418,7 +3418,7 @@ async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
         colors: vec![[10, 0, 0], [20, 0, 0], [30, 0, 0]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -3466,7 +3466,7 @@ async fn write_frame_treats_identity_zone_led_mapping_as_direct_order() {
         colors: vec![[10, 0, 0], [20, 0, 0], [30, 0, 0]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -3521,7 +3521,7 @@ async fn write_frame_uses_attachment_led_range_within_mapped_device() {
         colors: vec![[0, 0, 255]; 160],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 280);
     assert!(stats.errors.is_empty());
@@ -3565,7 +3565,7 @@ async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() 
         colors: vec![[12, 34, 56]; 24],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 24);
     assert!(stats.errors.is_empty());
@@ -3626,8 +3626,8 @@ async fn write_frame_uses_absolute_attachment_coordinates_for_segmented_logical_
         colors: vec![[0, 0, 255]; 108],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
+    manager.write_frame(&zone_colors, &layout);
 
     let logs = buffer.contents();
     assert_eq!(
@@ -3699,8 +3699,8 @@ async fn write_frame_uses_mapped_segment_when_attachment_length_already_matches(
         colors: vec![[0, 0, 255]; 108],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
+    manager.write_frame(&zone_colors, &layout);
 
     let logs = buffer.contents();
     assert_eq!(
@@ -3755,7 +3755,7 @@ async fn write_frame_unknown_zone_id_warns_but_continues() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     // Only zone_0 is written; nonexistent_zone is skipped.
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 5);
@@ -3786,7 +3786,7 @@ async fn write_frame_returns_immediately_with_slow_backend() {
     }];
 
     let started = Instant::now();
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     let elapsed = started.elapsed();
 
     assert_eq!(stats.devices_written, 1);
@@ -3869,7 +3869,7 @@ async fn shared_backend_output_queues_serialize_without_starving_peers() {
                 colors: vec![[0, step, 0]; 4],
             },
         ];
-        manager.write_frame(&zone_colors, &layout).await;
+        manager.write_frame(&zone_colors, &layout);
         step = step.wrapping_add(1).max(1);
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -3924,9 +3924,9 @@ async fn device_output_statistics_tracks_payload_bytes_on_success() {
         colors: vec![[30, 20, 10]; 4],
     }];
 
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&second, &layout).await;
+    manager.write_frame(&second, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let stats = manager.device_output_statistics();
@@ -3965,7 +3965,7 @@ async fn device_output_statistics_tracks_async_write_errors() {
         colors: vec![[90, 45, 180]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let stats = manager.device_output_statistics();
@@ -4020,10 +4020,10 @@ async fn write_frame_drops_stale_intermediate_payloads() {
         colors: vec![[0, 0, 255]; 4],
     }];
 
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&second, &layout).await;
-    manager.write_frame(&third, &layout).await;
+    manager.write_frame(&second, &layout);
+    manager.write_frame(&third, &layout);
 
     tokio::time::sleep(Duration::from_millis(420)).await;
 
@@ -4087,9 +4087,9 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
         colors: vec![[12, 34, 56]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert_eq!(write_count.load(Ordering::Relaxed), 1);
@@ -4134,7 +4134,7 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
         zone_id: "zone_0".into(),
         colors: vec![[12, 34, 56]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         while manager.device_output_statistics()[0].frames_sent < 2 {
@@ -4189,7 +4189,7 @@ async fn cached_payload_reassertion_uses_normal_failure_and_ack_telemetry() {
         zone_id: "zone_0".into(),
         colors: vec![[90, 45, 180]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -4241,9 +4241,9 @@ async fn write_frame_retries_identical_payload_after_async_write_error() {
         colors: vec![[90, 45, 180]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let expected_colors = vec![expected_led_color([90, 45, 180]); 4];
@@ -4284,7 +4284,7 @@ async fn reuse_routed_frame_outputs_keeps_identical_successful_payload_quiet() {
         colors: vec![[12, 34, 56]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert!(manager.can_reuse_routed_frame_outputs(&layout));
@@ -4325,7 +4325,7 @@ async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_err
         colors: vec![[90, 45, 180]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert!(manager.can_reuse_routed_frame_outputs(&layout));
@@ -4382,9 +4382,9 @@ async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
         colors: vec![[0, 0, 255]; 4],
     }];
 
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(20)).await;
-    manager.write_frame(&second, &layout).await;
+    manager.write_frame(&second, &layout);
 
     tokio::time::sleep(Duration::from_millis(220)).await;
 
@@ -4448,7 +4448,7 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
         colors: vec![[0, 0, 255]; 4],
     }];
 
-    manager.write_frame(&red, &layout).await;
+    manager.write_frame(&red, &layout);
     tokio::time::timeout(Duration::from_secs(1), async {
         while write_count.load(Ordering::Relaxed) < 1 {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4457,9 +4457,9 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
     .await
     .expect("first paced write should complete");
 
-    manager.write_frame(&green, &layout).await;
+    manager.write_frame(&green, &layout);
     tokio::time::sleep(Duration::from_millis(80)).await;
-    manager.write_frame(&blue, &layout).await;
+    manager.write_frame(&blue, &layout);
 
     tokio::time::sleep(Duration::from_millis(260)).await;
 
@@ -4506,7 +4506,7 @@ async fn paced_output_queue_sends_fast_frame_sink_while_updates_keep_arriving() 
             zone_id: "zone_0".into(),
             colors: vec![[step, 0, 255_u8.saturating_sub(step)]; 4],
         }];
-        manager.write_frame(&frame, &layout).await;
+        manager.write_frame(&frame, &layout);
         step = step.wrapping_add(1).max(1);
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -4554,7 +4554,7 @@ async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
         colors: vec![[128, 64, 32]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     assert_eq!(attempts.load(Ordering::Relaxed), 1);
@@ -4592,7 +4592,7 @@ async fn output_queue_reports_transport_start_before_terminal_acknowledgement() 
         zone_id: "zone_0".into(),
         colors: vec![[128, 64, 32]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         while manager.debug_snapshot().queues[0].transport_started == 0 {
@@ -4647,7 +4647,7 @@ async fn direct_backend_reports_transport_start_while_write_is_blocked() {
         zone_id: "zone_0".into(),
         colors: vec![[128, 64, 32]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         while manager.debug_snapshot().queues[0].transport_started == 0 {
@@ -4697,7 +4697,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
         colors: vec![[128, 64, 32]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::timeout(Duration::from_secs(1), async {
         while !manager.debug_snapshot().queues[0].worker_finished {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -4717,7 +4717,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
         zone_id: "zone_0".into(),
         colors: vec![[32, 64, 128]; 4],
     }];
-    manager.write_frame(&latest_frame, &layout).await;
+    manager.write_frame(&latest_frame, &layout);
     tokio::time::timeout(Duration::from_secs(1), async {
         while writes.lock().await.is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -4768,7 +4768,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
         zone_id: "zone_0".into(),
         colors: vec![[255, 0, 0]; 4],
     }];
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert!(
         backend_write_count.load(Ordering::Relaxed) > 0,
@@ -4790,7 +4790,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
         zone_id: "zone_0".into(),
         colors: vec![[0, 255, 0]; 4],
     }];
-    manager.write_frame(&second, &layout).await;
+    manager.write_frame(&second, &layout);
     tokio::time::sleep(Duration::from_millis(80)).await;
 
     assert!(

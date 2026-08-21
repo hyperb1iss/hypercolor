@@ -606,25 +606,21 @@ pub(crate) async fn execute_frame(
             OutputFrameSource::PublishedFrame => {
                 let published_frame = state.event_bus.frame_sender().borrow();
                 let zones = unassigned_output_plan.zones_for(&published_frame.zones);
-                manager
-                    .write_frame_with_brightness(
-                        &zones,
-                        unassigned_output_plan.layout(),
-                        global_brightness,
-                        None,
-                    )
-                    .await
+                manager.write_frame_with_brightness(
+                    &zones,
+                    unassigned_output_plan.layout(),
+                    global_brightness,
+                    None,
+                )
             }
             OutputFrameSource::CurrentFrame => {
                 let zones = unassigned_output_plan.zones_for(render.output_artifacts.zones());
-                manager
-                    .write_frame_with_brightness(
-                        &zones,
-                        unassigned_output_plan.layout(),
-                        global_brightness,
-                        None,
-                    )
-                    .await
+                manager.write_frame_with_brightness(
+                    &zones,
+                    unassigned_output_plan.layout(),
+                    global_brightness,
+                    None,
+                )
             }
         };
         frame_loop
@@ -889,12 +885,12 @@ async fn force_static_sleep_snapshot(
     let zones = scene_snapshot.spatial_engine.sample(&canvas);
 
     let (write_stats, async_failures) = if let Some(manager) = backend_manager {
-        let write_stats = manager.write_frame(&zones, layout.as_ref()).await;
+        let write_stats = manager.write_frame(&zones, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     } else {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(&zones, layout.as_ref()).await;
+        let write_stats = manager.write_frame(&zones, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };

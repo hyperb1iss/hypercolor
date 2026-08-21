@@ -670,7 +670,7 @@ async fn lifecycle_discovery_connect_and_frame_write() {
         zone_id: "zone_main".into(),
         colors: vec![[255, 0, 128]; 4],
     }];
-    let stats = manager.write_frame(&frame, &layout).await;
+    let stats = manager.write_frame(&frame, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -1122,7 +1122,7 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         zone_id: "zone_main".into(),
         colors: vec![[10, 20, 30]; 4],
     }];
-    manager.write_frame(&first_frame, &layout).await;
+    manager.write_frame(&first_frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     // Simulate one reconnect failure before eventual recovery.
@@ -1137,7 +1137,7 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         zone_id: "zone_main".into(),
         colors: vec![[220, 120, 20]; 4],
     }];
-    manager.write_frame(&second_frame, &layout).await;
+    manager.write_frame(&second_frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     let writes = writes.lock().await.clone();
