@@ -307,7 +307,11 @@ pub(crate) async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    service_scene_transactions(state, scene, frame_loop, render).await;
+    if state.scene_transactions.has_pending() || render.pending_layout_activation.is_some() {
+        // Layout preparation owns large staged GPU resources. Keep its future
+        // off the hot render future unless the control plane has work queued.
+        Box::pin(service_scene_transactions(state, scene, frame_loop, render)).await;
+    }
     if render.pending_layout_activation.is_some() {
         let mut render_loop = state.render_loop.write().await;
         return runtime
