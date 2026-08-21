@@ -1,18 +1,26 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[cfg(any(test, target_os = "macos"))]
+use std::time::Instant;
 
 use super::{
-    MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdInspector, MacosDirectLaunchdOwnerProof,
-    MacosDirectLaunchdPublicationExpectation, MacosDirectLaunchdState, exact_published_proof,
+    MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdOwnerProof,
+    MacosDirectLaunchdPublicationExpectation,
 };
+#[cfg(any(test, target_os = "macos"))]
+use super::{MacosDirectLaunchdInspector, MacosDirectLaunchdState, exact_published_proof};
+#[cfg(any(test, target_os = "macos"))]
+use crate::MacosOwnerStore;
 use crate::{
-    MAX_MACOS_EXECUTABLE_PATH_BYTES, MacosOwnerExecutionError, MacosOwnerStore,
-    MacosOwnerStoreError, validate_bounded_identity_text,
+    MAX_MACOS_EXECUTABLE_PATH_BYTES, MacosOwnerExecutionError, MacosOwnerStoreError,
+    validate_bounded_identity_text,
 };
 
 const MAX_BOOTSTRAP_PLIST_BYTES: u64 = 256 * 1024;
 const MAX_LAUNCHCTL_OUTPUT_BYTES: usize = 64 * 1024;
+#[cfg(any(test, target_os = "macos"))]
 const DEFAULT_INSPECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Exact immutable property-list identity submitted to launchd bootstrap.
@@ -124,6 +132,13 @@ impl MacosDirectLaunchdBootstrapExpectation {
 /// Retained exact property-list object submitted to launchctl without reopening its path.
 #[derive(Debug)]
 pub struct MacosDirectLaunchdBootstrapSource {
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            dead_code,
+            reason = "retained bootstrap descriptors are consumed only by the macOS mutator"
+        )
+    )]
     file: File,
     expectation: MacosDirectLaunchdBootstrapExpectation,
 }
@@ -141,6 +156,7 @@ impl MacosDirectLaunchdBootstrapSource {
         &self.expectation
     }
 
+    #[cfg(target_os = "macos")]
     fn try_clone_file(&self) -> Result<File, MacosOwnerExecutionError> {
         self.file
             .try_clone()
@@ -269,6 +285,7 @@ pub fn parse_direct_launchd_autostart_state(
     Ok(target.unwrap_or(true))
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LaunchctlAction {
     PrintDisabled,
@@ -279,6 +296,7 @@ enum LaunchctlAction {
     Bootout,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug)]
 enum SubmittedCommand {
     Completed {
@@ -289,6 +307,7 @@ enum SubmittedCommand {
     Unknown,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 trait LaunchctlCommandBoundary {
     fn run(
         &mut self,
@@ -309,6 +328,7 @@ trait LaunchctlCommandBoundary {
     ) -> Result<bool, MacosOwnerExecutionError>;
 }
 
+#[cfg(any(test, target_os = "macos"))]
 trait DeadlineDirectLaunchdInspector {
     fn inspect_direct_launchd_until(
         &mut self,
@@ -329,11 +349,13 @@ trait DeadlineDirectLaunchdInspector {
     ) -> Result<bool, MacosOwnerExecutionError>;
 }
 
+#[cfg(any(test, target_os = "macos"))]
 struct DeadlineInspectorBridge<'a, I> {
     inspector: &'a mut I,
     deadline: Instant,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 impl<I: DeadlineDirectLaunchdInspector> MacosDirectLaunchdInspector
     for DeadlineInspectorBridge<'_, I>
 {
@@ -361,12 +383,14 @@ impl<I: DeadlineDirectLaunchdInspector> MacosDirectLaunchdInspector
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 struct MutationController<'a, I, C> {
     store: &'a MacosOwnerStore,
     inspector: &'a mut I,
     commands: &'a mut C,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 impl<I, C> MutationController<'_, I, C>
 where
     I: DeadlineDirectLaunchdInspector,
@@ -403,6 +427,13 @@ where
         parse_direct_launchd_autostart_state(&stdout)
     }
 
+    #[cfg_attr(
+        all(test, not(target_os = "macos")),
+        expect(
+            dead_code,
+            reason = "the native inspector is unavailable in cross-target test builds"
+        )
+    )]
     fn autostart_enabled(&mut self) -> Result<bool, MacosOwnerExecutionError> {
         self.autostart_enabled_until(Self::deadline(DEFAULT_INSPECTION_TIMEOUT)?)
     }
