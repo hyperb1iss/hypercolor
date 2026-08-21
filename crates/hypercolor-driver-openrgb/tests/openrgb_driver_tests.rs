@@ -19,7 +19,7 @@ use hypercolor_openrgb_sdk::{
     PacketId, RgbColor,
 };
 use hypercolor_types::config::DriverConfigEntry;
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceError, DeviceId};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -289,6 +289,53 @@ async fn connect_fails_when_re_resolved_controller_disappears() {
         .await
         .expect_err("backend should reject disappeared remap");
     assert!(error.to_string().contains("disappeared"));
+    server.await.expect("server task should join");
+}
+
+#[tokio::test]
+async fn connect_handshake_timeout_preserves_configured_deadline() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_connect_handshake_timeout_server(listener));
+    let read_timeout = Duration::from_millis(20);
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        read_timeout_ms: u64::try_from(read_timeout.as_millis())
+            .expect("test timeout should fit u64"),
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+
+    let error = backend
+        .connect(&device_id)
+        .await
+        .expect_err("silent handshake should reach the configured read timeout");
+
+    assert_eq!(
+        error,
+        DeviceError::Timeout {
+            after: read_timeout
+        }
+    );
     server.await.expect("server task should join");
 }
 
@@ -955,6 +1002,29 @@ async fn run_connect_missing_server(listener: TcpListener) {
     }
 }
 
+async fn run_connect_handshake_timeout_server(listener: TcpListener) {
+    let (stream, _) = listener
+        .accept()
+        .await
+        .expect("fake OpenRGB server should accept discovery client");
+    let discovery_update = handle_output_connection(stream, false).await;
+    assert!(
+        discovery_update.is_none(),
+        "discovery should close without sending LED output"
+    );
+
+    let (mut stream, _) = listener
+        .accept()
+        .await
+        .expect("fake OpenRGB server should accept connect client");
+    let mut decoder = PacketDecoder::new();
+    let packet = read_next_packet(&mut stream, &mut decoder)
+        .await
+        .expect("connect client should send protocol negotiation");
+    assert_eq!(packet.header.packet_id, PacketId::RequestProtocolVersion);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+}
+
 async fn handle_connect_missing_connection(mut stream: TcpStream, connection_index: u32) -> bool {
     let mut decoder = PacketDecoder::new();
     while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
@@ -1481,9 +1551,10 @@ async fn handle_drain_connection(mut stream: TcpStream) {
 
 async fn handle_output_connection(
     mut stream: TcpStream,
-    close_after_mode_setup: bool,
+    close_after_mode_readback: bool,
 ) -> Option<Packet> {
     let mut decoder = PacketDecoder::new();
+    let mut saw_output_mode_setup = false;
     while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
         match packet.header.packet_id {
             PacketId::RequestProtocolVersion => {
@@ -1520,6 +1591,9 @@ async fn handle_output_connection(
                     controller_payload_v5("Board", "SER123", "hidraw0"),
                 )
                 .await;
+                if close_after_mode_readback && saw_output_mode_setup {
+                    return None;
+                }
             }
             PacketId::SetCustomMode => {
                 assert_eq!(packet.header.device_index, 0);
@@ -1527,9 +1601,7 @@ async fn handle_output_connection(
             PacketId::UpdateMode => {
                 assert_eq!(packet.header.device_index, 0);
                 assert!(!packet.payload.is_empty());
-                if close_after_mode_setup {
-                    return None;
-                }
+                saw_output_mode_setup = true;
             }
             PacketId::UpdateLeds => return Some(packet),
             other => panic!("unexpected OpenRGB client packet: {other:?}"),

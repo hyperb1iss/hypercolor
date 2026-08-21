@@ -313,7 +313,7 @@ impl DiscoveryCapability for OpenRgbDriverModule {
         })?;
         let routes = discover_routes(&config)
             .await
-            .map_err(DriverError::discovery)?;
+            .map_err(|error| map_openrgb_driver_error(&error))?;
         Ok(routes.into_iter().map(DiscoveredDevice::from).collect())
     }
 }
@@ -427,7 +427,9 @@ impl DeviceBackend for OpenRgbBackend {
 
         let mut client = connect_openrgb_client(&self.config, route.endpoint)
             .await
-            .map_err(|error| DeviceError::connection(id, error))?;
+            .map_err(|error| {
+                map_openrgb_device_error(*id, &error, OpenRgbDeviceOperation::Connect)
+            })?;
         let route = find_current_route(
             &mut client,
             route.endpoint,
@@ -435,11 +437,15 @@ impl DeviceBackend for OpenRgbBackend {
             &self.config,
         )
         .await
-        .map_err(|error| DeviceError::connection(id, error))?;
-        ensure_route_output_enabled(&route).map_err(|error| DeviceError::connection(id, error))?;
+        .map_err(|error| map_openrgb_device_error(*id, &error, OpenRgbDeviceOperation::Connect))?;
+        ensure_route_output_enabled(&route).map_err(|error| {
+            map_openrgb_device_error(*id, &error, OpenRgbDeviceOperation::Connect)
+        })?;
         configure_controller_output(&mut client, &route, &self.config)
             .await
-            .map_err(|error| DeviceError::connection(id, error))?;
+            .map_err(|error| {
+                map_openrgb_device_error(*id, &error, OpenRgbDeviceOperation::Connect)
+            })?;
 
         let controller = Arc::new(Mutex::new(ConnectedController {
             previous_mode: route.previous_mode.clone(),
@@ -904,7 +910,8 @@ async fn run_openrgb_output_worker(
                 }
             }
             Err(error) => {
-                let error = map_openrgb_device_error(device_id, &error);
+                let error =
+                    map_openrgb_device_error(device_id, &error, OpenRgbDeviceOperation::Write);
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(DeviceDeliveryAck::failed(
                         id,
@@ -923,7 +930,17 @@ async fn run_openrgb_output_worker(
     }
 }
 
-fn map_openrgb_device_error(device_id: DeviceId, error: &Error) -> DeviceError {
+#[derive(Clone, Copy)]
+enum OpenRgbDeviceOperation {
+    Connect,
+    Write,
+}
+
+fn map_openrgb_device_error(
+    device_id: DeviceId,
+    error: &Error,
+    operation: OpenRgbDeviceOperation,
+) -> DeviceError {
     match error
         .chain()
         .find_map(|cause| cause.downcast_ref::<OpenRgbError>())
@@ -932,8 +949,28 @@ fn map_openrgb_device_error(device_id: DeviceId, error: &Error) -> DeviceError {
         Some(OpenRgbError::ConnectionClosed) => DeviceError::Disconnected {
             device: device_id.to_string(),
         },
-        _ => DeviceError::write(device_id, error),
+        _ => match operation {
+            OpenRgbDeviceOperation::Connect => DeviceError::connection(device_id, error),
+            OpenRgbDeviceOperation::Write => DeviceError::write(device_id, error),
+        },
     }
+}
+
+fn map_openrgb_driver_error(error: &Error) -> DriverError {
+    match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<OpenRgbError>())
+    {
+        Some(OpenRgbError::Timeout { after, .. }) => DriverError::Timeout { after: *after },
+        _ => DriverError::discovery(error),
+    }
+}
+
+const fn is_openrgb_transport_failure(error: &OpenRgbError) -> bool {
+    matches!(
+        error,
+        OpenRgbError::Timeout { .. } | OpenRgbError::ConnectionClosed | OpenRgbError::Io(_)
+    )
 }
 
 async fn write_controller_colors(
@@ -1104,6 +1141,7 @@ async fn discover_endpoint(
     for controller_index in 0..count {
         let controller = match client.controller_data(controller_index).await {
             Ok(controller) => controller,
+            Err(error) if is_openrgb_transport_failure(&error) => return Err(error.into()),
             Err(error) => {
                 debug!(
                     endpoint = %endpoint,
@@ -1148,18 +1186,12 @@ async fn find_current_route(
     let count = count.min(MAX_CONTROLLERS_PER_ENDPOINT);
     let mut routes = Vec::new();
     for controller_index in 0..count {
-        let controller = match client.controller_data(controller_index).await {
-            Ok(controller) => controller,
-            Err(error) => {
-                debug!(
-                    endpoint = %endpoint,
-                    controller_index,
-                    error = %error,
-                    "OpenRGB controller data parse failed during remap"
-                );
-                continue;
-            }
-        };
+        let controller = client
+            .controller_data(controller_index)
+            .await
+            .with_context(|| {
+                format!("OpenRGB controller {controller_index} refresh failed at {endpoint}")
+            })?;
         routes.push(build_route(
             endpoint,
             controller_index,
@@ -1201,17 +1233,10 @@ async fn verify_controller_output_mode(
     route: &ControllerRoute,
     policy: ModeFlagPolicy,
 ) -> Result<()> {
-    let controller = match client.controller_data(route.controller_index).await {
-        Ok(controller) => controller,
-        Err(error) => {
-            debug!(
-                controller_index = route.controller_index,
-                error = %error,
-                "OpenRGB active mode readback unavailable after output setup"
-            );
-            return Ok(());
-        }
-    };
+    let controller = client
+        .controller_data(route.controller_index)
+        .await
+        .context("OpenRGB active mode readback failed after output setup")?;
     let Some((mode_index, mode)) = active_mode_snapshot(&controller) else {
         bail!(
             "OpenRGB controller {} has no active mode after output setup",
@@ -1836,7 +1861,7 @@ mod tests {
     }
 
     #[test]
-    fn sdk_timeout_maps_to_typed_device_timeout() {
+    fn sdk_timeout_maps_to_typed_boundary_timeouts() {
         let device_id = DeviceId::new();
         let after = Duration::from_millis(325);
         let error = Error::new(OpenRgbError::Timeout {
@@ -1846,9 +1871,51 @@ mod tests {
         .context("OpenRGB update_leds failed");
 
         assert_eq!(
-            map_openrgb_device_error(device_id, &error),
+            map_openrgb_device_error(device_id, &error, OpenRgbDeviceOperation::Write),
             DeviceError::Timeout { after }
         );
+        assert_eq!(
+            map_openrgb_device_error(device_id, &error, OpenRgbDeviceOperation::Connect),
+            DeviceError::Timeout { after }
+        );
+        assert!(matches!(
+            map_openrgb_driver_error(&error),
+            DriverError::Timeout { after: mapped } if mapped == after
+        ));
+    }
+
+    #[test]
+    fn sdk_connection_close_maps_to_typed_disconnect() {
+        let device_id = DeviceId::new();
+        let error = Error::new(OpenRgbError::ConnectionClosed)
+            .context("OpenRGB protocol negotiation failed");
+        let expected = DeviceError::Disconnected {
+            device: device_id.to_string(),
+        };
+
+        assert_eq!(
+            map_openrgb_device_error(device_id, &error, OpenRgbDeviceOperation::Connect),
+            expected
+        );
+        assert_eq!(
+            map_openrgb_device_error(device_id, &error, OpenRgbDeviceOperation::Write),
+            expected
+        );
+    }
+
+    #[test]
+    fn discovery_propagates_transport_failures() {
+        assert!(is_openrgb_transport_failure(&OpenRgbError::Timeout {
+            operation: "read",
+            after: Duration::from_millis(25),
+        }));
+        assert!(is_openrgb_transport_failure(
+            &OpenRgbError::ConnectionClosed
+        ));
+        assert!(is_openrgb_transport_failure(&OpenRgbError::Io(
+            "connection reset".to_owned()
+        )));
+        assert!(!is_openrgb_transport_failure(&OpenRgbError::InvalidUtf8));
     }
 
     #[tokio::test]
