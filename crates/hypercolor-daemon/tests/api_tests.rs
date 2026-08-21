@@ -4025,7 +4025,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
 ///
 /// This ensures that `sync_active_layout_connectivity` won't disconnect the
 /// device because the active layout has a zone referencing it.
-async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, led_count: u32) {
+fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, led_count: u32) {
     let layout = SpatialLayout {
         id: "test-layout".into(),
         name: "Test Layout".into(),
@@ -10115,7 +10115,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
 
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    set_layout_targeting_device(&state, &layout_device_id, 60).await;
+    set_layout_targeting_device(&state, &layout_device_id, 60);
 
     let app = test_app_with_state(Arc::clone(&state));
     let response = app

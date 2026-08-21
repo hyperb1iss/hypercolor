@@ -41,7 +41,7 @@ fn color_layer(id: SceneLayerId, channel: usize) -> SceneLayer {
     }
 }
 
-async fn scene_template(
+fn scene_template(
     state: &AppState,
     id: SceneId,
     name: &str,
@@ -120,8 +120,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         shared_zone_id,
         shared_layer_ids,
         SceneMutationMode::Live,
-    )
-    .await;
+    );
     let scene_b = scene_template(
         &state,
         scene_b_id,
@@ -129,8 +128,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         shared_zone_id,
         shared_layer_ids,
         SceneMutationMode::Live,
-    )
-    .await;
+    );
     let mut mutation = state.scene_manager.begin_mutation().await;
     mutation
         .create_scene(scene_a.clone())
@@ -272,8 +270,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
         zone_id,
         layer_ids,
         SceneMutationMode::Snapshot,
-    )
-    .await;
+    );
     let mut mutation = state.scene_manager.begin_mutation().await;
     mutation
         .create_scene(scene.clone())

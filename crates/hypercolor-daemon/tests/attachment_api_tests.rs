@@ -287,7 +287,7 @@ async fn create_template(app: &axum::Router, template_id: &str, name: &str, coun
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
-async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId) {
+fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId) {
     let layout = SpatialLayout {
         id: "active-layout".to_owned(),
         name: "Active Layout".to_owned(),
@@ -429,7 +429,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
     let template_id = "profile-test-strip";
 
     create_template(&app, template_id, "Profile Test Strip", 12).await;
-    set_active_layout_for_device(&state, device_id).await;
+    set_active_layout_for_device(&state, device_id);
 
     let update_body = json!({
         "bindings": [{
