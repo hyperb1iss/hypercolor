@@ -813,7 +813,12 @@ fn run_daemon(
     let runtime = daemon::build_main_runtime()?;
     runtime.block_on(async move {
         let shutdown_rx = install_signal_handlers();
-        daemon::run_with_extensions(options, shutdown_rx, extension_installers).await
+        Box::pin(daemon::run_with_extensions(
+            options,
+            shutdown_rx,
+            extension_installers,
+        ))
+        .await
     })
 }
 

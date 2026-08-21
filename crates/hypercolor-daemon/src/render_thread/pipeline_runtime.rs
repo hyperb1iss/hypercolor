@@ -2153,11 +2153,11 @@ pub(crate) struct PipelineRuntime {
 }
 
 impl PipelineRuntime {
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
     pub(crate) async fn from_state(
         state: &RenderThreadState,
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
-        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
         macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
@@ -2169,7 +2169,6 @@ impl PipelineRuntime {
             state.render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             state.render_gpu_device.clone(),
-            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
             macos_screen_parity_mailbox,
             Some(Arc::clone(&state.asset_library)),
             state.configured_max_fps_tier.get(),
@@ -2177,7 +2176,6 @@ impl PipelineRuntime {
             input_demands,
             state.interaction_routing.clone(),
         )?;
-        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
         state
             .input_manager
             .lock()
@@ -2186,6 +2184,29 @@ impl PipelineRuntime {
                 pipeline.render.sparkleflinger.macos_metal4_capability(),
             )?;
         Ok(pipeline)
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
+    pub(crate) fn from_state(
+        state: &RenderThreadState,
+        input_reader: InputPublicationReader,
+        input_demands: InputPublicationDemandHandle,
+    ) -> Result<Self> {
+        let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
+        Self::new_with_gpu_device(
+            state.canvas_dims.width(),
+            state.canvas_dims.height(),
+            initial_spatial_engine,
+            state.screen_capture_configured,
+            state.render_acceleration_mode,
+            #[cfg(feature = "wgpu")]
+            state.render_gpu_device.clone(),
+            Some(Arc::clone(&state.asset_library)),
+            state.configured_max_fps_tier.get(),
+            input_reader,
+            input_demands,
+            state.interaction_routing.clone(),
+        )
     }
 
     #[cfg(test)]
