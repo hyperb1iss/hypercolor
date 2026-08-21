@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 use leptos::prelude::*;
 
 use crate::control_value_json::json_to_control_value;

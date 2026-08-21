@@ -6,8 +6,8 @@ use gloo_net::http::Method;
 use hypercolor_types::api::scene::{
     ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest, SceneDocument,
 };
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use web_sys::{File, FormData};
@@ -281,7 +281,6 @@ async fn patch_controls(
         .iter()
         .map(|(name, value)| {
             control_value_from_json(value)
-                .and_then(|value| CanonicalControlValue::try_from(value).ok())
                 .map(|value| (name.clone(), value))
                 .ok_or_else(|| format!("Unsupported control value for {name}"))
         })
@@ -304,25 +303,25 @@ async fn patch_controls(
 
 fn control_value_from_json(value: &serde_json::Value) -> Option<ControlValue> {
     if let Some(value) = value.as_i64() {
-        return i32::try_from(value).ok().map(ControlValue::Integer);
+        return Some(ControlValue::Int(value));
     }
     if value.is_number() {
-        return serde_json::from_value::<f32>(value.clone())
+        return serde_json::from_value::<f64>(value.clone())
             .ok()
             .map(ControlValue::Float);
     }
     if let Some(value) = value.as_bool() {
-        return Some(ControlValue::Boolean(value));
+        return Some(ControlValue::Bool(value));
     }
     if let Some(value) = value.as_str() {
         return Some(ControlValue::Text(value.to_owned()));
     }
     if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
-        return Some(ControlValue::Color(color));
+        return Some(ControlValue::linear_color(color));
     }
-    serde_json::from_value(value.clone())
+    serde_json::from_value::<hypercolor_types::viewport::ViewportRect>(value.clone())
         .ok()
-        .map(ControlValue::Rect)
+        .map(ControlValue::rect)
 }
 
 pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String> {

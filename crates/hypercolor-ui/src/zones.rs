@@ -96,7 +96,7 @@ pub struct ZoneEffectState {
     /// to the zone's top-layer caption when the index doesn't know it.
     pub effect_name: Option<String>,
     pub effect_category: Option<String>,
-    pub control_values: std::collections::HashMap<String, hypercolor_types::effect::ControlValue>,
+    pub control_values: std::collections::HashMap<String, hypercolor_types::control::ControlValue>,
     pub preset_id: Option<String>,
     /// Scene revision observed with the control values.
     pub revision: u64,

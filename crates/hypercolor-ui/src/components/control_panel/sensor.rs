@@ -13,7 +13,7 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use serde_json::json;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 use super::{ControlDropdownDismissHandlers, dropdown_panel_style};
 use crate::api;

@@ -9,8 +9,8 @@ use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -283,21 +283,8 @@ impl EffectsContext {
                     .and_then(|prefs| prefs.preset_id.as_deref())
                     .and_then(|preset_id| preset_id.parse().ok()),
                 controls: stored_prefs.as_ref().and_then(|prefs| {
-                    (!prefs.control_values.is_empty()).then(|| {
-                        prefs
-                            .control_values
-                            .clone()
-                            .into_iter()
-                            .map(|(name, value)| {
-                                (
-                                    name,
-                                    CanonicalControlValue::try_from(value).expect(
-                                        "stored effect controls must satisfy canonical invariants",
-                                    ),
-                                )
-                            })
-                            .collect()
-                    })
+                    (!prefs.control_values.is_empty())
+                        .then(|| prefs.control_values.clone().into_iter().collect())
                 }),
                 zone: target_zone_id.as_deref().and_then(|zone_id| {
                     uuid::Uuid::parse_str(zone_id)

@@ -1,5 +1,6 @@
 use hypercolor_types::canvas::srgb_to_linear;
-use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType};
 use hypercolor_ui::api::{
     ComponentBinding, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
     SetDisplayFaceRequest,
@@ -53,7 +54,7 @@ fn color_control(id: &str) -> ControlDefinition {
         name: id.to_owned(),
         kind: ControlKind::Color,
         control_type: ControlType::ColorPicker,
-        default_value: ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+        default_value: ControlValue::linear_color([0.0, 0.0, 0.0, 1.0]),
         min: None,
         max: None,
         step: None,
@@ -176,7 +177,7 @@ fn set_display_face_request_serializes_present_controls() {
         payload,
         serde_json::json!({
             "effect_id": "face-2",
-            "controls": { "accent": { "float": 0.75 } },
+            "controls": { "accent": { "kind": "float", "value": 0.75 } },
             "blend_mode": "replace",
             "opacity": 1.0,
             "scope": "scene"
@@ -197,11 +198,11 @@ fn json_to_control_value_maps_primitive_types() {
     let controls: Vec<ControlDefinition> = Vec::new();
     assert_eq!(
         json_to_control_value("flag", &controls, &serde_json::json!(true)),
-        Some(ControlValue::Boolean(true))
+        Some(ControlValue::Bool(true))
     );
     assert_eq!(
         json_to_control_value("count", &controls, &serde_json::json!(7)),
-        Some(ControlValue::Integer(7))
+        Some(ControlValue::Int(7))
     );
     let Some(ControlValue::Float(v)) =
         json_to_control_value("alpha", &controls, &serde_json::json!(0.25))
@@ -220,15 +221,15 @@ fn json_to_control_value_uses_control_type_for_strings() {
         Some(ControlValue::Enum("high".to_owned()))
     );
 
-    let Some(ControlValue::Color(color)) =
+    let Some(ControlValue::ColorLinear(color)) =
         json_to_control_value("accent", &controls, &serde_json::json!("#ff80c0"))
     else {
         panic!("hex string should convert to Color for color-picker control");
     };
-    assert!((color[0] - 1.0).abs() < 1e-6);
-    assert!((color[1] - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
-    assert!((color[2] - srgb_to_linear(192.0 / 255.0)).abs() < 1e-6);
-    assert!((color[3] - 1.0).abs() < 1e-6);
+    assert!((color.r - 1.0).abs() < 1e-6);
+    assert!((color.g - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
+    assert!((color.b - srgb_to_linear(192.0 / 255.0)).abs() < 1e-6);
+    assert!((color.a - 1.0).abs() < 1e-6);
 
     // Unknown control id falls back to Text.
     assert_eq!(
@@ -240,17 +241,17 @@ fn json_to_control_value_uses_control_type_for_strings() {
 #[test]
 fn json_to_control_value_accepts_rgba_arrays() {
     let controls: Vec<ControlDefinition> = Vec::new();
-    let Some(ControlValue::Color(color)) = json_to_control_value(
+    let Some(ControlValue::ColorLinear(color)) = json_to_control_value(
         "accent",
         &controls,
         &serde_json::json!([1.0, 0.5, 0.25, 1.0]),
     ) else {
         panic!("four-element array should convert to Color");
     };
-    assert!((color[0] - 1.0).abs() < 1e-6);
-    assert!((color[1] - 0.5).abs() < 1e-6);
-    assert!((color[2] - 0.25).abs() < 1e-6);
-    assert!((color[3] - 1.0).abs() < 1e-6);
+    assert!((color.r - 1.0).abs() < 1e-6);
+    assert!((color.g - 0.5).abs() < 1e-6);
+    assert!((color.b - 0.25).abs() < 1e-6);
+    assert!((color.a - 1.0).abs() < 1e-6);
 }
 
 #[test]
@@ -266,12 +267,12 @@ fn json_to_control_value_rejects_malformed_input() {
 fn controls_to_json_serializes_typed_values_for_api_payloads() {
     let values = std::collections::HashMap::from([
         ("speed".to_owned(), ControlValue::Float(0.75)),
-        ("count".to_owned(), ControlValue::Integer(7)),
-        ("enabled".to_owned(), ControlValue::Boolean(true)),
+        ("count".to_owned(), ControlValue::Int(7)),
+        ("enabled".to_owned(), ControlValue::Bool(true)),
         ("mode".to_owned(), ControlValue::Enum("high".to_owned())),
         (
             "accent".to_owned(),
-            ControlValue::Color([
+            ControlValue::linear_color([
                 srgb_to_linear(128.0 / 255.0),
                 srgb_to_linear(255.0 / 255.0),
                 srgb_to_linear(234.0 / 255.0),
@@ -304,10 +305,10 @@ fn optimistic_control_updates_apply_raw_values() {
         values.get("mode"),
         Some(&ControlValue::Enum("high".to_owned()))
     );
-    let Some(ControlValue::Color(color)) = values.get("accent") else {
+    let Some(ControlValue::ColorLinear(color)) = values.get("accent") else {
         panic!("accent should be converted to a color");
     };
-    assert!((color[1] - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
+    assert!((color.g - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
 }
 
 #[test]

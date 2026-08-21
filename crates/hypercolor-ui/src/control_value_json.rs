@@ -14,7 +14,8 @@
 use std::collections::HashMap;
 
 use hypercolor_types::canvas::{LinearRgba, linear_to_srgb};
-use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, ControlType};
 
 /// Convert a raw control-panel JSON value into a typed [`ControlValue`],
 /// using the effect's control schema to disambiguate string and color
@@ -26,13 +27,14 @@ pub fn json_to_control_value(
     value: &serde_json::Value,
 ) -> Option<ControlValue> {
     if let Some(boolean) = value.as_bool() {
-        return Some(ControlValue::Boolean(boolean));
+        return Some(ControlValue::Bool(boolean));
     }
     if let Some(integer) = value.as_i64() {
-        return Some(ControlValue::Integer(i32::try_from(integer).ok()?));
+        return Some(ControlValue::Int(integer));
     }
     if let Some(float) = value.as_f64() {
-        return Some(ControlValue::Float(parse_f32(float)?));
+        parse_f32(float)?;
+        return Some(ControlValue::Float(float));
     }
     if let Some(text) = value.as_str() {
         let (is_dropdown, is_color_picker) = controls
@@ -60,7 +62,7 @@ pub fn json_to_control_value(
         for (idx, component) in array.iter().enumerate() {
             color[idx] = parse_f32(component.as_f64()?)?;
         }
-        return Some(ControlValue::Color(color));
+        return Some(ControlValue::linear_color(color));
     }
     None
 }
@@ -96,15 +98,25 @@ pub fn controls_to_json(
 #[must_use]
 pub fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
     match value {
+        ControlValue::Null | ControlValue::Unknown => serde_json::Value::Null,
         ControlValue::Float(number) => serde_json::json!(number),
-        ControlValue::Integer(number) => serde_json::json!(number),
-        ControlValue::Boolean(boolean) => serde_json::json!(boolean),
+        ControlValue::Int(number) => serde_json::json!(number),
+        ControlValue::Bool(boolean) => serde_json::json!(boolean),
         ControlValue::Text(text) | ControlValue::Enum(text) => serde_json::json!(text),
-        ControlValue::Color(rgba) => serde_json::json!(format!(
+        ControlValue::SecretRef(reference) => serde_json::json!(reference.as_str()),
+        ControlValue::Ip(value) => serde_json::json!(value.as_str()),
+        ControlValue::Mac(value) => serde_json::json!(value.as_str()),
+        ControlValue::Duration(value) => serde_json::json!(value.as_millis()),
+        ControlValue::ColorRgb(color) => serde_json::json!(color.to_hex()),
+        ControlValue::ColorRgba(color) => serde_json::json!(format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            color.r, color.g, color.b, color.a
+        )),
+        ControlValue::ColorLinear(rgba) => serde_json::json!(format!(
             "#{:02x}{:02x}{:02x}",
-            color_channel_to_byte(rgba[0]),
-            color_channel_to_byte(rgba[1]),
-            color_channel_to_byte(rgba[2]),
+            color_channel_to_byte(rgba.r),
+            color_channel_to_byte(rgba.g),
+            color_channel_to_byte(rgba.b),
         )),
         ControlValue::Gradient(stops) => serde_json::json!(stops),
         ControlValue::Rect(rect) => serde_json::json!({
@@ -113,6 +125,16 @@ pub fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
             "width": rect.width,
             "height": rect.height,
         }),
+        ControlValue::Flags(values) => serde_json::json!(values),
+        ControlValue::List(values) => {
+            serde_json::Value::Array(values.iter().map(control_value_to_json).collect())
+        }
+        ControlValue::Map(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), control_value_to_json(value)))
+                .collect(),
+        ),
     }
 }
 
@@ -145,10 +167,10 @@ pub fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
     Some(serde_json::json!([r, g, b, a]))
 }
 
-/// Convert a hex color string into a [`ControlValue::Color`].
+/// Convert a hex color string into a [`ControlValue::ColorLinear`].
 #[must_use]
 pub fn hex_to_control_value(hex: &str) -> Option<ControlValue> {
-    Some(ControlValue::Color(hex_to_rgba(hex)?))
+    Some(ControlValue::linear_color(hex_to_rgba(hex)?))
 }
 
 #[expect(

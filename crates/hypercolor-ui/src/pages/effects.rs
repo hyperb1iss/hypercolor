@@ -23,7 +23,8 @@ use crate::icons::*;
 use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
-use hypercolor_types::effect::{ControlDefinition, ControlValue, EffectCategory};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, EffectCategory};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 
 mod support;

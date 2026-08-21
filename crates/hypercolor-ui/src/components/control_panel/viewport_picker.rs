@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use hypercolor_leptos_ext::events::Change;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 
 use crate::api::effects::fetch_primary_effect_view;
@@ -209,7 +209,7 @@ pub(super) fn ViewportPicker(
                     let brightness = effect
                         .control_values
                         .get("brightness")
-                        .and_then(ControlValue::as_f32)
+                        .and_then(ControlValue::as_effect_f32)
                         .unwrap_or(1.0);
                     let mode_draft = match mode {
                         ViewportDesignerMode::WebViewport => ModeDraft::WebViewport {
@@ -225,25 +225,25 @@ pub(super) fn ViewportPicker(
                             scroll_x: effect
                                 .control_values
                                 .get("scroll_x")
-                                .and_then(ControlValue::as_f32)
+                                .and_then(ControlValue::as_effect_f32)
                                 .map(|v| v.round() as i32)
                                 .unwrap_or(0),
                             scroll_y: effect
                                 .control_values
                                 .get("scroll_y")
-                                .and_then(ControlValue::as_f32)
+                                .and_then(ControlValue::as_effect_f32)
                                 .map(|v| v.round() as i32)
                                 .unwrap_or(0),
                             render_width: effect
                                 .control_values
                                 .get("render_width")
-                                .and_then(ControlValue::as_f32)
+                                .and_then(ControlValue::as_effect_f32)
                                 .map(|v| v.round() as u32)
                                 .unwrap_or(1280),
                             render_height: effect
                                 .control_values
                                 .get("render_height")
-                                .and_then(ControlValue::as_f32)
+                                .and_then(ControlValue::as_effect_f32)
                                 .map(|v| v.round() as u32)
                                 .unwrap_or(720),
                         },

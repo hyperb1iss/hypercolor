@@ -1,7 +1,8 @@
 //! Scene API client for the live `/api/v1/scene` tree and saved scenes.
 
 pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::spatial::Output;

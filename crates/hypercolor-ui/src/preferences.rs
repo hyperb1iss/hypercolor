@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 

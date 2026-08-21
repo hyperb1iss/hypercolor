@@ -27,7 +27,7 @@ use hypercolor_leptos_ext::prelude::{
     TimeoutHandle as BrowserTimeoutHandle, set_timeout as browser_set_timeout,
 };
 use hypercolor_leptos_ext::raf::Scheduler;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;

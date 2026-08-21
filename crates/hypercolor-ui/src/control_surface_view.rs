@@ -1,7 +1,7 @@
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ControlAccess, ControlActionDescriptor, ControlAvailabilityState, ControlFieldDescriptor,
-    ControlOwner, ControlSurfaceDocument, ControlSurfaceScope, ControlValue as DynamicControlValue,
-    ControlValueType,
+    ControlOwner, ControlSurfaceDocument, ControlSurfaceScope, ControlValueType,
 };
 
 pub fn visible_control_surfaces(
@@ -126,31 +126,42 @@ pub fn action_is_hidden(
         .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
 }
 
-pub fn control_value_summary(value: Option<&DynamicControlValue>) -> String {
+pub fn control_value_summary(value: Option<&ControlValue>) -> String {
     match value {
-        Some(DynamicControlValue::String(value))
-        | Some(DynamicControlValue::IpAddress(value))
-        | Some(DynamicControlValue::MacAddress(value)) => value.clone(),
-        Some(DynamicControlValue::SecretRef(_)) => "Configured".to_string(),
-        Some(DynamicControlValue::ColorRgb(value)) => {
-            format!("#{:02x}{:02x}{:02x}", value[0], value[1], value[2])
+        Some(ControlValue::Text(value)) => value.clone(),
+        Some(ControlValue::Ip(value)) => value.as_str().to_owned(),
+        Some(ControlValue::Mac(value)) => value.as_str().to_owned(),
+        Some(ControlValue::SecretRef(_)) => "Configured".to_string(),
+        Some(ControlValue::ColorRgb(value)) => {
+            format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b)
         }
-        Some(DynamicControlValue::ColorRgba(value)) => {
+        Some(ControlValue::ColorRgba(value)) => {
             format!(
                 "#{:02x}{:02x}{:02x}{:02x}",
-                value[0], value[1], value[2], value[3]
+                value.r, value.g, value.b, value.a
             )
         }
-        Some(DynamicControlValue::Bool(value)) => value.to_string(),
-        Some(DynamicControlValue::Integer(value)) => value.to_string(),
-        Some(DynamicControlValue::Float(value)) => value.to_string(),
-        Some(DynamicControlValue::DurationMs(value)) => value.to_string(),
-        Some(DynamicControlValue::Enum(value)) => value.clone(),
-        Some(DynamicControlValue::Flags(values)) => values.join(", "),
-        Some(DynamicControlValue::List(_)) => "list".to_string(),
-        Some(DynamicControlValue::Object(_)) => "object".to_string(),
-        Some(DynamicControlValue::Unknown) => "unsupported value".to_string(),
-        Some(DynamicControlValue::Null) | None => String::new(),
+        Some(ControlValue::Bool(value)) => value.to_string(),
+        Some(ControlValue::Int(value)) => value.to_string(),
+        Some(ControlValue::Float(value)) => value.to_string(),
+        Some(ControlValue::Duration(value)) => value.as_millis().to_string(),
+        Some(ControlValue::ColorLinear(value)) => format!(
+            "linear({:.2}, {:.2}, {:.2}, {:.2})",
+            value.r, value.g, value.b, value.a
+        ),
+        Some(ControlValue::Gradient(values)) => {
+            format!("{} gradient stops", values.len())
+        }
+        Some(ControlValue::Rect(value)) => format!(
+            "{:.2},{:.2} {:.2}×{:.2}",
+            value.x, value.y, value.width, value.height
+        ),
+        Some(ControlValue::Enum(value)) => value.clone(),
+        Some(ControlValue::Flags(values)) => values.join(", "),
+        Some(ControlValue::List(_)) => "list".to_string(),
+        Some(ControlValue::Map(_)) => "object".to_string(),
+        Some(ControlValue::Unknown) => "unsupported value".to_string(),
+        Some(ControlValue::Null) | None => String::new(),
     }
 }
 
@@ -162,8 +173,9 @@ pub fn control_surface_event_matches_device(surface_id: &str, device_id: &str) -
 
 #[cfg(test)]
 mod tests {
+    use hypercolor_types::control::ControlValue;
     use hypercolor_types::controls::{
-        ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueType,
+        ControlSurfaceDocument, ControlSurfaceScope, ControlValueType,
     };
 
     use super::{

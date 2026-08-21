@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue, EffectId};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, EffectId};
 use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;

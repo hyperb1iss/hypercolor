@@ -10,7 +10,7 @@ use crate::control_value_json::controls_to_json;
 use crate::toasts;
 use hypercolor_color::Hsl;
 use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 mod actions;
 
@@ -870,7 +870,7 @@ fn PresetDropdownDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
 mod tests {
     use std::collections::HashMap;
 
-    use hypercolor_types::effect::ControlValue;
+    use hypercolor_types::control::ControlValue;
 
     use super::{preset_controls_modified, preset_display_label};
 

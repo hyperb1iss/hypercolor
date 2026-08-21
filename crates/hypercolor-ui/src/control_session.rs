@@ -45,7 +45,7 @@ pub type ControlPatchFn =
 /// Configuration for [`use_control_patch_session`].
 pub struct ControlPatchConfig {
     /// Control schema used to normalize raw JSON edits into typed
-    /// [`ControlValue`](hypercolor_types::effect::ControlValue)s for the
+    /// [`ControlValue`](hypercolor_types::control::ControlValue)s for the
     /// optimistic local map.
     pub defs: Signal<Vec<ControlDefinition>>,
     /// Optimistic local control values; ticked synchronously on every

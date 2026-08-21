@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -321,11 +321,11 @@ fn control_label(values: &HashMap<String, ControlValue>, key: &str) -> Option<St
 fn control_bool(values: &HashMap<String, ControlValue>, key: &str) -> bool {
     values
         .get(key)
-        .is_some_and(|value| matches!(value, ControlValue::Boolean(true)))
+        .is_some_and(|value| matches!(value, ControlValue::Bool(true)))
 }
 
 fn control_number(values: &HashMap<String, ControlValue>, key: &str) -> Option<f32> {
-    values.get(key).and_then(ControlValue::as_f32)
+    values.get(key).and_then(ControlValue::as_effect_f32)
 }
 
 fn speed_feel(speed: f32) -> &'static str {

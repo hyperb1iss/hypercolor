@@ -8,7 +8,7 @@ use crate::control_surface_api::{
     control_surface_action_url, control_surface_list_url, control_surface_values_url, path_segment,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
@@ -85,7 +85,7 @@ pub async fn fetch_device_control_surface(
 /// Patch typed field values on a surface.
 pub async fn patch_control_values(
     surface_id: &str,
-    values: BTreeMap<String, CanonicalControlValue>,
+    values: BTreeMap<String, ControlValue>,
 ) -> Result<ApplyControlChangesResponse, String> {
     let request = PatchControlsRequest {
         values,

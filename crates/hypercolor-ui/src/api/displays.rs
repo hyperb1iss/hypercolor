@@ -13,7 +13,7 @@ pub use hypercolor_types::api::displays::{
     UpdateDisplayFaceCompositionRequest,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
+use hypercolor_types::control::ControlValue;
 
 /// `GET /api/v1/displays` — list display-capable devices.
 pub async fn fetch_displays() -> Result<Vec<DisplaySummary>, String> {
@@ -65,7 +65,7 @@ pub async fn delete_display_face(display_id: &str, scope: DisplayFaceScope) -> R
 /// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides.
 pub async fn update_display_face_controls(
     display_id: &str,
-    values: BTreeMap<String, CanonicalControlValue>,
+    values: BTreeMap<String, ControlValue>,
 ) -> Result<DisplayFaceResponse, String> {
     let url = format!("/api/v1/displays/{display_id}/face/controls");
     let body = PatchControlsRequest {

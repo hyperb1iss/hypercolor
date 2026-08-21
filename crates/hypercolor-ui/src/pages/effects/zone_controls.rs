@@ -13,7 +13,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
