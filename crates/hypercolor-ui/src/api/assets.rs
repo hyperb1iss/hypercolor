@@ -1,9 +1,10 @@
 //! User media asset API client.
 
 use gloo_net::http::Method;
+use hypercolor_types::api::ApiResponse;
 use web_sys::{File, FormData};
 
-use super::{ApiEnvelope, client};
+use super::client;
 
 pub use hypercolor_types::api::assets::{
     AssetListResponse, AssetUpdateRequest, AssetUploadResponse,
@@ -57,7 +58,7 @@ pub async fn upload_asset(file: File) -> Result<AssetUploadResponse, String> {
     }
 
     response
-        .json::<ApiEnvelope<AssetUploadResponse>>()
+        .json::<ApiResponse<AssetUploadResponse>>()
         .await
         .map(|payload| payload.data)
         .map_err(|error| error.to_string())

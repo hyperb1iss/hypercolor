@@ -20,17 +20,33 @@ use hypercolor_core::input::screen::{
     PixelExtent, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
 };
 use hypercolor_core::input::{
-    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
-    MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities,
-    MacosTahoeSelectionCapabilities, MacosTimingStatus, SourceFreshness, SourceIssue, SourceKind,
-    SourcePlatformStatus, SourceState, SourceStatus,
+    MacosArchitecture as CoreMacosArchitecture,
+    MacosAuthorizationState as CoreMacosAuthorizationState,
+    MacosCapabilityOwner as CoreMacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosInputPlatformStatus, MacosProtectedSourceState as CoreMacosProtectedSourceState,
+    MacosScreenPlatformStatus, MacosScreenTimingStatus,
+    MacosSelectionState as CoreMacosSelectionState,
+    MacosTahoeCapabilities as CoreMacosTahoeCapabilities,
+    MacosTahoeSelectionCapabilities as CoreMacosTahoeSelectionCapabilities, MacosTimingStatus,
+    SourceFreshness, SourceIssue, SourceKind, SourcePlatformStatus, SourceState, SourceStatus,
+};
+pub use hypercolor_types::api::system::HealthResponse;
+use hypercolor_types::api::system::{
+    AudioDeviceInfo, AudioDevicesResponse, EffectHealthStatus, FullFrameCopySessionStatus,
+    GpuCompositorProbeStatus, HealthChecks, InputSourceIssueStatus, InputSourcePlatformStatus,
+    InputSourceStatus, InputStatus, LatencyHistogramBucketStatus, LatencyHistogramStatus,
+    LatencyPercentilesStatus, LatestFrameStatus, MacosArchitecture, MacosAuthorizationState,
+    MacosCapabilityOwner, MacosDaemonHandoverPhase, MacosDaemonOwnerConflictStatus,
+    MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus, MacosFrameDrop,
+    MacosInputTelemetry, MacosProtectedSourceState, MacosScreenTelemetry, MacosScreenTiming,
+    MacosSelectionState, MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, MacosTiming,
+    PreviewDemandStatus, PreviewRuntimeStatus, RenderAccelerationStatus, RenderLoopStatus,
+    RenderSurfaceStatus, ScreenCaptureCapacityStatus, ServerInfo, SessionPerformanceStatus,
+    SystemResource, SystemStatus,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
-use serde::Serialize;
 use tracing::{debug, warn};
-use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::envelope;
@@ -41,7 +57,6 @@ use crate::preview_runtime::{PreviewDemandSummary, PreviewRuntime};
 use crate::session::current_global_brightness;
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_types::server::ServerIdentity;
 
 const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
 const MULTI_ZONE_CAPABILITIES: &[&str] = &[
@@ -55,749 +70,11 @@ const MULTI_ZONE_CAPABILITIES: &[&str] = &[
 
 // ── Response Types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SystemStatus {
-    pub running: bool,
-    pub version: String,
-    pub server: ServerIdentity,
-    pub config_path: String,
-    pub data_dir: String,
-    pub cache_dir: String,
-    pub uptime_seconds: u64,
-    pub device_count: usize,
-    pub effect_count: usize,
-    pub scene_count: usize,
-    pub active_effect: Option<String>,
-    pub active_scene: Option<String>,
-    pub active_scene_snapshot_locked: bool,
-    pub global_brightness: u8,
-    pub audio_available: bool,
-    pub capture_available: bool,
-    pub screen_capture_capacity: ScreenCaptureCapacityStatus,
-    pub input: InputStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub macos_daemon_ownership: Option<MacosDaemonOwnershipApiStatus>,
-    pub compositor_acceleration: RenderAccelerationStatus,
-    pub render_loop: RenderLoopStatus,
-    pub session_performance: SessionPerformanceStatus,
-    pub latest_frame: Option<LatestFrameStatus>,
-    pub effect_health: EffectHealthStatus,
-    pub preview_runtime: PreviewRuntimeStatus,
-    pub event_bus_subscribers: usize,
-    pub capabilities: Vec<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SessionPerformanceStatus {
-    pub input_stage: LatencyPercentilesStatus,
-    pub full_frame_cpu_copies: FullFrameCopySessionStatus,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct LatencyPercentilesStatus {
-    pub sample_count: u64,
-    pub avg_ms: f64,
-    pub p95_ms: f64,
-    pub p99_ms: f64,
-    pub max_ms: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cumulative_histogram: Option<LatencyHistogramStatus>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct LatencyHistogramStatus {
-    pub bucket_width_us: u32,
-    pub overflow_bucket_index: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub snapshot_frame_token: Option<u64>,
-    pub buckets: Vec<LatencyHistogramBucketStatus>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct LatencyHistogramBucketStatus {
-    pub bucket_index: u32,
-    pub count: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct FullFrameCopySessionStatus {
-    pub count: u64,
-    pub frames: u64,
-    pub bytes: u64,
-}
-
-/// Installed byte fences for transactional screen publication admission.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct ScreenCaptureCapacityStatus {
-    pub admission_enforced: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub physical_transition_byte_capacity: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub physical_transition_backend_capacity: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub physical_reserved_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub physical_available_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub steady_total_byte_budget: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub steady_total_backend_capacity: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub steady_publication_byte_budget: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transition_publication_backend_capacity: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_height: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_retained_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_peak_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_weighted_work_units_per_frame: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_weighted_work_units_per_second: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_parallel_capacity_per_second: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_serial_capacity_per_second: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_worker_count: Option<u64>,
-}
-
-impl ScreenCaptureCapacityStatus {
-    const fn without_capacity(admission_enforced: bool) -> Self {
-        Self {
-            admission_enforced,
-            physical_transition_byte_capacity: None,
-            physical_transition_backend_capacity: None,
-            physical_reserved_bytes: None,
-            physical_available_bytes: None,
-            steady_total_byte_budget: None,
-            steady_total_backend_capacity: None,
-            steady_publication_byte_budget: None,
-            transition_publication_backend_capacity: None,
-            analysis_width: None,
-            analysis_height: None,
-            analysis_retained_bytes: None,
-            analysis_peak_bytes: None,
-            analysis_weighted_work_units_per_frame: None,
-            analysis_weighted_work_units_per_second: None,
-            analysis_parallel_capacity_per_second: None,
-            analysis_serial_capacity_per_second: None,
-            analysis_worker_count: None,
-        }
-    }
-}
-
-/// Host keyboard/mouse capture health, for consent and remediation UX.
-///
-/// `enabled` is the consent config gate. `host_capturing` is true when a
-/// host backend is actively reading device nodes. `devices_denied` counts
-/// input nodes present but unreadable (udev rules missing) — the signal
-/// that distinguishes "input is off" from "input is on but blocked".
-///
-/// `degraded` carries the failures the counters cannot express. Windows has no
-/// per-device denial to count: either the process has a visible window station
-/// and sees input, or it does not, and that is a session-level fact rather than
-/// a per-node one.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct InputStatus {
-    pub enabled: bool,
-    pub host_capture_registered: bool,
-    pub host_capturing: bool,
-    pub devices_opened: usize,
-    pub devices_denied: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub degraded: Option<String>,
-    pub backends: Vec<String>,
-    #[serde(default)]
-    pub source_graph_generation: u64,
-    #[serde(default)]
-    pub sources: Vec<InputSourceStatus>,
-}
-
-/// Structured source issue safe for operational status surfaces.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct InputSourceIssueStatus {
-    pub code: String,
-    pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remediation: Option<String>,
-    pub retryable: bool,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MacosProtectedSourceStateApi {
-    Disabled,
-    NeedsUserAction,
-    PermissionDenied,
-    NeedsProcessRestart,
-    NeedsSelection,
-    ReadyIdle,
-    Starting,
-    Live,
-    Interrupted,
-    Revoked,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MacosAuthorizationStateApi {
-    Unknown,
-    NotDetermined,
-    Denied,
-    Authorized,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MacosCapabilityOwnerApi {
-    AppSidecar,
-    App,
-    LaunchdService,
-    HomebrewService,
-    Broker,
-    Standalone,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosDaemonOwnerConflictApiStatus {
-    pub active: MacosCapabilityOwnerApi,
-    pub contender: MacosCapabilityOwnerApi,
-    pub observed_at_ms: u64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MacosDaemonHandoverPhaseApi {
-    Prepared,
-    AutostartsConfigured,
-    StopRequested,
-    OutgoingOwnerStopped,
-    AwaitingGuardRelease,
-    GuardReleased,
-    StartRequested,
-    RequestedOwnerStarted,
-    CommitPending,
-    Committed,
-    RollbackPending,
-    RollbackAutostartsRestored,
-    RollbackStopRequested,
-    RollbackOwnerStopped,
-    RollbackAwaitingGuardRelease,
-    RollbackGuardReleased,
-    RollbackStartRequested,
-    PriorOwnerStarted,
-    RollbackCommitPending,
-    RolledBack,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosDaemonOwnerRecoveryRequiredApiStatus {
-    pub requested_owner: MacosCapabilityOwnerApi,
-    pub prior_owner: MacosCapabilityOwnerApi,
-    pub phase: MacosDaemonHandoverPhaseApi,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosDaemonOwnershipApiStatus {
-    pub active_owner: MacosCapabilityOwnerApi,
-    pub owner_epoch: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conflict: Option<MacosDaemonOwnerConflictApiStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery_required: Option<MacosDaemonOwnerRecoveryRequiredApiStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MacosSelectionStateApi {
-    None,
-    Display { source_id: String },
-    SessionScoped { content_style: String },
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosTahoeSelectionCapabilitiesApiStatus {
-    pub source_id: String,
-    pub capture_session_generation: u64,
-    pub hdr_capture: bool,
-    pub dual_range_screenshots: bool,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MacosArchitectureApi {
-    AppleSilicon,
-    Intel,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosTahoeCapabilitiesApiStatus {
-    pub host_architecture: MacosArchitectureApi,
-    pub translated_process: bool,
-    pub content_tone_mapping_info: bool,
-    pub metal4: bool,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosInputTelemetryApiStatus {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authorization_last_transition_age_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_designated_requirement_hash: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_architecture: Option<MacosArchitectureApi>,
-    pub executable_architecture: MacosArchitectureApi,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub translated_process: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_session_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topology_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_capacity: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_depth: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_events_received: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_events_published: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_events_dropped: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tap_disabled_timeout: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tap_disabled_user_input: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tap_reenabled: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_gaps: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub callback_to_publication_timing: Option<MacosTimingApiStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosTimingApiStatus {
-    pub sample_count: u64,
-    pub total_ns: u64,
-    pub max_ns: u64,
-    pub p95_ns: u64,
-    pub p99_ns: u64,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosScreenTimingApiStatus {
-    pub callback: MacosTimingApiStatus,
-    pub retain: MacosTimingApiStatus,
-    pub enqueue: MacosTimingApiStatus,
-    pub conversion: MacosTimingApiStatus,
-    pub cpu_reduction: MacosTimingApiStatus,
-    pub native_import: MacosTimingApiStatus,
-    pub native_reduction_submit: MacosTimingApiStatus,
-    pub publication: MacosTimingApiStatus,
-    pub capture_to_native_publication: MacosTimingApiStatus,
-    pub capture_to_converted_publication: MacosTimingApiStatus,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosFrameDropApiStatus {
-    pub reason: String,
-    pub count: u64,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct MacosScreenTelemetryApiStatus {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authorization_last_transition_age_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_designated_requirement_hash: Option<String>,
-    pub executable_architecture: MacosArchitectureApi,
-    pub stream_state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_session_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topology_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication_plan_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pixel_format: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dynamic_range: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_space: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transfer_function: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection_diagnostic_label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_scale: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_width: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_height: Option<u32>,
-    pub queue_depth: usize,
-    pub admitted_native_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pinned_generations: Option<usize>,
-    pub frames_received: u64,
-    pub frames_published: u64,
-    pub frames_superseded: u64,
-    pub frames_malformed: u64,
-    pub frames_dropped: Vec<MacosFrameDropApiStatus>,
-    pub frames_stale: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timing: Option<MacosScreenTimingApiStatus>,
-    pub callback_total_ns: u64,
-    pub callback_max_ns: u64,
-    pub retain_total_ns: u64,
-    pub retain_max_ns: u64,
-    pub conversion_total_ns: u64,
-    pub conversion_max_ns: u64,
-    pub cpu_reduction_total_ns: u64,
-    pub cpu_reduction_max_ns: u64,
-    pub native_import_total_ns: u64,
-    pub native_import_max_ns: u64,
-    pub native_reduction_submit_total_ns: u64,
-    pub native_reduction_submit_max_ns: u64,
-    pub publication_total_ns: u64,
-    pub publication_max_ns: u64,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InputSourcePlatformStatus {
-    MacosInput {
-        keyboard: MacosProtectedSourceStateApi,
-        pointer: MacosProtectedSourceStateApi,
-        keyboard_tcc: MacosAuthorizationStateApi,
-        secure_input_active: bool,
-        keyboard_owner: MacosCapabilityOwnerApi,
-        pointer_owner: MacosCapabilityOwnerApi,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        owner_conflict: Option<MacosDaemonOwnerConflictApiStatus>,
-        telemetry: MacosInputTelemetryApiStatus,
-    },
-    MacosScreen {
-        state: MacosProtectedSourceStateApi,
-        tcc: MacosAuthorizationStateApi,
-        owner: MacosCapabilityOwnerApi,
-        selection: MacosSelectionStateApi,
-        tahoe: MacosTahoeCapabilitiesApiStatus,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tahoe_selection: Option<MacosTahoeSelectionCapabilitiesApiStatus>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        owner_conflict: Option<MacosDaemonOwnerConflictApiStatus>,
-        telemetry: MacosScreenTelemetryApiStatus,
-    },
-}
-
-/// Lock-free lifecycle and freshness status for one input source.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "source policy and lifecycle flags are independent diagnostics"
-)]
-pub struct InputSourceStatus {
-    pub source_id: String,
-    pub kind: String,
-    pub backend: String,
-    pub configured: bool,
-    pub consented: bool,
-    pub demanded: bool,
-    pub active_consumer_count: usize,
-    pub state: String,
-    pub freshness: String,
-    pub source_graph_generation: u64,
-    pub session_generation: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_sample_age_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub freshness_remaining_ms: Option<u64>,
-    pub resource_count: usize,
-    pub denied_resource_count: usize,
-    /// Effective issue, with freshness taking precedence while stale.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue: Option<InputSourceIssueStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lifecycle_issue: Option<InputSourceIssueStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub freshness_issue: Option<InputSourceIssueStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platform: Option<InputSourcePlatformStatus>,
-    pub retired: bool,
-}
-
 #[derive(Debug)]
 pub(crate) struct InputDiagnostic {
     pub source_id: String,
     pub status: &'static str,
     pub detail: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct RenderLoopStatus {
-    pub state: String,
-    pub fps_tier: String,
-    pub target_fps: u32,
-    pub ceiling_fps: u32,
-    pub capacity_fps: f64,
-    pub delivered_fps: f64,
-    pub actual_fps: f64,
-    pub consecutive_misses: u32,
-    pub total_frames: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct RenderAccelerationStatus {
-    pub requested_mode: String,
-    pub effective_mode: String,
-    pub fallback_reason: Option<String>,
-    pub servo_gpu_import_mode: String,
-    pub servo_gpu_import_attempting: bool,
-    pub gpu_probe: Option<GpuCompositorProbeStatus>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct GpuCompositorProbeStatus {
-    pub adapter_name: String,
-    pub adapter_device_type: String,
-    pub backend: String,
-    pub texture_format: String,
-    pub max_texture_dimension_2d: u32,
-    pub max_storage_textures_per_shader_stage: u32,
-    pub software_adapter_reason: Option<String>,
-    pub servo_gpu_import_backend_compatible: bool,
-    pub servo_gpu_import_backend_reason: Option<String>,
-    pub linux_servo_gpu_import_backend_compatible: bool,
-    pub linux_servo_gpu_import_backend_reason: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct LatestFrameStatus {
-    pub frame_token: u64,
-    pub compositor_backend: String,
-    pub output_frame_source: String,
-    pub output_reuses_published_frame: bool,
-    pub output_brightness_bits: u32,
-    pub output_brightness_generation: u64,
-    pub output_routing_signature: u64,
-    pub output_zone_shape_signature: u64,
-    pub output_unassigned_behavior_generation: u64,
-    pub devices_written: u32,
-    pub total_leds: u32,
-    pub gpu_zone_sampling: bool,
-    pub gpu_sample_deferred: bool,
-    pub gpu_sample_stale: bool,
-    pub gpu_sample_retry_hit: bool,
-    pub gpu_sample_queue_saturated: bool,
-    pub gpu_sample_wait_blocked: bool,
-    pub gpu_sample_cpu_fallback: bool,
-    pub preview_surface: bool,
-    pub scene_canvas_forced_surface: bool,
-    pub cpu_readback_skipped: bool,
-    pub gpu_readback_failed: bool,
-    pub total_ms: f64,
-    pub wake_late_ms: f64,
-    pub jitter_ms: f64,
-    pub frame_age_ms: f64,
-    pub input_sampling_ms: f64,
-    pub producer_ms: f64,
-    pub producer_render_ms: f64,
-    #[serde(rename = "producer_preview_compose_ms")]
-    pub producer_scene_compose_ms: f64,
-    pub composition_ms: f64,
-    pub effect_rendering_ms: f64,
-    pub spatial_sampling_ms: f64,
-    pub device_output_ms: f64,
-    pub preview_postprocess_ms: f64,
-    pub event_bus_ms: f64,
-    pub coordination_overhead_ms: f64,
-    pub publish_frame_data_ms: f64,
-    pub publish_group_canvas_ms: f64,
-    pub publish_preview_ms: f64,
-    pub publish_events_ms: f64,
-    pub logical_layer_count: u32,
-    pub render_group_count: u32,
-    pub full_frame_copy_count: u32,
-    pub full_frame_copy_kb: f64,
-    pub producer_full_frame_copy_count: u32,
-    pub producer_full_frame_copy_kb: f64,
-    pub producer_full_frame_copy_reason: Option<String>,
-    pub publication_full_frame_copy_count: u32,
-    pub publication_full_frame_copy_kb: f64,
-    pub publication_full_frame_copy_reason: Option<String>,
-    pub output_errors: u32,
-    pub render_surfaces: RenderSurfaceStatus,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct RenderSurfaceStatus {
-    pub canvas_receivers: u32,
-    pub scene_pool_slot_count: u32,
-    pub scene_pool_free_slots: u32,
-    pub scene_pool_published_slots: u32,
-    pub scene_pool_dequeued_slots: u32,
-    pub direct_pool_slot_count: u32,
-    pub direct_pool_free_slots: u32,
-    pub direct_pool_published_slots: u32,
-    pub direct_pool_dequeued_slots: u32,
-    pub preview_pool_slot_count: u32,
-    pub preview_pool_free_slots: u32,
-    pub preview_pool_published_slots: u32,
-    pub preview_pool_dequeued_slots: u32,
-    pub compositor_pool_slot_count: u32,
-    pub compositor_pool_free_slots: u32,
-    pub compositor_pool_published_slots: u32,
-    pub compositor_pool_dequeued_slots: u32,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EffectHealthStatus {
-    pub errors_total: u64,
-    pub fallbacks_applied_total: u64,
-    pub producer_gpu_readback_failures_total: u64,
-    pub servo_soft_stalls_total: u64,
-    pub servo_breaker_opens_total: u64,
-    pub servo_session_creates_total: u64,
-    pub servo_session_create_failures_total: u64,
-    pub servo_session_create_wait_total_ms: f64,
-    pub servo_session_create_wait_max_ms: f64,
-    pub servo_page_loads_total: u64,
-    pub servo_page_load_failures_total: u64,
-    pub servo_page_load_wait_total_ms: f64,
-    pub servo_page_load_wait_max_ms: f64,
-    pub servo_detached_destroys_total: u64,
-    pub servo_detached_destroy_failures_total: u64,
-    pub servo_render_requests_total: u64,
-    pub servo_render_queue_wait_total_ms: f64,
-    pub servo_render_queue_wait_max_ms: f64,
-    pub servo_render_scene_requests_total: u64,
-    pub servo_render_scene_queue_wait_total_ms: f64,
-    pub servo_render_scene_queue_wait_max_ms: f64,
-    pub servo_render_display_requests_total: u64,
-    pub servo_render_display_queue_wait_total_ms: f64,
-    pub servo_render_display_queue_wait_max_ms: f64,
-    pub servo_render_cpu_frames_total: u64,
-    pub servo_render_cached_frames_total: u64,
-    pub servo_render_gpu_frames_total: u64,
-    pub servo_gpu_import_failures_total: u64,
-    pub servo_gpu_import_fallbacks_total: u64,
-    pub servo_gpu_import_fallback_reason: Option<&'static str>,
-    pub servo_gpu_import_windows_sync_mode: Option<&'static str>,
-    pub servo_gpu_import_stale_frame_total: u64,
-    pub servo_gpu_import_adapter_mismatch_total: u64,
-    pub servo_gpu_import_slot_count: u64,
-    pub servo_gpu_import_pending_slots: u64,
-    pub servo_gpu_import_pending_slots_max: u64,
-    pub servo_gpu_import_completed_slots: u64,
-    pub servo_gpu_import_available_slots: u64,
-    pub servo_gpu_import_available_slots_min: u64,
-    pub servo_gpu_import_oldest_pending_age_max_ms: f64,
-    pub servo_gpu_import_blit_total_ms: f64,
-    pub servo_gpu_import_blit_max_ms: f64,
-    pub servo_gpu_import_sync_total_ms: f64,
-    pub servo_gpu_import_sync_max_ms: f64,
-    pub servo_gpu_import_total_ms: f64,
-    pub servo_gpu_import_max_ms: f64,
-    pub producer_cpu_frames_total: u64,
-    pub producer_gpu_frames_total: u64,
-    pub producer_gpu_cpu_materialization_blocked_total: u64,
-    pub sparkleflinger_gpu_source_upload_skipped_total: u64,
-    pub sparkleflinger_media_texture_allocations_total: u64,
-    pub sparkleflinger_media_texture_upload_bytes_total: u64,
-    pub sparkleflinger_display_finalize_rgba_attempts_total: u64,
-    pub sparkleflinger_display_finalize_yuv_attempts_total: u64,
-    pub sparkleflinger_display_finalize_successes_total: u64,
-    pub sparkleflinger_display_finalize_misses_total: u64,
-    pub sparkleflinger_display_finalize_latches_total: u64,
-    pub sparkleflinger_display_finalize_blocking_wait_total_ms: f64,
-    pub sparkleflinger_display_finalize_blocking_wait_max_ms: f64,
-    pub sparkleflinger_display_finalize_surface_reallocs_total: u64,
-    pub servo_render_evaluate_scripts_total_ms: f64,
-    pub servo_render_evaluate_scripts_max_ms: f64,
-    pub servo_render_event_loop_total_ms: f64,
-    pub servo_render_event_loop_max_ms: f64,
-    pub servo_render_paint_total_ms: f64,
-    pub servo_render_paint_max_ms: f64,
-    pub servo_render_readback_total_ms: f64,
-    pub servo_render_readback_max_ms: f64,
-    pub servo_render_frame_total_ms: f64,
-    pub servo_render_frame_max_ms: f64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct PreviewRuntimeStatus {
-    pub canvas_receivers: u32,
-    pub scene_canvas_receivers: u32,
-    pub screen_canvas_receivers: u32,
-    pub zone_preview_receivers: u32,
-    pub canvas_frames_published: u64,
-    pub scene_canvas_frames_published: u64,
-    pub screen_canvas_frames_published: u64,
-    pub zone_preview_frames_published: u64,
-    pub latest_canvas_frame_number: u32,
-    pub latest_scene_canvas_frame_number: u32,
-    pub latest_screen_canvas_frame_number: u32,
-    pub latest_zone_preview_frame_number: u32,
-    pub canvas_demand: PreviewDemandStatus,
-    pub scene_canvas_demand: PreviewDemandStatus,
-    pub screen_canvas_demand: PreviewDemandStatus,
-    pub zone_preview_demand: PreviewDemandStatus,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct PreviewDemandStatus {
-    pub subscribers: u32,
-    pub max_fps: u32,
-    pub max_width: u32,
-    pub max_height: u32,
-    pub any_full_resolution: bool,
-    pub any_rgb: bool,
-    pub any_rgba: bool,
-    pub any_jpeg: bool,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct HealthResponse {
-    pub status: String,
-    pub version: String,
-    pub uptime_seconds: u64,
-    pub checks: HealthChecks,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct HealthChecks {
-    pub render_loop: String,
-    pub device_backends: String,
-    pub event_bus: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ServerInfo {
-    #[serde(flatten)]
-    pub identity: ServerIdentity,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub server_session_id: Option<String>,
-    pub device_count: usize,
-    pub auth_required: bool,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SystemResource {
-    pub identity: ServerInfo,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<SystemStatus>,
 }
 
 /// Build the redacted input health snapshot used without protected control.
@@ -975,7 +252,7 @@ fn macos_input_platform_status(
             .owner_conflict
             .as_deref()
             .map(macos_daemon_owner_conflict),
-        telemetry: MacosInputTelemetryApiStatus {
+        telemetry: MacosInputTelemetry {
             authorization_last_transition_age_ms: status
                 .authorization_last_transition_at
                 .map(|transition| duration_ms(now.saturating_duration_since(transition))),
@@ -1023,7 +300,7 @@ fn macos_screen_platform_status(
             .owner_conflict
             .as_deref()
             .map(macos_daemon_owner_conflict),
-        telemetry: MacosScreenTelemetryApiStatus {
+        telemetry: MacosScreenTelemetry {
             authorization_last_transition_age_ms: status
                 .authorization_last_transition_at
                 .map(|transition| duration_ms(now.saturating_duration_since(transition))),
@@ -1058,7 +335,7 @@ fn macos_screen_platform_status(
             frames_dropped: status
                 .frames_dropped
                 .iter()
-                .map(|(reason, count)| MacosFrameDropApiStatus {
+                .map(|(reason, count)| MacosFrameDrop {
                     reason: reason.to_string(),
                     count: *count,
                 })
@@ -1085,8 +362,8 @@ fn macos_screen_platform_status(
     }
 }
 
-fn macos_timing_status(status: &MacosTimingStatus) -> MacosTimingApiStatus {
-    MacosTimingApiStatus {
+fn macos_timing_status(status: &MacosTimingStatus) -> MacosTiming {
+    MacosTiming {
         sample_count: status.sample_count,
         total_ns: status.total_ns,
         max_ns: status.max_ns,
@@ -1095,8 +372,8 @@ fn macos_timing_status(status: &MacosTimingStatus) -> MacosTimingApiStatus {
     }
 }
 
-fn macos_screen_timing_status(status: &MacosScreenTimingStatus) -> MacosScreenTimingApiStatus {
-    MacosScreenTimingApiStatus {
+fn macos_screen_timing_status(status: &MacosScreenTimingStatus) -> MacosScreenTiming {
+    MacosScreenTiming {
         callback: macos_timing_status(&status.callback),
         retain: macos_timing_status(&status.retain),
         enqueue: macos_timing_status(&status.enqueue),
@@ -1113,79 +390,81 @@ fn macos_screen_timing_status(status: &MacosScreenTimingStatus) -> MacosScreenTi
 }
 
 const fn macos_protected_source_state(
-    state: MacosProtectedSourceState,
-) -> MacosProtectedSourceStateApi {
+    state: CoreMacosProtectedSourceState,
+) -> MacosProtectedSourceState {
     match state {
-        MacosProtectedSourceState::Disabled => MacosProtectedSourceStateApi::Disabled,
-        MacosProtectedSourceState::NeedsUserAction => MacosProtectedSourceStateApi::NeedsUserAction,
-        MacosProtectedSourceState::PermissionDenied => {
-            MacosProtectedSourceStateApi::PermissionDenied
+        CoreMacosProtectedSourceState::Disabled => MacosProtectedSourceState::Disabled,
+        CoreMacosProtectedSourceState::NeedsUserAction => {
+            MacosProtectedSourceState::NeedsUserAction
         }
-        MacosProtectedSourceState::NeedsProcessRestart => {
-            MacosProtectedSourceStateApi::NeedsProcessRestart
+        CoreMacosProtectedSourceState::PermissionDenied => {
+            MacosProtectedSourceState::PermissionDenied
         }
-        MacosProtectedSourceState::NeedsSelection => MacosProtectedSourceStateApi::NeedsSelection,
-        MacosProtectedSourceState::ReadyIdle => MacosProtectedSourceStateApi::ReadyIdle,
-        MacosProtectedSourceState::Starting => MacosProtectedSourceStateApi::Starting,
-        MacosProtectedSourceState::Live => MacosProtectedSourceStateApi::Live,
-        MacosProtectedSourceState::Interrupted => MacosProtectedSourceStateApi::Interrupted,
-        MacosProtectedSourceState::Revoked => MacosProtectedSourceStateApi::Revoked,
-        MacosProtectedSourceState::Failed => MacosProtectedSourceStateApi::Failed,
+        CoreMacosProtectedSourceState::NeedsProcessRestart => {
+            MacosProtectedSourceState::NeedsProcessRestart
+        }
+        CoreMacosProtectedSourceState::NeedsSelection => MacosProtectedSourceState::NeedsSelection,
+        CoreMacosProtectedSourceState::ReadyIdle => MacosProtectedSourceState::ReadyIdle,
+        CoreMacosProtectedSourceState::Starting => MacosProtectedSourceState::Starting,
+        CoreMacosProtectedSourceState::Live => MacosProtectedSourceState::Live,
+        CoreMacosProtectedSourceState::Interrupted => MacosProtectedSourceState::Interrupted,
+        CoreMacosProtectedSourceState::Revoked => MacosProtectedSourceState::Revoked,
+        CoreMacosProtectedSourceState::Failed => MacosProtectedSourceState::Failed,
     }
 }
 
-const fn macos_authorization_state(state: MacosAuthorizationState) -> MacosAuthorizationStateApi {
+const fn macos_authorization_state(state: CoreMacosAuthorizationState) -> MacosAuthorizationState {
     match state {
-        MacosAuthorizationState::Unknown => MacosAuthorizationStateApi::Unknown,
-        MacosAuthorizationState::NotDetermined => MacosAuthorizationStateApi::NotDetermined,
-        MacosAuthorizationState::Denied => MacosAuthorizationStateApi::Denied,
-        MacosAuthorizationState::Authorized => MacosAuthorizationStateApi::Authorized,
+        CoreMacosAuthorizationState::Unknown => MacosAuthorizationState::Unknown,
+        CoreMacosAuthorizationState::NotDetermined => MacosAuthorizationState::NotDetermined,
+        CoreMacosAuthorizationState::Denied => MacosAuthorizationState::Denied,
+        CoreMacosAuthorizationState::Authorized => MacosAuthorizationState::Authorized,
     }
 }
 
-const fn macos_capability_owner(owner: MacosCapabilityOwner) -> MacosCapabilityOwnerApi {
+const fn macos_capability_owner(owner: CoreMacosCapabilityOwner) -> MacosCapabilityOwner {
     match owner {
-        MacosCapabilityOwner::AppSidecar => MacosCapabilityOwnerApi::AppSidecar,
-        MacosCapabilityOwner::App => MacosCapabilityOwnerApi::App,
-        MacosCapabilityOwner::LaunchdService => MacosCapabilityOwnerApi::LaunchdService,
-        MacosCapabilityOwner::HomebrewService => MacosCapabilityOwnerApi::HomebrewService,
-        MacosCapabilityOwner::Broker => MacosCapabilityOwnerApi::Broker,
-        MacosCapabilityOwner::Standalone => MacosCapabilityOwnerApi::Standalone,
+        CoreMacosCapabilityOwner::AppSidecar => MacosCapabilityOwner::AppSidecar,
+        CoreMacosCapabilityOwner::App => MacosCapabilityOwner::App,
+        CoreMacosCapabilityOwner::LaunchdService => MacosCapabilityOwner::LaunchdService,
+        CoreMacosCapabilityOwner::HomebrewService => MacosCapabilityOwner::HomebrewService,
+        CoreMacosCapabilityOwner::Broker => MacosCapabilityOwner::Broker,
+        CoreMacosCapabilityOwner::Standalone => MacosCapabilityOwner::Standalone,
     }
 }
 
 fn macos_daemon_owner_conflict(
     conflict: &MacosDaemonOwnerConflict,
-) -> MacosDaemonOwnerConflictApiStatus {
-    MacosDaemonOwnerConflictApiStatus {
+) -> MacosDaemonOwnerConflictStatus {
+    MacosDaemonOwnerConflictStatus {
         active: macos_capability_owner(conflict.active),
         contender: macos_capability_owner(conflict.contender),
         observed_at_ms: conflict.observed_at_ms,
     }
 }
 
-const fn macos_daemon_owner(owner: MacosDaemonOwner) -> MacosCapabilityOwnerApi {
+const fn macos_daemon_owner(owner: MacosDaemonOwner) -> MacosCapabilityOwner {
     match owner {
-        MacosDaemonOwner::AppSidecar => MacosCapabilityOwnerApi::AppSidecar,
-        MacosDaemonOwner::DirectLaunchd => MacosCapabilityOwnerApi::LaunchdService,
-        MacosDaemonOwner::Homebrew => MacosCapabilityOwnerApi::HomebrewService,
-        MacosDaemonOwner::Standalone => MacosCapabilityOwnerApi::Standalone,
+        MacosDaemonOwner::AppSidecar => MacosCapabilityOwner::AppSidecar,
+        MacosDaemonOwner::DirectLaunchd => MacosCapabilityOwner::LaunchdService,
+        MacosDaemonOwner::Homebrew => MacosCapabilityOwner::HomebrewService,
+        MacosDaemonOwner::Standalone => MacosCapabilityOwner::Standalone,
     }
 }
 
-fn macos_daemon_ownership(snapshot: &MacosOwnerSnapshot) -> MacosDaemonOwnershipApiStatus {
-    MacosDaemonOwnershipApiStatus {
+fn macos_daemon_ownership(snapshot: &MacosOwnerSnapshot) -> MacosDaemonOwnershipStatus {
+    MacosDaemonOwnershipStatus {
         active_owner: macos_daemon_owner(snapshot.active_owner),
         owner_epoch: snapshot.owner_epoch,
         conflict: snapshot
             .conflict
-            .map(|conflict| MacosDaemonOwnerConflictApiStatus {
+            .map(|conflict| MacosDaemonOwnerConflictStatus {
                 active: macos_daemon_owner(conflict.active_owner),
                 contender: macos_daemon_owner(conflict.contender_owner),
                 observed_at_ms: conflict.observed_at_ms,
             }),
         recovery_required: snapshot.recovery_required.map(|recovery| {
-            MacosDaemonOwnerRecoveryRequiredApiStatus {
+            MacosDaemonOwnerRecoveryRequiredStatus {
                 requested_owner: macos_daemon_owner(recovery.requested_owner),
                 prior_owner: macos_daemon_owner(recovery.prior_owner),
                 phase: macos_daemon_handover_phase(recovery.phase),
@@ -1194,61 +473,53 @@ fn macos_daemon_ownership(snapshot: &MacosOwnerSnapshot) -> MacosDaemonOwnership
     }
 }
 
-const fn macos_daemon_handover_phase(phase: MacosHandoverPhase) -> MacosDaemonHandoverPhaseApi {
+const fn macos_daemon_handover_phase(phase: MacosHandoverPhase) -> MacosDaemonHandoverPhase {
     match phase {
-        MacosHandoverPhase::Prepared => MacosDaemonHandoverPhaseApi::Prepared,
-        MacosHandoverPhase::AutostartsConfigured => {
-            MacosDaemonHandoverPhaseApi::AutostartsConfigured
-        }
-        MacosHandoverPhase::StopRequested => MacosDaemonHandoverPhaseApi::StopRequested,
-        MacosHandoverPhase::OutgoingOwnerStopped => {
-            MacosDaemonHandoverPhaseApi::OutgoingOwnerStopped
-        }
-        MacosHandoverPhase::AwaitingGuardRelease => {
-            MacosDaemonHandoverPhaseApi::AwaitingGuardRelease
-        }
-        MacosHandoverPhase::GuardReleased => MacosDaemonHandoverPhaseApi::GuardReleased,
-        MacosHandoverPhase::StartRequested => MacosDaemonHandoverPhaseApi::StartRequested,
+        MacosHandoverPhase::Prepared => MacosDaemonHandoverPhase::Prepared,
+        MacosHandoverPhase::AutostartsConfigured => MacosDaemonHandoverPhase::AutostartsConfigured,
+        MacosHandoverPhase::StopRequested => MacosDaemonHandoverPhase::StopRequested,
+        MacosHandoverPhase::OutgoingOwnerStopped => MacosDaemonHandoverPhase::OutgoingOwnerStopped,
+        MacosHandoverPhase::AwaitingGuardRelease => MacosDaemonHandoverPhase::AwaitingGuardRelease,
+        MacosHandoverPhase::GuardReleased => MacosDaemonHandoverPhase::GuardReleased,
+        MacosHandoverPhase::StartRequested => MacosDaemonHandoverPhase::StartRequested,
         MacosHandoverPhase::RequestedOwnerStarted => {
-            MacosDaemonHandoverPhaseApi::RequestedOwnerStarted
+            MacosDaemonHandoverPhase::RequestedOwnerStarted
         }
-        MacosHandoverPhase::CommitPending => MacosDaemonHandoverPhaseApi::CommitPending,
-        MacosHandoverPhase::Committed => MacosDaemonHandoverPhaseApi::Committed,
-        MacosHandoverPhase::RollbackPending => MacosDaemonHandoverPhaseApi::RollbackPending,
+        MacosHandoverPhase::CommitPending => MacosDaemonHandoverPhase::CommitPending,
+        MacosHandoverPhase::Committed => MacosDaemonHandoverPhase::Committed,
+        MacosHandoverPhase::RollbackPending => MacosDaemonHandoverPhase::RollbackPending,
         MacosHandoverPhase::RollbackAutostartsRestored => {
-            MacosDaemonHandoverPhaseApi::RollbackAutostartsRestored
+            MacosDaemonHandoverPhase::RollbackAutostartsRestored
         }
         MacosHandoverPhase::RollbackStopRequested => {
-            MacosDaemonHandoverPhaseApi::RollbackStopRequested
+            MacosDaemonHandoverPhase::RollbackStopRequested
         }
-        MacosHandoverPhase::RollbackOwnerStopped => {
-            MacosDaemonHandoverPhaseApi::RollbackOwnerStopped
-        }
+        MacosHandoverPhase::RollbackOwnerStopped => MacosDaemonHandoverPhase::RollbackOwnerStopped,
         MacosHandoverPhase::RollbackAwaitingGuardRelease => {
-            MacosDaemonHandoverPhaseApi::RollbackAwaitingGuardRelease
+            MacosDaemonHandoverPhase::RollbackAwaitingGuardRelease
         }
         MacosHandoverPhase::RollbackGuardReleased => {
-            MacosDaemonHandoverPhaseApi::RollbackGuardReleased
+            MacosDaemonHandoverPhase::RollbackGuardReleased
         }
         MacosHandoverPhase::RollbackStartRequested => {
-            MacosDaemonHandoverPhaseApi::RollbackStartRequested
+            MacosDaemonHandoverPhase::RollbackStartRequested
         }
-        MacosHandoverPhase::PriorOwnerStarted => MacosDaemonHandoverPhaseApi::PriorOwnerStarted,
+        MacosHandoverPhase::PriorOwnerStarted => MacosDaemonHandoverPhase::PriorOwnerStarted,
         MacosHandoverPhase::RollbackCommitPending => {
-            MacosDaemonHandoverPhaseApi::RollbackCommitPending
+            MacosDaemonHandoverPhase::RollbackCommitPending
         }
-        MacosHandoverPhase::RolledBack => MacosDaemonHandoverPhaseApi::RolledBack,
+        MacosHandoverPhase::RolledBack => MacosDaemonHandoverPhase::RolledBack,
     }
 }
 
-fn macos_selection_state(selection: &MacosSelectionState) -> MacosSelectionStateApi {
+fn macos_selection_state(selection: &CoreMacosSelectionState) -> MacosSelectionState {
     match selection {
-        MacosSelectionState::None => MacosSelectionStateApi::None,
-        MacosSelectionState::Display { source_id } => MacosSelectionStateApi::Display {
+        CoreMacosSelectionState::None => MacosSelectionState::None,
+        CoreMacosSelectionState::Display { source_id } => MacosSelectionState::Display {
             source_id: source_id.to_string(),
         },
-        MacosSelectionState::SessionScoped { content_style } => {
-            MacosSelectionStateApi::SessionScoped {
+        CoreMacosSelectionState::SessionScoped { content_style } => {
+            MacosSelectionState::SessionScoped {
                 content_style: content_style.to_string(),
             }
         }
@@ -1256,10 +527,10 @@ fn macos_selection_state(selection: &MacosSelectionState) -> MacosSelectionState
 }
 
 fn macos_tahoe_selection_capabilities(
-    capabilities: &MacosTahoeSelectionCapabilities,
+    capabilities: &CoreMacosTahoeSelectionCapabilities,
     include_private_selection_ids: bool,
-) -> MacosTahoeSelectionCapabilitiesApiStatus {
-    MacosTahoeSelectionCapabilitiesApiStatus {
+) -> MacosTahoeSelectionCapabilities {
+    MacosTahoeSelectionCapabilities {
         source_id: if include_private_selection_ids
             || !capabilities.source_id.starts_with("macos:session:")
         {
@@ -1273,10 +544,8 @@ fn macos_tahoe_selection_capabilities(
     }
 }
 
-fn macos_tahoe_capabilities(
-    capabilities: &MacosTahoeCapabilities,
-) -> MacosTahoeCapabilitiesApiStatus {
-    MacosTahoeCapabilitiesApiStatus {
+fn macos_tahoe_capabilities(capabilities: &CoreMacosTahoeCapabilities) -> MacosTahoeCapabilities {
+    MacosTahoeCapabilities {
         host_architecture: macos_architecture(capabilities.host_architecture),
         translated_process: capabilities.translated_process,
         content_tone_mapping_info: capabilities.content_tone_mapping_info,
@@ -1284,10 +553,10 @@ fn macos_tahoe_capabilities(
     }
 }
 
-const fn macos_architecture(architecture: MacosArchitecture) -> MacosArchitectureApi {
+const fn macos_architecture(architecture: CoreMacosArchitecture) -> MacosArchitecture {
     match architecture {
-        MacosArchitecture::AppleSilicon => MacosArchitectureApi::AppleSilicon,
-        MacosArchitecture::Intel => MacosArchitectureApi::Intel,
+        CoreMacosArchitecture::AppleSilicon => MacosArchitecture::AppleSilicon,
+        CoreMacosArchitecture::Intel => MacosArchitecture::Intel,
     }
 }
 
@@ -1494,8 +763,12 @@ async fn system_status_with_privacy(
         servo_render_gpu_frames_total: servo_health.render_gpu_frames_total,
         servo_gpu_import_failures_total: servo_health.render_gpu_import_failures_total,
         servo_gpu_import_fallbacks_total: servo_health.render_gpu_import_fallbacks_total,
-        servo_gpu_import_fallback_reason: servo_health.render_gpu_import_fallback_reason,
-        servo_gpu_import_windows_sync_mode: servo_health.render_gpu_import_windows_sync_mode,
+        servo_gpu_import_fallback_reason: servo_health
+            .render_gpu_import_fallback_reason
+            .map(str::to_owned),
+        servo_gpu_import_windows_sync_mode: servo_health
+            .render_gpu_import_windows_sync_mode
+            .map(str::to_owned),
         servo_gpu_import_stale_frame_total: servo_health.render_gpu_import_stale_frame_total,
         servo_gpu_import_adapter_mismatch_total: servo_health
             .render_gpu_import_adapter_mismatch_total,
@@ -1678,7 +951,9 @@ pub async fn get_sensors(State(state): State<Arc<AppState>>) -> Response {
 
 async fn server_info(state: &AppState) -> ServerInfo {
     ServerInfo {
-        identity: state.server_identity.clone(),
+        instance_id: state.server_identity.instance_id.clone(),
+        instance_name: state.server_identity.instance_name.clone(),
+        version: state.server_identity.version.clone(),
         server_session_id: state.server_session_id.clone(),
         device_count: state.device_registry.len().await,
         auth_required: state.security_state.security_enabled(),
@@ -2282,21 +1557,6 @@ fn round_2(value: f64) -> f64 {
 }
 
 // ── Audio Devices ────────────────────────────────────────────────────────
-
-/// One selectable audio input source.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, ToSchema)]
-pub struct AudioDeviceInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-}
-
-/// The audio input inventory plus the configured selection.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct AudioDevicesResponse {
-    pub devices: Vec<AudioDeviceInfo>,
-    pub current: String,
-}
 
 /// `GET /api/v1/system/audio-devices` — Enumerate audio input devices.
 pub async fn list_audio_devices(State(state): State<Arc<AppState>>) -> Response {
@@ -3084,28 +2344,26 @@ mod tests {
 
     #[test]
     fn macos_platform_status_is_present_in_openapi() {
-        use utoipa::OpenApi;
-
-        let document = crate::api::openapi::ApiDoc::openapi();
+        let document = crate::api::openapi_document();
         let value = serde_json::to_value(document).expect("OpenAPI should serialize");
         let schemas = value["components"]["schemas"]
             .as_object()
             .expect("OpenAPI should contain component schemas");
 
         assert!(schemas.contains_key("InputSourcePlatformStatus"));
-        assert!(schemas.contains_key("MacosDaemonOwnershipApiStatus"));
-        assert!(schemas.contains_key("MacosDaemonOwnerConflictApiStatus"));
-        assert!(schemas.contains_key("MacosDaemonOwnerRecoveryRequiredApiStatus"));
-        assert!(schemas.contains_key("MacosDaemonHandoverPhaseApi"));
-        assert!(schemas.contains_key("MacosSelectionStateApi"));
-        assert!(schemas.contains_key("MacosArchitectureApi"));
-        assert!(schemas.contains_key("MacosTahoeCapabilitiesApiStatus"));
-        assert!(schemas.contains_key("MacosTahoeSelectionCapabilitiesApiStatus"));
-        assert!(schemas.contains_key("MacosInputTelemetryApiStatus"));
-        assert!(schemas.contains_key("MacosScreenTelemetryApiStatus"));
-        assert!(schemas.contains_key("MacosTimingApiStatus"));
-        assert!(schemas.contains_key("MacosScreenTimingApiStatus"));
-        assert!(schemas.contains_key("MacosFrameDropApiStatus"));
+        assert!(schemas.contains_key("MacosDaemonOwnershipStatus"));
+        assert!(schemas.contains_key("MacosDaemonOwnerConflictStatus"));
+        assert!(schemas.contains_key("MacosDaemonOwnerRecoveryRequiredStatus"));
+        assert!(schemas.contains_key("MacosDaemonHandoverPhase"));
+        assert!(schemas.contains_key("MacosSelectionState"));
+        assert!(schemas.contains_key("MacosArchitecture"));
+        assert!(schemas.contains_key("MacosTahoeCapabilities"));
+        assert!(schemas.contains_key("MacosTahoeSelectionCapabilities"));
+        assert!(schemas.contains_key("MacosInputTelemetry"));
+        assert!(schemas.contains_key("MacosScreenTelemetry"));
+        assert!(schemas.contains_key("MacosTiming"));
+        assert!(schemas.contains_key("MacosScreenTiming"));
+        assert!(schemas.contains_key("MacosFrameDrop"));
         let platform_schema = &schemas["InputSourcePlatformStatus"];
         let encoded = serde_json::to_string(platform_schema).expect("schema should encode");
         assert!(encoded.contains("macos_input"));

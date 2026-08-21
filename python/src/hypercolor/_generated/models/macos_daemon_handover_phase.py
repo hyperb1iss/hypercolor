@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class MacosDaemonHandoverPhaseApi(str, Enum):
+class MacosDaemonHandoverPhase(str, Enum):
     AUTOSTARTS_CONFIGURED = "autostarts_configured"
     AWAITING_GUARD_RELEASE = "awaiting_guard_release"
     COMMITTED = "committed"

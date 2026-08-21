@@ -440,31 +440,29 @@ from .list_simulated_displays_response_200 import ListSimulatedDisplaysResponse2
 from .list_templates_response_200 import ListTemplatesResponse200
 from .live_section import LiveSection
 from .loop_mode import LoopMode
-from .macos_architecture_api import MacosArchitectureApi
-from .macos_authorization_state_api import MacosAuthorizationStateApi
-from .macos_capability_owner_api import MacosCapabilityOwnerApi
-from .macos_daemon_handover_phase_api import MacosDaemonHandoverPhaseApi
-from .macos_daemon_owner_conflict_api_status import MacosDaemonOwnerConflictApiStatus
-from .macos_daemon_owner_recovery_required_api_status import (
-    MacosDaemonOwnerRecoveryRequiredApiStatus,
+from .macos_architecture import MacosArchitecture
+from .macos_authorization_state import MacosAuthorizationState
+from .macos_capability_owner import MacosCapabilityOwner
+from .macos_daemon_handover_phase import MacosDaemonHandoverPhase
+from .macos_daemon_owner_conflict_status import MacosDaemonOwnerConflictStatus
+from .macos_daemon_owner_recovery_required_status import (
+    MacosDaemonOwnerRecoveryRequiredStatus,
 )
-from .macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
-from .macos_frame_drop_api_status import MacosFrameDropApiStatus
-from .macos_input_telemetry_api_status import MacosInputTelemetryApiStatus
-from .macos_protected_source_state_api import MacosProtectedSourceStateApi
-from .macos_screen_telemetry_api_status import MacosScreenTelemetryApiStatus
-from .macos_screen_timing_api_status import MacosScreenTimingApiStatus
-from .macos_selection_state_api_type_0 import MacosSelectionStateApiType0
-from .macos_selection_state_api_type_0_type import MacosSelectionStateApiType0Type
-from .macos_selection_state_api_type_1 import MacosSelectionStateApiType1
-from .macos_selection_state_api_type_1_type import MacosSelectionStateApiType1Type
-from .macos_selection_state_api_type_2 import MacosSelectionStateApiType2
-from .macos_selection_state_api_type_2_type import MacosSelectionStateApiType2Type
-from .macos_tahoe_capabilities_api_status import MacosTahoeCapabilitiesApiStatus
-from .macos_tahoe_selection_capabilities_api_status import (
-    MacosTahoeSelectionCapabilitiesApiStatus,
-)
-from .macos_timing_api_status import MacosTimingApiStatus
+from .macos_daemon_ownership_status import MacosDaemonOwnershipStatus
+from .macos_frame_drop import MacosFrameDrop
+from .macos_input_telemetry import MacosInputTelemetry
+from .macos_protected_source_state import MacosProtectedSourceState
+from .macos_screen_telemetry import MacosScreenTelemetry
+from .macos_screen_timing import MacosScreenTiming
+from .macos_selection_state_type_0 import MacosSelectionStateType0
+from .macos_selection_state_type_0_type import MacosSelectionStateType0Type
+from .macos_selection_state_type_1 import MacosSelectionStateType1
+from .macos_selection_state_type_1_type import MacosSelectionStateType1Type
+from .macos_selection_state_type_2 import MacosSelectionStateType2
+from .macos_selection_state_type_2_type import MacosSelectionStateType2Type
+from .macos_tahoe_capabilities import MacosTahoeCapabilities
+from .macos_tahoe_selection_capabilities import MacosTahoeSelectionCapabilities
+from .macos_timing import MacosTiming
 from .media_asset_record import MediaAssetRecord
 from .media_asset_record_list_response import MediaAssetRecordListResponse
 from .media_playback import MediaPlayback
@@ -1035,27 +1033,27 @@ __all__ = (
     "ListTemplatesResponse200",
     "LiveSection",
     "LoopMode",
-    "MacosArchitectureApi",
-    "MacosAuthorizationStateApi",
-    "MacosCapabilityOwnerApi",
-    "MacosDaemonHandoverPhaseApi",
-    "MacosDaemonOwnerConflictApiStatus",
-    "MacosDaemonOwnerRecoveryRequiredApiStatus",
-    "MacosDaemonOwnershipApiStatus",
-    "MacosFrameDropApiStatus",
-    "MacosInputTelemetryApiStatus",
-    "MacosProtectedSourceStateApi",
-    "MacosScreenTelemetryApiStatus",
-    "MacosScreenTimingApiStatus",
-    "MacosSelectionStateApiType0",
-    "MacosSelectionStateApiType0Type",
-    "MacosSelectionStateApiType1",
-    "MacosSelectionStateApiType1Type",
-    "MacosSelectionStateApiType2",
-    "MacosSelectionStateApiType2Type",
-    "MacosTahoeCapabilitiesApiStatus",
-    "MacosTahoeSelectionCapabilitiesApiStatus",
-    "MacosTimingApiStatus",
+    "MacosArchitecture",
+    "MacosAuthorizationState",
+    "MacosCapabilityOwner",
+    "MacosDaemonHandoverPhase",
+    "MacosDaemonOwnerConflictStatus",
+    "MacosDaemonOwnerRecoveryRequiredStatus",
+    "MacosDaemonOwnershipStatus",
+    "MacosFrameDrop",
+    "MacosInputTelemetry",
+    "MacosProtectedSourceState",
+    "MacosScreenTelemetry",
+    "MacosScreenTiming",
+    "MacosSelectionStateType0",
+    "MacosSelectionStateType0Type",
+    "MacosSelectionStateType1",
+    "MacosSelectionStateType1Type",
+    "MacosSelectionStateType2",
+    "MacosSelectionStateType2Type",
+    "MacosTahoeCapabilities",
+    "MacosTahoeSelectionCapabilities",
+    "MacosTiming",
     "MediaAssetRecord",
     "MediaAssetRecordListResponse",
     "MediaPlayback",

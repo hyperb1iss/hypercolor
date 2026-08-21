@@ -365,7 +365,7 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
     }
 
     response
-        .json::<super::ApiEnvelope<InstalledEffectResponse>>()
+        .json::<hypercolor_types::api::ApiResponse<InstalledEffectResponse>>()
         .await
         .map(|payload| payload.data)
         .map_err(|error| error.to_string())

@@ -12,9 +12,9 @@ use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrameView, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG,
     PreviewCancelFrame, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
     PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
-    SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
+    SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame, ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -1140,8 +1140,7 @@ pub fn extract_input_source_status_event_hint(
 pub fn extract_macos_daemon_ownership_event_hint(
     data: &serde_json::Value,
 ) -> Option<MacosDaemonOwnershipEventHint> {
-    let hint = MacosDaemonOwnershipEventHint::deserialize(data).ok()?;
-    (hint.active_owner.is_some() && hint.owner_epoch.is_some()).then_some(hint)
+    MacosDaemonOwnershipEventHint::deserialize(data).ok()
 }
 
 pub fn extract_control_surface_event_hint(

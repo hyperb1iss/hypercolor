@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="MacosTahoeSelectionCapabilitiesApiStatus")
+T = TypeVar("T", bound="MacosTahoeSelectionCapabilities")
 
 
 @_attrs_define
-class MacosTahoeSelectionCapabilitiesApiStatus:
+class MacosTahoeSelectionCapabilities:
     """
     Attributes:
         capture_session_generation (int):
@@ -58,15 +58,15 @@ class MacosTahoeSelectionCapabilitiesApiStatus:
 
         source_id = d.pop("source_id")
 
-        macos_tahoe_selection_capabilities_api_status = cls(
+        macos_tahoe_selection_capabilities = cls(
             capture_session_generation=capture_session_generation,
             dual_range_screenshots=dual_range_screenshots,
             hdr_capture=hdr_capture,
             source_id=source_id,
         )
 
-        macos_tahoe_selection_capabilities_api_status.additional_properties = d
-        return macos_tahoe_selection_capabilities_api_status
+        macos_tahoe_selection_capabilities.additional_properties = d
+        return macos_tahoe_selection_capabilities
 
     @property
     def additional_keys(self) -> list[str]:

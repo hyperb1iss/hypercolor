@@ -7,38 +7,38 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.macos_timing_api_status import MacosTimingApiStatus
+    from ..models.macos_timing import MacosTiming
 
 
-T = TypeVar("T", bound="MacosScreenTimingApiStatus")
+T = TypeVar("T", bound="MacosScreenTiming")
 
 
 @_attrs_define
-class MacosScreenTimingApiStatus:
+class MacosScreenTiming:
     """
     Attributes:
-        callback (MacosTimingApiStatus):
-        capture_to_converted_publication (MacosTimingApiStatus):
-        capture_to_native_publication (MacosTimingApiStatus):
-        conversion (MacosTimingApiStatus):
-        cpu_reduction (MacosTimingApiStatus):
-        enqueue (MacosTimingApiStatus):
-        native_import (MacosTimingApiStatus):
-        native_reduction_submit (MacosTimingApiStatus):
-        publication (MacosTimingApiStatus):
-        retain (MacosTimingApiStatus):
+        callback (MacosTiming):
+        capture_to_converted_publication (MacosTiming):
+        capture_to_native_publication (MacosTiming):
+        conversion (MacosTiming):
+        cpu_reduction (MacosTiming):
+        enqueue (MacosTiming):
+        native_import (MacosTiming):
+        native_reduction_submit (MacosTiming):
+        publication (MacosTiming):
+        retain (MacosTiming):
     """
 
-    callback: MacosTimingApiStatus
-    capture_to_converted_publication: MacosTimingApiStatus
-    capture_to_native_publication: MacosTimingApiStatus
-    conversion: MacosTimingApiStatus
-    cpu_reduction: MacosTimingApiStatus
-    enqueue: MacosTimingApiStatus
-    native_import: MacosTimingApiStatus
-    native_reduction_submit: MacosTimingApiStatus
-    publication: MacosTimingApiStatus
-    retain: MacosTimingApiStatus
+    callback: MacosTiming
+    capture_to_converted_publication: MacosTiming
+    capture_to_native_publication: MacosTiming
+    conversion: MacosTiming
+    cpu_reduction: MacosTiming
+    enqueue: MacosTiming
+    native_import: MacosTiming
+    native_reduction_submit: MacosTiming
+    publication: MacosTiming
+    retain: MacosTiming
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -85,36 +85,36 @@ class MacosScreenTimingApiStatus:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.macos_timing_api_status import MacosTimingApiStatus
+        from ..models.macos_timing import MacosTiming
 
         d = dict(src_dict)
-        callback = MacosTimingApiStatus.from_dict(d.pop("callback"))
+        callback = MacosTiming.from_dict(d.pop("callback"))
 
-        capture_to_converted_publication = MacosTimingApiStatus.from_dict(
+        capture_to_converted_publication = MacosTiming.from_dict(
             d.pop("capture_to_converted_publication")
         )
 
-        capture_to_native_publication = MacosTimingApiStatus.from_dict(
+        capture_to_native_publication = MacosTiming.from_dict(
             d.pop("capture_to_native_publication")
         )
 
-        conversion = MacosTimingApiStatus.from_dict(d.pop("conversion"))
+        conversion = MacosTiming.from_dict(d.pop("conversion"))
 
-        cpu_reduction = MacosTimingApiStatus.from_dict(d.pop("cpu_reduction"))
+        cpu_reduction = MacosTiming.from_dict(d.pop("cpu_reduction"))
 
-        enqueue = MacosTimingApiStatus.from_dict(d.pop("enqueue"))
+        enqueue = MacosTiming.from_dict(d.pop("enqueue"))
 
-        native_import = MacosTimingApiStatus.from_dict(d.pop("native_import"))
+        native_import = MacosTiming.from_dict(d.pop("native_import"))
 
-        native_reduction_submit = MacosTimingApiStatus.from_dict(
+        native_reduction_submit = MacosTiming.from_dict(
             d.pop("native_reduction_submit")
         )
 
-        publication = MacosTimingApiStatus.from_dict(d.pop("publication"))
+        publication = MacosTiming.from_dict(d.pop("publication"))
 
-        retain = MacosTimingApiStatus.from_dict(d.pop("retain"))
+        retain = MacosTiming.from_dict(d.pop("retain"))
 
-        macos_screen_timing_api_status = cls(
+        macos_screen_timing = cls(
             callback=callback,
             capture_to_converted_publication=capture_to_converted_publication,
             capture_to_native_publication=capture_to_native_publication,
@@ -127,8 +127,8 @@ class MacosScreenTimingApiStatus:
             retain=retain,
         )
 
-        macos_screen_timing_api_status.additional_properties = d
-        return macos_screen_timing_api_status
+        macos_screen_timing.additional_properties = d
+        return macos_screen_timing
 
     @property
     def additional_keys(self) -> list[str]:

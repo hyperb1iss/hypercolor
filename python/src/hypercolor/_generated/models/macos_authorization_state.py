@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class MacosAuthorizationStateApi(str, Enum):
+class MacosAuthorizationState(str, Enum):
     AUTHORIZED = "authorized"
     DENIED = "denied"
     NOT_DETERMINED = "not_determined"

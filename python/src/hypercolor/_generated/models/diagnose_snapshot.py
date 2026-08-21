@@ -29,7 +29,7 @@ class DiagnoseSnapshot:
 
             `enabled` is the consent config gate. `host_capturing` is true when a
             host backend is actively reading device nodes. `devices_denied` counts
-            input nodes present but unreadable (udev rules missing) — the signal
+            input nodes present but unreadable (udev rules missing), the signal
             that distinguishes "input is off" from "input is on but blocked".
 
             `degraded` carries the failures the counters cannot express. Windows has no

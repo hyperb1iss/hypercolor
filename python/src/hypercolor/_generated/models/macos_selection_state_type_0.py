@@ -6,32 +6,29 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="MacosFrameDropApiStatus")
+from ..models.macos_selection_state_type_0_type import MacosSelectionStateType0Type
+
+T = TypeVar("T", bound="MacosSelectionStateType0")
 
 
 @_attrs_define
-class MacosFrameDropApiStatus:
+class MacosSelectionStateType0:
     """
     Attributes:
-        count (int):
-        reason (str):
+        type_ (MacosSelectionStateType0Type):
     """
 
-    count: int
-    reason: str
+    type_: MacosSelectionStateType0Type
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        count = self.count
-
-        reason = self.reason
+        type_ = self.type_.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "count": count,
-                "reason": reason,
+                "type": type_,
             }
         )
 
@@ -40,17 +37,14 @@ class MacosFrameDropApiStatus:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        count = d.pop("count")
+        type_ = MacosSelectionStateType0Type(d.pop("type"))
 
-        reason = d.pop("reason")
-
-        macos_frame_drop_api_status = cls(
-            count=count,
-            reason=reason,
+        macos_selection_state_type_0 = cls(
+            type_=type_,
         )
 
-        macos_frame_drop_api_status.additional_properties = d
-        return macos_frame_drop_api_status
+        macos_selection_state_type_0.additional_properties = d
+        return macos_selection_state_type_0
 
     @property
     def additional_keys(self) -> list[str]:

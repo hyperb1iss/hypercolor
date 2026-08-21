@@ -1,4 +1,6 @@
-use hypercolor_ui::api::{InputSourceIssueStatus, InputSourceStatus, InputStatus, SystemStatus};
+use hypercolor_ui::api::{
+    InputSourceIssueStatus, InputSourceStatus, InputStatus, MacosCapabilityOwner, SystemStatus,
+};
 use hypercolor_ui::input_access::{
     InputAccessRemedy, InputPipelineState, StatusLineTone, input_access_remedy,
     input_pipeline_state, input_status_epoch, input_status_line, input_status_remediation,
@@ -84,7 +86,9 @@ fn input_status_deserializes_frozen_contract() {
         "host_capturing": false,
         "devices_opened": 0,
         "devices_denied": 2,
-        "backends": ["evdev", "browser"]
+        "backends": ["evdev", "browser"],
+        "source_graph_generation": 0,
+        "sources": []
     }))
     .expect("frozen input payload should deserialize");
 
@@ -99,6 +103,11 @@ fn input_status_deserializes_frozen_contract() {
 fn input_status_deserializes_source_health_snapshot() {
     let status: InputStatus = serde_json::from_value(serde_json::json!({
         "enabled": true,
+        "host_capture_registered": true,
+        "host_capturing": false,
+        "devices_opened": 0,
+        "devices_denied": 0,
+        "backends": ["raw_input"],
         "source_graph_generation": 12,
         "sources": [{
             "source_id": "host-interaction",
@@ -107,6 +116,7 @@ fn input_status_deserializes_source_health_snapshot() {
             "configured": true,
             "consented": true,
             "demanded": true,
+            "active_consumer_count": 1,
             "state": "failed",
             "freshness": "not_applicable",
             "source_graph_generation": 12,
@@ -169,8 +179,8 @@ fn macos_daemon_ownership_event_decodes_as_a_refetch_hint() {
     }))
     .expect("ownership event should decode");
 
-    assert_eq!(hint.active_owner.as_deref(), Some("app_sidecar"));
-    assert_eq!(hint.owner_epoch, Some(17));
+    assert_eq!(hint.active_owner, MacosCapabilityOwner::AppSidecar);
+    assert_eq!(hint.owner_epoch, 17);
     assert!(hint.recovery_required.is_some());
 }
 
@@ -185,8 +195,8 @@ fn macos_daemon_ownership_event_requires_identity() {
 }
 
 #[test]
-fn system_status_tolerates_missing_input_object() {
-    let status: SystemStatus = serde_json::from_value(serde_json::json!({
+fn system_status_rejects_an_incomplete_legacy_snapshot() {
+    let error = serde_json::from_value::<SystemStatus>(serde_json::json!({
         "running": true,
         "version": "0.1.0",
         "uptime_seconds": 5,
@@ -196,10 +206,9 @@ fn system_status_tolerates_missing_input_object() {
         "active_scene": null,
         "global_brightness": 100
     }))
-    .expect("status without input should still parse");
+    .expect_err("lockstep clients must reject incomplete system snapshots");
 
-    assert_eq!(status.input, InputStatus::default());
-    assert!(!status.input.enabled);
+    assert!(error.to_string().contains("missing field"));
 }
 
 #[test]

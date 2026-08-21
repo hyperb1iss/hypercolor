@@ -15,32 +15,32 @@ T = TypeVar("T", bound="ServerInfo")
 class ServerInfo:
     """
     Attributes:
+        auth_required (bool):
+        device_count (int):
         instance_id (str):
         instance_name (str):
         version (str):
-        auth_required (bool):
-        device_count (int):
         server_session_id (None | str | Unset):
     """
 
+    auth_required: bool
+    device_count: int
     instance_id: str
     instance_name: str
     version: str
-    auth_required: bool
-    device_count: int
     server_session_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        auth_required = self.auth_required
+
+        device_count = self.device_count
+
         instance_id = self.instance_id
 
         instance_name = self.instance_name
 
         version = self.version
-
-        auth_required = self.auth_required
-
-        device_count = self.device_count
 
         server_session_id: None | str | Unset
         if isinstance(self.server_session_id, Unset):
@@ -52,11 +52,11 @@ class ServerInfo:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "auth_required": auth_required,
+                "device_count": device_count,
                 "instance_id": instance_id,
                 "instance_name": instance_name,
                 "version": version,
-                "auth_required": auth_required,
-                "device_count": device_count,
             }
         )
         if server_session_id is not UNSET:
@@ -67,15 +67,15 @@ class ServerInfo:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+        auth_required = d.pop("auth_required")
+
+        device_count = d.pop("device_count")
+
         instance_id = d.pop("instance_id")
 
         instance_name = d.pop("instance_name")
 
         version = d.pop("version")
-
-        auth_required = d.pop("auth_required")
-
-        device_count = d.pop("device_count")
 
         def _parse_server_session_id(data: object) -> None | str | Unset:
             if data is None:
@@ -87,11 +87,11 @@ class ServerInfo:
         server_session_id = _parse_server_session_id(d.pop("server_session_id", UNSET))
 
         server_info = cls(
+            auth_required=auth_required,
+            device_count=device_count,
             instance_id=instance_id,
             instance_name=instance_name,
             version=version,
-            auth_required=auth_required,
-            device_count=device_count,
             server_session_id=server_session_id,
         )
 

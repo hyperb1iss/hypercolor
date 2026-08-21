@@ -6,7 +6,6 @@
 use std::future::Future;
 
 use leptos::prelude::{Get, LocalResource, expect_context};
-use serde::Deserialize;
 
 use crate::app::WsContext;
 
@@ -28,12 +27,6 @@ pub mod system;
 pub mod zones;
 
 // ── Shared Envelope ─────────────────────────────────────────────────────────
-
-/// Mirrors the daemon's envelope: `{ "data": T, "meta": { ... } }`.
-#[derive(Debug, Deserialize)]
-pub struct ApiEnvelope<T> {
-    pub data: T,
-}
 
 pub fn daemon_resource<T, Fut>(fetcher: impl Fn() -> Fut + 'static) -> LocalResource<T>
 where

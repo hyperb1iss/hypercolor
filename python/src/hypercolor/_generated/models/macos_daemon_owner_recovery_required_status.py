@@ -6,24 +6,24 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_capability_owner_api import MacosCapabilityOwnerApi
-from ..models.macos_daemon_handover_phase_api import MacosDaemonHandoverPhaseApi
+from ..models.macos_capability_owner import MacosCapabilityOwner
+from ..models.macos_daemon_handover_phase import MacosDaemonHandoverPhase
 
-T = TypeVar("T", bound="MacosDaemonOwnerRecoveryRequiredApiStatus")
+T = TypeVar("T", bound="MacosDaemonOwnerRecoveryRequiredStatus")
 
 
 @_attrs_define
-class MacosDaemonOwnerRecoveryRequiredApiStatus:
+class MacosDaemonOwnerRecoveryRequiredStatus:
     """
     Attributes:
-        phase (MacosDaemonHandoverPhaseApi):
-        prior_owner (MacosCapabilityOwnerApi):
-        requested_owner (MacosCapabilityOwnerApi):
+        phase (MacosDaemonHandoverPhase):
+        prior_owner (MacosCapabilityOwner):
+        requested_owner (MacosCapabilityOwner):
     """
 
-    phase: MacosDaemonHandoverPhaseApi
-    prior_owner: MacosCapabilityOwnerApi
-    requested_owner: MacosCapabilityOwnerApi
+    phase: MacosDaemonHandoverPhase
+    prior_owner: MacosCapabilityOwner
+    requested_owner: MacosCapabilityOwner
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,20 +48,20 @@ class MacosDaemonOwnerRecoveryRequiredApiStatus:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        phase = MacosDaemonHandoverPhaseApi(d.pop("phase"))
+        phase = MacosDaemonHandoverPhase(d.pop("phase"))
 
-        prior_owner = MacosCapabilityOwnerApi(d.pop("prior_owner"))
+        prior_owner = MacosCapabilityOwner(d.pop("prior_owner"))
 
-        requested_owner = MacosCapabilityOwnerApi(d.pop("requested_owner"))
+        requested_owner = MacosCapabilityOwner(d.pop("requested_owner"))
 
-        macos_daemon_owner_recovery_required_api_status = cls(
+        macos_daemon_owner_recovery_required_status = cls(
             phase=phase,
             prior_owner=prior_owner,
             requested_owner=requested_owner,
         )
 
-        macos_daemon_owner_recovery_required_api_status.additional_properties = d
-        return macos_daemon_owner_recovery_required_api_status
+        macos_daemon_owner_recovery_required_status.additional_properties = d
+        return macos_daemon_owner_recovery_required_status
 
     @property
     def additional_keys(self) -> list[str]:

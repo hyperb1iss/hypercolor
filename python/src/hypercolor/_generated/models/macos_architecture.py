@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class MacosArchitectureApi(str, Enum):
+class MacosArchitecture(str, Enum):
     APPLE_SILICON = "apple_silicon"
     INTEL = "intel"
 

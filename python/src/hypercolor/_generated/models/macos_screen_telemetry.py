@@ -6,19 +6,19 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_architecture_api import MacosArchitectureApi
+from ..models.macos_architecture import MacosArchitecture
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.macos_frame_drop_api_status import MacosFrameDropApiStatus
-    from ..models.macos_screen_timing_api_status import MacosScreenTimingApiStatus
+    from ..models.macos_frame_drop import MacosFrameDrop
+    from ..models.macos_screen_timing import MacosScreenTiming
 
 
-T = TypeVar("T", bound="MacosScreenTelemetryApiStatus")
+T = TypeVar("T", bound="MacosScreenTelemetry")
 
 
 @_attrs_define
-class MacosScreenTelemetryApiStatus:
+class MacosScreenTelemetry:
     """
     Attributes:
         admitted_native_bytes (int):
@@ -28,8 +28,8 @@ class MacosScreenTelemetryApiStatus:
         conversion_total_ns (int):
         cpu_reduction_max_ns (int):
         cpu_reduction_total_ns (int):
-        executable_architecture (MacosArchitectureApi):
-        frames_dropped (list[MacosFrameDropApiStatus]):
+        executable_architecture (MacosArchitecture):
+        frames_dropped (list[MacosFrameDrop]):
         frames_malformed (int):
         frames_published (int):
         frames_received (int):
@@ -60,7 +60,7 @@ class MacosScreenTelemetryApiStatus:
         publication_plan_generation (int | None | Unset):
         resource_generation (int | None | Unset):
         selection_diagnostic_label (None | str | Unset):
-        timing (MacosScreenTimingApiStatus | None | Unset):
+        timing (MacosScreenTiming | None | Unset):
         topology_generation (int | None | Unset):
         transfer_function (None | str | Unset):
     """
@@ -72,8 +72,8 @@ class MacosScreenTelemetryApiStatus:
     conversion_total_ns: int
     cpu_reduction_max_ns: int
     cpu_reduction_total_ns: int
-    executable_architecture: MacosArchitectureApi
-    frames_dropped: list[MacosFrameDropApiStatus]
+    executable_architecture: MacosArchitecture
+    frames_dropped: list[MacosFrameDrop]
     frames_malformed: int
     frames_published: int
     frames_received: int
@@ -104,13 +104,13 @@ class MacosScreenTelemetryApiStatus:
     publication_plan_generation: int | None | Unset = UNSET
     resource_generation: int | None | Unset = UNSET
     selection_diagnostic_label: None | str | Unset = UNSET
-    timing: MacosScreenTimingApiStatus | None | Unset = UNSET
+    timing: MacosScreenTiming | None | Unset = UNSET
     topology_generation: int | None | Unset = UNSET
     transfer_function: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.macos_screen_timing_api_status import MacosScreenTimingApiStatus
+        from ..models.macos_screen_timing import MacosScreenTiming
 
         admitted_native_bytes = self.admitted_native_bytes
 
@@ -258,7 +258,7 @@ class MacosScreenTelemetryApiStatus:
         timing: dict[str, Any] | None | Unset
         if isinstance(self.timing, Unset):
             timing = UNSET
-        elif isinstance(self.timing, MacosScreenTimingApiStatus):
+        elif isinstance(self.timing, MacosScreenTiming):
             timing = self.timing.to_dict()
         else:
             timing = self.timing
@@ -350,8 +350,8 @@ class MacosScreenTelemetryApiStatus:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.macos_frame_drop_api_status import MacosFrameDropApiStatus
-        from ..models.macos_screen_timing_api_status import MacosScreenTimingApiStatus
+        from ..models.macos_frame_drop import MacosFrameDrop
+        from ..models.macos_screen_timing import MacosScreenTiming
 
         d = dict(src_dict)
         admitted_native_bytes = d.pop("admitted_native_bytes")
@@ -368,14 +368,12 @@ class MacosScreenTelemetryApiStatus:
 
         cpu_reduction_total_ns = d.pop("cpu_reduction_total_ns")
 
-        executable_architecture = MacosArchitectureApi(d.pop("executable_architecture"))
+        executable_architecture = MacosArchitecture(d.pop("executable_architecture"))
 
         frames_dropped = []
         _frames_dropped = d.pop("frames_dropped")
         for frames_dropped_item_data in _frames_dropped:
-            frames_dropped_item = MacosFrameDropApiStatus.from_dict(
-                frames_dropped_item_data
-            )
+            frames_dropped_item = MacosFrameDrop.from_dict(frames_dropped_item_data)
 
             frames_dropped.append(frames_dropped_item)
 
@@ -564,7 +562,7 @@ class MacosScreenTelemetryApiStatus:
             d.pop("selection_diagnostic_label", UNSET)
         )
 
-        def _parse_timing(data: object) -> MacosScreenTimingApiStatus | None | Unset:
+        def _parse_timing(data: object) -> MacosScreenTiming | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -572,12 +570,12 @@ class MacosScreenTelemetryApiStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                timing_type_1 = MacosScreenTimingApiStatus.from_dict(data)
+                timing_type_1 = MacosScreenTiming.from_dict(data)
 
                 return timing_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(MacosScreenTimingApiStatus | None | Unset, data)
+            return cast(MacosScreenTiming | None | Unset, data)
 
         timing = _parse_timing(d.pop("timing", UNSET))
 
@@ -601,7 +599,7 @@ class MacosScreenTelemetryApiStatus:
 
         transfer_function = _parse_transfer_function(d.pop("transfer_function", UNSET))
 
-        macos_screen_telemetry_api_status = cls(
+        macos_screen_telemetry = cls(
             admitted_native_bytes=admitted_native_bytes,
             callback_max_ns=callback_max_ns,
             callback_total_ns=callback_total_ns,
@@ -646,8 +644,8 @@ class MacosScreenTelemetryApiStatus:
             transfer_function=transfer_function,
         )
 
-        macos_screen_telemetry_api_status.additional_properties = d
-        return macos_screen_telemetry_api_status
+        macos_screen_telemetry.additional_properties = d
+        return macos_screen_telemetry
 
     @property
     def additional_keys(self) -> list[str]:

@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use utoipa_axum::router::OpenApiRouter;
 
+use hypercolor_types::api::system::{AudioDevicesResponse, SystemResource};
+
 use crate::api::openapi::OperationDoc;
 use crate::api::{AppState, openapi, system};
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
@@ -9,7 +11,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/system",
             axum::routing::get(system::get_system),
-            [OperationDoc::get::<system::SystemResource>(
+            [OperationDoc::get::<SystemResource>(
                 "get_system",
                 "system",
                 "Get daemon identity and authorized status",
@@ -29,7 +31,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/system/audio-devices",
             axum::routing::get(system::list_audio_devices),
-            [OperationDoc::get::<system::AudioDevicesResponse>(
+            [OperationDoc::get::<AudioDevicesResponse>(
                 "list_audio_devices",
                 "system",
                 "List audio input devices",

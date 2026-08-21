@@ -6,36 +6,47 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_selection_state_api_type_2_type import (
-    MacosSelectionStateApiType2Type,
-)
-
-T = TypeVar("T", bound="MacosSelectionStateApiType2")
+T = TypeVar("T", bound="MacosTiming")
 
 
 @_attrs_define
-class MacosSelectionStateApiType2:
+class MacosTiming:
     """
     Attributes:
-        content_style (str):
-        type_ (MacosSelectionStateApiType2Type):
+        max_ns (int):
+        p95_ns (int):
+        p99_ns (int):
+        sample_count (int):
+        total_ns (int):
     """
 
-    content_style: str
-    type_: MacosSelectionStateApiType2Type
+    max_ns: int
+    p95_ns: int
+    p99_ns: int
+    sample_count: int
+    total_ns: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        content_style = self.content_style
+        max_ns = self.max_ns
 
-        type_ = self.type_.value
+        p95_ns = self.p95_ns
+
+        p99_ns = self.p99_ns
+
+        sample_count = self.sample_count
+
+        total_ns = self.total_ns
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "content_style": content_style,
-                "type": type_,
+                "max_ns": max_ns,
+                "p95_ns": p95_ns,
+                "p99_ns": p99_ns,
+                "sample_count": sample_count,
+                "total_ns": total_ns,
             }
         )
 
@@ -44,17 +55,26 @@ class MacosSelectionStateApiType2:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        content_style = d.pop("content_style")
+        max_ns = d.pop("max_ns")
 
-        type_ = MacosSelectionStateApiType2Type(d.pop("type"))
+        p95_ns = d.pop("p95_ns")
 
-        macos_selection_state_api_type_2 = cls(
-            content_style=content_style,
-            type_=type_,
+        p99_ns = d.pop("p99_ns")
+
+        sample_count = d.pop("sample_count")
+
+        total_ns = d.pop("total_ns")
+
+        macos_timing = cls(
+            max_ns=max_ns,
+            p95_ns=p95_ns,
+            p99_ns=p99_ns,
+            sample_count=sample_count,
+            total_ns=total_ns,
         )
 
-        macos_selection_state_api_type_2.additional_properties = d
-        return macos_selection_state_api_type_2
+        macos_timing.additional_properties = d
+        return macos_timing
 
     @property
     def additional_keys(self) -> list[str]:

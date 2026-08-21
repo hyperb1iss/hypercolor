@@ -1,8 +1,18 @@
 use hypercolor_app::state::{
-    ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, StateUpdate,
-    SystemResponse, WsEventMessage, WsHello,
+    AppState, DaemonMessage, EffectInfo, StateUpdate, WsEventMessage, WsHello,
 };
+use hypercolor_types::api::effects::EffectListResponse;
+use hypercolor_types::api::system::{ServerInfo, SystemResource, SystemStatus};
+use hypercolor_types::api::{ApiResponse, ResponseMeta};
 use serde_json::json;
+
+fn response_meta() -> ResponseMeta {
+    ResponseMeta {
+        api_version: "v1".to_owned(),
+        request_id: "req_test".to_owned(),
+        timestamp: "2026-08-20T00:00:00Z".to_owned(),
+    }
+}
 
 #[test]
 fn default_state_is_disconnected() {
@@ -58,21 +68,25 @@ fn parse_ws_hello_message() {
 
 #[test]
 fn parse_public_system_identity() {
-    let raw = json!({
-        "data": {
-            "identity": {
-                "instance_id": "01912345-6789-7abc-def0-123456789abc",
-                "instance_name": "desk-pc",
-                "version": "0.1.0",
-                "device_count": 2,
-                "auth_required": true
-            }
-        }
-    });
+    let raw = serde_json::to_value(ApiResponse {
+        data: SystemResource {
+            identity: ServerInfo {
+                instance_id: "01912345-6789-7abc-def0-123456789abc".to_owned(),
+                instance_name: "desk-pc".to_owned(),
+                version: "0.1.0".to_owned(),
+                device_count: 2,
+                auth_required: true,
+                ..ServerInfo::default()
+            },
+            status: None,
+        },
+        meta: response_meta(),
+    })
+    .expect("system response should serialize");
 
-    let envelope: ApiEnvelope<SystemResponse> =
+    let envelope: ApiResponse<SystemResource> =
         serde_json::from_value(raw).expect("should parse system response");
-    let system = envelope.data.expect("should have data");
+    let system = envelope.data;
     assert!(system.status.is_none());
     let server = system.identity;
     assert_eq!(server.instance_id, "01912345-6789-7abc-def0-123456789abc");
@@ -157,44 +171,27 @@ fn lifecycle_events_only_target_the_canonical_primary_zone() {
 
 #[test]
 fn parse_authenticated_system_status() {
-    let raw = json!({
-        "data": {
-          "identity": {
-            "instance_id": "01912345-6789-7abc-def0-123456789abc",
-            "instance_name": "desk-pc",
-            "version": "0.1.0"
-          },
-          "status": {
-            "running": true,
-            "version": "0.1.0",
-            "config_path": "/home/user/.config/hypercolor/hypercolor.toml",
-            "data_dir": "/home/user/.local/share/hypercolor",
-            "cache_dir": "/home/user/.cache/hypercolor",
-            "uptime_seconds": 3600,
-            "device_count": 2,
-            "effect_count": 15,
-            "scene_count": 3,
-            "active_effect": "Aurora Borealis",
-            "active_scene": "Movie Night",
-            "active_scene_snapshot_locked": true,
-            "global_brightness": 80,
-            "audio_available": true,
-            "capture_available": false,
-            "render_loop": {
-                "state": "running",
-                "fps_tier": "standard",
-                "total_frames": 216_000
-            },
-            "event_bus_subscribers": 1
-          }
-        }
-    });
+    let raw = serde_json::to_value(ApiResponse {
+        data: SystemResource {
+            identity: ServerInfo::default(),
+            status: Some(SystemStatus {
+                running: true,
+                active_effect: Some("Aurora Borealis".to_owned()),
+                active_scene: Some("Movie Night".to_owned()),
+                active_scene_snapshot_locked: true,
+                global_brightness: 80,
+                device_count: 2,
+                ..SystemStatus::default()
+            }),
+        },
+        meta: response_meta(),
+    })
+    .expect("system response should serialize");
 
-    let envelope: ApiEnvelope<SystemResponse> =
+    let envelope: ApiResponse<SystemResource> =
         serde_json::from_value(raw).expect("should parse system status");
     let status = envelope
         .data
-        .expect("should have data")
         .status
         .expect("authenticated system response should have status");
     assert!(status.running);
@@ -227,7 +224,7 @@ fn parse_effect_list_response() {
                     "name": "Effect B",
                     "description": "",
                     "author": "",
-                    "category": "reactive",
+                    "category": "interactive",
                     "source": "html",
                     "runnable": true,
                     "tags": [],
@@ -235,13 +232,19 @@ fn parse_effect_list_response() {
                     "audio_reactive": true
                 }
             ],
-            "pagination": { "offset": 0, "limit": 50, "total": 2, "has_more": false }
+            "total": 2,
+            "page": null
+        },
+        "meta": {
+            "api_version": "v1",
+            "request_id": "req_test",
+            "timestamp": "2026-08-20T00:00:00Z"
         }
     });
 
-    let envelope: ApiEnvelope<EffectListResponse> =
+    let envelope: ApiResponse<EffectListResponse> =
         serde_json::from_value(raw).expect("should parse effects");
-    let list = envelope.data.expect("should have data");
+    let list = envelope.data;
     assert_eq!(list.items.len(), 2);
     assert_eq!(list.items[0].name, "Effect A");
     assert_eq!(list.items[1].id, "bbb");

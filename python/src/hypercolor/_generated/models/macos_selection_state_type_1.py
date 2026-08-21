@@ -6,23 +6,21 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_selection_state_api_type_1_type import (
-    MacosSelectionStateApiType1Type,
-)
+from ..models.macos_selection_state_type_1_type import MacosSelectionStateType1Type
 
-T = TypeVar("T", bound="MacosSelectionStateApiType1")
+T = TypeVar("T", bound="MacosSelectionStateType1")
 
 
 @_attrs_define
-class MacosSelectionStateApiType1:
+class MacosSelectionStateType1:
     """
     Attributes:
         source_id (str):
-        type_ (MacosSelectionStateApiType1Type):
+        type_ (MacosSelectionStateType1Type):
     """
 
     source_id: str
-    type_: MacosSelectionStateApiType1Type
+    type_: MacosSelectionStateType1Type
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,15 +44,15 @@ class MacosSelectionStateApiType1:
         d = dict(src_dict)
         source_id = d.pop("source_id")
 
-        type_ = MacosSelectionStateApiType1Type(d.pop("type"))
+        type_ = MacosSelectionStateType1Type(d.pop("type"))
 
-        macos_selection_state_api_type_1 = cls(
+        macos_selection_state_type_1 = cls(
             source_id=source_id,
             type_=type_,
         )
 
-        macos_selection_state_api_type_1.additional_properties = d
-        return macos_selection_state_api_type_1
+        macos_selection_state_type_1.additional_properties = d
+        return macos_selection_state_type_1
 
     @property
     def additional_keys(self) -> list[str]:

@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use hypercolor_types::api::ApiResponse;
 use hypercolor_types::api::controls::InvokeControlActionRequest;
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
@@ -16,6 +17,7 @@ use hypercolor_types::api::scene::{
     ApplyEffectRequest, PatchControlsRequest, PatchZoneRequest, ReplaceLayerRequest, SceneDocument,
 };
 use hypercolor_types::api::scenes::SceneListResponse as ApiSceneListResponse;
+use hypercolor_types::api::system::SystemResource;
 use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
@@ -64,19 +66,23 @@ impl DaemonClient {
 
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
-        let system = self.get_data::<SystemResponse>("/system").await?;
+        let system = self.get_data::<SystemResource>("/system").await?;
         let status = system
             .status
             .context("System status requires daemon read access")?;
 
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let device_count = status.device_count as u32;
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let fps_target = status.render_loop.target_fps as f32;
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let fps_actual = status.render_loop.actual_fps as f32;
 
         Ok(DaemonState {
             running: status.running,
             brightness: status.global_brightness,
-            fps_target: status.render_loop.target_fps,
-            fps_actual: status.render_loop.actual_fps,
+            fps_target,
+            fps_actual,
             device_count,
             total_leds: 0,
         })
@@ -498,14 +504,8 @@ impl DaemonClient {
             return Err(daemon_error("API request failed", response).await);
         }
 
-        // The API wraps responses in { "data": T, "meta": {...} }
-        let envelope: serde_json::Value = response.json().await?;
-        if let Some(data) = envelope.get("data") {
-            Ok(serde_json::from_value(data.clone())?)
-        } else {
-            // Some endpoints return the data directly
-            Ok(serde_json::from_value(envelope)?)
-        }
+        let envelope: ApiResponse<T> = response.json().await?;
+        Ok(envelope.data)
     }
 
     async fn get_optional_data<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
@@ -573,33 +573,6 @@ pub struct ControlSurfaceQuery<'a> {
 #[derive(Debug, Deserialize)]
 struct ControlSurfaceListResponse {
     surfaces: Vec<ControlSurfaceDocument>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SystemStatusResponse {
-    running: bool,
-    global_brightness: u8,
-    device_count: usize,
-    /// The daemon nests every FPS figure here. A flat `fps` field would
-    /// silently deserialize to its default and read as a stalled render
-    /// loop, which is exactly what the status view used to show.
-    #[serde(default)]
-    render_loop: RenderLoopStatus,
-}
-
-#[derive(Debug, Deserialize)]
-struct SystemResponse {
-    status: Option<SystemStatusResponse>,
-}
-
-/// The `render_loop` block of the authenticated system status.
-#[derive(Debug, Default, Deserialize)]
-struct RenderLoopStatus {
-    #[serde(default)]
-    target_fps: f32,
-    /// Current delivered render cadence from the daemon status resource.
-    #[serde(default)]
-    actual_fps: f32,
 }
 
 fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
@@ -785,12 +758,8 @@ async fn response_data<T: DeserializeOwned>(response: reqwest::Response) -> Resu
         return Err(daemon_error("API request failed", response).await);
     }
 
-    let envelope: serde_json::Value = response.json().await?;
-    if let Some(data) = envelope.get("data") {
-        Ok(serde_json::from_value(data.clone())?)
-    } else {
-        Ok(serde_json::from_value(envelope)?)
-    }
+    let envelope: ApiResponse<T> = response.json().await?;
+    Ok(envelope.data)
 }
 
 fn control_surface_list_path(query: ControlSurfaceQuery<'_>) -> String {

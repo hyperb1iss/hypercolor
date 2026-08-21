@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class MacosProtectedSourceStateApi(str, Enum):
+class MacosProtectedSourceState(str, Enum):
     DISABLED = "disabled"
     FAILED = "failed"
     INTERRUPTED = "interrupted"

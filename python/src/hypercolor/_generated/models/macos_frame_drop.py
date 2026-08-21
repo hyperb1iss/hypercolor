@@ -6,39 +6,32 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_capability_owner_api import MacosCapabilityOwnerApi
-
-T = TypeVar("T", bound="MacosDaemonOwnerConflictApiStatus")
+T = TypeVar("T", bound="MacosFrameDrop")
 
 
 @_attrs_define
-class MacosDaemonOwnerConflictApiStatus:
+class MacosFrameDrop:
     """
     Attributes:
-        active (MacosCapabilityOwnerApi):
-        contender (MacosCapabilityOwnerApi):
-        observed_at_ms (int):
+        count (int):
+        reason (str):
     """
 
-    active: MacosCapabilityOwnerApi
-    contender: MacosCapabilityOwnerApi
-    observed_at_ms: int
+    count: int
+    reason: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        active = self.active.value
+        count = self.count
 
-        contender = self.contender.value
-
-        observed_at_ms = self.observed_at_ms
+        reason = self.reason
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "active": active,
-                "contender": contender,
-                "observed_at_ms": observed_at_ms,
+                "count": count,
+                "reason": reason,
             }
         )
 
@@ -47,20 +40,17 @@ class MacosDaemonOwnerConflictApiStatus:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        active = MacosCapabilityOwnerApi(d.pop("active"))
+        count = d.pop("count")
 
-        contender = MacosCapabilityOwnerApi(d.pop("contender"))
+        reason = d.pop("reason")
 
-        observed_at_ms = d.pop("observed_at_ms")
-
-        macos_daemon_owner_conflict_api_status = cls(
-            active=active,
-            contender=contender,
-            observed_at_ms=observed_at_ms,
+        macos_frame_drop = cls(
+            count=count,
+            reason=reason,
         )
 
-        macos_daemon_owner_conflict_api_status.additional_properties = d
-        return macos_daemon_owner_conflict_api_status
+        macos_frame_drop.additional_properties = d
+        return macos_frame_drop
 
     @property
     def additional_keys(self) -> list[str]:

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..models.effect_health_status import EffectHealthStatus
     from ..models.input_status import InputStatus
     from ..models.latest_frame_status import LatestFrameStatus
-    from ..models.macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
+    from ..models.macos_daemon_ownership_status import MacosDaemonOwnershipStatus
     from ..models.preview_runtime_status import PreviewRuntimeStatus
     from ..models.render_acceleration_status import RenderAccelerationStatus
     from ..models.render_loop_status import RenderLoopStatus
@@ -45,7 +45,7 @@ class SystemStatus:
 
             `enabled` is the consent config gate. `host_capturing` is true when a
             host backend is actively reading device nodes. `devices_denied` counts
-            input nodes present but unreadable (udev rules missing) — the signal
+            input nodes present but unreadable (udev rules missing), the signal
             that distinguishes "input is off" from "input is on but blocked".
 
             `degraded` carries the failures the counters cannot express. Windows has no
@@ -65,7 +65,7 @@ class SystemStatus:
         active_effect (None | str | Unset):
         active_scene (None | str | Unset):
         latest_frame (LatestFrameStatus | None | Unset):
-        macos_daemon_ownership (MacosDaemonOwnershipApiStatus | None | Unset):
+        macos_daemon_ownership (MacosDaemonOwnershipStatus | None | Unset):
     """
 
     active_scene_snapshot_locked: bool
@@ -94,14 +94,12 @@ class SystemStatus:
     active_effect: None | str | Unset = UNSET
     active_scene: None | str | Unset = UNSET
     latest_frame: LatestFrameStatus | None | Unset = UNSET
-    macos_daemon_ownership: MacosDaemonOwnershipApiStatus | None | Unset = UNSET
+    macos_daemon_ownership: MacosDaemonOwnershipStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.latest_frame_status import LatestFrameStatus
-        from ..models.macos_daemon_ownership_api_status import (
-            MacosDaemonOwnershipApiStatus,
-        )
+        from ..models.macos_daemon_ownership_status import MacosDaemonOwnershipStatus
 
         active_scene_snapshot_locked = self.active_scene_snapshot_locked
 
@@ -172,7 +170,7 @@ class SystemStatus:
         macos_daemon_ownership: dict[str, Any] | None | Unset
         if isinstance(self.macos_daemon_ownership, Unset):
             macos_daemon_ownership = UNSET
-        elif isinstance(self.macos_daemon_ownership, MacosDaemonOwnershipApiStatus):
+        elif isinstance(self.macos_daemon_ownership, MacosDaemonOwnershipStatus):
             macos_daemon_ownership = self.macos_daemon_ownership.to_dict()
         else:
             macos_daemon_ownership = self.macos_daemon_ownership
@@ -222,9 +220,7 @@ class SystemStatus:
         from ..models.effect_health_status import EffectHealthStatus
         from ..models.input_status import InputStatus
         from ..models.latest_frame_status import LatestFrameStatus
-        from ..models.macos_daemon_ownership_api_status import (
-            MacosDaemonOwnershipApiStatus,
-        )
+        from ..models.macos_daemon_ownership_status import MacosDaemonOwnershipStatus
         from ..models.preview_runtime_status import PreviewRuntimeStatus
         from ..models.render_acceleration_status import RenderAccelerationStatus
         from ..models.render_loop_status import RenderLoopStatus
@@ -322,7 +318,7 @@ class SystemStatus:
 
         def _parse_macos_daemon_ownership(
             data: object,
-        ) -> MacosDaemonOwnershipApiStatus | None | Unset:
+        ) -> MacosDaemonOwnershipStatus | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -330,14 +326,14 @@ class SystemStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                macos_daemon_ownership_type_1 = MacosDaemonOwnershipApiStatus.from_dict(
+                macos_daemon_ownership_type_1 = MacosDaemonOwnershipStatus.from_dict(
                     data
                 )
 
                 return macos_daemon_ownership_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(MacosDaemonOwnershipApiStatus | None | Unset, data)
+            return cast(MacosDaemonOwnershipStatus | None | Unset, data)
 
         macos_daemon_ownership = _parse_macos_daemon_ownership(
             d.pop("macos_daemon_ownership", UNSET)

@@ -1,6 +1,7 @@
 use hypercolor_types::api::effects::EffectSummary;
 use hypercolor_types::api::scene::ZoneResource;
 use hypercolor_types::api::scenes::ActivatedSceneRef;
+use hypercolor_types::api::system::InputSourceStatus;
 use hypercolor_types::device::{DeviceOrigin, DeviceState, DriverPresentation};
 use hypercolor_types::effect::{ControlKind, ControlValue, EffectCategory};
 use hypercolor_types::scene::SceneMutationMode;
@@ -9,7 +10,6 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::displays::DisplayFaceScope;
-use crate::api::system::InputSourceStatus;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct EffectCatalogResult {

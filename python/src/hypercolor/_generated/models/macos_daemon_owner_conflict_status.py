@@ -6,47 +6,39 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="MacosTimingApiStatus")
+from ..models.macos_capability_owner import MacosCapabilityOwner
+
+T = TypeVar("T", bound="MacosDaemonOwnerConflictStatus")
 
 
 @_attrs_define
-class MacosTimingApiStatus:
+class MacosDaemonOwnerConflictStatus:
     """
     Attributes:
-        max_ns (int):
-        p95_ns (int):
-        p99_ns (int):
-        sample_count (int):
-        total_ns (int):
+        active (MacosCapabilityOwner):
+        contender (MacosCapabilityOwner):
+        observed_at_ms (int):
     """
 
-    max_ns: int
-    p95_ns: int
-    p99_ns: int
-    sample_count: int
-    total_ns: int
+    active: MacosCapabilityOwner
+    contender: MacosCapabilityOwner
+    observed_at_ms: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        max_ns = self.max_ns
+        active = self.active.value
 
-        p95_ns = self.p95_ns
+        contender = self.contender.value
 
-        p99_ns = self.p99_ns
-
-        sample_count = self.sample_count
-
-        total_ns = self.total_ns
+        observed_at_ms = self.observed_at_ms
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "max_ns": max_ns,
-                "p95_ns": p95_ns,
-                "p99_ns": p99_ns,
-                "sample_count": sample_count,
-                "total_ns": total_ns,
+                "active": active,
+                "contender": contender,
+                "observed_at_ms": observed_at_ms,
             }
         )
 
@@ -55,26 +47,20 @@ class MacosTimingApiStatus:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        max_ns = d.pop("max_ns")
+        active = MacosCapabilityOwner(d.pop("active"))
 
-        p95_ns = d.pop("p95_ns")
+        contender = MacosCapabilityOwner(d.pop("contender"))
 
-        p99_ns = d.pop("p99_ns")
+        observed_at_ms = d.pop("observed_at_ms")
 
-        sample_count = d.pop("sample_count")
-
-        total_ns = d.pop("total_ns")
-
-        macos_timing_api_status = cls(
-            max_ns=max_ns,
-            p95_ns=p95_ns,
-            p99_ns=p99_ns,
-            sample_count=sample_count,
-            total_ns=total_ns,
+        macos_daemon_owner_conflict_status = cls(
+            active=active,
+            contender=contender,
+            observed_at_ms=observed_at_ms,
         )
 
-        macos_timing_api_status.additional_properties = d
-        return macos_timing_api_status
+        macos_daemon_owner_conflict_status.additional_properties = d
+        return macos_daemon_owner_conflict_status
 
     @property
     def additional_keys(self) -> list[str]:

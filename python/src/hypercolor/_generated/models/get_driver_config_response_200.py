@@ -18,7 +18,7 @@ T = TypeVar("T", bound="GetDriverConfigResponse200")
 class GetDriverConfigResponse200:
     """
     Attributes:
-        data (DriverConfigResponse):
+        data (DriverConfigResponse): Response for `GET /api/v1/drivers/{id}/config`.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 

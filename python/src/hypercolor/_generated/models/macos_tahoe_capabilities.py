@@ -6,23 +6,23 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_architecture_api import MacosArchitectureApi
+from ..models.macos_architecture import MacosArchitecture
 
-T = TypeVar("T", bound="MacosTahoeCapabilitiesApiStatus")
+T = TypeVar("T", bound="MacosTahoeCapabilities")
 
 
 @_attrs_define
-class MacosTahoeCapabilitiesApiStatus:
+class MacosTahoeCapabilities:
     """
     Attributes:
         content_tone_mapping_info (bool):
-        host_architecture (MacosArchitectureApi):
+        host_architecture (MacosArchitecture):
         metal4 (bool):
         translated_process (bool):
     """
 
     content_tone_mapping_info: bool
-    host_architecture: MacosArchitectureApi
+    host_architecture: MacosArchitecture
     metal4: bool
     translated_process: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -54,21 +54,21 @@ class MacosTahoeCapabilitiesApiStatus:
         d = dict(src_dict)
         content_tone_mapping_info = d.pop("content_tone_mapping_info")
 
-        host_architecture = MacosArchitectureApi(d.pop("host_architecture"))
+        host_architecture = MacosArchitecture(d.pop("host_architecture"))
 
         metal4 = d.pop("metal4")
 
         translated_process = d.pop("translated_process")
 
-        macos_tahoe_capabilities_api_status = cls(
+        macos_tahoe_capabilities = cls(
             content_tone_mapping_info=content_tone_mapping_info,
             host_architecture=host_architecture,
             metal4=metal4,
             translated_process=translated_process,
         )
 
-        macos_tahoe_capabilities_api_status.additional_properties = d
-        return macos_tahoe_capabilities_api_status
+        macos_tahoe_capabilities.additional_properties = d
+        return macos_tahoe_capabilities
 
     @property
     def additional_keys(self) -> list[str]:

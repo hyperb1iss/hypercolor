@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class MacosCapabilityOwnerApi(str, Enum):
+class MacosCapabilityOwner(str, Enum):
     APP = "app"
     APP_SIDECAR = "app_sidecar"
     BROKER = "broker"

@@ -6,30 +6,33 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.macos_selection_state_api_type_0_type import (
-    MacosSelectionStateApiType0Type,
-)
+from ..models.macos_selection_state_type_2_type import MacosSelectionStateType2Type
 
-T = TypeVar("T", bound="MacosSelectionStateApiType0")
+T = TypeVar("T", bound="MacosSelectionStateType2")
 
 
 @_attrs_define
-class MacosSelectionStateApiType0:
+class MacosSelectionStateType2:
     """
     Attributes:
-        type_ (MacosSelectionStateApiType0Type):
+        content_style (str):
+        type_ (MacosSelectionStateType2Type):
     """
 
-    type_: MacosSelectionStateApiType0Type
+    content_style: str
+    type_: MacosSelectionStateType2Type
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        content_style = self.content_style
+
         type_ = self.type_.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "content_style": content_style,
                 "type": type_,
             }
         )
@@ -39,14 +42,17 @@ class MacosSelectionStateApiType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        type_ = MacosSelectionStateApiType0Type(d.pop("type"))
+        content_style = d.pop("content_style")
 
-        macos_selection_state_api_type_0 = cls(
+        type_ = MacosSelectionStateType2Type(d.pop("type"))
+
+        macos_selection_state_type_2 = cls(
+            content_style=content_style,
             type_=type_,
         )
 
-        macos_selection_state_api_type_0.additional_properties = d
-        return macos_selection_state_api_type_0
+        macos_selection_state_type_2.additional_properties = d
+        return macos_selection_state_type_2
 
     @property
     def additional_keys(self) -> list[str]:
