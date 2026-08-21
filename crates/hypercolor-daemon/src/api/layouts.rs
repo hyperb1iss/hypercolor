@@ -24,10 +24,10 @@ use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
 use crate::api::AppState;
-use crate::api::RuntimeSessionSnapshotReader;
 use crate::api::envelope;
 use crate::api::{persist_layout_auto_exclusions, persist_layouts};
 use crate::discovery;
+use crate::domain::context::RuntimeSessionService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
 use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
@@ -54,19 +54,19 @@ const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 struct LayoutPersistenceContext {
     runtime_state_path: PathBuf,
-    runtime_snapshot_reader: RuntimeSessionSnapshotReader,
+    runtime_session: RuntimeSessionService,
 }
 
 impl LayoutPersistenceContext {
     fn from_state(state: &AppState) -> Self {
         Self {
             runtime_state_path: state.runtime_state_path.clone(),
-            runtime_snapshot_reader: state.runtime_session_snapshot_reader(),
+            runtime_session: state.runtime_session.clone(),
         }
     }
 
     async fn snapshot(&self) -> crate::runtime_state::RuntimeSessionSnapshot {
-        self.runtime_snapshot_reader.snapshot().await
+        self.runtime_session.snapshot().await
     }
 }
 

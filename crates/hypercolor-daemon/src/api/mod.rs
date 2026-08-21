@@ -87,6 +87,7 @@ use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::domain::context::{RuntimeSessionService, SceneContext};
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
@@ -99,10 +100,9 @@ use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle};
-use crate::runtime_state;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::{OutputPowerState, current_global_brightness};
+use crate::session::OutputPowerState;
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -124,6 +124,12 @@ type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, JoinHandle<()>)>>>
 /// via [`from_daemon_state`](Self::from_daemon_state). This guarantees
 /// that API calls operate on the same subsystems as the render pipeline.
 pub struct AppState {
+    /// Narrow scene transaction authority used by domain services.
+    pub scene: SceneContext,
+
+    /// Runtime-session snapshot and persistence authority.
+    pub runtime_session: RuntimeSessionService,
+
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
 
@@ -310,35 +316,6 @@ pub struct AppState {
     pub security_state: security::SecurityState,
 }
 
-#[derive(Clone)]
-pub(crate) struct RuntimeSessionSnapshotReader {
-    scene_manager: SceneService,
-    spatial_engine: SpatialService,
-    power_state: watch::Sender<OutputPowerState>,
-    driver_host: Arc<DaemonDriverHost>,
-    driver_registry: Arc<DriverModuleRegistry>,
-}
-
-impl RuntimeSessionSnapshotReader {
-    async fn snapshot(&self) -> runtime_state::RuntimeSessionSnapshot {
-        let mut snapshot = {
-            let manager = self.scene_manager.snapshot().await;
-            runtime_state::snapshot_from_scene_manager(&manager)
-        };
-        {
-            let spatial = self.spatial_engine.snapshot();
-            snapshot.active_layout_id = Some(spatial.layout().id.clone());
-        }
-        snapshot.global_brightness = current_global_brightness(&self.power_state);
-        snapshot.manual_paused = self.power_state.borrow().manually_paused();
-        self.driver_host
-            .driver_inventory()
-            .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
-            .await;
-        snapshot
-    }
-}
-
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const fn effect_renderer_acceleration_mode(
     requested_mode: RenderAccelerationMode,
@@ -377,16 +354,6 @@ mod tests {
 }
 
 impl AppState {
-    pub(crate) fn runtime_session_snapshot_reader(&self) -> RuntimeSessionSnapshotReader {
-        RuntimeSessionSnapshotReader {
-            scene_manager: self.scene_manager.clone(),
-            spatial_engine: self.spatial_engine.clone(),
-            power_state: self.power_state.clone(),
-            driver_host: Arc::clone(&self.driver_host),
-            driver_registry: Arc::clone(&self.driver_registry),
-        }
-    }
-
     /// Create a new `AppState` with default empty subsystems.
     ///
     /// Primarily useful for testing. In production, prefer
@@ -595,8 +562,25 @@ impl AppState {
                 Arc::clone(&simulated_display_runtime),
             )));
         }
+        let runtime_session = RuntimeSessionService::new(
+            runtime_state_path.clone(),
+            scene_manager.clone(),
+            Arc::clone(&scene_store),
+            spatial_engine.clone(),
+            power_state.clone(),
+            Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+        );
+        let scene = SceneContext::new(
+            scene_manager.clone(),
+            Arc::clone(&scene_store),
+            Arc::clone(&zone_layout_previews),
+            runtime_session.clone(),
+        );
 
         Self {
+            scene,
+            runtime_session,
             device_registry,
             effect_registry,
             scene_manager,
@@ -683,8 +667,25 @@ impl AppState {
         let library_store = Arc::clone(&daemon.library_store);
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
+        let runtime_session = RuntimeSessionService::new(
+            daemon.runtime_state_path.clone(),
+            daemon.scene_manager.clone(),
+            Arc::clone(&daemon.scene_store),
+            daemon.spatial_engine.clone(),
+            daemon.power_state.clone(),
+            Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+        );
+        let scene = SceneContext::new(
+            daemon.scene_manager.clone(),
+            Arc::clone(&daemon.scene_store),
+            Arc::clone(&daemon.zone_layout_previews),
+            runtime_session.clone(),
+        );
 
         Self {
+            scene,
+            runtime_session,
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),
@@ -791,29 +792,6 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     if let Err(error) = store.save() {
         warn!(%error, "Failed to persist simulated display store");
     }
-}
-
-/// Write the live scene set to the scene store.
-///
-/// SNAPSHOT WRITER (Spec 76 §2.3). This reads the manager rather than
-/// mutating it, so the scene state it captures is whatever a commit last
-/// installed — but the store write itself happens outside
-/// [`commit_scene`](crate::domain::scene::commit_scene) and outside the
-/// sequencer's ordering, so a snapshot racing a commit can write the
-/// older payload. The persistence layer converges regardless: both go
-/// through the same reserve-and-save admission, where the newer
-/// generation wins the destination and the loser reports `Superseded`.
-/// It predates the domain layer and moves inside the commit when §6.4
-/// gives the session snapshot a scene context to read from.
-pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Result<()> {
-    let pending = {
-        let manager = state.scene_manager.snapshot().await;
-        let store = state.scene_store.read().await;
-        store.reserve_save(manager.list().into_iter().cloned())?
-    };
-
-    let mut store = state.scene_store.write().await;
-    store.save_reserved(pending).map(|_| ())
 }
 
 pub(crate) fn publish_render_group_changed(
@@ -944,8 +922,7 @@ pub(crate) async fn prune_scene_display_groups_for_device(
     };
 
     let pruned =
-        match crate::domain::display::prune_display_zones_for_device(state.as_ref(), device_id)
-            .await
+        match crate::domain::display::prune_display_zones_for_device(&state.scene, device_id).await
         {
             Ok(pruned) => pruned,
             Err(error) => {
@@ -974,38 +951,8 @@ pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
     }
 }
 
-/// Persist the current runtime session snapshot (active scene, layout, brightness, and discovery state).
-pub(crate) async fn build_runtime_session_snapshot(
-    state: &AppState,
-) -> runtime_state::RuntimeSessionSnapshot {
-    state.runtime_session_snapshot_reader().snapshot().await
-}
-
 pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
-    let pending_save = match runtime_state::reserve_save(&state.runtime_state_path) {
-        Ok(pending_save) => pending_save,
-        Err(error) => {
-            warn!(
-                path = %state.runtime_state_path.display(),
-                %error,
-                "Failed to reserve runtime session snapshot"
-            );
-            return;
-        }
-    };
-    let snapshot = build_runtime_session_snapshot(state).await;
-
-    if let Err(error) = save_scene_store_snapshot(state).await {
-        warn!(%error, "Failed to persist scene store before runtime snapshot save");
-    }
-
-    if let Err(error) = runtime_state::save_reserved(pending_save, &snapshot) {
-        warn!(
-            path = %state.runtime_state_path.display(),
-            %error,
-            "Failed to persist runtime session snapshot"
-        );
-    }
+    state.runtime_session.save().await;
 }
 
 pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {

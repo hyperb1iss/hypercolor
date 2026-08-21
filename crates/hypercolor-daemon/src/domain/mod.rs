@@ -32,6 +32,7 @@
 //! `DomainError` or it does not reach the wire.
 
 pub mod commit;
+pub mod context;
 pub mod display;
 pub mod effect;
 pub mod layer;

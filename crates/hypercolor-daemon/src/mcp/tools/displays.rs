@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
 use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
 use crate::api::{AppState, publish_render_group_changed};
-use crate::domain::MutationContext;
 use crate::domain::display::{
     ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
     set_display_face,
@@ -90,13 +89,12 @@ pub(super) async fn handle_set_display_face_with_state(
 
     if clear {
         let cleared = clear_display_face(
-            state,
+            &state.scene,
             ClearDisplayFace {
                 device_id,
                 device_name: info.name.clone(),
                 layout: display_face_layout(device_id, info.name.as_str(), surface),
             },
-            MutationContext::mcp(),
         )
         .await?;
         let live_scope = live_scope_payload(state, device_id).await;
@@ -138,7 +136,7 @@ pub(super) async fn handle_set_display_face_with_state(
     // The face blends over the live effect by default; Replace is opt-in
     // through the REST composition endpoint for face-only looks.
     let written = set_display_face(
-        state,
+        &state.scene,
         SetDisplayFace {
             device_id,
             device_name: info.name.clone(),
@@ -151,7 +149,6 @@ pub(super) async fn handle_set_display_face_with_state(
                 opacity: 1.0,
             },
         },
-        MutationContext::mcp(),
     )
     .await?;
 
@@ -216,7 +213,7 @@ async fn handle_default_scope(
                 .and_then(|scene| scene.display_zone_for(device_id))
                 .is_some_and(|zone| zone.effect_ids().next().is_some())
         };
-        let cleared_zone = remove_default_display_overlay(state, device_id).await?;
+        let cleared_zone = remove_default_display_overlay(&state.scene, device_id).await?;
         if removed
             && !scene_assigned
             && let Some(mut zone) = cleared_zone
