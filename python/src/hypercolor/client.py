@@ -94,6 +94,7 @@ from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.models.zone_layout_request import ZoneLayoutRequest
 from ._generated.models.zone_resource import ZoneResource
 from ._generated.types import UNSET
+from ._model_validation import validate_generated_model
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
 from .exceptions import (
     ApiErrorDetails,
@@ -209,9 +210,11 @@ class HypercolorClient:
             generated_health_check._get_kwargs(), envelope=False
         )
         try:
-            return HealthResponse.from_dict(_mapping(payload))
+            health = HealthResponse.from_dict(_mapping(payload))
+            validate_generated_model(health)
         except (KeyError, TypeError, ValueError, AttributeError) as error:
             raise HypercolorApiError("Malformed Hypercolor health response") from error
+        return health
 
     async def get_status(self) -> SystemStatus:
         """Return the current daemon status snapshot."""
@@ -225,6 +228,10 @@ class HypercolorClient:
             raise HypercolorAuthenticationError("System status requires daemon read access")
         if not isinstance(system.status, SystemStatus):
             raise HypercolorApiError("Malformed Hypercolor system status")
+        try:
+            validate_generated_model(system.status)
+        except TypeError as error:
+            raise HypercolorApiError("Malformed Hypercolor system status") from error
         return system.status
 
     async def get_output(self) -> OutputState:
