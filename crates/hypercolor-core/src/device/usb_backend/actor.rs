@@ -24,6 +24,23 @@ pub(super) enum FrameWriteDisposition {
 }
 
 impl UsbBackend {
+    fn command_response(
+        device_id: DeviceId,
+        result: &Result<()>,
+    ) -> std::result::Result<(), DeviceError> {
+        result
+            .as_ref()
+            .map_err(|error| {
+                map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    error,
+                )
+            })
+            .copied()
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "actor bootstrap needs the transport, channels, ids, and shared error sink together"
@@ -111,7 +128,7 @@ impl UsbBackend {
                 let typed_error = map_hal_transport_error(
                     device_id,
                     USB_OUTPUT_BACKEND_ID,
-                    DeviceTransportOperation::Connect,
+                    DeviceTransportOperation::Disconnect,
                     &error,
                 );
                 Self::store_actor_error(&last_async_error, typed_error);
@@ -239,8 +256,7 @@ impl UsbBackend {
                             )
                             .await;
 
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             result?;
                         }
@@ -256,8 +272,7 @@ impl UsbBackend {
                                 transport.as_ref(),
                             )
                             .await;
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             return result;
                         }
@@ -463,8 +478,7 @@ impl UsbBackend {
                                 ))
                             };
 
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             result?;
                         }
@@ -480,8 +494,7 @@ impl UsbBackend {
                                 transport.as_ref(),
                             )
                             .await;
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             return result;
                         }

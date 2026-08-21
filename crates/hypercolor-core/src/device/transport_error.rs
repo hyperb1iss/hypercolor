@@ -7,6 +7,7 @@ use hypercolor_types::device::{DeviceError, DeviceId};
 #[derive(Clone, Copy)]
 pub(super) enum DeviceTransportOperation {
     Connect,
+    Disconnect,
     Write,
 }
 
@@ -21,9 +22,7 @@ pub(super) fn map_hal_transport_error(
         .find_map(|cause| cause.downcast_ref::<TransportError>());
 
     match transport_error {
-        Some(TransportError::NotFound { detail }) => DeviceError::NotFound {
-            device: format!("{device_id} ({detail})"),
-        },
+        Some(TransportError::NotFound { detail }) => operation.not_found(device_id, detail),
         Some(TransportError::Timeout { timeout_ms }) => DeviceError::Timeout {
             after: Duration::from_millis(*timeout_ms),
         },
@@ -48,6 +47,7 @@ impl DeviceTransportOperation {
     const fn description(self) -> &'static str {
         match self {
             Self::Connect => "transport connection",
+            Self::Disconnect => "transport disconnect",
             Self::Write => "transport write",
         }
     }
@@ -55,7 +55,19 @@ impl DeviceTransportOperation {
     fn fallback(self, device_id: DeviceId, error: &Error) -> DeviceError {
         match self {
             Self::Connect => DeviceError::connection(device_id, error),
+            Self::Disconnect => DeviceError::connection(device_id, error),
             Self::Write => DeviceError::write(device_id, error),
+        }
+    }
+
+    fn not_found(self, device_id: DeviceId, detail: &str) -> DeviceError {
+        match self {
+            Self::Connect => DeviceError::NotFound {
+                device: format!("{device_id} ({detail})"),
+            },
+            Self::Disconnect | Self::Write => DeviceError::Disconnected {
+                device: device_id.to_string(),
+            },
         }
     }
 }

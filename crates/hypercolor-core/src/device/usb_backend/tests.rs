@@ -103,6 +103,50 @@ async fn usb_midi_policy_rejects_timeout_retry_from_production_transport_path() 
 }
 
 #[test]
+fn transport_not_found_recoverability_depends_on_operation() {
+    use hypercolor_types::device::ErrorRecoverability;
+
+    let device_id = DeviceId::new();
+    let error = anyhow!(TransportError::NotFound {
+        detail: "device removed".to_owned(),
+    });
+
+    let connect_error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Connect,
+        &error,
+    );
+    assert!(matches!(connect_error, DeviceError::NotFound { .. }));
+    assert_eq!(
+        connect_error.recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    let write_error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Write,
+        &error,
+    );
+    assert_eq!(
+        write_error,
+        DeviceError::Disconnected {
+            device: device_id.to_string(),
+        }
+    );
+    assert_eq!(write_error.recoverability(), ErrorRecoverability::Reconnect);
+
+    let disconnect_error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Disconnect,
+        &error,
+    );
+    assert_eq!(disconnect_error, write_error);
+}
+
+#[test]
 fn usb_non_midi_lifecycle_policy_uses_default_connect_behavior() {
     let policy = lifecycle_policy_for_transport(TransportType::UsbHid { interface: 0 });
 
@@ -550,7 +594,11 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
         .await
         .expect("control response should arrive")
         .expect_err("unsupported brightness should fail the actor");
-    assert!(control_error.contains("does not support brightness"));
+    assert!(matches!(
+        &control_error,
+        DeviceError::WriteError { detail, .. }
+            if detail.contains("does not support brightness")
+    ));
     let ack = timeout(Duration::from_secs(1), delivery_rx)
         .await
         .expect("pending delivery should be rejected without hanging")
@@ -566,6 +614,160 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
             .as_ref()
             .is_some_and(|error| error.to_string().contains("does not support brightness"))
     );
+}
+
+#[tokio::test]
+async fn brightness_actor_response_preserves_timeout_duration() {
+    let device_id = DeviceId::new();
+    let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+    let transport: Arc<dyn Transport> = Arc::new(
+        RecordingTransport::default()
+            .with_failed_primary_send_attempt(1, InjectedPrimaryFailure::Timeout),
+    );
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicBool::new(true));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let last_async_error = Arc::new(Mutex::new(None));
+    let actor_task = UsbBackend::spawn_device_actor(
+        device_id,
+        "brightness-timeout-test-device",
+        Arc::clone(&protocol),
+        transport,
+        Arc::clone(&active),
+        Arc::clone(&lifecycle_gate),
+        frame_tx.clone(),
+        frame_rx,
+        display_rx,
+        command_rx,
+        Arc::clone(&last_async_error),
+    );
+    let mut device = UsbDevice {
+        protocol,
+        transport_name: "recording-test",
+        target_fps: None,
+        resolved_led_count: 1,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: Some(actor_task),
+        active,
+        lifecycle_gate,
+        last_async_error,
+        info_template: temporary_control_test_device(true, 1),
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    };
+
+    let error = device
+        .set_brightness(device_id, 128)
+        .await
+        .expect_err("injected brightness timeout should cross the actor response");
+    assert_eq!(
+        error,
+        DeviceError::Timeout {
+            after: Duration::from_millis(25),
+        }
+    );
+    if let Some(actor_task) = device.actor_task.take() {
+        actor_task.await.expect("actor wrapper should join");
+    }
+}
+
+#[tokio::test]
+async fn stored_actor_disconnect_survives_duplicate_connect_and_output_paths() {
+    let device_id = DeviceId::new();
+    let backend = backend_with_stored_actor_error(
+        device_id,
+        DeviceError::Disconnected {
+            device: device_id.to_string(),
+        },
+    );
+    let expected = DeviceError::Disconnected {
+        device: device_id.to_string(),
+    };
+
+    assert_eq!(
+        backend
+            .connect(&device_id)
+            .await
+            .expect_err("duplicate connect should report the actor failure"),
+        expected
+    );
+    assert_eq!(
+        backend
+            .write_colors(&device_id, &[[1, 2, 3]])
+            .await
+            .expect_err("write should report the actor failure"),
+        expected
+    );
+    assert_eq!(
+        backend
+            .write_display_payload_owned(
+                &device_id,
+                Arc::new(OwnedDisplayFramePayload::jpeg(1, 1, Arc::new(vec![0xFF]),)),
+            )
+            .await
+            .expect_err("display write should report the actor failure"),
+        expected
+    );
+    assert_eq!(
+        backend
+            .set_brightness(&device_id, 128)
+            .await
+            .expect_err("brightness should report the actor failure"),
+        expected
+    );
+}
+
+fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> UsbBackend {
+    let backend = UsbBackend::new();
+    let mut info = temporary_control_test_device(true, 1);
+    info.id = device_id;
+    info.capabilities.has_display = true;
+    info.capabilities.supports_brightness = true;
+    let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, _display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, _command_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicBool::new(false));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let last_async_error = Arc::new(Mutex::new(Some(error)));
+    let device = UsbDevice {
+        protocol: Arc::clone(&protocol),
+        transport_name: "recording-test",
+        target_fps: None,
+        resolved_led_count: 1,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: None,
+        active,
+        lifecycle_gate,
+        last_async_error,
+        info_template: info.clone(),
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    };
+    let frame_sink = device.frame_sink(device_id);
+    let display_sink = Some(device.display_sink(device_id));
+    backend
+        .connected
+        .write()
+        .expect("connected device map should remain available")
+        .insert(
+            device_id,
+            Arc::new(ConnectedUsbDevice {
+                device: tokio::sync::Mutex::new(device),
+                info_template: info,
+                protocol,
+                target_fps: None,
+                frame_sink,
+                display_sink,
+            }),
+        );
+    backend
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -808,6 +1010,10 @@ impl Protocol for ParallelFairnessProtocol {
             colors.first().map_or(0x11, |color| color[0]),
             TransferType::Primary,
         )]
+    }
+
+    fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
+        Some(vec![test_command(brightness)])
     }
 
     fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {

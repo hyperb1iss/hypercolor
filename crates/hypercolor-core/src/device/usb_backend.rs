@@ -204,11 +204,11 @@ struct UsbDisplayPayload {
 enum UsbDeviceCommand {
     SetBrightness {
         brightness: u8,
-        response_tx: oneshot::Sender<std::result::Result<(), String>>,
+        response_tx: oneshot::Sender<std::result::Result<(), DeviceError>>,
     },
     Shutdown {
         led_count: usize,
-        response_tx: oneshot::Sender<std::result::Result<(), String>>,
+        response_tx: oneshot::Sender<std::result::Result<(), DeviceError>>,
     },
 }
 
@@ -230,7 +230,10 @@ struct UsbDevice {
 }
 
 impl UsbDevice {
-    async fn ensure_actor_ready(&mut self, device_id: DeviceId) -> Result<()> {
+    async fn ensure_actor_ready(
+        &mut self,
+        device_id: DeviceId,
+    ) -> std::result::Result<(), DeviceError> {
         let finished_actor = if self
             .actor_task
             .as_ref()
@@ -244,18 +247,20 @@ impl UsbDevice {
         if let Some(actor_task) = finished_actor
             && let Err(error) = actor_task.await
         {
-            self.store_async_error(DeviceError::protocol(
+            self.store_async_error(
+                DeviceError::protocol(device_id, format!("USB device actor join failed: {error}")),
                 device_id,
-                format!("USB device actor join failed: {error}"),
-            ))?;
+            )?;
         }
 
-        if let Some(error) = self.last_async_error()? {
-            bail!("{error}");
+        if let Some(error) = self.last_async_error(device_id)? {
+            return Err(error);
         }
 
         if self.actor_task.is_none() {
-            bail!("USB device actor is not running for device {device_id}");
+            return Err(DeviceError::Disconnected {
+                device: device_id.to_string(),
+            });
         }
 
         Ok(())
@@ -297,7 +302,11 @@ impl UsbDevice {
             .send_replace(Some(Arc::new(UsbDisplayPayload { payload })));
     }
 
-    async fn set_brightness(&mut self, device_id: DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(
+        &mut self,
+        device_id: DeviceId,
+        brightness: u8,
+    ) -> std::result::Result<(), DeviceError> {
         self.ensure_actor_ready(device_id).await?;
 
         let (response_tx, response_rx) = oneshot::channel();
@@ -310,21 +319,19 @@ impl UsbDevice {
             .is_err()
         {
             self.ensure_actor_ready(device_id).await?;
-            bail!("USB device actor is unavailable for device {device_id}");
+            return Err(DeviceError::Disconnected {
+                device: device_id.to_string(),
+            });
         }
 
-        let response = response_rx.await.map_err(|_| {
-            anyhow!("USB device actor terminated while setting brightness for device {device_id}")
-        })?;
-
-        if let Err(error) = response {
-            bail!("{error}");
-        }
+        response_rx.await.map_err(|_| DeviceError::Disconnected {
+            device: device_id.to_string(),
+        })??;
 
         self.ensure_actor_ready(device_id).await
     }
 
-    async fn shutdown(&mut self, device_id: DeviceId) -> Result<()> {
+    async fn shutdown(&mut self, device_id: DeviceId) -> std::result::Result<(), DeviceError> {
         {
             let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
             self.active.store(false, Ordering::Release);
@@ -335,8 +342,8 @@ impl UsbDevice {
             }
         }
         let Some(actor_task) = self.actor_task.take() else {
-            if let Some(error) = self.last_async_error()? {
-                bail!("{error}");
+            if let Some(error) = self.last_async_error(device_id)? {
+                return Err(error);
             }
             return Ok(());
         };
@@ -351,44 +358,52 @@ impl UsbDevice {
             .is_ok();
 
         let shutdown_result = if command_sent {
-            response_rx.await.map_err(|_| {
-                anyhow!("USB device actor terminated while shutting down device {device_id}")
+            response_rx.await.map_err(|_| DeviceError::Disconnected {
+                device: device_id.to_string(),
             })?
         } else {
             Ok(())
         };
 
         if let Err(error) = actor_task.await {
-            self.store_async_error(DeviceError::protocol(
+            self.store_async_error(
+                DeviceError::protocol(device_id, format!("USB device actor join failed: {error}")),
                 device_id,
-                format!("USB device actor join failed: {error}"),
-            ))?;
+            )?;
         }
 
         if let Err(error) = shutdown_result {
-            self.store_async_error(DeviceError::protocol(device_id, error.clone()))?;
-            bail!("{error}");
+            self.store_async_error(error.clone(), device_id)?;
+            return Err(error);
         }
 
-        if let Some(error) = self.last_async_error()? {
-            bail!("{error}");
+        if let Some(error) = self.last_async_error(device_id)? {
+            return Err(error);
         }
 
         Ok(())
     }
 
-    fn last_async_error(&self) -> Result<Option<DeviceError>> {
+    fn last_async_error(
+        &self,
+        device_id: DeviceId,
+    ) -> std::result::Result<Option<DeviceError>, DeviceError> {
         self.last_async_error
             .lock()
             .map(|guard| guard.clone())
-            .map_err(|_| anyhow!("USB device async error state lock poisoned"))
+            .map_err(|_| {
+                DeviceError::protocol(device_id, "USB device async error state lock poisoned")
+            })
     }
 
-    fn store_async_error(&self, error: DeviceError) -> Result<()> {
-        let mut slot = self
-            .last_async_error
-            .lock()
-            .map_err(|_| anyhow!("USB device async error state lock poisoned"))?;
+    fn store_async_error(
+        &self,
+        error: DeviceError,
+        device_id: DeviceId,
+    ) -> std::result::Result<(), DeviceError> {
+        let mut slot = self.last_async_error.lock().map_err(|_| {
+            DeviceError::protocol(device_id, "USB device async error state lock poisoned")
+        })?;
         *slot = Some(error);
         Ok(())
     }
@@ -973,13 +988,7 @@ impl DeviceBackend for UsbBackend {
             .cloned();
         if let Some(connected) = connected {
             let mut device = connected.device.lock().await;
-            device
-                .ensure_actor_ready(*id)
-                .await
-                .with_context(|| {
-                    format!("USB device {id} is already connected but its actor is unhealthy")
-                })
-                .map_err(|error| DeviceError::connection(id, error))?;
+            device.ensure_actor_ready(*id).await?;
             debug!(device_id = %id, "USB device already connected; skipping duplicate connect");
             return Ok(());
         }
@@ -1220,14 +1229,7 @@ impl DeviceBackend for UsbBackend {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
-        disconnect_result.map_err(|error| {
-            map_hal_transport_error(
-                *id,
-                USB_OUTPUT_BACKEND_ID,
-                DeviceTransportOperation::Connect,
-                &error,
-            )
-        })
+        disconnect_result
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
@@ -1253,10 +1255,7 @@ impl DeviceBackend for UsbBackend {
         };
         let mut device = connected.device.lock().await;
 
-        device
-            .ensure_actor_ready(*id)
-            .await
-            .map_err(|error| DeviceError::write(id, error))?;
+        device.ensure_actor_ready(*id).await?;
 
         let frame_stats = summarize_frame(colors.as_slice());
         if !device.frame_diagnostics_emitted {
@@ -1343,10 +1342,7 @@ impl DeviceBackend for UsbBackend {
             });
         }
 
-        device
-            .ensure_actor_ready(*id)
-            .await
-            .map_err(|error| DeviceError::write(id, error))?;
+        device.ensure_actor_ready(*id).await?;
         trace!(
             device_id = %id,
             protocol = device.protocol.name(),
@@ -1374,10 +1370,7 @@ impl DeviceBackend for UsbBackend {
         };
 
         let mut device = connected.device.lock().await;
-        device
-            .set_brightness(*id, brightness)
-            .await
-            .map_err(|error| DeviceError::write(id, error))
+        device.set_brightness(*id, brightness).await
     }
 
     async fn connected_device_info(

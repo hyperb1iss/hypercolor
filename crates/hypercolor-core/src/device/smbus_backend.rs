@@ -207,7 +207,7 @@ impl DeviceBackend for SmBusBackend {
                 map_hal_transport_error(
                     *id,
                     SMBUS_OUTPUT_BACKEND_ID,
-                    DeviceTransportOperation::Connect,
+                    DeviceTransportOperation::Disconnect,
                     &error,
                 )
             })?;
