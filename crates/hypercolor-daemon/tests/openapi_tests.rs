@@ -271,11 +271,10 @@ fn documented_operations(document: &serde_json::Value) -> BTreeSet<(String, Stri
         .expect("OpenAPI paths should be an object")
         .iter()
         .flat_map(|(path, item)| {
-            METHODS.into_iter().filter_map(move |method| {
-                item[method]
-                    .is_object()
-                    .then(|| (method.to_owned(), path.clone()))
-            })
+            METHODS
+                .into_iter()
+                .filter(move |method| item[*method].is_object())
+                .map(move |method| (method.to_owned(), path.clone()))
         })
         .collect()
 }
