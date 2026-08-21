@@ -313,9 +313,13 @@ impl DaemonState {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
-        let scene_manager =
-            crate::domain::scene::SceneService::new(scene_manager_inner, Arc::clone(&event_bus));
         let scene_store = Arc::new(RwLock::new(scene_store_inner));
+        let scene_manager = crate::domain::scene::SceneService::new(
+            scene_manager_inner,
+            Arc::clone(&event_bus),
+            Arc::clone(&scene_store),
+            Arc::clone(&zone_layout_previews),
+        );
         info!(path = %scenes_path.display(), "Scene manager created");
 
         // ── Render Loop ─────────────────────────────────────────────────

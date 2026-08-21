@@ -127,7 +127,7 @@ async fn install_effect_with_test_demand_activation(
     scenes
         .activate(&scene.id, None)
         .expect("fixture scene activates");
-    let scene_manager = SceneService::new(scenes, Arc::clone(&state.event_bus));
+    let scene_manager = SceneService::in_memory(scenes, Arc::clone(&state.event_bus));
     state.scene_plan = scene_manager.plan_reader();
     state.scene_manager = scene_manager;
 }
@@ -142,7 +142,8 @@ fn test_asset_library() -> Arc<RwLock<AssetLibrary>> {
 fn render_state(input_manager: InputManager, screen_capture_configured: bool) -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
-    let scene_manager = SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus));
+    let scene_manager =
+        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
     let scene_plan = scene_manager.plan_reader();
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),

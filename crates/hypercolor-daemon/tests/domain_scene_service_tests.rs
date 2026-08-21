@@ -88,7 +88,8 @@ async fn seed_active_scene(state: &Arc<AppState>, scene: Scene) {
 
 #[tokio::test]
 async fn scene_service_returns_owned_snapshots_and_lock_free_plans() {
-    let service = SceneService::new(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+    let service =
+        SceneService::in_memory(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
     let sibling = service.clone();
     let mut snapshot = service.snapshot().await;
     snapshot.deactivate_current();
@@ -104,7 +105,8 @@ async fn scene_service_returns_owned_snapshots_and_lock_free_plans() {
 
 #[tokio::test]
 async fn scene_service_clones_share_one_commit_revision() {
-    let service = SceneService::new(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+    let service =
+        SceneService::in_memory(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
 
     assert_eq!(service.revision(), service.clone().revision());
     assert_eq!(

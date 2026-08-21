@@ -1524,7 +1524,7 @@ async fn handle_zone_layout_preview(
     let zone_id = parse_zone_preview_id(&zone_id_raw)?;
     let scene_id = state
         .scene_manager
-        .stage_zone_layout_preview(&state.zone_layout_previews, owner, zone_id, |scene| {
+        .stage_zone_layout_preview(owner, zone_id, |scene| {
             validated_zone_layout_preview(scene, zone_id, layout)
         })
         .await?

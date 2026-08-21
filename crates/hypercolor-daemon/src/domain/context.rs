@@ -24,9 +24,7 @@ use crate::domain::scene::{
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
-use crate::scene_store::SceneStore;
 use crate::session::{OutputPowerState, current_global_brightness};
-use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 use crate::{discovery, layout_auto_exclusions};
 
 /// Owning runtime-session persistence boundary.
@@ -34,7 +32,6 @@ use crate::{discovery, layout_auto_exclusions};
 pub struct RuntimeSessionService {
     path: PathBuf,
     scenes: SceneService,
-    scene_store: Arc<RwLock<SceneStore>>,
     spatial: SpatialService,
     power: watch::Sender<OutputPowerState>,
     driver_host: Arc<DaemonDriverHost>,
@@ -45,7 +42,6 @@ impl RuntimeSessionService {
     pub(crate) fn new(
         path: PathBuf,
         scenes: SceneService,
-        scene_store: Arc<RwLock<SceneStore>>,
         spatial: SpatialService,
         power: watch::Sender<OutputPowerState>,
         driver_host: Arc<DaemonDriverHost>,
@@ -54,7 +50,6 @@ impl RuntimeSessionService {
         Self {
             path,
             scenes,
-            scene_store,
             spatial,
             power,
             driver_host,
@@ -107,17 +102,7 @@ impl RuntimeSessionService {
     }
 
     async fn save_scene_store_snapshot(&self) -> anyhow::Result<()> {
-        let pending = {
-            let manager = self.scenes.snapshot().await;
-            let store = self.scene_store.read().await;
-            store.reserve_save(manager.list().into_iter().cloned())?
-        };
-
-        self.scene_store
-            .write()
-            .await
-            .save_reserved(pending)
-            .map(|_| ())
+        self.scenes.save_snapshot().await
     }
 }
 
@@ -125,8 +110,6 @@ impl RuntimeSessionService {
 #[derive(Clone)]
 pub struct SceneContext {
     scenes: SceneService,
-    scene_store: Arc<RwLock<SceneStore>>,
-    zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     runtime_session: RuntimeSessionService,
     asset_library: Arc<RwLock<AssetLibrary>>,
     config_manager: Option<Arc<ConfigManager>>,
@@ -137,8 +120,6 @@ pub struct SceneContext {
 impl SceneContext {
     pub(crate) fn new(
         scenes: SceneService,
-        scene_store: Arc<RwLock<SceneStore>>,
-        zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
         runtime_session: RuntimeSessionService,
         asset_library: Arc<RwLock<AssetLibrary>>,
         config_manager: Option<Arc<ConfigManager>>,
@@ -147,8 +128,6 @@ impl SceneContext {
     ) -> Self {
         Self {
             scenes,
-            scene_store,
-            zone_layout_previews,
             runtime_session,
             asset_library,
             config_manager,
@@ -175,13 +154,7 @@ impl SceneContext {
 
     /// Commit an owned candidate through the one ordered scene authority.
     pub async fn commit(&self, mutation: SceneMutation) -> Result<SceneCommit, DomainError> {
-        self.scenes
-            .commit_mutation(
-                self.scene_store.as_ref(),
-                self.zone_layout_previews.as_ref(),
-                mutation,
-            )
-            .await
+        self.scenes.commit_mutation(mutation).await
     }
 
     /// Rebuild and commit an idempotent reconciliation after conflicts.

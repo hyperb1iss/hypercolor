@@ -413,11 +413,7 @@ impl DaemonState {
         let mut mutation = self.scene_manager.begin_mutation().await;
         mutation.deactivate_current(SceneChangeReason::UserDeactivate);
         self.scene_manager
-            .commit_mutation(
-                self.scene_store.as_ref(),
-                self.zone_layout_previews.as_ref(),
-                mutation,
-            )
+            .commit_mutation(mutation)
             .await
             .context("failed to deactivate scene during shutdown")?;
         info!("Scene manager cleaned up");
@@ -531,15 +527,7 @@ impl DaemonState {
                         // all restore writers share.
                         let mut mutation = self.scene_manager.begin_mutation().await;
                         mutation.sync_primary_layout(&layout);
-                        if let Err(error) = self
-                            .scene_manager
-                            .commit_mutation(
-                                self.scene_store.as_ref(),
-                                self.zone_layout_previews.as_ref(),
-                                mutation,
-                            )
-                            .await
-                        {
+                        if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
                             warn!(%error, "Failed to sync restored scene layout");
                         }
                         info!(layout_id, layout_name = %layout.name, "Restored active layout");
@@ -616,15 +604,7 @@ impl DaemonState {
                 warn!(selector, scene_id = %scene_id, %error, "Failed to activate configured startup scene");
                 return;
             }
-            if let Err(error) = self
-                .scene_manager
-                .commit_mutation(
-                    self.scene_store.as_ref(),
-                    self.zone_layout_previews.as_ref(),
-                    mutation,
-                )
-                .await
-            {
+            if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
                 warn!(selector, scene_id = %scene_id, %error, "Failed to commit configured startup scene");
                 return;
             }
@@ -638,15 +618,7 @@ impl DaemonState {
                         self.spatial_engine.replace(prepared);
                         let mut mutation = self.scene_manager.begin_mutation().await;
                         mutation.sync_primary_layout(&layout);
-                        if let Err(error) = self
-                            .scene_manager
-                            .commit_mutation(
-                                self.scene_store.as_ref(),
-                                self.zone_layout_previews.as_ref(),
-                                mutation,
-                            )
-                            .await
-                        {
+                        if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
                             warn!(%error, "Failed to sync configured startup scene layout");
                         }
                     }
@@ -714,13 +686,7 @@ impl DaemonState {
             // so the render pipeline sees the current layout's zones.
             let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
             mutation.sync_primary_layout(&active_layout);
-            self.scene_manager
-                .commit_mutation(
-                    self.scene_store.as_ref(),
-                    self.zone_layout_previews.as_ref(),
-                    mutation,
-                )
-                .await?;
+            self.scene_manager.commit_mutation(mutation).await?;
         }
         if !snapshot.default_scene_groups.is_empty() || requested_active_scene_id.is_some() {
             info!(

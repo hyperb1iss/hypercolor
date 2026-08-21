@@ -856,7 +856,7 @@ mod tests {
     fn minimal_render_thread_state(registry: EffectRegistry) -> RenderThreadState {
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let event_bus = Arc::new(HypercolorBus::new());
-        let scene_manager = crate::domain::scene::SceneService::new(
+        let scene_manager = crate::domain::scene::SceneService::in_memory(
             SceneManager::with_default(),
             Arc::clone(&event_bus),
         );
@@ -1083,14 +1083,9 @@ mod tests {
                 .expect("default scene should be active");
             let scene_id = scene.id;
             let group_id = zone.id;
-            let tempdir = tempfile::tempdir().expect("test scene store tempdir");
-            let store = tokio::sync::RwLock::new(
-                crate::scene_store::SceneStore::new(tempdir.path().join("scenes.json"))
-                    .expect("test scene store should open"),
-            );
             state
                 .scene_manager
-                .commit_mutation(&store, &state.zone_layout_previews, mutation)
+                .commit_mutation(mutation)
                 .await
                 .expect("test scene should commit");
             (scene_id, group_id)

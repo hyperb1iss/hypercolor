@@ -140,7 +140,8 @@ fn display_group(
 fn render_state() -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
-    let scene_manager = SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus));
+    let scene_manager =
+        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
     let scene_plan = scene_manager.plan_reader();
     let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
     let asset_dir = asset_tempdir.path().join("assets");
@@ -189,7 +190,7 @@ async fn install_scene(state: &mut RenderThreadState, groups: Vec<Zone>) {
     scene_manager
         .activate(&scene.id, None)
         .expect("activate scene");
-    let scene_manager = SceneService::new(scene_manager, Arc::clone(&state.event_bus));
+    let scene_manager = SceneService::in_memory(scene_manager, Arc::clone(&state.event_bus));
     state.scene_plan = scene_manager.plan_reader();
     state.scene_manager = scene_manager;
 }

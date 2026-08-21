@@ -55,7 +55,7 @@ impl PreviewTestRig {
         let demands = InputPublicationDemandHandle::new();
         let event_bus = Arc::new(HypercolorBus::new());
         let executor = InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
-            scene_manager: crate::domain::scene::SceneService::new(
+            scene_manager: crate::domain::scene::SceneService::in_memory(
                 scene_manager(color),
                 Arc::clone(&event_bus),
             ),

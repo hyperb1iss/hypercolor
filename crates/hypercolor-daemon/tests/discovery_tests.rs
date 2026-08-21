@@ -524,7 +524,8 @@ fn make_runtime_with_registry(
             .expect("test driver inventory"),
     );
     let scene_transactions = SceneTransactionQueue::default();
-    let scene_manager = SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus));
+    let scene_manager =
+        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
     let driver_registry = Arc::new(driver_registry.unwrap_or_else(|| {
         network::build_builtin_driver_module_registry(
             &HypercolorConfig::default(),

@@ -4098,7 +4098,7 @@ async fn browser_preview_test_executor(
     let event_bus = Arc::new(HypercolorBus::new());
     Arc::new(
         InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
-            scene_manager: crate::domain::scene::SceneService::new(
+            scene_manager: crate::domain::scene::SceneService::in_memory(
                 SceneManager::new(),
                 Arc::clone(&event_bus),
             ),

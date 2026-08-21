@@ -58,7 +58,9 @@ use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
+use crate::scene_store::SceneStore;
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
+use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 // ── Owning service ───────────────────────────────────────────────────────
 
@@ -68,6 +70,8 @@ pub struct SceneService(Arc<SceneServiceInner>);
 
 struct SceneServiceInner {
     manager: tokio::sync::RwLock<SceneManager>,
+    store: Option<Arc<tokio::sync::RwLock<SceneStore>>>,
+    zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     commits: Arc<SceneCommitSequencer>,
     event_bus: Arc<HypercolorBus>,
     plan: ArcSwap<ScenePlanSnapshot>,
@@ -111,13 +115,40 @@ impl ScenePlanReader {
 }
 
 impl SceneService {
-    /// Own a fully initialized scene manager and its private event sink.
+    /// Own a non-durable scene manager for isolated consumers.
     #[must_use]
-    pub fn new(manager: SceneManager, event_bus: Arc<HypercolorBus>) -> Self {
+    pub fn in_memory(manager: SceneManager, event_bus: Arc<HypercolorBus>) -> Self {
+        Self::build(
+            manager,
+            event_bus,
+            None,
+            Arc::new(ZoneLayoutPreviewStore::default()),
+        )
+    }
+
+    /// Own a scene manager together with its durable and transient stores.
+    #[must_use]
+    pub(crate) fn new(
+        manager: SceneManager,
+        event_bus: Arc<HypercolorBus>,
+        store: Arc<tokio::sync::RwLock<SceneStore>>,
+        zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
+    ) -> Self {
+        Self::build(manager, event_bus, Some(store), zone_layout_previews)
+    }
+
+    fn build(
+        manager: SceneManager,
+        event_bus: Arc<HypercolorBus>,
+        store: Option<Arc<tokio::sync::RwLock<SceneStore>>>,
+        zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
+    ) -> Self {
         let commits = Arc::new(SceneCommitSequencer::new());
         let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
         Self(Arc::new(SceneServiceInner {
             manager: tokio::sync::RwLock::new(manager),
+            store,
+            zone_layout_previews,
             commits,
             event_bus,
             plan,
@@ -162,7 +193,6 @@ impl SceneService {
 
     pub(crate) async fn stage_zone_layout_preview<E, F>(
         &self,
-        store: &crate::zone_layout_preview::ZoneLayoutPreviewStore,
         owner: crate::zone_layout_preview::ZoneLayoutPreviewOwner,
         zone_id: ZoneId,
         validate: F,
@@ -176,7 +206,10 @@ impl SceneService {
         };
         let scene_id = scene.id;
         let layout = validate(scene)?;
-        store.set(owner, scene_id, zone_id, layout).await;
+        self.0
+            .zone_layout_previews
+            .set(owner, scene_id, zone_id, layout)
+            .await;
         Ok(Some(scene_id))
     }
 
@@ -194,8 +227,6 @@ impl SceneService {
     /// reserved before admission.
     pub async fn commit_mutation(
         &self,
-        scene_store: &tokio::sync::RwLock<crate::scene_store::SceneStore>,
-        zone_layout_previews: &crate::zone_layout_preview::ZoneLayoutPreviewStore,
         mutation: SceneMutation,
     ) -> Result<SceneCommit, DomainError> {
         let SceneMutation {
@@ -208,7 +239,10 @@ impl SceneService {
         } = mutation;
 
         let coordinator = if persists_scene_content {
-            Some(scene_store.read().await.clone())
+            match self.0.store.as_ref() {
+                Some(store) => Some(store.read().await.clone()),
+                None => None,
+            }
         } else {
             None
         };
@@ -242,7 +276,8 @@ impl SceneService {
                 None
             };
 
-            zone_layout_previews
+            self.0
+                .zone_layout_previews
                 .clear_at_scene_commit(
                     &preview_scenes_to_clear.into_iter().collect::<Vec<_>>(),
                     &preview_zones_to_clear.into_iter().collect::<Vec<_>>(),
@@ -267,7 +302,12 @@ impl SceneService {
             ));
         };
 
-        let outcome = scene_store.write().await.save_reserved(pending);
+        let store = self
+            .0
+            .store
+            .as_ref()
+            .expect("persistent scene commit must retain its owning store");
+        let outcome = store.write().await.save_reserved(pending);
         match outcome {
             Ok(AtomicWriteOutcome::Written) => {
                 ticket.release(events);
@@ -297,6 +337,21 @@ impl SceneService {
                 ))
             }
         }
+    }
+
+    /// Persist the current named-scene projection through the owning store.
+    pub async fn save_snapshot(&self) -> anyhow::Result<()> {
+        let Some(store) = self.0.store.as_ref() else {
+            return Ok(());
+        };
+        let pending = {
+            let manager = self.snapshot().await;
+            store
+                .read()
+                .await
+                .reserve_save(manager.list().into_iter().cloned())?
+        };
+        store.write().await.save_reserved(pending).map(|_| ())
     }
 
     pub(crate) async fn publish_layout_activation<F>(

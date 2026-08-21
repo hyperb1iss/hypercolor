@@ -12,7 +12,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tempfile::TempDir;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::Notify;
 
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
@@ -37,7 +37,7 @@ fn state(initial: SpatialLayout) -> (SpatialService, SceneService, SceneTransact
         SpatialEngine::try_new(initial.clone()).expect("test spatial layout should be addressable");
     (
         SpatialService::new(spatial_engine),
-        SceneService::new(
+        SceneService::in_memory(
             SceneManager::with_default_layout(initial),
             Arc::new(HypercolorBus::new()),
         ),
@@ -49,17 +49,8 @@ async fn commit_scene_mutation(
     scene_manager: &SceneService,
     mutation: crate::domain::scene::SceneMutation,
 ) {
-    let tempdir = tempfile::tempdir().expect("scene transaction store tempdir");
-    let store = RwLock::new(
-        crate::scene_store::SceneStore::new(tempdir.path().join("scenes.json"))
-            .expect("scene transaction store should open"),
-    );
     scene_manager
-        .commit_mutation(
-            &store,
-            &crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
-            mutation,
-        )
+        .commit_mutation(mutation)
         .await
         .expect("scene transaction mutation should commit");
 }

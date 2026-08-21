@@ -873,7 +873,7 @@ mod tests {
 
     fn minimal_render_thread_state() -> RenderThreadState {
         let event_bus = Arc::new(HypercolorBus::new());
-        let scene_manager = SceneService::new(SceneManager::new(), Arc::clone(&event_bus));
+        let scene_manager = SceneService::in_memory(SceneManager::new(), Arc::clone(&event_bus));
         let scene_plan = scene_manager.plan_reader();
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
