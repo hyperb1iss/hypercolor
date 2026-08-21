@@ -465,8 +465,10 @@ impl AppState {
         let scene_manager = SceneService::new(scene_manager_inner, Arc::clone(&event_bus));
         let scene_store = Arc::new(RwLock::new(scene_store));
         let scene_transactions = SceneTransactionQueue::default();
-        let asset_library = AssetLibrary::open(data_dir.join("assets"))
-            .expect("default app state should open asset library");
+        let asset_library = Arc::new(RwLock::new(
+            AssetLibrary::open(data_dir.join("assets"))
+                .expect("default app state should open asset library"),
+        ));
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
@@ -576,6 +578,9 @@ impl AppState {
             Arc::clone(&scene_store),
             Arc::clone(&zone_layout_previews),
             runtime_session.clone(),
+            Arc::clone(&asset_library),
+            None,
+            Arc::clone(&render_loop),
         );
 
         Self {
@@ -587,7 +592,7 @@ impl AppState {
             scene_store,
             event_bus,
             macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
-            asset_library: Arc::new(RwLock::new(asset_library)),
+            asset_library,
             preview_runtime,
             zone_layout_previews,
             render_loop,
@@ -681,6 +686,9 @@ impl AppState {
             Arc::clone(&daemon.scene_store),
             Arc::clone(&daemon.zone_layout_previews),
             runtime_session.clone(),
+            Arc::clone(&daemon.asset_library),
+            Some(Arc::clone(&daemon.config_manager)),
+            Arc::clone(&daemon.render_loop),
         );
 
         Self {

@@ -4,10 +4,7 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, output_schema, serialize_result};
 use crate::api::AppState;
-use crate::api::scenes::{asset_mime_types, current_media_config};
-use crate::domain::scene::{
-    ActivateScene, CreateScene, activate_scene, create_scene, evaluate_scene_media_admission,
-};
+use crate::domain::scene::{ActivateScene, CreateScene, activate_scene, create_scene};
 use crate::domain::scene_tree::{ClearScene, PatchLayerControls};
 use crate::domain::{DomainError, MutationContext};
 use crate::mcp::results::{
@@ -189,9 +186,6 @@ pub(super) async fn handle_activate_scene_with_state(
         .get("transition_ms")
         .and_then(Value::as_u64)
         .unwrap_or(1000);
-    let asset_mime_types = asset_mime_types(state).await;
-    let media_config = current_media_config(state);
-
     let scene = {
         let scene_manager = state.scene_manager.snapshot().await;
         let candidates = scene_manager
@@ -205,7 +199,7 @@ pub(super) async fn handle_activate_scene_with_state(
             .map_err(|error| ToolError::selector("name", error))?
     };
 
-    let admission = evaluate_scene_media_admission(&scene, &asset_mime_types, &media_config);
+    let admission = state.scene.evaluate_media_admission(&scene).await;
     if let Some(details) = admission.violation.as_ref() {
         return Err(ToolError::Conflict(details.message.clone()));
     }

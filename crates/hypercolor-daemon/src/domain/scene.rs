@@ -51,7 +51,6 @@ use hypercolor_types::scene::{
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
 use crate::api::AppState;
-use crate::api::scenes::MediaAdmissionViolationDetails;
 use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
 use crate::domain::spatial::SpatialService;
@@ -1344,6 +1343,36 @@ pub async fn commit_retrying<T>(
 
 // ── Scene media admission ────────────────────────────────────────────────
 
+pub(crate) const MEDIA_SOFT_PRODUCER_COST_US: u64 = 60_000;
+const LOTTIE_PRODUCER_COST_US: u64 = 8_000;
+const VIDEO_PRODUCER_COST_US: u64 = 20_000;
+const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
+
+/// Structured producer-cap violation details shared by every adapter.
+#[derive(Debug)]
+pub struct MediaAdmissionViolationDetails {
+    pub message: String,
+    pub caps: serde_json::Value,
+    pub counts: serde_json::Value,
+    pub layers: serde_json::Value,
+}
+
+#[derive(Debug, Default)]
+struct MediaAdmissionCounts {
+    video_asset_ids: HashSet<AssetId>,
+    livestream_asset_ids: HashSet<AssetId>,
+    lottie_asset_ids: HashSet<AssetId>,
+    estimated_cost_us: u64,
+    video_layers: Vec<serde_json::Value>,
+    livestream_layers: Vec<serde_json::Value>,
+}
+
+impl MediaAdmissionCounts {
+    const fn estimated_cost_us(&self) -> u64 {
+        self.estimated_cost_us
+    }
+}
+
 /// What activating a scene would cost the compositor, and whether it
 /// exceeds the hard producer caps.
 #[derive(Debug)]
@@ -1362,21 +1391,19 @@ pub struct MediaAdmissionContext {
 }
 
 impl MediaAdmissionContext {
-    /// Resolve admission inputs only when a layer can add a media producer.
-    pub async fn for_layer(state: &AppState, layer: &SceneLayer) -> Option<Self> {
-        if !matches!(layer.source, LayerSource::Media { .. }) {
-            return None;
+    pub(crate) fn new(
+        asset_mime_types: HashMap<AssetId, String>,
+        media_config: MediaConfig,
+    ) -> Self {
+        Self {
+            asset_mime_types,
+            media_config,
         }
-        Some(Self {
-            asset_mime_types: crate::api::scenes::asset_mime_types(state).await,
-            media_config: crate::api::scenes::current_media_config(state),
-        })
     }
 
     /// Reject a mutated candidate that exceeds the configured producer caps.
     pub fn validate(&self, scene: &Scene) -> Result<(), DomainError> {
-        let admission =
-            evaluate_scene_media_admission(scene, &self.asset_mime_types, &self.media_config);
+        let admission = self.evaluate(scene);
         let Some(violation) = admission.violation else {
             return Ok(());
         };
@@ -1388,6 +1415,12 @@ impl MediaAdmissionContext {
                 "layers": violation.layers,
             }),
         ))
+    }
+
+    /// Evaluate a complete scene against these resolved inputs.
+    #[must_use]
+    pub fn evaluate(&self, scene: &Scene) -> SceneMediaAdmission {
+        evaluate_scene_media_admission(scene, &self.asset_mime_types, &self.media_config)
     }
 }
 
@@ -1412,13 +1445,10 @@ pub fn evaluate_scene_media_admission(
     asset_mime_types: &HashMap<AssetId, String>,
     media_config: &MediaConfig,
 ) -> SceneMediaAdmission {
-    let counts = crate::api::scenes::scene_media_admission_counts(scene, asset_mime_types);
+    let counts = scene_media_admission_counts(scene, asset_mime_types);
     SceneMediaAdmission {
         estimated_cost_us: counts.estimated_cost_us(),
-        violation: crate::api::scenes::scene_media_admission_violation_details(
-            &counts,
-            media_config,
-        ),
+        violation: scene_media_admission_violation_details(&counts, media_config),
     }
 }
 
@@ -1445,6 +1475,114 @@ pub fn validate_scene_media_admission(
             "layers": violation.layers,
         }),
     ))
+}
+
+fn scene_media_admission_violation_details(
+    counts: &MediaAdmissionCounts,
+    media_config: &MediaConfig,
+) -> Option<MediaAdmissionViolationDetails> {
+    let video_cap = usize::from(media_config.max_video_producers.clamp(1, 4));
+    let livestream_cap = usize::from(media_config.max_livestream_producers.clamp(0, 2));
+    let video_count = counts.video_asset_ids.len();
+    let livestream_count = counts.livestream_asset_ids.len();
+
+    if video_count <= video_cap && livestream_count <= livestream_cap {
+        return None;
+    }
+
+    let mut violations = Vec::new();
+    if video_count > video_cap {
+        violations.push(format!("video producers {video_count}/{video_cap}"));
+    }
+    if livestream_count > livestream_cap {
+        violations.push(format!(
+            "livestream producers {livestream_count}/{livestream_cap}"
+        ));
+    }
+
+    Some(MediaAdmissionViolationDetails {
+        message: format!(
+            "Scene exceeds media producer caps: {}",
+            violations.join(", ")
+        ),
+        caps: serde_json::json!({
+            "video": video_cap,
+            "livestream": livestream_cap,
+        }),
+        counts: serde_json::json!({
+            "video": video_count,
+            "livestream": livestream_count,
+        }),
+        layers: serde_json::json!({
+            "video": counts.video_layers,
+            "livestream": counts.livestream_layers,
+        }),
+    })
+}
+
+fn scene_media_admission_counts(
+    scene: &Scene,
+    asset_mime_types: &HashMap<AssetId, String>,
+) -> MediaAdmissionCounts {
+    let mut counts = MediaAdmissionCounts::default();
+
+    for zone in scene.zones.iter().filter(|zone| zone.enabled) {
+        for layer in zone.layers.iter().filter(|layer| layer.enabled) {
+            let LayerSource::Media { asset_id, .. } = &layer.source else {
+                continue;
+            };
+            let Some(mime_type) = asset_mime_types.get(asset_id) else {
+                continue;
+            };
+
+            match mime_type.as_str() {
+                "video/mp4" | "video/webm" => {
+                    if counts.video_asset_ids.insert(*asset_id) {
+                        counts.estimated_cost_us = counts
+                            .estimated_cost_us
+                            .saturating_add(VIDEO_PRODUCER_COST_US);
+                    }
+                    counts.video_layers.push(media_admission_layer_detail(
+                        zone, layer, *asset_id, mime_type,
+                    ));
+                }
+                "application/vnd.hypercolor.stream-url" => {
+                    if counts.livestream_asset_ids.insert(*asset_id) {
+                        counts.estimated_cost_us = counts
+                            .estimated_cost_us
+                            .saturating_add(LIVESTREAM_PRODUCER_COST_US);
+                    }
+                    counts.livestream_layers.push(media_admission_layer_detail(
+                        zone, layer, *asset_id, mime_type,
+                    ));
+                }
+                "application/json" if counts.lottie_asset_ids.insert(*asset_id) => {
+                    counts.estimated_cost_us = counts
+                        .estimated_cost_us
+                        .saturating_add(LOTTIE_PRODUCER_COST_US);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    counts
+}
+
+fn media_admission_layer_detail(
+    zone: &Zone,
+    layer: &SceneLayer,
+    asset_id: AssetId,
+    mime_type: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "zone_id": zone.id.to_string(),
+        "zone_name": &zone.name,
+        "layer_id": layer.id.to_string(),
+        "layer_name": &layer.name,
+        "asset_id": asset_id.to_string(),
+        "mime_type": mime_type,
+    })
 }
 
 // ── activate_scene ───────────────────────────────────────────────────────
@@ -1494,8 +1632,7 @@ pub async fn activate_scene(
 ) -> Result<SceneActivated, DomainError> {
     let _ = meta;
 
-    let asset_mime_types = crate::api::scenes::asset_mime_types(state).await;
-    let media_config = crate::api::scenes::current_media_config(state);
+    let media_admission = state.scene.media_admission_context().await;
     let display_surfaces = crate::api::displays::connected_display_surface_layouts(state).await;
     let _activation_guard = state
         .scene_transactions
@@ -1513,7 +1650,7 @@ pub async fn activate_scene(
     let scene_name = scene.name.clone();
     let layout_id = scene.layout_id.clone();
     let activation_brightness = scene.activation_brightness;
-    let admission = evaluate_scene_media_admission(scene, &asset_mime_types, &media_config);
+    let admission = media_admission.evaluate(scene);
     if let Some(message) = admission.rejection_message() {
         return Err(DomainError::validation(message.to_owned()));
     }
@@ -1527,13 +1664,10 @@ pub async fn activate_scene(
 
     let commit = commit_scene(state, mutation).await?;
 
-    crate::api::scenes::apply_scene_media_soft_admission(
-        state,
-        command.scene_id,
-        &scene_name,
-        admission.estimated_cost_us,
-    )
-    .await;
+    state
+        .scene
+        .apply_media_soft_admission(command.scene_id, &scene_name, admission.estimated_cost_us)
+        .await;
     let layout = apply_activation_layout(state, layout_guard, layout_id).await;
     let brightness = apply_activation_brightness(state, activation_brightness).await;
     crate::api::save_runtime_session_snapshot(state).await;
@@ -1850,7 +1984,8 @@ pub async fn replace_scene(
         return Err(DomainError::validation(errors.join("; ")));
     }
     mutation.update_scene(updated.clone())?;
-    crate::domain::layer::validate_candidate_media_admission(state, &mutation, updated.id).await?;
+    crate::domain::layer::validate_candidate_media_admission(&state.scene, &mutation, updated.id)
+        .await?;
     mutation.retire_scene_previews(updated.id);
     let commit = commit_scene(state, mutation).await?;
     crate::api::save_runtime_session_snapshot(state).await;

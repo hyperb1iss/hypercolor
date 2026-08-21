@@ -187,17 +187,10 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         .expect("zone update should follow scene B");
     assert_eq!(updated.zone.name, "candidate zone renamed");
 
-    let inserted = insert_layer(
-        &state,
-        shared_zone_id,
-        inserted_layer,
-        None,
-        None,
-        MutationContext::api(),
-    )
-    .await
-    .expect("layer insertion should follow scene B")
-    .expect("layer insertion should be admitted");
+    let inserted = insert_layer(&state.scene, shared_zone_id, inserted_layer, None, None)
+        .await
+        .expect("layer insertion should follow scene B")
+        .expect("layer insertion should be admitted");
     assert!(
         inserted
             .zone()
@@ -207,11 +200,10 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     );
 
     let reordered = reorder_layers(
-        &state,
+        &state.scene,
         shared_zone_id,
         vec![inserted_layer_id, shared_layer_ids[1], shared_layer_ids[0]],
         None,
-        MutationContext::api(),
     )
     .await
     .expect("layer reorder should follow scene B")
@@ -226,16 +218,10 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         vec![inserted_layer_id, shared_layer_ids[1], shared_layer_ids[0]]
     );
 
-    let removed = remove_layer(
-        &state,
-        shared_zone_id,
-        shared_layer_ids[1],
-        None,
-        MutationContext::api(),
-    )
-    .await
-    .expect("layer deletion should follow scene B")
-    .expect("layer deletion should be admitted");
+    let removed = remove_layer(&state.scene, shared_zone_id, shared_layer_ids[1], None)
+        .await
+        .expect("layer deletion should follow scene B")
+        .expect("layer deletion should be admitted");
     assert!(
         removed
             .zone()
@@ -331,35 +317,24 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     );
     assert_conflict(
         insert_layer(
-            &state,
+            &state.scene,
             zone_id,
             color_layer(SceneLayerId::new(), 2),
             None,
             Some(revision),
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
         reorder_layers(
-            &state,
+            &state.scene,
             zone_id,
             layer_ids.into_iter().rev().collect(),
             Some(revision),
-            MutationContext::api(),
         )
         .await,
     );
-    assert_conflict(
-        remove_layer(
-            &state,
-            zone_id,
-            layer_ids[0],
-            Some(revision),
-            MutationContext::api(),
-        )
-        .await,
-    );
+    assert_conflict(remove_layer(&state.scene, zone_id, layer_ids[0], Some(revision)).await);
 
     let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.get(&scene_id), Some(&scene));

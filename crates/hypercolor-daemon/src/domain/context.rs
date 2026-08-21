@@ -3,13 +3,21 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hypercolor_core::asset::AssetLibrary;
+use hypercolor_core::config::ConfigManager;
+use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
+use hypercolor_types::layer::{LayerSource, SceneLayer};
+use hypercolor_types::scene::{Scene, SceneId};
 use tokio::sync::{RwLock, watch};
 
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{COMMIT_ATTEMPTS, SceneMutation, SceneService};
+use crate::domain::scene::{
+    COMMIT_ATTEMPTS, MEDIA_SOFT_PRODUCER_COST_US, MediaAdmissionContext, SceneMediaAdmission,
+    SceneMutation, SceneService,
+};
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
@@ -116,6 +124,9 @@ pub struct SceneContext {
     scene_store: Arc<RwLock<SceneStore>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     runtime_session: RuntimeSessionService,
+    asset_library: Arc<RwLock<AssetLibrary>>,
+    config_manager: Option<Arc<ConfigManager>>,
+    render_loop: Arc<RwLock<RenderLoop>>,
 }
 
 impl SceneContext {
@@ -124,12 +135,18 @@ impl SceneContext {
         scene_store: Arc<RwLock<SceneStore>>,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
         runtime_session: RuntimeSessionService,
+        asset_library: Arc<RwLock<AssetLibrary>>,
+        config_manager: Option<Arc<ConfigManager>>,
+        render_loop: Arc<RwLock<RenderLoop>>,
     ) -> Self {
         Self {
             scenes,
             scene_store,
             zone_layout_previews,
             runtime_session,
+            asset_library,
+            config_manager,
+            render_loop,
         }
     }
 
@@ -181,5 +198,75 @@ impl SceneContext {
     /// Persist the durable runtime-session projection after a scene mutation.
     pub async fn save_runtime_session(&self) {
         self.runtime_session.save().await;
+    }
+
+    /// Resolve the current media producer policy and asset vocabulary.
+    pub async fn media_admission_context(&self) -> MediaAdmissionContext {
+        let asset_mime_types = {
+            let library = self.asset_library.read().await;
+            library
+                .records()
+                .iter()
+                .map(|record| (record.id, record.mime_type.clone()))
+                .collect()
+        };
+        let media_config = self
+            .config_manager
+            .as_ref()
+            .map_or_else(Default::default, |manager| manager.get().media.clone());
+        MediaAdmissionContext::new(asset_mime_types, media_config)
+    }
+
+    /// Resolve admission inputs only when a layer adds a media producer.
+    pub async fn media_admission_for_layer(
+        &self,
+        layer: &SceneLayer,
+    ) -> Option<MediaAdmissionContext> {
+        if !matches!(layer.source, LayerSource::Media { .. }) {
+            return None;
+        }
+        Some(self.media_admission_context().await)
+    }
+
+    /// Evaluate a complete scene against the current media producer policy.
+    pub async fn evaluate_media_admission(&self, scene: &Scene) -> SceneMediaAdmission {
+        self.media_admission_context().await.evaluate(scene)
+    }
+
+    /// Preemptively lower the render tier when admitted media cost exceeds the soft cap.
+    pub async fn apply_media_soft_admission(
+        &self,
+        scene_id: SceneId,
+        scene_name: &str,
+        estimated_cost_us: u64,
+    ) {
+        if estimated_cost_us <= MEDIA_SOFT_PRODUCER_COST_US {
+            return;
+        }
+
+        let mut render_loop = self.render_loop.write().await;
+        let current_tier = render_loop.stats().tier;
+        let Some(next_tier) = current_tier.downshift() else {
+            tracing::warn!(
+                %scene_id,
+                scene_name,
+                estimated_cost_us,
+                soft_cap_us = MEDIA_SOFT_PRODUCER_COST_US,
+                current_tier = %current_tier,
+                "Scene media producer cost exceeds soft cap but render loop is already at minimum tier"
+            );
+            return;
+        };
+
+        tracing::warn!(
+            %scene_id,
+            scene_name,
+            estimated_cost_us,
+            soft_cap_us = MEDIA_SOFT_PRODUCER_COST_US,
+            previous_tier = %current_tier,
+            next_tier = %next_tier,
+            "Scene media producer cost exceeds soft cap; preemptively downshifting render loop"
+        );
+        render_loop.set_tier(next_tier);
     }
 }

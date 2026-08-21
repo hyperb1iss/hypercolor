@@ -365,15 +365,8 @@ pub async fn create_layer(
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
-    let inserted = crate::domain::layer::insert_layer(
-        state.as_ref(),
-        zone_id,
-        layer,
-        None,
-        expected,
-        MutationContext::api(),
-    )
-    .await;
+    let inserted =
+        crate::domain::layer::insert_layer(&state.scene, zone_id, layer, None, expected).await;
 
     match inserted {
         Ok(Ok(written)) => {
@@ -405,14 +398,7 @@ pub async fn reorder_layers(
     };
 
     layer_stack_response(
-        crate::domain::layer::reorder_layers(
-            state.as_ref(),
-            zone_id,
-            body.order,
-            expected,
-            MutationContext::api(),
-        )
-        .await,
+        crate::domain::layer::reorder_layers(&state.scene, zone_id, body.order, expected).await,
         zone_id,
     )
 }
@@ -474,14 +460,7 @@ pub async fn delete_layer(
     };
 
     layer_stack_response(
-        crate::domain::layer::remove_layer(
-            state.as_ref(),
-            zone_id,
-            layer_id,
-            expected,
-            MutationContext::api(),
-        )
-        .await,
+        crate::domain::layer::remove_layer(&state.scene, zone_id, layer_id, expected).await,
         zone_id,
     )
 }

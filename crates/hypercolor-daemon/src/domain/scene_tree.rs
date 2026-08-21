@@ -31,7 +31,7 @@ use hypercolor_core::scene::{LayerMutationError, OutputPlacement};
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{MediaAdmissionContext, SceneMutation, commit_scene};
+use crate::domain::scene::{SceneMutation, commit_scene};
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 
 // ── Projection ───────────────────────────────────────────────────────────
@@ -429,7 +429,7 @@ pub async fn replace_layer(
 ) -> Result<ZoneWritten, DomainError> {
     let _ = meta;
 
-    let media_admission = MediaAdmissionContext::for_layer(state, &command.layer).await;
+    let media_admission = state.scene.media_admission_for_layer(&command.layer).await;
     let mut mutation = state.scene_manager.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("replacing a layer")?;

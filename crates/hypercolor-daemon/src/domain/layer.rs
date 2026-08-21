@@ -22,10 +22,10 @@ use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
-use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{MediaAdmissionContext, SceneMutation, commit_scene};
-use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::domain::context::SceneContext;
+use crate::domain::scene::SceneMutation;
+use crate::domain::{DomainError, ResourceKind};
 
 /// The outcome of a layer-stack mutation.
 #[derive(Debug)]
@@ -59,17 +59,14 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn insert_layer(
-    state: &AppState,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer: SceneLayer,
     index: Option<usize>,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let media_admission = MediaAdmissionContext::for_layer(state, &layer).await;
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let media_admission = ctx.media_admission_for_layer(&layer).await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
@@ -84,7 +81,7 @@ pub async fn insert_layer(
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
         media_admission.validate(scene)?;
     }
-    finish(state, mutation, vec![zone]).await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 /// Drop one layer out of a zone's stack.
@@ -93,15 +90,12 @@ pub async fn insert_layer(
 ///
 /// As [`insert_layer`].
 pub async fn remove_layer(
-    state: &AppState,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("deleting a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
@@ -109,7 +103,7 @@ pub async fn remove_layer(
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(state, mutation, vec![zone]).await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 /// Rewrite a zone's layer order.
@@ -118,15 +112,12 @@ pub async fn remove_layer(
 ///
 /// As [`insert_layer`].
 pub async fn reorder_layers(
-    state: &AppState,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer_ids: Vec<SceneLayerId>,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("reordering layers")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
@@ -134,21 +125,19 @@ pub async fn reorder_layers(
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(state, mutation, vec![zone]).await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 pub(crate) async fn validate_candidate_media_admission(
-    state: &AppState,
+    ctx: &SceneContext,
     mutation: &SceneMutation,
     scene_id: SceneId,
 ) -> Result<(), DomainError> {
-    let asset_mime_types = crate::api::scenes::asset_mime_types(state).await;
-    let media_config = crate::api::scenes::current_media_config(state);
     let scene = mutation
         .scenes()
         .get(&scene_id)
         .ok_or_else(|| DomainError::not_found(crate::domain::ResourceKind::Scene, scene_id))?;
-    crate::domain::scene::validate_scene_media_admission(scene, &asset_mime_types, &media_config)
+    ctx.media_admission_context().await.validate(scene)
 }
 
 /// Merge control overrides into one effect layer.
@@ -157,16 +146,13 @@ pub(crate) async fn validate_candidate_media_admission(
 ///
 /// As [`insert_layer`].
 pub async fn patch_layer_controls(
-    state: &AppState,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     controls: HashMap<String, ControlValue>,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
@@ -174,18 +160,18 @@ pub async fn patch_layer_controls(
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(state, mutation, vec![zone]).await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 /// Record both events every layer mutation publishes, commit, and record
 /// the new stack in the session snapshot.
 async fn finish(
-    state: &AppState,
+    ctx: &SceneContext,
     mutation: SceneMutation,
     zones: Vec<Zone>,
 ) -> Result<LayerResult, DomainError> {
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.commit(mutation).await?;
+    ctx.save_runtime_session().await;
 
     Ok(Ok(LayerStackWritten { zones, commit }))
 }

@@ -1,28 +1,19 @@
 //! Scene endpoints — `/api/v1/scenes/*`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use tracing::warn;
 
 use hypercolor_core::scene::SceneManager;
-use hypercolor_types::asset::AssetId;
-use hypercolor_types::config::MediaConfig;
-use hypercolor_types::layer::{LayerSource, SceneLayer};
-use hypercolor_types::scene::{Scene, SceneId, SceneKind, Zone};
+use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
 use crate::api::AppState;
 use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
-
-const MEDIA_SOFT_PRODUCER_COST_US: u64 = 60_000;
-const LOTTIE_PRODUCER_COST_US: u64 = 8_000;
-const VIDEO_PRODUCER_COST_US: u64 = 20_000;
-const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -201,8 +192,6 @@ pub async fn activate_scene(
     // renders it from the shared evaluation rather than from the service's
     // error text. The service enforces the same rule regardless.
     let (scene_id, admission) = {
-        let asset_mime_types = asset_mime_types(state.as_ref()).await;
-        let media_config = current_media_config(state.as_ref());
         let manager = state.scene_manager.snapshot().await;
         let Some(scene_id) = resolve_scene_id(&manager, &id) else {
             return DomainError::not_found(ResourceKind::Scene, &id).into_response();
@@ -210,11 +199,7 @@ pub async fn activate_scene(
         let Some(scene) = manager.get(&scene_id) else {
             return DomainError::not_found(ResourceKind::Scene, &id).into_response();
         };
-        let admission = crate::domain::scene::evaluate_scene_media_admission(
-            scene,
-            &asset_mime_types,
-            &media_config,
-        );
+        let admission = state.scene.evaluate_media_admission(scene).await;
         (scene_id, admission)
     };
     if let Some(violation) = admission.violation.as_ref() {
@@ -287,190 +272,5 @@ fn resolve_stored_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<S
         manager
             .get(scene_id)
             .is_some_and(|scene| scene.kind == SceneKind::Named)
-    })
-}
-
-pub(crate) async fn asset_mime_types(state: &AppState) -> HashMap<AssetId, String> {
-    let library = state.asset_library.read().await;
-    library
-        .records()
-        .iter()
-        .map(|record| (record.id, record.mime_type.clone()))
-        .collect()
-}
-
-pub(crate) fn current_media_config(state: &AppState) -> MediaConfig {
-    state
-        .config_manager
-        .as_ref()
-        .map_or_else(MediaConfig::default, |manager| manager.get().media.clone())
-}
-
-#[derive(Debug)]
-pub struct MediaAdmissionViolationDetails {
-    pub message: String,
-    pub caps: serde_json::Value,
-    pub counts: serde_json::Value,
-    pub layers: serde_json::Value,
-}
-
-pub(crate) fn scene_media_admission_violation_details(
-    counts: &MediaAdmissionCounts,
-    media_config: &MediaConfig,
-) -> Option<MediaAdmissionViolationDetails> {
-    let video_cap = usize::from(media_config.max_video_producers.clamp(1, 4));
-    let livestream_cap = usize::from(media_config.max_livestream_producers.clamp(0, 2));
-    let video_count = counts.video_asset_ids.len();
-    let livestream_count = counts.livestream_asset_ids.len();
-
-    if video_count <= video_cap && livestream_count <= livestream_cap {
-        return None;
-    }
-
-    let mut violations = Vec::new();
-    if video_count > video_cap {
-        violations.push(format!("video producers {video_count}/{video_cap}"));
-    }
-    if livestream_count > livestream_cap {
-        violations.push(format!(
-            "livestream producers {livestream_count}/{livestream_cap}"
-        ));
-    }
-
-    Some(MediaAdmissionViolationDetails {
-        message: format!(
-            "Scene exceeds media producer caps: {}",
-            violations.join(", ")
-        ),
-        caps: serde_json::json!({
-            "video": video_cap,
-            "livestream": livestream_cap,
-        }),
-        counts: serde_json::json!({
-            "video": video_count,
-            "livestream": livestream_count,
-        }),
-        layers: serde_json::json!({
-            "video": counts.video_layers,
-            "livestream": counts.livestream_layers,
-        }),
-    })
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct MediaAdmissionCounts {
-    video_asset_ids: HashSet<AssetId>,
-    livestream_asset_ids: HashSet<AssetId>,
-    lottie_asset_ids: HashSet<AssetId>,
-    estimated_cost_us: u64,
-    video_layers: Vec<serde_json::Value>,
-    livestream_layers: Vec<serde_json::Value>,
-}
-
-impl MediaAdmissionCounts {
-    /// Estimated per-frame producer cost in microseconds.
-    pub(crate) const fn estimated_cost_us(&self) -> u64 {
-        self.estimated_cost_us
-    }
-}
-
-pub(crate) fn scene_media_admission_counts(
-    scene: &Scene,
-    asset_mime_types: &HashMap<AssetId, String>,
-) -> MediaAdmissionCounts {
-    let mut counts = MediaAdmissionCounts::default();
-
-    for group in scene.zones.iter().filter(|group| group.enabled) {
-        for layer in group.layers.iter().filter(|layer| layer.enabled) {
-            let LayerSource::Media { asset_id, .. } = &layer.source else {
-                continue;
-            };
-            let Some(mime_type) = asset_mime_types.get(asset_id) else {
-                continue;
-            };
-
-            match mime_type.as_str() {
-                "video/mp4" | "video/webm" => {
-                    if counts.video_asset_ids.insert(*asset_id) {
-                        counts.estimated_cost_us = counts
-                            .estimated_cost_us
-                            .saturating_add(VIDEO_PRODUCER_COST_US);
-                    }
-                    counts.video_layers.push(media_admission_layer_detail(
-                        group, layer, *asset_id, mime_type,
-                    ));
-                }
-                "application/vnd.hypercolor.stream-url" => {
-                    if counts.livestream_asset_ids.insert(*asset_id) {
-                        counts.estimated_cost_us = counts
-                            .estimated_cost_us
-                            .saturating_add(LIVESTREAM_PRODUCER_COST_US);
-                    }
-                    counts.livestream_layers.push(media_admission_layer_detail(
-                        group, layer, *asset_id, mime_type,
-                    ));
-                }
-                "application/json" if counts.lottie_asset_ids.insert(*asset_id) => {
-                    counts.estimated_cost_us = counts
-                        .estimated_cost_us
-                        .saturating_add(LOTTIE_PRODUCER_COST_US);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    counts
-}
-
-pub(crate) async fn apply_scene_media_soft_admission(
-    state: &AppState,
-    scene_id: SceneId,
-    scene_name: &str,
-    estimated_cost_us: u64,
-) {
-    if estimated_cost_us <= MEDIA_SOFT_PRODUCER_COST_US {
-        return;
-    }
-
-    let mut render_loop = state.render_loop.write().await;
-    let current_tier = render_loop.stats().tier;
-    let Some(next_tier) = current_tier.downshift() else {
-        warn!(
-            %scene_id,
-            scene_name,
-            estimated_cost_us,
-            soft_cap_us = MEDIA_SOFT_PRODUCER_COST_US,
-            current_tier = %current_tier,
-            "Scene media producer cost exceeds soft cap but render loop is already at minimum tier"
-        );
-        return;
-    };
-
-    warn!(
-        %scene_id,
-        scene_name,
-        estimated_cost_us,
-        soft_cap_us = MEDIA_SOFT_PRODUCER_COST_US,
-        previous_tier = %current_tier,
-        next_tier = %next_tier,
-        "Scene media producer cost exceeds soft cap; preemptively downshifting render loop"
-    );
-    render_loop.set_tier(next_tier);
-}
-
-fn media_admission_layer_detail(
-    zone: &Zone,
-    layer: &SceneLayer,
-    asset_id: AssetId,
-    mime_type: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "zone_id": zone.id.to_string(),
-        "zone_name": &zone.name,
-        "layer_id": layer.id.to_string(),
-        "layer_name": &layer.name,
-        "asset_id": asset_id.to_string(),
-        "mime_type": mime_type,
     })
 }
