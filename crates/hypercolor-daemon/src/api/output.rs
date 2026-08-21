@@ -17,7 +17,7 @@ use crate::domain;
 
 /// `GET /api/v1/output` — Read global output power and brightness.
 pub async fn get_output(State(state): State<Arc<AppState>>) -> Response {
-    envelope::ok(domain::output::get_output(state.as_ref()))
+    envelope::ok(domain::output::get_output(&state.output))
 }
 
 /// `PATCH /api/v1/output` — Set power, brightness, or both.
@@ -25,7 +25,7 @@ pub async fn patch_output(
     State(state): State<Arc<AppState>>,
     Json(request): Json<OutputPatchRequest>,
 ) -> Response {
-    match domain::output::patch_output(state.as_ref(), request).await {
+    match domain::output::patch_output(&state.output, request).await {
         Ok(output) => envelope::ok(output),
         Err(error) => error.into_response(),
     }

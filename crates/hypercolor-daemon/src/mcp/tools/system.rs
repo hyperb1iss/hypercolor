@@ -134,7 +134,7 @@ pub(super) async fn handle_set_output_power_with_state(
 ) -> Result<Value, ToolError> {
     let requested = parse_output_power_mode(params)?;
     let outcome = output::patch_output(
-        state,
+        &state.output,
         OutputPatchRequest {
             power: Some(requested),
             brightness: None,

@@ -1243,11 +1243,10 @@ async fn run_identify_flash(
 
     let power = *state.power_state.borrow();
     if power.sleeping() {
-        super::effects::publish_static_output_snapshot(
-            state.as_ref(),
-            power.effective_off_output_color(),
-        )
-        .await;
+        state
+            .output
+            .publish_static_snapshot(power.effective_off_output_color())
+            .await;
     }
     debug!(
         backend_id = %backend_id,

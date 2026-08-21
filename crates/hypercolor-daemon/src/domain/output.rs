@@ -12,15 +12,193 @@
 //! `0.0..=1.0` bound is a domain rule that renders as a validation
 //! error, not a parse failure.
 
-use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode, OutputResource};
-use hypercolor_types::event::HypercolorEvent;
+use std::sync::Arc;
+use std::time::Instant;
 
-use crate::api::AppState;
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::device::BackendManager;
+use hypercolor_core::engine::{RenderLoop, RenderLoopState};
+use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode, OutputResource};
+use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::event::{FrameData, HypercolorEvent, ZoneColors};
+use hypercolor_types::session::OffOutputBehavior;
+use tokio::sync::{Mutex, RwLock, watch};
+
+use crate::device_settings::DeviceSettingsStore;
 use crate::domain::DomainError;
+use crate::domain::context::{DeviceContext, RuntimeSessionService};
+use crate::domain::spatial::SpatialService;
+use crate::performance::PerformanceTracker;
+use crate::preview_runtime::PreviewRuntime;
 use crate::session::{
     OutputOverride, OutputPowerState, clear_output_override, current_global_brightness,
-    set_global_brightness, set_manual_pause,
+    set_global_brightness, set_manual_pause, set_output_stopped,
 };
+
+/// Owning authority for global output power, brightness, and quiescence.
+#[derive(Clone)]
+pub struct OutputContext {
+    power: watch::Sender<OutputPowerState>,
+    transition: Arc<Mutex<()>>,
+    settings: Arc<RwLock<DeviceSettingsStore>>,
+    event_bus: Arc<HypercolorBus>,
+    runtime_session: RuntimeSessionService,
+    performance: Arc<RwLock<PerformanceTracker>>,
+    render_loop: Arc<RwLock<RenderLoop>>,
+    spatial: SpatialService,
+    backend_manager: Arc<Mutex<BackendManager>>,
+    preview_runtime: Arc<PreviewRuntime>,
+    devices: DeviceContext,
+    start_time: Instant,
+}
+
+impl OutputContext {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the composition root supplies the complete output ownership boundary"
+    )]
+    pub(crate) fn new(
+        power: watch::Sender<OutputPowerState>,
+        transition: Arc<Mutex<()>>,
+        settings: Arc<RwLock<DeviceSettingsStore>>,
+        event_bus: Arc<HypercolorBus>,
+        runtime_session: RuntimeSessionService,
+        performance: Arc<RwLock<PerformanceTracker>>,
+        render_loop: Arc<RwLock<RenderLoop>>,
+        spatial: SpatialService,
+        backend_manager: Arc<Mutex<BackendManager>>,
+        preview_runtime: Arc<PreviewRuntime>,
+        devices: DeviceContext,
+        start_time: Instant,
+    ) -> Self {
+        Self {
+            power,
+            transition,
+            settings,
+            event_bus,
+            runtime_session,
+            performance,
+            render_loop,
+            spatial,
+            backend_manager,
+            preview_runtime,
+            devices,
+            start_time,
+        }
+    }
+
+    /// Whether output is awake and the render loop is running.
+    pub async fn is_running(&self) -> bool {
+        !self.power.borrow().sleeping()
+            && self.render_loop.read().await.state() != RenderLoopState::Paused
+    }
+
+    /// Bring output back to running before a freshly applied effect starts.
+    pub async fn wake_for_effect_start(&self) -> bool {
+        if self.is_running().await {
+            return true;
+        }
+        set_power(self, OutputPowerMode::Running).await;
+        self.is_running().await
+    }
+
+    /// Quiesce render and network output after the final effect stops.
+    pub async fn quiesce_after_effect_stop(&self) -> usize {
+        let _transition_guard = self.transition.lock().await;
+        self.render_loop.write().await.pause();
+        set_output_stopped(&self.power, &self.event_bus);
+        let released = self.devices.release_renderable_network_devices().await;
+        self.publish_static_snapshot([0, 0, 0]).await;
+        self.performance.write().await.clear_frame_timings();
+        released
+    }
+
+    /// Re-publish a held static frame after output topology changes.
+    pub async fn reconcile_static_hold(&self) -> bool {
+        let _transition_guard = self.transition.lock().await;
+        let output_power = *self.power.borrow();
+        if !output_power.sleeping()
+            || output_power.effective_off_output_behavior() != OffOutputBehavior::Static
+        {
+            return false;
+        }
+
+        self.publish_static_snapshot(output_power.effective_off_output_color())
+            .await;
+        true
+    }
+
+    pub async fn publish_static_snapshot(&self, color: [u8; 3]) {
+        let (layout, canvas, mut zones) = {
+            let spatial = self.spatial.snapshot();
+            let layout = spatial.layout();
+            let Ok(mut canvas) = Canvas::try_new(layout.canvas_width, layout.canvas_height)
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "Static output canvas allocation failed; preserving the last published output");
+                })
+            else {
+                return;
+            };
+            canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
+            let Ok(zones) = spatial.try_sample(&canvas).inspect_err(|error| {
+                tracing::warn!(%error, "Static output sampling failed; preserving the last published output");
+            }) else {
+                return;
+            };
+            (layout, canvas, zones)
+        };
+        let frame_number = self
+            .event_bus
+            .frame_receiver()
+            .borrow()
+            .frame_number
+            .saturating_add(1);
+        let elapsed_ms = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+
+        let write_stats = {
+            let mut backend_manager = self.backend_manager.lock().await;
+            let unassigned_outputs = backend_manager.unassigned_output_zones(layout.as_ref());
+            if unassigned_outputs.is_empty() {
+                backend_manager.write_frame(&zones, layout.as_ref()).await
+            } else {
+                zones.extend(unassigned_outputs.iter().map(|output| ZoneColors {
+                    zone_id: output.id.clone(),
+                    colors: vec![
+                        color;
+                        usize::try_from(output.topology.led_count()).unwrap_or_default()
+                    ],
+                }));
+                let mut static_layout = layout.as_ref().clone();
+                static_layout.zones.extend(unassigned_outputs);
+                backend_manager.write_frame(&zones, &static_layout).await
+            }
+        };
+        if !write_stats.errors.is_empty() {
+            tracing::warn!(
+                error_count = write_stats.errors.len(),
+                "One-shot static frame encountered output errors while quiescing effect output"
+            );
+        }
+
+        let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
+        let group_frame = hypercolor_core::bus::DisplayGroupFrame::Canvas(canvas_frame.clone());
+        let (_, display_group_targets) = self.event_bus.display_group_targets_snapshot();
+        for group_id in display_group_targets.keys().copied() {
+            self.event_bus
+                .group_canvas_sender(group_id)
+                .send_replace(group_frame.clone());
+        }
+        self.event_bus
+            .frame_sender()
+            .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
+        self.event_bus
+            .scene_canvas_sender()
+            .send_replace(canvas_frame.clone());
+        self.event_bus.canvas_sender().send_replace(canvas_frame);
+        self.preview_runtime
+            .record_canvas_publication(frame_number, elapsed_ms);
+    }
+}
 
 /// Which outputs a released pause has to reconnect on resume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,8 +208,8 @@ enum OutputReconnectScope {
 }
 
 /// Read the live output resource.
-pub fn get_output(state: &AppState) -> OutputResource {
-    let power = *state.power_state.borrow();
+pub fn get_output(ctx: &OutputContext) -> OutputResource {
+    let power = *ctx.power.borrow();
     OutputResource {
         power: observed_power(power),
         brightness: power.global_brightness,
@@ -46,7 +224,7 @@ pub fn get_output(state: &AppState) -> OutputResource {
 /// 200 there is the same defect class as a silently discarded query
 /// filter. Callers wanting a read use `GET /output`.
 pub async fn patch_output(
-    state: &AppState,
+    ctx: &OutputContext,
     request: OutputPatchRequest,
 ) -> Result<OutputResource, DomainError> {
     let OutputPatchRequest { power, brightness } = request;
@@ -57,18 +235,18 @@ pub async fn patch_output(
     }
 
     if let Some(brightness) = brightness {
-        set_brightness(state, brightness).await?;
+        set_brightness(ctx, brightness).await?;
     }
     if let Some(power) = power {
-        set_power(state, power).await;
+        set_power(ctx, power).await;
     }
 
-    Ok(get_output(state))
+    Ok(get_output(ctx))
 }
 
 /// Set global brightness, persisting it and mirroring it into live
 /// power state.
-pub async fn set_brightness(state: &AppState, brightness: f32) -> Result<(), DomainError> {
+pub async fn set_brightness(ctx: &OutputContext, brightness: f32) -> Result<(), DomainError> {
     if !(0.0..=1.0).contains(&brightness) {
         return Err(DomainError::validation_field(
             "brightness",
@@ -76,10 +254,10 @@ pub async fn set_brightness(state: &AppState, brightness: f32) -> Result<(), Dom
         ));
     }
 
-    let previous = brightness_percent(current_global_brightness(&state.power_state));
+    let previous = brightness_percent(current_global_brightness(&ctx.power));
 
     {
-        let mut settings = state.device_settings.write().await;
+        let mut settings = ctx.settings.write().await;
         settings.set_global_brightness(brightness);
         settings.save().map_err(|error| {
             DomainError::Internal(anyhow::anyhow!(
@@ -87,41 +265,40 @@ pub async fn set_brightness(state: &AppState, brightness: f32) -> Result<(), Dom
             ))
         })?;
     }
-    state
-        .event_bus
+    ctx.event_bus
         .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
 
-    set_global_brightness(&state.power_state, brightness);
-    state.event_bus.publish(HypercolorEvent::BrightnessChanged {
+    set_global_brightness(&ctx.power, brightness);
+    ctx.event_bus.publish(HypercolorEvent::BrightnessChanged {
         old: previous,
         new_value: brightness_percent(brightness),
     });
 
-    crate::api::save_runtime_session_snapshot(state).await;
+    ctx.runtime_session.save().await;
     Ok(())
 }
 
 /// Drive global output power to the requested mode.
-pub async fn set_power(state: &AppState, requested: OutputPowerMode) {
-    let _transition_guard = state.output_power_transition.lock().await;
-    let previous = *state.power_state.borrow();
+pub async fn set_power(ctx: &OutputContext, requested: OutputPowerMode) {
+    let _transition_guard = ctx.transition.lock().await;
+    let previous = *ctx.power.borrow();
     match requested {
         OutputPowerMode::Paused => {
             let static_color = [0, 0, 0];
-            set_manual_pause(&state.power_state, &state.event_bus, true, static_color);
-            schedule_released_output_reconnect(state, previous);
-            crate::api::effects::publish_static_output_snapshot(state, static_color).await;
-            state.performance.write().await.clear_frame_timings();
-            state.render_loop.write().await.pause();
+            set_manual_pause(&ctx.power, &ctx.event_bus, true, static_color);
+            schedule_released_output_reconnect(ctx, previous);
+            ctx.publish_static_snapshot(static_color).await;
+            ctx.performance.write().await.clear_frame_timings();
+            ctx.render_loop.write().await.pause();
         }
         OutputPowerMode::Running => {
-            clear_output_override(&state.power_state, &state.event_bus);
-            state.render_loop.write().await.resume();
-            schedule_released_output_reconnect(state, previous);
+            clear_output_override(&ctx.power, &ctx.event_bus);
+            ctx.render_loop.write().await.resume();
+            schedule_released_output_reconnect(ctx, previous);
         }
     }
 
-    crate::api::save_runtime_session_snapshot(state).await;
+    ctx.runtime_session.save().await;
 }
 
 /// Project internal power state onto the two observable modes.
@@ -147,13 +324,13 @@ fn observed_power(power: OutputPowerState) -> OutputPowerMode {
     }
 }
 
-fn schedule_released_output_reconnect(state: &AppState, previous: OutputPowerState) {
+fn schedule_released_output_reconnect(ctx: &OutputContext, previous: OutputPowerState) {
     match released_output_reconnect_scope(previous) {
         Some(OutputReconnectScope::All) => {
-            crate::api::effects::schedule_all_output_reconnect(state);
+            ctx.devices.schedule_output_reconnect(false);
         }
         Some(OutputReconnectScope::Network) => {
-            crate::api::effects::schedule_network_output_reconnect(state);
+            ctx.devices.schedule_output_reconnect(true);
         }
         None => {}
     }

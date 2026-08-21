@@ -252,12 +252,11 @@ pub async fn apply_effect(
 
     // Every refusal above returns before this point, so nothing the
     // caller can get rejected for has woken output (Spec 78 §2.3).
-    let output =
-        if command.wake_output && !crate::api::effects::wake_output_for_effect_start(state).await {
-            SideEffectOutcome::failed("output did not resume; patch /output to retry")
-        } else {
-            SideEffectOutcome::applied()
-        };
+    let output = if command.wake_output && !state.output.wake_for_effect_start().await {
+        SideEffectOutcome::failed("output did not resume; patch /output to retry")
+    } else {
+        SideEffectOutcome::applied()
+    };
 
     crate::api::save_runtime_session_snapshot(state).await;
 

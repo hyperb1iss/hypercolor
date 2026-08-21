@@ -401,7 +401,7 @@ pub async fn clear_scene(
 
     let commit = commit_scene(state, mutation).await?;
     if command.zone.is_none() {
-        crate::api::effects::quiesce_output_after_effect_stop(state).await;
+        state.output.quiesce_after_effect_stop().await;
     }
     crate::api::save_runtime_session_snapshot(state).await;
 

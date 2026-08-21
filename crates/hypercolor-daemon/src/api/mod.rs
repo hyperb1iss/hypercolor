@@ -88,6 +88,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{DeviceContext, RuntimeSessionService, SceneContext};
+use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
@@ -132,6 +133,9 @@ pub struct AppState {
 
     /// Device lifecycle and discovery-layout reconciliation authority.
     pub devices: DeviceContext,
+
+    /// Global output power, brightness, and quiescence authority.
+    pub output: OutputContext,
 
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
@@ -379,13 +383,28 @@ impl AppState {
         }
     }
 
+    #[doc(hidden)]
+    pub fn new_with_data_dir(data_dir: PathBuf) -> Self {
+        Self::new_with_runtime_overrides(data_dir, None, None)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "test-facing app state construction wires all shared subsystems in one place"
     )]
     #[doc(hidden)]
-    pub fn new_with_data_dir(data_dir: PathBuf) -> Self {
+    pub fn new_with_runtime_overrides(
+        data_dir: PathBuf,
+        config_manager: Option<Arc<ConfigManager>>,
+        driver_registry: Option<Arc<DriverModuleRegistry>>,
+    ) -> Self {
         use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+        let config = config_manager
+            .as_ref()
+            .map_or_else(HypercolorConfig::default, |manager| {
+                manager.get().as_ref().clone()
+            });
 
         let default_layout = SpatialLayout {
             id: "default".into(),
@@ -491,8 +510,8 @@ impl AppState {
         let interaction_routing = InteractionRoutingControl::new(
             browser_input.registry(),
             1,
-            HypercolorConfig::default().input.daemon_route,
-            HypercolorConfig::default().input.preview_route,
+            config.input.daemon_route,
+            config.input.preview_route,
         );
         let mut standalone_input_manager = InputManager::new();
         standalone_input_manager.add_source(Box::new(browser_input_source));
@@ -525,14 +544,16 @@ impl AppState {
             DriverInventoryStore::open(data_dir.join(DRIVER_INVENTORY_FILENAME))
                 .expect("default app state should open driver inventory"),
         );
-        let driver_registry = Arc::new(
-            network::build_builtin_driver_module_registry(
-                &HypercolorConfig::default(),
-                Arc::clone(&credential_store),
-                usb_protocol_configs.clone(),
+        let driver_registry = driver_registry.unwrap_or_else(|| {
+            Arc::new(
+                network::build_builtin_driver_module_registry(
+                    &config,
+                    Arc::clone(&credential_store),
+                    usb_protocol_configs.clone(),
+                )
+                .expect("default app state should build driver module registry"),
             )
-            .expect("default app state should build driver module registry"),
-        );
+        });
         let driver_host = Arc::new(DaemonDriverHost::new(
             device_registry.clone(),
             Arc::clone(&backend_manager),
@@ -556,7 +577,7 @@ impl AppState {
             Arc::clone(&driver_registry),
             Arc::clone(&discovery_in_progress),
             scene_transactions.clone(),
-            None,
+            config_manager.clone(),
         ));
         {
             let mut manager = backend_manager.try_lock().expect(
@@ -578,6 +599,8 @@ impl AppState {
         );
         let devices = DeviceContext::new(
             Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+            config_manager.clone(),
             Arc::clone(&layout_auto_exclusions),
             layout_auto_exclusions_path.clone(),
         );
@@ -587,15 +610,32 @@ impl AppState {
             Arc::clone(&zone_layout_previews),
             runtime_session.clone(),
             Arc::clone(&asset_library),
-            None,
+            config_manager.clone(),
             Arc::clone(&render_loop),
             devices.clone(),
+        );
+        let output_power_transition = Arc::new(Mutex::new(()));
+        let start_time = Instant::now();
+        let output = OutputContext::new(
+            power_state.clone(),
+            Arc::clone(&output_power_transition),
+            Arc::clone(&device_settings),
+            Arc::clone(&event_bus),
+            runtime_session.clone(),
+            Arc::clone(&performance),
+            Arc::clone(&render_loop),
+            spatial_engine.clone(),
+            Arc::clone(&backend_manager),
+            Arc::clone(&preview_runtime),
+            devices.clone(),
+            start_time,
         );
 
         Self {
             scene,
             runtime_session,
             devices,
+            output,
             device_registry,
             effect_registry,
             scene_manager,
@@ -615,7 +655,7 @@ impl AppState {
             device_metrics,
             lifecycle_manager,
             reconnect_tasks,
-            config_manager: None,
+            config_manager,
             data_dir,
             extensions: ExtensionRegistry::default(),
             api_extensions: Vec::new(),
@@ -652,18 +692,18 @@ impl AppState {
             logical_devices_path,
             runtime_state_path,
             power_state,
-            output_power_transition: Arc::new(Mutex::new(())),
+            output_power_transition,
             scene_transactions,
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
-            start_time: Instant::now(),
+            start_time,
             server_identity: ServerIdentity {
                 instance_id: "00000000-0000-7000-8000-000000000000".to_owned(),
                 instance_name: "hypercolor".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
             server_session_id: None,
-            security_state: security::SecurityState::from_config(&HypercolorConfig::default()),
+            security_state: security::SecurityState::from_config(&config),
         }
     }
 
@@ -693,6 +733,8 @@ impl AppState {
         );
         let devices = DeviceContext::new(
             Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+            Some(Arc::clone(&daemon.config_manager)),
             Arc::clone(&daemon.layout_auto_exclusions),
             daemon.layout_auto_exclusions_path.clone(),
         );
@@ -706,11 +748,26 @@ impl AppState {
             Arc::clone(&daemon.render_loop),
             devices.clone(),
         );
+        let output = OutputContext::new(
+            daemon.power_state.clone(),
+            Arc::clone(&daemon.output_power_transition),
+            Arc::clone(&daemon.device_settings),
+            Arc::clone(&daemon.event_bus),
+            runtime_session.clone(),
+            Arc::clone(&daemon.performance),
+            Arc::clone(&daemon.render_loop),
+            daemon.spatial_engine.clone(),
+            Arc::clone(&daemon.backend_manager),
+            Arc::clone(&daemon.preview_runtime),
+            devices.clone(),
+            daemon.start_time,
+        );
 
         Self {
             scene,
             runtime_session,
             devices,
+            output,
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),

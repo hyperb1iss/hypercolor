@@ -8,6 +8,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
+use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId};
 use tokio::sync::{RwLock, watch};
@@ -285,6 +286,8 @@ impl SceneContext {
 #[derive(Clone)]
 pub struct DeviceContext {
     driver_host: Arc<DaemonDriverHost>,
+    driver_registry: Arc<DriverModuleRegistry>,
+    config_manager: Option<Arc<ConfigManager>>,
     layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
     layout_auto_exclusions_path: PathBuf,
 }
@@ -292,11 +295,15 @@ pub struct DeviceContext {
 impl DeviceContext {
     pub(crate) fn new(
         driver_host: Arc<DaemonDriverHost>,
+        driver_registry: Arc<DriverModuleRegistry>,
+        config_manager: Option<Arc<ConfigManager>>,
         layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
         layout_auto_exclusions_path: PathBuf,
     ) -> Self {
         Self {
             driver_host,
+            driver_registry,
+            config_manager,
             layout_auto_exclusions,
             layout_auto_exclusions_path,
         }
@@ -306,6 +313,60 @@ impl DeviceContext {
     pub async fn sync_connectivity(&self) {
         let runtime = self.driver_host.discovery_runtime();
         discovery::sync_active_layout_connectivity(&runtime, None).await;
+    }
+
+    /// Schedule discovery after released output ownership becomes available.
+    pub fn schedule_output_reconnect(&self, network_only: bool) {
+        let Some(config_manager) = self.config_manager.as_ref() else {
+            return;
+        };
+        let config_guard = config_manager.get();
+        let config = Arc::clone(&*config_guard);
+        let target_ids = network_only.then(|| {
+            self.driver_registry
+                .discovery_drivers()
+                .into_iter()
+                .filter_map(|driver| {
+                    let descriptor = driver.module_descriptor();
+                    let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
+                        || descriptor
+                            .transports
+                            .contains(&DriverTransportKind::Network);
+                    is_network_driver.then_some(descriptor.id)
+                })
+                .collect::<Vec<_>>()
+        });
+        if target_ids.as_ref().is_some_and(Vec::is_empty) {
+            return;
+        }
+        let targets = match discovery::resolve_targets(
+            target_ids.as_deref(),
+            &config,
+            self.driver_registry.as_ref(),
+        ) {
+            Ok(targets) => targets,
+            Err(error) => {
+                tracing::warn!(%error, network_only, "Skipping reconnect scan after output release");
+                return;
+            }
+        };
+        if targets.is_empty() {
+            return;
+        }
+
+        discovery::schedule_discovery_scan(
+            self.driver_host.discovery_runtime(),
+            Arc::clone(&self.driver_registry),
+            Arc::clone(&self.driver_host),
+            config,
+            targets,
+            discovery::default_timeout(),
+        );
+    }
+
+    /// Release network output ownership after an effect stop.
+    pub async fn release_renderable_network_devices(&self) -> usize {
+        discovery::release_renderable_network_devices(&self.driver_host.discovery_runtime()).await
     }
 
     /// Reconcile discovery exclusions after zone layouts change.

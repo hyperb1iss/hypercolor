@@ -371,7 +371,7 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
         .as_str()
         .expect("layer id")
         .to_owned();
-    hypercolor_daemon::domain::output::set_power(&state, OutputPowerMode::Paused).await;
+    hypercolor_daemon::domain::output::set_power(&state.output, OutputPowerMode::Paused).await;
 
     // Replace the layer with one running the very same effect. Spec 78
     // §1.4 mints a fresh id regardless: replacement is creation.
@@ -586,7 +586,7 @@ async fn effect_apply_sugars_reject_stale_revisions_before_waking_output() {
     let before = read_document(&app).await;
     let revision = before["data"]["revision"].as_u64().expect("revision");
 
-    hypercolor_daemon::domain::output::set_power(&state, OutputPowerMode::Paused).await;
+    hypercolor_daemon::domain::output::set_power(&state.output, OutputPowerMode::Paused).await;
 
     let routes = [
         format!("/api/v1/effects/{effect_id}/apply"),

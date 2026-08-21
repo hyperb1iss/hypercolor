@@ -100,7 +100,7 @@ pub(super) async fn handle_set_brightness_with_state(
     let normalized = f32::from(brightness_u16) / 100.0;
 
     let outcome = output::patch_output(
-        state,
+        &state.output,
         OutputPatchRequest {
             power: None,
             brightness: Some(normalized),

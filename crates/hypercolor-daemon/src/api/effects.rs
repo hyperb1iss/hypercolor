@@ -14,39 +14,31 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use tokio::fs;
 use tracing::{info, warn};
 
-use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::effect::{
     EffectRegistry, HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file,
     parse_html_effect_metadata,
 };
-use hypercolor_core::engine::RenderLoopState;
-use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::api::scene::{
     ApplyEffectRequest as SceneApplyEffectRequest, ApplyEffectResponse as SceneApplyEffectResponse,
     TransitionType,
 };
-use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
-use hypercolor_types::event::{EffectRef, FrameData, HypercolorEvent, ZoneColors};
+use hypercolor_types::event::{EffectRef, HypercolorEvent};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::Zone;
-use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope;
-use crate::discovery;
 use crate::domain;
 // One definition of the source spelling, shared with the `source`
 // catalog filter: a second one here would let a listing narrow on values
 // the payload never reports.
 use crate::domain::effect::RequestedTransition;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
-use crate::session::set_output_stopped;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -71,193 +63,6 @@ pub use hypercolor_types::api::effects::{
 struct ResolvedEffectPreset {
     id: PresetId,
     controls: HashMap<String, ControlValue>,
-}
-
-/// Bring output back to running so a freshly applied effect is visible.
-///
-/// Reports whether output is running once the attempt settles, which is
-/// the post-commit outcome the apply response carries (Spec 78 §2.3).
-pub(crate) async fn wake_output_for_effect_start(state: &AppState) -> bool {
-    if output_is_running(state).await {
-        return true;
-    }
-    crate::domain::output::set_power(state, OutputPowerMode::Running).await;
-    output_is_running(state).await
-}
-
-async fn output_is_running(state: &AppState) -> bool {
-    let sleeping = state.power_state.borrow().sleeping();
-    !sleeping && state.render_loop.read().await.state() != RenderLoopState::Paused
-}
-
-pub(crate) fn schedule_network_output_reconnect(state: &AppState) {
-    schedule_output_reconnect(state, true);
-}
-
-pub(crate) fn schedule_all_output_reconnect(state: &AppState) {
-    schedule_output_reconnect(state, false);
-}
-
-fn schedule_output_reconnect(state: &AppState, network_only: bool) {
-    let Some(config_manager) = state.config_manager.as_ref() else {
-        return;
-    };
-    let config_guard = config_manager.get();
-    let config = Arc::clone(&*config_guard);
-    let target_ids = network_only.then(|| {
-        state
-            .driver_registry
-            .discovery_drivers()
-            .into_iter()
-            .filter_map(|driver| {
-                let descriptor = driver.module_descriptor();
-                let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
-                    || descriptor
-                        .transports
-                        .contains(&DriverTransportKind::Network);
-                is_network_driver.then_some(descriptor.id)
-            })
-            .collect::<Vec<_>>()
-    });
-    if target_ids.as_ref().is_some_and(Vec::is_empty) {
-        return;
-    }
-    let targets = match discovery::resolve_targets(
-        target_ids.as_deref(),
-        &config,
-        state.driver_registry.as_ref(),
-    ) {
-        Ok(targets) => targets,
-        Err(error) => {
-            warn!(%error, network_only, "Skipping reconnect scan after output release");
-            return;
-        }
-    };
-    if targets.is_empty() {
-        return;
-    }
-
-    discovery::schedule_discovery_scan(
-        super::discovery_runtime(state),
-        Arc::clone(&state.driver_registry),
-        Arc::clone(&state.driver_host),
-        config,
-        targets,
-        discovery::default_timeout(),
-    );
-}
-
-pub(crate) async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
-    let _transition_guard = state.output_power_transition.lock().await;
-    {
-        let mut render_loop = state.render_loop.write().await;
-        render_loop.pause();
-    }
-
-    set_output_stopped(&state.power_state, &state.event_bus);
-
-    let runtime = super::discovery_runtime(state);
-    let released_network_devices = discovery::release_renderable_network_devices(&runtime).await;
-
-    publish_static_output_snapshot(state, [0, 0, 0]).await;
-    state.performance.write().await.clear_frame_timings();
-    released_network_devices
-}
-
-pub(crate) async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
-    let (layout, canvas, mut zones) = {
-        let spatial = state.spatial_engine.snapshot();
-        let layout = spatial.layout();
-        let Ok(mut canvas) = Canvas::try_new(layout.canvas_width, layout.canvas_height).inspect_err(
-            |error| {
-                warn!(%error, "Static output canvas allocation failed; preserving the last published output");
-            },
-        ) else {
-            return;
-        };
-        canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
-        let Ok(zones) = spatial.try_sample(&canvas).inspect_err(|error| {
-            warn!(%error, "Static output sampling failed; preserving the last published output");
-        }) else {
-            return;
-        };
-        (layout, canvas, zones)
-    };
-    let frame_number = next_black_frame_number(state);
-    let elapsed_ms = elapsed_ms_u32(state);
-
-    let write_stats = {
-        let mut backend_manager = state.backend_manager.lock().await;
-        let unassigned_outputs = backend_manager.unassigned_output_zones(layout.as_ref());
-        if unassigned_outputs.is_empty() {
-            backend_manager.write_frame(&zones, layout.as_ref())
-        } else {
-            zones.extend(unassigned_outputs.iter().map(|output| ZoneColors {
-                zone_id: output.id.clone(),
-                colors: vec![
-                    color;
-                    usize::try_from(output.topology.led_count()).unwrap_or_default()
-                ],
-            }));
-            let mut static_layout = layout.as_ref().clone();
-            static_layout.zones.extend(unassigned_outputs);
-            backend_manager.write_frame(&zones, &static_layout)
-        }
-    };
-    if !write_stats.errors.is_empty() {
-        warn!(
-            error_count = write_stats.errors.len(),
-            "One-shot static frame encountered output errors while quiescing effect output"
-        );
-    }
-
-    let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
-    let group_frame = hypercolor_core::bus::DisplayGroupFrame::Canvas(canvas_frame.clone());
-    let (_, display_group_targets) = state.event_bus.display_group_targets_snapshot();
-    for group_id in display_group_targets.keys().copied() {
-        state
-            .event_bus
-            .group_canvas_sender(group_id)
-            .send_replace(group_frame.clone());
-    }
-    state
-        .event_bus
-        .frame_sender()
-        .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
-    state
-        .event_bus
-        .scene_canvas_sender()
-        .send_replace(canvas_frame.clone());
-    state.event_bus.canvas_sender().send_replace(canvas_frame);
-    state
-        .preview_runtime
-        .record_canvas_publication(frame_number, elapsed_ms);
-}
-
-pub(crate) async fn reconcile_static_output_hold(state: &AppState) -> bool {
-    let _transition_guard = state.output_power_transition.lock().await;
-    let output_power = *state.power_state.borrow();
-    if !output_power.sleeping()
-        || output_power.effective_off_output_behavior() != OffOutputBehavior::Static
-    {
-        return false;
-    }
-
-    publish_static_output_snapshot(state, output_power.effective_off_output_color()).await;
-    true
-}
-
-fn next_black_frame_number(state: &AppState) -> u32 {
-    state
-        .event_bus
-        .frame_receiver()
-        .borrow()
-        .frame_number
-        .saturating_add(1)
-}
-
-fn elapsed_ms_u32(state: &AppState) -> u32 {
-    u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────

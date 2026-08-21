@@ -621,7 +621,7 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
     );
     assert!(activated.brightness.applied);
     assert_eq!(
-        hypercolor_daemon::domain::output::get_output(&state).brightness,
+        hypercolor_daemon::domain::output::get_output(&state.output).brightness,
         0.42
     );
 

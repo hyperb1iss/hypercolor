@@ -15,7 +15,6 @@ use anyhow::{Result, bail};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
@@ -6347,7 +6346,9 @@ async fn an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui() {
 
 #[tokio::test]
 async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -6362,15 +6363,11 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         ))
         .expect("blocking reconnect driver should register");
     let registry = Arc::new(registry);
-    state.config_manager = Some(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(Arc::clone(&manager)))
-            .with_driver_registry(Arc::clone(&registry)),
-    );
-    let state = Arc::new(state);
+    let state = Arc::new(AppState::new_with_runtime_overrides(
+        data_dir,
+        Some(manager),
+        Some(registry),
+    ));
     insert_test_effect(&state, "solid_color").await;
     {
         let mut render_loop = state.render_loop.write().await;
@@ -6804,7 +6801,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
     assert_eq!(create_response.status(), StatusCode::CREATED);
 
     hypercolor_daemon::domain::output::set_power(
-        &state,
+        &state.output,
         hypercolor_types::api::output::OutputPowerMode::Paused,
     )
     .await;
@@ -9721,12 +9718,8 @@ async fn persist_current_layouts_for_test(state: &Arc<AppState>) {
 }
 
 fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.device_settings = Arc::new(tokio::sync::RwLock::new(DeviceSettingsStore::new(
-        dir.path().join("device-settings.json"),
-    )));
-    state.runtime_state_path = dir.path().join("runtime-state.json");
+    let state = AppState::new_with_data_dir(dir.path().to_path_buf());
     (Arc::new(state), dir)
 }
 
