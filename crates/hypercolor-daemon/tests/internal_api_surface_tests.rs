@@ -31,11 +31,11 @@ fn app_state_has_one_module_identity() {
     let offenders = daemon_sources()
         .into_iter()
         .flat_map(|(path, source)| {
-            banned.into_iter().filter_map(move |pattern| {
-                source
-                    .contains(pattern)
-                    .then(|| format!("{} contains {pattern}", path.display()))
-            })
+            banned
+                .into_iter()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{} contains {pattern}", path.display()))
+                .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
 
@@ -44,4 +44,24 @@ fn app_state_has_one_module_identity() {
         "AppState belongs to app_state, not the transport API:\n{}",
         offenders.join("\n")
     );
+}
+
+#[test]
+fn driver_host_and_workers_reuse_the_discovery_context() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let host = source("network/host.rs");
+    assert!(host.contains("runtime: DiscoveryRuntime"));
+    assert!(!host.contains("clippy::too_many_arguments"));
+    assert!(!host.contains("DiscoveryRuntime {\n            device_registry:"));
+
+    let worker = source("startup/discovery_worker.rs");
+    assert!(worker.contains("discovery: DiscoveryRuntime"));
+    assert!(!worker.contains("DiscoveryRuntime {\n            device_registry:"));
 }

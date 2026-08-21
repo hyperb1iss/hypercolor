@@ -898,29 +898,10 @@ impl DaemonState {
     )]
     fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {
         let worker = DiscoveryWorkerContext {
-            device_registry: self.device_registry.clone(),
-            backend_manager: Arc::clone(&self.backend_manager),
-            lifecycle_manager: Arc::clone(&self.lifecycle_manager),
-            reconnect_tasks: Arc::clone(&self.reconnect_tasks),
-            event_bus: Arc::clone(&self.event_bus),
+            discovery: self.driver_host.discovery_runtime(),
             config_manager: Arc::clone(&self.config_manager),
             driver_host: Arc::clone(&self.driver_host),
             driver_registry: Arc::clone(&self.driver_registry),
-            spatial_engine: self.spatial_engine.clone(),
-            scene_manager: self.scene_manager.clone(),
-            layouts: Arc::clone(&self.layouts),
-            layouts_path: self.layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),
-            logical_devices: Arc::clone(&self.logical_devices),
-            attachment_registry: Arc::clone(&self.attachment_registry),
-            attachment_profiles: Arc::clone(&self.attachment_profiles),
-            device_settings: Arc::clone(&self.device_settings),
-            runtime_state_path: self.runtime_state_path.clone(),
-            device_aliases_path: self.device_aliases_path.clone(),
-            usb_protocol_configs: self.usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&self.credential_store),
-            in_progress: Arc::clone(&self.discovery_in_progress),
-            scene_transactions: self.scene_transactions.clone(),
         };
 
         let initial_targets =

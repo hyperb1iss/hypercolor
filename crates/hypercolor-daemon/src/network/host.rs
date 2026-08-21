@@ -1,17 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
-use std::sync::atomic::AtomicBool;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use hypercolor_core::attachment::ComponentRegistry;
-use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
-};
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendRebindActions, DeviceControlStore, DriverConfigView, DriverControlHost,
@@ -23,103 +15,33 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
-use hypercolor_types::spatial::SpatialLayout;
 use serde_json::{Number, Value};
-use tokio::sync::{Mutex, RwLock};
-use tokio::task::JoinHandle;
 use tracing::warn;
 
-use crate::attachment_profiles::ComponentProfileStore;
-use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryRuntime};
-use crate::domain::scene::SceneService;
-use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::DriverInventoryStore;
-use crate::layout_auto_exclusions;
-use crate::logical_devices::LogicalDevice;
-use crate::scene_transactions::SceneTransactionQueue;
 
 /// Daemon-owned host adapter passed to built-in drivers.
 #[derive(Clone)]
 pub struct DaemonDriverHost {
-    device_registry: DeviceRegistry,
-    backend_manager: Arc<Mutex<BackendManager>>,
-    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
-    reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
-    event_bus: Arc<HypercolorBus>,
-    spatial_engine: SpatialService,
-    scene_manager: SceneService,
-    layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
-    layouts_path: PathBuf,
-    layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-    logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-    attachment_registry: Arc<RwLock<ComponentRegistry>>,
-    attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
-    device_settings: Arc<RwLock<DeviceSettingsStore>>,
-    runtime_state_path: PathBuf,
-    device_aliases_path: PathBuf,
+    runtime: DiscoveryRuntime,
     driver_inventory: Arc<DriverInventoryStore>,
-    usb_protocol_configs: UsbProtocolConfigStore,
-    credential_store: Arc<CredentialStore>,
     driver_registry: Arc<DriverModuleRegistry>,
-    discovery_in_progress: Arc<AtomicBool>,
-    pending_discovery_scans: Arc<StdMutex<crate::discovery::PendingDiscoveryScans>>,
-    scene_transactions: SceneTransactionQueue,
     config_manager: Option<Arc<ConfigManager>>,
 }
 
 impl DaemonDriverHost {
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        device_registry: DeviceRegistry,
-        backend_manager: Arc<Mutex<BackendManager>>,
-        lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
-        reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
-        event_bus: Arc<HypercolorBus>,
-        spatial_engine: SpatialService,
-        scene_manager: SceneService,
-        layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
-        layouts_path: PathBuf,
-        layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-        logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-        attachment_registry: Arc<RwLock<ComponentRegistry>>,
-        attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
-        device_settings: Arc<RwLock<DeviceSettingsStore>>,
-        runtime_state_path: PathBuf,
-        device_aliases_path: PathBuf,
+        runtime: DiscoveryRuntime,
         driver_inventory: Arc<DriverInventoryStore>,
-        usb_protocol_configs: UsbProtocolConfigStore,
-        credential_store: Arc<CredentialStore>,
         driver_registry: Arc<DriverModuleRegistry>,
-        discovery_in_progress: Arc<AtomicBool>,
-        scene_transactions: SceneTransactionQueue,
         config_manager: Option<Arc<ConfigManager>>,
     ) -> Self {
         Self {
-            device_registry,
-            backend_manager,
-            lifecycle_manager,
-            reconnect_tasks,
-            event_bus,
-            spatial_engine,
-            scene_manager,
-            layouts,
-            layouts_path,
-            layout_auto_exclusions,
-            logical_devices,
-            attachment_registry,
-            attachment_profiles,
-            device_settings,
-            runtime_state_path,
-            device_aliases_path,
+            runtime,
             driver_inventory,
-            usb_protocol_configs,
-            credential_store,
             driver_registry,
-            discovery_in_progress,
-            pending_discovery_scans: Arc::default(),
-            scene_transactions,
             config_manager,
         }
     }
@@ -140,35 +62,12 @@ impl DaemonDriverHost {
 
     #[must_use]
     pub fn discovery_runtime(&self) -> DiscoveryRuntime {
-        DiscoveryRuntime {
-            device_registry: self.device_registry.clone(),
-            backend_manager: Arc::clone(&self.backend_manager),
-            lifecycle_manager: Arc::clone(&self.lifecycle_manager),
-            reconnect_tasks: Arc::clone(&self.reconnect_tasks),
-            event_bus: Arc::clone(&self.event_bus),
-            spatial_engine: self.spatial_engine.clone(),
-            scene_manager: self.scene_manager.clone(),
-            layouts: Arc::clone(&self.layouts),
-            layouts_path: self.layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),
-            logical_devices: Arc::clone(&self.logical_devices),
-            attachment_registry: Arc::clone(&self.attachment_registry),
-            attachment_profiles: Arc::clone(&self.attachment_profiles),
-            device_settings: Arc::clone(&self.device_settings),
-            runtime_state_path: self.runtime_state_path.clone(),
-            device_aliases_path: self.device_aliases_path.clone(),
-            usb_protocol_configs: self.usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&self.credential_store),
-            in_progress: Arc::clone(&self.discovery_in_progress),
-            pending_scans: Arc::clone(&self.pending_discovery_scans),
-            scene_transactions: self.scene_transactions.clone(),
-            task_spawner: tokio::runtime::Handle::current(),
-        }
+        self.runtime.clone()
     }
 
     #[must_use]
     pub fn credential_store(&self) -> Arc<CredentialStore> {
-        Arc::clone(&self.credential_store)
+        Arc::clone(&self.runtime.credential_store)
     }
 
     #[must_use]
@@ -189,7 +88,8 @@ impl DaemonDriverHost {
     }
 
     async fn device_control_settings_key(&self, device_id: DeviceId) -> String {
-        self.device_registry
+        self.runtime
+            .device_registry
             .fingerprint_for_id(&device_id)
             .await
             .map_or_else(
@@ -202,17 +102,25 @@ impl DaemonDriverHost {
 #[async_trait]
 impl DriverCredentialStore for DaemonDriverHost {
     async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
-        Ok(self.credential_store.get_driver_json(driver_id, key).await)
+        Ok(self
+            .runtime
+            .credential_store
+            .get_driver_json(driver_id, key)
+            .await)
     }
 
     async fn set_json(&self, driver_id: &str, key: &str, value: Value) -> Result<()> {
-        self.credential_store
+        self.runtime
+            .credential_store
             .store_driver_json(driver_id, key, value)
             .await
     }
 
     async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
-        self.credential_store.remove_driver(driver_id, key).await
+        self.runtime
+            .credential_store
+            .remove_driver(driver_id, key)
+            .await
     }
 }
 
@@ -246,8 +154,9 @@ impl DriverDiscoveryState for DaemonDriverHost {
     async fn tracked_devices(&self, driver_id: &str) -> Vec<DriverTrackedDevice> {
         let mut tracked_devices = Vec::new();
 
-        for tracked in self.device_registry.list().await {
+        for tracked in self.runtime.device_registry.list().await {
             let metadata = self
+                .runtime
                 .device_registry
                 .metadata_for_id(&tracked.info.id)
                 .await
@@ -256,6 +165,7 @@ impl DriverDiscoveryState for DaemonDriverHost {
                 continue;
             }
             let fingerprint = self
+                .runtime
                 .device_registry
                 .fingerprint_for_id(&tracked.info.id)
                 .await;
@@ -344,20 +254,21 @@ impl DriverControlStore for DaemonDriverHost {
 impl DeviceControlStore for DaemonDriverHost {
     async fn load_device_values(&self, device_id: DeviceId) -> Result<ControlValueMap> {
         let key = self.device_control_settings_key(device_id).await;
-        let store = self.device_settings.read().await;
+        let store = self.runtime.device_settings.read().await;
         store.driver_control_values_for_key(&key)
     }
 
     async fn save_device_values(&self, device_id: DeviceId, values: ControlValueMap) -> Result<()> {
         let key = self.device_control_settings_key(device_id).await;
         {
-            let mut store = self.device_settings.write().await;
+            let mut store = self.runtime.device_settings.write().await;
             store.set_driver_control_values(&key, values)?;
             store.save()?;
         }
         // Driver control rows live in their own map, not the per-device
         // settings rows a `Some` key names, so this hint is store-scoped.
-        self.event_bus
+        self.runtime
+            .event_bus
             .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
         Ok(())
     }
@@ -435,7 +346,7 @@ impl BackendRebindActions for DaemonDriverHost {
         };
         let backend = provider.build(self, config_view)?;
 
-        let mut manager = self.backend_manager.lock().await;
+        let mut manager = self.runtime.backend_manager.lock().await;
         manager.register_backend(backend);
         Ok(())
     }
@@ -459,7 +370,8 @@ impl DriverControlHost for DaemonDriverHost {
     }
 
     fn publish_control_event(&self, event: ControlSurfaceEvent) {
-        self.event_bus
+        self.runtime
+            .event_bus
             .publish(HypercolorEvent::ControlSurfaceChanged(event));
     }
 }
