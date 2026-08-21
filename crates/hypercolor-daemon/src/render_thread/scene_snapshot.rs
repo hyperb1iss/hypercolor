@@ -10,7 +10,7 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
-use crate::session::OutputPowerState;
+use crate::output_power::OutputPowerState;
 
 use super::RenderThreadState;
 use super::scene_dependency::SceneDependencyKey;
@@ -665,11 +665,11 @@ mod tests {
     use super::{default_display_group_viewport, display_descriptors_for_groups};
     use crate::device_settings::DeviceSettingsStore;
     use crate::display_output::DISPLAY_FACE_DEFAULT_FPS;
+    use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::PreviewRuntime;
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
-    use crate::session::OutputPowerState;
     use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
     use hypercolor_types::display::DisplayPixelFormat;
 

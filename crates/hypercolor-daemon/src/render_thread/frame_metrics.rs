@@ -439,12 +439,12 @@ mod tests {
         ActiveFrameMetricsInput, PublishFrameStats, RenderSurfaceSnapshot,
         ThrottleFrameMetricsInput, build_throttle_frame_metrics, summarize_active_frame,
     };
+    use crate::output_power::OutputPowerState;
     use crate::performance::{CompositorBackendKind, FullFrameCopyMetrics, OutputFrameSourceKind};
     use crate::render_thread::scene_dependency::SceneDependencyKey;
     use crate::render_thread::scene_snapshot::{
         EffectDemand, FrameSceneSnapshot, SceneRuntimeSnapshot, SceneTransitionSnapshot,
     };
-    use crate::session::OutputPowerState;
 
     fn scene_snapshot() -> FrameSceneSnapshot {
         FrameSceneSnapshot {

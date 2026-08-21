@@ -13,7 +13,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use hypercolor_core::asset::AssetLibrary;
@@ -48,12 +48,13 @@ use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
+use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle, RenderThread};
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::{OutputPowerState, SessionController};
+use crate::session::SessionController;
 use crate::simulators::{SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -246,11 +247,8 @@ pub struct DaemonState {
     /// Global discovery scan lock shared across startup and API-triggered scans.
     pub discovery_in_progress: Arc<AtomicBool>,
 
-    /// Shared session-driven output power state for the render thread.
-    pub power_state: watch::Sender<OutputPowerState>,
-
-    /// Serializes output state changes with hardware hold reconciliation.
-    pub output_power_transition: Arc<Mutex<()>>,
+    /// Canonical global output power and brightness authority.
+    pub output_power: OutputPower,
 
     /// Frame-boundary scene changes mirrored into the render thread.
     pub scene_transactions: SceneTransactionQueue,

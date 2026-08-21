@@ -107,7 +107,7 @@ static RELAYS: &[RelayRegistration] = &[
         source: RelaySource::Connection(|context| {
             tokio::spawn(relay_canvas(
                 Arc::clone(&context.state.preview_runtime),
-                context.state.power_state.subscribe(),
+                context.state.output_power.subscribe(),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))

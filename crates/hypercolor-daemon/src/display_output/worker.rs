@@ -25,7 +25,7 @@ use super::{
 };
 use crate::deadline::advance_deadline;
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
-use crate::session::OutputPowerState;
+use crate::output_power::OutputPowerState;
 
 const DISPLAY_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 

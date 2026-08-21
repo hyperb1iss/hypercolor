@@ -939,8 +939,8 @@ async fn force_static_sleep_snapshot(
 }
 
 fn should_switch_to_late_sleep_frame(
-    frame_output_power: crate::session::OutputPowerState,
-    latest_output_power: crate::session::OutputPowerState,
+    frame_output_power: crate::output_power::OutputPowerState,
+    latest_output_power: crate::output_power::OutputPowerState,
 ) -> bool {
     !frame_output_power.sleeping() && latest_output_power.sleeping()
 }
@@ -955,6 +955,7 @@ const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourc
 
 #[cfg(test)]
 mod tests {
+    use crate::output_power::OutputPowerState;
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
@@ -966,7 +967,6 @@ mod tests {
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
     use crate::render_thread::pipeline_runtime::needs_gpu_preview_advance;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
-    use crate::session::OutputPowerState;
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_core::types::event::{FrameData, ZoneColors};

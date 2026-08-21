@@ -23,7 +23,6 @@ use hypercolor_types::sensor::SystemSnapshot;
 use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
-use crate::session::current_global_brightness;
 
 use hypercolor_core::config::ConfigManager;
 
@@ -234,7 +233,7 @@ async fn system_status_with_privacy(
         active_effect,
         active_scene,
         active_scene_snapshot_locked,
-        global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
+        global_brightness: brightness_percent(state.output_power.global_brightness()),
         audio_available,
         capture_available: capture_input_available(),
         screen_capture_capacity,

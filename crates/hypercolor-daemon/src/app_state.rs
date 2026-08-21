@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
@@ -55,13 +55,13 @@ use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
+use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle};
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::OutputPowerState;
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -241,11 +241,8 @@ pub struct AppState {
     /// Persisted path for startup runtime-session restoration.
     pub runtime_state_path: PathBuf,
 
-    /// Shared user/session output brightness state.
-    pub power_state: watch::Sender<OutputPowerState>,
-
-    /// Serializes global output transitions and their persistence boundary.
-    pub output_power_transition: Arc<Mutex<()>>,
+    /// Canonical global output power and brightness authority.
+    pub output_power: OutputPower,
 
     /// Frame-boundary scene changes mirrored into the render thread.
     pub scene_transactions: SceneTransactionQueue,
@@ -382,6 +379,8 @@ impl AppState {
                 );
                 DeviceSettingsStore::new(device_settings_path)
             });
+        let output_power = OutputPower::new(device_settings);
+        let device_settings = output_power.device_settings();
         let simulated_displays_path = data_dir.join("simulated-displays.json");
         let simulated_displays = SimulatedDisplayStore::load(&simulated_displays_path)
             .unwrap_or_else(|error| {
@@ -392,11 +391,6 @@ impl AppState {
                 );
                 SimulatedDisplayStore::new(simulated_displays_path)
             });
-        let initial_global_brightness = device_settings.global_brightness();
-        let (power_state, _) = watch::channel(OutputPowerState {
-            global_brightness: initial_global_brightness,
-            ..OutputPowerState::default()
-        });
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&data_dir)
                 .expect("default app state should open credential store"),
@@ -464,7 +458,6 @@ impl AppState {
                     .expect("display preference persistence should initialize")
             }),
         ));
-        let device_settings = Arc::new(RwLock::new(device_settings));
         let simulated_displays = Arc::new(RwLock::new(simulated_displays));
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
@@ -534,7 +527,7 @@ impl AppState {
             runtime_state_path.clone(),
             scene_manager.clone(),
             spatial_engine.clone(),
-            power_state.clone(),
+            output_power.clone(),
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
         );
@@ -564,12 +557,9 @@ impl AppState {
             runtime_session.clone(),
             devices.clone(),
         );
-        let output_power_transition = Arc::new(Mutex::new(()));
         let start_time = Instant::now();
         let output = OutputContext::new(
-            power_state.clone(),
-            Arc::clone(&output_power_transition),
-            Arc::clone(&device_settings),
+            output_power.clone(),
             Arc::clone(&event_bus),
             runtime_session.clone(),
             Arc::clone(&performance),
@@ -649,8 +639,7 @@ impl AppState {
             logical_devices,
             logical_devices_path,
             runtime_state_path,
-            power_state,
-            output_power_transition,
+            output_power,
             scene_transactions,
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
@@ -740,8 +729,7 @@ impl AppState {
             logical_devices: Arc::clone(&daemon.logical_devices),
             logical_devices_path: daemon.logical_devices_path.clone(),
             runtime_state_path: daemon.runtime_state_path.clone(),
-            power_state: daemon.power_state.clone(),
-            output_power_transition: Arc::clone(&daemon.output_power_transition),
+            output_power: daemon.output_power.clone(),
             scene_transactions: daemon.scene_transactions.clone(),
             library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),

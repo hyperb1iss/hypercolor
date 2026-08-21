@@ -22,25 +22,19 @@ use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode, OutputR
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::event::{FrameData, HypercolorEvent, ZoneColors};
 use hypercolor_types::session::OffOutputBehavior;
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 
-use crate::device_settings::DeviceSettingsStore;
 use crate::domain::DomainError;
 use crate::domain::context::{DeviceContext, RuntimeSessionService};
 use crate::domain::spatial::SpatialService;
+use crate::output_power::{OutputOverride, OutputPower, OutputPowerState};
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
-use crate::session::{
-    OutputOverride, OutputPowerState, clear_output_override, current_global_brightness,
-    set_global_brightness, set_manual_pause, set_output_stopped,
-};
 
 /// Owning authority for global output power, brightness, and quiescence.
 #[derive(Clone)]
 pub struct OutputContext {
-    power: watch::Sender<OutputPowerState>,
-    transition: Arc<Mutex<()>>,
-    settings: Arc<RwLock<DeviceSettingsStore>>,
+    output_power: OutputPower,
     event_bus: Arc<HypercolorBus>,
     runtime_session: RuntimeSessionService,
     performance: Arc<RwLock<PerformanceTracker>>,
@@ -58,9 +52,7 @@ impl OutputContext {
         reason = "the composition root supplies the complete output ownership boundary"
     )]
     pub(crate) fn new(
-        power: watch::Sender<OutputPowerState>,
-        transition: Arc<Mutex<()>>,
-        settings: Arc<RwLock<DeviceSettingsStore>>,
+        output_power: OutputPower,
         event_bus: Arc<HypercolorBus>,
         runtime_session: RuntimeSessionService,
         performance: Arc<RwLock<PerformanceTracker>>,
@@ -72,9 +64,7 @@ impl OutputContext {
         start_time: Instant,
     ) -> Self {
         Self {
-            power,
-            transition,
-            settings,
+            output_power,
             event_bus,
             runtime_session,
             performance,
@@ -89,7 +79,7 @@ impl OutputContext {
 
     /// Whether output is awake and the render loop is running.
     pub async fn is_running(&self) -> bool {
-        !self.power.borrow().sleeping()
+        !self.output_power.snapshot().sleeping()
             && self.render_loop.read().await.state() != RenderLoopState::Paused
     }
 
@@ -104,9 +94,9 @@ impl OutputContext {
 
     /// Quiesce render and network output after the final effect stops.
     pub async fn quiesce_after_effect_stop(&self) -> usize {
-        let _transition_guard = self.transition.lock().await;
+        let output_power = self.output_power.transition().await;
         self.render_loop.write().await.pause();
-        set_output_stopped(&self.power, &self.event_bus);
+        output_power.set_output_stopped(&self.event_bus);
         let released = self.devices.release_renderable_network_devices().await;
         self.publish_static_snapshot([0, 0, 0]).await;
         self.performance.write().await.clear_frame_timings();
@@ -115,8 +105,8 @@ impl OutputContext {
 
     /// Re-publish a held static frame after output topology changes.
     pub async fn reconcile_static_hold(&self) -> bool {
-        let _transition_guard = self.transition.lock().await;
-        let output_power = *self.power.borrow();
+        let output_power_guard = self.output_power.transition().await;
+        let output_power = output_power_guard.snapshot();
         if !output_power.sleeping()
             || output_power.effective_off_output_behavior() != OffOutputBehavior::Static
         {
@@ -209,7 +199,7 @@ enum OutputReconnectScope {
 
 /// Read the live output resource.
 pub fn get_output(ctx: &OutputContext) -> OutputResource {
-    let power = *ctx.power.borrow();
+    let power = ctx.output_power.snapshot();
     OutputResource {
         power: observed_power(power),
         brightness: power.global_brightness,
@@ -254,21 +244,19 @@ pub async fn set_brightness(ctx: &OutputContext, brightness: f32) -> Result<(), 
         ));
     }
 
-    let previous = brightness_percent(current_global_brightness(&ctx.power));
-
-    {
-        let mut settings = ctx.settings.write().await;
-        settings.set_global_brightness(brightness);
-        settings.save().map_err(|error| {
+    let previous = ctx
+        .output_power
+        .set_global_brightness(brightness)
+        .await
+        .map(brightness_percent)
+        .map_err(|error| {
             DomainError::Internal(anyhow::anyhow!(
                 "Failed to persist global brightness: {error}"
             ))
         })?;
-    }
     ctx.event_bus
         .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
 
-    set_global_brightness(&ctx.power, brightness);
     ctx.event_bus.publish(HypercolorEvent::BrightnessChanged {
         old: previous,
         new_value: brightness_percent(brightness),
@@ -280,19 +268,19 @@ pub async fn set_brightness(ctx: &OutputContext, brightness: f32) -> Result<(), 
 
 /// Drive global output power to the requested mode.
 pub async fn set_power(ctx: &OutputContext, requested: OutputPowerMode) {
-    let _transition_guard = ctx.transition.lock().await;
-    let previous = *ctx.power.borrow();
+    let output_power = ctx.output_power.transition().await;
+    let previous = output_power.snapshot();
     match requested {
         OutputPowerMode::Paused => {
             let static_color = [0, 0, 0];
-            set_manual_pause(&ctx.power, &ctx.event_bus, true, static_color);
+            output_power.set_manual_pause(&ctx.event_bus, true, static_color);
             schedule_released_output_reconnect(ctx, previous);
             ctx.publish_static_snapshot(static_color).await;
             ctx.performance.write().await.clear_frame_timings();
             ctx.render_loop.write().await.pause();
         }
         OutputPowerMode::Running => {
-            clear_output_override(&ctx.power, &ctx.event_bus);
+            output_power.clear_output_override(&ctx.event_bus);
             ctx.render_loop.write().await.resume();
             schedule_released_output_reconnect(ctx, previous);
         }
@@ -315,7 +303,7 @@ pub async fn set_power(ctx: &OutputContext, requested: OutputPowerMode) {
 /// event, so clients reconcile the power snapshot after an
 /// `EffectStopped` lifecycle event.
 ///
-/// [`OutputPowerState::reported_paused`]: crate::session::OutputPowerState::reported_paused
+/// [`OutputPowerState::reported_paused`]: crate::output_power::OutputPowerState::reported_paused
 fn observed_power(power: OutputPowerState) -> OutputPowerMode {
     if power.sleeping() {
         OutputPowerMode::Paused
@@ -370,7 +358,7 @@ mod tests {
     use super::{
         OutputReconnectScope, brightness_percent, observed_power, released_output_reconnect_scope,
     };
-    use crate::session::{OutputOverride, OutputPowerState};
+    use crate::output_power::{OutputOverride, OutputPowerState};
     use hypercolor_types::api::output::OutputPowerMode;
 
     #[test]

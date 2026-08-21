@@ -34,8 +34,8 @@ use self::render::display_viewport_signature;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::domain::spatial::SpatialService;
 use crate::logical_devices::LogicalDevice;
+use crate::output_power::OutputPowerState;
 use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
-use crate::session::OutputPowerState;
 use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);

@@ -148,7 +148,10 @@ use super::session::{
 async fn hello_reports_a_destructive_stop_as_not_running_and_paused() {
     let state = AppState::new();
     state.render_loop.write().await.start();
-    crate::session::set_output_stopped(&state.power_state, &state.event_bus);
+    state
+        .output_power
+        .set_output_stopped(&state.event_bus)
+        .await;
 
     let hello = build_hello_state(&state).await;
     assert!(!hello.running);

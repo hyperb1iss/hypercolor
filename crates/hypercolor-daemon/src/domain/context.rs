@@ -15,7 +15,7 @@ use hypercolor_types::device::{DeviceInfo, DriverModuleKind, DriverTransportKind
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
@@ -29,8 +29,8 @@ use crate::domain::scene::{
 use crate::domain::scene_tree::SceneTreeContext;
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
+use crate::output_power::OutputPower;
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
-use crate::session::{OutputPowerState, current_global_brightness};
 use crate::{discovery, layout_auto_exclusions};
 
 /// Complete daemon domain graph assembled once by the composition root.
@@ -106,7 +106,7 @@ pub struct RuntimeSessionService {
     path: PathBuf,
     scenes: SceneService,
     spatial: SpatialService,
-    power: watch::Sender<OutputPowerState>,
+    output_power: OutputPower,
     driver_host: Arc<DaemonDriverHost>,
     driver_registry: Arc<DriverModuleRegistry>,
 }
@@ -116,7 +116,7 @@ impl RuntimeSessionService {
         path: PathBuf,
         scenes: SceneService,
         spatial: SpatialService,
-        power: watch::Sender<OutputPowerState>,
+        output_power: OutputPower,
         driver_host: Arc<DaemonDriverHost>,
         driver_registry: Arc<DriverModuleRegistry>,
     ) -> Self {
@@ -124,7 +124,7 @@ impl RuntimeSessionService {
             path,
             scenes,
             spatial,
-            power,
+            output_power,
             driver_host,
             driver_registry,
         }
@@ -137,8 +137,9 @@ impl RuntimeSessionService {
             runtime_state::snapshot_from_scene_manager(&manager)
         };
         snapshot.active_layout_id = Some(self.spatial.layout().id.clone());
-        snapshot.global_brightness = current_global_brightness(&self.power);
-        snapshot.manual_paused = self.power.borrow().manually_paused();
+        let output_power = self.output_power.snapshot();
+        snapshot.global_brightness = output_power.global_brightness;
+        snapshot.manual_paused = output_power.manually_paused();
         self.driver_host
             .driver_inventory()
             .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())

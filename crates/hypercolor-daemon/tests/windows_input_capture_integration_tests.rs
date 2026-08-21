@@ -30,13 +30,13 @@ use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
+use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand, RenderThread, RenderThreadState,
 };
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
-use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::effect::EffectId;

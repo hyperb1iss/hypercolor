@@ -444,7 +444,7 @@ pub async fn identify_device(
     };
     let color = requested_color.map(identify_color_echo);
     let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
-    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+    let identify_brightness = (state.output_power.snapshot().effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
@@ -577,7 +577,7 @@ pub async fn identify_segment(
     };
     let color = requested_color.map(identify_color_echo);
     let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
-    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+    let identify_brightness = (state.output_power.snapshot().effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
@@ -690,7 +690,7 @@ pub async fn identify_attachment(
     };
     let color = requested_color.map(identify_color_echo);
     let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
-    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+    let identify_brightness = (state.output_power.snapshot().effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
@@ -1149,7 +1149,7 @@ async fn run_identify_flash(
     let mut show_on = false;
     let mut identify_failed = false;
     let mut phase_index = 0_u32;
-    let mut power_state = state.power_state.subscribe();
+    let mut power_state = state.output_power.subscribe();
 
     loop {
         if power_state.borrow().sleeping() {
@@ -1204,7 +1204,7 @@ async fn run_identify_flash(
         show_on = !show_on;
     }
 
-    let _transition_guard = state.output_power_transition.lock().await;
+    let output_power = state.output_power.transition().await;
     if !identify_failed {
         debug!(
             backend_id = %backend_id,
@@ -1225,7 +1225,7 @@ async fn run_identify_flash(
 
     drop(direct_control);
 
-    let power = *state.power_state.borrow();
+    let power = output_power.snapshot();
     if power.sleeping() {
         state
             .domains
@@ -1300,8 +1300,8 @@ async fn write_identify_output_if_running(
     device_id: DeviceId,
     colors: &[[u8; 3]],
 ) -> anyhow::Result<bool> {
-    let _transition_guard = state.output_power_transition.lock().await;
-    if state.power_state.borrow().sleeping() {
+    let output_power = state.output_power.transition().await;
+    if output_power.snapshot().sleeping() {
         return Ok(false);
     }
     direct_backend.write_colors(device_id, colors).await?;

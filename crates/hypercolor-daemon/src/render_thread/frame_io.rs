@@ -793,12 +793,12 @@ mod tests {
     };
     use crate::device_settings::DeviceSettingsStore;
     use crate::domain::scene::SceneService;
+    use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
-    use crate::session::OutputPowerState;
 
     fn sample_frame(
         zone_id: &str,

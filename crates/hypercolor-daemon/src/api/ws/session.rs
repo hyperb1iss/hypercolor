@@ -78,7 +78,6 @@ use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputScreenBranchDemand,
 };
-use crate::session::current_global_brightness;
 use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -1658,11 +1657,11 @@ pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
         acc.saturating_add(led_count)
     });
 
-    let power_state = *state.power_state.borrow();
+    let power_state = state.output_power.snapshot();
     HelloState {
         running: !power_state.sleeping(),
         paused: power_state.reported_paused(),
-        brightness: brightness_percent(current_global_brightness(&state.power_state)),
+        brightness: brightness_percent(state.output_power.global_brightness()),
         fps: HelloFps {
             target: target_fps,
             capacity: (capacity_fps * 10.0).round() / 10.0,
@@ -1716,15 +1715,23 @@ async fn send_json(
 mod hello_state_tests {
     use super::build_hello_state;
     use crate::app_state::AppState;
-    use crate::session::{OutputOverride, set_global_brightness};
 
     #[tokio::test]
     async fn hello_reports_effective_pause_and_actual_brightness() {
         let state = AppState::new();
-        set_global_brightness(&state.power_state, 0.42);
         state
-            .power_state
-            .send_modify(|power| power.session_sleeping = true);
+            .output_power
+            .set_global_brightness(0.42)
+            .await
+            .expect("brightness should persist");
+        let generation = state.output_power.begin_session_transition();
+        state
+            .output_power
+            .transition()
+            .await
+            .update_with_events_for_generation(&state.event_bus, generation, |power| {
+                power.session_sleeping = true;
+            });
 
         let hello = build_hello_state(&state).await;
 
@@ -1736,8 +1743,9 @@ mod hello_state_tests {
     async fn hello_reports_a_destructive_stop_as_paused() {
         let state = AppState::new();
         state
-            .power_state
-            .send_modify(|power| power.output_override = OutputOverride::Stopped);
+            .output_power
+            .set_output_stopped(&state.event_bus)
+            .await;
 
         let hello = build_hello_state(&state).await;
 

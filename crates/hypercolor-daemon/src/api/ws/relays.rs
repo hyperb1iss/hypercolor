@@ -56,10 +56,10 @@ use super::protocol::{
 };
 use crate::app_state::AppState;
 use crate::interactive_preview::PreviewResourceLease;
+use crate::output_power::OutputPowerState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
 use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand};
-use crate::session::OutputPowerState;
 
 const BACKPRESSURE_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 pub(super) static WS_PREVIEW_PUBLICATION_QUEUED_COUNT: AtomicU64 = AtomicU64::new(0);

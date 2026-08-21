@@ -24,7 +24,6 @@ use hypercolor_daemon::daemon::{
     validate_network_bind_auth,
 };
 use hypercolor_daemon::discovery;
-use hypercolor_daemon::session::current_global_brightness;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
     config_sources, default_config, install_signal_handlers, parse_config_toml,
@@ -1368,7 +1367,7 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
         .expect("a stale snapshot must not block startup");
 
     // Nothing from the unreadable snapshot was restored.
-    assert!((current_global_brightness(&state.power_state) - 1.0).abs() < f32::EPSILON);
+    assert!((state.output_power.global_brightness() - 1.0).abs() < f32::EPSILON);
 
     state.shutdown().await.expect("shutdown should succeed");
 }
@@ -1453,8 +1452,8 @@ async fn daemon_start_restores_manual_pause_before_rendering() {
 
     state.start().await.expect("start should succeed");
 
-    assert!(state.power_state.borrow().manually_paused());
-    assert_eq!(current_global_brightness(&state.power_state), 1.0);
+    assert!(state.output_power.snapshot().manually_paused());
+    assert_eq!(state.output_power.global_brightness(), 1.0);
     assert_eq!(
         state.render_loop.read().await.state(),
         RenderLoopState::Paused
@@ -1718,7 +1717,7 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
         state.scene_manager.snapshot().await.active_scene_id(),
         Some(&named_scene_id)
     );
-    assert!((current_global_brightness(&state.power_state) - 0.35).abs() < f32::EPSILON);
+    assert!((state.output_power.global_brightness() - 0.35).abs() < f32::EPSILON);
     assert_eq!(
         state.spatial_engine.snapshot().layout().id,
         selected_layout.id

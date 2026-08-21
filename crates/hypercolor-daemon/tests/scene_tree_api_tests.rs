@@ -395,7 +395,7 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
-        state.power_state.borrow().manually_paused(),
+        state.output_power.snapshot().manually_paused(),
         "whole-layer replacement must not wake paused output"
     );
     let replaced = body_json(response).await;
@@ -615,7 +615,7 @@ async fn effect_apply_sugars_reject_stale_revisions_before_waking_output() {
             "precondition_failed"
         );
         assert!(
-            state.power_state.borrow().manually_paused(),
+            state.output_power.snapshot().manually_paused(),
             "a rejected sugar must not wake output"
         );
         assert_eq!(

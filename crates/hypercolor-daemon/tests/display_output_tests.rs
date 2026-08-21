@@ -30,8 +30,8 @@ use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapsho
 use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
+use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
-use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_daemon::simulators::SIMULATED_DISPLAY_BACKEND_ID;
 
 const DISPLAY_TEST_TIMEOUT: Duration = Duration::from_secs(5);

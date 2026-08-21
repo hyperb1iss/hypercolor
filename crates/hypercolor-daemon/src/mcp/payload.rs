@@ -10,7 +10,6 @@ use super::tools::{brightness_percent, render_capacity_fps};
 use crate::api::effects::active_effect_metadata;
 use crate::api::system::input_status_snapshot;
 use crate::app_state::AppState;
-use crate::session::current_global_brightness;
 
 #[derive(Debug, Default)]
 pub(crate) struct DeviceInventoryFilter<'a> {
@@ -45,7 +44,7 @@ pub(crate) async fn build_status_payload(state: &AppState) -> StatusResult {
         0.0
     };
 
-    let brightness = brightness_percent(current_global_brightness(&state.power_state));
+    let brightness = brightness_percent(state.output_power.global_brightness());
     let active_effect = active_effect_metadata(state).await;
     let effect_count = state.domains.effects.len().await;
     let scene_count = state.scene_manager.snapshot().await.scene_count();
@@ -79,7 +78,7 @@ pub(crate) async fn build_status_payload(state: &AppState) -> StatusResult {
     let input = input_status_snapshot(state);
     let input_state = interaction_state(input.enabled, input.degraded.as_deref());
 
-    let power = *state.power_state.borrow();
+    let power = state.output_power.snapshot();
     let paused = power.reported_paused();
 
     StatusResult {

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, ArcSwapOption};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
@@ -66,11 +66,11 @@ use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
+use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::{OutputPowerState, set_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -227,9 +227,7 @@ impl DaemonState {
         let asset_library = Arc::new(RwLock::new(asset_library));
         info!(path = %asset_library_path.display(), "Asset library ready");
 
-        let (power_state, _) = watch::channel(OutputPowerState::default());
         let scene_transactions = SceneTransactionQueue::default();
-        info!("Session power state channel created");
 
         // ── Device Registry ─────────────────────────────────────────────
         let device_registry = DeviceRegistry::new();
@@ -527,9 +525,8 @@ impl DaemonState {
             );
             DeviceSettingsStore::new(device_settings_path)
         });
-        let initial_global_brightness = device_settings_inner.global_brightness();
-        let device_settings = Arc::new(RwLock::new(device_settings_inner));
-        set_global_brightness(&power_state, initial_global_brightness);
+        let output_power = OutputPower::new(device_settings_inner);
+        let device_settings = output_power.device_settings();
         info!("Device settings store ready");
 
         // ── Simulator Store ─────────────────────────────────────────
@@ -691,13 +688,12 @@ impl DaemonState {
 
         let library_path = ConfigManager::data_dir().join("library.json");
         let library_store = open_persisted_library_store(&library_path)?;
-        let output_power_transition = Arc::new(Mutex::new(()));
         let start_time = Instant::now();
         let runtime_session = RuntimeSessionService::new(
             runtime_state_path.clone(),
             scene_manager.clone(),
             spatial_engine.clone(),
-            power_state.clone(),
+            output_power.clone(),
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
         );
@@ -728,9 +724,7 @@ impl DaemonState {
             devices.clone(),
         );
         let output = OutputContext::new(
-            power_state.clone(),
-            Arc::clone(&output_power_transition),
-            Arc::clone(&device_settings),
+            output_power.clone(),
             Arc::clone(&event_bus),
             runtime_session.clone(),
             Arc::clone(&performance),
@@ -811,8 +805,7 @@ impl DaemonState {
             startup_device_aliases: Some(startup_device_aliases),
             startup_runtime_snapshot,
             discovery_in_progress,
-            power_state,
-            output_power_transition,
+            output_power,
             scene_transactions,
             render_thread: None,
             display_output_thread: None,

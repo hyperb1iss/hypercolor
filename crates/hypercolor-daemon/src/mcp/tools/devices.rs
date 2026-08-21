@@ -6,7 +6,6 @@ use super::{ToolDefinition, ToolError, brightness_percent, output_schema, serial
 use crate::app_state::AppState;
 use crate::domain::output;
 use crate::mcp::results::{BrightnessResult, BrightnessScope, DeviceInventoryResult};
-use crate::session::current_global_brightness;
 use hypercolor_types::api::output::OutputPatchRequest;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -94,7 +93,7 @@ pub(super) async fn handle_set_brightness_with_state(
         });
     }
 
-    let previous = brightness_percent(current_global_brightness(&state.power_state));
+    let previous = brightness_percent(state.output_power.global_brightness());
 
     let brightness_u16 = u16::try_from(brightness).unwrap_or(100);
     let normalized = f32::from(brightness_u16) / 100.0;

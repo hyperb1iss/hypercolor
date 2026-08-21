@@ -259,7 +259,7 @@ impl DeviceSettingsStore {
     }
 
     /// Persist a global brightness scalar.
-    pub fn set_global_brightness(&mut self, brightness: f32) {
+    pub(crate) fn set_global_brightness(&mut self, brightness: f32) {
         self.snapshot.global_brightness = brightness.clamp(0.0, 1.0);
     }
 

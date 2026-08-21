@@ -50,7 +50,6 @@ use hypercolor_daemon::library::JsonLibraryStore;
 use hypercolor_daemon::persistence::AtomicFileWriter;
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
-use hypercolor_daemon::session::{OutputOverride, OutputPowerState};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
 use hypercolor_network::DriverModuleRegistry;
@@ -82,7 +81,6 @@ use hypercolor_types::scene::{
     SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
     ZoneRole,
 };
-use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -5955,7 +5953,7 @@ async fn pausing_output_darkens_display_groups_without_an_active_effect() {
     assert_eq!(response.status(), StatusCode::OK);
     let response_json = body_json(response).await;
     assert_eq!(response_json["data"]["power"], "paused");
-    assert!(state.power_state.borrow().manually_paused());
+    assert!(state.output_power.snapshot().manually_paused());
     assert_display_group_frame_black(&group_receiver.borrow());
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -6089,8 +6087,8 @@ async fn output_patch_sets_power_and_brightness_in_one_call() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["power"], "paused");
     assert_eq!(json["data"]["brightness"], 0.25);
-    assert!(state.power_state.borrow().manually_paused());
-    assert_eq!(state.power_state.borrow().global_brightness, 0.25);
+    assert!(state.output_power.snapshot().manually_paused());
+    assert_eq!(state.output_power.global_brightness(), 0.25);
 
     // A brightness-only patch leaves power exactly where it was.
     let response = app
@@ -6151,7 +6149,7 @@ async fn output_patch_rejects_brightness_outside_the_unit_interval() {
         assert_eq!(json["error"]["details"]["field"], "brightness");
     }
 
-    assert_eq!(state.power_state.borrow().global_brightness, 1.0);
+    assert_eq!(state.output_power.global_brightness(), 1.0);
 }
 
 /// A rejected brightness never reaches the power half of the patch.
@@ -6168,7 +6166,7 @@ async fn output_patch_validates_brightness_before_moving_power() {
         .await
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(!state.power_state.borrow().manually_paused());
+    assert!(!state.output_power.snapshot().manually_paused());
 }
 
 /// The routes this resource replaced are gone, not aliased.
@@ -6383,13 +6381,10 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         render_loop.start();
         render_loop.pause();
     }
-    state.power_state.send_replace(OutputPowerState {
-        output_override: OutputOverride::Stopped,
-        session_brightness: 0.0,
-        off_output_behavior: OffOutputBehavior::Release,
-        off_output_color: [0, 0, 0],
-        ..OutputPowerState::default()
-    });
+    state
+        .output_power
+        .set_output_stopped(&state.event_bus)
+        .await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = tokio::time::timeout(
@@ -6411,7 +6406,7 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         state.render_loop.read().await.state(),
         RenderLoopState::Running
     );
-    let power_state = *state.power_state.borrow();
+    let power_state = state.output_power.snapshot();
     assert!(!power_state.sleeping());
     assert_eq!(power_state.session_brightness, 1.0);
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -6827,7 +6822,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
         .await
         .expect("failed to execute request");
     assert_eq!(activate_response.status(), StatusCode::OK);
-    assert!(state.power_state.borrow().manually_paused());
+    assert!(state.output_power.snapshot().manually_paused());
 
     let first_layer_id = {
         let manager = state.scene_manager.snapshot().await;
@@ -6851,7 +6846,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
         .await
         .expect("failed to execute request");
     assert_eq!(second_activate_response.status(), StatusCode::OK);
-    assert!(state.power_state.borrow().manually_paused());
+    assert!(state.output_power.snapshot().manually_paused());
 
     let second_layer_id = {
         let manager = state.scene_manager.snapshot().await;
@@ -8971,8 +8966,7 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
     assert!(
         state
             .spatial_engine
-            .read()
-            .await
+            .snapshot()
             .layout()
             .zones
             .iter()

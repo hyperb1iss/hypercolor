@@ -284,9 +284,16 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
 #[tokio::test]
 async fn mcp_status_surfaces_report_effective_session_pause() {
     let state = fresh_app_state();
+    let generation = state.output_power.begin_session_transition();
     state
-        .power_state
-        .send_modify(|power| power.session_sleeping = true);
+        .output_power
+        .pause_for_session(
+            &state.event_bus,
+            generation,
+            hypercolor_types::session::OffOutputBehavior::Static,
+            [0, 0, 0],
+        )
+        .await;
 
     let status = execute_tool_with_state("get_status", &json!({}), &state)
         .await
@@ -300,9 +307,10 @@ async fn mcp_status_surfaces_report_effective_session_pause() {
     assert_eq!(resource["running"], false);
     assert_eq!(resource["paused"], true);
 
-    state.power_state.send_modify(|power| {
-        power.output_override = hypercolor_daemon::session::OutputOverride::Stopped;
-    });
+    state
+        .output_power
+        .set_output_stopped(&state.event_bus)
+        .await;
 
     let stopped_status = execute_tool_with_state("get_status", &json!({}), &state)
         .await
@@ -525,7 +533,7 @@ fn scenes_path(state: &AppState) -> PathBuf {
 
 #[derive(Debug, PartialEq)]
 struct McpMutationSnapshot {
-    power: hypercolor_daemon::session::OutputPowerState,
+    power: hypercolor_daemon::output_power::OutputPowerState,
     active_scene_id: Option<SceneId>,
     revision: u64,
     scenes: Value,
@@ -534,7 +542,7 @@ struct McpMutationSnapshot {
 async fn mcp_mutation_snapshot(state: &AppState) -> McpMutationSnapshot {
     let manager = state.scene_manager.snapshot().await;
     McpMutationSnapshot {
-        power: *state.power_state.borrow(),
+        power: state.output_power.snapshot(),
         active_scene_id: manager.active_scene_id().copied(),
         revision: state.scene_manager.revision(),
         scenes: serde_json::to_value(manager.list()).expect("scenes should serialize"),
@@ -2099,7 +2107,7 @@ fn fuzzy_color_shorthand_hex_requires_an_explicit_hash() {
 
 #[tokio::test]
 async fn set_output_power_tool_validates_desired_state() {
-    let state = fresh_app_state();
+    let (state, _tempdir) = isolated_state_with_tempdir();
 
     let error = execute_tool_with_state("set_output_power", &json!({ "state": "off" }), &state)
         .await
@@ -2109,7 +2117,8 @@ async fn set_output_power_tool_validates_desired_state() {
 
 #[tokio::test]
 async fn stateful_set_output_power_is_reversible_and_idempotent() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
 
     let paused = execute_tool_with_state(
         "set_output_power",
@@ -2119,7 +2128,7 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
     .await
     .expect("pause should succeed");
     assert_eq!(paused["state"], "paused");
-    assert!(state.power_state.borrow().manually_paused());
+    assert!(state.output_power.snapshot().manually_paused());
 
     let paused_again = execute_tool_with_state(
         "set_output_power",
@@ -2138,7 +2147,7 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
     .await
     .expect("resume should succeed");
     assert_eq!(running["state"], "running");
-    assert!(!state.power_state.borrow().sleeping());
+    assert!(!state.output_power.snapshot().sleeping());
 }
 
 /// `set_brightness` is a projection of the output service, so the tool
@@ -2154,7 +2163,7 @@ async fn set_brightness_tool_projects_the_output_service() {
             .expect("brightness should be accepted");
     assert_eq!(response["brightness"], 35);
     assert_eq!(response["previous_brightness"], 100);
-    assert!((state.power_state.borrow().global_brightness - 0.35).abs() < 1e-6);
+    assert!((state.output_power.global_brightness() - 0.35).abs() < 1e-6);
     assert!(
         (state.device_settings.read().await.global_brightness() - 0.35).abs() < 1e-6,
         "the tool must persist through the same store the REST route writes"

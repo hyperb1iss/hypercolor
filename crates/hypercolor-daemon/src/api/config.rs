@@ -952,7 +952,7 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
 }
 
 async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
-    let power_state = *state.power_state.borrow();
+    let power_state = state.output_power.snapshot();
     if power_state.sleeping() {
         return false;
     }

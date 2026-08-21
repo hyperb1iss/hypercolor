@@ -54,6 +54,7 @@ use hypercolor_types::spatial::{
 
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
+use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
 use hypercolor_daemon::render_thread::{
@@ -61,7 +62,6 @@ use hypercolor_daemon::render_thread::{
     InputPublicationDemandRegistration, RenderThread, RenderThreadState,
 };
 use hypercolor_daemon::scene_transactions::{SceneTransactionQueue, apply_layout_update};
-use hypercolor_daemon::session::OutputPowerState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

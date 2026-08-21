@@ -25,9 +25,7 @@ use crate::interactive_preview::{
 use crate::persistence::{self, AtomicWriteOutcome};
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
-use crate::session::{
-    SessionController, current_global_brightness, restore_manual_pause, set_global_brightness,
-};
+use crate::session::SessionController;
 use crate::simulators::activate_simulated_displays;
 
 use super::DaemonState;
@@ -101,8 +99,7 @@ impl DaemonState {
         self.session_controller = Some(SessionController::start(
             Arc::clone(&self.config_manager),
             Arc::clone(&self.event_bus),
-            self.power_state.clone(),
-            Arc::clone(&self.output_power_transition),
+            self.output_power.clone(),
             self.discovery_runtime(),
             Arc::clone(&self.driver_host),
             Arc::clone(&self.driver_registry),
@@ -116,7 +113,7 @@ impl DaemonState {
         {
             let mut loop_guard = self.render_loop.write().await;
             loop_guard.start();
-            if self.power_state.borrow().manually_paused() {
+            if self.output_power.snapshot().manually_paused() {
                 loop_guard.pause();
             }
         }
@@ -143,7 +140,7 @@ impl DaemonState {
             scene_plan: self.scene_manager.plan_reader(),
             input_manager: Arc::clone(&self.input_manager),
             interaction_routing: self.interaction_routing.clone(),
-            power_state: self.power_state.subscribe(),
+            power_state: self.output_power.subscribe(),
             device_settings: Arc::clone(&self.device_settings),
             scene_transactions: self.scene_transactions.clone(),
             screen_capture_configured: config.capture.enabled,
@@ -199,7 +196,7 @@ impl DaemonState {
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
             preview_runtime: Arc::clone(&self.preview_runtime),
-            power_state: self.power_state.subscribe(),
+            power_state: self.output_power.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
             display_frames: Arc::clone(&self.display_frames),
             face_fps_cap: config.display.effective_face_fps_cap(),
@@ -451,8 +448,9 @@ impl DaemonState {
             let spatial = self.spatial_engine.snapshot();
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
-        snapshot.global_brightness = current_global_brightness(&self.power_state);
-        snapshot.manual_paused = self.power_state.borrow().manually_paused();
+        let output_power = self.output_power.snapshot();
+        snapshot.global_brightness = output_power.global_brightness;
+        snapshot.manual_paused = output_power.manually_paused();
         self.driver_host
             .driver_inventory()
             .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
@@ -492,7 +490,7 @@ impl DaemonState {
         if let Some(snapshot) = snapshot.as_ref()
             && snapshot.manual_paused
         {
-            restore_manual_pause(&self.power_state, [0, 0, 0]);
+            self.output_power.restore_manual_pause([0, 0, 0]).await;
         }
 
         if !scene_mode.eq_ignore_ascii_case("last") {
@@ -507,16 +505,15 @@ impl DaemonState {
             );
             return;
         };
-        set_global_brightness(&self.power_state, snapshot.global_brightness);
+        if let Err(error) = self
+            .output_power
+            .set_global_brightness(snapshot.global_brightness)
+            .await
         {
-            let mut settings = self.device_settings.write().await;
-            settings.set_global_brightness(snapshot.global_brightness);
-            if let Err(error) = settings.save() {
-                warn!(
-                    %error,
-                    "Failed to sync restored global brightness into device settings store"
-                );
-            }
+            warn!(
+                %error,
+                "Failed to sync restored global brightness into device settings store"
+            );
         }
 
         // Restore active layout if persisted.
@@ -636,13 +633,10 @@ impl DaemonState {
             }
         }
 
-        if let Some(brightness) = activation_brightness {
-            set_global_brightness(&self.power_state, brightness);
-            let mut settings = self.device_settings.write().await;
-            settings.set_global_brightness(brightness);
-            if let Err(error) = settings.save() {
-                warn!(%error, "Failed to persist configured startup scene brightness");
-            }
+        if let Some(brightness) = activation_brightness
+            && let Err(error) = self.output_power.set_global_brightness(brightness).await
+        {
+            warn!(%error, "Failed to persist configured startup scene brightness");
         }
 
         info!(scene_id = %scene_id, scene_name, "Activated configured startup scene");
