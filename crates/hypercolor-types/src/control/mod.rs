@@ -65,6 +65,7 @@ use utoipa::{PartialSchema, ToSchema};
 
 use crate::effect::GradientStop;
 use crate::spatial::NormalizedRect;
+use crate::viewport::ViewportRect;
 
 /// Stable identifier for a renderer control.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -644,6 +645,17 @@ pub enum ControlValueInvalid {
     },
 }
 
+/// Why a raw effect-control JSON value cannot enter the canonical algebra.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EffectJsonValueError {
+    /// The JSON value is not one of the shapes accepted by effect controls.
+    #[error("unsupported effect control JSON shape")]
+    UnsupportedShape,
+    /// A number cannot be represented by the effect renderer's `f32` ABI.
+    #[error("effect control number must be finite and within the f32 range")]
+    FloatOutOfRange,
+}
+
 impl ControlValueInvalid {
     fn nested(path: impl Into<String>, source: Self) -> Self {
         Self::Nested {
@@ -670,6 +682,58 @@ fn finite_stop(stop: &GradientStop) -> Result<(), ControlValueInvalid> {
 }
 
 impl ControlValue {
+    /// Admit a raw effect-control JSON value into the canonical algebra.
+    ///
+    /// The returned value still needs validation against its
+    /// [`crate::effect::ControlDefinition`].
+    pub fn try_from_effect_json(value: &serde_json::Value) -> Result<Self, EffectJsonValueError> {
+        if let Some(value) = value.as_i64() {
+            return Ok(Self::Int(value));
+        }
+        if let Some(value) = value.as_f64() {
+            narrow_effect_f32(value)?;
+            return Ok(Self::Float(value));
+        }
+        if let Some(value) = value.as_bool() {
+            return Ok(Self::Bool(value));
+        }
+        if let Some(value) = value.as_str() {
+            return Ok(Self::Text(value.to_owned()));
+        }
+        if let Some(array) = value.as_array()
+            && array.len() == 4
+        {
+            let mut color = [0.0_f32; 4];
+            for (index, component) in array.iter().enumerate() {
+                color[index] = narrow_effect_f32(
+                    component
+                        .as_f64()
+                        .ok_or(EffectJsonValueError::UnsupportedShape)?,
+                )?;
+            }
+            return Ok(Self::linear_color(color));
+        }
+        if let Some(object) = value.as_object() {
+            let component = |name| {
+                object
+                    .get(name)
+                    .and_then(serde_json::Value::as_f64)
+                    .ok_or(EffectJsonValueError::UnsupportedShape)
+                    .and_then(narrow_effect_f32)
+            };
+            return Ok(Self::rect(
+                ViewportRect::new(
+                    component("x")?,
+                    component("y")?,
+                    component("width")?,
+                    component("height")?,
+                )
+                .clamp(),
+            ));
+        }
+        Err(EffectJsonValueError::UnsupportedShape)
+    }
+
     /// Validate and build an IP-address value while preserving its spelling.
     pub fn ip(text: impl Into<String>) -> Result<Self, ControlValueInvalid> {
         IpText::new(text).map(Self::Ip)
@@ -798,4 +862,13 @@ impl ControlValue {
             _ => Ok(()),
         }
     }
+}
+
+/// Narrow a JSON number to the effect renderer's scalar width.
+pub fn narrow_effect_f32(value: f64) -> Result<f32, EffectJsonValueError> {
+    if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
+        return Err(EffectJsonValueError::FloatOutOfRange);
+    }
+    #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+    Ok(value as f32)
 }

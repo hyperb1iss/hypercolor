@@ -6,8 +6,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use hypercolor_types::control::{
-    ControlDeltaBatch, ControlId, ControlSet, ControlValue, ControlValueInvalid, IpText, MacText,
-    SecretRef, SetRevision,
+    ControlDeltaBatch, ControlId, ControlSet, ControlValue, ControlValueInvalid,
+    EffectJsonValueError, IpText, MacText, SecretRef, SetRevision, narrow_effect_f32,
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::GradientStop;
@@ -81,6 +81,67 @@ fn canonical_wire_roundtrips_every_variant() {
         serde_json::to_value(ControlValue::Duration(Duration::from_millis(1500)))
             .expect("duration serializes"),
         serde_json::json!({"kind": "duration", "value": 1500})
+    );
+}
+
+#[test]
+fn effect_json_admission_uses_checked_scalar_narrowing() {
+    assert_eq!(narrow_effect_f32(0.25), Ok(0.25));
+    assert_eq!(
+        narrow_effect_f32(f64::INFINITY),
+        Err(EffectJsonValueError::FloatOutOfRange)
+    );
+    assert_eq!(
+        narrow_effect_f32(f64::from(f32::MAX) * 2.0),
+        Err(EffectJsonValueError::FloatOutOfRange)
+    );
+    assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!([
+            0.0,
+            0.5,
+            f64::from(f32::MAX) * 2.0,
+            1.0
+        ])),
+        Err(EffectJsonValueError::FloatOutOfRange)
+    );
+}
+
+#[test]
+fn effect_json_admission_rejects_malformed_composites() {
+    assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!([0.0, 1.0, 0.0])),
+        Err(EffectJsonValueError::UnsupportedShape)
+    );
+    assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!({
+            "x": 0.1,
+            "y": 0.2,
+            "width": "wide",
+            "height": 0.4
+        })),
+        Err(EffectJsonValueError::UnsupportedShape)
+    );
+}
+
+#[test]
+fn effect_json_admission_builds_canonical_composites() {
+    assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!([0.1, 0.2, 0.3, 0.4])),
+        Ok(ControlValue::linear_color([0.1, 0.2, 0.3, 0.4]))
+    );
+    assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!({
+            "x": 0.1,
+            "y": 0.2,
+            "width": 0.5,
+            "height": 0.4
+        })),
+        Ok(ControlValue::Rect(NormalizedRect {
+            x: 0.1,
+            y: 0.2,
+            width: 0.5,
+            height: 0.4,
+        }))
     );
 }
 
