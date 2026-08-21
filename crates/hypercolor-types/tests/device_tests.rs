@@ -652,6 +652,15 @@ fn device_error_display_messages() {
         err.to_string(),
         "backend fixture-network does not support display output"
     );
+
+    let err = DeviceError::PermissionDenied {
+        device: "USB Controller".into(),
+        detail: "udev policy rejected access".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "permission denied for USB Controller: udev policy rejected access"
+    );
 }
 
 #[test]
@@ -740,6 +749,15 @@ fn device_error_recoverability_is_typed() {
         DeviceError::Unsupported {
             backend: "fixture-network".into(),
             operation: "display output"
+        }
+        .recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    assert_eq!(
+        DeviceError::PermissionDenied {
+            device: String::new(),
+            detail: String::new(),
         }
         .recoverability(),
         ErrorRecoverability::Permanent

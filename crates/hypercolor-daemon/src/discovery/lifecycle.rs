@@ -5,9 +5,7 @@ use hypercolor_core::device::{
     AsyncWriteFailure, DeviceLifecycleManager, DeviceLifecyclePolicy, DiscoveryConnectBehavior,
     LifecycleAction,
 };
-use hypercolor_types::device::{
-    ConnectionType, DeviceError, DeviceId, DeviceState, ErrorRecoverability,
-};
+use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceState};
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
@@ -754,12 +752,7 @@ async fn should_retry_connect_failure(
 }
 
 fn connect_failure_is_retryable(policy: DeviceLifecyclePolicy, error: &DeviceError) -> bool {
-    match error.recoverability() {
-        ErrorRecoverability::Permanent => false,
-        ErrorRecoverability::Retry | ErrorRecoverability::Reconnect => {
-            !matches!(error, DeviceError::Timeout { .. }) || policy.retry_on_connect_timeout()
-        }
-    }
+    policy.should_retry_connect_failure(error)
 }
 
 fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {

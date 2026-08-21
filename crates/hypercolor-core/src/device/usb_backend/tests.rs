@@ -75,6 +75,33 @@ fn usb_midi_lifecycle_policy_runs_connect_in_background_without_timeout_retry() 
     assert!(!policy.retry_on_connect_timeout());
 }
 
+#[tokio::test]
+async fn usb_midi_policy_rejects_timeout_retry_from_production_transport_path() {
+    let device_id = DeviceId::new();
+    let transport = RecordingTransport::default()
+        .with_failed_primary_send_attempt(1, InjectedPrimaryFailure::Timeout);
+    let error = UsbBackend::run_commands(&FairnessProtocol, &transport, &[test_command(0x42)])
+        .await
+        .expect_err("injected transport timeout should fail the command");
+    let error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Connect,
+        error,
+    );
+    let policy = lifecycle_policy_for_transport(TransportType::UsbMidi {
+        midi_interface: 2,
+        display_interface: 0,
+        display_endpoint: 0x01,
+    });
+
+    assert!(matches!(
+        &error,
+        DeviceError::Timeout { after } if *after == Duration::from_millis(25)
+    ));
+    assert!(!policy.should_retry_connect_failure(&error));
+}
+
 #[test]
 fn usb_non_midi_lifecycle_policy_uses_default_connect_behavior() {
     let policy = lifecycle_policy_for_transport(TransportType::UsbHid { interface: 0 });

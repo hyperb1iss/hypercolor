@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use crate::discovery::DiscoveredDevice;
 use hypercolor_types::device::{
-    DeviceError, DeviceId, DeviceInfo, DisplayFrameFormat, OwnedDisplayFramePayload,
+    DeviceError, DeviceId, DeviceInfo, DisplayFrameFormat, ErrorRecoverability,
+    OwnedDisplayFramePayload,
 };
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +81,17 @@ impl DeviceLifecyclePolicy {
     #[must_use]
     pub const fn retry_on_connect_timeout(self) -> bool {
         self.retry_on_connect_timeout
+    }
+
+    /// Decide whether a typed connect failure should enter lifecycle retry.
+    #[must_use]
+    pub const fn should_retry_connect_failure(self, error: &DeviceError) -> bool {
+        match error.recoverability() {
+            ErrorRecoverability::Permanent => false,
+            ErrorRecoverability::Retry | ErrorRecoverability::Reconnect => {
+                !matches!(error, DeviceError::Timeout { .. }) || self.retry_on_connect_timeout
+            }
+        }
     }
 
     /// Return a copy with a different connect timeout.

@@ -5,7 +5,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use hypercolor_core::device::{
     DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior, SmBusBackend,
     SmBusScanner,
@@ -13,8 +13,9 @@ use hypercolor_core::device::{
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusOperation, decode_operations};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    SegmentInfo,
 };
 use tempfile::tempdir;
 
@@ -298,45 +299,29 @@ async fn smbus_discovery_source_is_empty_on_empty_dev_root() {
 }
 
 #[tokio::test]
-async fn smbus_backend_reinitializes_transport_after_write_failure() {
+async fn smbus_backend_preserves_transport_timeout_without_private_retry() {
     let device_id = DeviceId::new();
     let discovered = discovered_smbus_device(device_id);
     let open_count = Arc::new(AtomicUsize::new(0));
     let first_packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
-    let second_packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
     let close_count = Arc::new(AtomicUsize::new(0));
 
     let backend = SmBusBackend::with_transport_factory({
         let open_count = Arc::clone(&open_count);
         let first_packets = Arc::clone(&first_packets);
-        let second_packets = Arc::clone(&second_packets);
         let close_count = Arc::clone(&close_count);
 
         move |bus_path, address, _bus_arbiter| {
             assert_eq!(bus_path, "/dev/i2c-9");
             assert_eq!(address, 0x71);
 
-            let open_index = open_count.fetch_add(1, Ordering::SeqCst);
-            match open_index {
-                0 => Ok(Box::new(ScriptedTransport::new(
-                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
-                    vec![
-                        Ok(()),
-                        Err(TransportError::IoError {
-                            detail: "simulated frame write failure".to_owned(),
-                        }),
-                    ],
-                    Arc::clone(&first_packets),
-                    Arc::clone(&close_count),
-                ))),
-                1 => Ok(Box::new(ScriptedTransport::new(
-                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
-                    vec![Ok(()), Ok(())],
-                    Arc::clone(&second_packets),
-                    Arc::clone(&close_count),
-                ))),
-                other => bail!("unexpected extra SMBus transport open #{other}"),
-            }
+            assert_eq!(open_count.fetch_add(1, Ordering::SeqCst), 0);
+            Ok(Box::new(ScriptedTransport::new(
+                vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                vec![Ok(()), Err(TransportError::Timeout { timeout_ms: 275 })],
+                Arc::clone(&first_packets),
+                Arc::clone(&close_count),
+            )))
         }
     });
 
@@ -357,16 +342,20 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
         1,
         "duplicate connect should preserve the active device and its frame sinks"
     );
-    backend
+    let error = backend
         .write_colors(&device_id, &[[0x10, 0x20, 0x30]; 8])
         .await
-        .expect("write should recover after one transport reinitialize");
+        .expect_err("transport timeout should cross the backend boundary");
+    assert!(matches!(
+        error,
+        DeviceError::Timeout { after } if after == Duration::from_millis(275)
+    ));
     backend
         .disconnect(&device_id)
         .await
         .expect("disconnect should succeed");
 
-    assert_eq!(open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(open_count.load(Ordering::SeqCst), 1);
     assert_eq!(
         first_packets
             .lock()
@@ -376,17 +365,9 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
         "first transport should see init traffic plus the failed frame write"
     );
     assert_eq!(
-        second_packets
-            .lock()
-            .expect("second packet log lock should not be poisoned")
-            .len(),
-        4,
-        "replacement transport should rerun init and then accept the retried frame"
-    );
-    assert_eq!(
         close_count.load(Ordering::SeqCst),
-        2,
-        "recovery should close the stale transport and disconnect should close the replacement"
+        1,
+        "disconnect should close the original transport"
     );
 }
 

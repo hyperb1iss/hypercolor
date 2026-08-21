@@ -18,6 +18,7 @@ pub mod smbus_backend;
 pub mod smbus_scanner;
 mod state_machine;
 mod traits;
+mod transport_error;
 pub mod usb_backend;
 pub mod usb_hotplug;
 pub mod usb_scanner;

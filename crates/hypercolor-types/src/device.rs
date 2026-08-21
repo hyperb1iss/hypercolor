@@ -1047,6 +1047,15 @@ pub enum DeviceError {
         device: String,
     },
 
+    /// The host denied access to the device transport.
+    #[error("permission denied for {device}: {detail}")]
+    PermissionDenied {
+        /// Device display name or identifier.
+        device: String,
+        /// Operating system policy or access failure detail.
+        detail: String,
+    },
+
     /// Connection handle is stale or unknown.
     #[error("invalid handle {handle_id} for backend {backend}")]
     InvalidHandle {
@@ -1113,6 +1122,7 @@ impl DeviceError {
             | Self::Disconnected { .. } => ErrorRecoverability::Reconnect,
             Self::NotAdopted { .. }
             | Self::NotFound { .. }
+            | Self::PermissionDenied { .. }
             | Self::InvalidHandle { .. }
             | Self::InvalidTransition { .. }
             | Self::Unsupported { .. } => ErrorRecoverability::Permanent,

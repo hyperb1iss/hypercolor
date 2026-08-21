@@ -21,6 +21,7 @@ use super::traits::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
 };
+use super::transport_error::{DeviceTransportOperation, map_hal_transport_error};
 use hypercolor_types::device::DeviceError;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
@@ -202,7 +203,14 @@ impl DeviceBackend for SmBusBackend {
             .clone();
         let device = connect_pending_device(&pending, &self.transport_factory, bus_arbiter)
             .await
-            .map_err(|error| DeviceError::connection(id, error))?;
+            .map_err(|error| {
+                map_hal_transport_error(
+                    *id,
+                    SMBUS_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Connect,
+                    error,
+                )
+            })?;
         self.connected
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -238,7 +246,14 @@ impl DeviceBackend for SmBusBackend {
             .close()
             .await
             .map_err(map_transport_error)
-            .map_err(|error| DeviceError::connection(id, error))
+            .map_err(|error| {
+                map_hal_transport_error(
+                    *id,
+                    SMBUS_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Connect,
+                    error,
+                )
+            })
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
@@ -376,7 +391,14 @@ async fn write_connected_device(
         frame_commands.as_slice(),
     )
     .await
-    .map_err(|error| DeviceError::write(device_id, error))
+    .map_err(|error| {
+        map_hal_transport_error(
+            device_id,
+            SMBUS_OUTPUT_BACKEND_ID,
+            DeviceTransportOperation::Write,
+            error,
+        )
+    })
 }
 
 async fn run_init_sequence(

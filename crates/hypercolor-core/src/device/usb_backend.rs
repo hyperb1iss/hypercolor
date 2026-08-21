@@ -39,6 +39,7 @@ use super::traits::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
 };
+use super::transport_error::{DeviceTransportOperation, map_hal_transport_error};
 use crate::attachment::ComponentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
@@ -1181,7 +1182,14 @@ impl DeviceBackend for UsbBackend {
             Ok(())
         }
         .await;
-        result.map_err(|error| DeviceError::connection(id, error))
+        result.map_err(|error| {
+            map_hal_transport_error(
+                *id,
+                USB_OUTPUT_BACKEND_ID,
+                DeviceTransportOperation::Connect,
+                error,
+            )
+        })
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
@@ -1204,7 +1212,14 @@ impl DeviceBackend for UsbBackend {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
-        disconnect_result.map_err(|error| DeviceError::connection(id, error))
+        disconnect_result.map_err(|error| {
+            map_hal_transport_error(
+                *id,
+                USB_OUTPUT_BACKEND_ID,
+                DeviceTransportOperation::Connect,
+                error,
+            )
+        })
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
