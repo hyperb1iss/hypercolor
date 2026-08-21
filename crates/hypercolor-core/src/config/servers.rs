@@ -69,7 +69,7 @@ pub enum StoredServersError {
         path: PathBuf,
         /// TOML decoder error.
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 }
 
@@ -105,7 +105,7 @@ fn parse_server_credentials(
     let file = toml::from_str::<StoredServersFile>(contents).map_err(|source| {
         StoredServersError::Parse {
             path: path.to_path_buf(),
-            source,
+            source: Box::new(source),
         }
     })?;
 
