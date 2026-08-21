@@ -34,7 +34,6 @@ use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::server::ServerIdentity;
-use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
@@ -44,14 +43,13 @@ use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{
     DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionService, SceneContext,
 };
-use crate::domain::layout::LayoutContext;
+use crate::domain::layout::{LayoutContext, LayoutContextResources};
 use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
-use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
@@ -215,22 +213,6 @@ pub struct AppState {
 
     /// Registry of compiled-in driver modules and capabilities.
     pub driver_registry: Arc<DriverModuleRegistry>,
-
-    /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
-    pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
-
-    #[cfg(feature = "persistence-test-hooks")]
-    #[doc(hidden)]
-    pub layout_mutation_test_hooks: crate::api::layouts::LayoutMutationTestHooks,
-
-    /// Persistent path for spatial layouts.
-    pub layouts_path: PathBuf,
-
-    /// Discovery auto-sync exclusions keyed by legacy layout or scene zone.
-    pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-
-    /// Persistent path for discovery auto-sync exclusions.
-    pub layout_auto_exclusions_path: PathBuf,
 
     /// Logical device segmentation store (physical device -> logical ranges).
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
@@ -556,7 +538,12 @@ impl AppState {
             devices.clone(),
         );
         let layout = LayoutContext::new(
-            Arc::clone(&layouts),
+            LayoutContextResources {
+                layouts: Arc::clone(&layouts),
+                layouts_path: layouts_path.clone(),
+                layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
+                layout_auto_exclusions_path: layout_auto_exclusions_path.clone(),
+            },
             spatial_engine.clone(),
             scene_manager.clone(),
             scene_transactions.clone(),
@@ -640,12 +627,6 @@ impl AppState {
             credential_store,
             driver_host,
             driver_registry,
-            layouts,
-            #[cfg(feature = "persistence-test-hooks")]
-            layout_mutation_test_hooks: crate::api::layouts::LayoutMutationTestHooks::default(),
-            layouts_path,
-            layout_auto_exclusions,
-            layout_auto_exclusions_path,
             logical_devices,
             logical_devices_path,
             runtime_state_path,
@@ -731,12 +712,6 @@ impl AppState {
             credential_store: Arc::clone(&daemon.credential_store),
             driver_host,
             driver_registry,
-            layouts: Arc::clone(&daemon.layouts),
-            #[cfg(feature = "persistence-test-hooks")]
-            layout_mutation_test_hooks: crate::api::layouts::LayoutMutationTestHooks::default(),
-            layouts_path: daemon.layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&daemon.layout_auto_exclusions),
-            layout_auto_exclusions_path: daemon.layout_auto_exclusions_path.clone(),
             logical_devices: Arc::clone(&daemon.logical_devices),
             logical_devices_path: daemon.logical_devices_path.clone(),
             runtime_state_path: daemon.runtime_state_path.clone(),

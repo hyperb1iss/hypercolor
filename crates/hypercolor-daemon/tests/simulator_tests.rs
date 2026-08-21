@@ -490,7 +490,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         brightness: None,
     });
     {
-        let mut layouts = state.layouts.write().await;
+        let mut layouts = state.domains.layout.catalog_for_test().write().await;
         layouts.insert(
             active_layout_with_simulator.id.clone(),
             active_layout_with_simulator.clone(),
@@ -586,7 +586,9 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(state.display_frames.read().await.frame(device_id).is_none());
     assert!(
         state
-            .layouts
+            .domains
+            .layout
+            .catalog_for_test()
             .read()
             .await
             .get(&active_layout_with_simulator.id)

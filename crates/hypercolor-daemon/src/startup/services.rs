@@ -719,7 +719,12 @@ impl DaemonState {
             devices.clone(),
         );
         let layout = LayoutContext::new(
-            Arc::clone(&layouts),
+            crate::domain::layout::LayoutContextResources {
+                layouts: Arc::clone(&layouts),
+                layouts_path: layouts_path.clone(),
+                layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
+                layout_auto_exclusions_path: layout_auto_exclusions_path.clone(),
+            },
             spatial_engine.clone(),
             scene_manager.clone(),
             scene_transactions.clone(),

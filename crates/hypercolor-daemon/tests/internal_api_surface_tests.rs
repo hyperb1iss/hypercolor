@@ -115,3 +115,41 @@ fn transports_use_the_effect_domain_authority() {
         offenders.join("\n")
     );
 }
+
+#[test]
+fn layout_transport_uses_the_layout_domain_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let app_state = source("app_state.rs");
+    for retired_field in [
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub layout_auto_exclusions_path:",
+        "pub layout_mutation_test_hooks:",
+    ] {
+        assert!(!app_state.contains(retired_field), "found {retired_field}");
+    }
+
+    let adapter = source("api/layouts.rs");
+    for bypass in [
+        "state.layouts",
+        "state.layouts_path",
+        "state.spatial_engine",
+        "state.scene_transactions",
+        "state.layout_auto_exclusions",
+    ] {
+        assert!(
+            !adapter.contains(bypass),
+            "layout adapter contains {bypass}"
+        );
+    }
+    assert!(adapter.contains("state.domains.layout"));
+}

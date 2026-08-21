@@ -666,7 +666,9 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
         ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
-        .layouts
+        .domains
+        .layout
+        .catalog_for_test()
         .write()
         .await
         .insert(layout.id.clone(), layout);

@@ -39,9 +39,7 @@ pub use hypercolor_types::api::config::{ConfigApplyQuery, ConfigDocument, Config
 fn internal_config_error(message: impl Into<String>) -> Response {
     DomainError::Internal(anyhow::anyhow!(message.into())).into_response()
 }
-use crate::scene_transactions::{
-    PreparedLayoutUpdate, SceneTransaction, apply_prepared_layout_update_under_guard,
-};
+use crate::scene_transactions::SceneTransaction;
 
 /// The outcome of a config write, reset, or whole-config reset.
 #[derive(Debug, Serialize, ToSchema)]
@@ -1418,15 +1416,6 @@ async fn apply_render_config_change(state: &Arc<AppState>, key: Option<&str>) ->
     applied
 }
 
-const fn canvas_dimensions_differ(
-    current_width: u32,
-    current_height: u32,
-    next_width: u32,
-    next_height: u32,
-) -> bool {
-    current_width != next_width || current_height != next_height
-}
-
 async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, height: u32) -> bool {
     let state = Arc::clone(state);
     match tokio::spawn(sync_active_layout_canvas_size_workflow(
@@ -1447,90 +1436,18 @@ async fn sync_active_layout_canvas_size_workflow(
     width: u32,
     height: u32,
 ) -> bool {
-    #[cfg(feature = "persistence-test-hooks")]
-    let mutation_reference = format!("{width}x{height}");
-    #[cfg(feature = "persistence-test-hooks")]
-    state
-        .layout_mutation_test_hooks
-        .wait(
-            crate::api::layouts::LayoutMutationTestPoint::BeforeGuard,
-            crate::api::layouts::LayoutMutationTestOperation::ConfigResize,
-            &mutation_reference,
-        )
-        .await;
-    let guard = state.scene_transactions.acquire_layout_update_guard().await;
-    let updated_layout = {
-        let spatial = state.spatial_engine.snapshot();
-        let current = spatial.layout().as_ref().clone();
-        if canvas_dimensions_differ(current.canvas_width, current.canvas_height, width, height) {
-            let mut updated = current;
-            updated.canvas_width = width;
-            updated.canvas_height = height;
-            Some(updated)
-        } else {
-            None
-        }
-    };
-
-    let Some(updated_layout) = updated_layout else {
-        return false;
-    };
-
-    let prepared = match PreparedLayoutUpdate::try_new(updated_layout.clone()) {
-        Ok(prepared) => prepared,
+    match state
+        .domains
+        .layout
+        .resize_active_canvas(width, height)
+        .await
+    {
+        Ok(applied) => applied,
         Err(error) => {
             warn!(%error, width, height, "Rejected live canvas dimension config");
-            return false;
-        }
-    };
-    if let Err(error) = apply_prepared_layout_update_under_guard(
-        state.spatial_engine.clone(),
-        state.scene_manager.clone(),
-        state.scene_transactions.clone(),
-        &guard,
-        prepared,
-    )
-    .await
-    {
-        warn!(%error, width, height, "Rejected live canvas dimension config");
-        return false;
-    }
-
-    let persisted_layout_updated = {
-        let mut layouts = state.layouts.write().await;
-        if let Some(saved_layout) = layouts.get_mut(&updated_layout.id) {
-            saved_layout.canvas_width = width;
-            saved_layout.canvas_height = height;
-            true
-        } else {
             false
         }
-    };
-
-    #[cfg(feature = "persistence-test-hooks")]
-    state
-        .layout_mutation_test_hooks
-        .wait(
-            crate::api::layouts::LayoutMutationTestPoint::AfterMemoryMutation,
-            crate::api::layouts::LayoutMutationTestOperation::ConfigResize,
-            &mutation_reference,
-        )
-        .await;
-    if persisted_layout_updated {
-        crate::api::persist_layouts_best_effort(&state).await;
     }
-    #[cfg(feature = "persistence-test-hooks")]
-    state
-        .layout_mutation_test_hooks
-        .wait(
-            crate::api::layouts::LayoutMutationTestPoint::AfterWorkflow,
-            crate::api::layouts::LayoutMutationTestOperation::ConfigResize,
-            &mutation_reference,
-        )
-        .await;
-    drop(guard);
-
-    true
 }
 
 #[cfg(test)]
@@ -1551,9 +1468,8 @@ mod tests {
 
     use super::{
         CaptureConfigTransactionError, ConfigApplyQuery, LiveSections,
-        apply_capture_config_transaction, apply_input_config_change, canvas_dimensions_differ,
-        capture_statuses_match, live_sections_for, put_config_key,
-        validate_prepared_capture_status, write_covers,
+        apply_capture_config_transaction, apply_input_config_change, capture_statuses_match,
+        live_sections_for, put_config_key, validate_prepared_capture_status, write_covers,
     };
     use crate::app_state::AppState;
 
@@ -1815,13 +1731,6 @@ mod tests {
             super::redact_key("daemon.port", serde_json::json!(9420)),
             serde_json::json!(9420)
         );
-    }
-
-    #[test]
-    fn canvas_dimensions_differ_only_when_size_changes() {
-        assert!(!canvas_dimensions_differ(800, 600, 800, 600));
-        assert!(canvas_dimensions_differ(800, 600, 801, 600));
-        assert!(canvas_dimensions_differ(800, 600, 800, 601));
     }
 
     #[tokio::test]

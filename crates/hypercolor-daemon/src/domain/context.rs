@@ -566,8 +566,7 @@ impl DeviceContext {
         }
     }
 
-    /// Persist the discovery auto-sync exclusion store.
-    pub async fn persist_layout_auto_exclusions(&self) {
+    async fn persist_layout_auto_exclusions(&self) {
         let exclusions = self.layout_auto_exclusions.read().await;
         if let Err(error) =
             layout_auto_exclusions::save(&self.layout_auto_exclusions_path, &exclusions)
