@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use hypercolor_driver_api::{DeviceLifecyclePolicy, DriverError, ErrorRecoverability};
+use hypercolor_driver_api::{
+    DeviceDeliveryAck, DeviceDeliveryId, DeviceLifecyclePolicy, DeviceWriteOutcome, DriverError,
+    ErrorRecoverability,
+};
 use hypercolor_types::device::DeviceError;
 
 #[test]
@@ -56,4 +59,22 @@ fn lifecycle_policy_owns_typed_connect_retry_decisions() {
     );
     assert!(DeviceLifecyclePolicy::default().should_retry_connect_failure(&reconnect));
     assert!(!DeviceLifecyclePolicy::default().should_retry_connect_failure(&permanent));
+}
+
+#[test]
+fn delivery_ack_preserves_typed_device_error() {
+    let error = DeviceError::Timeout {
+        after: Duration::from_millis(25),
+    };
+    let ack = DeviceDeliveryAck::from_write_result(
+        DeviceDeliveryId {
+            queue_generation: 4,
+            sequence: 9,
+        },
+        3,
+        Duration::from_millis(25),
+        Err::<DeviceWriteOutcome, _>(error.clone()),
+    );
+
+    assert_eq!(ack.error, Some(error));
 }

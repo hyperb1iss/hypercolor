@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceError, DeviceId};
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -414,8 +414,8 @@ pub struct AsyncWriteFailure {
     pub backend_id: String,
     /// Physical device ID targeted by the queue.
     pub device_id: DeviceId,
-    /// Most recent async write error string.
-    pub error: String,
+    /// Most recent typed async write error.
+    pub error: DeviceError,
 }
 
 #[derive(Debug)]
@@ -445,7 +445,7 @@ struct OutputQueueMetrics {
     last_handled_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
     last_error_sequence: AtomicU64,
-    last_error: StdMutex<Option<String>>,
+    last_error: StdMutex<Option<DeviceError>>,
 }
 
 impl OutputQueueMetrics {
@@ -583,7 +583,7 @@ impl OutputQueueMetrics {
         }
     }
 
-    fn record_write_error(&self, id: DeviceDeliveryId, sent_at: Instant, error: String) {
+    fn record_write_error(&self, id: DeviceDeliveryId, sent_at: Instant, error: DeviceError) {
         if !self.is_current(id) {
             return;
         }
@@ -629,9 +629,9 @@ impl OutputQueueMetrics {
             DeviceDeliveryStatus::Failed => self.record_write_error(
                 ack.id,
                 completed_at,
-                ack.error
-                    .clone()
-                    .unwrap_or_else(|| "device delivery failed without an error".to_owned()),
+                ack.error.clone().unwrap_or_else(|| {
+                    DeviceError::protocol("output queue", "delivery failed without an error")
+                }),
             ),
         }
     }
@@ -700,7 +700,8 @@ impl OutputQueueMetrics {
         let last_error = (self.last_error_sequence.load(Ordering::Relaxed)
             > self.last_handled_sequence.load(Ordering::Relaxed))
         .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
-        .flatten();
+        .flatten()
+        .map(|error| error.to_string());
 
         DeviceOutputStatistics {
             backend_id: backend_id.to_owned(),
@@ -744,7 +745,7 @@ impl OutputQueueMetrics {
         }
     }
 
-    fn last_error(&self) -> Option<String> {
+    fn last_error(&self) -> Option<DeviceError> {
         (self.last_error_sequence.load(Ordering::Relaxed)
             > self.last_handled_sequence.load(Ordering::Relaxed))
         .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
@@ -1068,16 +1069,16 @@ impl OutputQueue {
                         repeated_write_failures_since_log = 0;
                     }
                     DeviceDeliveryStatus::Failed => {
-                        let error = ack
-                            .error
-                            .as_deref()
-                            .unwrap_or("device delivery failed without an error");
+                        let error = ack.error.clone().unwrap_or_else(|| {
+                            DeviceError::protocol(device_id, "delivery failed without an error")
+                        });
+                        let error_text = error.to_string();
 
-                        if last_logged_write_error.as_deref() == Some(error) {
+                        if last_logged_write_error.as_deref() == Some(error_text.as_str()) {
                             repeated_write_failures_since_log =
                                 repeated_write_failures_since_log.saturating_add(1);
                         } else {
-                            last_logged_write_error = Some(error.to_owned());
+                            last_logged_write_error = Some(error_text);
                             repeated_write_failures_since_log = 0;
                         }
 
@@ -1348,7 +1349,7 @@ impl OutputQueue {
         )
     }
 
-    pub(super) fn last_error(&self) -> Option<String> {
+    pub(super) fn last_error(&self) -> Option<DeviceError> {
         self.metrics.last_error()
     }
 }

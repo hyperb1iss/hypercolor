@@ -172,8 +172,8 @@ pub struct DeviceDeliveryAck {
     pub completed_payload_bytes: u64,
     /// Time spent in actual transport I/O, excluding queue wait.
     pub transport_latency: Duration,
-    /// Error reported by a failed attempt.
-    pub error: Option<String>,
+    /// Typed error reported by a failed attempt.
+    pub error: Option<DeviceError>,
 }
 
 /// Observer notified when a queue-qualified delivery begins transport I/O.
@@ -206,14 +206,14 @@ impl DeviceDeliveryAck {
             Ok(DeviceWriteOutcome::SuppressedCadence) => {
                 Self::suppressed(id, DeviceDeliveryStatus::SuppressedCadence)
             }
-            Err(error) => Self::failed(id, true, transport_latency, error.to_string()),
+            Err(error) => Self::failed(id, true, transport_latency, error),
         }
     }
 
     /// Build an acknowledgement for a transport attempt rejected before I/O.
     #[must_use]
-    pub fn rejected(id: DeviceDeliveryId, error: impl Into<String>) -> Self {
-        Self::failed(id, false, Duration::ZERO, error.into())
+    pub fn rejected(id: DeviceDeliveryId, error: DeviceError) -> Self {
+        Self::failed(id, false, Duration::ZERO, error)
     }
 
     /// Build an acknowledgement for a completed transport attempt.
@@ -239,7 +239,7 @@ impl DeviceDeliveryAck {
         id: DeviceDeliveryId,
         transport_started: bool,
         transport_latency: Duration,
-        error: impl Into<String>,
+        error: DeviceError,
     ) -> Self {
         Self {
             id,
@@ -247,7 +247,7 @@ impl DeviceDeliveryAck {
             transport_started,
             completed_payload_bytes: 0,
             transport_latency,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 

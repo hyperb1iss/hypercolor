@@ -14,7 +14,7 @@ pub(super) fn map_hal_transport_error(
     device_id: DeviceId,
     backend_id: &'static str,
     operation: DeviceTransportOperation,
-    error: Error,
+    error: &Error,
 ) -> DeviceError {
     let transport_error = error
         .chain()
@@ -50,7 +50,7 @@ impl DeviceTransportOperation {
         }
     }
 
-    fn fallback(self, device_id: DeviceId, error: Error) -> DeviceError {
+    fn fallback(self, device_id: DeviceId, error: &Error) -> DeviceError {
         match self {
             Self::Connect => DeviceError::connection(device_id, error),
             Self::Write => DeviceError::write(device_id, error),

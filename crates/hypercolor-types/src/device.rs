@@ -989,7 +989,7 @@ pub enum ErrorRecoverability {
 /// Errors from the device backend layer.
 ///
 /// All variants are `Send + Sync` for use across async boundaries.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DeviceError {
     /// Connection attempt failed.

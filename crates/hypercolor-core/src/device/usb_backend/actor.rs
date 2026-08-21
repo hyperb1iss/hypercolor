@@ -5,16 +5,16 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceError, DeviceId, USB_OUTPUT_BACKEND_ID};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace, warn};
 
 use super::{
-    MAX_RETRIES, RETRY_BACKOFF, UsbBackend, UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload,
-    describe_packet, format_error_chain, format_hex_preview, map_transport_error,
-    record_usb_display_lane,
+    DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF, UsbBackend, UsbDeviceCommand,
+    UsbDisplayPayload, UsbFramePayload, describe_packet, format_error_chain, format_hex_preview,
+    map_hal_transport_error, map_transport_error, record_usb_display_lane,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +39,7 @@ impl UsbBackend {
         frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
-        last_async_error: Arc<StdMutex<Option<String>>>,
+        last_async_error: Arc<StdMutex<Option<DeviceError>>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let transport_name = transport.name();
@@ -69,10 +69,18 @@ impl UsbBackend {
                 .await
             };
 
-            let rejection = actor_result
-                .as_ref()
-                .map_or_else(ToString::to_string, |()| {
-                    "USB device actor stopped before transport started".to_owned()
+            let actor_error = actor_result.as_ref().err().map(|error| {
+                map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    error,
+                )
+            });
+            let rejection = actor_error
+                .clone()
+                .unwrap_or_else(|| DeviceError::Disconnected {
+                    device: device_id.to_string(),
                 });
             {
                 let _gate = super::lock_lifecycle_gate(&lifecycle_gate);
@@ -83,7 +91,10 @@ impl UsbBackend {
             }
 
             if let Err(error) = actor_result {
-                Self::store_actor_error(&last_async_error, error.to_string());
+                Self::store_actor_error(
+                    &last_async_error,
+                    actor_error.expect("failed actor result should have a typed error"),
+                );
                 warn!(
                     device_id = %device_id,
                     device = device_name,
@@ -97,7 +108,13 @@ impl UsbBackend {
             }
 
             if let Err(error) = transport.close().await.map_err(map_transport_error) {
-                Self::store_actor_error(&last_async_error, error.to_string());
+                let typed_error = map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Connect,
+                    &error,
+                );
+                Self::store_actor_error(&last_async_error, typed_error);
                 warn!(
                     device_id = %device_id,
                     device = device_name,
@@ -629,12 +646,18 @@ impl UsbBackend {
             Err(error)
                 if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
             {
+                let typed_error = map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    &error,
+                );
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(super::DeviceDeliveryAck::failed(
                         id,
                         true,
                         transport_started_at.elapsed(),
-                        error.to_string(),
+                        typed_error,
                     ));
                 }
                 warn!(
@@ -648,12 +671,18 @@ impl UsbBackend {
                 Ok(())
             }
             Err(error) => {
+                let typed_error = map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    &error,
+                );
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(super::DeviceDeliveryAck::failed(
                         id,
                         true,
                         transport_started_at.elapsed(),
-                        error.to_string(),
+                        typed_error,
                     ));
                 }
                 Err(error)
@@ -819,7 +848,10 @@ impl UsbBackend {
         Ok(())
     }
 
-    fn store_actor_error(last_async_error: &Arc<StdMutex<Option<String>>>, error: String) {
+    fn store_actor_error(
+        last_async_error: &Arc<StdMutex<Option<DeviceError>>>,
+        error: DeviceError,
+    ) {
         if let Ok(mut slot) = last_async_error.lock() {
             *slot = Some(error);
         }

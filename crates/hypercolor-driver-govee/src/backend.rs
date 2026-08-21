@@ -624,7 +624,9 @@ impl DeviceBackend for GoveeBackend {
         let Some(device) = device else {
             return DeviceDeliveryAck::rejected(
                 delivery_id,
-                format!("Govee device {device_id} is not connected"),
+                DeviceError::Disconnected {
+                    device: device_id.to_string(),
+                },
             );
         };
         let result = Self::write_device_colors(

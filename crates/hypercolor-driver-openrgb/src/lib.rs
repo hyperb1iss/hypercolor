@@ -542,6 +542,7 @@ impl ConnectedOutput {
         let lifecycle_gate = Arc::new(StdMutex::new(()));
         let last_async_error = Arc::new(StdMutex::new(None::<String>));
         let io_task = tokio::spawn(run_openrgb_output_worker(
+            device_id,
             Arc::clone(&controller),
             frame_rx,
             Arc::clone(&active),
@@ -571,6 +572,7 @@ impl ConnectedOutput {
 
     fn enqueue_colors(&self, colors: Arc<Vec<[u8; 3]>>) -> std::result::Result<(), DeviceError> {
         enqueue_openrgb_payload(
+            self.device_id,
             &self.frame_tx,
             &self.active,
             &self.lifecycle_gate,
@@ -585,7 +587,9 @@ impl ConnectedOutput {
             let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
             self.active.store(false, Ordering::Release);
             if let Some(pending) = self.frame_tx.send_replace(None) {
-                pending.reject_pending("OpenRGB controller disconnected before transport started");
+                pending.reject_pending(DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                });
             }
         }
         {
@@ -625,7 +629,9 @@ impl Drop for ConnectedOutput {
             let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
             self.active.store(false, Ordering::Release);
             if let Some(pending) = self.frame_tx.send_replace(None) {
-                pending.reject_pending("OpenRGB output worker stopped before transport started");
+                pending.reject_pending(DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                });
             }
         }
         if let Some(io_task) = self
@@ -713,7 +719,7 @@ impl OpenRgbFramePayload {
         }
     }
 
-    fn reject_pending(&self, error: impl Into<String>) {
+    fn reject_pending(&self, error: DeviceError) {
         let Some(id) = self.delivery_id else {
             return;
         };
@@ -748,6 +754,7 @@ impl DeviceFrameSink for OpenRgbFrameSink {
         colors: Arc<Vec<[u8; 3]>>,
     ) -> std::result::Result<(), DeviceError> {
         enqueue_openrgb_payload(
+            self.device_id,
             &self.frame_tx,
             &self.active,
             &self.lifecycle_gate,
@@ -764,19 +771,22 @@ impl DeviceFrameSink for OpenRgbFrameSink {
     ) -> DeviceDeliveryAck {
         let (payload, delivery_rx) = OpenRgbFramePayload::tracked(id, colors);
         if let Err(error) = enqueue_openrgb_payload(
+            self.device_id,
             &self.frame_tx,
             &self.active,
             &self.lifecycle_gate,
             &self.last_async_error,
             Arc::new(payload),
         ) {
-            return DeviceDeliveryAck::rejected(id, error.to_string());
+            return DeviceDeliveryAck::rejected(id, DeviceError::write(self.device_id, error));
         }
 
         delivery_rx.await.unwrap_or_else(|_| {
             DeviceDeliveryAck::rejected(
                 id,
-                "OpenRGB output worker terminated before acknowledging delivery",
+                DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                },
             )
         })
     }
@@ -790,25 +800,29 @@ impl DeviceFrameSink for OpenRgbFrameSink {
         let (payload, delivery_rx) =
             OpenRgbFramePayload::tracked_observed(id, colors, Some(observer));
         if let Err(error) = enqueue_openrgb_payload(
+            self.device_id,
             &self.frame_tx,
             &self.active,
             &self.lifecycle_gate,
             &self.last_async_error,
             Arc::new(payload),
         ) {
-            return DeviceDeliveryAck::rejected(id, error.to_string());
+            return DeviceDeliveryAck::rejected(id, DeviceError::write(self.device_id, error));
         }
 
         delivery_rx.await.unwrap_or_else(|_| {
             DeviceDeliveryAck::rejected(
                 id,
-                "OpenRGB output worker terminated before acknowledging delivery",
+                DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                },
             )
         })
     }
 }
 
 fn enqueue_openrgb_payload(
+    device_id: DeviceId,
     frame_tx: &watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: &AtomicBool,
     lifecycle_gate: &StdMutex<()>,
@@ -827,7 +841,10 @@ fn enqueue_openrgb_payload(
         bail!("{error}");
     }
     if let Some(previous) = frame_tx.send_replace(Some(payload)) {
-        previous.reject_pending("OpenRGB frame was superseded before transport started");
+        previous.reject_pending(DeviceError::write(
+            device_id,
+            "OpenRGB frame was superseded before transport started",
+        ));
     }
     Ok(())
 }
@@ -840,6 +857,7 @@ fn lock_lifecycle_gate(gate: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
 }
 
 async fn run_openrgb_output_worker(
+    device_id: DeviceId,
     controller: Arc<Mutex<ConnectedController>>,
     mut frame_rx: watch::Receiver<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
@@ -886,7 +904,7 @@ async fn run_openrgb_output_worker(
                 }
             }
             Err(error) => {
-                let error = error.to_string();
+                let error = DeviceError::write(device_id, error);
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(DeviceDeliveryAck::failed(
                         id,
@@ -898,7 +916,7 @@ async fn run_openrgb_output_worker(
                         *last_error = None;
                     }
                 } else if let Ok(mut last_error) = last_async_error.lock() {
-                    *last_error = Some(error);
+                    *last_error = Some(error.to_string());
                 }
             }
         }
@@ -1765,8 +1783,9 @@ mod tests {
         let (frame_tx, _frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
         let active = Arc::new(AtomicBool::new(true));
         let lifecycle_gate = Arc::new(StdMutex::new(()));
+        let device_id = DeviceId::new();
         let sink = OpenRgbFrameSink {
-            device_id: DeviceId::new(),
+            device_id,
             frame_tx: frame_tx.clone(),
             active: Arc::clone(&active),
             lifecycle_gate: Arc::clone(&lifecycle_gate),
@@ -1784,7 +1803,9 @@ mod tests {
         });
         active.store(false, Ordering::Release);
         if let Some(pending) = frame_tx.send_replace(None) {
-            pending.reject_pending("test disconnect cleanup");
+            pending.reject_pending(DeviceError::Disconnected {
+                device: device_id.to_string(),
+            });
         }
         drop(gate);
 

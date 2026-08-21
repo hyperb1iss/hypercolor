@@ -208,7 +208,7 @@ impl DeviceBackend for SmBusBackend {
                     *id,
                     SMBUS_OUTPUT_BACKEND_ID,
                     DeviceTransportOperation::Connect,
-                    error,
+                    &error,
                 )
             })?;
         self.connected
@@ -251,7 +251,7 @@ impl DeviceBackend for SmBusBackend {
                     *id,
                     SMBUS_OUTPUT_BACKEND_ID,
                     DeviceTransportOperation::Connect,
-                    error,
+                    &error,
                 )
             })
     }
@@ -396,7 +396,7 @@ async fn write_connected_device(
             device_id,
             SMBUS_OUTPUT_BACKEND_ID,
             DeviceTransportOperation::Write,
-            error,
+            &error,
         )
     })
 }

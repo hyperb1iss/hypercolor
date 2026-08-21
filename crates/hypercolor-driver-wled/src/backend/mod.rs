@@ -578,7 +578,9 @@ impl DeviceBackend for WledBackend {
         let Some(device) = device else {
             return DeviceDeliveryAck::rejected(
                 delivery_id,
-                format!("WLED device {device_id} is not connected"),
+                DeviceError::Disconnected {
+                    device: device_id.to_string(),
+                },
             );
         };
         let result = Self::write_device_colors(

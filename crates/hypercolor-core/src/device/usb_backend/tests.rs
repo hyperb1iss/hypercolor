@@ -87,7 +87,7 @@ async fn usb_midi_policy_rejects_timeout_retry_from_production_transport_path() 
         device_id,
         USB_OUTPUT_BACKEND_ID,
         DeviceTransportOperation::Connect,
-        error,
+        &error,
     );
     let policy = lifecycle_policy_for_transport(TransportType::UsbMidi {
         midi_interface: 2,
@@ -554,8 +554,8 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
         last_async_error
             .lock()
             .expect("async error lock should remain available")
-            .as_deref()
-            .is_some_and(|error| error.contains("does not support brightness"))
+            .as_ref()
+            .is_some_and(|error| error.to_string().contains("does not support brightness"))
     );
 }
 
@@ -564,8 +564,9 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
     let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
     let active = Arc::new(AtomicBool::new(true));
     let lifecycle_gate = Arc::new(Mutex::new(()));
+    let device_id = DeviceId::new();
     let sink = UsbFrameSink {
-        device_id: DeviceId::new(),
+        device_id,
         frame_tx: frame_tx.clone(),
         active: Arc::clone(&active),
         lifecycle_gate: Arc::clone(&lifecycle_gate),
@@ -583,7 +584,9 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
     });
     active.store(false, Ordering::Release);
     if let Some(pending) = frame_tx.send_replace(None) {
-        pending.reject_pending("test shutdown cleanup");
+        pending.reject_pending(DeviceError::Disconnected {
+            device: device_id.to_string(),
+        });
     }
     drop(gate);
 
@@ -652,6 +655,16 @@ async fn assert_transient_frame_failure_survival(
     assert_eq!(first_ack.status, DeviceDeliveryStatus::Failed);
     assert!(first_ack.transport_started);
     assert_eq!(first_ack.completed_payload_bytes, 0);
+    match failure {
+        InjectedPrimaryFailure::Timeout => assert!(matches!(
+            first_ack.error,
+            Some(DeviceError::Timeout { after }) if after == Duration::from_millis(25)
+        )),
+        InjectedPrimaryFailure::Io => assert!(matches!(
+            first_ack.error,
+            Some(DeviceError::WriteError { .. })
+        )),
+    }
 
     let second_id = DeviceDeliveryId {
         queue_generation: 7,

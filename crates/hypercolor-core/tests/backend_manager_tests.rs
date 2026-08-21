@@ -2861,7 +2861,8 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].backend_id, "mock");
     assert_eq!(failures[0].device_id, device_id);
-    assert!(failures[0].error.contains("mock write failure"));
+    assert!(matches!(failures[0].error, DeviceError::WriteError { .. }));
+    assert!(failures[0].error.to_string().contains("mock write failure"));
 }
 
 #[tokio::test(flavor = "current_thread")]

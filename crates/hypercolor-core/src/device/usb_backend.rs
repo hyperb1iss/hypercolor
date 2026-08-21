@@ -154,7 +154,7 @@ impl UsbFramePayload {
         }
     }
 
-    fn reject_pending(&self, error: impl Into<String>) {
+    fn reject_pending(&self, error: DeviceError) {
         let Some(id) = self.delivery_id else {
             return;
         };
@@ -223,7 +223,7 @@ struct UsbDevice {
     actor_task: Option<JoinHandle<()>>,
     active: Arc<AtomicBool>,
     lifecycle_gate: Arc<StdMutex<()>>,
-    last_async_error: Arc<StdMutex<Option<String>>>,
+    last_async_error: Arc<StdMutex<Option<DeviceError>>>,
     info_template: DeviceInfo,
     frame_diagnostics_emitted: bool,
     non_black_frame_diagnostics_emitted: bool,
@@ -244,8 +244,9 @@ impl UsbDevice {
         if let Some(actor_task) = finished_actor
             && let Err(error) = actor_task.await
         {
-            self.store_async_error(format!(
-                "USB device actor join failed for device {device_id}: {error}"
+            self.store_async_error(DeviceError::protocol(
+                device_id,
+                format!("USB device actor join failed: {error}"),
             ))?;
         }
 
@@ -260,12 +261,15 @@ impl UsbDevice {
         Ok(())
     }
 
-    fn queue_colors(&self, colors: Arc<Vec<[u8; 3]>>) {
+    fn queue_colors(&self, device_id: DeviceId, colors: Arc<Vec<[u8; 3]>>) {
         let previous = self
             .frame_tx
             .send_replace(Some(Arc::new(UsbFramePayload::untracked(colors))));
         if let Some(previous) = previous {
-            previous.reject_pending("USB frame was superseded before transport started");
+            previous.reject_pending(DeviceError::write(
+                device_id,
+                "USB frame was superseded before transport started",
+            ));
         }
     }
 
@@ -325,7 +329,9 @@ impl UsbDevice {
             let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
             self.active.store(false, Ordering::Release);
             if let Some(pending) = self.frame_tx.send_replace(None) {
-                pending.reject_pending("USB device stopped before transport started");
+                pending.reject_pending(DeviceError::Disconnected {
+                    device: device_id.to_string(),
+                });
             }
         }
         let Some(actor_task) = self.actor_task.take() else {
@@ -353,13 +359,14 @@ impl UsbDevice {
         };
 
         if let Err(error) = actor_task.await {
-            self.store_async_error(format!(
-                "USB device actor join failed for device {device_id}: {error}"
+            self.store_async_error(DeviceError::protocol(
+                device_id,
+                format!("USB device actor join failed: {error}"),
             ))?;
         }
 
         if let Err(error) = shutdown_result {
-            self.store_async_error(error.clone())?;
+            self.store_async_error(DeviceError::protocol(device_id, error.clone()))?;
             bail!("{error}");
         }
 
@@ -370,14 +377,14 @@ impl UsbDevice {
         Ok(())
     }
 
-    fn last_async_error(&self) -> Result<Option<String>> {
+    fn last_async_error(&self) -> Result<Option<DeviceError>> {
         self.last_async_error
             .lock()
             .map(|guard| guard.clone())
             .map_err(|_| anyhow!("USB device async error state lock poisoned"))
     }
 
-    fn store_async_error(&self, error: String) -> Result<()> {
+    fn store_async_error(&self, error: DeviceError) -> Result<()> {
         let mut slot = self
             .last_async_error
             .lock()
@@ -392,7 +399,7 @@ struct UsbFrameSink {
     frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
     active: Arc<AtomicBool>,
     lifecycle_gate: Arc<StdMutex<()>>,
-    last_async_error: Arc<StdMutex<Option<String>>>,
+    last_async_error: Arc<StdMutex<Option<DeviceError>>>,
 }
 
 #[async_trait::async_trait]
@@ -408,16 +415,15 @@ impl DeviceFrameSink for UsbFrameSink {
     ) -> DeviceDeliveryAck {
         let (payload, delivery_rx) = UsbFramePayload::tracked(id, colors);
         if let Err(error) = self.publish(Arc::new(payload)) {
-            return DeviceDeliveryAck::rejected(id, error.to_string());
+            return DeviceDeliveryAck::rejected(id, error);
         }
 
         delivery_rx.await.unwrap_or_else(|_| {
             DeviceDeliveryAck::rejected(
                 id,
-                format!(
-                    "USB device actor terminated before acknowledging delivery for device {}",
-                    self.device_id
-                ),
+                DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                },
             )
         })
     }
@@ -430,16 +436,15 @@ impl DeviceFrameSink for UsbFrameSink {
     ) -> DeviceDeliveryAck {
         let (payload, delivery_rx) = UsbFramePayload::tracked_observed(id, colors, Some(observer));
         if let Err(error) = self.publish(Arc::new(payload)) {
-            return DeviceDeliveryAck::rejected(id, error.to_string());
+            return DeviceDeliveryAck::rejected(id, error);
         }
 
         delivery_rx.await.unwrap_or_else(|_| {
             DeviceDeliveryAck::rejected(
                 id,
-                format!(
-                    "USB device actor terminated before acknowledging delivery for device {}",
-                    self.device_id
-                ),
+                DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                },
             )
         })
     }
@@ -450,7 +455,10 @@ impl UsbFrameSink {
         let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
         self.ensure_ready()?;
         if let Some(previous) = self.frame_tx.send_replace(Some(payload)) {
-            previous.reject_pending("USB frame was superseded before transport started");
+            previous.reject_pending(DeviceError::write(
+                self.device_id,
+                "USB frame was superseded before transport started",
+            ));
         }
         Ok(())
     }
@@ -470,7 +478,7 @@ impl UsbFrameSink {
             })?
             .clone()
         {
-            return Err(DeviceError::write(self.device_id, error));
+            return Err(error);
         }
         Ok(())
     }
@@ -487,7 +495,7 @@ struct UsbDisplaySink {
     device_id: DeviceId,
     display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
     active: Arc<AtomicBool>,
-    last_async_error: Arc<StdMutex<Option<String>>>,
+    last_async_error: Arc<StdMutex<Option<DeviceError>>>,
 }
 
 #[async_trait::async_trait]
@@ -510,7 +518,7 @@ impl DeviceDisplaySink for UsbDisplaySink {
             })?
             .clone()
         {
-            return Err(DeviceError::write(self.device_id, error));
+            return Err(error);
         }
 
         self.display_tx
@@ -1187,7 +1195,7 @@ impl DeviceBackend for UsbBackend {
                 *id,
                 USB_OUTPUT_BACKEND_ID,
                 DeviceTransportOperation::Connect,
-                error,
+                &error,
             )
         })
     }
@@ -1217,7 +1225,7 @@ impl DeviceBackend for UsbBackend {
                 *id,
                 USB_OUTPUT_BACKEND_ID,
                 DeviceTransportOperation::Connect,
-                error,
+                &error,
             )
         })
     }
@@ -1288,7 +1296,7 @@ impl DeviceBackend for UsbBackend {
             "usb frame queued for device actor"
         );
 
-        device.queue_colors(colors);
+        device.queue_colors(*id, colors);
         Ok(())
     }
 

@@ -5,7 +5,9 @@ use hypercolor_core::device::{
     AsyncWriteFailure, DeviceLifecycleManager, DeviceLifecyclePolicy, DiscoveryConnectBehavior,
     LifecycleAction,
 };
-use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceState};
+use hypercolor_types::device::{
+    ConnectionType, DeviceError, DeviceId, DeviceState, ErrorRecoverability,
+};
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
@@ -534,14 +536,31 @@ fn async_write_failure_actions(
             continue;
         }
 
+        let recovery = failure.error.recoverability();
+        if recovery == ErrorRecoverability::Retry {
+            debug!(
+                backend_id = %failure.backend_id,
+                device_id = %failure.device_id,
+                error = %failure.error,
+                "retryable async device write failed; keeping output lane active"
+            );
+            continue;
+        }
+
         warn!(
             backend_id = %failure.backend_id,
             device_id = %failure.device_id,
             error = %failure.error,
-            "async device write failed; entering reconnect flow"
+            recoverability = ?recovery,
+            "async device write failed; applying typed lifecycle recovery"
         );
 
-        match lifecycle.on_comm_error(failure.device_id) {
+        let actions = match recovery {
+            ErrorRecoverability::Retry => unreachable!("retry failures return above"),
+            ErrorRecoverability::Reconnect => lifecycle.on_comm_error(failure.device_id),
+            ErrorRecoverability::Permanent => lifecycle.on_runtime_deactivate(failure.device_id),
+        };
+        match actions {
             Ok(actions) => {
                 planned.push((failure.device_id, actions));
             }
@@ -768,6 +787,42 @@ fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceFamily, DeviceInfo, DeviceOrigin,
+    };
+
+    fn active_lifecycle() -> (DeviceLifecycleManager, DeviceId) {
+        let device_id = DeviceId::new();
+        let info = DeviceInfo {
+            id: device_id,
+            name: "Async Output Fixture".to_owned(),
+            vendor: "Hypercolor".to_owned(),
+            family: DeviceFamily::new_static("fixture", "Fixture"),
+            model: None,
+            connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("fixture", "fixture", ConnectionType::Network),
+            segments: Vec::new(),
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        };
+        let mut lifecycle = DeviceLifecycleManager::new();
+        lifecycle.on_discovered(device_id, &info, None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("fixture should connect");
+        lifecycle
+            .on_frame_success(device_id)
+            .expect("fixture should become active");
+        (lifecycle, device_id)
+    }
+
+    fn async_failure(device_id: DeviceId, error: DeviceError) -> AsyncWriteFailure {
+        AsyncWriteFailure {
+            backend_id: "fixture".to_owned(),
+            device_id,
+            error,
+        }
+    }
 
     #[test]
     fn connect_retry_policy_branches_on_typed_recoverability() {
@@ -795,5 +850,76 @@ mod tests {
                 device_id: DeviceId::new(),
             }
         ));
+    }
+
+    #[test]
+    fn async_timeout_keeps_active_lane_for_retry() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+
+        let planned = async_write_failure_actions(
+            &mut lifecycle,
+            vec![async_failure(
+                device_id,
+                DeviceError::Timeout {
+                    after: Duration::from_millis(25),
+                },
+            )],
+        );
+
+        assert!(planned.is_empty());
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Active));
+    }
+
+    #[test]
+    fn async_transient_failure_enters_reconnect_flow() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+
+        let planned = async_write_failure_actions(
+            &mut lifecycle,
+            vec![async_failure(
+                device_id,
+                DeviceError::write(device_id, "connection reset"),
+            )],
+        );
+
+        assert_eq!(planned.len(), 1);
+        assert!(
+            planned[0]
+                .1
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. }))
+        );
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Reconnecting));
+    }
+
+    #[test]
+    fn async_permanent_failure_deactivates_without_reconnect() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+
+        let planned = async_write_failure_actions(
+            &mut lifecycle,
+            vec![async_failure(
+                device_id,
+                DeviceError::PermissionDenied {
+                    device: device_id.to_string(),
+                    detail: "access revoked".to_owned(),
+                },
+            )],
+        );
+
+        assert_eq!(planned.len(), 1);
+        assert!(
+            planned[0]
+                .1
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::Disconnect { .. }))
+        );
+        assert!(
+            !planned[0]
+                .1
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. }))
+        );
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Known));
     }
 }
