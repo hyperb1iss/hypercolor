@@ -275,8 +275,8 @@ impl SecretRef {
 }
 
 /// IP address text, validated on construction, **original text
-/// preserved** — projecting back to the driver wire is byte-equal even
-/// for non-canonical spellings (`::FFFF:1.2.3.4` stays uppercase).
+/// preserved** so the canonical wire is byte-equal even for non-canonical
+/// spellings (`::FFFF:1.2.3.4` stays uppercase).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IpText(String);
 
@@ -303,6 +303,12 @@ impl IpText {
         self.0
             .parse()
             .expect("IpText holds text validated as an IpAddr")
+    }
+}
+
+impl From<IpAddr> for IpText {
+    fn from(value: IpAddr) -> Self {
+        Self(value.to_string())
     }
 }
 
@@ -664,6 +670,16 @@ fn finite_stop(stop: &GradientStop) -> Result<(), ControlValueInvalid> {
 }
 
 impl ControlValue {
+    /// Validate and build an IP-address value while preserving its spelling.
+    pub fn ip(text: impl Into<String>) -> Result<Self, ControlValueInvalid> {
+        IpText::new(text).map(Self::Ip)
+    }
+
+    /// Validate and build a MAC-address value while preserving its spelling.
+    pub fn mac(text: impl Into<String>) -> Result<Self, ControlValueInvalid> {
+        MacText::new(text).map(Self::Mac)
+    }
+
     /// Build a canonical linear-light color from RGBA channels.
     #[must_use]
     pub const fn linear_color([r, g, b, a]: [f32; 4]) -> Self {

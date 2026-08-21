@@ -51,11 +51,23 @@ fn driver_field_sets_standard_driver_config_defaults() {
 }
 
 #[test]
-fn push_metadata_value_skips_empty_metadata() {
+fn push_metadata_value_skips_empty_and_invalid_metadata() {
     let mut document = control_surface::device_surface("hue", DeviceId::new());
     let mut metadata = HashMap::from([("ip".to_owned(), "192.168.1.24".to_owned())]);
     metadata.insert("empty".to_owned(), String::new());
+    metadata.insert("invalid_ip".to_owned(), "not-an-address".to_owned());
 
+    control_surface::push_metadata_value(
+        &mut document,
+        "hue",
+        &metadata,
+        "invalid_ip",
+        "Invalid IP",
+        "connection",
+        ControlValueType::IpAddress,
+        |raw| IpText::new(raw).ok().map(ControlValue::Ip),
+        5,
+    );
     control_surface::push_metadata_value(
         &mut document,
         "hue",
@@ -64,7 +76,7 @@ fn push_metadata_value_skips_empty_metadata() {
         "IP Address",
         "connection",
         ControlValueType::IpAddress,
-        |raw| ControlValue::Ip(IpText::new(raw).expect("fixture IP should be valid")),
+        |raw| IpText::new(raw).ok().map(ControlValue::Ip),
         0,
     );
     control_surface::push_metadata_value(
@@ -75,7 +87,7 @@ fn push_metadata_value_skips_empty_metadata() {
         "Empty",
         "connection",
         control_surface::string_value_type(None),
-        ControlValue::Text,
+        |raw| Some(ControlValue::Text(raw)),
         10,
     );
 
@@ -86,6 +98,7 @@ fn push_metadata_value_skips_empty_metadata() {
             IpText::new("192.168.1.24").expect("fixture IP should be valid")
         ))
     );
+    assert!(!document.values.contains_key("invalid_ip"));
     assert!(!document.values.contains_key("empty"));
 }
 

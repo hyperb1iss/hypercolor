@@ -29,10 +29,11 @@ use hypercolor_driver_api::{
     ValidatedControlChanges,
 };
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlEnumOption,
-    ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument, ControlValue,
-    ControlValueMap, ControlValueType,
+    ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument, ControlValueMap,
+    ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 use hypercolor_types::identity::BackendId;
@@ -436,7 +437,7 @@ pub fn wled_device_control_surface(
             "IP Address",
             "connection",
             ControlValueType::IpAddress,
-            ControlValue::IpAddress,
+            |raw| IpText::new(raw).ok().map(ControlValue::Ip),
             0,
         );
         control_surface::push_metadata_value(
@@ -447,7 +448,7 @@ pub fn wled_device_control_surface(
             "Hostname",
             "connection",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             10,
         );
     }
@@ -460,7 +461,7 @@ pub fn wled_device_control_surface(
             "Firmware",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(firmware_version.clone()),
+            ControlValue::Text(firmware_version.clone()),
             20,
         );
     }
@@ -472,7 +473,7 @@ pub fn wled_device_control_surface(
         "LED Count",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ControlValue::Int(i64::from(device.info.total_led_count())),
         30,
     );
     control_surface::push_readonly_value(
@@ -482,7 +483,7 @@ pub fn wled_device_control_surface(
         "Max FPS",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ControlValue::Int(i64::from(device.info.capabilities.max_fps)),
         40,
     );
 
@@ -645,7 +646,7 @@ fn wled_effective_device_values(
 
 fn wled_protocol_control_value(value: Option<&ControlValue>) -> ControlValue {
     match value {
-        Some(ControlValue::Enum(protocol) | ControlValue::String(protocol))
+        Some(ControlValue::Enum(protocol) | ControlValue::Text(protocol))
             if matches!(protocol.as_str(), "ddp" | "e131") =>
         {
             ControlValue::Enum(protocol.clone())
@@ -662,7 +663,7 @@ fn wled_config_values(config: &WledConfig) -> ControlValueMap {
                 config
                     .known_ips
                     .iter()
-                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .map(|ip| ControlValue::Ip(IpText::from(*ip)))
                     .collect(),
             ),
         ),
@@ -682,7 +683,7 @@ fn wled_config_values(config: &WledConfig) -> ControlValueMap {
         ),
         (
             FIELD_DEDUP_THRESHOLD.to_owned(),
-            ControlValue::Integer(i64::from(config.dedup_threshold)),
+            ControlValue::Int(i64::from(config.dedup_threshold)),
         ),
     ])
 }

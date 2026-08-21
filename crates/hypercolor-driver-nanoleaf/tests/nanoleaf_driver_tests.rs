@@ -16,9 +16,10 @@ use hypercolor_driver_nanoleaf::{
     NanoleafConfig, NanoleafDriverModule, nanoleaf_device_control_surface,
     nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
 };
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ApplyImpact, ControlAccess, ControlActionStatus, ControlSurfaceEvent,
-    ControlValue, ControlValueMap,
+    ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
@@ -176,9 +177,9 @@ fn nanoleaf_driver_control_surface_exposes_typed_config_fields() {
     };
     assert_eq!(
         device_ips,
-        &[ControlValue::IpAddress("10.0.0.25".to_owned())]
+        &[ControlValue::ip("10.0.0.25").expect("fixture IP should be valid")]
     );
-    assert_eq!(surface.values["transition_time"], ControlValue::Integer(4));
+    assert_eq!(surface.values["transition_time"], ControlValue::Int(4));
     assert!(surface.fields.iter().any(
         |field| field.id == "device_ips" && field.apply_impact == ApplyImpact::DiscoveryRescan
     ));
@@ -229,26 +230,26 @@ fn nanoleaf_device_control_surface_exposes_tracked_metadata() {
     );
     assert_eq!(
         surface.values["ip"],
-        ControlValue::IpAddress("10.0.0.30".to_owned())
+        ControlValue::ip("10.0.0.30").expect("fixture IP should be valid")
     );
-    assert_eq!(surface.values["api_port"], ControlValue::Integer(16021));
+    assert_eq!(surface.values["api_port"], ControlValue::Int(16021));
     assert_eq!(
         surface.values["device_key"],
-        ControlValue::String("nanoleaf-shapes".to_owned())
+        ControlValue::Text("nanoleaf-shapes".to_owned())
     );
     assert_eq!(
         surface.values["model"],
-        ControlValue::String("NL42".to_owned())
+        ControlValue::Text("NL42".to_owned())
     );
     assert_eq!(
         surface.values["firmware_version"],
-        ControlValue::String("9.4.0".to_owned())
+        ControlValue::Text("9.4.0".to_owned())
     );
-    assert_eq!(surface.values["led_count"], ControlValue::Integer(1));
-    assert_eq!(surface.values["max_fps"], ControlValue::Integer(30));
+    assert_eq!(surface.values["led_count"], ControlValue::Int(1));
+    assert_eq!(surface.values["max_fps"], ControlValue::Int(30));
     assert_eq!(
         surface.values["state"],
-        ControlValue::String("Known".to_owned())
+        ControlValue::Text("Known".to_owned())
     );
     let refresh = surface
         .actions

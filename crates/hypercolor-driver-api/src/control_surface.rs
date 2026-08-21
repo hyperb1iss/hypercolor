@@ -163,21 +163,17 @@ pub fn push_metadata_value(
     label: &str,
     group_id: &str,
     value_type: ControlValueType,
-    value: impl FnOnce(String) -> ControlValue,
+    value: impl FnOnce(String) -> Option<ControlValue>,
     ordering: i32,
 ) {
     let Some(raw) = metadata.get(id).filter(|value| !value.is_empty()).cloned() else {
         return;
     };
+    let Some(value) = value(raw) else {
+        return;
+    };
     push_readonly_value(
-        document,
-        driver_id,
-        id,
-        label,
-        group_id,
-        value_type,
-        value(raw),
-        ordering,
+        document, driver_id, id, label, group_id, value_type, value, ordering,
     );
 }
 

@@ -13,8 +13,9 @@ use hypercolor_driver_hue::{
     HueConfig, HueDriverModule, hue_device_control_surface, hue_driver_control_surface,
     resolve_hue_probe_bridges_from_sources,
 };
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
-    ApplyImpact, ControlAccess, ControlAvailabilityState, ControlSurfaceScope, ControlValue,
+    ApplyImpact, ControlAccess, ControlAvailabilityState, ControlSurfaceScope,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
@@ -174,7 +175,7 @@ fn hue_driver_control_surface_exposes_typed_config_fields() {
     };
     assert_eq!(
         bridge_ips,
-        &[ControlValue::IpAddress("10.0.0.10".to_owned())]
+        &[ControlValue::ip("10.0.0.10").expect("fixture IP should be valid")]
     );
     assert_eq!(surface.values["use_cie_xy"], ControlValue::Bool(false));
     assert!(surface.fields.iter().any(
@@ -228,18 +229,18 @@ fn hue_device_control_surface_exposes_tracked_metadata() {
     );
     assert_eq!(
         surface.values["ip"],
-        ControlValue::IpAddress("10.0.0.20".to_owned())
+        ControlValue::ip("10.0.0.20").expect("fixture IP should be valid")
     );
-    assert_eq!(surface.values["api_port"], ControlValue::Integer(8443));
+    assert_eq!(surface.values["api_port"], ControlValue::Int(8443));
     assert_eq!(
         surface.values["entertainment_config_name"],
-        ControlValue::String("Studio Area".to_owned())
+        ControlValue::Text("Studio Area".to_owned())
     );
-    assert_eq!(surface.values["led_count"], ControlValue::Integer(1));
-    assert_eq!(surface.values["max_fps"], ControlValue::Integer(0));
+    assert_eq!(surface.values["led_count"], ControlValue::Int(1));
+    assert_eq!(surface.values["max_fps"], ControlValue::Int(0));
     assert_eq!(
         surface.values["state"],
-        ControlValue::String("Known".to_owned())
+        ControlValue::Text("Known".to_owned())
     );
     assert_eq!(
         surface.availability["ip"].state,
