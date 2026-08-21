@@ -7,8 +7,7 @@ use std::array;
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
-use hypercolor_types::control::ControlValue;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -406,12 +405,12 @@ impl EffectRenderer for ColorWaveRenderer {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" | "wave_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.wave_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "background_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.background_color = [color.r, color.g, color.b, color.a];
                     }
                 }
@@ -432,17 +431,13 @@ impl EffectRenderer for ColorWaveRenderer {
                     }
                 }
                 "direction" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.direction = WaveDirection::from_str(choice);
                         self.reset_state();
                     }
                 }
                 "color_mode" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.color_mode = WaveColorMode::from_str(choice);
                     }
                 }

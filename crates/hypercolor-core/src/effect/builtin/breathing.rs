@@ -7,8 +7,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{Canvas, LinearRgba};
-use hypercolor_types::control::ControlValue;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -80,7 +79,7 @@ impl EffectRenderer for BreathingRenderer {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color = [color.r, color.g, color.b, color.a];
                     }
                 }

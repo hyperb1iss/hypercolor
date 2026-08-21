@@ -7,8 +7,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklab, Oklch};
-use hypercolor_types::control::ControlValue;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -453,25 +452,25 @@ impl EffectRenderer for GradientRenderer {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color_start" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color_start = [color.r, color.g, color.b, color.a];
                         self.invalidate_cache();
                     }
                 }
                 "color_mid" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color_mid = [color.r, color.g, color.b, color.a];
                         self.invalidate_cache();
                     }
                 }
                 "color_end" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color_end = [color.r, color.g, color.b, color.a];
                         self.invalidate_cache();
                     }
                 }
                 "use_mid_color" => {
-                    if let CanonicalControlValue::Bool(flag) = value {
+                    if let ControlValue::Bool(flag) = value {
                         self.use_mid_color = *flag;
                         self.invalidate_cache();
                     }
@@ -483,17 +482,13 @@ impl EffectRenderer for GradientRenderer {
                     }
                 }
                 "mode" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.mode = GradientMode::from_str(choice);
                         self.invalidate_cache();
                     }
                 }
                 "repeat_mode" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.repeat_mode = RepeatMode::from_str(choice);
                         self.invalidate_cache();
                     }
@@ -541,9 +536,7 @@ impl EffectRenderer for GradientRenderer {
                     }
                 }
                 "interpolation" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.interpolation = InterpolationMode::from_str(choice);
                         self.invalidate_cache();
                     }
@@ -555,9 +548,7 @@ impl EffectRenderer for GradientRenderer {
                     }
                 }
                 "easing" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.easing = EasingMode::from_str(choice);
                         self.invalidate_cache();
                     }

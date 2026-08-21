@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::Canvas;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
 };
@@ -73,7 +73,7 @@ impl EffectRenderer for ScreenCastRenderer {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "viewport" => {
-                    if let CanonicalControlValue::Rect(rect) = value {
+                    if let ControlValue::Rect(rect) = value {
                         self.viewport =
                             ViewportRect::new(rect.x, rect.y, rect.width, rect.height).clamp();
                     }
@@ -84,9 +84,7 @@ impl EffectRenderer for ScreenCastRenderer {
                     }
                 }
                 "fit_mode" => {
-                    if let CanonicalControlValue::Enum(mode) | CanonicalControlValue::Text(mode) =
-                        value
-                    {
+                    if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
                         self.fit_mode = parse_fit_mode(mode);
                     }
                 }

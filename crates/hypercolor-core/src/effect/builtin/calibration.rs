@@ -9,8 +9,7 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, linear_to_srgb_u8};
-use hypercolor_types::control::ControlValue;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -449,36 +448,32 @@ impl EffectRenderer for CalibrationRenderer {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "pattern" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.pattern = CalibrationPattern::from_str(choice);
                     }
                 }
                 "direction" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.direction = CalibrationDirection::from_str(choice);
                     }
                 }
                 "primary_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.primary_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "secondary_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.secondary_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "accent_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.accent_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "background_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.background_color = [color.r, color.g, color.b, color.a];
                     }
                 }
@@ -498,7 +493,7 @@ impl EffectRenderer for CalibrationRenderer {
                     }
                 }
                 "show_grid" => {
-                    if let CanonicalControlValue::Bool(show_grid) = value {
+                    if let ControlValue::Bool(show_grid) = value {
                         self.show_grid = *show_grid;
                     }
                 }

@@ -7,8 +7,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{Canvas, LinearRgba, Oklab};
-use hypercolor_types::control::ControlValue;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -211,8 +210,7 @@ impl EffectRenderer for ColorZonesRenderer {
         for (control_id, value) in batch.changes {
             let name = control_id.as_str();
             if name == "zone_count" {
-                if let CanonicalControlValue::Enum(choice) | CanonicalControlValue::Text(choice) =
-                    value
+                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value
                     && let Ok(count) = choice.parse::<u8>()
                 {
                     self.zone_count = count.clamp(2, 9);
@@ -223,7 +221,7 @@ impl EffectRenderer for ColorZonesRenderer {
             if let Some(index) = name.strip_prefix("zone_") {
                 if let Ok(number) = index.parse::<usize>()
                     && (1..=9).contains(&number)
-                    && let CanonicalControlValue::ColorLinear(color) = value
+                    && let ControlValue::ColorLinear(color) = value
                 {
                     let rgba = [color.r, color.g, color.b, color.a];
                     self.zones[number - 1] = rgba;
@@ -234,9 +232,7 @@ impl EffectRenderer for ColorZonesRenderer {
 
             match name {
                 "layout" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.layout = ZoneLayout::from_str(choice);
                     }
                 }

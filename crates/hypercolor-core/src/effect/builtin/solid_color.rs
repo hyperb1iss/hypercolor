@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 
 use super::common::{builtin_effect_id, color_control, dropdown_control, slider_control};
@@ -175,12 +175,12 @@ impl EffectRenderer for SolidColorRenderer {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "secondary_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.secondary_color = [color.r, color.g, color.b, color.a];
                     }
                 }
@@ -190,9 +190,7 @@ impl EffectRenderer for SolidColorRenderer {
                     }
                 }
                 "pattern" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.pattern = SolidPattern::from_str(choice);
                     }
                 }

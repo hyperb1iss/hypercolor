@@ -438,9 +438,9 @@ fn typed_control_value(kind: &str, value: &str) -> Result<ControlValue> {
         "secret" | "secretref" => Ok(ControlValue::SecretRef(SecretRef::new(value))),
         "ip" | "ipaddress" => Ok(ControlValue::ip(value)?),
         "mac" | "macaddress" => Ok(ControlValue::mac(value)?),
-        "duration" | "durationms" => Ok(ControlValue::Duration(
-            std::time::Duration::from_millis(value.parse::<u64>()?),
-        )),
+        "duration" | "durationms" => Ok(ControlValue::Duration(std::time::Duration::from_millis(
+            value.parse::<u64>()?,
+        ))),
         "enum" => Ok(ControlValue::Enum(value.to_owned())),
         "flags" => Ok(ControlValue::Flags(split_list(value))),
         "rgb" | "colorrgb" => {

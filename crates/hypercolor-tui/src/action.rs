@@ -9,8 +9,7 @@ use crate::state::{
     PreviewSource, SceneDocument, SceneSummary, SimulatedDisplaySummary, SpectrumSnapshot,
 };
 use hypercolor_types::controls::{
-    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
-    ControlValueMap,
+    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
 
 /// Every state change in the TUI flows through an Action.

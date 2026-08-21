@@ -16,8 +16,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
-use hypercolor_types::control::ControlValue;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -215,12 +214,12 @@ impl EffectRenderer for AudioPulseRenderer {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "base_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.base_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "peak_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.peak_color = [color.r, color.g, color.b, color.a];
                     }
                 }

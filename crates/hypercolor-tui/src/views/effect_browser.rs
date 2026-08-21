@@ -1459,9 +1459,7 @@ fn current_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinitio
 /// Normalize a control's current value to `[0, 1]`.
 fn normalized_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinition) -> f32 {
     normalize(
-        current_value(values, ctrl)
-            .as_effect_f32()
-            .unwrap_or(0.0),
+        current_value(values, ctrl).as_effect_f32().unwrap_or(0.0),
         ctrl.min.unwrap_or(0.0),
         ctrl.max.unwrap_or(1.0),
     )

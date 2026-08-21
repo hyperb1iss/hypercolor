@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use hypercolor_color::Hsv;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 
 use super::common::{builtin_effect_id, dropdown_control, slider_control};
@@ -167,9 +167,7 @@ impl EffectRenderer for RainbowRenderer {
                     }
                 }
                 "direction" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.direction = RainbowDirection::from_str(choice);
                     }
                 }

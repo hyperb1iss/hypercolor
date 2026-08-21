@@ -213,10 +213,7 @@ async fn execute_activate(
         );
     }
     if let Some(speed) = args.speed {
-        controls.insert(
-            "speed".to_string(),
-            ControlValue::Int(i64::from(speed)),
-        );
+        controls.insert("speed".to_string(), ControlValue::Int(i64::from(speed)));
     }
     if let Some(intensity) = args.intensity {
         controls.insert(
@@ -476,9 +473,7 @@ fn control_value_from_json(value: serde_json::Value) -> Result<ControlValue> {
     if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
         return Ok(ControlValue::linear_color(color));
     }
-    if let Ok(rect) =
-        serde_json::from_value::<hypercolor_types::viewport::ViewportRect>(value)
-    {
+    if let Ok(rect) = serde_json::from_value::<hypercolor_types::viewport::ViewportRect>(value) {
         return Ok(ControlValue::rect(rect));
     }
     anyhow::bail!("Unsupported effect control value")
