@@ -172,9 +172,9 @@ impl PairingCapability for PairingOnlyCapability {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary> {
+    ) -> std::result::Result<Option<DeviceAuthSummary>, DriverError> {
         let _ = (host, device);
-        None
+        Ok(None)
     }
 
     async fn pair(

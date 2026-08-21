@@ -373,26 +373,22 @@ impl PairingCapability for GoveeDriverModule {
         &self,
         host: &dyn DriverHost,
         _device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary> {
-        match host
+    ) -> std::result::Result<Option<DeviceAuthSummary>, DriverError> {
+        let credentials = host
             .credentials()
             .get_json(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
             .await
-        {
-            Ok(Some(_)) => Some(DeviceAuthSummary {
+            .map_err(DriverError::pairing)?;
+
+        Ok(match credentials {
+            Some(_) => Some(DeviceAuthSummary {
                 state: DeviceAuthState::Configured,
                 can_pair: false,
                 descriptor: None,
                 last_error: None,
             }),
-            Ok(None) => Some(auth_summary_without_account_key(_device)),
-            Err(error) => Some(DeviceAuthSummary {
-                state: DeviceAuthState::Error,
-                can_pair: true,
-                descriptor: Some(govee_pairing_descriptor()),
-                last_error: Some(error.to_string()),
-            }),
-        }
+            None => Some(auth_summary_without_account_key(_device)),
+        })
     }
 
     async fn pair(

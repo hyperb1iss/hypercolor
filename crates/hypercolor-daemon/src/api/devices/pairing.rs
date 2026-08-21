@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
 use hypercolor_driver_api::{
-    DeviceAuthState, DeviceAuthSummary, PairDeviceStatus as GenericPairDeviceStatus,
+    DeviceAuthState, DeviceAuthSummary, DriverError, PairDeviceStatus as GenericPairDeviceStatus,
     TrackedDeviceCtx,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
@@ -65,10 +65,14 @@ pub(super) async fn build_device_auth_summary(
     info: &DeviceInfo,
     device_state: &DeviceState,
     metadata: Option<&HashMap<String, String>>,
-) -> Option<DeviceAuthSummary> {
+) -> Result<Option<DeviceAuthSummary>, DriverError> {
     let driver_id = info.driver_id();
-    let driver = state.driver_registry.get(driver_id)?;
-    let pairing = driver.pairing()?;
+    let Some(driver) = state.driver_registry.get(driver_id) else {
+        return Ok(None);
+    };
+    let Some(pairing) = driver.pairing() else {
+        return Ok(None);
+    };
     let device = TrackedDeviceCtx {
         device_id: info.id,
         info,
@@ -171,7 +175,9 @@ async fn pair_device_for_ui(
         status: outcome.status,
         message: outcome.message,
         activated: outcome.activated,
-        device: refreshed_device_summary(state.as_ref(), device_id).await,
+        device: refreshed_device_summary(state.as_ref(), device_id)
+            .await
+            .map_err(|error| DomainError::Internal(anyhow::Error::new(error)))?,
     })
 }
 
@@ -222,6 +228,8 @@ async fn delete_device_pairing(
         status: "unpaired".to_owned(),
         message: outcome.message,
         disconnected: outcome.disconnected,
-        device: refreshed_device_summary(state.as_ref(), device_id).await,
+        device: refreshed_device_summary(state.as_ref(), device_id)
+            .await
+            .map_err(|error| DomainError::Internal(anyhow::Error::new(error)))?,
     })
 }

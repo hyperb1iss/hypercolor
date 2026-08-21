@@ -92,6 +92,7 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
     let open = pairing
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
     assert_eq!(open.state, DeviceAuthState::Open);
     assert!(open.can_pair);
@@ -112,6 +113,7 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
     let configured = pairing
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
     assert_eq!(configured.state, DeviceAuthState::Configured);
     assert!(!configured.can_pair);
@@ -151,6 +153,7 @@ async fn auth_summary_requires_pairing_for_cloud_only_inventory() {
         .expect("Govee factory should expose pairing")
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
 
     assert_eq!(summary.state, DeviceAuthState::Required);
@@ -181,6 +184,7 @@ async fn auth_summary_does_not_offer_pairing_for_lan_only_sku() {
         .expect("Govee factory should expose pairing")
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
 
     assert_eq!(summary.state, DeviceAuthState::Open);

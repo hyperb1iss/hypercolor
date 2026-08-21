@@ -14,11 +14,15 @@ pub use hypercolor_types::pairing::{
 #[async_trait]
 pub trait PairingCapability: Send + Sync {
     /// Summarize auth state for one tracked device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the driver's credential state cannot be read.
     async fn auth_summary(
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary>;
+    ) -> Result<Option<DeviceAuthSummary>, DriverError>;
 
     /// Pair a tracked device.
     ///

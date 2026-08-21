@@ -158,18 +158,28 @@ pub async fn list_devices(
             .device_registry
             .metadata_for_id(&tracked.info.id)
             .await;
-        items.push((
-            summarize_device_for_response(
-                &state,
-                &tracked.info,
-                &tracked.state,
-                tracked.user_settings.brightness,
-                layout_device_id,
-                metadata.as_ref(),
-            )
-            .await,
-            tracked.info.clone(),
-        ));
+        let summary = match summarize_device_for_response(
+            &state,
+            &tracked.info,
+            &tracked.state,
+            tracked.user_settings.brightness,
+            layout_device_id,
+            metadata.as_ref(),
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    device_id = %tracked.info.id,
+                    driver_id = %tracked.info.driver_id(),
+                    "failed to summarize device pairing state"
+                );
+                return DomainError::Internal(anyhow::Error::new(error)).into_response();
+            }
+        };
+        items.push((summary, tracked.info.clone()));
     }
     items.sort_by_cached_key(|(summary, _)| summary.name.to_lowercase());
 
@@ -218,17 +228,19 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         .metadata_for_id(&tracked.info.id)
         .await;
 
-    envelope::ok(
-        summarize_device_for_response(
-            &state,
-            &tracked.info,
-            &tracked.state,
-            tracked.user_settings.brightness,
-            layout_device_id,
-            metadata.as_ref(),
-        )
-        .await,
+    match summarize_device_for_response(
+        &state,
+        &tracked.info,
+        &tracked.state,
+        tracked.user_settings.brightness,
+        layout_device_id,
+        metadata.as_ref(),
     )
+    .await
+    {
+        Ok(summary) => envelope::ok(summary),
+        Err(error) => DomainError::Internal(anyhow::Error::new(error)).into_response(),
+    }
 }
 
 /// `PUT /api/v1/devices/{id}` — Update a device's metadata.
@@ -334,17 +346,19 @@ pub async fn update_device(
         .metadata_for_id(&updated.info.id)
         .await;
 
-    envelope::ok(
-        summarize_device_for_response(
-            &state,
-            &updated.info,
-            &updated.state,
-            updated.user_settings.brightness,
-            layout_device_id,
-            metadata.as_ref(),
-        )
-        .await,
+    match summarize_device_for_response(
+        &state,
+        &updated.info,
+        &updated.state,
+        updated.user_settings.brightness,
+        layout_device_id,
+        metadata.as_ref(),
     )
+    .await
+    {
+        Ok(summary) => envelope::ok(summary),
+        Err(error) => DomainError::Internal(anyhow::Error::new(error)).into_response(),
+    }
 }
 
 /// `DELETE /api/v1/devices/{id}` — Remove a device from tracking.
@@ -820,8 +834,8 @@ pub(super) async fn summarize_device_for_response(
     brightness: f32,
     layout_device_id: String,
     metadata: Option<&HashMap<String, String>>,
-) -> DeviceSummary {
-    DeviceSummary {
+) -> Result<DeviceSummary, hypercolor_driver_api::DriverError> {
+    Ok(DeviceSummary {
         id: info.id.to_string(),
         layout_device_id,
         name: info.name.clone(),
@@ -832,7 +846,7 @@ pub(super) async fn summarize_device_for_response(
         firmware_version: info.firmware_version.clone(),
         connection: device_connection_summary(info, metadata),
         total_leds: info.total_led_count(),
-        auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await,
+        auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await?,
         segments: info
             .segments
             .iter()
@@ -846,18 +860,20 @@ pub(super) async fn summarize_device_for_response(
             })
             .collect(),
         attachments: None,
-    }
+    })
 }
 
 pub(super) async fn refreshed_device_summary(
     state: &AppState,
     device_id: DeviceId,
-) -> Option<DeviceSummary> {
-    let tracked = state.device_registry.get(&device_id).await?;
+) -> Result<Option<DeviceSummary>, hypercolor_driver_api::DriverError> {
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return Ok(None);
+    };
     let layout_device_id = ensure_default_logical_entry(state, &tracked.info).await;
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
 
-    Some(
+    Ok(Some(
         summarize_device_for_response(
             state,
             &tracked.info,
@@ -866,8 +882,8 @@ pub(super) async fn refreshed_device_summary(
             layout_device_id,
             metadata.as_ref(),
         )
-        .await,
-    )
+        .await?,
+    ))
 }
 
 fn device_connection_summary(

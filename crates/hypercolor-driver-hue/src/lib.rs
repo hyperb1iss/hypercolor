@@ -498,15 +498,15 @@ impl PairingCapability for HueDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary> {
+    ) -> std::result::Result<Option<DeviceAuthSummary>, DriverError> {
         let last_error = device
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
         let configured = hue_credentials_present(host.credentials(), device.metadata)
             .await
-            .unwrap_or_default();
+            .map_err(DriverError::pairing)?;
 
-        Some(DeviceAuthSummary {
+        Ok(Some(DeviceAuthSummary {
             state: if last_error.is_some() {
                 DeviceAuthState::Error
             } else if configured {
@@ -517,7 +517,7 @@ impl PairingCapability for HueDriverModule {
             can_pair: true,
             descriptor: Some(hue_pairing_descriptor()),
             last_error,
-        })
+        }))
     }
 
     async fn pair(
