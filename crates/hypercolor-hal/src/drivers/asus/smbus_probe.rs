@@ -530,7 +530,7 @@ async fn probe_with_transport(
         bus_path: bus_path.to_owned(),
         address,
     };
-    let fingerprint = identifier.fingerprint();
+    let fingerprint = identifier.fingerprint("asus");
     let firmware_name = protocol.firmware_name();
     let info = build_device_info(
         controller_kind,

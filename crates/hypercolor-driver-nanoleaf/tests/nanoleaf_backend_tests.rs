@@ -67,8 +67,7 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         device_ips: Vec::new(),
         transition_time: 1,
     };
-    let mut backend = NanoleafBackend::with_mdns_enabled(config, Arc::clone(&store), false)
-        .with_stream_port(stream_port);
+    let backend = NanoleafBackend::new(config, Arc::clone(&store)).with_stream_port(stream_port);
 
     let discovered = NanoleafDiscoveredDevice {
         device_key: "living-room".to_owned(),
@@ -83,11 +82,15 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         ),
         panel_ids: Vec::new(),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
-        metadata: HashMap::new(),
+        metadata: HashMap::from([
+            ("device_key".to_owned(), "living-room".to_owned()),
+            ("ip".to_owned(), "127.0.0.1".to_owned()),
+            ("api_port".to_owned(), api_port.to_string()),
+        ]),
         claim: None,
     };
     let device_id = discovered.info.id;
-    backend.remember_device(discovered);
+    backend.adopt_device(&discovered.into_discovered())?;
 
     backend.connect(&device_id).await?;
 
@@ -137,13 +140,12 @@ async fn backend_connect_without_discovery_fails() {
             .await
             .expect("credential store"),
     );
-    let backend = NanoleafBackend::with_mdns_enabled(
+    let backend = NanoleafBackend::new(
         NanoleafConfig {
             device_ips: Vec::new(),
             transition_time: 1,
         },
         store,
-        false,
     );
 
     let error = backend

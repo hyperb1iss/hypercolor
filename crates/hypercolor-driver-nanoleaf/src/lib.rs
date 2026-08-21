@@ -20,6 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::control_apply;
 use hypercolor_driver_api::control_surface;
 use hypercolor_driver_api::support::{
@@ -29,14 +30,13 @@ use hypercolor_driver_api::support::{
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
-    DeviceBackendFactory, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
+    DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
     DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverCredentialStore,
-    DriverDescriptor, DriverDiscoveredDevice, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
-    TrackedDeviceCtx, ValidatedControlChanges,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverTrackedDevice, OutputBinding, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
+    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
-use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, ApplyControlChangesResponse, ApplyImpact,
@@ -218,16 +218,12 @@ async fn fetch_panel_layout(
 #[derive(Clone)]
 pub struct NanoleafDriverModule {
     credential_store: Arc<CredentialStore>,
-    mdns_enabled: bool,
 }
 
 impl NanoleafDriverModule {
     #[must_use]
-    pub fn new(credential_store: Arc<CredentialStore>, mdns_enabled: bool) -> Self {
-        Self {
-            credential_store,
-            mdns_enabled,
-        }
+    pub fn new(credential_store: Arc<CredentialStore>) -> Self {
+        Self { credential_store }
     }
 }
 
@@ -275,10 +271,9 @@ impl DeviceBackendFactory for NanoleafDriverModule {
                 message: error.to_string(),
             }
         })?;
-        Ok(Arc::new(NanoleafBackend::with_mdns_enabled(
+        Ok(Arc::new(NanoleafBackend::new(
             config,
             Arc::clone(&self.credential_store),
-            self.mdns_enabled,
         )))
     }
 }
@@ -303,7 +298,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<DiscoveryResult> {
+    ) -> Result<Vec<DiscoveredDevice>> {
         let config = config.parse_settings::<NanoleafConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_devices = resolve_nanoleaf_probe_devices_from_sources(&config, &tracked_devices);
@@ -313,14 +308,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
             request.timeout,
             request.mdns_enabled,
         );
-        let devices = scanner
-            .scan()
-            .await?
-            .into_iter()
-            .map(DriverDiscoveredDevice::from)
-            .collect();
-
-        Ok(DiscoveryResult { devices })
+        scanner.scan().await
     }
 }
 

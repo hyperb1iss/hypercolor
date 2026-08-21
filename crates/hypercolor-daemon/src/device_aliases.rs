@@ -191,7 +191,12 @@ pub async fn seed_registry(path: &Path, registry: &DeviceRegistry) {
     let pins: HashMap<PortableDeviceKey, DeviceFingerprint> = file
         .aliases
         .iter()
-        .map(|(key, record)| (key.clone(), DeviceFingerprint(record.fingerprint.clone())))
+        .map(|(key, record)| {
+            (
+                key.clone(),
+                DeviceFingerprint::from_persisted(record.fingerprint.clone()),
+            )
+        })
         .collect();
     let quarantined: HashSet<PortableDeviceKey> = file.quarantined_keys.into_iter().collect();
 
@@ -240,8 +245,8 @@ pub async fn sync_from_registry(path: &Path, registry: &DeviceRegistry) -> anyho
     for (key, pinned_fingerprint) in pins {
         let live = claims_by_key.get(&key);
         if let Some(record) = file.aliases.get_mut(&key) {
-            if record.fingerprint != pinned_fingerprint.0 {
-                record.fingerprint = pinned_fingerprint.0;
+            if record.fingerprint != pinned_fingerprint.as_str() {
+                record.fingerprint = pinned_fingerprint.into_string();
                 changed = true;
             }
             if let Some((claim, layout_device_id)) = live {
@@ -269,7 +274,7 @@ pub async fn sync_from_registry(path: &Path, registry: &DeviceRegistry) -> anyho
                 DeviceAliasRecord {
                     source: claim.source(),
                     raw: claim.raw().to_owned(),
-                    fingerprint: pinned_fingerprint.0,
+                    fingerprint: pinned_fingerprint.into_string(),
                     layout_device_id: layout_device_id.clone(),
                     first_seen_epoch_s: now,
                     last_seen_epoch_s: now,
@@ -298,9 +303,9 @@ fn persisted_collision(collision: PortableKeyCollision, now: u64) -> PersistedKe
     PersistedKeyCollision {
         key: collision.key,
         observed_epoch_s: now,
-        existing_fingerprint: collision.existing_fingerprint.0,
+        existing_fingerprint: collision.existing_fingerprint.into_string(),
         existing_claim: collision.existing_claim,
-        incoming_fingerprint: collision.incoming_fingerprint.0,
+        incoming_fingerprint: collision.incoming_fingerprint.into_string(),
         incoming_claim: collision.incoming_claim,
     }
 }
@@ -381,7 +386,7 @@ mod tests {
 
     fn discovered(name: &str, fingerprint: &str, mac: &str, peer_octet: u8) -> DiscoveredDevice {
         DiscoveredDevice {
-            fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+            fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: mock_info(name),
             metadata: HashMap::new(),
@@ -472,7 +477,7 @@ mod tests {
 
         assert_eq!(
             second_session.fingerprint_for_id(&id).await,
-            Some(DeviceFingerprint("net:wled:aaa".to_owned()))
+            Some(DeviceFingerprint::from_persisted("net:wled:aaa".to_owned()))
         );
     }
 
@@ -524,7 +529,9 @@ mod tests {
             .await;
         assert_eq!(
             next_session.fingerprint_for_id(&id).await,
-            Some(DeviceFingerprint("net:wled:unit-c".to_owned()))
+            Some(DeviceFingerprint::from_persisted(
+                "net:wled:unit-c".to_owned()
+            ))
         );
     }
 

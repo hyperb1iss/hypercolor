@@ -32,10 +32,8 @@ pub use controls::{
     DriverControlProvider, DriverControlStore, DriverLifecycleActions, ValidatedControlChanges,
 };
 pub use descriptor::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor};
-pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
-pub use driver_discovery::{
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDiscoveredDevice,
-};
+pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
+pub use driver_discovery::{DiscoveryCapability, DiscoveryRequest};
 pub use error::{DriverError, ErrorRecoverability};
 pub use host::{
     DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,

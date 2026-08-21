@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveryConnectBehavior,
-    DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost,
-    DriverModule, DriverRuntimeActions, DriverTrackedDevice,
+    DeviceBackend, DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveredDevice,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
+    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -23,6 +23,33 @@ use hypercolor_types::device::DeviceId;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+async fn discover_and_adopt(
+    module: &OpenRgbDriverModule,
+    backend: &Arc<dyn DeviceBackend>,
+    host: &dyn DriverHost,
+    config: DriverConfigView<'_>,
+) -> Vec<DiscoveredDevice> {
+    let devices = module
+        .discovery()
+        .expect("OpenRGB should expose discovery")
+        .discover(
+            host,
+            &DiscoveryRequest {
+                timeout: Duration::from_secs(2),
+                mdns_enabled: false,
+            },
+            config,
+        )
+        .await
+        .expect("driver discovery should read the fake OpenRGB server");
+    for device in &devices {
+        backend
+            .adopt_device(device)
+            .expect("backend should adopt the canonical discovery result");
+    }
+    devices
+}
 
 #[tokio::test]
 async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
@@ -67,8 +94,8 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
         .await
         .expect("discovery should read fake OpenRGB controller");
 
-    assert_eq!(discovery.devices.len(), 1);
-    let discovered = &discovery.devices[0];
+    assert_eq!(discovery.len(), 1);
+    let discovered = &discovery[0];
     assert_eq!(
         discovered.connect_behavior,
         DiscoveryConnectBehavior::AutoConnect
@@ -85,12 +112,10 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    assert_eq!(devices.len(), 1);
-    let device_id = devices[0].id;
+    backend
+        .adopt_device(discovered)
+        .expect("backend should adopt the canonical discovery result");
+    let device_id = discovered.info.id;
 
     backend
         .connect(&device_id)
@@ -140,11 +165,8 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -204,11 +226,8 @@ async fn connect_re_resolves_controller_index_before_mode_setup() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -253,11 +272,8 @@ async fn connect_fails_when_re_resolved_controller_disappears() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     let error = backend
         .connect(&device_id)
@@ -297,11 +313,8 @@ async fn connect_rejects_unapproved_active_mode_after_setup() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     let error = backend
         .connect(&device_id)
@@ -341,11 +354,8 @@ async fn connect_rejects_missing_active_mode_after_setup() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     let error = backend
         .connect(&device_id)
@@ -383,11 +393,8 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -445,11 +452,8 @@ async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -499,11 +503,8 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -559,11 +560,8 @@ async fn disconnect_completes_while_frame_sink_writers_race() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -631,11 +629,8 @@ async fn disconnect_restores_previous_openrgb_mode() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -705,11 +700,8 @@ async fn disconnect_fallback_blacks_out_without_previous_mode() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -758,11 +750,8 @@ async fn disconnect_blackout_policy_writes_zero_frame() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -811,11 +800,8 @@ async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -895,10 +881,7 @@ async fn discover_with_startup_rescan_server(server_protocol_version: u32) -> bo
         .build(&host, view)
         .expect("backend construction should succeed");
 
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should tolerate empty OpenRGB server");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
     assert!(devices.is_empty());
 
     server.await.expect("server task should join")

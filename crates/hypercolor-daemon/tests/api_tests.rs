@@ -18,8 +18,8 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverHost, DriverModule, DriverRuntimeCacheProvider,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverHost, DriverModule, DriverRuntimeCacheProvider,
     ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
@@ -462,8 +462,11 @@ impl DeviceBackend for NoopBackend {
         self.info.clone()
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, _id: &DeviceId) -> Result<()> {
@@ -628,9 +631,9 @@ impl DiscoveryCapability for RescanTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<DiscoveryResult> {
+    ) -> anyhow::Result<Vec<DiscoveredDevice>> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
-        Ok(DiscoveryResult::default())
+        Ok(Vec::new())
     }
 }
 
@@ -743,13 +746,13 @@ impl DiscoveryCapability for BlockingReconnectTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<DiscoveryResult> {
+    ) -> anyhow::Result<Vec<DiscoveredDevice>> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
         let _permit = Arc::clone(&self.release)
             .acquire_owned()
             .await
             .expect("blocking reconnect semaphore should stay open");
-        Ok(DiscoveryResult::default())
+        Ok(Vec::new())
     }
 }
 
@@ -860,8 +863,11 @@ impl DeviceBackend for StaticOutputRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, _id: &DeviceId) -> Result<()> {
@@ -891,8 +897,11 @@ impl DeviceBackend for IdentifyRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, _id: &DeviceId) -> Result<()> {
@@ -932,8 +941,11 @@ impl DeviceBackend for DisconnectRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
@@ -3890,7 +3902,7 @@ async fn insert_test_hue_bridge_device(
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint(format!("hue:{bridge_id}"));
+    let fingerprint = DeviceFingerprint::from_persisted(format!("hue:{bridge_id}"));
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("bridge_id".to_owned(), bridge_id.to_owned());
     metadata.insert("ip".to_owned(), ip.to_owned());
@@ -3937,7 +3949,7 @@ async fn insert_test_nanoleaf_device(
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint(format!("nanoleaf:{device_key}"));
+    let fingerprint = DeviceFingerprint::from_persisted(format!("nanoleaf:{device_key}"));
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("device_key".to_owned(), device_key.to_owned());
     metadata.insert("ip".to_owned(), ip.to_owned());
@@ -3977,7 +3989,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:40".to_owned());
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("smbus_address".to_owned(), "0x40".to_owned());
     state
@@ -10061,7 +10073,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint("wled:studio-strip".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("wled:studio-strip".to_owned());
     state
         .device_registry
         .add_discovered(DiscoveredDevice {
@@ -11321,7 +11333,7 @@ async fn list_devices_includes_connection_summary_when_available() {
         .device_registry
         .add_with_fingerprint_and_metadata(
             info,
-            DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned()),
+            DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned()),
             metadata,
         )
         .await;
@@ -11386,7 +11398,7 @@ async fn list_devices_preserves_custom_connection_transport_id() {
         .device_registry
         .add_with_fingerprint_and_metadata(
             info,
-            DeviceFingerprint("openlinkhub:hub-001".to_owned()),
+            DeviceFingerprint::from_persisted("openlinkhub:hub-001".to_owned()),
             metadata,
         )
         .await;
@@ -11816,7 +11828,7 @@ async fn delete_device_by_name_returns_canonical_id() {
 async fn delete_device_forgets_learned_wled_inventory() {
     let state = Arc::new(isolated_state());
     let device_id = DeviceId::new();
-    let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned());
     let info = DeviceInfo {
         id: device_id,
         name: "WLED Gledopto".to_owned(),

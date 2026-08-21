@@ -10,14 +10,17 @@ use std::sync::LazyLock;
 mod frame_state;
 
 use hypercolor_core::device::mock::{
-    MockCall, MockDeviceBackend, MockDeviceConfig, MockEffectRenderer, MockTransportScanner,
+    MockCall, MockDeviceBackend, MockDeviceConfig, MockDiscoverySource, MockEffectRenderer,
 };
-use hypercolor_core::device::{DeviceBackend, DeviceRegistry, DiscoveryOrchestrator};
+use hypercolor_core::device::{
+    DeviceBackend, DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior,
+    DiscoveryOrchestrator,
+};
 use hypercolor_core::effect::EffectRenderer;
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Rgba;
-use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceState};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     LedTopology, NormalizedPosition, Output, SpatialLayout, StripDirection,
@@ -26,6 +29,11 @@ use hypercolor_types::spatial::{
 use frame_state::TestFrameState;
 
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
+
+fn add_discovery_source(orchestrator: &mut DiscoveryOrchestrator, source: MockDiscoverySource) {
+    let name = source.name().to_owned();
+    orchestrator.add_source(name, async move { source.scan().await });
+}
 
 fn initialized_renderer(
     mut renderer: MockEffectRenderer,
@@ -202,21 +210,21 @@ fn build_dual_zone_layout(
 #[tokio::test]
 async fn scanner_finds_devices_and_orchestrator_deduplicates() {
     let registry = DeviceRegistry::new();
-    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
 
     // Two scanners with overlapping devices (same fingerprint)
     let strip = strip_config("Living Room Strip", 60);
     let matrix = matrix_config("Desk Matrix", 10, 10);
     let ring = ring_config("Fan Ring", 12);
 
-    let scanner_a = MockTransportScanner::new("mock-mdns")
+    let scanner_a = MockDiscoverySource::new("mock-mdns")
         .with_device(&strip)
         .with_device(&matrix);
 
-    let scanner_b = MockTransportScanner::new("mock-udp").with_device(&ring);
+    let scanner_b = MockDiscoverySource::new("mock-udp").with_device(&ring);
 
-    orchestrator.add_scanner(Box::new(scanner_a));
-    orchestrator.add_scanner(Box::new(scanner_b));
+    add_discovery_source(&mut orchestrator, scanner_a);
+    add_discovery_source(&mut orchestrator, scanner_b);
 
     let report = orchestrator.full_scan().await;
 
@@ -226,7 +234,7 @@ async fn scanner_finds_devices_and_orchestrator_deduplicates() {
     assert!(report.reappeared_devices.is_empty());
 
     // Registry should contain exactly 3 devices
-    assert_eq!(orchestrator.registry().len().await, 3);
+    assert_eq!(registry.len().await, 3);
 }
 
 #[tokio::test]
@@ -246,11 +254,11 @@ async fn scanner_deduplicates_same_fingerprint() {
         id: Some(shared_id),
     };
 
-    let scanner_a = MockTransportScanner::new("scanner-a").with_device(&config);
-    let scanner_b = MockTransportScanner::new("scanner-b").with_device(&config);
+    let scanner_a = MockDiscoverySource::new("scanner-a").with_device(&config);
+    let scanner_b = MockDiscoverySource::new("scanner-b").with_device(&config);
 
-    orchestrator.add_scanner(Box::new(scanner_a));
-    orchestrator.add_scanner(Box::new(scanner_b));
+    add_discovery_source(&mut orchestrator, scanner_a);
+    add_discovery_source(&mut orchestrator, scanner_b);
 
     let report = orchestrator.full_scan().await;
 
@@ -265,14 +273,14 @@ async fn scanner_handles_failure_gracefully() {
     let registry = DeviceRegistry::new();
     let mut orchestrator = DiscoveryOrchestrator::new(registry);
 
-    let mut failing_scanner = MockTransportScanner::new("broken");
+    let mut failing_scanner = MockDiscoverySource::new("broken");
     failing_scanner.should_fail = true;
 
     let good_scanner =
-        MockTransportScanner::new("healthy").with_device(&strip_config("Good Strip", 30));
+        MockDiscoverySource::new("healthy").with_device(&strip_config("Good Strip", 30));
 
-    orchestrator.add_scanner(Box::new(failing_scanner));
-    orchestrator.add_scanner(Box::new(good_scanner));
+    add_discovery_source(&mut orchestrator, failing_scanner);
+    add_discovery_source(&mut orchestrator, good_scanner);
 
     let report = orchestrator.full_scan().await;
 
@@ -290,11 +298,16 @@ async fn device_lifecycle_discover_connect_write_disconnect() {
 
     let backend = MockDeviceBackend::new().with_device(&config);
 
-    // Discover
-    let devices = backend.discover().await.expect("discover should succeed");
-    assert_eq!(devices.len(), 1);
-    assert_eq!(devices[0].name, "Test Strip");
-    assert_eq!(devices[0].total_led_count(), 60);
+    let info = backend.device_infos()[0].clone();
+    backend
+        .adopt_device(&DiscoveredDevice {
+            fingerprint: DeviceFingerprint::from_persisted("bridge:mock:test-strip"),
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+            info,
+            metadata: Default::default(),
+            claim: None,
+        })
+        .expect("adoption should succeed");
 
     // Connect
     backend
@@ -327,7 +340,7 @@ async fn device_lifecycle_discover_connect_write_disconnect() {
 
     // Verify call log
     let calls = backend.calls();
-    assert_eq!(calls[0], MockCall::Discover);
+    assert_eq!(calls[0], MockCall::Adopt(device_id));
     assert_eq!(calls[1], MockCall::Connect(device_id));
     assert_eq!(
         calls[2],
@@ -825,19 +838,19 @@ async fn backend_info_returns_mock_metadata() {
 #[tokio::test]
 async fn registry_integration_with_discovery() {
     let registry = DeviceRegistry::new();
-    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
 
-    let scanner = MockTransportScanner::new("test-scanner")
+    let scanner = MockDiscoverySource::new("test-scanner")
         .with_device(&strip_config("Reg Strip A", 30))
         .with_device(&ring_config("Reg Ring B", 16));
 
-    orchestrator.add_scanner(Box::new(scanner));
+    add_discovery_source(&mut orchestrator, scanner);
 
     let report = orchestrator.full_scan().await;
     assert_eq!(report.new_devices.len(), 2);
 
     // Verify devices are in the registry
-    let devices = orchestrator.registry().list().await;
+    let devices = registry.list().await;
     assert_eq!(devices.len(), 2);
 
     // All devices should be in Known state initially

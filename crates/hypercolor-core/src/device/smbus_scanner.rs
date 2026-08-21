@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use hypercolor_hal::{probe_smbus_devices_in_root, probe_smbus_devices_system};
 
-use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 
 /// `SMBus` transport scanner.
 pub struct SmBusScanner {
@@ -40,13 +40,9 @@ impl Default for SmBusScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for SmBusScanner {
-    fn name(&self) -> &'static str {
-        "SMBus HAL"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl SmBusScanner {
+    /// Discover SMBus devices supported by HAL probes.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         let probes = match &self.dev_root {
             Some(dev_root) => probe_smbus_devices_in_root(dev_root).await?,
             None => probe_smbus_devices_system().await?,

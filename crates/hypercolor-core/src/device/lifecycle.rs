@@ -582,7 +582,7 @@ impl DeviceLifecycleManager {
         let Some(fingerprint) = fingerprint else {
             return Self::layout_device_id(device_info);
         };
-        let value = fingerprint.0.to_ascii_lowercase();
+        let value = fingerprint.as_str().to_ascii_lowercase();
 
         if let Some(value) = value.strip_prefix("net:") {
             let owner_prefix = format!("{owner}:");
@@ -624,7 +624,7 @@ impl DeviceLifecycleManager {
     ) -> DeviceIdentifier {
         let backend_id = device_info.output_backend_id();
         if let Some(fingerprint) = fingerprint {
-            let value = fingerprint.0.clone();
+            let value = fingerprint.as_str().to_owned();
             if let Some(rest) = value.strip_prefix("smbus:") {
                 let (bus_path, address) = rest.rsplit_once(':').map_or((rest, 0), |(bus, raw)| {
                     let address = u16::from_str_radix(raw, 16).unwrap_or(0);
@@ -762,7 +762,9 @@ mod tests {
         let actions = lifecycle.on_discovered(
             info.id,
             &info,
-            Some(&DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned())),
+            Some(&DeviceFingerprint::from_persisted(
+                "net:aa:bb:cc:dd:ee:ff".to_owned(),
+            )),
         );
 
         assert_eq!(actions.len(), 1);
@@ -850,7 +852,9 @@ mod tests {
         lifecycle.on_discovered(
             info.id,
             &info,
-            Some(&DeviceFingerprint("net:office-node".to_owned())),
+            Some(&DeviceFingerprint::from_persisted(
+                "net:office-node".to_owned(),
+            )),
         );
         lifecycle
             .on_connected(info.id)
@@ -985,7 +989,8 @@ mod tests {
             "Scoped Network Device",
             DeviceFamily::new_static("scoped-driver", "Scoped Driver"),
         );
-        let fingerprint = DeviceFingerprint("net:scoped-driver:bridge.local".to_owned());
+        let fingerprint =
+            DeviceFingerprint::from_persisted("net:scoped-driver:bridge.local".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
@@ -999,7 +1004,7 @@ mod tests {
             "Unscoped Network Device",
             DeviceFamily::new_static("net-driver", "Network Driver"),
         );
-        let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
@@ -1015,7 +1020,7 @@ mod tests {
         );
         info.connection_type = ConnectionType::Usb;
         info.origin = DeviceOrigin::native("usb-driver", "usb", ConnectionType::Usb);
-        let fingerprint = DeviceFingerprint("usb:/dev/hidraw2".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("usb:/dev/hidraw2".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
@@ -1032,7 +1037,7 @@ mod tests {
         );
         info.connection_type = ConnectionType::Usb;
         info.origin = DeviceOrigin::native("usb-driver", "usb", ConnectionType::Usb);
-        let fingerprint = DeviceFingerprint("usb:1532:0099:001-6-4-4".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("usb:1532:0099:001-6-4-4".to_owned());
 
         lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
         lifecycle
@@ -1066,7 +1071,7 @@ mod tests {
         );
         info.connection_type = ConnectionType::Bridge;
         info.origin = DeviceOrigin::native("bridge-driver", "blocks", ConnectionType::Bridge);
-        let fingerprint = DeviceFingerprint("bridge:blocksd:LPMJW6".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("bridge:blocksd:LPMJW6".to_owned());
 
         lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
         lifecycle

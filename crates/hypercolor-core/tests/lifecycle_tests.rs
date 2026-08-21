@@ -457,11 +457,11 @@ impl DeviceBackend for RecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![device_info(
-            self.expected_device_id,
-            "Lifecycle Device",
-        )])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -645,7 +645,9 @@ async fn lifecycle_discovery_connect_and_frame_write() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:desk-strip".to_owned(),
+        )),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;
 
@@ -675,7 +677,7 @@ fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Studio Strip");
-    let fingerprint = DeviceFingerprint("net:wled:wled-studio.local".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:wled:wled-studio.local".to_owned());
 
     let deferred_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -708,7 +710,7 @@ fn repeated_auto_discovery_suppresses_duplicate_connect_while_in_flight() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     let first_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -759,7 +761,7 @@ fn rediscovered_known_device_can_retry_stale_in_flight_connect() {
         DeviceLifecycleManager::new().with_connect_in_flight_stale_after(Duration::ZERO);
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     let first_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -844,7 +846,7 @@ fn rediscovered_reconnecting_device_connects_without_waiting_for_retry_timer() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     lifecycle.on_discovered_with_behavior(
         device_id,
@@ -897,7 +899,7 @@ fn deferred_discovery_disconnects_connected_device() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Desk Strip");
-    let fingerprint = DeviceFingerprint("mock:desk-strip".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("mock:desk-strip".to_owned());
 
     let initial_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -985,12 +987,16 @@ fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         first_id,
         &first,
-        Some(&DeviceFingerprint("usb:16d0:1294:1-3.3".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "usb:16d0:1294:1-3.3".to_owned(),
+        )),
     );
     let _ = lifecycle.on_discovered(
         second_id,
         &second,
-        Some(&DeviceFingerprint("usb:16d0:1294:1-3.4".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "usb:16d0:1294:1-3.4".to_owned(),
+        )),
     );
 
     assert_eq!(
@@ -1012,7 +1018,9 @@ fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "smbus:/dev/i2c-9:40".to_owned(),
+        )),
     );
 
     assert_eq!(
@@ -1030,7 +1038,9 @@ fn runtime_deactivate_disconnects_without_disabling_the_device() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:desk-strip".to_owned(),
+        )),
     );
     assert!(
         actions
@@ -1086,7 +1096,9 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:case-fan".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:case-fan".to_owned(),
+        )),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;
 

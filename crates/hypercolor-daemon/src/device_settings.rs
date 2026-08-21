@@ -693,7 +693,7 @@ mod tests {
         let portable_key = claim.key().to_string();
         let id = registry
             .add_discovered(DiscoveredDevice {
-                fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+                fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
                 connect_behavior: DiscoveryConnectBehavior::Deferred,
                 info,
                 metadata: HashMap::new(),
@@ -796,7 +796,7 @@ mod tests {
         };
         let id = registry
             .add_discovered(DiscoveredDevice {
-                fingerprint: DeviceFingerprint("net:wled:anon".to_owned()),
+                fingerprint: DeviceFingerprint::from_persisted("net:wled:anon".to_owned()),
                 connect_behavior: DiscoveryConnectBehavior::Deferred,
                 info,
                 metadata: HashMap::new(),
@@ -815,7 +815,7 @@ mod tests {
         // quarantines it, and neither unit may key settings by it.
         let registry = DeviceRegistry::new();
         let discovered = |name: &str, fingerprint: &str, peer_octet: u8| DiscoveredDevice {
-            fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+            fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
             connect_behavior: DiscoveryConnectBehavior::Deferred,
             info: DeviceInfo {
                 id: DeviceId::new(),

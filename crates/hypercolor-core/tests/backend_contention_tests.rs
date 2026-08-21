@@ -16,10 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink};
-use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
-};
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -93,7 +90,6 @@ impl DeviceFrameSink for BlockingFrameSink {
 
 struct MultiDeviceSinkBackend {
     backend_id: String,
-    devices: Vec<DeviceId>,
     sinks: HashMap<DeviceId, Arc<BlockingFrameSink>>,
     fallback_count: Arc<AtomicUsize>,
 }
@@ -115,7 +111,6 @@ impl MultiDeviceSinkBackend {
 
         Self {
             backend_id: backend_id.into(),
-            devices: vec![slow_device, fast_device],
             sinks,
             fallback_count,
         }
@@ -144,12 +139,11 @@ impl DeviceBackend for MultiDeviceSinkBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(self
-            .devices
-            .iter()
-            .map(|device_id| test_device_info(*device_id, &self.backend_id))
-            .collect())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -219,38 +213,11 @@ impl DeviceBackend for ContentionMockBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.device_id,
-            name: format!("contention-{}", self.backend_id),
-            vendor: "hypercolor-test".to_owned(),
-            family: DeviceFamily::named("Contention"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native(
-                "contention",
-                self.backend_id.clone(),
-                ConnectionType::Network,
-            ),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 8,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 8,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -325,9 +292,7 @@ async fn build_manager_with_backends(
         let io = manager
             .backend_io(&backend_id)
             .expect("backend was just registered");
-        io.connect_with_refresh(device_id)
-            .await
-            .expect("connect should succeed");
+        io.connect(device_id).await.expect("connect should succeed");
 
         ids.push((backend_id, device_id));
     }
@@ -337,36 +302,6 @@ async fn build_manager_with_backends(
 
 fn u8_tag(value: usize) -> u8 {
     u8::try_from(value).expect("test tag must fit in u8")
-}
-
-fn test_device_info(device_id: DeviceId, backend_id: &str) -> DeviceInfo {
-    DeviceInfo {
-        id: device_id,
-        name: format!("sink-device-{device_id}"),
-        vendor: "hypercolor-test".to_owned(),
-        family: DeviceFamily::named("Contention"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("contention", backend_id.to_owned(), ConnectionType::Network),
-        segments: vec![SegmentInfo {
-            name: "Main".to_owned(),
-            led_count: 4,
-            topology: DeviceTopologyHint::Strip,
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: None,
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities {
-            led_count: 4,
-            supports_direct: true,
-            supports_brightness: false,
-            has_display: false,
-            display_resolution: None,
-            max_fps: 60,
-            color_space: hypercolor_types::device::DeviceColorSpace::default(),
-            features: DeviceFeatures::default(),
-        },
-    }
 }
 
 fn make_layout(zones: Vec<Output>) -> SpatialLayout {
@@ -745,14 +680,14 @@ async fn slow_backend_does_not_block_fast_backend() {
     let fast_count = fast_backend.write_count_handle();
     manager.register_backend(Arc::new(fast_backend));
     let fast_io = manager.backend_io("fast").unwrap();
-    fast_io.connect_with_refresh(fast_device).await.unwrap();
+    fast_io.connect(fast_device).await.unwrap();
 
     let slow_device = DeviceId::new();
     let slow_backend = ContentionMockBackend::new("slow", slow_device).with_delay(SLOW_DELAY);
     let slow_count = slow_backend.write_count_handle();
     manager.register_backend(Arc::new(slow_backend));
     let slow_io = manager.backend_io("slow").unwrap();
-    slow_io.connect_with_refresh(slow_device).await.unwrap();
+    slow_io.connect(slow_device).await.unwrap();
 
     let start = Instant::now();
 

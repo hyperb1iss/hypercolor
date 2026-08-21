@@ -547,8 +547,12 @@ impl DaemonState {
 
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let driver_registry = Arc::new(
-            network::build_builtin_driver_module_registry(config, Arc::clone(&credential_store))
-                .context("failed to build driver module registry")?,
+            network::build_builtin_driver_module_registry(
+                config,
+                Arc::clone(&credential_store),
+                usb_protocol_configs.clone(),
+            )
+            .context("failed to build driver module registry")?,
         );
         let driver_host = Arc::new(DaemonDriverHost::new(
             device_registry.clone(),
@@ -597,7 +601,6 @@ impl DaemonState {
                 driver_registry.as_ref(),
                 driver_host.as_ref(),
                 config,
-                usb_protocol_configs.clone(),
             )
             .context("failed to register enabled device backends")?;
         }

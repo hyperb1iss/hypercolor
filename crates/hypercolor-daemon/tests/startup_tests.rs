@@ -86,8 +86,11 @@ impl DeviceBackend for StaticHoldRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, _id: &DeviceId) -> Result<()> {
@@ -132,8 +135,11 @@ impl DeviceBackend for ShutdownCleanupBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -1480,7 +1486,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
                 firmware_version: Some("0.15.3".to_owned()),
                 capabilities: DeviceCapabilities::default(),
             },
-            DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned()),
+            DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned()),
             wled_metadata,
         )
         .await;

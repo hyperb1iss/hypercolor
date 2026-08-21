@@ -87,12 +87,9 @@ fn resolve_hue_probe_bridges_merges_tracked_metadata() {
 #[test]
 fn hue_module_advertises_presentation_metadata() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = HueDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = HueDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
 
     let descriptor = module.module_descriptor();
     assert!(descriptor.capabilities.presentation);
@@ -112,12 +109,9 @@ fn hue_module_advertises_presentation_metadata() {
 #[test]
 fn hue_config_validation_rejects_non_routable_bridge_ips() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = HueDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = HueDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
     let mut config = module
         .config()
         .expect("Hue should expose config provider")

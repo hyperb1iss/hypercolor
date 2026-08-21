@@ -17,7 +17,6 @@ mod frame_state;
 use hypercolor_core::bus::{EventFilter, HypercolorBus};
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
-    TransportScanner,
 };
 use hypercolor_core::effect::{EffectEntry, EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::engine::{
@@ -145,15 +144,19 @@ impl TestScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for TestScanner {
+impl TestScanner {
     fn name(&self) -> &str {
         &self.name
     }
 
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+    async fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
         Ok(self.devices.clone())
     }
+}
+
+fn add_test_source(orchestrator: &mut DiscoveryOrchestrator, source: TestScanner) {
+    let name = source.name().to_owned();
+    orchestrator.add_source(name, async move { source.scan().await });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -211,7 +214,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
 
 fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
     let info = make_device_info(name, led_count);
-    let fp = DeviceFingerprint(format!("test:{name}"));
+    let fp = DeviceFingerprint::from_persisted(format!("test:{name}"));
     DiscoveredDevice {
         fingerprint: fp,
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
@@ -520,8 +523,8 @@ async fn device_registry_with_discovery_full_scan() {
         make_discovered_device("wled-matrix", 256),
     ];
 
-    orchestrator.add_scanner(Box::new(TestScanner::new("test-wled", devices)));
-    assert_eq!(orchestrator.scanner_count(), 1);
+    add_test_source(&mut orchestrator, TestScanner::new("test-wled", devices));
+    assert_eq!(orchestrator.source_count(), 1);
 
     // Full scan
     let report = orchestrator.full_scan().await;
@@ -553,8 +556,14 @@ async fn discovery_deduplicates_across_scanners() {
     let mut device2 = make_discovered_device("shared-device", 30);
     device2.info.name = "shared-device-v2".to_string();
 
-    orchestrator.add_scanner(Box::new(TestScanner::new("scanner-a", vec![device1])));
-    orchestrator.add_scanner(Box::new(TestScanner::new("scanner-b", vec![device2])));
+    add_test_source(
+        &mut orchestrator,
+        TestScanner::new("scanner-a", vec![device1]),
+    );
+    add_test_source(
+        &mut orchestrator,
+        TestScanner::new("scanner-b", vec![device2]),
+    );
 
     let report = orchestrator.full_scan().await;
 
@@ -568,7 +577,7 @@ async fn discovery_rescan_reports_reappeared() {
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
 
     let devices = vec![make_discovered_device("persistent-device", 10)];
-    orchestrator.add_scanner(Box::new(TestScanner::new("test", devices.clone())));
+    add_test_source(&mut orchestrator, TestScanner::new("test", devices.clone()));
 
     // First scan: new device
     let report1 = orchestrator.full_scan().await;
@@ -576,6 +585,8 @@ async fn discovery_rescan_reports_reappeared() {
     assert!(report1.reappeared_devices.is_empty());
 
     // Second scan: same device reappears
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_test_source(&mut orchestrator, TestScanner::new("test", devices));
     let report2 = orchestrator.full_scan().await;
     assert!(report2.new_devices.is_empty(), "no new devices on rescan");
     assert_eq!(
@@ -1325,7 +1336,7 @@ async fn multiple_scanners_aggregate_results() {
         make_discovered_device("wled-1", 30),
         make_discovered_device("wled-2", 60),
     ];
-    orchestrator.add_scanner(Box::new(TestScanner::new("wled", wled_devices)));
+    add_test_source(&mut orchestrator, TestScanner::new("wled", wled_devices));
 
     // Scanner B: 1 USB device
     let usb_device = {
@@ -1357,16 +1368,16 @@ async fn multiple_scanners_aggregate_results() {
             },
         };
         DiscoveredDevice {
-            fingerprint: DeviceFingerprint("usb:prism-1".to_string()),
+            fingerprint: DeviceFingerprint::from_persisted("usb:prism-1".to_string()),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
             claim: None,
         }
     };
-    orchestrator.add_scanner(Box::new(TestScanner::new("usb", vec![usb_device])));
+    add_test_source(&mut orchestrator, TestScanner::new("usb", vec![usb_device]));
 
-    assert_eq!(orchestrator.scanner_count(), 2);
+    assert_eq!(orchestrator.source_count(), 2);
 
     let report = orchestrator.full_scan().await;
     assert_eq!(

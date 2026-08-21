@@ -11,10 +11,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use utoipa::ToSchema;
 
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
+};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
+    DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
+    FingerprintNamespace, SegmentInfo,
 };
 
 use crate::discovery::{
@@ -93,7 +96,11 @@ impl SimulatedDisplayConfig {
 
     #[must_use]
     pub fn fingerprint(&self) -> DeviceFingerprint {
-        DeviceFingerprint(format!("{SIMULATED_DISPLAY_BACKEND_ID}:{}", self.id))
+        DeviceFingerprint::mint(
+            FingerprintNamespace::Bridge,
+            SIMULATED_DISPLAY_BACKEND_ID,
+            &self.id.to_string(),
+        )
     }
 }
 
@@ -269,14 +276,14 @@ impl DeviceBackend for SimulatedDisplayBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        let store = self.store.read().await;
-        Ok(store
-            .list()
-            .into_iter()
-            .filter(|config| config.enabled)
-            .map(|config| config.device_info())
-            .collect())
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        if discovered.info.output_backend_id() == SIMULATED_DISPLAY_BACKEND_ID {
+            Ok(())
+        } else {
+            Err(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })
+        }
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {

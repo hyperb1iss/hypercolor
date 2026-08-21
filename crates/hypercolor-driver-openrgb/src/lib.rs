@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceBackendFactory, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceFrameSink, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigProvider,
-    DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverError, DriverHost,
-    DriverModule, DriverPresentationProvider, OutputBinding,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    OutputBinding,
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
@@ -25,9 +25,9 @@ use hypercolor_openrgb_sdk::{
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceColorSpace,
-    DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
-    DeviceTopologyHint, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
-    DriverPresentation, DriverTransportKind, SegmentInfo,
+    DeviceError, DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo,
+    DeviceOrigin, DeviceTopologyHint, DriverCapabilitySet, DriverModuleDescriptor,
+    DriverModuleKind, DriverPresentation, DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::identity::BackendId;
 use serde::{Deserialize, Serialize};
@@ -205,6 +205,15 @@ impl IdentityConfidence {
             Self::Low => "low",
         }
     }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
 }
 
 /// OpenRGB driver module.
@@ -301,17 +310,11 @@ impl DiscoveryCapability for OpenRgbDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<DiscoveryResult> {
+    ) -> Result<Vec<DiscoveredDevice>> {
         let config = config.parse_settings::<OpenRgbConfig>()?;
         validate_openrgb_config(&config)?;
         let routes = discover_routes(&config).await?;
-        Ok(DiscoveryResult {
-            devices: routes
-                .into_iter()
-                .map(DiscoveredDevice::from)
-                .map(DriverDiscoveredDevice::from)
-                .collect(),
-        })
+        Ok(routes.into_iter().map(DiscoveredDevice::from).collect())
     }
 }
 
@@ -349,18 +352,62 @@ impl DeviceBackend for OpenRgbBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        let mut routes = discover_routes(&self.config).await?;
-        self.preserve_connected_previous_modes(&mut routes).await;
-        *self
-            .discovered
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = routes
-            .iter()
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let rejected = || DeviceError::NotAdopted {
+            device_id: discovered.info.id,
+        };
+        let endpoint = discovered
+            .metadata
+            .get(METADATA_ENDPOINT)
+            .and_then(|value| value.parse::<SocketAddr>().ok())
+            .ok_or_else(rejected)?;
+        let controller_index = discovered
+            .metadata
+            .get(METADATA_CONTROLLER_INDEX)
+            .and_then(|value| value.parse::<u32>().ok())
+            .ok_or_else(rejected)?;
+        let fingerprint = discovered
+            .metadata
+            .get(METADATA_FINGERPRINT)
+            .map(|value| DeviceFingerprint::from_persisted(value.clone()))
+            .ok_or_else(rejected)?;
+        let confidence = discovered
+            .metadata
+            .get(METADATA_IDENTITY_CONFIDENCE)
+            .and_then(|value| IdentityConfidence::parse(value))
+            .ok_or_else(rejected)?;
+        let detector_class = discovered
+            .metadata
+            .get(METADATA_DETECTOR_CLASS)
             .cloned()
-            .map(|route| (route.info.id, route))
-            .collect();
-        Ok(routes.into_iter().map(|route| route.info).collect())
+            .ok_or_else(rejected)?;
+        let protocol_version = discovered
+            .metadata
+            .get(METADATA_PROTOCOL_VERSION)
+            .and_then(|value| value.parse::<u32>().ok())
+            .ok_or_else(rejected)?;
+        let route = ControllerRoute {
+            endpoint,
+            controller_index,
+            target_fps: target_fps(&self.config, fingerprint.as_str(), &detector_class),
+            auto_connect: matches!(
+                discovered.connect_behavior,
+                DiscoveryConnectBehavior::AutoConnect
+            ),
+            disabled_reason: discovered.metadata.get(METADATA_DISABLED_REASON).cloned(),
+            fingerprint,
+            confidence,
+            detector_class,
+            writable_mode: None,
+            previous_mode: None,
+            info: discovered.info.clone(),
+            protocol_version,
+        };
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovered.info.id, route);
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -463,24 +510,6 @@ impl DeviceBackend for OpenRgbBackend {
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .map(|output| output.frame_sink() as Arc<dyn DeviceFrameSink>)
-    }
-}
-
-impl OpenRgbBackend {
-    async fn preserve_connected_previous_modes(&self, routes: &mut [ControllerRoute]) {
-        for route in routes {
-            let controller = self
-                .connected
-                .read()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(&route.info.id)
-                .cloned();
-            let Some(controller) = controller else {
-                continue;
-            };
-            let controller = controller.controller.lock().await;
-            route.previous_mode.clone_from(&controller.previous_mode);
-        }
     }
 }
 
@@ -1064,7 +1093,10 @@ impl From<ControllerRoute> for DiscoveredDevice {
                 METADATA_CONTROLLER_INDEX.to_owned(),
                 route.controller_index.to_string(),
             ),
-            (METADATA_FINGERPRINT.to_owned(), route.fingerprint.0.clone()),
+            (
+                METADATA_FINGERPRINT.to_owned(),
+                route.fingerprint.as_str().to_owned(),
+            ),
             (
                 METADATA_IDENTITY_CONFIDENCE.to_owned(),
                 route.confidence.as_str().to_owned(),
@@ -1212,7 +1244,7 @@ async fn find_current_route(
     }
     bail!(
         "OpenRGB controller fingerprint '{}' disappeared",
-        fingerprint.0
+        fingerprint.as_str()
     )
 }
 
@@ -1343,8 +1375,8 @@ fn disambiguate_duplicate_fingerprints(routes: &mut [ControllerRoute]) {
         }
         let ordinal = seen.entry(route.fingerprint.clone()).or_default();
         *ordinal += 1;
-        let base = route.fingerprint.0.clone();
-        route.fingerprint = DeviceFingerprint(format!("{base}:duplicate:{ordinal}"));
+        let key = format!("duplicate:{}:{ordinal}", route.info.id);
+        route.fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Bridge, "openrgb", &key);
         route.info.id = route.fingerprint.stable_device_id();
         route.info.capabilities.supports_direct = false;
         route.disabled_reason = Some(
@@ -1374,7 +1406,7 @@ fn build_route(
     let previous_mode = previous_mode_snapshot(&controller, writable_mode.as_ref());
     let fingerprint = controller_fingerprint(endpoint, &controller, confidence, controller_index);
     let device_id = fingerprint.stable_device_id();
-    let target_fps = target_fps(config, &fingerprint.0, &detector_class);
+    let target_fps = target_fps(config, fingerprint.as_str(), &detector_class);
     let info = build_device_info(
         device_id,
         &controller,
@@ -1438,7 +1470,11 @@ fn controller_fingerprint(
     } else {
         format!("unstable-index:{controller_index}")
     };
-    DeviceFingerprint(format!("bridge:openrgb:{endpoint}:{identity}"))
+    DeviceFingerprint::mint(
+        FingerprintNamespace::Bridge,
+        "openrgb",
+        &format!("{endpoint}:{identity}"),
+    )
 }
 
 fn select_writable_mode(

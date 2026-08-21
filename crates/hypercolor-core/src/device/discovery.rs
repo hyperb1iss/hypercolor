@@ -1,14 +1,16 @@
-//! Discovery orchestrator — parallel scanner coordination and deduplication.
+//! Discovery orchestrator for parallel driver-source coordination and deduplication.
 //!
-//! The [`DiscoveryOrchestrator`] runs all registered transport scanners
+//! The [`DiscoveryOrchestrator`] runs all registered driver discovery sources
 //! concurrently, deduplicates their results, diffs against the device
 //! registry, and reports what changed.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use hypercolor_driver_api::{DiscoveredDevice, TransportScanner};
+use anyhow::Result;
+use hypercolor_driver_api::DiscoveredDevice;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
@@ -70,11 +72,18 @@ pub struct DiscoveryProgress {
 
 // ── DiscoveryOrchestrator ────────────────────────────────────────────────
 
-/// Coordinates parallel device discovery across all transport scanners.
+type DiscoveryFuture = Pin<Box<dyn Future<Output = Result<Vec<DiscoveredDevice>>> + Send>>;
+
+struct DiscoverySource {
+    name: String,
+    future: DiscoveryFuture,
+}
+
+/// Coordinates parallel device discovery across all registered driver sources.
 ///
-/// At startup: runs a full scan across all transports simultaneously.
-/// At runtime: listens for hot-plug hints and triggers targeted rescans.
-/// On demand: `full_scan()` can be called from the REST API or CLI.
+/// Each instance owns one discovery batch and is consumed by
+/// [`full_scan`](Self::full_scan). Startup, hot-plug, and on-demand callers
+/// construct a fresh batch against the shared registry.
 ///
 /// # Deduplication
 ///
@@ -82,8 +91,7 @@ pub struct DiscoveryProgress {
 /// different probe paths. The orchestrator deduplicates using
 /// [`DeviceFingerprint`], keeping the richest metadata.
 pub struct DiscoveryOrchestrator {
-    /// Registered scanners, one per transport.
-    scanners: Vec<Box<dyn TransportScanner>>,
+    sources: Vec<DiscoverySource>,
 
     /// Shared device registry.
     registry: DeviceRegistry,
@@ -92,33 +100,40 @@ pub struct DiscoveryOrchestrator {
 impl DiscoveryOrchestrator {
     /// Create a new orchestrator with the given registry.
     ///
-    /// Scanners are added via [`add_scanner`](Self::add_scanner) before
+    /// Sources are added via [`add_source`](Self::add_source) before
     /// calling [`full_scan`](Self::full_scan).
     #[must_use]
     pub fn new(registry: DeviceRegistry) -> Self {
         Self {
-            scanners: Vec::new(),
+            sources: Vec::new(),
             registry,
         }
     }
 
-    /// Register a transport scanner.
-    pub fn add_scanner(&mut self, scanner: Box<dyn TransportScanner>) {
-        info!(scanner = scanner.name(), "Registered transport scanner");
-        self.scanners.push(scanner);
+    /// Register one driver-owned discovery future.
+    pub fn add_source<F>(&mut self, name: impl Into<String>, future: F)
+    where
+        F: Future<Output = Result<Vec<DiscoveredDevice>>> + Send + 'static,
+    {
+        let name = name.into();
+        info!(source = %name, "registered discovery source");
+        self.sources.push(DiscoverySource {
+            name,
+            future: Box::pin(future),
+        });
     }
 
-    /// Number of registered scanners.
+    /// Number of registered discovery sources.
     #[must_use]
-    pub fn scanner_count(&self) -> usize {
-        self.scanners.len()
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
     }
 
-    /// Run a full parallel scan across all registered transports.
+    /// Run this discovery batch across all registered sources.
     ///
     /// All scanners execute concurrently. Results are collected,
     /// deduplicated by fingerprint, and merged into the device registry.
-    pub async fn full_scan(&mut self) -> DiscoveryReport {
+    pub async fn full_scan(self) -> DiscoveryReport {
         self.full_scan_with_progress(|_| std::future::ready(()))
             .await
     }
@@ -128,7 +143,7 @@ impl DiscoveryOrchestrator {
     /// This allows higher layers to start device lifecycle work immediately
     /// instead of waiting for the entire discovery sweep to complete.
     #[expect(clippy::too_many_lines)]
-    pub async fn full_scan_with_progress<F, Fut>(&mut self, mut on_progress: F) -> DiscoveryReport
+    pub async fn full_scan_with_progress<F, Fut>(mut self, mut on_progress: F) -> DiscoveryReport
     where
         F: FnMut(DiscoveryProgress) -> Fut,
         Fut: Future<Output = ()>,
@@ -141,21 +156,17 @@ impl DiscoveryOrchestrator {
         // at once.
         let known_ids_before: HashSet<DeviceId> = known_before.values().copied().collect();
 
-        // Move scanners out so each can be scanned on its own task.
-        // We restore every scanner instance after awaiting task completion.
-        let scanners = std::mem::take(&mut self.scanners);
+        let sources = std::mem::take(&mut self.sources);
         let mut scan_tasks = JoinSet::new();
-        for (index, mut scanner) in scanners.into_iter().enumerate() {
+        for (index, source) in sources.into_iter().enumerate() {
             scan_tasks.spawn(async move {
-                let scanner_name = scanner.name().to_owned();
                 let started = Instant::now();
-                let result = scanner.scan().await;
+                let result = source.future.await;
                 let elapsed = started.elapsed();
-                (index, scanner, scanner_name, elapsed, result)
+                (index, source.name, elapsed, result)
             });
         }
 
-        let mut restored_scanners = Vec::new();
         let mut scanner_reports = Vec::new();
         let mut aggregated: HashMap<DeviceFingerprint, DiscoveredDevice> = HashMap::new();
         let mut new_devices = Vec::new();
@@ -164,8 +175,7 @@ impl DiscoveryOrchestrator {
 
         while let Some(task) = scan_tasks.join_next().await {
             match task {
-                Ok((index, scanner, scanner_name, elapsed, result)) => {
-                    restored_scanners.push((index, scanner));
+                Ok((index, scanner_name, elapsed, result)) => {
                     match result {
                         Ok(devices) => {
                             let discovered = devices.len();
@@ -271,11 +281,6 @@ impl DiscoveryOrchestrator {
                 }
             }
         }
-        restored_scanners.sort_by_key(|(index, _)| *index);
-        self.scanners = restored_scanners
-            .into_iter()
-            .map(|(_, scanner)| scanner)
-            .collect();
         scanner_reports.sort_by_key(|(index, _)| *index);
 
         let mut vanished_devices = known_ids_before
@@ -307,12 +312,6 @@ impl DiscoveryOrchestrator {
             total_known,
             scan_duration,
         }
-    }
-
-    /// Access the underlying device registry.
-    #[must_use]
-    pub fn registry(&self) -> &DeviceRegistry {
-        &self.registry
     }
 
     fn merge_discovered(existing: &mut DiscoveredDevice, incoming: &DiscoveredDevice) {

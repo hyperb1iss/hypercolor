@@ -248,8 +248,11 @@ impl DeviceBackend for MultiDisplaySinkBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -346,8 +349,11 @@ impl DeviceBackend for RecordingDisplayBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -400,8 +406,11 @@ impl DeviceBackend for FailingDisplayBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -1824,7 +1833,7 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     let tracked_id = device_registry
         .add_with_fingerprint_and_metadata(
             simulated_display_device_info(device_id, 480, 480),
-            DeviceFingerprint(format!("simulator:{device_id}")),
+            DeviceFingerprint::from_persisted(format!("simulator:{device_id}")),
             simulated_display_metadata(),
         )
         .await;
@@ -1897,7 +1906,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     let tracked_id = device_registry
         .add_with_fingerprint_and_metadata(
             simulated_display_device_info(device_id, 480, 480),
-            DeviceFingerprint(format!("simulator:{device_id}")),
+            DeviceFingerprint::from_persisted(format!("simulator:{device_id}")),
             simulated_display_metadata(),
         )
         .await;

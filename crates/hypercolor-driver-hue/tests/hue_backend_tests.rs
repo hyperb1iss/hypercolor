@@ -121,8 +121,7 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
         )
         .await?;
 
-    let mut backend =
-        HueBackend::with_mdns_enabled(HueConfig::default(), Arc::clone(&store), false);
+    let backend = HueBackend::new(HueConfig::default(), Arc::clone(&store));
     let discovered = HueDiscoveredBridge {
         bridge_id: "test-bridge".to_owned(),
         ip: "127.0.0.1".parse()?,
@@ -138,10 +137,14 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
         entertainment_config: None,
         lights: Vec::new(),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
-        metadata: HashMap::new(),
+        metadata: HashMap::from([
+            ("bridge_id".to_owned(), "test-bridge".to_owned()),
+            ("ip".to_owned(), "127.0.0.1".to_owned()),
+            ("api_port".to_owned(), api_port.to_string()),
+        ]),
     };
     let device_id = discovered.info.id;
-    backend.remember_bridge(discovered);
+    backend.adopt_device(&discovered.into_discovered())?;
 
     backend.connect(&device_id).await?;
     let info = backend
@@ -187,7 +190,7 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
 async fn lifecycle_policy_outlasts_the_bridge_handshake_round_trips() -> TestResult {
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
-    let backend = HueBackend::with_mdns_enabled(HueConfig::default(), store, false);
+    let backend = HueBackend::new(HueConfig::default(), store);
     let info = build_device_info("test-bridge", "Living Room Bridge", None, None, None, &[]);
 
     let policy = backend.lifecycle_policy(&info);

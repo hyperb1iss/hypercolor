@@ -91,12 +91,9 @@ fn resolve_nanoleaf_probe_devices_merges_tracked_metadata() {
 #[test]
 fn nanoleaf_module_advertises_presentation_metadata() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = NanoleafDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = NanoleafDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
 
     let descriptor = module.module_descriptor();
     assert!(descriptor.capabilities.presentation);
@@ -116,12 +113,9 @@ fn nanoleaf_module_advertises_presentation_metadata() {
 #[test]
 fn nanoleaf_config_validation_rejects_non_routable_device_ips() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = NanoleafDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = NanoleafDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
     let mut config = module
         .config()
         .expect("Nanoleaf should expose config provider")
@@ -251,12 +245,9 @@ fn nanoleaf_device_control_surface_exposes_tracked_metadata() {
 #[tokio::test]
 async fn nanoleaf_refresh_topology_action_schedules_device_reconnect() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = NanoleafDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = NanoleafDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
     let tracked = tracked_nanoleaf_device();
     let host = TestHost::default();
     let device = TrackedDeviceCtx {

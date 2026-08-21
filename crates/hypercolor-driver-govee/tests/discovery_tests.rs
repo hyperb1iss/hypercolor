@@ -211,7 +211,7 @@ fn cloud_inventory_device_uses_mac_fingerprint_when_device_id_is_mac() {
         properties: None,
     });
 
-    assert_eq!(discovered.fingerprint.0, "net:govee:aabbccddeeff");
+    assert_eq!(discovered.fingerprint.as_str(), "net:govee:aabbccddeeff");
     assert_eq!(discovered.info.name, "Desk Strip");
     assert_eq!(
         discovered.metadata.get("mac"),
@@ -231,19 +231,17 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)),
     )
     .expect("scan response should parse");
-    let mut devices = vec![hypercolor_driver_api::DriverDiscoveredDevice::from(
-        hypercolor_driver_api::DiscoveredDevice {
-            fingerprint: DeviceFingerprint("net:govee:001122334455".to_owned()),
-            connect_behavior: hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect,
-            info: build_device_info(&lan_device),
-            metadata: HashMap::from([
-                ("ip".to_owned(), "10.0.0.8".to_owned()),
-                ("sku".to_owned(), "H619A".to_owned()),
-                ("mac".to_owned(), "001122334455".to_owned()),
-            ]),
-            claim: None,
-        },
-    )];
+    let mut devices = vec![hypercolor_driver_api::DiscoveredDevice {
+        fingerprint: DeviceFingerprint::from_persisted("net:govee:001122334455".to_owned()),
+        connect_behavior: hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect,
+        info: build_device_info(&lan_device),
+        metadata: HashMap::from([
+            ("ip".to_owned(), "10.0.0.8".to_owned()),
+            ("sku".to_owned(), "H619A".to_owned()),
+            ("mac".to_owned(), "001122334455".to_owned()),
+        ]),
+        claim: None,
+    }];
 
     merge_cloud_inventory(
         &mut devices,
@@ -487,7 +485,9 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
             ("sku".to_owned(), sku.to_owned()),
             ("mac".to_owned(), mac.to_owned()),
         ]),
-        fingerprint: Some(DeviceFingerprint(format!("net:govee:{mac}"))),
+        fingerprint: Some(DeviceFingerprint::from_persisted(format!(
+            "net:govee:{mac}"
+        ))),
         current_state: DeviceState::Known,
     }
 }

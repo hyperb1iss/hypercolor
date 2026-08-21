@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 use tracing::warn;
 
 use hypercolor_driver_api::{CredentialStore, MdnsBrowser};
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::portable::PortableIdentityClaim;
 
 use super::fetch_device_info;
@@ -224,13 +224,9 @@ impl NanoleafScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for NanoleafScanner {
-    fn name(&self) -> &'static str {
-        "Nanoleaf"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl NanoleafScanner {
+    /// Discover configured and mDNS-visible Nanoleaf devices.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         Ok(self
             .scan_devices()
             .await?

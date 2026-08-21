@@ -3,7 +3,7 @@
 mod actor;
 
 use std::cmp::min;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
@@ -25,7 +25,7 @@ use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::attachment::DeviceComponentProfile;
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, OwnedDisplayFramePayload, SegmentInfo, USB_OUTPUT_BACKEND_ID,
+    DeviceError, DeviceId, DeviceInfo, OwnedDisplayFramePayload, SegmentInfo, USB_OUTPUT_BACKEND_ID,
 };
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -34,12 +34,11 @@ use tracing::{debug, info, trace};
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
+use super::DiscoveredDevice;
 use super::traits::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
 };
-use super::usb_scanner::UsbScanner;
-use super::{DiscoveredDevice, TransportScanner};
 use crate::attachment::ComponentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
@@ -580,7 +579,6 @@ pub struct UsbBackend {
     pending: StdRwLock<HashMap<DeviceId, PendingUsbDevice>>,
     connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedUsbDevice>>>,
     protocol_configs: UsbProtocolConfigStore,
-    enabled_driver_ids: Option<BTreeSet<String>>,
 }
 
 struct ConnectedUsbDevice {
@@ -603,18 +601,6 @@ impl UsbBackend {
     pub fn with_protocol_config_store(protocol_configs: UsbProtocolConfigStore) -> Self {
         Self {
             protocol_configs,
-            ..Self::default()
-        }
-    }
-
-    #[must_use]
-    pub fn with_protocol_config_store_and_enabled_driver_ids(
-        protocol_configs: UsbProtocolConfigStore,
-        enabled_driver_ids: BTreeSet<String>,
-    ) -> Self {
-        Self {
-            protocol_configs,
-            enabled_driver_ids: Some(enabled_driver_ids),
             ..Self::default()
         }
     }
@@ -952,35 +938,15 @@ impl DeviceBackend for UsbBackend {
             })
     }
 
-    async fn discover(&self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
-        let mut scanner = self
-            .enabled_driver_ids
-            .as_ref()
-            .map_or_else(UsbScanner::new, |ids| {
-                UsbScanner::with_enabled_driver_ids(ids.clone())
-            });
-        let discovered = scanner.scan().await?;
-
-        let mut pending_devices = HashMap::new();
-        let mut info = Vec::with_capacity(discovered.len());
-        for discovered_device in discovered {
-            if let Some(pending) = pending_from_discovered(&discovered_device) {
-                pending_devices.insert(discovered_device.info.id, pending);
-            }
-            info.push(discovered_device.info);
-        }
-        *self.pending.write().unwrap_or_else(PoisonError::into_inner) = pending_devices;
-
-        Ok(info)
-    }
-
-    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
-        if let Some(pending) = pending_from_discovered(discovered) {
-            self.pending
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(discovered.info.id, pending);
-        }
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let pending = pending_from_discovered(discovered).ok_or(DeviceError::NotAdopted {
+            device_id: discovered.info.id,
+        })?;
+        self.pending
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovered.info.id, pending);
+        Ok(())
     }
 
     #[allow(
@@ -1013,7 +979,7 @@ impl DeviceBackend for UsbBackend {
                 .join(", ");
             pending_guard.get(id).cloned().with_context(|| {
                 format!(
-                    "device {id} has no pending USB descriptor; run discover() (pending_cache_size={}, sample_ids=[{}])",
+                    "device {id} has no adopted USB descriptor (pending_cache_size={}, sample_ids=[{}])",
                     pending_guard.len(),
                     pending_ids
                 )

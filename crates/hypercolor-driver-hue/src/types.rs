@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::portable::PortableIdentityClaim;
 
@@ -121,7 +122,8 @@ impl HueDiscoveredBridge {
     /// Convert into the generic discovery representation.
     #[must_use]
     pub fn into_discovered(self) -> DiscoveredDevice {
-        let fingerprint = DeviceFingerprint(format!("hue:{}", self.bridge_id));
+        let fingerprint =
+            DeviceFingerprint::mint(FingerprintNamespace::Net, "hue", &self.bridge_id);
         // The bridge id is MAC-derived and fixed for the life of the
         // bridge, which is exactly what a portable identity requires.
         let claim = PortableIdentityClaim::hue_bridge_id(&self.bridge_id, self.ip);
@@ -168,7 +170,7 @@ pub fn build_device_info(
     entertainment_config: Option<&HueEntertainmentConfig>,
     lights: &[HueLight],
 ) -> DeviceInfo {
-    let fingerprint = DeviceFingerprint(format!("hue:{bridge_id}"));
+    let fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Net, "hue", bridge_id);
     let device_id = fingerprint.stable_device_id();
     let lights_by_id: HashMap<&str, &HueLight> = lights
         .iter()

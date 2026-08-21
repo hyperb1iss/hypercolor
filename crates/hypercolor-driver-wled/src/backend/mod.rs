@@ -29,11 +29,10 @@ use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence, TransportScanner,
+    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
-use hypercolor_types::device::{DeviceColorFormat, DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceColorFormat, DeviceError, DeviceId, DeviceInfo};
 
-use cache::{build_device_info, wled_fingerprint};
 use health::{
     clear_device, enter_realtime_mode, exit_realtime_mode, prime_device,
     validate_wled_receiver_config,
@@ -58,15 +57,8 @@ const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// WLED device backend implementing [`DeviceBackend`].
 ///
-/// Manages discovery via HTTP probing and per-device UDP streaming
-/// over DDP or E1.31.
+/// Manages adopted devices and per-device UDP streaming over DDP or E1.31.
 pub struct WledBackend {
-    /// Known device IPs for HTTP-based discovery (no mDNS required).
-    known_ips: Vec<IpAddr>,
-
-    /// Whether to run an mDNS fallback scan when no known IPs are configured.
-    mdns_fallback: bool,
-
     /// Connected devices, keyed by `DeviceId`.
     devices: StdRwLock<HashMap<DeviceId, Arc<Mutex<WledDevice>>>>,
 
@@ -96,22 +88,10 @@ pub struct WledBackend {
 }
 
 impl WledBackend {
-    /// Create a new WLED backend with known device IPs for discovery.
-    ///
-    /// These IPs are probed via HTTP during `discover()`. For
-    /// zero-config discovery, use the [`WledScanner`](crate::scanner::WledScanner)
-    /// which uses mDNS.
+    /// Create a new WLED backend.
     #[must_use]
-    pub fn new(known_ips: Vec<IpAddr>) -> Self {
-        Self::with_mdns_fallback(known_ips, false)
-    }
-
-    /// Create a backend with explicit mDNS fallback behavior.
-    #[must_use]
-    pub fn with_mdns_fallback(known_ips: Vec<IpAddr>, mdns_fallback: bool) -> Self {
+    pub fn new() -> Self {
         Self {
-            known_ips,
-            mdns_fallback,
             devices: StdRwLock::new(HashMap::new()),
             device_ips: StdRwLock::new(HashMap::new()),
             device_infos: StdRwLock::new(HashMap::new()),
@@ -137,21 +117,6 @@ impl WledBackend {
     /// Set the global fuzzy dedup threshold for newly connected devices.
     pub fn set_dedup_threshold(&mut self, threshold: u8) {
         self.dedup_threshold = threshold;
-    }
-
-    /// Seed the backend with a discovered device entry.
-    pub fn remember_device(&mut self, device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) {
-        if !self.known_ips.contains(&ip) {
-            self.known_ips.push(ip);
-        }
-        self.device_ips
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(device_id, ip);
-        self.device_infos
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(device_id, info);
     }
 
     /// The local address of the shared UDP socket, if initialized.
@@ -182,11 +147,6 @@ impl WledBackend {
             .get(id)
             .and_then(|device| device.try_lock().ok())
             .map(|device| device.e131_start_universe)
-    }
-
-    /// Probe a single IP for a WLED device via HTTP.
-    async fn probe_ip(ip: IpAddr) -> Result<WledDeviceInfo> {
-        super::fetch_wled_info(ip).await
     }
 
     async fn ensure_shared_socket(&self) -> Result<Arc<UdpSocket>> {
@@ -359,102 +319,22 @@ impl DeviceBackend for WledBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        let mut discovered = Vec::new();
-        let mut candidates: HashMap<IpAddr, Option<String>> = self
-            .known_ips
-            .iter()
-            .copied()
-            .map(|ip| (ip, None))
-            .collect();
-
-        if candidates.is_empty() && self.mdns_fallback {
-            let mut scanner = crate::scanner::WledScanner::with_timeout(Duration::from_secs(2));
-            match scanner.scan().await {
-                Ok(scanner_devices) => {
-                    for device in scanner_devices {
-                        let Some(ip_raw) = device.metadata.get("ip") else {
-                            continue;
-                        };
-                        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
-                            continue;
-                        };
-                        let hostname = device
-                            .metadata
-                            .get("hostname")
-                            .map(|value| value.trim_end_matches('.').to_ascii_lowercase());
-                        candidates.entry(ip).or_insert(hostname);
-                    }
-                }
-                Err(error) => {
-                    debug!(error = %error, "WLED backend mDNS fallback scan failed");
-                }
-            }
-        }
-
-        let mut device_ips = HashMap::new();
-        let mut device_infos = HashMap::new();
-
-        for (ip, hostname) in candidates {
-            match Self::probe_ip(ip).await {
-                Ok(wled_info) => {
-                    let fingerprint = wled_fingerprint(ip, hostname.as_deref(), &wled_info);
-                    let device_id = fingerprint.stable_device_id();
-
-                    info!(
-                        ip = %ip,
-                        name = %wled_info.name,
-                        leds = wled_info.led_count,
-                        firmware = %wled_info.firmware_version,
-                        "Discovered WLED device"
-                    );
-
-                    let device_info = build_device_info(device_id, &wled_info, ip);
-                    device_ips.insert(device_id, ip);
-                    device_infos.insert(device_id, wled_info);
-                    discovered.push(device_info);
-                }
-                Err(e) => {
-                    debug!(ip = %ip, error = %e, "Failed to probe WLED device");
-                }
-            }
-        }
-
-        *self
-            .device_ips
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = device_ips;
-        *self
-            .device_infos
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = device_infos;
-        Ok(discovered)
-    }
-
-    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
         let Some(ip) = discovered
             .metadata
             .get("ip")
             .and_then(|ip| ip.parse::<IpAddr>().ok())
         else {
-            debug!(
-                device_id = %discovered.info.id,
-                "WLED discovery result omitted a usable IP"
-            );
-            return;
+            return Err(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            });
         };
         let rgbw = discovered
             .info
             .segments
             .first()
             .is_some_and(|segment| matches!(segment.color_format, DeviceColorFormat::Rgbw));
-        let mac = discovered
-            .fingerprint
-            .0
-            .strip_prefix("net:")
-            .filter(|value| !value.starts_with("wled:"))
-            .unwrap_or_default()
-            .to_owned();
+        let mac = discovered.metadata.get("mac").cloned().unwrap_or_default();
         let info = WledDeviceInfo {
             firmware_version: discovered
                 .info
@@ -489,6 +369,7 @@ impl DeviceBackend for WledBackend {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(discovered.info.id, info);
+        Ok(())
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {

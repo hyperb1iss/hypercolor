@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use hypercolor_core::device::{
     DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior, SmBusBackend,
-    SmBusScanner, TransportScanner,
+    SmBusScanner,
 };
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusOperation, decode_operations};
 use hypercolor_hal::transport::{Transport, TransportError};
@@ -17,28 +17,6 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use tempfile::tempdir;
-
-#[derive(Clone)]
-struct StaticScanner {
-    devices: Vec<DiscoveredDevice>,
-}
-
-impl StaticScanner {
-    fn new(devices: Vec<DiscoveredDevice>) -> Self {
-        Self { devices }
-    }
-}
-
-#[async_trait::async_trait]
-impl TransportScanner for StaticScanner {
-    fn name(&self) -> &'static str {
-        "static-smbus-test"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        Ok(self.devices.clone())
-    }
-}
 
 struct ScriptedTransport {
     send_receive_results: StdMutex<Vec<Result<Vec<u8>, TransportError>>>,
@@ -266,12 +244,6 @@ impl Transport for ConcurrentSmBusTransport {
     }
 }
 
-#[test]
-fn smbus_scanner_name_is_stable() {
-    let scanner = SmBusScanner::new();
-    assert_eq!(scanner.name(), "SMBus HAL");
-}
-
 #[tokio::test]
 async fn smbus_scanner_ignores_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
@@ -317,24 +289,24 @@ fn smbus_backend_lifecycle_policy_runs_connect_in_background() {
 }
 
 #[tokio::test]
-async fn smbus_backend_discover_is_empty_on_empty_dev_root() {
+async fn smbus_discovery_source_is_empty_on_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
-    let backend = SmBusBackend::with_scanner(SmBusScanner::with_dev_root(tempdir.path()));
+    let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
 
-    let devices = backend.discover().await.expect("discover should succeed");
+    let devices = scanner.scan().await.expect("discovery should succeed");
     assert!(devices.is_empty());
 }
 
 #[tokio::test]
 async fn smbus_backend_reinitializes_transport_after_write_failure() {
     let device_id = DeviceId::new();
-    let scanner = StaticScanner::new(vec![discovered_smbus_device(device_id)]);
+    let discovered = discovered_smbus_device(device_id);
     let open_count = Arc::new(AtomicUsize::new(0));
     let first_packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
     let second_packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
     let close_count = Arc::new(AtomicUsize::new(0));
 
-    let backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
+    let backend = SmBusBackend::with_transport_factory({
         let open_count = Arc::clone(&open_count);
         let first_packets = Arc::clone(&first_packets);
         let second_packets = Arc::clone(&second_packets);
@@ -368,8 +340,9 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
         }
     });
 
-    let devices = backend.discover().await.expect("discover should succeed");
-    assert_eq!(devices.len(), 1);
+    backend
+        .adopt_device(&discovered)
+        .expect("backend should adopt discovery descriptor");
 
     backend
         .connect(&device_id)
@@ -421,12 +394,12 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
 async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions() {
     let first_id = DeviceId::new();
     let second_id = DeviceId::new();
-    let scanner = StaticScanner::new(vec![
+    let discovered = [
         discovered_smbus_device_at(first_id, "/dev/i2c-9", 0x71),
         discovered_smbus_device_at(second_id, "/dev/i2c-9", 0x73),
-    ]);
+    ];
     let probe = Arc::new(SmBusConcurrencyProbe::new());
-    let backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
+    let backend = SmBusBackend::with_transport_factory({
         let probe = Arc::clone(&probe);
         move |bus_path, address, bus_arbiter| {
             assert_eq!(bus_path, "/dev/i2c-9");
@@ -438,8 +411,11 @@ async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions()
         }
     });
 
-    let devices = backend.discover().await.expect("discover should succeed");
-    assert_eq!(devices.len(), 2);
+    for device in &discovered {
+        backend
+            .adopt_device(device)
+            .expect("backend should adopt discovery descriptor");
+    }
     backend
         .connect(&first_id)
         .await
@@ -542,7 +518,7 @@ fn discovered_smbus_device_at(
     address: u16,
 ) -> DiscoveredDevice {
     DiscoveredDevice {
-        fingerprint: DeviceFingerprint(format!("smbus:{bus_path}:{address:02x}")),
+        fingerprint: DeviceFingerprint::from_persisted(format!("smbus:{bus_path}:{address:02x}")),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: DeviceInfo {
             id: device_id,

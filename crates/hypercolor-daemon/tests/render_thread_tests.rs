@@ -224,8 +224,11 @@ impl DeviceBackend for SlowDisconnectFailBackend {
         }
     }
 
-    async fn discover(&self) -> anyhow::Result<Vec<DeviceInfo>> {
-        Ok(vec![self.info.clone()])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> anyhow::Result<()> {

@@ -33,6 +33,7 @@ hypercolor-hal = { workspace = true, optional = true }
 hypercolor-network = { workspace = true }
 hypercolor-types = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

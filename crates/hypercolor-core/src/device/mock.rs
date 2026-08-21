@@ -1,7 +1,7 @@
-//! Mock device backend and transport scanner for integration testing.
+//! Mock device backend and discovery source for integration testing.
 //!
 //! Provides configurable mock implementations of [`DeviceBackend`],
-//! [`TransportScanner`], and [`EffectRenderer`] that simulate realistic
+//! discovery sources, and [`EffectRenderer`] that simulate realistic
 //! device behavior without real hardware. Every call is tracked for
 //! test assertions.
 
@@ -14,14 +14,15 @@ use anyhow::{Result, bail};
 use hypercolor_color::Hsv;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::spatial::LedTopology;
 
 use super::traits::{BackendInfo, DeviceBackend};
-use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior};
 use crate::effect::{EffectRenderer, FrameInput};
 
 // ── Call Tracking ───────────────────────────────────────────────────────────
@@ -31,8 +32,8 @@ use crate::effect::{EffectRenderer, FrameInput};
 pub enum MockCall {
     /// `info()` was called.
     Info,
-    /// `discover()` was called.
-    Discover,
+    /// A discovered device was adopted by the backend.
+    Adopt(DeviceId),
     /// `connect(id)` was called.
     Connect(DeviceId),
     /// `disconnect(id)` was called.
@@ -181,13 +182,23 @@ impl DeviceBackend for MockDeviceBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .calls
-            .push(MockCall::Discover);
-        Ok(self.devices.clone())
+            .push(MockCall::Adopt(discovered.info.id));
+        if self
+            .devices
+            .iter()
+            .any(|device| device.id == discovered.info.id)
+        {
+            Ok(())
+        } else {
+            Err(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })
+        }
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -239,15 +250,15 @@ impl DeviceBackend for MockDeviceBackend {
     }
 }
 
-// ── MockTransportScanner ────────────────────────────────────────────────────
+// ── MockDiscoverySource ─────────────────────────────────────────────────────
 
-/// A configurable mock [`TransportScanner`] for discovery tests.
+/// A configurable discovery source for tests.
 ///
 /// Returns a pre-built list of [`DiscoveredDevice`] entries on scan,
 /// or fails if configured to do so.
-pub struct MockTransportScanner {
+pub struct MockDiscoverySource {
     /// Scanner name for logging.
-    scanner_name: String,
+    source_name: String,
 
     /// Devices this scanner will "find".
     devices: Vec<DiscoveredDevice>,
@@ -256,12 +267,12 @@ pub struct MockTransportScanner {
     pub should_fail: bool,
 }
 
-impl MockTransportScanner {
-    /// Create a new mock scanner with no devices.
+impl MockDiscoverySource {
+    /// Create a new mock discovery source with no devices.
     #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
-            scanner_name: name.to_owned(),
+            source_name: name.to_owned(),
             devices: Vec::new(),
             should_fail: false,
         }
@@ -279,7 +290,11 @@ impl MockTransportScanner {
         );
 
         self.devices.push(DiscoveredDevice {
-            fingerprint: DeviceFingerprint(fingerprint_key),
+            fingerprint: DeviceFingerprint::mint(
+                FingerprintNamespace::Bridge,
+                "mock",
+                &fingerprint_key,
+            ),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
@@ -290,15 +305,17 @@ impl MockTransportScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for MockTransportScanner {
-    fn name(&self) -> &str {
-        &self.scanner_name
+impl MockDiscoverySource {
+    /// Return the source name used in discovery reports.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.source_name
     }
 
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+    /// Produce this source's configured discovery results.
+    pub async fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
         if self.should_fail {
-            bail!("mock scanner '{}' failed", self.scanner_name);
+            bail!("mock discovery source '{}' failed", self.source_name);
         }
         Ok(self.devices.clone())
     }

@@ -3,17 +3,54 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
+    DiscoveredDevice, DiscoveryConnectBehavior,
 };
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
 use hypercolor_driver_govee::{GoveeLanDevice, build_cloud_discovered_device, build_device_info};
 use hypercolor_types::config::GoveeConfig;
+use hypercolor_types::device::{DeviceFingerprint, FingerprintNamespace};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::UdpSocket;
 use tokio::time::{Duration, timeout};
 
 struct CountingDeliveryObserver(Arc<AtomicUsize>);
+
+fn adopt_lan_device(backend: &GoveeBackend, device: GoveeLanDevice, target: std::net::SocketAddr) {
+    let info = build_device_info(&device);
+    let fingerprint = DeviceFingerprint::mint(
+        FingerprintNamespace::Net,
+        "govee",
+        &device
+            .mac
+            .chars()
+            .filter(char::is_ascii_hexdigit)
+            .collect::<String>()
+            .to_ascii_lowercase(),
+    );
+    let discovered = DiscoveredDevice {
+        fingerprint,
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info,
+        metadata: std::collections::HashMap::from([
+            ("ip".to_owned(), target.ip().to_string()),
+            ("port".to_owned(), target.port().to_string()),
+            ("sku".to_owned(), device.sku),
+            ("mac".to_owned(), device.mac),
+        ]),
+        claim: None,
+    };
+    backend
+        .adopt_device(&discovered)
+        .expect("Govee backend should adopt LAN discovery metadata");
+}
+
+fn adopt_cloud_device(backend: &GoveeBackend, device: V1Device) {
+    backend
+        .adopt_device(&build_cloud_discovered_device(device))
+        .expect("Govee backend should adopt cloud discovery metadata");
+}
 
 impl DeviceDeliveryObserver for CountingDeliveryObserver {
     fn transport_started(&self, _id: DeviceDeliveryId) {
@@ -33,7 +70,7 @@ async fn write_colors_dedups_and_paces_lan_state_frames() {
         lan_state_fps: 10,
         ..GoveeConfig::default()
     });
-    backend.remember_device_at(device, target);
+    adopt_lan_device(&backend, device, target);
 
     backend
         .write_colors(&device_id, &[[255, 0, 0], [0, 0, 255]])
@@ -76,7 +113,7 @@ async fn connect_enables_razer_only_for_validated_profiles() {
     let h619a = test_device("H619A");
     let h619a_id = build_device_info(&h619a).id;
     let h619a_backend = GoveeBackend::new(GoveeConfig::default());
-    h619a_backend.remember_device_at(h619a, h619a_target);
+    adopt_lan_device(&h619a_backend, h619a, h619a_target);
 
     h619a_backend
         .connect(&h619a_id)
@@ -97,7 +134,7 @@ async fn connect_enables_razer_only_for_validated_profiles() {
     let h6163 = test_device("H6163");
     let h6163_id = build_device_info(&h6163).id;
     let h6163_backend = GoveeBackend::new(GoveeConfig::default());
-    h6163_backend.remember_device_at(h6163, h6163_target);
+    adopt_lan_device(&h6163_backend, h6163, h6163_target);
 
     h6163_backend
         .connect(&h6163_id)
@@ -120,7 +157,7 @@ async fn write_colors_uses_razer_only_when_led_count_matches() {
         razer_fps: 25,
         ..GoveeConfig::default()
     });
-    backend.remember_device_at(device, target);
+    adopt_lan_device(&backend, device, target);
 
     backend
         .write_colors(&device_id, &[[1, 2, 3]; 20])
@@ -147,7 +184,7 @@ async fn cloud_only_device_uses_v1_control_for_connect_and_color() {
         serve_http_requests(2, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
     let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
-    backend.remember_cloud_device(cloud_device);
+    adopt_cloud_device(&backend, cloud_device);
 
     backend
         .connect(&device_id)
@@ -179,7 +216,7 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
         serve_http_requests(1, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
     let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
-    backend.remember_cloud_device(cloud_device);
+    adopt_cloud_device(&backend, cloud_device);
 
     let colors = Arc::new(vec![[255, 0, 0], [0, 0, 255]]);
     let starts = Arc::new(AtomicUsize::new(0));
@@ -219,7 +256,7 @@ fn cloud_only_output_cadence_preserves_sub_hz_interval() {
     let cloud_device = test_cloud_device();
     let device_id = build_cloud_discovered_device(cloud_device.clone()).info.id;
     let backend = GoveeBackend::new(GoveeConfig::default());
-    backend.remember_cloud_device(cloud_device);
+    adopt_cloud_device(&backend, cloud_device);
 
     let cadence = backend
         .output_cadence(&device_id)
@@ -237,7 +274,7 @@ async fn cloud_only_device_uses_v1_control_for_brightness() {
         serve_http_requests(1, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
     let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
-    backend.remember_cloud_device(cloud_device);
+    adopt_cloud_device(&backend, cloud_device);
 
     backend
         .set_brightness(&device_id, 250)

@@ -2,28 +2,32 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
+use crate::device::DiscoveredDevice;
 use crate::device::traits::{BackendInfo, DeviceBackend};
-use crate::types::device::{
-    BLOCKS_OUTPUT_BACKEND_ID, ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
-    SegmentInfo,
-};
+use crate::types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
 use super::connection::{self, BlocksConnection};
-use super::types::{BlocksDeviceResponse, RoliBlockType};
 
 /// Device backend that bridges to blocksd for ROLI Blocks hardware.
 pub struct BlocksBackend {
     /// Socket path for blocksd connection.
     socket_path: PathBuf,
+    pending: StdRwLock<HashMap<DeviceId, PendingBlocksDevice>>,
     /// Active connection (None if disconnected).
     state: Mutex<BlocksBackendState>,
+}
+
+#[derive(Clone)]
+struct PendingBlocksDevice {
+    uid: u64,
+    info: DeviceInfo,
 }
 
 struct BlocksBackendState {
@@ -58,6 +62,7 @@ impl BlocksBackend {
     pub fn new(socket_path: PathBuf) -> Self {
         Self {
             socket_path,
+            pending: StdRwLock::new(HashMap::new()),
             state: Mutex::new(BlocksBackendState {
                 connection: None,
                 devices: HashMap::new(),
@@ -153,67 +158,61 @@ impl DeviceBackend for BlocksBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        // If socket doesn't exist, blocksd isn't running — not an error
-        if !connection::socket_exists(&self.socket_path) {
-            return Ok(vec![]);
-        }
-
-        let mut state = self.state.lock().await;
-        let Ok(conn) = state.ensure_connected(&self.socket_path).await else {
-            return Ok(vec![]);
-        };
-
-        let response = match conn.discover().await {
-            Ok(r) => r,
-            Err(e) => {
-                debug!("blocksd discover failed: {e}");
-                state.handle_disconnect();
-                return Ok(vec![]);
-            }
-        };
-
-        state.devices.clear();
-        state.uid_map.clear();
-
-        let mut infos = Vec::with_capacity(response.devices.len());
-        for dev in &response.devices {
-            let info = device_info_from_blocks(dev);
-            let device_id = info.id;
-
-            state.uid_map.insert(dev.uid, device_id);
-            state.devices.insert(
-                device_id,
-                BlocksDevice {
-                    uid: dev.uid,
-                    info: info.clone(),
-                    connected: false,
-                    frames_sent: 0,
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let uid = discovered
+            .metadata
+            .get("uid")
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
+        self.pending
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                discovered.info.id,
+                PendingBlocksDevice {
+                    uid,
+                    info: discovered.info.clone(),
                 },
             );
-
-            infos.push(info);
-        }
-
-        Ok(infos)
+        Ok(())
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        Ok(self
+        let connected = self
             .state
             .lock()
             .await
             .devices
             .get(id)
-            .map(|d| d.info.clone()))
+            .map(|d| d.info.clone());
+        Ok(connected.or_else(|| {
+            self.pending
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(id)
+                .map(|device| device.info.clone())
+        }))
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
+        let pending = self
+            .pending
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unadopted blocks device: {id}"))?;
         let mut state = self.state.lock().await;
-        let device = state
-            .devices
-            .get_mut(id)
-            .ok_or_else(|| anyhow::anyhow!("unknown blocks device: {id}"))?;
+        state.ensure_connected(&self.socket_path).await?;
+        state.uid_map.insert(pending.uid, *id);
+        let device = state.devices.entry(*id).or_insert_with(|| BlocksDevice {
+            uid: pending.uid,
+            info: pending.info,
+            connected: false,
+            frames_sent: 0,
+        });
         device.connected = true;
         Ok(())
     }
@@ -290,52 +289,5 @@ impl DeviceBackend for BlocksBackend {
 
     fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
         Some(25)
-    }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-/// Construct a `DeviceInfo` from blocksd's device response.
-fn device_info_from_blocks(dev: &BlocksDeviceResponse) -> DeviceInfo {
-    let block_type = RoliBlockType::from_api(&dev.block_type);
-    let serial_short = if dev.serial.len() >= 6 {
-        &dev.serial[..6]
-    } else {
-        &dev.serial
-    };
-
-    let fingerprint = DeviceFingerprint(format!("bridge:blocksd:{}", dev.uid));
-    let device_id = fingerprint.stable_device_id();
-
-    let rows = dev.grid_height;
-    let cols = dev.grid_width;
-    let led_count = rows * cols;
-
-    DeviceInfo {
-        id: device_id,
-        name: format!("{} ({serial_short})", block_type.display_name()),
-        vendor: "ROLI".to_owned(),
-        family: DeviceFamily::new_static("roli", "ROLI"),
-        model: Some(block_type.display_name().to_owned()),
-        connection_type: ConnectionType::Bridge,
-        origin: DeviceOrigin::native("roli", BLOCKS_OUTPUT_BACKEND_ID, ConnectionType::Bridge),
-        segments: vec![SegmentInfo {
-            name: "Grid".to_owned(),
-            led_count,
-            topology: DeviceTopologyHint::Matrix { rows, cols },
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: None,
-        }],
-        firmware_version: dev.firmware_version.clone(),
-        capabilities: DeviceCapabilities {
-            led_count,
-            supports_direct: true,
-            supports_brightness: true,
-            has_display: false,
-            display_resolution: None,
-            max_fps: 25,
-            color_space: hypercolor_types::device::DeviceColorSpace::default(),
-            features: DeviceFeatures::default(),
-        },
     }
 }

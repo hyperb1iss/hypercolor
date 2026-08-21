@@ -11,7 +11,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
 
-use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 
 /// The serial normalizations reviewed for cross-OS stability.
 ///
@@ -117,13 +117,9 @@ impl Default for UsbScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for UsbScanner {
-    fn name(&self) -> &'static str {
-        "USB HAL"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl UsbScanner {
+    /// Discover USB devices supported by the enabled HAL driver set.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         let devices = nusb::list_devices()
             .await
             .context("failed to enumerate USB devices")?;
@@ -151,7 +147,7 @@ impl TransportScanner for UsbScanner {
                 serial: usb.serial_number().map(ToOwned::to_owned),
                 usb_path: (!path.is_empty()).then_some(path.clone()),
             };
-            let fingerprint = identifier.fingerprint();
+            let fingerprint = identifier.fingerprint(&descriptor.driver_id());
             let info = Self::build_device_info(
                 &usb,
                 descriptor,

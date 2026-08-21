@@ -84,8 +84,11 @@ impl DeviceBackend for SharedSlowBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -164,25 +167,11 @@ impl DeviceBackend for SlowRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Slow Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 10,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, _id: &DeviceId) -> Result<()> {
@@ -263,25 +252,11 @@ impl DeviceBackend for FailingDisconnectBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Failing Disconnect Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -320,25 +295,11 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Shared Payload Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -526,25 +487,11 @@ impl DeviceBackend for FastFrameSinkBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Fast Sink Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Usb,
-            origin: DeviceOrigin::native("test", "fast_sink", ConnectionType::Usb),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -613,34 +560,11 @@ impl DeviceBackend for DirectControlRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Recording Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 4,
-                supports_direct: true,
-                supports_brightness: true,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -723,25 +647,11 @@ impl DeviceBackend for FailOnceRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Fail Once Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, _id: &DeviceId) -> Result<()> {
@@ -837,34 +747,11 @@ impl DeviceBackend for MetadataRefreshingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Initial Metadata Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: Some("Initial".to_owned()),
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 1,
-                topology: DeviceTopologyHint::Point,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: Some("1.0.0".to_owned()),
-            capabilities: DeviceCapabilities {
-                led_count: 1,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
@@ -921,65 +808,46 @@ impl DisplayRecordingBackend {
     }
 }
 
-struct DiscoverRetryBackend {
+struct ConnectRecordingBackend {
     expected_device_id: DeviceId,
     connected: AtomicBool,
-    connect_attempts: AtomicUsize,
-    discover_count: AtomicUsize,
+    connect_attempts: Arc<AtomicUsize>,
+    fail_connect: bool,
     target_fps: u32,
 }
 
-impl DiscoverRetryBackend {
-    fn new(expected_device_id: DeviceId, target_fps: u32) -> Self {
+impl ConnectRecordingBackend {
+    fn new(
+        expected_device_id: DeviceId,
+        connect_attempts: Arc<AtomicUsize>,
+        fail_connect: bool,
+        target_fps: u32,
+    ) -> Self {
         Self {
             expected_device_id,
             connected: AtomicBool::new(false),
-            connect_attempts: AtomicUsize::new(0),
-            discover_count: AtomicUsize::new(0),
+            connect_attempts,
+            fail_connect,
             target_fps,
         }
     }
 }
 
 #[async_trait::async_trait]
-impl DeviceBackend for DiscoverRetryBackend {
+impl DeviceBackend for ConnectRecordingBackend {
     fn info(&self) -> BackendInfo {
         BackendInfo {
-            id: "retry".to_owned(),
-            name: "Discover Retry Backend".to_owned(),
-            description: "Fails the first connect and succeeds after discover".to_owned(),
+            id: "connect_recording".to_owned(),
+            name: "Connect Recording Backend".to_owned(),
+            description: "Records direct connection attempts".to_owned(),
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        self.discover_count.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Retry Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 4,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: self.target_fps,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -988,8 +856,8 @@ impl DeviceBackend for DiscoverRetryBackend {
         }
 
         self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        if self.connect_attempts.load(Ordering::Relaxed) == 1 {
-            bail!("first connect attempt should fail");
+        if self.fail_connect {
+            bail!("connect failure");
         }
 
         self.connected.store(true, Ordering::Release);
@@ -1020,130 +888,18 @@ impl DeviceBackend for DiscoverRetryBackend {
         (*id == self.expected_device_id && self.connected.load(Ordering::Acquire))
             .then_some(self.target_fps)
     }
-}
-
-struct CleanupRetryBackend {
-    expected_device_id: DeviceId,
-    connected: AtomicBool,
-    connect_attempts: Arc<AtomicUsize>,
-    disconnect_attempts: Arc<AtomicUsize>,
-    discover_attempts: Arc<AtomicUsize>,
-    target_fps: u32,
 }
 
 struct TimeoutConnectBackend {
     expected_device_id: DeviceId,
     connect_attempts: Arc<AtomicUsize>,
     disconnect_attempts: Arc<AtomicUsize>,
-    discover_attempts: Arc<AtomicUsize>,
 }
 
 struct TransportTimeoutConnectBackend {
     expected_device_id: DeviceId,
     connect_attempts: Arc<AtomicUsize>,
     disconnect_attempts: Arc<AtomicUsize>,
-    discover_attempts: Arc<AtomicUsize>,
-}
-
-impl CleanupRetryBackend {
-    fn new(
-        expected_device_id: DeviceId,
-        connect_attempts: Arc<AtomicUsize>,
-        disconnect_attempts: Arc<AtomicUsize>,
-        discover_attempts: Arc<AtomicUsize>,
-        target_fps: u32,
-    ) -> Self {
-        Self {
-            expected_device_id,
-            connected: AtomicBool::new(true),
-            connect_attempts,
-            disconnect_attempts,
-            discover_attempts,
-            target_fps,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl DeviceBackend for CleanupRetryBackend {
-    fn info(&self) -> BackendInfo {
-        BackendInfo {
-            id: "cleanup_retry".to_owned(),
-            name: "Cleanup Retry Backend".to_owned(),
-            description: "Requires disconnect cleanup before a retry can reconnect".to_owned(),
-        }
-    }
-
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Cleanup Retry Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 4,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: self.target_fps,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
-    }
-
-    async fn connect(&self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
-        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        if self.connected.load(Ordering::Acquire) {
-            bail!("stale session still connected");
-        }
-
-        self.connected.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
-        self.disconnect_attempts.fetch_add(1, Ordering::Relaxed);
-        self.connected.store(false, Ordering::Release);
-        Ok(())
-    }
-
-    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-        if !self.connected.load(Ordering::Acquire) {
-            bail!("write while disconnected");
-        }
-
-        Ok(())
-    }
-
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        (*id == self.expected_device_id && self.connected.load(Ordering::Acquire))
-            .then_some(self.target_fps)
-    }
 }
 
 #[async_trait::async_trait]
@@ -1156,26 +912,11 @@ impl DeviceBackend for TimeoutConnectBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Timeout Connect Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -1216,26 +957,11 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Transport Timeout Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Usb,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Usb),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -1276,38 +1002,11 @@ impl DeviceBackend for DisplayRecordingBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Display Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Display".to_owned(),
-                led_count: 0,
-                topology: DeviceTopologyHint::Display {
-                    width: 480,
-                    height: 480,
-                    circular: true,
-                },
-                color_format: DeviceColorFormat::Jpeg,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 0,
-                supports_direct: false,
-                supports_brightness: false,
-                has_display: true,
-                display_resolution: Some((480, 480)),
-                max_fps: 30,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -1935,53 +1634,55 @@ async fn write_device_colors_writes_immediately_to_connected_device() {
 }
 
 #[tokio::test]
-async fn backend_io_connect_with_refresh_retries_and_caches_target_fps() {
-    let device_id = DeviceId::new();
-    let mut manager = BackendManager::new();
-    manager.register_backend(Arc::new(DiscoverRetryBackend::new(device_id, 48)));
-
-    let io = manager
-        .backend_io("retry")
-        .expect("backend io handle should exist");
-    let output_cadence = io
-        .connect_with_refresh(device_id)
-        .await
-        .expect("connect with refresh should succeed");
-
-    manager.set_cached_output_cadence("retry", device_id, output_cadence);
-    manager.map_device("retry:device", "retry", device_id);
-
-    assert_eq!(output_cadence.target_fps(), 48);
-    assert_eq!(manager.cached_target_fps("retry", device_id), Some(48));
-}
-
-#[tokio::test]
-async fn backend_io_connect_with_refresh_cleans_up_stale_session_before_retry() {
+async fn backend_io_connects_once_and_caches_target_fps() {
     let device_id = DeviceId::new();
     let connect_attempts = Arc::new(AtomicUsize::new(0));
-    let disconnect_attempts = Arc::new(AtomicUsize::new(0));
-    let discover_attempts = Arc::new(AtomicUsize::new(0));
     let mut manager = BackendManager::new();
-    manager.register_backend(Arc::new(CleanupRetryBackend::new(
+    manager.register_backend(Arc::new(ConnectRecordingBackend::new(
         device_id,
         Arc::clone(&connect_attempts),
-        Arc::clone(&disconnect_attempts),
-        Arc::clone(&discover_attempts),
-        36,
+        false,
+        48,
     )));
 
     let io = manager
-        .backend_io("cleanup_retry")
+        .backend_io("connect_recording")
         .expect("backend io handle should exist");
-    let output_cadence = io
-        .connect_with_refresh(device_id)
-        .await
-        .expect("connect with refresh should recover after cleanup");
+    let output_cadence = io.connect(device_id).await.expect("connect should succeed");
 
-    assert_eq!(output_cadence.target_fps(), 36);
-    assert_eq!(connect_attempts.load(Ordering::Relaxed), 2);
-    assert_eq!(disconnect_attempts.load(Ordering::Relaxed), 1);
-    assert_eq!(discover_attempts.load(Ordering::Relaxed), 1);
+    manager.set_cached_output_cadence("connect_recording", device_id, output_cadence);
+    manager.map_device("connect_recording:device", "connect_recording", device_id);
+
+    assert_eq!(output_cadence.target_fps(), 48);
+    assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        manager.cached_target_fps("connect_recording", device_id),
+        Some(48)
+    );
+}
+
+#[tokio::test]
+async fn backend_io_connect_failure_is_not_retried() {
+    let device_id = DeviceId::new();
+    let connect_attempts = Arc::new(AtomicUsize::new(0));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(ConnectRecordingBackend::new(
+        device_id,
+        Arc::clone(&connect_attempts),
+        true,
+        60,
+    )));
+
+    let io = manager
+        .backend_io("connect_recording")
+        .expect("backend io handle should exist");
+    let error = io
+        .connect(device_id)
+        .await
+        .expect_err("connect failure should surface directly");
+
+    assert!(error.to_string().contains("connect failure"));
+    assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -2001,7 +1702,7 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     let io = manager
         .backend_io("slow")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
+    io.connect(device_id)
         .await
         .expect("initial connect should succeed");
 
@@ -2017,7 +1718,7 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     let output_cadence = io
-        .connect_with_refresh_timeout(device_id, Duration::from_millis(20))
+        .connect_with_timeout(device_id, Duration::from_millis(20))
         .await
         .expect("timeout should start after the backend lock is acquired");
 
@@ -2027,25 +1728,23 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
 }
 
 #[tokio::test]
-async fn backend_io_connect_timeout_skips_discovery_refresh_retry() {
+async fn backend_io_connect_timeout_does_not_retry_or_disconnect() {
     let device_id = DeviceId::new();
     let connect_attempts = Arc::new(AtomicUsize::new(0));
     let disconnect_attempts = Arc::new(AtomicUsize::new(0));
-    let discover_attempts = Arc::new(AtomicUsize::new(0));
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(TimeoutConnectBackend {
         expected_device_id: device_id,
         connect_attempts: Arc::clone(&connect_attempts),
         disconnect_attempts: Arc::clone(&disconnect_attempts),
-        discover_attempts: Arc::clone(&discover_attempts),
     }));
     let io = manager
         .backend_io("timeout_connect")
         .expect("backend io handle should exist");
 
     let error = io
-        .connect_with_refresh_timeout(device_id, Duration::from_millis(20))
+        .connect_with_timeout(device_id, Duration::from_millis(20))
         .await
         .expect_err("connect should time out");
 
@@ -2057,35 +1756,28 @@ async fn backend_io_connect_timeout_skips_discovery_refresh_retry() {
     assert_eq!(
         disconnect_attempts.load(Ordering::Relaxed),
         0,
-        "timeout cleanup must not drop backend discovery state"
-    );
-    assert_eq!(
-        discover_attempts.load(Ordering::Relaxed),
-        0,
-        "timeout retry must not run a fresh discovery scan"
+        "timeout handling must not mutate backend lifecycle state"
     );
 }
 
 #[tokio::test]
-async fn backend_io_transport_timeout_skips_discovery_refresh_retry() {
+async fn backend_io_transport_timeout_is_not_retried_or_disconnected() {
     let device_id = DeviceId::new();
     let connect_attempts = Arc::new(AtomicUsize::new(0));
     let disconnect_attempts = Arc::new(AtomicUsize::new(0));
-    let discover_attempts = Arc::new(AtomicUsize::new(0));
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(TransportTimeoutConnectBackend {
         expected_device_id: device_id,
         connect_attempts: Arc::clone(&connect_attempts),
         disconnect_attempts: Arc::clone(&disconnect_attempts),
-        discover_attempts: Arc::clone(&discover_attempts),
     }));
     let io = manager
         .backend_io("transport_timeout_connect")
         .expect("backend io handle should exist");
 
     let error = io
-        .connect_with_refresh(device_id)
+        .connect(device_id)
         .await
         .expect_err("connect should surface transport timeout");
     let error_chain = format_error_chain(&error);
@@ -2098,12 +1790,7 @@ async fn backend_io_transport_timeout_skips_discovery_refresh_retry() {
     assert_eq!(
         disconnect_attempts.load(Ordering::Relaxed),
         0,
-        "transport timeout cleanup must not drop backend discovery state"
-    );
-    assert_eq!(
-        discover_attempts.load(Ordering::Relaxed),
-        0,
-        "transport timeout retry must not run a fresh discovery scan"
+        "transport failures must not mutate backend lifecycle state"
     );
 }
 
@@ -2122,9 +1809,7 @@ async fn backend_io_write_colors_targets_backend_directly() {
     let io = manager
         .backend_io("recording")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
     io.write_colors(device_id, &[[9, 8, 7]; 4])
         .await
         .expect("direct write should succeed");
@@ -2148,9 +1833,7 @@ async fn backend_io_set_brightness_targets_backend_directly() {
     let io = manager
         .backend_io("recording")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
     io.set_brightness(device_id, 64)
         .await
         .expect("brightness write should succeed");
@@ -2177,9 +1860,7 @@ async fn backend_io_disconnect_stops_future_direct_writes() {
     let io = manager
         .backend_io("recording")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
     io.disconnect(device_id)
         .await
         .expect("disconnect should succeed");
@@ -2200,9 +1881,7 @@ async fn backend_io_connected_device_info_returns_backend_metadata() {
     let io = manager
         .backend_io("metadata")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
 
     let info = io
         .connected_device_info(device_id)
@@ -2227,9 +1906,7 @@ async fn backend_io_write_display_frame_targets_backend_directly() {
     let io = manager
         .backend_io("display")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
 
     let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xD9];
     io.write_display_frame(device_id, &jpeg_data)

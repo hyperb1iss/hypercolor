@@ -14,13 +14,12 @@ use hypercolor_color::Rgb;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
+    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use super::bridge::HueBridgeClient;
 use super::color::{CieXyb, ColorGamut, rgb_to_cie_xyb};
-use super::scanner::{HueKnownBridge, HueScanner};
 use super::streaming::HueStreamSession;
 use super::types::{
     HueBridgeIdentity, HueDiscoveredBridge, HueEntertainmentConfig, HueLight, build_device_info,
@@ -80,7 +79,6 @@ const fn bool_true() -> bool {
 pub struct HueBackend {
     config: HueConfig,
     credential_store: Arc<CredentialStore>,
-    mdns_enabled: bool,
     discovered: StdRwLock<HashMap<DeviceId, HueDiscoveredBridge>>,
     bridges: StdRwLock<HashMap<DeviceId, Arc<Mutex<HueBridgeState>>>>,
 }
@@ -102,82 +100,12 @@ impl HueBackend {
     /// Create a new Hue backend using the configured manual bridge IPs.
     #[must_use]
     pub fn new(config: HueConfig, credential_store: Arc<CredentialStore>) -> Self {
-        Self::with_mdns_enabled(config, credential_store, true)
-    }
-
-    /// Create a backend with explicit `mDNS` enablement.
-    #[must_use]
-    pub fn with_mdns_enabled(
-        config: HueConfig,
-        credential_store: Arc<CredentialStore>,
-        mdns_enabled: bool,
-    ) -> Self {
         Self {
             config,
             credential_store,
-            mdns_enabled,
             discovered: StdRwLock::new(HashMap::new()),
             bridges: StdRwLock::new(HashMap::new()),
         }
-    }
-
-    /// Seed the backend with a previously discovered bridge.
-    pub fn remember_bridge(&mut self, bridge: HueDiscoveredBridge) {
-        self.discovered
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(bridge.info.id, bridge);
-    }
-
-    fn known_bridges(&self) -> Vec<HueKnownBridge> {
-        let mut known: HashMap<IpAddr, HueKnownBridge> = self
-            .config
-            .bridge_ips
-            .iter()
-            .copied()
-            .map(HueKnownBridge::from_ip)
-            .map(|bridge| (bridge.ip, bridge))
-            .collect();
-
-        for bridge in self
-            .discovered
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-        {
-            known
-                .entry(bridge.ip)
-                .and_modify(|existing| {
-                    if existing.bridge_id.is_empty() {
-                        existing.bridge_id.clone_from(&bridge.bridge_id);
-                    }
-                    if existing.api_port == 0 {
-                        existing.api_port = bridge.api_port;
-                    }
-                    if existing.name.is_empty() {
-                        existing.name.clone_from(&bridge.info.name);
-                    }
-                    if existing.model_id.is_empty() {
-                        existing.model_id = bridge.info.model.clone().unwrap_or_default();
-                    }
-                    if existing.sw_version.is_empty() {
-                        existing.sw_version =
-                            bridge.info.firmware_version.clone().unwrap_or_default();
-                    }
-                })
-                .or_insert_with(|| HueKnownBridge {
-                    bridge_id: bridge.bridge_id.clone(),
-                    ip: bridge.ip,
-                    api_port: bridge.api_port,
-                    name: bridge.info.name.clone(),
-                    model_id: bridge.info.model.clone().unwrap_or_default(),
-                    sw_version: bridge.info.firmware_version.clone().unwrap_or_default(),
-                });
-        }
-
-        let mut resolved: Vec<_> = known.into_values().collect();
-        resolved.sort_by_key(|bridge| bridge.ip);
-        resolved
     }
 
     async fn write_bridge_colors(
@@ -269,25 +197,46 @@ impl DeviceBackend for HueBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        let mut scanner = HueScanner::with_options(
-            self.known_bridges(),
-            Arc::clone(&self.credential_store),
-            Duration::from_secs(2),
-            self.mdns_enabled,
-            self.config.entertainment_config.clone(),
-        );
-        let bridges = scanner.scan_bridges().await?;
-        *self
-            .discovered
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let ip = discovered
+            .metadata
+            .get("ip")
+            .and_then(|value| value.parse::<IpAddr>().ok())
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
+        let api_port = discovered
+            .metadata
+            .get("api_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
+        let bridge_id =
+            discovered
+                .metadata
+                .get("bridge_id")
+                .cloned()
+                .ok_or(DeviceError::NotAdopted {
+                    device_id: discovered.info.id,
+                })?;
+        self.discovered
             .write()
-            .unwrap_or_else(PoisonError::into_inner) = bridges
-            .iter()
-            .cloned()
-            .map(|bridge| (bridge.info.id, bridge))
-            .collect();
-
-        Ok(bridges.into_iter().map(|bridge| bridge.info).collect())
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                discovered.info.id,
+                HueDiscoveredBridge {
+                    bridge_id,
+                    ip,
+                    api_port,
+                    info: discovered.info.clone(),
+                    entertainment_config: None,
+                    lights: Vec::new(),
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata.clone(),
+                },
+            );
+        Ok(())
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {

@@ -8,7 +8,8 @@ use serde::Deserialize;
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,
+    SegmentInfo,
 };
 use hypercolor_types::portable::PortableIdentityClaim;
 
@@ -89,7 +90,8 @@ impl NanoleafDiscoveredDevice {
     /// Convert into the generic discovery representation.
     #[must_use]
     pub fn into_discovered(self) -> DiscoveredDevice {
-        let fingerprint = DeviceFingerprint(format!("nanoleaf:{}", self.device_key));
+        let fingerprint =
+            DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", &self.device_key);
 
         DiscoveredDevice {
             fingerprint,
@@ -110,7 +112,7 @@ pub fn build_device_info(
     firmware: Option<&str>,
     panels: &[NanoleafPanelLayout],
 ) -> DeviceInfo {
-    let fingerprint = DeviceFingerprint(format!("nanoleaf:{device_key}"));
+    let fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", device_key);
     let device_id = fingerprint.stable_device_id();
 
     let segments: Vec<SegmentInfo> = panels

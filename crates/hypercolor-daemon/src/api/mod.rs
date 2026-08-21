@@ -555,6 +555,7 @@ impl AppState {
             network::build_builtin_driver_module_registry(
                 &HypercolorConfig::default(),
                 Arc::clone(&credential_store),
+                usb_protocol_configs.clone(),
             )
             .expect("default app state should build driver module registry"),
         );

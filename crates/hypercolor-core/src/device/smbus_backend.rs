@@ -16,12 +16,12 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID, Se
 use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
-use super::smbus_scanner::SmBusScanner;
+use super::DiscoveredDevice;
 use super::traits::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
 };
-use super::{DiscoveredDevice, TransportScanner};
+use hypercolor_types::device::DeviceError;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
@@ -61,7 +61,6 @@ struct SmBusDeviceFrameSink {
 
 /// Core `SMBus` backend for HAL-managed ENE controllers.
 pub struct SmBusBackend {
-    scanner: Mutex<Box<dyn TransportScanner>>,
     pending: StdRwLock<HashMap<DeviceId, PendingSmBusDevice>>,
     connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedSmBusDevice>>>,
     bus_arbiters: StdMutex<HashMap<String, SmBusBusArbiter>>,
@@ -75,12 +74,8 @@ impl SmBusBackend {
         Self::default()
     }
 
-    #[must_use]
-    pub fn with_scanner<S>(scanner: S) -> Self
-    where
-        S: TransportScanner + 'static,
-    {
-        Self::with_scanner_and_transport_factory(scanner, |bus_path, address, bus_arbiter| {
+    fn default_transport_factory() -> SmBusTransportFactory {
+        Arc::new(|bus_path, address, bus_arbiter| {
             Ok(Box::new(
                 SmBusTransport::open_with_arbiter(bus_path, address, bus_arbiter).with_context(
                     || {
@@ -95,13 +90,11 @@ impl SmBusBackend {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn with_scanner_and_transport_factory<S, F>(scanner: S, transport_factory: F) -> Self
+    pub fn with_transport_factory<F>(transport_factory: F) -> Self
     where
-        S: TransportScanner + 'static,
         F: Fn(&str, u16, SmBusBusArbiter) -> Result<Box<dyn Transport>> + Send + Sync + 'static,
     {
         Self {
-            scanner: Mutex::new(Box::new(scanner)),
             pending: StdRwLock::new(HashMap::new()),
             connected: StdRwLock::new(HashMap::new()),
             bus_arbiters: StdMutex::new(HashMap::new()),
@@ -112,7 +105,12 @@ impl SmBusBackend {
 
 impl Default for SmBusBackend {
     fn default() -> Self {
-        Self::with_scanner(SmBusScanner::default())
+        Self {
+            pending: StdRwLock::new(HashMap::new()),
+            connected: StdRwLock::new(HashMap::new()),
+            bus_arbiters: StdMutex::new(HashMap::new()),
+            transport_factory: Self::default_transport_factory(),
+        }
     }
 }
 
@@ -164,28 +162,15 @@ impl DeviceBackend for SmBusBackend {
         DeviceLifecyclePolicy::default().with_connect_execution(ConnectExecution::Background)
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        let discovered = self.scanner.lock().await.scan().await?;
-        let mut pending_devices = HashMap::new();
-        let mut info = Vec::with_capacity(discovered.len());
-        for discovered_device in discovered {
-            if let Some(pending) = pending_from_discovered(&discovered_device) {
-                pending_devices.insert(discovered_device.info.id, pending);
-            }
-            info.push(discovered_device.info);
-        }
-        *self.pending.write().unwrap_or_else(PoisonError::into_inner) = pending_devices;
-
-        Ok(info)
-    }
-
-    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
-        if let Some(pending) = pending_from_discovered(discovered) {
-            self.pending
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(discovered.info.id, pending);
-        }
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let pending = pending_from_discovered(discovered).ok_or(DeviceError::NotAdopted {
+            device_id: discovered.info.id,
+        })?;
+        self.pending
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovered.info.id, pending);
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -203,7 +188,7 @@ impl DeviceBackend for SmBusBackend {
             let pending_guard = self.pending.read().unwrap_or_else(PoisonError::into_inner);
             pending_guard.get(id).cloned().with_context(|| {
                 format!(
-                    "device {id} has no pending SMBus descriptor; run discover() (pending_cache_size={})",
+                    "device {id} has no adopted SMBus descriptor (pending_cache_size={})",
                     pending_guard.len()
                 )
             })?

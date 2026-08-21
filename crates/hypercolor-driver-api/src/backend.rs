@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::discovery::DiscoveredDevice;
 use anyhow::{Result, bail};
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, DisplayFrameFormat, OwnedDisplayFramePayload,
+    DeviceError, DeviceId, DeviceInfo, DisplayFrameFormat, OwnedDisplayFramePayload,
 };
 use serde::{Deserialize, Serialize};
 
@@ -434,20 +434,13 @@ pub trait DeviceBackend: Send + Sync {
     /// Static metadata about this backend.
     fn info(&self) -> BackendInfo;
 
-    /// Scan for devices reachable via this backend's transport.
+    /// Adopt one device emitted by this backend's discovery capability.
     ///
     /// # Errors
     ///
-    /// Returns an error if the transport is unavailable or the scan fails.
-    async fn discover(&self) -> Result<Vec<DeviceInfo>>;
-
-    /// Prime any backend-local discovery cache from a scanner result.
-    ///
-    /// Host transport backends can use this to carry scanner metadata into
-    /// `connect()` without running a second hardware discovery pass.
-    fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
-        let _ = discovered;
-    }
+    /// Returns an error when the discovery payload does not belong to this
+    /// backend or cannot be installed into backend-owned inventory.
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError>;
 
     /// Return refreshed metadata for a connected device, if available.
     ///

@@ -1360,7 +1360,7 @@ async fn prepare_identify_backend(
             device_state = %device_state,
             "temporarily connecting device for identify"
         );
-        if let Err(error) = direct_backend.connect_with_refresh(device_id).await {
+        if let Err(error) = direct_backend.connect(device_id).await {
             warn!(
                 backend_id = %backend_id,
                 device_id = %device_id,

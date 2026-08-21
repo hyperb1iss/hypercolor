@@ -3,11 +3,11 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
-    DeviceBackendFactory, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-    DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState,
-    DriverError, DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
-    DriverRuntimeActions, OutputBinding, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
-    TrackedDeviceCtx, ValidatedControlChanges,
+    DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
+    DriverConfigView, DriverControlProvider, DriverCredentialStore, DriverDescriptor,
+    DriverDiscoveryState, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverProtocolCatalog, DriverRuntimeActions, OutputBinding, PairDeviceOutcome,
+    PairDeviceRequest, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
@@ -16,8 +16,8 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleDescriptor, DriverModuleKind,
-    DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceId, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
+    DriverProtocolDescriptor, DriverTransportKind,
 };
 use hypercolor_types::identity::BackendId;
 use std::collections::BTreeSet;
@@ -122,8 +122,11 @@ impl DeviceBackend for TestBackend {
         }
     }
 
-    async fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<()> {
@@ -151,9 +154,9 @@ impl DiscoveryCapability for DiscoveryOnlyCapability {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<DiscoveryResult> {
+    ) -> Result<Vec<DiscoveredDevice>> {
         let _ = (host, request, config);
-        Ok(DiscoveryResult::default())
+        Ok(Vec::new())
     }
 }
 

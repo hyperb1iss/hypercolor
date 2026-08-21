@@ -5238,6 +5238,7 @@ name = "hypercolor-driver-builtin"
 version = "0.3.2"
 dependencies = [
  "anyhow",
+ "async-trait",
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-driver-govee",

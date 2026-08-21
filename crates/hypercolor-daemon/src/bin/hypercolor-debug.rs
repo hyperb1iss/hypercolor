@@ -5,16 +5,15 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
-    DeviceRegistry, DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport,
-    TransportScanner, UsbHotplugEvent, UsbHotplugMonitor,
+    DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, UsbHotplugEvent,
+    UsbHotplugMonitor, UsbProtocolConfigStore,
 };
 use hypercolor_driver_api::{
     CredentialStore, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
-    DriverDiscoveredDevice, DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions,
-    DriverTrackedDevice,
+    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
+use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceInfo;
 use serde_json::Value;
 use tracing::info;
@@ -42,22 +41,15 @@ enum DebugCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DebugTarget {
-    HostTransport(String),
-    Driver(String),
-}
+struct DebugTarget(String);
 
 impl DebugTarget {
-    fn host_transport(target_id: &str) -> Self {
-        Self::HostTransport(target_id.to_owned())
+    fn driver(target_id: &str) -> Self {
+        Self(target_id.to_owned())
     }
 
     fn is_usb(&self) -> bool {
-        matches!(
-            self,
-            Self::HostTransport(target_id)
-                if target_id == hypercolor_daemon::network::USB_HOST_TRANSPORT_TARGET_ID
-        )
+        self.0 == hypercolor_types::device::USB_OUTPUT_BACKEND_ID
     }
 }
 
@@ -65,8 +57,8 @@ impl DebugTarget {
 struct DetectArgs {
     /// Discovery targets to scan (repeat or comma-separate values).
     #[arg(long, value_delimiter = ',', default_values_t = [
-        hypercolor_daemon::network::USB_HOST_TRANSPORT_TARGET_ID.to_owned(),
-        hypercolor_daemon::network::SMBUS_HOST_TRANSPORT_TARGET_ID.to_owned(),
+        hypercolor_types::device::USB_OUTPUT_BACKEND_ID.to_owned(),
+        hypercolor_types::device::SMBUS_OUTPUT_BACKEND_ID.to_owned(),
     ])]
     targets: Vec<String>,
 
@@ -110,9 +102,12 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
         CredentialStore::open_blocking(&ConfigManager::data_dir())
             .context("failed to open driver credential store")?,
     );
-    let driver_registry =
-        hypercolor_daemon::network::build_builtin_driver_module_registry(&config, credential_store)
-            .context("failed to build debug driver registry")?;
+    let driver_registry = hypercolor_daemon::network::build_builtin_driver_module_registry(
+        &config,
+        credential_store,
+        UsbProtocolConfigStore::new(),
+    )
+    .context("failed to build debug driver registry")?;
     let driver_host = Arc::new(DebugDriverHost);
     let discovery_timeout = Duration::from_millis(args.timeout_ms.max(100));
     let periodic_targets = normalize_targets(&args.targets, &driver_registry)?;
@@ -194,8 +189,8 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
                             &driver_registry,
                             Arc::clone(&driver_host),
                             &config,
-                            &[DebugTarget::host_transport(
-                                hypercolor_daemon::network::USB_HOST_TRANSPORT_TARGET_ID,
+                            &[DebugTarget::driver(
+                                hypercolor_types::device::USB_OUTPUT_BACKEND_ID,
                             )],
                             &args,
                             discovery_timeout,
@@ -289,19 +284,14 @@ async fn run_scan(
 ) -> Result<()> {
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
     for target in targets {
-        match target {
-            DebugTarget::HostTransport(target_id) => {
-                add_host_transport_scanner(&mut orchestrator, driver_registry, config, target_id)?;
-            }
-            DebugTarget::Driver(driver_id) => add_driver_scanner(
-                &mut orchestrator,
-                driver_registry,
-                Arc::clone(&driver_host),
-                config,
-                driver_id,
-                timeout,
-            )?,
-        }
+        add_driver_source(
+            &mut orchestrator,
+            driver_registry,
+            Arc::clone(&driver_host),
+            config,
+            &target.0,
+            timeout,
+        )?;
     }
 
     let report = orchestrator.full_scan().await;
@@ -383,28 +373,16 @@ fn normalize_targets(
         .iter()
         .map(|target| target.trim().to_ascii_lowercase())
     {
-        let target = match target.as_str() {
-            target_id if hypercolor_daemon::network::is_host_transport_target(target_id) => {
-                DebugTarget::HostTransport(target_id.to_owned())
-            }
-            driver_id => {
-                let Some(driver) = driver_registry.get(driver_id) else {
-                    let mut supported = hypercolor_daemon::network::HOST_TRANSPORT_TARGET_IDS
-                        .iter()
-                        .map(|target_id| (*target_id).to_owned())
-                        .collect::<Vec<_>>();
-                    supported.extend(driver_registry.ids());
-                    anyhow::bail!(
-                        "unknown discovery target '{driver_id}'. Supported targets: {}",
-                        supported.join(", ")
-                    );
-                };
-                if driver.discovery().is_none() {
-                    anyhow::bail!("driver '{driver_id}' does not support discovery");
-                }
-                DebugTarget::Driver(driver_id.to_owned())
-            }
+        let Some(driver) = driver_registry.get(&target) else {
+            anyhow::bail!(
+                "unknown discovery target '{target}'. Supported targets: {}",
+                driver_registry.ids().join(", ")
+            );
         };
+        if driver.discovery().is_none() {
+            anyhow::bail!("driver '{target}' does not support discovery");
+        }
+        let target = DebugTarget::driver(&target);
         if !out.contains(&target) {
             out.push(target);
         }
@@ -416,20 +394,7 @@ fn transport_label(info: &DeviceInfo) -> String {
     info.origin.transport.as_id().to_owned()
 }
 
-fn add_host_transport_scanner(
-    orchestrator: &mut DiscoveryOrchestrator,
-    driver_registry: &DriverModuleRegistry,
-    config: &HypercolorConfig,
-    target_id: &str,
-) -> Result<()> {
-    let scanner =
-        hypercolor_daemon::network::host_transport_scanner(target_id, driver_registry, config)
-            .with_context(|| format!("host discovery target '{target_id}' is not registered"))?;
-    orchestrator.add_scanner(scanner);
-    Ok(())
-}
-
-fn add_driver_scanner(
+fn add_driver_source(
     orchestrator: &mut DiscoveryOrchestrator,
     driver_registry: &DriverModuleRegistry,
     host: Arc<DebugDriverHost>,
@@ -441,60 +406,28 @@ fn add_driver_scanner(
         .get(driver_id)
         .with_context(|| format!("debug driver '{driver_id}' is not registered"))?;
     let driver_config = hypercolor_daemon::network::driver_config_entry(config, driver_id);
-    orchestrator.add_scanner(Box::new(DebugDriverScanner {
-        driver,
-        driver_id: driver_id.to_owned(),
-        config: driver_config,
-        host,
-        request: DiscoveryRequest {
-            timeout,
-            mdns_enabled: config.discovery.mdns_enabled,
-        },
-    }));
-    Ok(())
-}
-
-struct DebugDriverScanner {
-    driver: Arc<dyn DriverModule>,
-    driver_id: String,
-    config: DriverConfigEntry,
-    host: Arc<DebugDriverHost>,
-    request: DiscoveryRequest,
-}
-
-#[async_trait::async_trait]
-impl TransportScanner for DebugDriverScanner {
-    fn name(&self) -> &str {
-        self.driver.descriptor().display_name
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        let Some(capability) = self.driver.discovery() else {
+    let display_name = driver.descriptor().display_name.to_owned();
+    let driver_id = driver_id.to_owned();
+    let request = DiscoveryRequest {
+        timeout,
+        mdns_enabled: config.discovery.mdns_enabled,
+    };
+    orchestrator.add_source(display_name, async move {
+        let Some(capability) = driver.discovery() else {
             return Ok(Vec::new());
         };
-        let config = DriverConfigView {
-            driver_id: &self.driver_id,
-            entry: &self.config,
-        };
-        let result = capability
-            .discover(self.host.as_ref(), &self.request, config)
-            .await?;
-        Ok(result
-            .devices
-            .into_iter()
-            .map(driver_discovered_to_device)
-            .collect())
-    }
-}
-
-fn driver_discovered_to_device(device: DriverDiscoveredDevice) -> DiscoveredDevice {
-    DiscoveredDevice {
-        fingerprint: device.fingerprint,
-        connect_behavior: device.connect_behavior,
-        info: device.info,
-        metadata: device.metadata,
-        claim: device.claim,
-    }
+        capability
+            .discover(
+                host.as_ref(),
+                &request,
+                DriverConfigView {
+                    driver_id: &driver_id,
+                    entry: &driver_config,
+                },
+            )
+            .await
+    });
+    Ok(())
 }
 
 struct DebugDriverHost;

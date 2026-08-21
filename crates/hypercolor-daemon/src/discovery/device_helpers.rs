@@ -171,11 +171,11 @@ async fn connect_backend_device_inner(
     timeout: Option<Duration>,
 ) -> anyhow::Result<()> {
     let io = backend_io(runtime, backend_id).await?;
-    remember_discovered_device(runtime, device_id, &io).await;
+    adopt_discovered_device(runtime, device_id, &io).await?;
     sync_host_attachment_profile_config(runtime, device_id, &io).await;
     let output_cadence = match timeout {
-        Some(timeout) => io.connect_with_refresh_timeout(device_id, timeout).await?,
-        None => io.connect_with_refresh(device_id).await?,
+        Some(timeout) => io.connect_with_timeout(device_id, timeout).await?,
+        None => io.connect(device_id).await?,
     };
     let frame_sink = io.frame_sink(device_id);
 
@@ -190,16 +190,16 @@ async fn connect_backend_device_inner(
     Ok(())
 }
 
-async fn remember_discovered_device(
+async fn adopt_discovered_device(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
     backend: &BackendIo,
-) {
+) -> anyhow::Result<()> {
     let Some(tracked) = runtime.device_registry.get(&device_id).await else {
-        return;
+        return Ok(());
     };
     let Some(fingerprint) = runtime.device_registry.fingerprint_for_id(&device_id).await else {
-        return;
+        return Ok(());
     };
     let metadata = runtime
         .device_registry
@@ -208,13 +208,13 @@ async fn remember_discovered_device(
         .unwrap_or_default();
     let claim = runtime.device_registry.claim_for_id(&device_id).await;
 
-    backend.remember_discovered_device(&DiscoveredDevice {
+    backend.adopt_device(&DiscoveredDevice {
         fingerprint,
         connect_behavior: tracked.connect_behavior,
         info: tracked.info,
         metadata,
         claim,
-    });
+    })
 }
 
 pub(super) async fn disconnect_backend_device(

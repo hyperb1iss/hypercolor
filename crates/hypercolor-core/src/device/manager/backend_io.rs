@@ -7,7 +7,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use hypercolor_driver_api::DiscoveredDevice;
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload};
-use tracing::debug;
 
 use crate::device::traits::{DeviceFrameSink, DeviceLifecyclePolicy, OutputCadence};
 
@@ -32,16 +31,15 @@ impl BackendIo {
         }
     }
 
-    /// Connect a device, retrying once after cleanup and backend discovery refresh.
+    /// Connect a device once using its already-adopted backend inventory.
     ///
     /// Returns the backend's preferred output cadence for the connected device.
     ///
     /// # Errors
     ///
-    /// Returns an error if the backend connect call fails both before and
-    /// after discovery refresh.
-    pub async fn connect_with_refresh(&self, device_id: DeviceId) -> Result<OutputCadence> {
-        self.connect_with_refresh_inner(device_id, None).await
+    /// Returns an error if the backend connect call fails.
+    pub async fn connect(&self, device_id: DeviceId) -> Result<OutputCadence> {
+        self.connect_inner(device_id, None).await
     }
 
     /// Connect a device, applying timeout only to backend operations after
@@ -52,130 +50,41 @@ impl BackendIo {
     /// # Errors
     ///
     /// Returns an error if the backend connect call fails or times out.
-    pub async fn connect_with_refresh_timeout(
+    pub async fn connect_with_timeout(
         &self,
         device_id: DeviceId,
         timeout: Duration,
     ) -> Result<OutputCadence> {
-        self.connect_with_refresh_inner(device_id, Some(timeout))
-            .await
+        self.connect_inner(device_id, Some(timeout)).await
     }
 
-    async fn connect_with_refresh_inner(
+    async fn connect_inner(
         &self,
         device_id: DeviceId,
         timeout: Option<Duration>,
     ) -> Result<OutputCadence> {
-        let backend = &self.backend;
-
-        if let Err(initial_error) = run_backend_operation(
+        run_backend_operation(
             timeout,
             &self.backend_id,
             device_id,
             "connect",
-            backend.connect(&device_id),
+            self.backend.connect(&device_id),
         )
-        .await
-        {
-            let initial_message = initial_error.to_string();
-            if is_backend_operation_timeout(&initial_error) {
-                debug!(
-                    backend_id = %self.backend_id,
-                    %device_id,
-                    error = %initial_message,
-                    "backend connect timed out; preserving discovery state for reconnect"
-                );
-                return Err(initial_error);
-            } else if is_missing_discovery_descriptor(&initial_message) {
-                debug!(
-                    backend_id = %self.backend_id,
-                    %device_id,
-                    error = %initial_message,
-                    "backend discovery state missing; refreshing before connect retry"
-                );
-            } else {
-                debug!(
-                    backend_id = %self.backend_id,
-                    %device_id,
-                    error = %initial_message,
-                    "initial connect failed; refreshing backend discovery state and retrying"
-                );
+        .await?;
 
-                match run_backend_operation(
-                    timeout,
-                    &self.backend_id,
-                    device_id,
-                    "disconnect cleanup",
-                    backend.disconnect(&device_id),
-                )
-                .await
-                {
-                    Ok(()) => debug!(
-                        backend_id = %self.backend_id,
-                        %device_id,
-                        "best-effort cleanup after failed connect completed"
-                    ),
-                    Err(cleanup_error) => debug!(
-                        backend_id = %self.backend_id,
-                        %device_id,
-                        error = %cleanup_error,
-                        "best-effort cleanup after failed connect could not release an existing session"
-                    ),
-                }
-            }
-
-            run_backend_operation(
-                timeout,
-                &self.backend_id,
-                device_id,
-                "discovery refresh",
-                backend.discover(),
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "backend '{}' discovery refresh failed after initial connect failure for device {device_id}: {initial_message}",
-                    self.backend_id
-                )
-            })?;
-
-            if let Err(retry_error) = run_backend_operation(
-                timeout,
-                &self.backend_id,
-                device_id,
-                "connect retry",
-                backend.connect(&device_id),
-            )
-            .await
-            {
-                let retry_message = retry_error.to_string();
-                debug!(
-                    backend_id = %self.backend_id,
-                    %device_id,
-                    error = %retry_message,
-                    "connect still failing after discovery refresh"
-                );
-                return Err(retry_error).with_context(|| {
-                    format!(
-                        "failed to connect device {device_id} using backend '{}' after discovery refresh (initial error: {initial_message})",
-                        self.backend_id
-                    )
-                });
-            }
-
-            debug!(
-                backend_id = %self.backend_id,
-                %device_id,
-                "connect succeeded after discovery refresh"
-            );
-        }
-
-        Ok(backend.output_cadence(&device_id).unwrap_or_default())
+        Ok(self.backend.output_cadence(&device_id).unwrap_or_default())
     }
 
-    /// Prime the backend's discovery cache from a scanner result.
-    pub fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
-        self.backend.remember_discovered_device(discovered);
+    /// Adopt a discovery result into backend-owned inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot reconstruct its connection
+    /// descriptor from the canonical discovery payload.
+    pub fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<()> {
+        self.backend
+            .adopt_device(discovered)
+            .with_context(|| format!("backend '{}' refused device adoption", self.backend_id))
     }
 
     /// Return backend lifecycle policy for a discovered device.
@@ -330,18 +239,6 @@ impl BackendIo {
                 )
             })
     }
-}
-
-fn is_missing_discovery_descriptor(message: &str) -> bool {
-    message.contains(" has no pending ") && message.contains(" descriptor; run discover()")
-}
-
-fn is_backend_operation_timeout(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let message = cause.to_string();
-        message.contains("transport timeout after")
-            || message.contains(" timed out after ") && message.contains(" using backend ")
-    })
 }
 
 async fn run_backend_operation<T, F>(
