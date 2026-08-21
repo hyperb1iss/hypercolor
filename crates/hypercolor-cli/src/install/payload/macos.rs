@@ -28,6 +28,7 @@ const MAX_TARGET_BYTES: usize = 128;
 const NOTARIZATION_ID_BYTES: usize = 36;
 const NOTARIZATION_STATUS_BYTES: usize = 32;
 const TEAM_ID_BYTES: usize = 10;
+const CDHASH_HEX_BYTES: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacosReleaseProvenance {
@@ -38,6 +39,7 @@ pub struct MacosReleaseProvenance {
     daemon_inode: u64,
     designated_requirement: String,
     designated_requirement_sha256: String,
+    cdhash: String,
     team_id: String,
 }
 
@@ -75,6 +77,11 @@ impl MacosReleaseProvenance {
     #[must_use]
     pub fn designated_requirement_sha256(&self) -> &str {
         &self.designated_requirement_sha256
+    }
+
+    #[must_use]
+    pub fn cdhash(&self) -> &str {
+        &self.cdhash
     }
 
     #[must_use]
@@ -232,7 +239,7 @@ fn bind_retained_file_identity(
     unit: &UnitRecord,
     manifest: &ValidatedManifest,
     path: &str,
-) -> Result<hypercolor_platform_fs::DirectoryEntryMetadata, ReleasePayloadError> {
+) -> Result<(hypercolor_platform_fs::DirectoryEntryMetadata, String), ReleasePayloadError> {
     let ValidatedMember::File {
         source_mode,
         size,
@@ -281,6 +288,8 @@ fn bind_retained_file_identity(
             "installed content mismatch for {path}"
         )));
     }
+    let cdhash = crate::install::macos::thin_macho_cdhash(opened.file_mut(), *size)
+        .map_err(|source| ReleasePayloadError::InvalidUnit(source.to_string()))?;
     let after = opened
         .file()
         .metadata()
@@ -293,7 +302,7 @@ fn bind_retained_file_identity(
             "installed identity drift for {path}"
         )));
     }
-    Ok(metadata)
+    Ok((metadata, cdhash))
 }
 
 #[derive(Debug, Deserialize)]
@@ -364,7 +373,11 @@ impl RawProvenance {
         if *source_mode != 0o755 {
             return Err(invalid_provenance());
         }
-        let daemon_metadata = bind_retained_file_identity(unit, manifest, DAEMON_PATH)?;
+        let (daemon_metadata, retained_cdhash) =
+            bind_retained_file_identity(unit, manifest, DAEMON_PATH)?;
+        if daemon.cdhash != retained_cdhash {
+            return Err(invalid_provenance());
+        }
         let designated_requirement = bind_designated_requirement(
             &daemon.designated_requirement,
             DAEMON_IDENTIFIER,
@@ -378,6 +391,7 @@ impl RawProvenance {
             daemon_inode: daemon_metadata.inode(),
             designated_requirement_sha256: hex_digest(designated_requirement.as_bytes()),
             designated_requirement,
+            cdhash: daemon.cdhash,
             team_id: self.team_id,
         })
     }
@@ -392,6 +406,8 @@ struct RawSignedObject {
     identifier: String,
     #[serde(deserialize_with = "deserialize_requirement")]
     designated_requirement: String,
+    #[serde(deserialize_with = "deserialize_cdhash")]
+    cdhash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -465,6 +481,23 @@ where
     D: Deserializer<'de>,
 {
     deserialize_bounded_string::<D, MAX_REQUIREMENT_BYTES>(deserializer, "designated requirement")
+}
+
+fn deserialize_cdhash<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = deserialize_bounded_string::<D, CDHASH_HEX_BYTES>(deserializer, "CDHash")?;
+    if value.len() != CDHASH_HEX_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(D::Error::custom(
+            "CDHash must be exactly 40 lowercase hexadecimal bytes",
+        ));
+    }
+    Ok(value)
 }
 
 fn deserialize_team_id<'de, D>(deserializer: D) -> Result<String, D::Error>

@@ -87,6 +87,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
         "/* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] ",
         "/* exists */ and certificate leaf[subject.OU] = \"AB12CD34EF\""
     );
+    let (daemon_bytes, daemon_cdhash) = thin_macho_daemon();
     let (_, rust_target) = native_macos_identity();
     let provenance = serde_json::to_vec_pretty(&json!({
         "team_id": "AB12CD34EF",
@@ -95,6 +96,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
             "path": "bin/hypercolor-daemon",
             "identifier": "tech.hyperbliss.hypercolor.daemon",
             "designated_requirement": designated_requirement,
+            "cdhash": daemon_cdhash,
         }],
         "notarization": {
             "id": "2efe2717-52ef-43a5-96dc-0797e4ca1041",
@@ -104,7 +106,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
     }))
     .expect("encode macOS provenance");
     let files = vec![
-        ("bin/hypercolor-daemon", b"daemon".to_vec()),
+        ("bin/hypercolor-daemon", daemon_bytes),
         ("bin/hypercolor", b"candidate".to_vec()),
         ("bin/hypercolor-app", b"app".to_vec()),
         ("bin/hypercolor-tui", b"tui".to_vec()),
@@ -183,12 +185,57 @@ fn native_macos_identity() -> (&'static str, &'static str) {
     }
 }
 
+fn thin_macho_daemon() -> (Vec<u8>, String) {
+    const MACH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_CODE_SIGNATURE: u32 = 0x1d;
+    const EMBEDDED_SIGNATURE: u32 = 0xfade_0cc0;
+    const CODE_DIRECTORY: u32 = 0xfade_0c02;
+    let cpu_type = match std::env::consts::ARCH {
+        "aarch64" => 0x0100_000c_u32,
+        "x86_64" => 0x0100_0007_u32,
+        architecture => panic!("unsupported fixture architecture {architecture}"),
+    };
+    let mut code_directory = vec![0_u8; 40];
+    code_directory[0..4].copy_from_slice(&CODE_DIRECTORY.to_be_bytes());
+    code_directory[4..8].copy_from_slice(&40_u32.to_be_bytes());
+    code_directory[36] = 32;
+    code_directory[37] = 2;
+    let mut signature = vec![0_u8; 20];
+    signature[0..4].copy_from_slice(&EMBEDDED_SIGNATURE.to_be_bytes());
+    signature[4..8].copy_from_slice(&60_u32.to_be_bytes());
+    signature[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    signature[12..16].copy_from_slice(&0_u32.to_be_bytes());
+    signature[16..20].copy_from_slice(&20_u32.to_be_bytes());
+    signature.extend_from_slice(&code_directory);
+    let mut macho = vec![0_u8; 48];
+    macho[0..4].copy_from_slice(&MACH_MAGIC_64.to_le_bytes());
+    macho[4..8].copy_from_slice(&cpu_type.to_le_bytes());
+    macho[16..20].copy_from_slice(&1_u32.to_le_bytes());
+    macho[20..24].copy_from_slice(&16_u32.to_le_bytes());
+    macho[32..36].copy_from_slice(&LC_CODE_SIGNATURE.to_le_bytes());
+    macho[36..40].copy_from_slice(&16_u32.to_le_bytes());
+    macho[40..44].copy_from_slice(&48_u32.to_le_bytes());
+    macho[44..48].copy_from_slice(&60_u32.to_le_bytes());
+    macho.extend_from_slice(&signature);
+    let digest = Sha256::digest(code_directory);
+    (macho, hex_bytes(&digest[..20]))
+}
+
 fn sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(64);
     for byte in digest {
         use std::fmt::Write as _;
         write!(&mut output, "{byte:02x}").expect("write digest");
+    }
+    output
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("write hexadecimal bytes");
     }
     output
 }
@@ -373,13 +420,15 @@ fn retained_macos_unit_binds_manifest_and_notarized_daemon_identity() {
         .expect("open retained bin directory")
         .open_regular_file(Path::new("hypercolor-daemon"))
         .expect("open retained daemon");
+    let (daemon_bytes, daemon_cdhash) = thin_macho_daemon();
 
-    assert_eq!(provenance.daemon_sha256(), sha256(b"daemon"));
-    assert_eq!(provenance.daemon_size(), 6);
+    assert_eq!(provenance.daemon_sha256(), sha256(&daemon_bytes));
+    assert_eq!(provenance.daemon_size(), daemon_bytes.len() as u64);
     assert_eq!(provenance.daemon_mode(), 0o555);
     assert_eq!(provenance.daemon_device(), daemon.metadata().device());
     assert_eq!(provenance.daemon_inode(), daemon.metadata().inode());
     assert_eq!(provenance.team_id(), "AB12CD34EF");
+    assert_eq!(provenance.cdhash(), daemon_cdhash);
     assert_eq!(
         provenance.designated_requirement(),
         concat!(
@@ -403,6 +452,8 @@ fn macos_provenance_rejects_malformed_or_mismatched_identity() {
         "daemon-identifier",
         "designated-requirement",
         "designated-requirement-broadened",
+        "cdhash-uppercase",
+        "cdhash-mismatch",
         "notarization-field",
         "notarization-message-bound",
         "object-count",
@@ -417,6 +468,8 @@ fn macos_provenance_rejects_malformed_or_mismatched_identity() {
             "daemon-identifier"
             | "designated-requirement"
             | "designated-requirement-broadened"
+            | "cdhash-uppercase"
+            | "cdhash-mismatch"
             | "notarization-field"
             | "notarization-message-bound"
             | "object-count" => {
@@ -439,6 +492,15 @@ fn macos_provenance_rejects_malformed_or_mismatched_identity() {
                             .expect("fixture designated requirement");
                         provenance["objects"][0]["designated_requirement"] =
                             json!(format!("{requirement} or anchor trusted"));
+                    }
+                    "cdhash-uppercase" => {
+                        let cdhash = provenance["objects"][0]["cdhash"]
+                            .as_str()
+                            .expect("fixture CDHash");
+                        provenance["objects"][0]["cdhash"] = json!(cdhash.to_ascii_uppercase());
+                    }
+                    "cdhash-mismatch" => {
+                        provenance["objects"][0]["cdhash"] = json!("0".repeat(40));
                     }
                     "notarization-field" => {
                         provenance["notarization"]["attacker"] = json!(true);

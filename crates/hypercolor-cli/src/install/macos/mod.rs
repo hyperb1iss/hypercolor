@@ -1,9 +1,19 @@
 mod effects;
 mod executor;
+mod launcher_store;
 mod legacy;
+mod macho_cdhash;
 mod model;
+mod native;
+mod native_identity;
+mod native_inventory;
+mod native_layout;
+mod native_legacy;
+mod native_legacy_identity;
+mod native_legacy_tree;
 mod platform;
 mod proof;
+mod public_tree;
 mod record;
 mod runtime;
 mod state;
@@ -12,12 +22,15 @@ mod validation;
 use super::{InstallPlatformError, UnitId, UnitRecord};
 
 pub use executor::MacosInstallExecutor;
+pub(crate) use macho_cdhash::thin_macho_cdhash;
 pub use model::{
     MacosCandidateLayout, MacosDirectoryState, MacosEntryPublication, MacosExactEntry,
     MacosFilePublication, MacosInstallConfig, MacosLaunchdObservation, MacosLauncherSnapshot,
     MacosLegacyExecutable, MacosLegacyFile, MacosLegacySnapshot, MacosMutationOutcome,
     MacosPublicSnapshot, MacosRuntimeExecutable, MacosRuntimeTransition, MacosStopAuthority,
 };
+pub use native::MacosNativeExecutor;
+pub use public_tree::MacosPublicTree;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MacosInspection {
@@ -127,6 +140,7 @@ pub fn bind_macos_retained_legacy_unit(
             "macOS legacy binder requires a synthetic legacy unit ID",
         ));
     }
+    native_legacy::validate_legacy_snapshot_binding(&directory, &id)?;
     UnitRecord::new(id, root_hint, directory).map_err(|source| model::error(source.to_string()))
 }
 
@@ -135,6 +149,15 @@ pub fn retain_macos_unit(
     lock: &super::InstallLock,
     id: &UnitId,
 ) -> Result<UnitRecord, InstallPlatformError> {
-    super::payload::retain_installed_release_unit(store, lock, id)
-        .map_err(|source| model::error(source.to_string()))
+    if !id.as_str().starts_with("legacy-") {
+        return super::payload::retain_installed_release_unit(store, lock, id)
+            .map_err(|source| model::error(source.to_string()));
+    }
+    let directory = store
+        .open_unit_directory(lock, id)
+        .map_err(|source| model::error(source.to_string()))?;
+    let read_only = directory
+        .read_only()
+        .map_err(|source| model::error(source.to_string()))?;
+    bind_macos_retained_legacy_unit(id.clone(), store.unit_path(id), read_only)
 }

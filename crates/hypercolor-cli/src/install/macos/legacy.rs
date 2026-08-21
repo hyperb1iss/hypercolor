@@ -12,28 +12,41 @@ use super::model::{
 pub(super) fn legacy_identity(
     inspection: &MacosInspection,
 ) -> Result<String, InstallPlatformError> {
-    let mut hasher = Sha256::new();
-    encode_entry(
-        &mut hasher,
-        "launcher",
+    legacy_identity_parts(
         &inspection.launcher,
-        Some(&inspection.launcher_bytes),
-    )?;
-    for (path, entry) in &inspection.public.entries {
+        &inspection.launcher_bytes,
+        &inspection.public.entries,
+        &inspection.public.regular_bytes,
+        inspection.legacy_executable.as_ref(),
+    )
+}
+
+pub(super) fn legacy_identity_parts(
+    launcher: &MacosExactEntry,
+    launcher_bytes: &[u8],
+    entries: &std::collections::BTreeMap<String, MacosExactEntry>,
+    regular_bytes: &std::collections::BTreeMap<String, Vec<u8>>,
+    executable: Option<&super::model::MacosLegacyExecutable>,
+) -> Result<String, InstallPlatformError> {
+    let mut hasher = Sha256::new();
+    encode_entry(&mut hasher, "launcher", launcher, Some(launcher_bytes))?;
+    for (path, entry) in entries {
         encode_entry(
             &mut hasher,
             path,
             entry,
-            inspection.public.regular_bytes.get(path).map(Vec::as_slice),
+            regular_bytes.get(path).map(Vec::as_slice),
         )?;
     }
-    if let Some(executable) = &inspection.legacy_executable {
+    if let Some(executable) = executable {
         hasher.update(b"executable\0");
         hasher.update(executable.path.as_bytes());
         hasher.update(b"\0");
         hasher.update(executable.sha256.as_bytes());
         hasher.update(b"\0");
         hasher.update(executable.designated_requirement_sha256.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(executable.cdhash.as_bytes());
     }
     Ok(super::model::hex_digest(&hasher.finalize()))
 }

@@ -6,7 +6,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::super::{InstallPlatformError, UnitId};
 
-pub(super) const MACOS_RECORD_SCHEMA_VERSION: u32 = 1;
+pub(super) const MACOS_RECORD_SCHEMA_VERSION: u32 = 2;
 pub(super) const MACOS_RECEIPT_SCHEMA_VERSION: u32 = 1;
 pub(super) const MAX_LAUNCHER_BYTES: usize = 32 * 1024;
 pub(super) const MAX_PUBLIC_PATH_BYTES: usize = 4 * 1024;
@@ -83,6 +83,7 @@ pub struct MacosRuntimeExecutable {
     pub inode: u64,
     pub designated_requirement: String,
     pub designated_requirement_sha256: String,
+    pub cdhash: String,
     pub synthetic_legacy: bool,
 }
 
@@ -156,6 +157,7 @@ pub struct MacosLegacyExecutable {
     pub inode: u64,
     pub designated_requirement: String,
     pub designated_requirement_sha256: String,
+    pub cdhash: String,
     pub version: String,
 }
 
@@ -190,6 +192,7 @@ pub(super) struct MacosUnitBinding {
     pub(super) daemon_inode: u64,
     pub(super) designated_requirement: String,
     pub(super) designated_requirement_sha256: String,
+    pub(super) cdhash: String,
     pub(super) version: String,
     pub(super) synthetic_legacy: bool,
 }
@@ -359,6 +362,13 @@ pub(super) fn launcher_snapshot_id(mode: u32, bytes: &[u8]) -> String {
 
 pub(super) fn is_sha256(value: &str) -> bool {
     value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+pub(super) fn is_cdhash(value: &str) -> bool {
+    value.len() == 40
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))

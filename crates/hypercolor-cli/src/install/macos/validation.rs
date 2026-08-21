@@ -8,7 +8,7 @@ use super::executor::MacosInstallExecutor;
 use super::model::{
     MAX_LAUNCHER_BYTES, MacosDirectoryState, MacosExactEntry, MacosFilePublication,
     MacosLauncherSnapshot, MacosLayoutEffect, MacosOwnerReceipt, MacosRecord,
-    compare_directory_paths, error, hex_digest, is_sha256, launcher_snapshot_id,
+    compare_directory_paths, error, hex_digest, is_cdhash, is_sha256, launcher_snapshot_id,
     validate_candidate_layout, validate_public_path,
 };
 use super::record::{decode_receipt, decode_record};
@@ -20,6 +20,10 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
     ) -> Result<MacosRecord, InstallPlatformError> {
         let record = decode_record(encoded)?;
         self.validate_record(&record)?;
+        let directories = record.prior_directories.keys().cloned().collect::<Vec<_>>();
+        let entries = record.prior_entries.keys().cloned().collect::<Vec<_>>();
+        self.executor
+            .bind_public_inventory(&directories, &entries)?;
         Ok(record)
     }
 
@@ -155,6 +159,11 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
     ) -> Result<(), InstallPlatformError> {
         if !is_sha256(&binding.daemon_sha256)
             || !is_sha256(&binding.designated_requirement_sha256)
+            || !is_cdhash(&binding.cdhash)
+            || binding.designated_requirement.is_empty()
+            || binding.designated_requirement.len() > 8 * 1024
+            || hex_digest(binding.designated_requirement.as_bytes())
+                != binding.designated_requirement_sha256
             || binding.daemon_size == 0
             || binding.daemon_mode > 0o777
             || binding.daemon_device == 0
@@ -187,6 +196,7 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
                     inode: binding.daemon_inode,
                     designated_requirement: binding.designated_requirement.clone(),
                     designated_requirement_sha256: binding.designated_requirement_sha256.clone(),
+                    cdhash: binding.cdhash.clone(),
                     version: binding.version.clone(),
                 },
                 &record.prior_launcher,

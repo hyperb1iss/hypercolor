@@ -230,12 +230,13 @@ impl<E: MacosInstallExecutor> InstallPlatform for MacosInstallPlatform<E> {
         let prior_binding = if let Some((unit, executable)) = &synthetic {
             Some(self.legacy_binding(unit, executable))
         } else {
-            prior_platform_unit
+            let retained = prior_platform_unit
                 .as_ref()
-                .map(|unit| {
-                    self.retained_unit(unit)
-                        .and_then(|unit| self.unit_binding(unit))
-                })
+                .map(|unit| self.retained_unit(unit).cloned())
+                .transpose()?;
+            retained
+                .as_ref()
+                .map(|unit| self.unit_binding(unit))
                 .transpose()?
         };
         if prior.platform.loaded && prior_binding.is_none() {
@@ -510,7 +511,14 @@ impl<E: MacosInstallExecutor> InstallPlatform for MacosInstallPlatform<E> {
     ) -> Result<(), InstallPlatformError> {
         let record = self.validated_record(platform_record)?;
         self.prove_owner(PlatformCheckpoint::PriorUnloaded, unloaded, &record, None)
-            .map(|_| ())
+            .map(|_| ())?;
+        if !self
+            .executor
+            .wait_for_guard_release(std::time::Duration::from_secs(10))?
+        {
+            return Err(error("macOS daemon guard did not release before deadline"));
+        }
+        Ok(())
     }
 
     fn install_launcher(

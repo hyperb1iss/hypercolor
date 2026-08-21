@@ -19,6 +19,12 @@ pub trait MacosInstallExecutor {
 
     fn validate_unit_authority(&mut self, unit: &UnitRecord) -> Result<(), InstallPlatformError>;
 
+    fn validate_unit_executable(
+        &mut self,
+        unit: &UnitRecord,
+        executable: &super::model::MacosRuntimeExecutable,
+    ) -> Result<(), InstallPlatformError>;
+
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError>;
 
     fn launchd_observation(&mut self) -> Result<MacosLaunchdObservation, InstallPlatformError>;
@@ -34,6 +40,12 @@ pub trait MacosInstallExecutor {
         &mut self,
         layouts: &[MacosCandidateLayout],
     ) -> Result<MacosPublicSnapshot, InstallPlatformError>;
+
+    fn bind_public_inventory(
+        &mut self,
+        directories: &[String],
+        entries: &[String],
+    ) -> Result<(), InstallPlatformError>;
 
     fn candidate_layout(
         &mut self,
@@ -121,4 +133,6 @@ pub trait MacosInstallExecutor {
         after_epoch: u64,
         timeout: Duration,
     ) -> Result<Option<MacosOwnerRecord>, InstallPlatformError>;
+
+    fn wait_for_guard_release(&mut self, timeout: Duration) -> Result<bool, InstallPlatformError>;
 }

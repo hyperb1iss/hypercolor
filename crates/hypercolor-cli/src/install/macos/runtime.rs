@@ -110,6 +110,7 @@ fn runtime_executable(binding: &MacosUnitBinding) -> MacosRuntimeExecutable {
         inode: binding.daemon_inode,
         designated_requirement: binding.designated_requirement.clone(),
         designated_requirement_sha256: binding.designated_requirement_sha256.clone(),
+        cdhash: binding.cdhash.clone(),
         synthetic_legacy: binding.synthetic_legacy,
     }
 }

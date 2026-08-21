@@ -53,7 +53,7 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
     }
 
     pub(super) fn unit_binding(
-        &self,
+        &mut self,
         unit: &UnitRecord,
     ) -> Result<MacosUnitBinding, InstallPlatformError> {
         let provenance = super::super::payload::bind_macos_release_provenance(unit)
@@ -67,7 +67,7 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
             .to_str()
             .ok_or_else(|| error("retained macOS daemon path is not exact UTF-8"))?
             .to_owned();
-        Ok(MacosUnitBinding {
+        let binding = MacosUnitBinding {
             unit: unit.id().clone(),
             daemon_path,
             daemon_sha256: provenance.daemon_sha256().to_owned(),
@@ -77,9 +77,13 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
             daemon_inode: provenance.daemon_inode(),
             designated_requirement: provenance.designated_requirement().to_owned(),
             designated_requirement_sha256: provenance.designated_requirement_sha256().to_owned(),
+            cdhash: provenance.cdhash().to_owned(),
             version,
             synthetic_legacy: false,
-        })
+        };
+        self.executor
+            .validate_unit_executable(unit, &runtime_executable(&binding))?;
+        Ok(binding)
     }
 
     pub(super) fn legacy_binding(
@@ -97,6 +101,7 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
             daemon_inode: executable.inode,
             designated_requirement: executable.designated_requirement.clone(),
             designated_requirement_sha256: executable.designated_requirement_sha256.clone(),
+            cdhash: executable.cdhash.clone(),
             version: executable.version.clone(),
             synthetic_legacy: true,
         }
@@ -194,6 +199,7 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
                 || executable.inode != binding.daemon_inode
                 || executable.designated_requirement != binding.designated_requirement
                 || executable.designated_requirement_sha256 != binding.designated_requirement_sha256
+                || executable.cdhash != binding.cdhash
             {
                 return Err(error(
                     "legacy macOS baseline executable changed during proof",
@@ -282,6 +288,7 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
                 || observed.mode != binding.daemon_mode
                 || observed.designated_requirement != binding.designated_requirement
                 || observed.designated_requirement_sha256 != binding.designated_requirement_sha256
+                || observed.cdhash != binding.cdhash
             {
                 return Err(error(
                     "restored legacy daemon identity drifted from its snapshot",
@@ -299,6 +306,7 @@ impl<E: MacosInstallExecutor> MacosInstallPlatform<E> {
             binding.daemon_path,
             binding.designated_requirement,
             binding.designated_requirement_sha256,
+            binding.cdhash,
             binding.daemon_sha256,
             binding.daemon_mode,
             binding.daemon_size,
@@ -319,7 +327,24 @@ fn legacy_executable(binding: &MacosUnitBinding) -> MacosLegacyExecutable {
         inode: binding.daemon_inode,
         designated_requirement: binding.designated_requirement.clone(),
         designated_requirement_sha256: binding.designated_requirement_sha256.clone(),
+        cdhash: binding.cdhash.clone(),
         version: binding.version.clone(),
+    }
+}
+
+fn runtime_executable(binding: &MacosUnitBinding) -> super::model::MacosRuntimeExecutable {
+    super::model::MacosRuntimeExecutable {
+        unit: binding.unit.clone(),
+        path: binding.daemon_path.clone(),
+        sha256: binding.daemon_sha256.clone(),
+        size: binding.daemon_size,
+        mode: binding.daemon_mode,
+        device: binding.daemon_device,
+        inode: binding.daemon_inode,
+        designated_requirement: binding.designated_requirement.clone(),
+        designated_requirement_sha256: binding.designated_requirement_sha256.clone(),
+        cdhash: binding.cdhash.clone(),
+        synthetic_legacy: binding.synthetic_legacy,
     }
 }
 

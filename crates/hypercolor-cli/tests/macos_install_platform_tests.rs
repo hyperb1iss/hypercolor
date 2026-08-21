@@ -2,16 +2,18 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hypercolor_cli::install::macos::{
     MacosCandidateLayout, MacosDirectoryState, MacosEntryPublication, MacosExactEntry,
     MacosFilePublication, MacosInstallConfig, MacosInstallExecutor, MacosInstallPlatform,
-    MacosLaunchdObservation, MacosLauncherSnapshot, MacosLegacyExecutable, MacosLegacySnapshot,
-    MacosMutationOutcome, MacosPublicSnapshot, MacosRuntimeTransition,
-    bind_macos_retained_legacy_unit, retain_macos_unit,
+    MacosLaunchdObservation, MacosLauncherSnapshot, MacosLegacyExecutable, MacosLegacyFile,
+    MacosLegacySnapshot, MacosMutationOutcome, MacosNativeExecutor, MacosPublicSnapshot,
+    MacosRuntimeExecutable, MacosRuntimeTransition, bind_macos_retained_legacy_unit,
+    retain_macos_unit,
 };
 use hypercolor_cli::install::{
     InstallAction, InstallCoordinator, InstallDisposition, InstallPlatform, InstallRequest,
@@ -19,8 +21,11 @@ use hypercolor_cli::install::{
     PlatformTransactionRecord, UnitId, UnitRecord, stage_release_payload,
 };
 use hypercolor_macos_owner::{
-    MacosDaemonOwner, MacosDirectLaunchdPublicationExpectation, MacosOwnerIdentity,
-    MacosOwnerRecord,
+    MacosDaemonOwner, MacosDirectLaunchdBootstrapSource, MacosDirectLaunchdExecutableExpectation,
+    MacosDirectLaunchdInspector, MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator,
+    MacosDirectLaunchdOwnerProof, MacosDirectLaunchdPublicationExpectation,
+    MacosDirectLaunchdState, MacosOwnerExecutionError, MacosOwnerIdentity, MacosOwnerRecord,
+    MacosOwnerStore,
 };
 use hypercolor_platform_fs::ExclusiveDirectory;
 use serde_json::json;
@@ -32,6 +37,7 @@ const REQUIREMENT: &str = concat!(
     "certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and ",
     "certificate leaf[subject.OU] = \"AB12CD34EF\""
 );
+const CDHASH: &str = "0123456789abcdef0123456789abcdef01234567";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FaultPoint {
@@ -203,6 +209,14 @@ impl MacosInstallExecutor for FakeExecutor {
         Ok(())
     }
 
+    fn validate_unit_executable(
+        &mut self,
+        _unit: &UnitRecord,
+        _executable: &MacosRuntimeExecutable,
+    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+        Ok(())
+    }
+
     fn active_unit(
         &mut self,
     ) -> Result<Option<UnitId>, hypercolor_cli::install::InstallPlatformError> {
@@ -256,6 +270,14 @@ impl MacosInstallExecutor for FakeExecutor {
             }
         }
         Ok(self.public.clone())
+    }
+
+    fn bind_public_inventory(
+        &mut self,
+        _directories: &[String],
+        _entries: &[String],
+    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+        Ok(())
     }
 
     fn candidate_layout(
@@ -475,13 +497,15 @@ impl MacosInstallExecutor for FakeExecutor {
                     "scripted stop has no current owner",
                 )
             })?;
+            let active_matches = self.active().as_ref() == Some(&authority.unit)
+                || (self.active().is_none() && authority.unit.as_str().starts_with("legacy-"));
             if owner.owner_epoch != authority.owner_epoch
                 || owner.active_identity.audit_token_identity != authority.audit_token_identity
                 || owner.active_identity.executable_path != authority.executable_path
                 || owner.active_identity.designated_requirement_hash
                     != authority.designated_requirement_hash
                 || owner.active_identity.pid != authority.pid
-                || self.active().as_ref() != Some(&authority.unit)
+                || !active_matches
             {
                 return Err(hypercolor_cli::install::InstallPlatformError::new(
                     "scripted stop authority is not current",
@@ -612,6 +636,13 @@ impl MacosInstallExecutor for FakeExecutor {
             .owner
             .clone()
             .filter(|record| record.owner_epoch > after_epoch))
+    }
+
+    fn wait_for_guard_release(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<bool, hypercolor_cli::install::InstallPlatformError> {
+        Ok(true)
     }
 }
 
@@ -1014,7 +1045,7 @@ fn strict_record_validation_rejects_reordered_and_unknown_layout_effects() {
     let mut value = original.clone();
     value["layout"].as_array_mut().expect("layout").swap(0, 1);
     let forged = PlatformTransactionRecord::macos(
-        1,
+        2,
         serde_json::to_vec(&value).expect("encode forged record"),
     )
     .expect("bounded forged record");
@@ -1031,7 +1062,7 @@ fn strict_record_validation_rejects_reordered_and_unknown_layout_effects() {
 
     value["unknown"] = json!(true);
     let unknown = PlatformTransactionRecord::macos(
-        1,
+        2,
         serde_json::to_vec(&value).expect("encode unknown record"),
     )
     .expect("bounded unknown record");
@@ -1054,7 +1085,7 @@ fn strict_record_validation_rejects_reordered_and_unknown_layout_effects() {
         let mut value = original.clone();
         value["candidate_launcher_snapshot"][field] = forged_value;
         let forged = PlatformTransactionRecord::macos(
-            1,
+            2,
             serde_json::to_vec(&value).expect("encode forged snapshot"),
         )
         .expect("bounded forged snapshot");
@@ -1069,6 +1100,27 @@ fn strict_record_validation_rejects_reordered_and_unknown_layout_effects() {
                 )
                 .is_err(),
             "forged private snapshot {field} must fail closed"
+        );
+    }
+
+    for forged_cdhash in ["A".repeat(40), "0".repeat(40)] {
+        let mut value = original.clone();
+        value["candidate"]["cdhash"] = json!(forged_cdhash);
+        let forged = PlatformTransactionRecord::macos(
+            2,
+            serde_json::to_vec(&value).expect("encode forged CDHash binding"),
+        )
+        .expect("bounded forged record");
+        assert!(
+            platform
+                .validate_transaction_plan(
+                    &prior_platform,
+                    &target,
+                    &prepared.transitions,
+                    prepared.layout_operation_count,
+                    &forged,
+                )
+                .is_err()
         );
     }
 }
@@ -1380,7 +1432,7 @@ fn first_conversion_snapshots_complete_raw_inventory_and_restores_exact_modes() 
         snapshot_unit: None,
         snapshot_path: None,
     };
-    executor.legacy_executable = Some(MacosLegacyExecutable {
+    let legacy_executable = MacosLegacyExecutable {
         path: install
             .path()
             .join("home/.local/bin/hypercolor-daemon")
@@ -1393,14 +1445,61 @@ fn first_conversion_snapshots_complete_raw_inventory_and_restores_exact_modes() 
         inode: 42,
         designated_requirement: REQUIREMENT.to_owned(),
         designated_requirement_sha256: sha256(REQUIREMENT.as_bytes()),
+        cdhash: CDHASH.to_owned(),
         version: "0.2.9".to_owned(),
+    };
+    executor.launchd.pid = Some(3100);
+    executor.owner = Some(MacosOwnerRecord {
+        schema_version: 1,
+        active_owner: MacosDaemonOwner::DirectLaunchd,
+        active_identity: MacosOwnerIdentity::new(
+            "legacy-audit",
+            &legacy_executable.path,
+            &legacy_executable.designated_requirement_sha256,
+            3100,
+        )
+        .expect("legacy owner identity"),
+        owner_epoch: 7,
+        conflict: None,
+        selected_external_owner: None,
     });
+    executor.next_epoch = 7;
+    executor.legacy_executable = Some(legacy_executable);
     let mut probe = MacosInstallPlatform::new(executor, config.clone(), [candidate.clone()])
         .expect("probe platform");
     let prior = probe.inspect().expect("legacy inspection");
     let legacy_id = prior.layout_unit.expect("synthetic legacy ID");
     let mut executor = probe.into_executor();
-    let legacy = legacy_unit(&legacy_id);
+    let executable = executor
+        .legacy_executable
+        .clone()
+        .expect("legacy executable");
+    let snapshot = MacosLegacySnapshot {
+        unit: legacy_id,
+        version: executable.version.clone(),
+        launcher: Some(MacosFilePublication {
+            mode: 0o600,
+            contents: executor.launcher_bytes.clone(),
+        }),
+        entries: executor.public.entries.clone().into_iter().collect(),
+        regular_files: executor
+            .public
+            .regular_bytes
+            .iter()
+            .map(|(path, contents)| MacosLegacyFile {
+                path: path.clone(),
+                mode: match &executor.public.entries[path] {
+                    MacosExactEntry::RegularFile { mode, .. } => *mode,
+                    MacosExactEntry::Absent | MacosExactEntry::Symlink { .. } => {
+                        panic!("regular bytes require a regular entry")
+                    }
+                },
+                contents: contents.clone(),
+            })
+            .collect(),
+        executable,
+    };
+    let legacy = legacy_unit(&snapshot, b"legacy-daemon");
     executor.legacy_unit = Some(legacy.clone());
     executor.fault = Some(("launcher".to_owned(), FaultPoint::Before));
     let mut platform = MacosInstallPlatform::new(executor, config, [candidate.clone(), legacy])
@@ -1439,6 +1538,8 @@ fn first_conversion_snapshots_complete_raw_inventory_and_restores_exact_modes() 
         executor.launcher,
         MacosExactEntry::RegularFile { mode: 0o600, .. }
     ));
+    assert!(executor.launchd.pid.is_some());
+    assert!(executor.owner.expect("restored legacy owner").owner_epoch > 7);
 }
 
 #[test]
@@ -1702,6 +1803,663 @@ fn same_unit_failure_restores_prior_launcher_mode_layout_and_fresh_owner() {
     assert!(executor.owner.expect("restored owner").owner_epoch > prior_epoch + 1);
 }
 
+#[derive(Debug, Default)]
+struct NoLaunchdMutator;
+
+impl MacosDirectLaunchdMutator for NoLaunchdMutator {
+    fn autostart_enabled(&mut self) -> Result<bool, MacosOwnerExecutionError> {
+        Ok(false)
+    }
+
+    fn set_autostart(
+        &mut self,
+        _enabled: bool,
+        _timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        panic!("filesystem authority tests must not mutate launchd")
+    }
+
+    fn bootout_exact(
+        &mut self,
+        _expected: &MacosDirectLaunchdOwnerProof,
+        _timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        panic!("filesystem authority tests must not mutate launchd")
+    }
+
+    fn bootstrap_and_kickstart_exact(
+        &mut self,
+        _source: &mut MacosDirectLaunchdBootstrapSource,
+        _expected: &MacosDirectLaunchdPublicationExpectation,
+        _timeout: Duration,
+    ) -> Result<
+        MacosDirectLaunchdMutationOutcome<MacosDirectLaunchdOwnerProof>,
+        MacosOwnerExecutionError,
+    > {
+        panic!("filesystem authority tests must not mutate launchd")
+    }
+}
+
+#[derive(Debug, Default)]
+struct NoLaunchdInspector;
+
+impl MacosDirectLaunchdInspector for NoLaunchdInspector {
+    fn inspect_direct_launchd(
+        &mut self,
+    ) -> Result<MacosDirectLaunchdState, MacosOwnerExecutionError> {
+        Ok(MacosDirectLaunchdState::NotLoaded)
+    }
+
+    fn live_identity_matches(
+        &mut self,
+        _identity: &MacosOwnerIdentity,
+    ) -> Result<bool, MacosOwnerExecutionError> {
+        Ok(false)
+    }
+
+    fn publication_identity_matches(
+        &mut self,
+        _identity: &MacosOwnerIdentity,
+        _executable: &MacosDirectLaunchdExecutableExpectation,
+    ) -> Result<bool, MacosOwnerExecutionError> {
+        Ok(false)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CaptureStartMutator {
+    observed_executable: Arc<Mutex<Option<(u64, u64, String)>>>,
+}
+
+impl MacosDirectLaunchdMutator for CaptureStartMutator {
+    fn autostart_enabled(&mut self) -> Result<bool, MacosOwnerExecutionError> {
+        Ok(false)
+    }
+
+    fn set_autostart(
+        &mut self,
+        _enabled: bool,
+        _timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        panic!("runtime identity test must not change autostart")
+    }
+
+    fn bootout_exact(
+        &mut self,
+        _expected: &MacosDirectLaunchdOwnerProof,
+        _timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        panic!("runtime identity test must not stop launchd")
+    }
+
+    fn bootstrap_and_kickstart_exact(
+        &mut self,
+        _source: &mut MacosDirectLaunchdBootstrapSource,
+        expected: &MacosDirectLaunchdPublicationExpectation,
+        _timeout: Duration,
+    ) -> Result<
+        MacosDirectLaunchdMutationOutcome<MacosDirectLaunchdOwnerProof>,
+        MacosOwnerExecutionError,
+    > {
+        *self
+            .observed_executable
+            .lock()
+            .expect("capture start expectation") = Some((
+            expected.executable().device(),
+            expected.executable().inode(),
+            expected.executable().cdhash().to_owned(),
+        ));
+        Ok(MacosDirectLaunchdMutationOutcome::SubmittedUnknown)
+    }
+}
+
+#[test]
+fn native_executor_uses_retained_home_for_scaffolds_entries_and_private_launcher() {
+    let fixture = ReleaseFixture::new();
+    let home = tempfile::tempdir().expect("HOME");
+    let home_path = fs::canonicalize(home.path()).expect("canonical HOME");
+    let store = InstallStore::new(home_path.join(".local/lib/hypercolor"), 128 * 1024);
+    let mut lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("anchored install lock");
+    let candidate = stage_release_payload(
+        &store,
+        &lock,
+        fixture.path(),
+        &fixture.candidate,
+        &fixture.unit,
+    )
+    .expect("stage complete candidate");
+    drop(candidate);
+    let candidate =
+        retain_macos_unit(&store, &lock, &fixture.unit).expect("cold rebind complete candidate");
+    let config = MacosInstallConfig {
+        direct_plist_path: home_path
+            .join("Library/LaunchAgents/tech.hyperbliss.hypercolor.plist")
+            .to_string_lossy()
+            .into_owned(),
+        immutable_units_root: store.root().join("units"),
+        active_root: store.root().join("active"),
+        log_directory: home_path.join("Library/Logs/hypercolor"),
+    };
+    let mut executor = MacosNativeExecutor::new_with_launchd(
+        &store,
+        &mut lock,
+        &home_path,
+        &home_path.join(".local"),
+        &home_path.join(".local/bin"),
+        config,
+        MacosOwnerStore::new(home_path.join("Library/Application Support/Hypercolor")),
+        NoLaunchdMutator,
+        NoLaunchdInspector,
+    )
+    .expect("native executor");
+    executor
+        .validate_unit_authority(&candidate)
+        .expect("candidate belongs to retained units root");
+    let projection = executor
+        .candidate_layout(&candidate)
+        .expect("bounded candidate projection");
+    let before = executor
+        .public_snapshot(std::slice::from_ref(&projection))
+        .expect("fresh public snapshot");
+    for directory in &projection.directories {
+        if before.directories[directory] == MacosDirectoryState::Absent {
+            executor
+                .replace_directory(directory, MacosDirectoryState::Absent, true)
+                .expect("create one retained scaffold");
+        }
+    }
+    let (path, target) = &projection.entries[0];
+    executor
+        .replace_layout(
+            path,
+            &MacosExactEntry::Absent,
+            Some(&MacosEntryPublication::Symlink(target.clone())),
+        )
+        .expect("publish one exact public link");
+    let after = executor
+        .public_snapshot(std::slice::from_ref(&projection))
+        .expect("published public snapshot");
+    assert_eq!(
+        after.entries[path],
+        MacosExactEntry::Symlink {
+            target: target.clone()
+        }
+    );
+    let launcher = MacosFilePublication {
+        mode: 0o644,
+        contents: b"<?xml version=\"1.0\"?><plist/>\n".to_vec(),
+    };
+    let snapshot = executor
+        .persist_launcher_snapshot(&launcher)
+        .expect("private launcher snapshot");
+    executor
+        .validate_launcher_snapshot(&launcher, &snapshot)
+        .expect("private launcher identity");
+    fs::write(
+        store.root().join(&snapshot.relative_path),
+        b"foreign private bytes",
+    )
+    .expect("tamper private snapshot");
+    assert!(
+        executor
+            .validate_launcher_snapshot(&launcher, &snapshot)
+            .is_err()
+    );
+}
+
+#[test]
+fn native_executor_discovers_complete_historical_inventory_without_sentinels() {
+    let fixture = ReleaseFixture::new();
+    let home = tempfile::tempdir().expect("HOME");
+    let home_path = fs::canonicalize(home.path()).expect("canonical HOME");
+    let install_prefix = home_path.join(".local");
+    let install_dir = install_prefix.join("bin");
+    let store = InstallStore::new(install_prefix.join("lib/hypercolor"), 128 * 1024);
+    let mut lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("anchored install lock");
+    let candidate = stage_release_payload(
+        &store,
+        &lock,
+        fixture.path(),
+        &fixture.candidate,
+        &fixture.unit,
+    )
+    .expect("stage complete candidate");
+    let historical = [
+        (install_dir.join("hyper"), b"old-cli".as_slice(), 0o755),
+        (
+            install_dir.join("hypercolor-tray"),
+            b"old-tray".as_slice(),
+            0o700,
+        ),
+        (
+            install_prefix.join("share/bash-completion/completions/hyper"),
+            b"old-bash".as_slice(),
+            0o644,
+        ),
+        (
+            install_prefix.join("share/zsh/site-functions/_hyper"),
+            b"old-zsh".as_slice(),
+            0o600,
+        ),
+        (
+            home_path.join(".config/fish/completions/hyper.fish"),
+            b"old-fish".as_slice(),
+            0o644,
+        ),
+        (
+            install_prefix.join("share/hypercolor/ui/assets/nested/app.js"),
+            b"old-ui".as_slice(),
+            0o640,
+        ),
+        (
+            install_prefix.join("share/hypercolor/effects/bundled/legacy.html"),
+            b"old-effect".as_slice(),
+            0o600,
+        ),
+        (
+            install_prefix.join("share/icons/hicolor/128x128/apps/hypercolor.png"),
+            b"old-icon".as_slice(),
+            0o644,
+        ),
+        (
+            install_prefix.join("share/icons/hicolor/scalable/apps/hypercolor-symbolic.svg"),
+            b"old-symbolic".as_slice(),
+            0o644,
+        ),
+    ];
+    for (path, bytes, mode) in &historical {
+        write_mode(path, bytes, *mode);
+    }
+    let unrelated = install_prefix.join("share/icons/hicolor/128x128/apps/unrelated.png");
+    write_mode(&unrelated, b"sentinel", 0o644);
+    let config = native_config(&store, &home_path);
+    let mut executor = MacosNativeExecutor::new_with_launchd(
+        &store,
+        &mut lock,
+        &home_path,
+        &install_prefix,
+        &install_dir,
+        config,
+        MacosOwnerStore::new(home_path.join("Library/Application Support/Hypercolor")),
+        NoLaunchdMutator,
+        NoLaunchdInspector,
+    )
+    .expect("native executor");
+    let projection = executor
+        .candidate_layout(&candidate)
+        .expect("candidate projection");
+    let snapshot = executor
+        .public_snapshot(&[projection])
+        .expect("complete historical snapshot");
+    for (path, bytes, mode) in historical {
+        let path = path.to_string_lossy().into_owned();
+        assert!(matches!(
+            snapshot.entries.get(&path),
+            Some(MacosExactEntry::RegularFile { mode: actual, .. }) if *actual == mode
+        ));
+        assert_eq!(snapshot.regular_bytes[&path], bytes);
+    }
+    assert!(
+        !snapshot
+            .entries
+            .contains_key(&unrelated.to_string_lossy().into_owned())
+    );
+    assert_eq!(
+        fs::read(unrelated).expect("unrelated sentinel"),
+        b"sentinel"
+    );
+}
+
+#[test]
+fn native_executor_publishes_reuses_and_cold_rebinds_synthetic_legacy_unit() {
+    let home = tempfile::tempdir().expect("HOME");
+    let home_path = fs::canonicalize(home.path()).expect("canonical HOME");
+    let install_prefix = home_path.join(".local");
+    let install_dir = install_prefix.join("bin");
+    let daemon_path = install_dir.join("hypercolor-daemon");
+    let public_path = install_dir.join("hyper");
+    write_mode(&daemon_path, b"legacy-daemon", 0o555);
+    write_mode(&public_path, b"legacy-cli", 0o700);
+    let daemon_metadata = fs::metadata(&daemon_path).expect("legacy daemon metadata");
+    let executable = MacosLegacyExecutable {
+        path: daemon_path.to_string_lossy().into_owned(),
+        sha256: sha256(b"legacy-daemon"),
+        size: b"legacy-daemon".len() as u64,
+        mode: 0o555,
+        device: daemon_metadata.dev(),
+        inode: daemon_metadata.ino(),
+        designated_requirement: REQUIREMENT.to_owned(),
+        designated_requirement_sha256: sha256(REQUIREMENT.as_bytes()),
+        cdhash: CDHASH.to_owned(),
+        version: "0.2.9".to_owned(),
+    };
+    let public_path = public_path.to_string_lossy().into_owned();
+    let entries = BTreeMap::from([(
+        public_path.clone(),
+        MacosExactEntry::RegularFile {
+            mode: 0o700,
+            sha256: sha256(b"legacy-cli"),
+            snapshot_unit: None,
+            snapshot_path: None,
+        },
+    )]);
+    let regular_bytes = BTreeMap::from([(public_path.clone(), b"legacy-cli".to_vec())]);
+    let launcher = MacosFilePublication {
+        mode: 0o600,
+        contents: b"<?xml version=\"1.0\"?><plist>legacy</plist>\n".to_vec(),
+    };
+    let unit = legacy_snapshot_unit_id(Some(&launcher), &entries, &regular_bytes, &executable);
+    let snapshot = MacosLegacySnapshot {
+        unit: unit.clone(),
+        version: executable.version.clone(),
+        launcher: Some(launcher.clone()),
+        entries: entries.clone().into_iter().collect(),
+        regular_files: vec![MacosLegacyFile {
+            path: public_path,
+            mode: 0o700,
+            contents: b"legacy-cli".to_vec(),
+        }],
+        executable: executable.clone(),
+    };
+    let store = InstallStore::new(install_prefix.join("lib/hypercolor"), 128 * 1024);
+    let mut lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("anchored install lock");
+    let config = native_config(&store, &home_path);
+    let mut executor = MacosNativeExecutor::new_with_launchd(
+        &store,
+        &mut lock,
+        &home_path,
+        &install_prefix,
+        &install_dir,
+        config.clone(),
+        MacosOwnerStore::new(home_path.join("Library/Application Support/Hypercolor")),
+        NoLaunchdMutator,
+        NoLaunchdInspector,
+    )
+    .expect("native executor");
+    let retained = executor
+        .snapshot_legacy_unit(&snapshot)
+        .expect("publish synthetic legacy unit");
+    let reused = executor
+        .snapshot_legacy_unit(&snapshot)
+        .expect("reuse exact synthetic legacy unit");
+    assert_eq!(retained, reused);
+    drop(retained);
+    drop(reused);
+    drop(executor);
+    drop(lock);
+
+    let mut lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("cold anchored lock");
+    let retained = retain_macos_unit(&store, &lock, &unit).expect("cold synthetic rebind");
+    let mut executor = MacosNativeExecutor::new_with_launchd(
+        &store,
+        &mut lock,
+        &home_path,
+        &install_prefix,
+        &install_dir,
+        config,
+        MacosOwnerStore::new(home_path.join("Library/Application Support/Hypercolor")),
+        NoLaunchdMutator,
+        NoLaunchdInspector,
+    )
+    .expect("cold native executor");
+    executor
+        .validate_unit_authority(&retained)
+        .expect("cold synthetic authority");
+    executor
+        .validate_legacy_snapshot(
+            &retained,
+            &executable,
+            &MacosExactEntry::RegularFile {
+                mode: launcher.mode,
+                sha256: sha256(&launcher.contents),
+                snapshot_unit: None,
+                snapshot_path: None,
+            },
+            &launcher.contents,
+            &entries,
+        )
+        .expect("cold synthetic content binding");
+    drop(retained);
+    drop(executor);
+    drop(lock);
+
+    let unit_root = store.root().join("units").join(unit.as_str());
+    let index_path = unit_root.join("legacy-snapshot.json");
+    let manifest_path = unit_root.join("manifest.json");
+    let original_index = fs::read(&index_path).expect("canonical legacy index");
+    let original_manifest = fs::read(&manifest_path).expect("canonical legacy manifest");
+    let mut forged_index: serde_json::Value =
+        serde_json::from_slice(&original_index).expect("parse legacy index");
+    forged_index["executable"]["designated_requirement"] =
+        serde_json::Value::String("identifier forged".to_owned());
+    let forged_index = serde_json::to_vec(&forged_index).expect("encode forged legacy index");
+    let mut forged_manifest: serde_json::Value =
+        serde_json::from_slice(&original_manifest).expect("parse legacy manifest");
+    forged_manifest["index_sha256"] = serde_json::Value::String(sha256(&forged_index));
+    fs::write(&index_path, &forged_index).expect("write forged legacy index");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&forged_manifest).expect("encode forged legacy manifest"),
+    )
+    .expect("write forged legacy manifest");
+    let lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("forged anchored lock");
+    assert!(retain_macos_unit(&store, &lock, &unit).is_err());
+    drop(lock);
+    fs::write(&index_path, original_index).expect("restore canonical legacy index");
+    fs::write(&manifest_path, original_manifest).expect("restore canonical legacy manifest");
+
+    let original_index = fs::read(&index_path).expect("restored legacy index");
+    let original_manifest = fs::read(&manifest_path).expect("restored legacy manifest");
+    let mut forged_index: serde_json::Value =
+        serde_json::from_slice(&original_index).expect("parse restored legacy index");
+    forged_index["executable"]["cdhash"] = serde_json::Value::String("0".repeat(40));
+    let forged_index = serde_json::to_vec(&forged_index).expect("encode forged CDHash index");
+    let mut forged_manifest: serde_json::Value =
+        serde_json::from_slice(&original_manifest).expect("parse restored legacy manifest");
+    forged_manifest["index_sha256"] = serde_json::Value::String(sha256(&forged_index));
+    fs::write(&index_path, &forged_index).expect("write forged CDHash index");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&forged_manifest).expect("encode forged CDHash manifest"),
+    )
+    .expect("write forged CDHash manifest");
+    let lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("CDHash-forged anchored lock");
+    assert!(retain_macos_unit(&store, &lock, &unit).is_err());
+    drop(lock);
+    fs::write(&index_path, original_index).expect("restore CDHash index");
+    fs::write(&manifest_path, original_manifest).expect("restore CDHash manifest");
+
+    fs::set_permissions(&unit_root, fs::Permissions::from_mode(0o777))
+        .expect("weaken synthetic root mode");
+    let lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("root-mode anchored lock");
+    assert!(retain_macos_unit(&store, &lock, &unit).is_err());
+    drop(lock);
+    fs::set_permissions(&unit_root, fs::Permissions::from_mode(0o700))
+        .expect("restore synthetic root mode");
+    fs::set_permissions(unit_root.join("bin"), fs::Permissions::from_mode(0o777))
+        .expect("weaken synthetic descendant mode");
+    let lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("descendant-mode anchored lock");
+    assert!(retain_macos_unit(&store, &lock, &unit).is_err());
+    drop(lock);
+    fs::set_permissions(unit_root.join("bin"), fs::Permissions::from_mode(0o700))
+        .expect("restore synthetic descendant mode");
+
+    fs::write(unit_root.join("public/00000.bin"), b"tampered").expect("tamper synthetic snapshot");
+    let lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("tampered anchored lock");
+    assert!(retain_macos_unit(&store, &lock, &unit).is_err());
+}
+
+#[test]
+fn native_executor_inspects_inactive_raw_executable_without_launchd() {
+    let home = tempfile::tempdir().expect("HOME");
+    let home_path = fs::canonicalize(home.path()).expect("canonical HOME");
+    let install_prefix = home_path.join(".local");
+    let install_dir = install_prefix.join("bin");
+    let daemon_path = install_dir.join("hypercolor-daemon");
+    fs::create_dir_all(&install_dir).expect("raw install directory");
+    copy_thin_signed_fixture(&daemon_path);
+    fs::set_permissions(&daemon_path, fs::Permissions::from_mode(0o555))
+        .expect("safe raw executable mode");
+    let metadata = fs::metadata(&daemon_path).expect("raw executable metadata");
+    let store = InstallStore::new(install_prefix.join("lib/hypercolor"), 128 * 1024);
+    let mut lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("anchored install lock");
+    let observed_start = Arc::new(Mutex::new(None));
+    let mut executor = MacosNativeExecutor::new_with_launchd(
+        &store,
+        &mut lock,
+        &home_path,
+        &install_prefix,
+        &install_dir,
+        native_config(&store, &home_path),
+        MacosOwnerStore::new(home_path.join("Library/Application Support/Hypercolor")),
+        CaptureStartMutator {
+            observed_executable: Arc::clone(&observed_start),
+        },
+        NoLaunchdInspector,
+    )
+    .expect("native executor");
+    let observed = executor
+        .inspect_legacy_executable(None)
+        .expect("inactive raw inspection")
+        .expect("raw executable");
+    assert_eq!(observed.path, daemon_path.to_string_lossy());
+    assert_eq!(observed.size, metadata.len());
+    assert_eq!(observed.mode, 0o555);
+    assert_eq!(observed.device, metadata.dev());
+    assert_eq!(observed.inode, metadata.ino());
+    assert_eq!(
+        observed.sha256,
+        sha256(&fs::read(&daemon_path).expect("raw bytes"))
+    );
+    assert!(!observed.designated_requirement.is_empty());
+    let launcher = MacosFilePublication {
+        mode: 0o600,
+        contents: b"<?xml version=\"1.0\"?><plist>legacy</plist>\n".to_vec(),
+    };
+    let launcher_snapshot = executor
+        .persist_launcher_snapshot(&launcher)
+        .expect("legacy launcher snapshot");
+    let entries = BTreeMap::new();
+    let regular_bytes = BTreeMap::new();
+    let unit = legacy_snapshot_unit_id(Some(&launcher), &entries, &regular_bytes, &observed);
+    let snapshot = MacosLegacySnapshot {
+        unit: unit.clone(),
+        version: observed.version.clone(),
+        launcher: Some(launcher.clone()),
+        entries: Vec::new(),
+        regular_files: Vec::new(),
+        executable: observed.clone(),
+    };
+    let retained = executor
+        .snapshot_legacy_unit(&snapshot)
+        .expect("publish signed synthetic snapshot");
+    let displaced = install_dir.join("displaced-daemon");
+    fs::rename(&daemon_path, displaced).expect("retain original executable inode");
+    copy_thin_signed_fixture(&daemon_path);
+    fs::set_permissions(&daemon_path, fs::Permissions::from_mode(0o555))
+        .expect("restored raw executable mode");
+    let restored = fs::metadata(&daemon_path).expect("restored executable metadata");
+    assert_ne!(restored.ino(), observed.inode);
+    let refreshed = executor
+        .inspect_legacy_executable(None)
+        .expect("refreshed signed raw inspection")
+        .expect("restored raw executable");
+    assert_eq!(refreshed.device, restored.dev());
+    assert_eq!(refreshed.inode, restored.ino());
+    let retry_snapshot = MacosLegacySnapshot {
+        executable: refreshed,
+        ..snapshot
+    };
+    let reused = executor
+        .snapshot_legacy_unit(&retry_snapshot)
+        .expect("reuse synthetic snapshot after rollback inode refresh");
+    assert_eq!(retained, reused);
+    assert_eq!(retry_snapshot.unit, unit);
+    let outcome = executor
+        .transition_runtime(&MacosRuntimeTransition::Start {
+            executable: MacosRuntimeExecutable {
+                unit: UnitId::new(format!("legacy-{}", "a".repeat(64))).expect("legacy unit"),
+                path: observed.path,
+                sha256: observed.sha256,
+                size: observed.size,
+                mode: observed.mode,
+                device: observed.device,
+                inode: observed.inode,
+                designated_requirement: observed.designated_requirement,
+                designated_requirement_sha256: observed.designated_requirement_sha256,
+                cdhash: observed.cdhash,
+                synthetic_legacy: true,
+            },
+            launcher_snapshot,
+            after_epoch: 9,
+        })
+        .expect("bounded synthetic runtime submission");
+    assert_eq!(outcome, MacosMutationOutcome::SubmittedUnknown);
+    assert_eq!(
+        *observed_start.lock().expect("captured start expectation"),
+        Some((
+            restored.dev(),
+            restored.ino(),
+            retry_snapshot.executable.cdhash
+        ))
+    );
+}
+
+#[test]
+fn native_executor_rejects_same_path_store_replacement_before_observation() {
+    let home = tempfile::tempdir().expect("HOME");
+    let home_path = fs::canonicalize(home.path()).expect("canonical HOME");
+    let store = InstallStore::new(home_path.join(".local/lib/hypercolor"), 128 * 1024);
+    let mut lock = store
+        .acquire_anchored_lock(&home_path)
+        .expect("anchored install lock");
+    let displaced = home_path.join("displaced-store");
+    fs::rename(store.root(), &displaced).expect("displace retained store");
+    fs::create_dir_all(store.root()).expect("replace canonical store path");
+    let config = MacosInstallConfig {
+        direct_plist_path: home_path
+            .join("Library/LaunchAgents/tech.hyperbliss.hypercolor.plist")
+            .to_string_lossy()
+            .into_owned(),
+        immutable_units_root: store.root().join("units"),
+        active_root: store.root().join("active"),
+        log_directory: home_path.join("Library/Logs/hypercolor"),
+    };
+    let result = MacosNativeExecutor::new_with_launchd(
+        &store,
+        &mut lock,
+        &home_path,
+        &home_path.join(".local"),
+        &home_path.join(".local/bin"),
+        config,
+        MacosOwnerStore::new(home_path.join("Library/Application Support/Hypercolor")),
+        NoLaunchdMutator,
+        NoLaunchdInspector,
+    );
+    assert!(result.is_err());
+    assert!(!home_path.join("Library").exists());
+}
+
 fn config(store: &InstallStore, root: &Path) -> MacosInstallConfig {
     MacosInstallConfig {
         direct_plist_path: root
@@ -1711,6 +2469,110 @@ fn config(store: &InstallStore, root: &Path) -> MacosInstallConfig {
         immutable_units_root: store.root().join("units"),
         active_root: store.root().join("active"),
         log_directory: root.join("home/Library/Logs/hypercolor"),
+    }
+}
+
+fn native_config(store: &InstallStore, home: &Path) -> MacosInstallConfig {
+    MacosInstallConfig {
+        direct_plist_path: home
+            .join("Library/LaunchAgents/tech.hyperbliss.hypercolor.plist")
+            .to_string_lossy()
+            .into_owned(),
+        immutable_units_root: store.root().join("units"),
+        active_root: store.root().join("active"),
+        log_directory: home.join("Library/Logs/hypercolor"),
+    }
+}
+
+fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
+    fs::create_dir_all(path.parent().expect("fixture file parent")).expect("fixture parent");
+    fs::write(path, bytes).expect("fixture file");
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("fixture mode");
+}
+
+fn copy_thin_signed_fixture(path: &Path) {
+    fs::create_dir_all(path.parent().expect("signed fixture parent"))
+        .expect("signed fixture parent directory");
+    let architecture = match std::env::consts::ARCH {
+        "aarch64" => "arm64e",
+        "x86_64" => "x86_64",
+        other => panic!("unsupported signed fixture architecture {other}"),
+    };
+    let status = std::process::Command::new("/usr/bin/lipo")
+        .args(["/bin/ls", "-thin", architecture, "-output"])
+        .arg(path)
+        .status()
+        .expect("run lipo for signed fixture");
+    assert!(status.success(), "lipo must produce a signed thin fixture");
+}
+
+fn legacy_snapshot_unit_id(
+    launcher: Option<&MacosFilePublication>,
+    entries: &BTreeMap<String, MacosExactEntry>,
+    regular_bytes: &BTreeMap<String, Vec<u8>>,
+    executable: &MacosLegacyExecutable,
+) -> UnitId {
+    let mut digest = Sha256::new();
+    let launcher_entry = launcher.map_or(MacosExactEntry::Absent, |launcher| {
+        MacosExactEntry::RegularFile {
+            mode: launcher.mode,
+            sha256: sha256(&launcher.contents),
+            snapshot_unit: None,
+            snapshot_path: None,
+        }
+    });
+    encode_legacy_entry(
+        &mut digest,
+        "launcher",
+        &launcher_entry,
+        launcher.map(|launcher| launcher.contents.as_slice()),
+    );
+    for (path, entry) in entries {
+        encode_legacy_entry(
+            &mut digest,
+            path,
+            entry,
+            regular_bytes.get(path).map(Vec::as_slice),
+        );
+    }
+    digest.update(b"executable\0");
+    digest.update(executable.path.as_bytes());
+    digest.update(b"\0");
+    digest.update(executable.sha256.as_bytes());
+    digest.update(b"\0");
+    digest.update(executable.designated_requirement_sha256.as_bytes());
+    digest.update(b"\0");
+    digest.update(executable.cdhash.as_bytes());
+    UnitId::new(format!("legacy-{}", sha256(&digest.finalize()))).expect("legacy unit ID")
+}
+
+fn encode_legacy_entry(
+    digest: &mut Sha256,
+    path: &str,
+    entry: &MacosExactEntry,
+    contents: Option<&[u8]>,
+) {
+    digest.update(path.as_bytes());
+    digest.update(b"\0");
+    match entry {
+        MacosExactEntry::Absent => digest.update(b"absent\0"),
+        MacosExactEntry::Symlink { target } => {
+            digest.update(b"symlink\0");
+            digest.update(target.as_bytes());
+            digest.update(b"\0");
+        }
+        MacosExactEntry::RegularFile {
+            mode,
+            sha256: expected_sha,
+            ..
+        } => {
+            let contents = contents.expect("regular legacy bytes");
+            assert_eq!(&sha256(contents), expected_sha);
+            digest.update(b"file\0");
+            digest.update(mode.to_le_bytes());
+            digest.update(contents);
+            digest.update(b"\0");
+        }
     }
 }
 
@@ -1752,13 +2614,39 @@ impl ReleaseFixture {
 
     fn with_version(version: &str, daemon: &[u8]) -> Self {
         let root = tempfile::tempdir().expect("release root");
+        let (daemon_bytes, daemon_cdhash) = thin_macho_daemon(daemon);
         let files = [
-            ("bin/hypercolor-daemon", daemon, 0o755),
+            ("bin/hypercolor-daemon", daemon_bytes.as_slice(), 0o755),
             ("bin/hypercolor", b"candidate".as_slice(), 0o755),
             ("bin/hypercolor-app", b"app".as_slice(), 0o755),
             ("bin/hypercolor-tui", b"tui".as_slice(), 0o755),
             ("bin/hypercolor-open", b"open".as_slice(), 0o755),
             ("share/hypercolor/ui/index.html", b"ui".as_slice(), 0o644),
+            (
+                "share/applications/hypercolor.desktop",
+                b"[Desktop Entry]\nExec=hypercolor\n".as_slice(),
+                0o644,
+            ),
+            (
+                "share/bash-completion/completions/hypercolor",
+                b"complete hypercolor\n".as_slice(),
+                0o644,
+            ),
+            (
+                "share/zsh/site-functions/_hypercolor",
+                b"#compdef hypercolor\n".as_slice(),
+                0o644,
+            ),
+            (
+                "share/fish/vendor_completions.d/hypercolor.fish",
+                b"complete -c hypercolor\n".as_slice(),
+                0o644,
+            ),
+            (
+                "share/icons/hicolor/48x48/apps/hypercolor.png",
+                b"icon".as_slice(),
+                0o644,
+            ),
             (
                 "share/hypercolor/effects/bundled/effect.html",
                 b"effect".as_slice(),
@@ -1788,6 +2676,7 @@ impl ReleaseFixture {
                 "path": "bin/hypercolor-daemon",
                 "identifier": "tech.hyperbliss.hypercolor.daemon",
                 "designated_requirement": REQUIREMENT,
+                "cdhash": daemon_cdhash,
             }],
             "notarization": {
                 "id": "2efe2717-52ef-43a5-96dc-0797e4ca1041",
@@ -1810,6 +2699,17 @@ impl ReleaseFixture {
             "share",
             "share/hypercolor",
             "share/hypercolor/ui",
+            "share/applications",
+            "share/bash-completion",
+            "share/bash-completion/completions",
+            "share/zsh",
+            "share/zsh/site-functions",
+            "share/fish",
+            "share/fish/vendor_completions.d",
+            "share/icons",
+            "share/icons/hicolor",
+            "share/icons/hicolor/48x48",
+            "share/icons/hicolor/48x48/apps",
             "share/hypercolor/effects",
             "share/hypercolor/effects/bundled",
             "share/hypercolor/docs",
@@ -1879,14 +2779,137 @@ impl ReleaseFixture {
     }
 }
 
+fn thin_macho_daemon(payload: &[u8]) -> (Vec<u8>, String) {
+    const MACH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_CODE_SIGNATURE: u32 = 0x1d;
+    const EMBEDDED_SIGNATURE: u32 = 0xfade_0cc0;
+    const CODE_DIRECTORY: u32 = 0xfade_0c02;
+    let cpu_type = match std::env::consts::ARCH {
+        "aarch64" => 0x0100_000c_u32,
+        "x86_64" => 0x0100_0007_u32,
+        architecture => panic!("unsupported fixture architecture {architecture}"),
+    };
+    let mut code_directory = vec![0_u8; 40];
+    code_directory[0..4].copy_from_slice(&CODE_DIRECTORY.to_be_bytes());
+    code_directory[4..8].copy_from_slice(&40_u32.to_be_bytes());
+    code_directory[36] = 32;
+    code_directory[37] = 2;
+    let mut signature = vec![0_u8; 20];
+    signature[0..4].copy_from_slice(&EMBEDDED_SIGNATURE.to_be_bytes());
+    signature[4..8].copy_from_slice(&60_u32.to_be_bytes());
+    signature[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    signature[12..16].copy_from_slice(&0_u32.to_be_bytes());
+    signature[16..20].copy_from_slice(&20_u32.to_be_bytes());
+    signature.extend_from_slice(&code_directory);
+    let signature_offset = 48_u32 + u32::try_from(payload.len()).expect("fixture payload bound");
+    let mut macho = vec![0_u8; 48];
+    macho[0..4].copy_from_slice(&MACH_MAGIC_64.to_le_bytes());
+    macho[4..8].copy_from_slice(&cpu_type.to_le_bytes());
+    macho[16..20].copy_from_slice(&1_u32.to_le_bytes());
+    macho[20..24].copy_from_slice(&16_u32.to_le_bytes());
+    macho[32..36].copy_from_slice(&LC_CODE_SIGNATURE.to_le_bytes());
+    macho[36..40].copy_from_slice(&16_u32.to_le_bytes());
+    macho[40..44].copy_from_slice(&signature_offset.to_le_bytes());
+    macho[44..48].copy_from_slice(&60_u32.to_le_bytes());
+    macho.extend_from_slice(payload);
+    macho.extend_from_slice(&signature);
+    let digest = Sha256::digest(code_directory);
+    (macho, hex_bytes(&digest[..20]))
+}
+
 fn retain_candidate(store: &InstallStore, id: &UnitId) -> UnitRecord {
     let lock = store.acquire_lock().expect("retain lock");
     retain_macos_unit(store, &lock, id).expect("retain installed macOS unit")
 }
 
-fn legacy_unit(id: &UnitId) -> UnitRecord {
+fn legacy_unit(snapshot: &MacosLegacySnapshot, daemon_bytes: &[u8]) -> UnitRecord {
     let parent = tempfile::tempdir().expect("legacy authority parent");
-    fs::create_dir(parent.path().join("legacy")).expect("legacy authority directory");
+    let root = parent.path().join("legacy");
+    fs::create_dir(&root).expect("legacy authority directory");
+    let regular_files = snapshot
+        .regular_files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    let mut stored_entries = serde_json::Map::new();
+    for (position, (path, entry)) in snapshot.entries.iter().enumerate() {
+        let stored = match entry {
+            MacosExactEntry::Absent => json!({"kind":"absent"}),
+            MacosExactEntry::Symlink { target } => {
+                json!({"kind":"symlink","target":target})
+            }
+            MacosExactEntry::RegularFile { mode, sha256, .. } => {
+                let file = regular_files[path.as_str()];
+                let relative = format!("public/{position:05}.bin");
+                write_mode(&root.join(&relative), &file.contents, *mode);
+                json!({
+                    "kind":"regular_file",
+                    "file":{
+                        "relative_path":relative,
+                        "mode":mode,
+                        "sha256":sha256,
+                        "size":file.contents.len(),
+                    }
+                })
+            }
+        };
+        stored_entries.insert(path.clone(), stored);
+    }
+    let launcher = snapshot.launcher.as_ref().map(|launcher| {
+        write_mode(
+            &root.join("launchd/prior.plist"),
+            &launcher.contents,
+            launcher.mode,
+        );
+        json!({
+            "relative_path":"launchd/prior.plist",
+            "mode":launcher.mode,
+            "sha256":sha256(&launcher.contents),
+            "size":launcher.contents.len(),
+        })
+    });
+    let executable = &snapshot.executable;
+    let index = serde_json::to_vec(&json!({
+        "schema_version":2,
+        "unit":snapshot.unit,
+        "version":snapshot.version,
+        "executable":{
+            "path":executable.path,
+            "sha256":executable.sha256,
+            "size":executable.size,
+            "mode":executable.mode,
+            "device":executable.device,
+            "inode":executable.inode,
+            "designated_requirement":executable.designated_requirement,
+            "designated_requirement_sha256":executable.designated_requirement_sha256,
+            "cdhash":executable.cdhash,
+            "version":executable.version,
+        },
+        "launcher":launcher,
+        "entries":stored_entries,
+    }))
+    .expect("legacy index");
+    let manifest = serde_json::to_vec(&json!({
+        "name":"hypercolor-macos-legacy-snapshot",
+        "version":snapshot.version,
+        "unit":snapshot.unit,
+        "index_sha256":sha256(&index),
+    }))
+    .expect("legacy manifest");
+    write_mode(&root.join("manifest.json"), &manifest, 0o644);
+    write_mode(&root.join("legacy-snapshot.json"), &index, 0o644);
+    write_mode(
+        &root.join("bin/hypercolor-daemon"),
+        daemon_bytes,
+        snapshot.executable.mode,
+    );
+    for relative in ["", "bin", "launchd", "public"] {
+        let directory = root.join(relative);
+        if directory.exists() {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                .expect("canonical private legacy directory mode");
+        }
+    }
     let exclusive = ExclusiveDirectory::try_acquire(parent.path(), Path::new(".legacy.lock"))
         .expect("legacy lock")
         .expect("exclusive legacy lock");
@@ -1897,8 +2920,8 @@ fn legacy_unit(id: &UnitId) -> UnitRecord {
         .expect("legacy directory authority")
         .read_only()
         .expect("read-only legacy authority");
-    bind_macos_retained_legacy_unit(id.clone(), parent.path().join("legacy"), authority)
-        .expect("bind legacy unit")
+    bind_macos_retained_legacy_unit(snapshot.unit.clone(), root, authority)
+        .expect("bind complete legacy unit")
 }
 
 fn native_platform() -> &'static str {
@@ -1926,6 +2949,18 @@ fn sha256(bytes: &[u8]) -> String {
             write!(&mut output, "{byte:02x}").expect("write digest");
             output
         })
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    bytes.iter().fold(
+        String::with_capacity(bytes.len() * 2),
+        |mut output, byte| {
+            write!(&mut output, "{byte:02x}").expect("write hexadecimal bytes");
+            output
+        },
+    )
 }
 
 fn exact_entry_content_matches(left: &MacosExactEntry, right: &MacosExactEntry) -> bool {

@@ -268,6 +268,28 @@ signature_requirement() {
   codesign -d -r- "$1" 2>&1 | sed -n 's/^designated => /designated => /p'
 }
 
+codesign_arch_for_target() {
+  case "$1" in
+    aarch64-apple-darwin) printf 'arm64\n' ;;
+    x86_64-apple-darwin) printf 'x86_64\n' ;;
+    *) die "unsupported CDHash target: $1" ;;
+  esac
+}
+
+signature_cdhash() {
+  local path="$1"
+  local target="$2"
+  local arch metadata cdhash
+  arch="$(codesign_arch_for_target "${target}")"
+  if ! metadata="$(codesign -d --arch "${arch}" --verbose=4 "${path}" 2>&1)"; then
+    die "could not inspect architecture-specific CDHash for ${path}"
+  fi
+  cdhash="$(sed -n 's/^CDHash=\([0-9a-f]\{40\}\)$/\1/p' <<< "${metadata}")"
+  [[ "${cdhash}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "codesign returned malformed or ambiguous CDHash for ${path}"
+  printf '%s\n' "${cdhash}"
+}
+
 normalize_entitlements() {
   plutil -convert json -o - "$1" | jq -S .
 }
@@ -412,17 +434,19 @@ write_object_inventory() {
   local output="$4"
   local records
   records="$(mktemp)"
-  local path relative_path requirement
+  local path relative_path requirement cdhash
   while IFS= read -r -d '' path; do
     is_macho "${path}" || continue
     relative_path="${path#"${scope_root}/"}"
     resolve_rule "${scope}" "${relative_path}" "${target}"
     requirement="$(signature_requirement "${path}")"
+    cdhash="$(signature_cdhash "${path}" "${target}")"
     jq -n \
       --arg path "${relative_path}" \
       --arg identifier "${RULE_IDENTIFIER}" \
       --arg requirement "${requirement}" \
-      '{path: $path, identifier: $identifier, designated_requirement: $requirement}' \
+      --arg cdhash "${cdhash}" \
+      '{path: $path, identifier: $identifier, designated_requirement: $requirement, cdhash: $cdhash}' \
       >> "${records}"
   done < <(find "${scope_root}" -type f -print0)
   jq -s . "${records}" > "${output}"
