@@ -4487,12 +4487,18 @@ async fn list_control_surfaces_preserves_driver_action_confirmation() {
 async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
+    let settings_key = hypercolor_daemon::device_settings::resolve_device_settings_key(
+        &state.device_registry,
+        &state.device_settings,
+        device_id,
+    )
+    .await;
     state
         .device_settings
         .write()
         .await
         .set_driver_control_values(
-            &device_id.to_string(),
+            &settings_key,
             ControlValueMap::from([
                 (
                     "protocol".to_owned(),
