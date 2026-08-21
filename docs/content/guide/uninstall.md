@@ -312,6 +312,7 @@ connection profiles, and scenes. When you are ready to wipe it:
 |---|---|---|
 | Linux | `~/.config/hypercolor/` | `hypercolor.toml`, `cli.toml` connection profiles |
 | Linux | `~/.local/share/hypercolor/` | Bundled UI, effects, logs, first-run marker |
+| Linux | `~/.local/state/hypercolor/` | Runtime session, device identity, and output state |
 | Linux | `~/.cache/hypercolor/` | Servo runtime cache, transient state |
 | Windows | `%APPDATA%\hypercolor\` | `hypercolor.toml`, `cli.toml` connection profiles |
 | Windows | `%LOCALAPPDATA%\hypercolor\` | Bundled UI, effects, logs, first-run marker |
@@ -321,7 +322,7 @@ connection profiles, and scenes. When you are ready to wipe it:
 Linux purge:
 
 ```bash
-rm -rf ~/.config/hypercolor ~/.local/share/hypercolor ~/.cache/hypercolor
+rm -rf ~/.config/hypercolor ~/.local/share/hypercolor ~/.local/state/hypercolor ~/.cache/hypercolor
 ```
 
 macOS purge:
