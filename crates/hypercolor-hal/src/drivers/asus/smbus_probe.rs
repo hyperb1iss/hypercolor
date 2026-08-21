@@ -8,7 +8,6 @@ use std::sync::Once;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_types::device::{
     ConnectionType, DeviceFamily, DeviceIdentifier, DeviceOrigin, SMBUS_OUTPUT_BACKEND_ID,
-    SegmentInfo,
 };
 use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
 use thiserror::Error;
@@ -16,9 +15,9 @@ use thiserror::Error;
 use crate::drivers::asus::smbus::AuraSmBusProtocol;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::drivers::asus::smbus::{encode_ene_transaction, ene_dram_remap_sequence};
-use crate::protocol::{Protocol, ProtocolError};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use crate::protocol::{ProtocolZone, ResponseStatus};
+use crate::protocol::ResponseStatus;
+use crate::protocol::{Protocol, ProtocolError};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 
@@ -707,11 +706,7 @@ fn build_device_info(
     address: u16,
     device_id: hypercolor_types::device::DeviceId,
 ) -> DeviceInfo {
-    let segments = protocol
-        .zones()
-        .into_iter()
-        .map(protocol_zone_to_segment_info)
-        .collect::<Vec<_>>();
+    let segments = protocol.zones();
 
     DeviceInfo {
         id: device_id,
@@ -728,16 +723,5 @@ fn build_device_info(
         segments,
         firmware_version: firmware_name,
         capabilities: protocol.capabilities(),
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn protocol_zone_to_segment_info(zone: ProtocolZone) -> SegmentInfo {
-    SegmentInfo {
-        name: zone.name,
-        led_count: zone.led_count,
-        topology: zone.topology,
-        color_format: zone.color_format,
-        layout_hint: zone.layout_hint,
     }
 }

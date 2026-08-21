@@ -1,12 +1,12 @@
 //! Legacy libusb control-transfer protocols for early UNI hubs.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 
-use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-};
+use crate::protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};
 use crate::transport::vendor::{VendorControlOperation, encode_operations as encode_vendor_ops};
 
 use super::common::apply_al_white_limit;
@@ -503,11 +503,11 @@ impl Protocol for LegacyUniHubProtocol {
         LEGACY_RESPONSE_TIMEOUT
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         self.fan_counts
             .iter()
             .enumerate()
-            .map(|(index, fan_count)| ProtocolZone {
+            .map(|(index, fan_count)| SegmentInfo {
                 name: format!("Group {}", index + 1),
                 led_count: u32::from(*fan_count)
                     * u32::try_from(self.leds_per_fan())

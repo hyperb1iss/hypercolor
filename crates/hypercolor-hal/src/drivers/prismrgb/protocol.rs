@@ -1,5 +1,7 @@
 //! Pure `PrismRGB` protocol encoder/decoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
@@ -12,8 +14,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 const PRISM_S_ATX_LEDS: usize = 120;
@@ -447,12 +449,12 @@ impl Protocol for PrismRgbProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         match self.model {
             PrismRgbModel::PrismS => {
                 let mut zones = Vec::new();
                 if self.prism_s_config.atx_present {
-                    zones.push(ProtocolZone {
+                    zones.push(SegmentInfo {
                         name: "ATX Strimer".to_owned(),
                         led_count: u32::try_from(PRISM_S_ATX_LEDS).unwrap_or(u32::MAX),
                         topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
@@ -461,7 +463,7 @@ impl Protocol for PrismRgbProtocol {
                     });
                 }
                 if let Some(gpu_cable) = self.prism_s_config.gpu_cable {
-                    zones.push(ProtocolZone {
+                    zones.push(SegmentInfo {
                         name: "GPU Strimer".to_owned(),
                         led_count: u32::try_from(gpu_cable.led_count()).unwrap_or(u32::MAX),
                         topology: gpu_cable.topology(),
@@ -471,7 +473,7 @@ impl Protocol for PrismRgbProtocol {
                 }
                 zones
             }
-            PrismRgbModel::PrismMini => vec![ProtocolZone {
+            PrismRgbModel::PrismMini => vec![SegmentInfo {
                 name: "Channel 1".to_owned(),
                 led_count: u32::try_from(PRISM_MINI_MAX_LEDS).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,

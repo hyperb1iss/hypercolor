@@ -5,14 +5,16 @@
 //! feature packets for control, large output reports for color data) and
 //! differ only in packet sizes, subcommands, and ring topology.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceTopologyHint};
 use zerocopy::{FromZeros, IntoBytes};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 use super::common::{
@@ -657,12 +659,12 @@ impl Protocol for Ene6k77Protocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let zone_count = usize::from(self.variant.logical_channel_count());
         let mut zones = Vec::with_capacity(zone_count);
 
         for logical_channel in 0..zone_count {
-            zones.push(ProtocolZone {
+            zones.push(SegmentInfo {
                 name: self.zone_name(logical_channel),
                 led_count: self.logical_zone_led_count(logical_channel),
                 topology: self.zone_topology(logical_channel),

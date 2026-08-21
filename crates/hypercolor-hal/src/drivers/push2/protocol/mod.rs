@@ -1,5 +1,7 @@
 //! Ableton Push 2 MIDI + display protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 mod display;
 mod led_palette;
 
@@ -14,8 +16,8 @@ use hypercolor_types::device::{
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 const PUSH2_RGB_LED_COUNT: usize = 92;
@@ -371,58 +373,58 @@ impl Protocol for Push2Protocol {
         }
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         vec![
-            ProtocolZone {
+            SegmentInfo {
                 name: "Pads".to_owned(),
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Buttons Above".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Buttons Below".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Scene Launch".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Transport".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Custom,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "White Buttons".to_owned(),
                 led_count: u32::try_from(PUSH2_WHITE_BUTTON_COUNT).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Touch Strip".to_owned(),
                 led_count: 31,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Display".to_owned(),
                 led_count: 0,
                 topology: DeviceTopologyHint::Display {

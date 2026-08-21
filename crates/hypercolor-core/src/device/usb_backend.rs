@@ -25,7 +25,7 @@ use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::attachment::DeviceComponentProfile;
 use hypercolor_types::device::{
-    DeviceError, DeviceId, DeviceInfo, OwnedDisplayFramePayload, SegmentInfo, USB_OUTPUT_BACKEND_ID,
+    DeviceError, DeviceId, DeviceInfo, OwnedDisplayFramePayload, USB_OUTPUT_BACKEND_ID,
 };
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -1600,23 +1600,9 @@ fn build_connected_device_info(
 ) -> DeviceInfo {
     let mut info = template.clone();
     info.id = device_id;
-    info.segments = protocol
-        .zones()
-        .into_iter()
-        .map(protocol_zone_to_segment_info)
-        .collect();
+    info.segments = protocol.zones();
     info.capabilities = protocol.capabilities();
     info
-}
-
-fn protocol_zone_to_segment_info(zone: hypercolor_hal::protocol::ProtocolZone) -> SegmentInfo {
-    SegmentInfo {
-        name: zone.name,
-        led_count: zone.led_count,
-        topology: zone.topology,
-        color_format: zone.color_format,
-        layout_hint: zone.layout_hint,
-    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 //! ASUS Aura ENE `SMBus` protocol helpers.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
@@ -13,8 +15,8 @@ use hypercolor_types::device::{
 };
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 /// ENE indirect address register.
@@ -558,14 +560,14 @@ impl Protocol for AuraSmBusProtocol {
         }
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
 
         if state.led_count == 0 {
             return Vec::new();
         }
 
-        vec![ProtocolZone {
+        vec![SegmentInfo {
             name: "Lighting".to_owned(),
             led_count: state.led_count,
             topology: DeviceTopologyHint::Strip,

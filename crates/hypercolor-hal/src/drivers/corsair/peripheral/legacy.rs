@@ -1,12 +1,13 @@
 //! Corsair legacy vendor-control lighting commands.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceFeatures};
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-    TransferType,
+    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 use crate::transport::vendor::{
     VendorControlOperation, encode_operations as encode_vendor_operations,
@@ -134,7 +135,7 @@ impl Protocol for CorsairLegacyPeripheralProtocol {
         LEGACY_TIMEOUT
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         Vec::new()
     }
 

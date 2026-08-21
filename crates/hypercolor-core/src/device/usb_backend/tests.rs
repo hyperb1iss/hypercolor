@@ -5,10 +5,10 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceDeliveryStatus;
 use hypercolor_hal::protocol::{
-    ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus, TransferType,
+    ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint,
+    ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
@@ -973,7 +973,7 @@ impl Protocol for FairnessProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         Vec::new()
     }
 
@@ -1030,7 +1030,7 @@ impl Protocol for ParallelFairnessProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         Vec::new()
     }
 

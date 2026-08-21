@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, Result};
 use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
-use hypercolor_hal::protocol::{Protocol, ProtocolZone};
+use hypercolor_hal::protocol::Protocol;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceIdentifier,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, USB_OUTPUT_BACKEND_ID,
@@ -57,11 +57,7 @@ impl UsbScanner {
         device_id: hypercolor_types::device::DeviceId,
     ) -> DeviceInfo {
         let (segments, capabilities) = if let Some(protocol) = protocol {
-            let segments = protocol
-                .zones()
-                .into_iter()
-                .map(protocol_zone_to_segment_info)
-                .collect::<Vec<_>>();
+            let segments = protocol.zones();
             (segments, protocol.capabilities())
         } else {
             let fallback_led_count = 1_u32;
@@ -192,16 +188,6 @@ impl UsbScanner {
         }
 
         Ok(discovered)
-    }
-}
-
-fn protocol_zone_to_segment_info(zone: ProtocolZone) -> hypercolor_types::device::SegmentInfo {
-    hypercolor_types::device::SegmentInfo {
-        name: zone.name,
-        led_count: zone.led_count,
-        topology: zone.topology,
-        color_format: zone.color_format,
-        layout_hint: zone.layout_hint,
     }
 }
 

@@ -1,5 +1,7 @@
 //! Corsair Bragi HID RGB protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +12,7 @@ use tracing::warn;
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 use super::topology::zones_for_bragi;
@@ -281,7 +283,7 @@ impl Protocol for CorsairBragiProtocol {
         BRAGI_RESPONSE_TIMEOUT
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         zones_for_bragi(&self.config)
     }
 
