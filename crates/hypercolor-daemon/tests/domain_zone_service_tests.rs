@@ -87,7 +87,7 @@ async fn seeded_scene(state: &AppState) -> SceneId {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("scene should commit");
     scene_id

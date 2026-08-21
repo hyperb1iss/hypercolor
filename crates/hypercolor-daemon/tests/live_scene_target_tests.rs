@@ -145,7 +145,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene A should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("scene A should commit");
 
@@ -175,7 +175,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene B should activate before candidates are opened");
-    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("scene B should commit");
 
@@ -274,7 +274,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("snapshot scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("snapshot scene should commit");
     let revision = state.scene_manager.revision();

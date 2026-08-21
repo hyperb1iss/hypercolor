@@ -91,7 +91,7 @@ use crate::domain::context::{DeviceContext, RuntimeSessionService, SceneContext}
 use crate::domain::effect::EffectContext;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
-use crate::domain::scene::SceneService;
+use crate::domain::scene::{SceneLibraryContext, SceneService};
 use crate::domain::scene_tree::SceneTreeContext;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
@@ -148,6 +148,9 @@ pub struct AppState {
 
     /// Live scene-tree read and mutation authority.
     pub scene_tree: SceneTreeContext,
+
+    /// Named scene library and activation authority.
+    pub scene_library: SceneLibraryContext,
 
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
@@ -664,6 +667,12 @@ impl AppState {
             devices.clone(),
             start_time,
         );
+        let scene_library = SceneLibraryContext::new(
+            scene.clone(),
+            layout.clone(),
+            output.clone(),
+            Arc::clone(&event_bus),
+        );
         let effects = EffectContext::new(
             Arc::clone(&effect_registry),
             scene.clone(),
@@ -685,6 +694,7 @@ impl AppState {
             output,
             effects,
             scene_tree,
+            scene_library,
             device_registry,
             effect_registry,
             scene_manager,
@@ -822,6 +832,12 @@ impl AppState {
             devices.clone(),
             daemon.start_time,
         );
+        let scene_library = SceneLibraryContext::new(
+            scene.clone(),
+            layout.clone(),
+            output.clone(),
+            Arc::clone(&daemon.event_bus),
+        );
         let effects = EffectContext::new(
             Arc::clone(&daemon.effect_registry),
             scene.clone(),
@@ -843,6 +859,7 @@ impl AppState {
             output,
             effects,
             scene_tree,
+            scene_library,
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),
@@ -1026,7 +1043,7 @@ async fn clear_active_scene_effect_groups(
         return Ok(None);
     }
 
-    crate::domain::scene::commit_scene(state.as_ref(), mutation)
+    crate::domain::scene::commit_scene(&state.scene, mutation)
         .await?
         .log_if_retrying("Failed to persist effect fallback");
     persist_runtime_session(state).await;
@@ -1109,22 +1126,6 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
 
 pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::DiscoveryRuntime {
     state.driver_host.discovery_runtime()
-}
-
-/// Re-evaluate device connect behavior after a change to what the active
-/// scene targets, so a device placed in a zone connects now instead of
-/// whenever the next discovery sweep happens to run.
-///
-/// Awaited rather than detached, matching `apply_layout` and the logical
-/// device endpoints. Reconciliation only performs I/O for devices whose
-/// eligibility actually changed — a device already Connected and still
-/// wanted, or still Known and still unwanted, yields no lifecycle actions
-/// at all — so an edit that moves no device costs one in-memory walk.
-/// Detaching it would buy nothing and cost ordering: concurrent runs could
-/// apply stale eligibility out of order, and an in-flight connect could
-/// outlive shutdown's disconnect sweep.
-pub(crate) async fn sync_connectivity(state: &AppState) {
-    state.devices.sync_connectivity().await;
 }
 
 // ── Router ───────────────────────────────────────────────────────────────

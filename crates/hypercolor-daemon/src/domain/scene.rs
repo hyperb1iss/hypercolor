@@ -50,11 +50,13 @@ use hypercolor_types::scene::{
 };
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
-use crate::api::AppState;
 use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
+use crate::domain::context::SceneContext;
+use crate::domain::layout::LayoutContext;
+use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
-use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::domain::{DomainError, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
 
@@ -74,6 +76,31 @@ struct SceneServiceInner {
 /// Lock-free render-side access to the latest admitted scene plan.
 #[derive(Clone)]
 pub struct ScenePlanReader(Arc<SceneServiceInner>);
+
+/// Named scene library and activation authority shared by every transport.
+#[derive(Clone)]
+pub struct SceneLibraryContext {
+    scene: SceneContext,
+    layout: LayoutContext,
+    output: OutputContext,
+    event_bus: Arc<HypercolorBus>,
+}
+
+impl SceneLibraryContext {
+    pub(crate) fn new(
+        scene: SceneContext,
+        layout: LayoutContext,
+        output: OutputContext,
+        event_bus: Arc<HypercolorBus>,
+    ) -> Self {
+        Self {
+            scene,
+            layout,
+            output,
+            event_bus,
+        }
+    }
+}
 
 impl ScenePlanReader {
     /// Borrow the latest admitted scene plan without cloning its `Arc`.
@@ -1282,17 +1309,10 @@ impl SceneMutation {
 /// the mutation is committed, and where they ended up is reported by
 /// [`SceneCommit::durability`].
 pub async fn commit_scene(
-    state: &AppState,
+    ctx: &SceneContext,
     mutation: SceneMutation,
 ) -> Result<SceneCommit, DomainError> {
-    state
-        .scene_manager
-        .commit_mutation(
-            state.scene_store.as_ref(),
-            state.zone_layout_previews.as_ref(),
-            mutation,
-        )
-        .await
+    ctx.commit(mutation).await
 }
 
 /// How many times an idempotent reconciliation rebuilds its candidate
@@ -1319,26 +1339,10 @@ pub const COMMIT_ATTEMPTS: usize = 4;
 /// Whatever `build` returns, or the last [`DomainError::Conflict`] when
 /// every attempt loses.
 pub async fn commit_retrying<T>(
-    state: &AppState,
-    mut build: impl FnMut(&mut SceneMutation) -> Result<Option<T>, DomainError>,
+    ctx: &SceneContext,
+    build: impl FnMut(&mut SceneMutation) -> Result<Option<T>, DomainError>,
 ) -> Result<Option<(T, SceneCommit)>, DomainError> {
-    let mut last_conflict = None;
-    for _ in 0..COMMIT_ATTEMPTS {
-        let mut mutation = state.scene_manager.begin_mutation().await;
-        let Some(value) = build(&mut mutation)? else {
-            return Ok(None);
-        };
-        match commit_scene(state, mutation).await {
-            Ok(commit) => return Ok(Some((value, commit))),
-            Err(conflict @ DomainError::Conflict { .. }) => {
-                last_conflict = Some(conflict);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Err(last_conflict.unwrap_or_else(|| {
-        DomainError::conflict("scene commit did not converge after repeated concurrent writes")
-    }))
+    ctx.commit_retrying(build).await
 }
 
 // ── Scene media admission ────────────────────────────────────────────────
@@ -1626,21 +1630,19 @@ pub struct SceneActivated {
 /// producer caps, and [`DomainError::Conflict`] when a
 /// concurrent scene mutation lands first.
 pub async fn activate_scene(
-    state: &AppState,
+    ctx: &SceneLibraryContext,
     command: ActivateScene,
-    meta: MutationContext,
 ) -> Result<SceneActivated, DomainError> {
-    let _ = meta;
-
-    let media_admission = state.scene.media_admission_context().await;
-    let display_surfaces = state.devices.connected_display_surface_layouts().await;
-    let _activation_guard = state
-        .scene_transactions
-        .acquire_scene_activation_guard()
+    let media_admission = ctx.scene.media_admission_context().await;
+    let display_surfaces = ctx
+        .scene
+        .devices()
+        .connected_display_surface_layouts()
         .await;
-    let layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
+    let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
+    let layout_guard = ctx.layout.acquire_update_guard().await;
 
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
 
     let scene = mutation
@@ -1662,18 +1664,17 @@ pub async fn activate_scene(
         SceneChangeReason::UserActivate,
     )?;
 
-    let commit = commit_scene(state, mutation).await?;
+    let commit = ctx.scene.commit(mutation).await?;
 
-    state
-        .scene
+    ctx.scene
         .apply_media_soft_admission(command.scene_id, &scene_name, admission.estimated_cost_us)
         .await;
-    let layout = apply_activation_layout(state, layout_guard, layout_id).await;
-    let brightness = apply_activation_brightness(state, activation_brightness).await;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let layout = apply_activation_layout(ctx, layout_guard, layout_id).await;
+    let brightness = apply_activation_brightness(ctx, activation_brightness).await;
+    ctx.scene.save_runtime_session().await;
 
     // Which scene is active decides which devices are worth connecting.
-    crate::api::sync_connectivity(state).await;
+    ctx.scene.devices().sync_connectivity().await;
 
     Ok(SceneActivated {
         scene_id: command.scene_id,
@@ -1687,7 +1688,7 @@ pub async fn activate_scene(
 }
 
 async fn apply_activation_layout(
-    state: &AppState,
+    ctx: &SceneLibraryContext,
     guard: LayoutUpdateGuard,
     layout_id: Option<hypercolor_types::identity::LayoutId>,
 ) -> SceneLayoutActivationOutcome {
@@ -1698,10 +1699,10 @@ async fn apply_activation_layout(
             message: None,
         };
     };
-    let layout = state.layouts.read().await.get(layout_id.as_str()).cloned();
+    let layout = ctx.layout.get(&layout_id).await;
     let Some(layout) = layout else {
         let message = format!("scene layout '{layout_id}' is not available");
-        state.event_bus.publish(HypercolorEvent::Error {
+        ctx.event_bus.publish(HypercolorEvent::Error {
             code: "scene_layout_unavailable".to_owned(),
             message: message.clone(),
             severity: Severity::Warning,
@@ -1713,7 +1714,7 @@ async fn apply_activation_layout(
         };
     };
 
-    match state.layout.apply_persisted_update(guard, layout).await {
+    match ctx.layout.apply_persisted_update(guard, layout).await {
         Ok(()) => SceneLayoutActivationOutcome {
             layout_id: Some(layout_id),
             applied: true,
@@ -1730,7 +1731,7 @@ async fn apply_activation_layout(
 }
 
 async fn apply_activation_brightness(
-    state: &AppState,
+    ctx: &SceneLibraryContext,
     brightness: Option<f32>,
 ) -> SideEffectOutcome {
     let Some(brightness) = brightness else {
@@ -1740,7 +1741,7 @@ async fn apply_activation_brightness(
         };
     };
 
-    match crate::domain::output::set_brightness(&state.output, brightness).await {
+    match crate::domain::output::set_brightness(&ctx.output, brightness).await {
         Ok(()) => SideEffectOutcome::applied(),
         Err(error) => SideEffectOutcome::failed(format!(
             "brightness did not apply: {error}; patch /output to retry"
@@ -1830,13 +1831,10 @@ pub struct SceneDeactivated {
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn create_scene(
-    state: &AppState,
+    ctx: &SceneLibraryContext,
     command: CreateScene,
-    meta: MutationContext,
 ) -> Result<SceneWritten, DomainError> {
-    let _ = meta;
-
-    let default_layout = state.effects.full_scope_layout();
+    let default_layout = ctx.layout.current();
     let scene = Scene {
         id: SceneId::new(),
         name: command.name,
@@ -1858,9 +1856,9 @@ pub async fn create_scene(
         mutation_mode: command.mutation_mode.unwrap_or(SceneMutationMode::Live),
     };
 
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     mutation.create_scene(scene.clone())?;
-    let commit = commit_scene(state, mutation).await?;
+    let commit = ctx.scene.commit(mutation).await?;
 
     Ok(SceneWritten { scene, commit })
 }
@@ -1877,25 +1875,17 @@ pub async fn create_scene(
 /// cannot be added, and [`DomainError::Conflict`] when a concurrent
 /// scene mutation lands first.
 pub async fn snapshot_scene(
-    state: &AppState,
+    ctx: &SceneLibraryContext,
     command: SnapshotScene,
-    meta: MutationContext,
 ) -> Result<SceneWritten, DomainError> {
-    let _ = meta;
-
-    let _layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let _layout_guard = ctx.layout.acquire_update_guard().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     let active = mutation
         .scenes()
         .active_scene()
         .cloned()
         .ok_or_else(|| DomainError::conflict("no active scene to snapshot"))?;
-    let layout_id = {
-        let spatial = state.spatial_engine.snapshot();
-        hypercolor_types::identity::LayoutId::new(spatial.layout().id.clone()).map_err(|error| {
-            DomainError::Internal(anyhow::anyhow!("active layout has an invalid id: {error}"))
-        })?
-    };
+    let layout_id = ctx.layout.active_layout_id()?;
     let scene = Scene {
         id: SceneId::new(),
         name: command.name,
@@ -1908,7 +1898,7 @@ pub async fn snapshot_scene(
     };
 
     mutation.create_scene(scene.clone())?;
-    let commit = commit_scene(state, mutation).await?;
+    let commit = ctx.scene.commit(mutation).await?;
 
     Ok(SceneWritten { scene, commit })
 }
@@ -1926,12 +1916,9 @@ pub async fn snapshot_scene(
 /// [`DomainError::PreconditionFailed`] for a stale revision, and
 /// [`DomainError::Conflict`] when a concurrent mutation lands first.
 pub async fn replace_scene(
-    state: &AppState,
+    ctx: &SceneLibraryContext,
     command: ReplaceScene,
-    meta: MutationContext,
 ) -> Result<SceneWritten, DomainError> {
-    let _ = meta;
-
     if command.document.id.is_some_and(|id| id != command.scene_id) {
         return Err(DomainError::validation_field(
             "id",
@@ -1939,8 +1926,8 @@ pub async fn replace_scene(
         ));
     }
 
-    let default_layout = state.effects.full_scope_layout();
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let default_layout = ctx.layout.current();
+    let mut mutation = ctx.scene.begin_mutation().await;
     crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
     let existing = mutation
         .scenes()
@@ -1984,12 +1971,12 @@ pub async fn replace_scene(
         return Err(DomainError::validation(errors.join("; ")));
     }
     mutation.update_scene(updated.clone())?;
-    crate::domain::layer::validate_candidate_media_admission(&state.scene, &mutation, updated.id)
+    crate::domain::layer::validate_candidate_media_admission(&ctx.scene, &mutation, updated.id)
         .await?;
     mutation.retire_scene_previews(updated.id);
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
-    crate::api::sync_connectivity(state).await;
+    let commit = ctx.scene.commit(mutation).await?;
+    ctx.scene.save_runtime_session().await;
+    ctx.scene.devices().sync_connectivity().await;
 
     Ok(SceneWritten {
         scene: updated,
@@ -2206,44 +2193,32 @@ fn replacement_zone_layout(
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn delete_scene(
-    state: &AppState,
+    ctx: &SceneLibraryContext,
     scene_id: SceneId,
-    meta: MutationContext,
 ) -> Result<SceneDeleted, DomainError> {
-    let _ = meta;
-
     if scene_id.is_default() {
         return Err(DomainError::conflict("Default scene cannot be deleted"));
     }
 
-    let _activation_guard = state
-        .scene_transactions
-        .acquire_scene_activation_guard()
-        .await;
-    let is_active = state
-        .scene_manager
-        .snapshot()
-        .await
-        .active_scene_id()
-        .copied()
-        == Some(scene_id);
+    let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
+    let is_active = ctx.scene.snapshot().await.active_scene_id().copied() == Some(scene_id);
     let layout_guard = if is_active {
-        Some(state.scene_transactions.acquire_layout_update_guard().await)
+        Some(ctx.layout.acquire_update_guard().await)
     } else {
         None
     };
 
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
     let scene = mutation.delete_scene(&scene_id)?;
     let current_scene = mutation.scenes().active_scene().cloned();
 
     mutation.retire_scene_previews(scene_id);
-    let commit = commit_scene(state, mutation).await?;
+    let commit = ctx.scene.commit(mutation).await?;
     drop(layout_guard);
-    crate::api::save_runtime_session_snapshot(state).await;
+    ctx.scene.save_runtime_session().await;
     if is_active {
-        crate::api::sync_connectivity(state).await;
+        ctx.scene.devices().sync_connectivity().await;
     }
 
     Ok(SceneDeleted {
@@ -2260,29 +2235,21 @@ pub async fn delete_scene(
 ///
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
-pub async fn deactivate_scene(
-    state: &AppState,
-    meta: MutationContext,
-) -> Result<SceneDeactivated, DomainError> {
-    let _ = meta;
+pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactivated, DomainError> {
+    let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
+    let layout_guard = ctx.layout.acquire_update_guard().await;
 
-    let _activation_guard = state
-        .scene_transactions
-        .acquire_scene_activation_guard()
-        .await;
-    let layout_guard = state.scene_transactions.acquire_layout_update_guard().await;
-
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     let previous_scene = mutation.scenes().active_scene().cloned();
     mutation.deactivate_current(SceneChangeReason::UserDeactivate);
     let current_scene = mutation.scenes().active_scene().cloned();
 
-    let commit = commit_scene(state, mutation).await?;
+    let commit = ctx.scene.commit(mutation).await?;
     drop(layout_guard);
-    crate::api::save_runtime_session_snapshot(state).await;
+    ctx.scene.save_runtime_session().await;
 
     // Which scene is active decides which devices are worth connecting.
-    crate::api::sync_connectivity(state).await;
+    ctx.scene.devices().sync_connectivity().await;
 
     Ok(SceneDeactivated {
         previous_scene,

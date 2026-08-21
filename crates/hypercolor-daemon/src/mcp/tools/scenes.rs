@@ -205,7 +205,7 @@ pub(super) async fn handle_activate_scene_with_state(
     }
 
     let activated = activate_scene(
-        state,
+        &state.scene_library,
         ActivateScene {
             scene_id: scene.id,
             transition: Some(TransitionSpec {
@@ -213,7 +213,6 @@ pub(super) async fn handle_activate_scene_with_state(
                 ..scene.transition.clone()
             }),
         },
-        MutationContext::mcp(),
     )
     .await?;
 
@@ -434,7 +433,7 @@ pub(super) async fn handle_create_scene_with_state(
     };
 
     let created = create_scene(
-        state,
+        &state.scene_library,
         CreateScene {
             name: name.to_owned(),
             description: params
@@ -445,7 +444,6 @@ pub(super) async fn handle_create_scene_with_state(
             mutation_mode: Some(mutation_mode),
             metadata: std::collections::HashMap::default(),
         },
-        MutationContext::mcp(),
     )
     .await?;
 

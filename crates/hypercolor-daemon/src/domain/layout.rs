@@ -68,13 +68,19 @@ impl LayoutContext {
         self.layouts.read().await.get(layout_id.as_str()).cloned()
     }
 
+    /// Capture the currently published layout.
+    #[must_use]
+    pub fn current(&self) -> SpatialLayout {
+        self.spatial.layout().as_ref().clone()
+    }
+
     /// Resolve the current layout id for scene snapshots.
     ///
     /// # Errors
     ///
     /// Returns an error when the active layout carries an invalid id.
     pub fn active_layout_id(&self) -> Result<LayoutId, crate::domain::DomainError> {
-        LayoutId::new(self.spatial.layout().id.clone()).map_err(|error| {
+        LayoutId::new(self.current().id).map_err(|error| {
             crate::domain::DomainError::Internal(anyhow::anyhow!(
                 "active layout has an invalid id: {error}"
             ))

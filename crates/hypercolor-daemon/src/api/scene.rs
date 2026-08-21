@@ -77,9 +77,7 @@ pub async fn patch_scene(
 
 /// `POST /api/v1/scene/deactivate` — return to the default scene.
 pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
-    if let Err(error) =
-        crate::domain::scene::deactivate_scene(state.as_ref(), MutationContext::api()).await
-    {
+    if let Err(error) = crate::domain::scene::deactivate_scene(&state.scene_library).await {
         return error.into_response();
     }
     get_scene(State(state)).await

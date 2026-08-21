@@ -510,7 +510,7 @@ async fn seed_multi_zone_primary_assignment(
             OutputPlacement::AutoGrid,
         )
         .expect("custom group should claim a zone");
-    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("multi-zone scene should commit");
     primary_layout

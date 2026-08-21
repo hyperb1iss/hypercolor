@@ -1773,7 +1773,6 @@ mod zone_layout_preview_race_tests {
 
     use super::{ZoneLayoutPreviewOwner, handle_zone_layout_preview};
     use crate::api::AppState;
-    use crate::domain::MutationContext;
     use crate::domain::scene::{ActivateScene, activate_scene};
     use crate::domain::zone::{CreateZone, DeleteZone, create_zone, delete_zone};
 
@@ -1825,7 +1824,7 @@ mod zone_layout_preview_race_tests {
         mutation
             .create_scene(next)
             .expect("next scene should be created");
-        crate::domain::scene::commit_scene(&state, mutation)
+        crate::domain::scene::commit_scene(&state.scene, mutation)
             .await
             .expect("next scene should commit");
 
@@ -1847,12 +1846,11 @@ mod zone_layout_preview_race_tests {
         let activation_state = Arc::clone(&state);
         let activation = tokio::spawn(async move {
             activate_scene(
-                &activation_state,
+                &activation_state.scene_library,
                 ActivateScene {
                     scene_id: next_scene_id,
                     transition: None,
                 },
-                MutationContext::api(),
             )
             .await
         });

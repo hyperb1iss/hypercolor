@@ -15,11 +15,9 @@
 //!   `hypercolor_types::api::envelope::ApiResponse<Outcome>`.
 //!
 //! Domain signatures never mention Axum, `serde_json::Value`, or
-//! `Response`. Transport provenance rides in [`MutationContext`],
-//! never inside command payloads. WS/session/startup provenance
-//! variants arrive with the WS-command wave — `ChangeTrigger` rides
-//! serialized events, so new variants ship under the §0 dual-accept
-//! process, not as a side effect here.
+//! `Response`. Mutations whose canonical events carry provenance accept
+//! [`MutationContext`] beside the command, never inside it. Commands
+//! that cannot publish the trigger carry no ceremonial context.
 //!
 //! MCP selector failures are an adapter concern. The adapter returns a
 //! JSON-RPC invalid-params error with the normalized query, failure kind,
@@ -516,8 +514,11 @@ impl From<DomainError> for ToolError {
     }
 }
 
-/// Transport provenance for a mutation. Rides beside the command,
-/// never inside it — command payloads stay transport-free.
+/// Transport provenance for a trigger-bearing mutation.
+///
+/// Rides beside the command rather than inside it so command payloads
+/// stay transport-free. Mutations without a canonical trigger-bearing
+/// event do not accept this context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationContext {
     /// Which surface initiated the mutation.

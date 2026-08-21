@@ -69,7 +69,7 @@ pub async fn create_scene(
     Json(body): Json<CreateSceneRequest>,
 ) -> Response {
     let created = match crate::domain::scene::create_scene(
-        state.as_ref(),
+        &state.scene_library,
         crate::domain::scene::CreateScene {
             name: body.name,
             description: body.description,
@@ -77,7 +77,6 @@ pub async fn create_scene(
             mutation_mode: body.mutation_mode,
             metadata: HashMap::new(),
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {
@@ -94,12 +93,11 @@ pub async fn snapshot_scene(
     Json(body): Json<SnapshotSceneRequest>,
 ) -> Response {
     let created = match crate::domain::scene::snapshot_scene(
-        state.as_ref(),
+        &state.scene_library,
         crate::domain::scene::SnapshotScene {
             name: body.name,
             description: body.description,
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {
@@ -127,13 +125,12 @@ pub async fn update_scene(
     };
 
     let updated = match crate::domain::scene::replace_scene(
-        state.as_ref(),
+        &state.scene_library,
         crate::domain::scene::ReplaceScene {
             scene_id,
             document: body,
             expected_revision,
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {
@@ -163,13 +160,7 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    if let Err(error) = crate::domain::scene::delete_scene(
-        state.as_ref(),
-        scene_id,
-        crate::domain::MutationContext::api(),
-    )
-    .await
-    {
+    if let Err(error) = crate::domain::scene::delete_scene(&state.scene_library, scene_id).await {
         return match error {
             // The service reports the resolved id; the caller gets back
             // the id it actually sent.
@@ -215,12 +206,11 @@ pub async fn activate_scene(
     }
 
     let activated = match crate::domain::scene::activate_scene(
-        state.as_ref(),
+        &state.scene_library,
         crate::domain::scene::ActivateScene {
             scene_id,
             transition: None,
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {

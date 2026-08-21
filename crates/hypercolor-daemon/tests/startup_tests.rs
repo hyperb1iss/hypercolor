@@ -1545,7 +1545,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
                 None,
             )
             .expect("native effect should activate");
-        hypercolor_daemon::domain::scene::commit_scene(&api_state, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&api_state.scene, mutation)
             .await
             .expect("native effect should commit");
     }
@@ -3054,7 +3054,7 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
             )
             .expect("native effect should activate")
             .id;
-        hypercolor_daemon::domain::scene::commit_scene(&api_state, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&api_state.scene, mutation)
             .await
             .expect("native effect should commit");
         group_id

@@ -129,9 +129,9 @@ impl SceneCommit {
 
 /// One ordered publication chain for scene commits.
 ///
-/// Lives in `AppState` so every transport shares it. The inner lock is
-/// a `std::sync::Mutex` held only for bookkeeping — never across an
-/// await, never across a publish.
+/// Owned by the scene service so every transport shares one sequence.
+/// The inner lock is a `std::sync::Mutex` held only for bookkeeping,
+/// never across an await or publish.
 #[derive(Debug, Default)]
 pub struct SceneCommitSequencer {
     state: Mutex<SequencerState>,

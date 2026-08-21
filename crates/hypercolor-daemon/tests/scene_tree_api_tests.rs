@@ -224,7 +224,7 @@ async fn seed_tree(state: &Arc<AppState>) -> EffectId {
             None,
         )
         .expect("primary zone should seed");
-    hypercolor_daemon::domain::scene::commit_scene(state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("primary zone should commit");
     effect_id
@@ -767,7 +767,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
                 },
             )
             .expect("binding should attach");
-        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
             .await
             .expect("binding should commit");
     }
@@ -1313,7 +1313,7 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
             )
             .expect("face assigns")
             .id;
-        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
             .await
             .expect("face should commit");
         zone_id
@@ -1375,7 +1375,7 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
             )
             .expect("face assigns")
             .id;
-        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
             .await
             .expect("face should commit");
         zone_id

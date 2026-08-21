@@ -674,7 +674,7 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
             )
             .expect("named simulator face should be assigned");
         mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
-        hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
             .await
             .expect("simulator face scenes should commit");
         named_scene_id

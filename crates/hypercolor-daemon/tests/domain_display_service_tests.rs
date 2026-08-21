@@ -276,7 +276,7 @@ async fn display_face_mutations_conflict_on_a_snapshot_locked_scene() {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("scene should commit");
 
@@ -375,7 +375,7 @@ async fn sync_display_surfaces_skips_a_snapshot_locked_scene() {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("scene should commit");
 

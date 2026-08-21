@@ -384,7 +384,7 @@ async fn hello_handshake_names_the_scene_but_not_its_contents() {
             None,
         )
         .expect("hello test should install a primary group");
-    hypercolor_daemon::domain::scene::commit_scene(&state, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
         .await
         .expect("hello test scene should commit");
 
